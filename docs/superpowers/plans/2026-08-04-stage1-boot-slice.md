@@ -19,6 +19,8 @@
 - 成功串口序列必须恰好为 `boot_start`、`serial_ready`、`boot_complete`，协议版本为 `v=1`，序号从 1 严格递增。
 - QEMU 成功 guest 值为 `0x10`，主机预期退出码为 `33`；panic guest 值为 `0x11`，主机预期退出码为 `35`。
 - 固定 QEMU machine 为 `pc-i440fx-10.0`，CPU 为 `qemu64`，内存为 `128M`，加速器为单线程 TCG，测试超时为 10 秒。
+- QEMU 11.0.50 Windows 对 BIOS 启动盘的 `readonly=on` 配置在启动前报告 `Block node is read-only`；为实现同一固定 BIOS profile 的可启动性，`-drive` 保持 `format=raw,file=…`（不设置 `readonly=on`），且每次构建均重新生成镜像。
+- QEMU 11.0.50 的 `-no-shutdown` 会抑制 `isa-debug-exit` 发出的 guest shutdown 请求；保留 `-no-reboot`，但不传递 `-no-shutdown`，使端口 `0xf4` 的 `0x10`/`0x11` 分别按设计映射为主机退出码 33/35。
 - 不实现物理内存发现、页表、GDT/IDT、trap、POSIR Bootstrap、init Task、Capability 或形式化细化。
 - 阶段 0 继续是当前阶段，`BLK-001`、`BLK-002` 保持 Open；不得把阶段 1 标记为满足退出条件。
 - `.obsidian/` 是现有未跟踪目录，不读取、不修改、不提交。
@@ -701,13 +703,12 @@ mod tests {
                 "-serial",
                 "stdio",
                 "-no-reboot",
-                "-no-shutdown",
                 "-nic",
                 "none",
                 "-device",
                 "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-drive",
-                "format=raw,readonly=on,file=C:/prima/prima-os-bios.img",
+                "format=raw,file=C:/prima/prima-os-bios.img",
                 "-boot",
                 "order=c,strict=on",
             ]
@@ -942,13 +943,12 @@ fn qemu_args(image: &Path) -> Vec<OsString> {
         "-serial".into(),
         "stdio".into(),
         "-no-reboot".into(),
-        "-no-shutdown".into(),
         "-nic".into(),
         "none".into(),
         "-device".into(),
         "isa-debug-exit,iobase=0xf4,iosize=0x04".into(),
         "-drive".into(),
-        format!("format=raw,readonly=on,file={}", image.display()).into(),
+        format!("format=raw,file={}", image.display()).into(),
         "-boot".into(),
         "order=c,strict=on".into(),
     ]
@@ -1147,13 +1147,12 @@ mod tests {
                 "-serial",
                 "stdio",
                 "-no-reboot",
-                "-no-shutdown",
                 "-nic",
                 "none",
                 "-device",
                 "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-drive",
-                "format=raw,readonly=on,file=C:/prima/prima-os-bios.img",
+                "format=raw,file=C:/prima/prima-os-bios.img",
                 "-boot",
                 "order=c,strict=on",
             ]

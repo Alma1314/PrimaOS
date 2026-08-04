@@ -20,15 +20,35 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "build" => {
-            let images = image::build_images()?;
-            drop(images.bios);
-            image::report_build_success();
+            let _images = build_and_report()?;
             Ok(())
         }
+        "run" => {
+            let images = build_and_report()?;
+            qemu::run_bios_interactive(&images.bios)
+        }
+        "test" => test_boot_slice(),
         _ => Err(usage()),
     }
 }
 
+fn build_and_report() -> Result<image::Images, String> {
+    let images = image::build_images()?;
+    image::report_build_success();
+    Ok(images)
+}
+
+fn test_boot_slice() -> Result<(), String> {
+    let images = build_and_report()?;
+    for run in 1..=2 {
+        qemu::run_bios_test(&images.bios)
+            .map_err(|error| format!("BIOS run {run} failed: {error}"))?;
+        println!("PASS qemu bios run={run}");
+    }
+    println!("PASS stage1 boot slice");
+    Ok(())
+}
+
 fn usage() -> String {
-    "usage: cargo xtask build".to_owned()
+    "usage: cargo xtask <build|run|test>".to_owned()
 }

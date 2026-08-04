@@ -64,9 +64,6 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
-const _: fn(&Path) -> Result<(), String> = run_bios_interactive;
-const _: fn(&Path) -> Result<(), String> = run_bios_test;
-
 fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
     let qemu = locate_qemu()?;
     let mut child = Command::new(&qemu)
@@ -186,13 +183,12 @@ fn qemu_args(image: &Path) -> Vec<OsString> {
         "-serial".into(),
         "stdio".into(),
         "-no-reboot".into(),
-        "-no-shutdown".into(),
         "-nic".into(),
         "none".into(),
         "-device".into(),
         "isa-debug-exit,iobase=0xf4,iosize=0x04".into(),
         "-drive".into(),
-        format!("format=raw,readonly=on,file={}", image.display()).into(),
+        format!("format=raw,file={}", image.display()).into(),
         "-boot".into(),
         "order=c,strict=on".into(),
     ]
@@ -391,13 +387,12 @@ mod tests {
                 "-serial",
                 "stdio",
                 "-no-reboot",
-                "-no-shutdown",
                 "-nic",
                 "none",
                 "-device",
                 "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-drive",
-                "format=raw,readonly=on,file=C:/prima/prima-os-bios.img",
+                "format=raw,file=C:/prima/prima-os-bios.img",
                 "-boot",
                 "order=c,strict=on",
             ]
