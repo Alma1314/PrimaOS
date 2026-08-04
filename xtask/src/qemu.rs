@@ -21,6 +21,33 @@ struct CapturedOutput {
     stderr: String,
 }
 
+#[derive(Debug)]
+struct CapturedStreams {
+    stdout: String,
+    stderr: String,
+}
+
+/// Minimal seam for the timeout cleanup state machine.
+trait ChildControl {
+    fn kill(&mut self) -> io::Result<()>;
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+
+impl ChildControl for Child {
+    fn kill(&mut self) -> io::Result<()> {
+        Child::kill(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        Child::wait(self)
+    }
+}
+
 pub(crate) fn run_bios_interactive(image: &Path) -> Result<(), String> {
     let qemu = locate_qemu()?;
     let status = Command::new(&qemu)
@@ -68,30 +95,47 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
                 thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
-                let cleanup = terminate_child(&mut child);
-                let stdout = join_reader(stdout_reader, "stdout")?;
-                let stderr = join_reader(stderr_reader, "stderr")?;
-                return Err(format!(
-                    "QEMU timed out after {}s; {cleanup}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                    TEST_TIMEOUT.as_secs()
-                ));
+                let cleanup = terminate_child_with(&mut child);
+                return match cleanup {
+                    Ok(cleanup) => {
+                        let streams = join_readers(stdout_reader, stderr_reader);
+                        Err(format!(
+                            "QEMU timed out after {}s; {cleanup}\n{}",
+                            TEST_TIMEOUT.as_secs(),
+                            streams.diagnostics()
+                        ))
+                    }
+                    Err(cleanup) => Err(format!(
+                        "QEMU timed out after {}s; {cleanup}; reader threads were not joined because QEMU may still be running",
+                        TEST_TIMEOUT.as_secs()
+                    )),
+                };
             }
             Err(error) => {
-                let cleanup = terminate_child(&mut child);
-                let stdout = join_reader(stdout_reader, "stdout")?;
-                let stderr = join_reader(stderr_reader, "stderr")?;
-                return Err(format!(
-                    "failed while waiting for QEMU: {error}; {cleanup}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                ));
+                let cleanup = terminate_child_with(&mut child);
+                return match cleanup {
+                    Ok(cleanup) => {
+                        let streams = join_readers(stdout_reader, stderr_reader);
+                        Err(format!(
+                            "failed while waiting for QEMU: {error}; {cleanup}\n{}",
+                            streams.diagnostics()
+                        ))
+                    }
+                    Err(cleanup) => Err(format!(
+                        "failed while waiting for QEMU: {error}; {cleanup}; reader threads were not joined because QEMU may still be running"
+                    )),
+                };
             }
         }
     };
 
-    Ok(CapturedOutput {
-        status,
-        stdout: join_reader(stdout_reader, "stdout")?,
-        stderr: join_reader(stderr_reader, "stderr")?,
-    })
+    join_readers(stdout_reader, stderr_reader)
+        .into_output()
+        .map(|streams| CapturedOutput {
+            status,
+            stdout: streams.stdout,
+            stderr: streams.stderr,
+        })
 }
 
 fn locate_qemu() -> Result<PathBuf, String> {
@@ -177,6 +221,38 @@ where
     })
 }
 
+struct ReaderResults {
+    stdout: Result<String, String>,
+    stderr: Result<String, String>,
+}
+
+impl ReaderResults {
+    fn diagnostics(&self) -> String {
+        format!(
+            "stdout:\n{}\nstderr:\n{}",
+            self.stdout.as_deref().unwrap_or_else(|error| error),
+            self.stderr.as_deref().unwrap_or_else(|error| error)
+        )
+    }
+
+    fn into_output(self) -> Result<CapturedStreams, String> {
+        match (self.stdout, self.stderr) {
+            (Ok(stdout), Ok(stderr)) => Ok(CapturedStreams { stdout, stderr }),
+            (stdout, stderr) => Err(ReaderResults { stdout, stderr }.diagnostics()),
+        }
+    }
+}
+
+fn join_readers(
+    stdout_reader: JoinHandle<io::Result<Vec<u8>>>,
+    stderr_reader: JoinHandle<io::Result<Vec<u8>>>,
+) -> ReaderResults {
+    ReaderResults {
+        stdout: join_reader(stdout_reader, "stdout"),
+        stderr: join_reader(stderr_reader, "stderr"),
+    }
+}
+
 fn join_reader(
     reader: JoinHandle<io::Result<Vec<u8>>>,
     stream_name: &str,
@@ -188,12 +264,21 @@ fn join_reader(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn terminate_child(child: &mut Child) -> String {
-    let kill_result = child.kill();
-    let wait_result = child.wait();
-    match (kill_result, wait_result) {
-        (Ok(()), Ok(_)) => "QEMU child terminated".to_owned(),
-        (kill, wait) => format!("QEMU cleanup result: kill={kill:?}, wait={wait:?}"),
+fn terminate_child_with(child: &mut impl ChildControl) -> Result<String, String> {
+    match child.kill() {
+        Ok(()) => child
+            .wait()
+            .map(|_| "QEMU child terminated".to_owned())
+            .map_err(|error| format!("QEMU cleanup failed after kill: wait failed: {error}")),
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok("QEMU child already exited".to_owned()),
+            Ok(None) => Err(format!(
+                "QEMU cleanup failed: kill failed: {kill_error}; child is still running"
+            )),
+            Err(wait_error) => Err(format!(
+                "QEMU cleanup failed: kill failed: {kill_error}; try_wait failed: {wait_error}"
+            )),
+        },
     }
 }
 
@@ -206,8 +291,78 @@ fn with_output(error: String, output: &CapturedOutput) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PANIC_EXIT_CODE, SUCCESS_EXIT_CODE, TEST_TIMEOUT, qemu_args, validate_exit_code};
-    use std::{path::Path, time::Duration};
+    use super::{
+        ChildControl, PANIC_EXIT_CODE, SUCCESS_EXIT_CODE, TEST_TIMEOUT, join_readers, qemu_args,
+        terminate_child_with, validate_exit_code,
+    };
+    use std::{io, path::Path, process::ExitStatus, thread, time::Duration};
+
+    struct FakeChild {
+        kill_error: Option<io::Error>,
+        try_wait_result: Option<io::Result<Option<ExitStatus>>>,
+        calls: Vec<&'static str>,
+    }
+
+    impl ChildControl for FakeChild {
+        fn kill(&mut self) -> io::Result<()> {
+            self.calls.push("kill");
+            self.kill_error.take().map_or(Ok(()), Err)
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+            self.calls.push("try_wait");
+            self.try_wait_result
+                .take()
+                .expect("test configures one try_wait result")
+        }
+
+        fn wait(&mut self) -> io::Result<ExitStatus> {
+            self.calls.push("wait");
+            panic!("blocking wait must not run after a failed kill")
+        }
+    }
+
+    #[test]
+    fn failed_kill_of_running_child_never_calls_blocking_wait() {
+        let mut child = FakeChild {
+            kill_error: Some(io::Error::other("access denied")),
+            try_wait_result: Some(Ok(None)),
+            calls: Vec::new(),
+        };
+
+        let error = terminate_child_with(&mut child).unwrap_err();
+
+        assert!(error.contains("kill failed: access denied"));
+        assert_eq!(child.calls, ["kill", "try_wait"]);
+    }
+
+    #[test]
+    fn reader_error_still_collects_other_stream_diagnostic() {
+        let stdout_reader = thread::spawn(|| -> io::Result<Vec<u8>> {
+            Err(io::Error::other("stdout read failure"))
+        });
+        let stderr_reader = thread::spawn(|| Ok(b"stderr preserved".to_vec()));
+
+        let error = join_readers(stdout_reader, stderr_reader)
+            .into_output()
+            .unwrap_err();
+
+        assert!(error.contains("failed to read QEMU stdout: stdout read failure"));
+        assert!(error.contains("stderr preserved"));
+    }
+
+    #[test]
+    fn reader_panic_still_collects_other_stream_diagnostic() {
+        let stdout_reader = thread::spawn(|| Ok(b"stdout preserved".to_vec()));
+        let stderr_reader = thread::spawn(|| -> io::Result<Vec<u8>> { panic!("stderr panic") });
+
+        let error = join_readers(stdout_reader, stderr_reader)
+            .into_output()
+            .unwrap_err();
+
+        assert!(error.contains("stdout preserved"));
+        assert!(error.contains("stderr reader thread panicked"));
+    }
 
     #[test]
     fn arguments_are_fixed_single_core_and_headless() {

@@ -650,7 +650,7 @@ mod qemu;
 
 其余内容保持不变。
 
-- [ ] **Step 2: 写入 QEMU 参数与退出码的失败测试**
+- [ ] **Step 2: 写入 QEMU 参数、退出码与生命周期的失败测试**
 
 Create `xtask/src/qemu.rs`：
 
@@ -740,12 +740,13 @@ mod tests {
 Run：
 
 ```bash
-cargo test -p xtask qemu::tests
+cargo test -p xtask qemu::tests::failed_kill_of_running_child_never_calls_blocking_wait
+cargo test -p xtask qemu::tests::reader_error_still_collects_other_stream_diagnostic
 ```
 
-Expected：4 tests 中参数测试和成功退出码测试失败。
+Expected：第一条测试在 `ChildControl` / `terminate_child_with` 尚未实现时编译失败；第二条测试在 `join_readers` 尚未实现时编译失败。两者均证明当前控制流缺少所需的可控生命周期 seam 和双流汇聚。
 
-- [ ] **Step 4: 实现 QEMU 定位、固定参数、输出捕获和超时清理**
+- [ ] **Step 4: 实现 QEMU 定位、固定参数、输出捕获和安全超时清理**
 
 Replace `xtask/src/qemu.rs` with：
 
@@ -770,6 +771,33 @@ struct CapturedOutput {
     status: ExitStatus,
     stdout: String,
     stderr: String,
+}
+
+#[derive(Debug)]
+struct CapturedStreams {
+    stdout: String,
+    stderr: String,
+}
+
+/// Minimal seam for the timeout cleanup state machine.
+trait ChildControl {
+    fn kill(&mut self) -> io::Result<()>;
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+
+impl ChildControl for Child {
+    fn kill(&mut self) -> io::Result<()> {
+        Child::kill(self)
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        Child::wait(self)
+    }
 }
 
 pub(crate) fn run_bios_interactive(image: &Path) -> Result<(), String> {
@@ -816,30 +844,47 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
                 thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
-                let cleanup = terminate_child(&mut child);
-                let stdout = join_reader(stdout_reader, "stdout")?;
-                let stderr = join_reader(stderr_reader, "stderr")?;
-                return Err(format!(
-                    "QEMU timed out after {}s; {cleanup}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                    TEST_TIMEOUT.as_secs()
-                ));
+                let cleanup = terminate_child_with(&mut child);
+                return match cleanup {
+                    Ok(cleanup) => {
+                        let streams = join_readers(stdout_reader, stderr_reader);
+                        Err(format!(
+                            "QEMU timed out after {}s; {cleanup}\n{}",
+                            TEST_TIMEOUT.as_secs(),
+                            streams.diagnostics()
+                        ))
+                    }
+                    Err(cleanup) => Err(format!(
+                        "QEMU timed out after {}s; {cleanup}; reader threads were not joined because QEMU may still be running",
+                        TEST_TIMEOUT.as_secs()
+                    )),
+                };
             }
             Err(error) => {
-                let cleanup = terminate_child(&mut child);
-                let stdout = join_reader(stdout_reader, "stdout")?;
-                let stderr = join_reader(stderr_reader, "stderr")?;
-                return Err(format!(
-                    "failed while waiting for QEMU: {error}; {cleanup}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                ));
+                let cleanup = terminate_child_with(&mut child);
+                return match cleanup {
+                    Ok(cleanup) => {
+                        let streams = join_readers(stdout_reader, stderr_reader);
+                        Err(format!(
+                            "failed while waiting for QEMU: {error}; {cleanup}\n{}",
+                            streams.diagnostics()
+                        ))
+                    }
+                    Err(cleanup) => Err(format!(
+                        "failed while waiting for QEMU: {error}; {cleanup}; reader threads were not joined because QEMU may still be running"
+                    )),
+                };
             }
         }
     };
 
-    Ok(CapturedOutput {
-        status,
-        stdout: join_reader(stdout_reader, "stdout")?,
-        stderr: join_reader(stderr_reader, "stderr")?,
-    })
+    join_readers(stdout_reader, stderr_reader)
+        .into_output()
+        .map(|streams| CapturedOutput {
+            status,
+            stdout: streams.stdout,
+            stderr: streams.stderr,
+        })
 }
 
 fn locate_qemu() -> Result<PathBuf, String> {
@@ -925,6 +970,37 @@ where
     })
 }
 
+struct ReaderResults {
+    stdout: Result<String, String>,
+    stderr: Result<String, String>,
+}
+
+impl ReaderResults {
+    fn diagnostics(&self) -> String {
+        format!(
+            "stdout:\n{}\nstderr:\n{}",
+            self.stdout.as_deref().unwrap_or_else(|error| error),
+            self.stderr.as_deref().unwrap_or_else(|error| error)
+        )
+    }
+
+    fn into_output(self) -> Result<CapturedStreams, String> {
+        match (self.stdout, self.stderr) {
+            (Ok(stdout), Ok(stderr)) => Ok(CapturedStreams { stdout, stderr }),
+            (stdout, stderr) => Err(ReaderResults { stdout, stderr }.diagnostics()),
+        }
+    }
+}
+
+fn join_readers(
+    stdout_reader: JoinHandle<io::Result<Vec<u8>>>,
+    stderr_reader: JoinHandle<io::Result<Vec<u8>>>,
+) -> ReaderResults {
+    let stdout = join_reader(stdout_reader, "stdout");
+    let stderr = join_reader(stderr_reader, "stderr");
+    ReaderResults { stdout, stderr }
+}
+
 fn join_reader(
     reader: JoinHandle<io::Result<Vec<u8>>>,
     stream_name: &str,
@@ -936,12 +1012,21 @@ fn join_reader(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn terminate_child(child: &mut Child) -> String {
-    let kill_result = child.kill();
-    let wait_result = child.wait();
-    match (kill_result, wait_result) {
-        (Ok(()), Ok(_)) => "QEMU child terminated".to_owned(),
-        (kill, wait) => format!("QEMU cleanup result: kill={kill:?}, wait={wait:?}"),
+fn terminate_child_with(child: &mut impl ChildControl) -> Result<String, String> {
+    match child.kill() {
+        Ok(()) => child
+            .wait()
+            .map(|_| "QEMU child terminated".to_owned())
+            .map_err(|error| format!("QEMU cleanup failed after kill: wait failed: {error}")),
+        Err(kill_error) => match child.try_wait() {
+            Ok(Some(_)) => Ok("QEMU child already exited".to_owned()),
+            Ok(None) => Err(format!(
+                "QEMU cleanup failed: kill failed: {kill_error}; child is still running"
+            )),
+            Err(wait_error) => Err(format!(
+                "QEMU cleanup failed: kill failed: {kill_error}; try_wait failed: {wait_error}"
+            )),
+        },
     }
 }
 
@@ -1029,7 +1114,28 @@ const _: fn(&Path) -> Result<(), String> = run_bios_test;
 
 Task 3 的 `run_bios_test` 已经在生产代码中调用 `protocol::validate_output(&output.stdout)`，因此删除 Task 2 的临时 `protocol.rs` 签名断言。Task 4 实际接通 CLI 后必须删除以上两个 QEMU 临时断言。
 
-- [ ] **Step 6: 运行 QEMU 单元测试并确认通过**
+- [ ] **Step 6: 使用最小 seam 实现可验证的清理和双流汇聚**
+
+保留 `Child` 的唯一所有权，只为 timeout cleanup 提供模块私有的 `ChildControl` seam：
+
+```rust
+trait ChildControl {
+    fn kill(&mut self) -> io::Result<()>;
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+```
+
+`terminate_child_with` 必须仅在 `kill()` 成功后调用阻塞 `wait()` 以 reap。若 `kill()` 失败，必须先调用 `try_wait()`：`Some(_)` 表示 child 已退出；`None` 或 `try_wait` 错误返回含 kill 错误的受控 cleanup failure，绝不能调用阻塞 `wait()`。
+
+正常结束、timeout 和 `try_wait` error 路径必须将两个 reader `JoinHandle` 都交给同一个 `join_readers`，先完整收集两个结果再决定返回。`ReaderResults::diagnostics()` 必须保留每个流的成功文本或 read error/thread panic。只有 cleanup 已确认 child 退出时才 join reader；若 child 无法终止，必须立即返回明确说明 reader 未 join、QEMU 可能仍运行的 cleanup failure，避免阻塞仍读取活进程 pipe 的线程。
+
+```rust
+let streams = join_readers(stdout_reader, stderr_reader);
+Err(format!("...\n{}", streams.diagnostics()))
+```
+
+- [ ] **Step 7: 运行 QEMU 单元测试并确认通过**
 
 Run：
 
@@ -1037,9 +1143,9 @@ Run：
 cargo fmt --all && cargo test -p xtask qemu::tests
 ```
 
-Expected：`4 passed; 0 failed`。
+Expected：`7 passed; 0 failed`（4 个既有参数/退出码测试、1 个 failed-kill cleanup 测试、1 个 reader read-error 汇聚测试、1 个 reader panic 汇聚测试）。
 
-- [ ] **Step 7: 提交 QEMU runner**
+- [ ] **Step 8: 提交 QEMU runner**
 
 ```bash
 git add -- xtask/src/main.rs xtask/src/qemu.rs
@@ -1347,7 +1453,7 @@ Run：
 cargo fmt --all && cargo test -p xtask
 ```
 
-Expected：`13 passed; 0 failed`。
+Expected：`16 passed; 0 failed`。
 
 Run：
 
@@ -1399,7 +1505,7 @@ Run：
 cargo fmt --all --check && cargo clippy --workspace --all-targets --no-deps -- -D warnings && cargo test -p xtask
 ```
 
-Expected：所有命令退出码为 0；xtask 测试结果为 `13 passed; 0 failed`。
+Expected：所有命令退出码为 0；xtask 测试结果为 `16 passed; 0 failed`。
 
 - [ ] **Step 2: 重新运行唯一功能验收并保留真实结果**
 
