@@ -1018,7 +1018,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 5: 运行 QEMU 单元测试并确认通过**
+- [ ] **Step 5: 保持 Task 3 过渡期编译无 warning**
+
+`run_bios_interactive` 和 `run_bios_test` 直到 Task 4 才有 CLI 调用点；在 Task 3 中保留下面两个匿名函数签名引用，以使普通 `cargo xtask build` 无 dead-code warning，同时不提前接入 `run`/`test` CLI：
+
+```rust
+const _: fn(&Path) -> Result<(), String> = run_bios_interactive;
+const _: fn(&Path) -> Result<(), String> = run_bios_test;
+```
+
+Task 3 的 `run_bios_test` 已经在生产代码中调用 `protocol::validate_output(&output.stdout)`，因此删除 Task 2 的临时 `protocol.rs` 签名断言。Task 4 实际接通 CLI 后必须删除以上两个 QEMU 临时断言。
+
+- [ ] **Step 6: 运行 QEMU 单元测试并确认通过**
 
 Run：
 
@@ -1028,7 +1039,7 @@ cargo fmt --all && cargo test -p xtask qemu::tests
 
 Expected：`4 passed; 0 failed`。
 
-- [ ] **Step 6: 提交 QEMU runner**
+- [ ] **Step 7: 提交 QEMU runner**
 
 ```bash
 git add -- xtask/src/main.rs xtask/src/qemu.rs
@@ -1114,6 +1125,13 @@ fn test_boot_slice() -> Result<(), String> {
 fn usage() -> String {
     "usage: cargo xtask <build|run|test>".to_owned()
 }
+```
+
+在此处实际 CLI 调用已使用 QEMU runner 后，删除 Task 3 保留的两个匿名 QEMU 函数签名断言：
+
+```rust
+const _: fn(&Path) -> Result<(), String> = run_bios_interactive;
+const _: fn(&Path) -> Result<(), String> = run_bios_test;
 ```
 
 - [ ] **Step 2: 运行端到端测试并确认它以受控超时失败**

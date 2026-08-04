@@ -50,8 +50,6 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-const _: fn(&str) -> Result<(), String> = validate_output;
-
 fn parse_line(line: &str) -> Result<Event, String> {
     let fields: Vec<&str> = line.split('|').collect();
     if fields.len() != 5 {

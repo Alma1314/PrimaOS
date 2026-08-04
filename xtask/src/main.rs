@@ -1,5 +1,6 @@
 mod image;
 mod protocol;
+mod qemu;
 
 use std::{env, process};
 
