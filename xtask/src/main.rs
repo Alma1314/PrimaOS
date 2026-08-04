@@ -1,4 +1,5 @@
 mod image;
+mod protocol;
 
 use std::{env, process};
 
