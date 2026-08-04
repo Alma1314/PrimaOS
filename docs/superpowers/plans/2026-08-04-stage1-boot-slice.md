@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - 权威设计为 `docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md`。
-- 固定 Rust 工具链为 `nightly-2026-07-30`，组件为 `rust-src`、`llvm-tools-preview`，targets 为 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`。
+- 固定 Rust 工具链为 `nightly-2026-07-30`，组件为 `rust-src`、`llvm-tools-preview`、`rustfmt`，targets 为 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`。
 - 固定 `bootloader = 0.11.17`、`bootloader_api = 0.11.17`，并提交 `Cargo.lock`。
 - 固定 QEMU winget 包 `SoftwareFreedomConservancy.QEMU` 版本 `11.0.50`。
 - BIOS 是首轮自动验收路径；UEFI 只要求镜像生成且非空。
@@ -98,16 +98,16 @@ Expected：首行包含 `QEMU emulator version 11.0.50`。
 Run：
 
 ```bash
-rustup toolchain install nightly-2026-07-30 --profile minimal --component rust-src --component llvm-tools-preview --target x86_64-unknown-none --target x86_64-unknown-uefi
+rustup toolchain install nightly-2026-07-30 --profile minimal --component rust-src --component llvm-tools-preview --component rustfmt --target x86_64-unknown-none --target x86_64-unknown-uefi
 ```
 
 Verify：
 
 ```bash
-rustc +nightly-2026-07-30 --version && rustup component list --toolchain nightly-2026-07-30-x86_64-pc-windows-msvc --installed
+rustc +nightly-2026-07-30 --version && rustup component list --toolchain nightly-2026-07-30-x86_64-pc-windows-msvc --installed && rustfmt +nightly-2026-07-30 --version
 ```
 
-Expected：`rustc` 输出包含 `nightly`，组件列表包含 `rust-src`、`llvm-tools`，targets 包含 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`。
+Expected：`rustc` 输出包含 `nightly`，组件列表包含 `rust-src`、`llvm-tools`、`rustfmt`，targets 包含 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`；`rustfmt` 输出版本且退出码为 0。
 
 - [ ] **Step 4: 写入 workspace 与工具链配置**
 
@@ -134,7 +134,7 @@ Create `rust-toolchain.toml`：
 [toolchain]
 channel = "nightly-2026-07-30"
 profile = "minimal"
-components = ["rust-src", "llvm-tools-preview"]
+components = ["rust-src", "llvm-tools-preview", "rustfmt"]
 targets = ["x86_64-unknown-none", "x86_64-unknown-uefi"]
 ```
 
@@ -314,7 +314,8 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "build" => {
-            let _images = image::build_images()?;
+            let images = image::build_images()?;
+            drop(images.bios);
             image::report_build_success();
             Ok(())
         }

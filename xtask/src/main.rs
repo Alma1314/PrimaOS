@@ -18,7 +18,8 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "build" => {
-            let _images = image::build_images()?;
+            let images = image::build_images()?;
+            drop(images.bios);
             image::report_build_success();
             Ok(())
         }
