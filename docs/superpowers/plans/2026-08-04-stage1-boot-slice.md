@@ -531,10 +531,7 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         }
     }
 
-    if events
-        .iter()
-        .any(|event| event.kind == EventKind::Panic)
-    {
+    if events.iter().any(|event| event.kind == EventKind::Panic) {
         return Err("kernel emitted panic event".to_owned());
     }
 
@@ -546,6 +543,8 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
 
     Ok(())
 }
+
+const _: fn(&str) -> Result<(), String> = validate_output;
 
 fn parse_line(line: &str) -> Result<Event, String> {
     let fields: Vec<&str> = line.split('|').collect();
@@ -598,7 +597,23 @@ cargo fmt --all && cargo test -p xtask protocol::tests
 
 Expected：`9 passed; 0 failed`。
 
-- [ ] **Step 6: 提交协议验证器**
+- [ ] **Step 6: Task 3 接线时删除临时签名断言**
+
+在 `xtask/src/qemu.rs` 的真实调用点接入：
+
+```rust
+protocol::validate_output(&output.stdout)
+```
+
+确认普通 `cargo xtask build` 和测试仍无 warning 后，从 `xtask/src/protocol.rs` 删除 Task 2 Step 4 中的临时接口签名断言：
+
+```rust
+const _: fn(&str) -> Result<(), String> = validate_output;
+```
+
+该断言只用于 Task 2 已编译但尚未有运行时调用点的过渡期；Task 3 的生产调用接通后不应保留。
+
+- [ ] **Step 7: 提交协议验证器**
 
 ```bash
 git add -- xtask/src/main.rs xtask/src/protocol.rs
