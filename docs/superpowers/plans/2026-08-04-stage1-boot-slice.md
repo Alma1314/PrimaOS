@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - 权威设计为 `docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md`。
-- 固定 Rust 工具链为 `nightly-2026-07-30`，组件为 `rust-src`、`llvm-tools-preview`、`rustfmt`，targets 为 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`。
+- 固定 Rust 工具链为 `nightly-2026-07-30`，组件为 `rust-src`、`llvm-tools-preview`、`rustfmt`、`clippy`，targets 为 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`。
 - 固定 `bootloader = 0.11.17`、`bootloader_api = 0.11.17`，并提交 `Cargo.lock`。
 - 固定 QEMU winget 包 `SoftwareFreedomConservancy.QEMU` 版本 `11.0.50`。
 - BIOS 是首轮自动验收路径；UEFI 只要求镜像生成且非空。
@@ -100,16 +100,16 @@ Expected：首行包含 `QEMU emulator version 11.0.50`。
 Run：
 
 ```bash
-rustup toolchain install nightly-2026-07-30 --profile minimal --component rust-src --component llvm-tools-preview --component rustfmt --target x86_64-unknown-none --target x86_64-unknown-uefi
+rustup toolchain install nightly-2026-07-30 --profile minimal --component rust-src --component llvm-tools-preview --component rustfmt --component clippy --target x86_64-unknown-none --target x86_64-unknown-uefi
 ```
 
 Verify：
 
 ```bash
-rustc +nightly-2026-07-30 --version && rustup component list --toolchain nightly-2026-07-30-x86_64-pc-windows-msvc --installed && rustfmt +nightly-2026-07-30 --version
+rustc +nightly-2026-07-30 --version && rustup component list --toolchain nightly-2026-07-30-x86_64-pc-windows-msvc --installed && rustup target list --toolchain nightly-2026-07-30-x86_64-pc-windows-msvc --installed && rustfmt +nightly-2026-07-30 --version && cargo +nightly-2026-07-30 clippy --version
 ```
 
-Expected：`rustc` 输出包含 `nightly`，组件列表包含 `rust-src`、`llvm-tools`、`rustfmt`，targets 包含 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`；`rustfmt` 输出版本且退出码为 0。
+Expected：`rustc` 输出包含 `nightly`，组件列表包含 `rust-src`、`llvm-tools`、`rustfmt`、`clippy`，targets 包含 `x86_64-unknown-none` 与 `x86_64-unknown-uefi`；`rustfmt` 与 `cargo clippy --version` 均输出版本且退出码为 0。
 
 - [ ] **Step 4: 写入 workspace 与工具链配置**
 
@@ -136,7 +136,7 @@ Create `rust-toolchain.toml`：
 [toolchain]
 channel = "nightly-2026-07-30"
 profile = "minimal"
-components = ["rust-src", "llvm-tools-preview", "rustfmt"]
+components = ["rust-src", "llvm-tools-preview", "rustfmt", "clippy"]
 targets = ["x86_64-unknown-none", "x86_64-unknown-uefi"]
 ```
 
@@ -1582,10 +1582,10 @@ EOF
 Run：
 
 ```bash
-cargo fmt --all --check && cargo clippy --workspace --all-targets --no-deps -- -D warnings && cargo test -p xtask
+cargo fmt --all --check && cargo clippy -p xtask --all-targets --no-deps -- -D warnings && cargo clippy -p kernel --bin prima-kernel --target x86_64-unknown-none --no-deps -- -D warnings && cargo test -p xtask
 ```
 
-Expected：所有命令退出码为 0；xtask 测试结果为 `16 passed; 0 failed`。
+Expected：所有命令退出码为 0；`cargo test -p xtask` 结果为 `16 passed; 0 failed`。
 
 - [ ] **Step 2: 重新运行唯一功能验收并保留真实结果**
 
@@ -1613,7 +1613,7 @@ PASS stage1 boot slice
 在 `Prima OS 实现阶段.md` 中作以下精确修改：
 
 ```markdown
-> 更新日期：2026-08-04
+> 更新日期：2026-08-05
 ```
 
 将当前快照中的相关行改为：
@@ -1626,7 +1626,7 @@ PASS stage1 boot slice
 | 当前主要工件 | [[Prima OS]]、[[COSIR 原语规范]]、Rust/QEMU 启动闭环 |
 | 当前首要缺口 | x86_64 机器状态到 POSIR 状态的细化草案；形式化工具中的可执行状态模型；异常帧格式与 `exc_resume` 原语（COSIR 细化层缺口） |
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
-| 最近实现证据 | 2026-08-04 — `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次固定 BIOS 启动；同时生成非空 BIOS/UEFI 镜像 |
+| 最近实现证据 | 2026-08-05 — `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次固定 BIOS 启动；同时生成非空 BIOS/UEFI 镜像 |
 ```
 
 将快照后的说明改为：
@@ -1640,8 +1640,8 @@ PASS stage1 boot slice
 在证据索引的 `SPEC-001` 行后增加：
 
 ```markdown
-| IMPL-001 | 实现工件 | `Cargo.toml`、`kernel/`、`xtask/`、`Cargo.lock` | 2026-08-04 | 固定 nightly-2026-07-30 与 bootloader 0.11.17；生成 BIOS/UEFI 镜像 | S1-D1、S1-D2 |
-| TEST-001 | QEMU 集成测试 | `cargo xtask test` | 2026-08-04 | QEMU 11.0.50；固定 BIOS profile 连续启动两次，结构化串口序列和退出码均通过 | S1-D1、S1-D2、S1-X1 |
+| IMPL-001 | 实现工件 | `Cargo.toml`、`kernel/`、`xtask/`、`Cargo.lock` | 2026-08-05 | 固定 nightly-2026-07-30 与 bootloader 0.11.17；生成 BIOS/UEFI 镜像 | S1-D1、S1-D2 |
+| TEST-001 | QEMU 集成测试 | `cargo xtask test` | 2026-08-05 | QEMU 11.0.50；固定 BIOS profile 连续启动两次，结构化串口序列和退出码均通过 | S1-D1、S1-D2、S1-X1 |
 ```
 
 不得关闭 `BLK-001` 或 `BLK-002`。
