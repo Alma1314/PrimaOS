@@ -1,6 +1,8 @@
 # Prima OS 阶段 1 启动闭环设计
 
-> 日期：2026-08-04
+> 设计日期：2026-08-04
+>
+> 修订日期：2026-08-05
 >
 > 状态：已批准
 >
@@ -24,7 +26,7 @@ cargo xtask test
 
 - 在项目根目录建立 Cargo workspace；
 - 使用固定日期的 Rust nightly；
-- 安装并固定 `rust-src` 与 `llvm-tools-preview`；
+- 安装并固定声明式工具链组件 `rust-src`、`llvm-tools-preview`、`rustfmt` 与 `clippy`；
 - 使用 `bootloader` crate 生成 BIOS 和 UEFI 磁盘镜像；
 - 使用 `bootloader_api` 接收启动信息；
 - 构建 `x86_64-unknown-none`、`no_std`、`no_main` 内核；
@@ -132,11 +134,14 @@ cargo xtask run
 -display none
 -serial stdio
 -no-reboot
--no-shutdown
 -device isa-debug-exit,iobase=0xf4,iosize=0x04
 ```
 
-实现还必须固定机器类型和内存大小。测试模式不得打开图形窗口。
+QEMU 11.0.50 Windows 实测表明，`isa-debug-exit` 的端口写入是 guest shutdown 请求；`-no-shutdown` 会抑制该请求，导致 QEMU 进程不退出并最终触发测试超时。因此，自动测试 profile 必须保留 `-no-reboot`，不得传递 `-no-shutdown`。
+
+BIOS drive 使用 `format=raw,file=...`，不设置 `readonly=on`。QEMU 11.0.50 Windows 实测在 bootloader 启动前对 `readonly=on` 报告 `Block node is read-only`；每次 `xtask build` 或 `xtask test` 调用都会删除并重建镜像。当前 kernel 不执行块 I/O，因此该可写 raw image 例外不引入跨命令 guest 状态证据。用 `xtask run` 时同样经过构建流。统一使用该可写 raw image profile，不得把 `readonly=on` 加回自动测试参数。
+
+实现还必须固定机器类型和内存大小。测试模式不得打开图形窗口。该 profile 的完整参数以实现中的固定参数测试为准。任何后续参数调整都必须以实际 QEMU 版本验证并同步本设计。确定性退出仍要求 guest 成功值 `0x10` 映射为主机退出码 `33`，panic 值 `0x11` 映射为 `35`。命令超时仍是错误处理保护，不是正确性证据。
 
 ### 4.3 测试流
 
@@ -269,6 +274,8 @@ PASS stage1 boot slice
 - 一个明确日期的 Rust nightly；
 - `rust-src`；
 - `llvm-tools-preview`；
+- `rustfmt`；
+- `clippy`；
 - `bootloader` 和 `bootloader_api` 精确版本；
 - `Cargo.lock`；
 - QEMU 机器类型、内存大小和全部启动参数；
