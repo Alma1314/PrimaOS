@@ -2,7 +2,7 @@
 
 > 文档类型：实施进度与证据跟踪
 >
-> 更新日期：2026-08-05
+> 更新日期：2026-08-06
 >
 > 架构与阶段定义：[[Prima OS]]
 >
@@ -39,7 +39,7 @@
 | 当前主要工件 | [[Prima OS]]、[[COSIR 原语规范]]、Rust/QEMU 启动闭环 |
 | 当前首要缺口 | x86_64 机器状态到 POSIR 状态的细化草案；形式化工具中的可执行状态模型；异常帧格式与 `exc_resume` 原语（COSIR 细化层缺口） |
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
-| 最近实现证据 | 2026-08-05 — `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次固定 BIOS 启动；同时生成非空 BIOS/UEFI 镜像 |
+| 最近实现证据 | 2026-08-06 — 最终审查加固后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次固定 BIOS 启动；23 个 host 单元测试全部通过 |
 
 当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现；尚无机器证明、物理内存发现、页表与 trap 框架、POSIR Bootstrap 或兼容性测试证据。
 
@@ -51,6 +51,7 @@
 | SPEC-001 | 抽象规范 | [[COSIR 原语规范]] | 2026-07-30 | 已定义对象能力状态机（11 类原语、16 个不变式）；尚无机器证明 | S0-D1、S0-D2 |
 | IMPL-001 | 实现工件 | `Cargo.toml`、`kernel/`、`xtask/`、`Cargo.lock` | 2026-08-05 | 固定 nightly-2026-07-30 与 bootloader 0.11.17；生成 BIOS/UEFI 镜像 | S1-D1、S1-D2 |
 | TEST-001 | QEMU 集成测试 | `cargo xtask test` | 2026-08-05 | QEMU 11.0.50；固定 BIOS profile 连续启动两次，结构化串口序列和退出码均通过 | S1-D1、S1-D2、S1-X1 |
+| TEST-002 | 最终审查加固验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 23 个 host 单元测试通过；严格 LF/CRLF、reader 启动失败 cleanup 与 UART TEMT drain 加固后，QEMU 11.0.50 固定 BIOS profile 连续启动两次并输出六条稳定 PASS 摘要 | S1-D1、S1-D2、S1-X1 |
 
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
 
@@ -101,15 +102,15 @@
 
 ### 交付检查
 
-- [x] S1-D1：QEMU 可重复启动；证据：TEST-001（固定 BIOS profile 连续两次）。
-- [x] S1-D2：串口结构化输出与确定性退出；证据：IMPL-001、TEST-001。
+- [x] S1-D1：QEMU 可重复启动；证据：TEST-001、TEST-002（固定 BIOS profile 连续两次）。
+- [x] S1-D2：串口结构化输出与确定性退出；证据：IMPL-001、TEST-001、TEST-002。
 - [ ] S1-D3：物理内存发现；证据：页帧清单与保留区域测试。
 - [ ] S1-D4：初始页表、GDT/IDT 与 trap 框架；证据：异常和权限测试。
 - [ ] S1-D5：Bootstrap 创建 init Task；证据：初始对象和 Capability 快照。
 
 ### 退出条件
 
-- [x] S1-X1：脚本可无人值守启动并退出 QEMU；证据：TEST-001。
+- [x] S1-X1：脚本可无人值守启动并退出 QEMU；证据：TEST-001、TEST-002。
 - [ ] S1-X2：init 只获得规范定义的初始 Authority。
 - [ ] S1-X3：活动 Segment 与空闲页帧满足唯一归属不变量。
 
