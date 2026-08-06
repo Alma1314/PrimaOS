@@ -11,7 +11,7 @@ use std::{
 
 const SUCCESS_EXIT_CODE: i32 = 33;
 const PANIC_EXIT_CODE: i32 = 35;
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const QEMU_INSTALL_COMMAND: &str =
     "winget install --id SoftwareFreedomConservancy.QEMU --exact --version 11.0.50";
 
@@ -592,7 +592,7 @@ mod tests {
                 "order=c,strict=on",
             ]
         );
-        assert_eq!(TEST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(TEST_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]

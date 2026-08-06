@@ -19,7 +19,7 @@
 - 成功串口序列必须恰好为 `boot_start`、`serial_ready`、`boot_complete`，协议版本为 `v=1`，序号从 1 严格递增；每条 `PRIMA|` 记录必须以 LF 或 CRLF 结束，无终止符、仅 CR 或 LF 前多余 CR 均拒绝，但无关固件的未终止尾部噪声仍忽略。
 - 最终正常事件与 panic 事件后必须等待 16550 LSR bit 6（TEMT）再写 QEMU 退出端口。
 - QEMU 成功 guest 值为 `0x10`，主机预期退出码为 `33`；panic guest 值为 `0x11`，主机预期退出码为 `35`。
-- 固定 QEMU machine 为 `pc-i440fx-10.0`，CPU 为 `qemu64`，内存为 `128M`，加速器为单线程 TCG，测试超时为 10 秒。
+- 固定 QEMU machine 为 `pc-i440fx-10.0`，CPU 为 `qemu64`，内存为 `128M`，加速器为单线程 TCG，测试超时为 30 秒。
 - QEMU 11.0.50 Windows 对 BIOS 启动盘的 `readonly=on` 配置在启动前报告 `Block node is read-only`；为实现同一固定 BIOS profile 的可启动性，`-drive` 保持 `format=raw,file=…`（不设置 `readonly=on`），且每次构建均重新生成镜像。
 - QEMU 11.0.50 的 `-no-shutdown` 会抑制 `isa-debug-exit` 发出的 guest shutdown 请求；保留 `-no-reboot`，但不传递 `-no-shutdown`，使端口 `0xf4` 的 `0x10`/`0x11` 分别按设计映射为主机退出码 33/35。
 - stdout/stderr reader 必须通过带固定安全名称的 `thread::Builder::spawn` 可失败启动；任一启动失败都先清理并 reap 已拥有的 child。第二个 reader 启动失败仅在确认 child 退出后 join 第一个 reader并保留其输出；cleanup 未确认时不得阻塞 join。
@@ -664,7 +664,7 @@ use std::{ffi::OsString, path::Path, time::Duration};
 
 const SUCCESS_EXIT_CODE: i32 = 33;
 const PANIC_EXIT_CODE: i32 = 35;
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn qemu_args(_image: &Path) -> Vec<OsString> {
     Vec::new()
@@ -716,7 +716,7 @@ mod tests {
                 "order=c,strict=on",
             ]
         );
-        assert_eq!(TEST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(TEST_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]
@@ -771,7 +771,7 @@ use std::{
 
 const SUCCESS_EXIT_CODE: i32 = 33;
 const PANIC_EXIT_CODE: i32 = 35;
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const QEMU_INSTALL_COMMAND: &str =
     "winget install --id SoftwareFreedomConservancy.QEMU --exact --version 11.0.50";
 
@@ -1160,7 +1160,7 @@ mod tests {
                 "order=c,strict=on",
             ]
         );
-        assert_eq!(TEST_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(TEST_TIMEOUT, Duration::from_secs(30));
     }
 
     #[test]
@@ -1334,7 +1334,7 @@ cargo fmt --all && cargo xtask test
 Expected：命令在第一个 BIOS run 后返回非零，错误包含：
 
 ```text
-QEMU timed out after 10s
+QEMU timed out after 30s
 ```
 
 QEMU 子进程必须已被回收；不得手工杀死其他 QEMU 进程。失败证明测试能观察到当前 kernel 缺少串口与退出协议。
@@ -1787,9 +1787,56 @@ Expected：全部退出码为 0；最后一条命令实际执行两次 BIOS run�
 
 ---
 
+### Task 7: 固定高负载主机的 BIOS 测试失败保护
+
+**Files:**
+- Modify: `xtask/src/qemu.rs`
+- Modify: `docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md`
+- Modify: `docs/superpowers/plans/2026-08-04-stage1-boot-slice.md`
+- Modify after fresh acceptance only: `Prima OS 实现阶段.md`
+
+**Root-cause evidence:**
+- finishing fresh 验收在主机总 CPU 达 100% 时于 BIOS run 1 触发原 10 秒保护，且没有 PRIMA 输出；cleanup 正确终止并 reap child。
+- 同一镜像与完全相同的 QEMU 参数在负载回落后以退出码 33 完成，实测耗时 7.079 秒并输出三条 PRIMA 记录；两次 BIOS 的 fresh acceptance 总耗时 17.156 秒。
+- 结论：10 秒阈值是环境敏感的失败保护误报，不是已确认的 kernel、镜像或 QEMU 状态机挂死。
+
+- [x] **Step 1: 用参数锁定测试观察 30 秒 RED**
+
+Run：
+
+```bash
+cargo test -p xtask qemu::tests::arguments_are_fixed_single_core_and_headless
+```
+
+Observed：断言失败并显示 `left: 10s`、`right: 30s`。
+
+- [x] **Step 2: 最小修改固定超时并确认 focused GREEN**
+
+将 `TEST_TIMEOUT` 改为 `Duration::from_secs(30)`，不增加自动重试，不改变退出码和事件协议。Focused test 通过。
+
+- [x] **Step 3: 同步设计与决策边界**
+
+设计和实现阶段决策日志必须说明：30 秒只作为高负载主机的失败保护；不增加自动重试；成功仍必须同时满足退出码 33 和严格 PRIMA 事件序列。
+
+- [x] **Step 4: fresh 验证并登记 TEST-003**
+
+Run：
+
+```bash
+cargo fmt --all --check
+cargo clippy -p xtask --all-targets --no-deps -- -D warnings
+cargo clippy -p kernel --bin prima-kernel --target x86_64-unknown-none --no-deps -- -D warnings
+cargo test -p xtask
+cargo xtask test
+```
+
+Observed：23 个单元测试通过；两次 BIOS run 输出六条稳定 PASS，整条 acceptance 退出码 0，总耗时 17.156 秒。保留 `TEST-001`、`TEST-002`，追加 `TEST-003` 并保持阶段边界不变。
+
+---
+
 ## Plan Self-Review
 
-- **Spec coverage:** Task 1 覆盖固定工具链、Cargo workspace、artifact dependency 和双镜像；Task 2 覆盖版本化事件协议；Task 3 覆盖 QEMU 参数、退出码、超时和进程清理；Task 4 覆盖 COM1、panic、连续两次 BIOS 验收及统一 CLI；Task 5 覆盖静态验证与历史 TEST-001 证据边界；Task 6 覆盖严格 LF/CRLF、UART TEMT drain、fallible reader startup 与 TEST-002 fresh evidence。
+- **Spec coverage:** Task 1 覆盖固定工具链、Cargo workspace、artifact dependency 和双镜像；Task 2 覆盖版本化事件协议；Task 3 覆盖 QEMU 参数、退出码、超时和进程清理；Task 4 覆盖 COM1、panic、连续两次 BIOS 验收及统一 CLI；Task 5 覆盖静态验证与历史 TEST-001 证据边界；Task 6 覆盖严格 LF/CRLF、UART TEMT drain、fallible reader startup 与 TEST-002 fresh evidence；Task 7 覆盖高负载主机下 30 秒失败保护与 TEST-003 fresh evidence。
 - **Scope:** 计划只实现启动闭环，没有引入物理内存、页表、GDT/IDT、trap、Bootstrap、Capability、CI、Linux 主机验证或 UEFI 运行验证。
 - **Type consistency:** `image::Images::bios` 从 Task 1 传给 Task 4；`protocol::validate_output` 从 Task 2 传给 Task 3；`qemu::run_bios_test` 和 `run_bios_interactive` 的签名在 Tasks 3–4 一致。
 - **Protocol consistency:** kernel 输出字段、顺序、序号、LF/CRLF 终止约束、TEMT drain、成功值 `0x10` 和 panic 值 `0x11` 与 xtask 验证器及设计规范一致。
