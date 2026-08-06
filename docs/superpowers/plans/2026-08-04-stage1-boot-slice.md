@@ -16,11 +16,14 @@
 - 固定 QEMU winget 包 `SoftwareFreedomConservancy.QEMU` 版本 `11.0.50`。
 - BIOS 是首轮自动验收路径；UEFI 只要求镜像生成且非空。
 - 唯一功能验收入口是 `cargo xtask test`；该命令必须独立运行两次 BIOS 启动。
-- 成功串口序列必须恰好为 `boot_start`、`serial_ready`、`boot_complete`，协议版本为 `v=1`，序号从 1 严格递增。
+- 成功串口序列必须恰好为 `boot_start`、`serial_ready`、`boot_complete`，协议版本为 `v=1`，序号从 1 严格递增；每条 `PRIMA|` 记录必须以 LF 或 CRLF 结束，无终止符、仅 CR 或 LF 前多余 CR 均拒绝，但无关固件的未终止尾部噪声仍忽略。
+- 最终正常事件与 panic 事件后必须等待 16550 LSR bit 6（TEMT）再写 QEMU 退出端口。
 - QEMU 成功 guest 值为 `0x10`，主机预期退出码为 `33`；panic guest 值为 `0x11`，主机预期退出码为 `35`。
 - 固定 QEMU machine 为 `pc-i440fx-10.0`，CPU 为 `qemu64`，内存为 `128M`，加速器为单线程 TCG，测试超时为 10 秒。
 - QEMU 11.0.50 Windows 对 BIOS 启动盘的 `readonly=on` 配置在启动前报告 `Block node is read-only`；为实现同一固定 BIOS profile 的可启动性，`-drive` 保持 `format=raw,file=…`（不设置 `readonly=on`），且每次构建均重新生成镜像。
 - QEMU 11.0.50 的 `-no-shutdown` 会抑制 `isa-debug-exit` 发出的 guest shutdown 请求；保留 `-no-reboot`，但不传递 `-no-shutdown`，使端口 `0xf4` 的 `0x10`/`0x11` 分别按设计映射为主机退出码 33/35。
+- stdout/stderr reader 必须通过带固定安全名称的 `thread::Builder::spawn` 可失败启动；任一启动失败都先清理并 reap 已拥有的 child。第二个 reader 启动失败仅在确认 child 退出后 join 第一个 reader并保留其输出；cleanup 未确认时不得阻塞 join。
+- 最终 `cargo test -p xtask` 必须为 `23 passed; 0 failed`。
 - 不实现物理内存发现、页表、GDT/IDT、trap、POSIR Bootstrap、init Task、Capability 或形式化细化。
 - 阶段 0 继续是当前阶段，`BLK-001`、`BLK-002` 保持 Open；不得把阶段 1 标记为满足退出条件。
 - `.obsidian/` 是现有未跟踪目录，不读取、不修改、不提交。
@@ -1533,7 +1536,7 @@ Run：
 cargo fmt --all && cargo test -p xtask
 ```
 
-Expected：`16 passed; 0 failed`。
+Expected：历史 Task 4 完成时为 `16 passed; 0 failed`；最终审查加固后当前精确结果为 `23 passed; 0 failed`。
 
 Run：
 
@@ -1716,11 +1719,79 @@ Expected：Git 只显示既有未跟踪 `.obsidian/`；功能验收再次输出�
 
 ---
 
+### Task 6: 最终整分支审查加固
+
+**Files:**
+- Modify: `xtask/src/protocol.rs`
+- Modify: `xtask/src/qemu.rs`
+- Modify: `kernel/src/serial.rs`
+- Modify: `kernel/src/main.rs`
+- Modify: `docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md`
+- Modify: `docs/superpowers/plans/2026-08-04-stage1-boot-slice.md`
+- Modify after fresh acceptance only: `Prima OS 实现阶段.md`
+
+**Interfaces and invariants:**
+- `protocol::validate_output` 只接受实际 LF 或 CRLF 终止的 `PRIMA|` 记录；无关固件的未终止尾部噪声仍可忽略。
+- `serial::flush()` 轮询 16550 LSR bit 6 TEMT；正常与 panic 最终事件均在写 `0xf4` 前调用。
+- reader 由具名 `thread::Builder::spawn` 启动并传播 `io::Result`；模块私有 `start_readers_with` seam 只注入 reader startup，不扩展为通用进程框架。
+- reader startup failure 必须清理/reap owned child；仅在确认 child 已退出后 join 已启动 reader。cleanup 未确认时返回明确边界错误，不 join 可能等待活 pipe 的 reader。
+- 固定成功事件、panic 格式、序号、退出值、QEMU 参数、`-no-shutdown` 缺席和 `readonly=on` 缺席全部保持不变。
+
+- [x] **Step 1: 用三个 focused tests 观察严格终止符 RED**
+
+Run：
+
+```bash
+cargo test -p xtask protocol::tests::rejects_prima_record_
+```
+
+Observed：3 tests 均因旧解析器返回 `Ok(())` 而失败；随后最小实现 LF/CRLF 边界，并增加无关 firmware 未终止尾部噪声的正向测试。
+
+- [x] **Step 2: 用可控 startup seam tests 观察 reader RED**
+
+Run：
+
+```bash
+cargo test -p xtask reader_startup
+```
+
+Observed：`start_readers_with` 尚不存在，测试以 unresolved import 编译失败；随后最小实现 fallible named startup、cleanup/reap、cleanup 后 join 与无法确认 cleanup 时不 join 的边界。
+
+- [x] **Step 3: 确认 focused GREEN 与精确单元测试总数**
+
+Run：
+
+```bash
+cargo test -p xtask protocol::tests
+cargo test -p xtask reader_startup
+cargo test -p xtask
+```
+
+Expected/current：协议 `13 passed`，reader startup `3 passed`，完整 xtask `23 passed; 0 failed`。
+
+- [x] **Step 4: 运行 fresh static、unit 与两次 BIOS acceptance**
+
+```bash
+cargo fmt --all --check
+cargo clippy -p xtask --all-targets --no-deps -- -D warnings
+cargo clippy -p kernel --bin prima-kernel --target x86_64-unknown-none --no-deps -- -D warnings
+cargo test -p xtask
+cargo xtask test
+```
+
+Expected：全部退出码为 0；最后一条命令实际执行两次 BIOS run，并只输出规定的六条稳定 PASS 摘要。
+
+- [ ] **Step 5: fresh acceptance 后追加 TEST-002 并校验证据边界**
+
+保留历史 `TEST-001` 原文；使用实际系统日期增加 `TEST-002`，关联 S1-D1、S1-D2、S1-X1。当前阶段仍为阶段 0，两个 blocker 保持 Open，阶段 1 保持进行中，未实现项保持未勾选。
+
+---
+
 ## Plan Self-Review
 
-- **Spec coverage:** Task 1 覆盖固定工具链、Cargo workspace、artifact dependency 和双镜像；Task 2 覆盖版本化事件协议；Task 3 覆盖 QEMU 参数、退出码、超时和进程清理；Task 4 覆盖 COM1、panic、连续两次 BIOS 验收及统一 CLI；Task 5 覆盖静态验证与证据边界。
+- **Spec coverage:** Task 1 覆盖固定工具链、Cargo workspace、artifact dependency 和双镜像；Task 2 覆盖版本化事件协议；Task 3 覆盖 QEMU 参数、退出码、超时和进程清理；Task 4 覆盖 COM1、panic、连续两次 BIOS 验收及统一 CLI；Task 5 覆盖静态验证与历史 TEST-001 证据边界；Task 6 覆盖严格 LF/CRLF、UART TEMT drain、fallible reader startup 与 TEST-002 fresh evidence。
 - **Scope:** 计划只实现启动闭环，没有引入物理内存、页表、GDT/IDT、trap、Bootstrap、Capability、CI、Linux 主机验证或 UEFI 运行验证。
 - **Type consistency:** `image::Images::bios` 从 Task 1 传给 Task 4；`protocol::validate_output` 从 Task 2 传给 Task 3；`qemu::run_bios_test` 和 `run_bios_interactive` 的签名在 Tasks 3–4 一致。
-- **Protocol consistency:** kernel 输出字段、顺序、序号、成功值 `0x10` 和 panic 值 `0x11` 与 xtask 验证器及设计规范一致。
+- **Protocol consistency:** kernel 输出字段、顺序、序号、LF/CRLF 终止约束、TEMT drain、成功值 `0x10` 和 panic 值 `0x11` 与 xtask 验证器及设计规范一致。
 - **Evidence boundary:** 只更新 S1-D1、S1-D2、S1-X1；阶段 0、两个阻塞项和阶段 1 未实现检查项保持原状态。
 - **Placeholder scan:** 所有代码、命令、版本、路径、预期结果和文档替换均已明确，无未决实现槽位。

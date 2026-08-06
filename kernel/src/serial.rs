@@ -7,6 +7,7 @@ use core::{
 const COM1: u16 = 0x3f8;
 const LINE_STATUS: u16 = COM1 + 5;
 const TRANSMITTER_EMPTY: u8 = 1 << 5;
+const TRANSMITTER_IDLE: u8 = 1 << 6;
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -37,6 +38,13 @@ pub(crate) fn write_bytes(bytes: &[u8]) {
         unsafe {
             outb(COM1, byte);
         }
+    }
+}
+
+pub(crate) fn flush() {
+    init();
+    while unsafe { inb(LINE_STATUS) } & TRANSMITTER_IDLE == 0 {
+        spin_loop();
     }
 }
 

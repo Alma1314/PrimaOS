@@ -16,6 +16,7 @@ fn kernel_main(_boot_info: &'static mut BootInfo) -> ! {
     protocol::boot_start();
     protocol::serial_ready();
     protocol::boot_complete();
+    serial::flush();
     qemu::exit(qemu::SUCCESS)
 }
 
@@ -23,5 +24,6 @@ fn kernel_main(_boot_info: &'static mut BootInfo) -> ! {
 fn panic(_info: &PanicInfo<'_>) -> ! {
     serial::init();
     protocol::panic_event();
+    serial::flush();
     qemu::exit(qemu::PANIC)
 }

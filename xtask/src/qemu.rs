@@ -81,8 +81,8 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
         .stderr
         .take()
         .expect("stderr is piped when the child is created");
-    let stdout_reader = read_in_background(stdout);
-    let stderr_reader = read_in_background(stderr);
+    let (stdout_reader, stderr_reader) =
+        start_readers_with(&mut child, stdout, stderr, spawn_reader)?;
     let started = Instant::now();
 
     let status = loop {
@@ -206,15 +206,73 @@ fn validate_exit_code(actual: Option<i32>, expected: i32) -> Result<(), String> 
     }
 }
 
-fn read_in_background<R>(mut reader: R) -> JoinHandle<io::Result<Vec<u8>>>
+type ReaderResult = io::Result<Vec<u8>>;
+type ReaderHandle = JoinHandle<ReaderResult>;
+type ReaderJob = Box<dyn FnOnce() -> ReaderResult + Send>;
+
+fn spawn_reader(name: &'static str, read: ReaderJob) -> io::Result<ReaderHandle> {
+    thread::Builder::new().name(name.to_owned()).spawn(read)
+}
+
+fn start_readers_with<Stdout, Stderr, Spawn>(
+    child: &mut impl ChildControl,
+    stdout: Stdout,
+    stderr: Stderr,
+    mut spawn: Spawn,
+) -> Result<(ReaderHandle, ReaderHandle), String>
+where
+    Stdout: Read + Send + 'static,
+    Stderr: Read + Send + 'static,
+    Spawn: FnMut(&'static str, ReaderJob) -> io::Result<ReaderHandle>,
+{
+    let stdout_reader = match spawn("prima-qemu-stdout", read_job(stdout)) {
+        Ok(reader) => reader,
+        Err(error) => {
+            let startup = format!("failed to start QEMU stdout reader: {error}");
+            let cleanup = terminate_child_with(child);
+            return Err(startup_cleanup_error(startup, cleanup, false));
+        }
+    };
+
+    match spawn("prima-qemu-stderr", read_job(stderr)) {
+        Ok(stderr_reader) => Ok((stdout_reader, stderr_reader)),
+        Err(error) => {
+            let startup = format!("failed to start QEMU stderr reader: {error}");
+            let cleanup = terminate_child_with(child);
+            Err(match cleanup {
+                Ok(cleanup) => {
+                    let stdout = join_reader(stdout_reader, "stdout").unwrap_or_else(|error| error);
+                    format!("{startup}; {cleanup}\nstdout:\n{stdout}")
+                }
+                Err(cleanup) => startup_cleanup_error(startup, Err(cleanup), true),
+            })
+        }
+    }
+}
+
+fn read_job<R>(mut reader: R) -> ReaderJob
 where
     R: Read + Send + 'static,
 {
-    thread::spawn(move || {
+    Box::new(move || {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
         Ok(bytes)
     })
+}
+
+fn startup_cleanup_error(
+    startup: String,
+    cleanup: Result<String, String>,
+    reader_started: bool,
+) -> String {
+    match cleanup {
+        Ok(cleanup) => format!("{startup}; {cleanup}"),
+        Err(cleanup) if reader_started => format!(
+            "{startup}; {cleanup}; reader thread was not joined because QEMU may still be running"
+        ),
+        Err(cleanup) => format!("{startup}; {cleanup}"),
+    }
 }
 
 struct ReaderResults {
@@ -289,13 +347,22 @@ fn with_output(error: String, output: &CapturedOutput) -> String {
 mod tests {
     use super::{
         ChildControl, PANIC_EXIT_CODE, SUCCESS_EXIT_CODE, TEST_TIMEOUT, join_readers, qemu_args,
-        terminate_child_with, validate_exit_code,
+        start_readers_with, terminate_child_with, validate_exit_code,
     };
-    use std::{io, path::Path, process::ExitStatus, thread, time::Duration};
+    use std::{
+        io::{self, Cursor},
+        path::Path,
+        process::{Command, ExitStatus},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
 
     struct FakeChild {
         kill_error: Option<io::Error>,
         try_wait_result: Option<io::Result<Option<ExitStatus>>>,
+        wait_result: Option<io::Result<ExitStatus>>,
+        wait_signal: Option<mpsc::Sender<()>>,
         calls: Vec<&'static str>,
     }
 
@@ -314,8 +381,134 @@ mod tests {
 
         fn wait(&mut self) -> io::Result<ExitStatus> {
             self.calls.push("wait");
-            panic!("blocking wait must not run after a failed kill")
+            if let Some(signal) = self.wait_signal.take() {
+                signal.send(()).expect("test receiver remains open");
+            }
+            self.wait_result
+                .take()
+                .expect("test configures one wait result")
         }
+    }
+
+    #[test]
+    fn first_reader_startup_failure_terminates_and_reaps_child() {
+        let mut child = FakeChild {
+            kill_error: None,
+            try_wait_result: None,
+            wait_result: Some(Ok(success_status())),
+            wait_signal: None,
+            calls: Vec::new(),
+        };
+        let mut spawn_calls = 0;
+        let mut reader_names = Vec::new();
+        let error = start_readers_with(
+            &mut child,
+            Cursor::new(Vec::<u8>::new()),
+            Cursor::new(Vec::<u8>::new()),
+            |name, _| {
+                spawn_calls += 1;
+                reader_names.push(name);
+                Err(io::Error::other("stdout spawn denied"))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(spawn_calls, 1);
+        assert_eq!(reader_names, ["prima-qemu-stdout"]);
+        assert_eq!(child.calls, ["kill", "wait"]);
+        assert!(error.contains("failed to start QEMU stdout reader: stdout spawn denied"));
+        assert!(error.contains("QEMU child terminated"));
+    }
+
+    #[test]
+    fn second_reader_startup_failure_cleans_child_then_joins_first_reader() {
+        let (cleanup_confirmed, cleanup_observed) = mpsc::channel();
+        let mut cleanup_observed = Some(cleanup_observed);
+        let mut child = FakeChild {
+            kill_error: None,
+            try_wait_result: None,
+            wait_result: Some(Ok(success_status())),
+            wait_signal: Some(cleanup_confirmed),
+            calls: Vec::new(),
+        };
+        let mut spawn_calls = 0;
+        let mut reader_names = Vec::new();
+        let error = start_readers_with(
+            &mut child,
+            Cursor::new(b"stdout preserved".to_vec()),
+            Cursor::new(Vec::<u8>::new()),
+            |name, read| {
+                spawn_calls += 1;
+                reader_names.push(name);
+                if spawn_calls == 1 {
+                    let cleanup_observed = cleanup_observed
+                        .take()
+                        .expect("test starts the stdout reader once");
+                    Ok(thread::spawn(move || {
+                        cleanup_observed
+                            .recv_timeout(Duration::from_secs(1))
+                            .map_err(io::Error::other)?;
+                        read()
+                    }))
+                } else {
+                    Err(io::Error::other("stderr spawn denied"))
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(spawn_calls, 2);
+        assert_eq!(reader_names, ["prima-qemu-stdout", "prima-qemu-stderr"]);
+        assert_eq!(child.calls, ["kill", "wait"]);
+        assert!(error.contains("failed to start QEMU stderr reader: stderr spawn denied"));
+        assert!(error.contains("QEMU child terminated"));
+        assert!(error.contains("stdout preserved"));
+    }
+
+    #[test]
+    fn failed_reader_startup_cleanup_does_not_join_live_pipe_reader() {
+        let mut child = FakeChild {
+            kill_error: Some(io::Error::other("access denied")),
+            try_wait_result: Some(Ok(None)),
+            wait_result: None,
+            wait_signal: None,
+            calls: Vec::new(),
+        };
+        let (reader_gate, reader_waiting) = mpsc::channel::<()>();
+        let mut reader_waiting = Some(reader_waiting);
+        let mut spawn_calls = 0;
+        let error = start_readers_with(
+            &mut child,
+            Cursor::new(Vec::<u8>::new()),
+            Cursor::new(Vec::<u8>::new()),
+            |_, read| {
+                spawn_calls += 1;
+                if spawn_calls == 1 {
+                    let reader_waiting = reader_waiting
+                        .take()
+                        .expect("test starts the stdout reader once");
+                    Ok(thread::spawn(move || {
+                        reader_waiting.recv().map_err(io::Error::other)?;
+                        read()
+                    }))
+                } else {
+                    Err(io::Error::other("stderr spawn denied"))
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(child.calls, ["kill", "try_wait"]);
+        assert!(error.contains("kill failed: access denied"));
+        assert!(error.contains("reader thread was not joined because QEMU may still be running"));
+        drop(reader_gate);
+    }
+
+    fn success_status() -> ExitStatus {
+        Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .status()
+            .expect("cmd should provide a successful status for tests")
     }
 
     #[test]
@@ -323,6 +516,8 @@ mod tests {
         let mut child = FakeChild {
             kill_error: Some(io::Error::other("access denied")),
             try_wait_result: Some(Ok(None)),
+            wait_result: None,
+            wait_signal: None,
             calls: Vec::new(),
         };
 

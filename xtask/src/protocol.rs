@@ -30,9 +30,21 @@ const EXPECTED_EVENTS: [Event; 3] = [
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     let mut events = Vec::new();
 
-    for raw_line in output.lines() {
-        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+    for raw_line in output.split_inclusive('\n') {
+        let Some(line) = raw_line.strip_suffix('\n') else {
+            if raw_line.starts_with("PRIMA|") {
+                return Err("PRIMA record must end with LF or CRLF".to_owned());
+            }
+            continue;
+        };
         if line.starts_with("PRIMA|") {
+            let line = match line.strip_suffix('\r') {
+                Some(line) if line.ends_with('\r') => {
+                    return Err("PRIMA record must end with LF or CRLF".to_owned());
+                }
+                Some(line) => line,
+                None => line,
+            };
             events.push(parse_line(line)?);
         }
     }
@@ -102,6 +114,51 @@ mod tests {
     #[test]
     fn accepts_expected_sequence_and_ignores_firmware_output() {
         assert_eq!(validate_output(VALID), Ok(()));
+    }
+
+    #[test]
+    fn accepts_unterminated_non_prima_firmware_tail() {
+        let output = format!("{VALID}firmware tail without a line terminator");
+        assert_eq!(validate_output(&output), Ok(()));
+    }
+
+    #[test]
+    fn rejects_prima_record_without_line_feed_terminator() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=boot_complete|status=ok",
+        );
+
+        let error = validate_output(output).unwrap_err();
+
+        assert!(error.contains("LF or CRLF"), "{error}");
+    }
+
+    #[test]
+    fn rejects_prima_record_with_cr_only_terminator() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\r",
+        );
+
+        let error = validate_output(output).unwrap_err();
+
+        assert!(error.contains("LF or CRLF"), "{error}");
+    }
+
+    #[test]
+    fn rejects_prima_record_with_extra_cr_before_line_feed() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\r\r\n",
+        );
+
+        let error = validate_output(output).unwrap_err();
+
+        assert!(error.contains("LF or CRLF"), "{error}");
     }
 
     #[test]
