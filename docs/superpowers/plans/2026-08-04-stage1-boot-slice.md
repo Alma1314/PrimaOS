@@ -641,7 +641,7 @@ EOF
 **Interfaces:**
 - Consumes: `image::Images::bios` 与 `protocol::validate_output(&str)`。
 - Produces: `qemu::run_bios_interactive(image: &Path) -> Result<(), String>` 和 `qemu::run_bios_test(image: &Path) -> Result<(), String>`。
-- Constants: 成功退出码 `33`，panic 退出码 `35`，测试超时 10 秒。
+- Constants: 成功退出码 `33`，panic 退出码 `35`，测试超时 30 秒。
 
 - [ ] **Step 1: 在 `xtask/src/main.rs` 声明 QEMU 模块**
 
