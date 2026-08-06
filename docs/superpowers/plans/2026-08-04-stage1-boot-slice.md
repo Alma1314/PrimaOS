@@ -1781,7 +1781,7 @@ cargo xtask test
 
 Expected：全部退出码为 0；最后一条命令实际执行两次 BIOS run，并只输出规定的六条稳定 PASS 摘要。
 
-- [ ] **Step 5: fresh acceptance 后追加 TEST-002 并校验证据边界**
+- [x] **Step 5: fresh acceptance 后追加 TEST-002 并校验证据边界**
 
 保留历史 `TEST-001` 原文；使用实际系统日期增加 `TEST-002`，关联 S1-D1、S1-D2、S1-X1。当前阶段仍为阶段 0，两个 blocker 保持 Open，阶段 1 保持进行中，未实现项保持未勾选。
 
