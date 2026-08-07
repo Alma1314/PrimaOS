@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "xtask"]
+members = ["kernel", "xtask", "cosir"]
 default-members = ["xtask"]
 
 [profile.dev]
