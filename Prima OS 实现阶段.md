@@ -37,11 +37,12 @@
 | 已满足退出条件的最高阶段 | 无 |
 | 当前实现代码 | 阶段 1 启动闭环探索实现：`kernel/`、`xtask/` |
 | 当前主要工件 | [[Prima OS]]、[[COSIR 原语规范]]、Rust/QEMU 启动闭环 |
-| 当前首要缺口 | x86_64 机器状态到 POSIR 状态的细化草案（BLK-002）；形式化工具中的可执行状态模型（BLK-001） |
+| 当前首要缺口 | 形式化工具中的可执行状态模型（BLK-001） |
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
 | exc_resume（本切片） | 2026-08-07 — 定义异常恢复原语 `exc_resume`、x86_64 SretFrame 帧布局（细化层定义）、Faulted 细化态与错误码；新增 §12.10，标注细化要求 #16 与边界清单 #1/#2 |
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
 | 最近细化证据 | 见 SPEC-012：exc_resume 原语与 Faulted 细化态（COSIR §12.10）定义完成，Rust 可执行状态模型探针 12 测试通过 |
+| BLK-002 细化（本切片） | 2026-08-07 — 定义 x86_64 MachineState（交接点起）、抽象函数 α 与 Bootstrap 细化对应；cosir 新增 machine/abstract_ops 模块；规范新增 §20；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS |
 
 当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现；尚无机器证明、物理内存发现、页表与 trap 框架、POSIR Bootstrap 或兼容性测试证据。
 
@@ -56,6 +57,7 @@
 | TEST-002 | 最终审查加固验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 23 个 host 单元测试通过；严格 LF/CRLF、reader 启动失败 cleanup 与 UART TEMT drain 加固后，QEMU 11.0.50 固定 BIOS profile 连续启动两次并输出六条稳定 PASS 摘要 | S1-D1、S1-D2、S1-X1 |
 | TEST-003 | 高负载失败保护验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 固定 30 秒失败保护、不增加自动重试；23 个 host 单元测试通过，QEMU 11.0.50 两次 BIOS run 输出六条 PASS，整条验收耗时 17.156 秒 | S1-D1、S1-D2、S1-X1 |
 | SPEC-012 | 细化规范与可执行模型 | `COSIR 原语规范.md` §12.10、`cosir/` | 2026-08-07 | 定义 `exc_resume` 原语、x86_64 SretFrame 与 Faulted 细化态；`cargo test -p cosir` 12 tests 通过；`cargo xtask test` 六条 PASS | S0-D1、S0-D2 |
+| SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
 
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
 
@@ -64,7 +66,7 @@
 | ID | 阶段 | 问题 | 解除条件 | 状态 |
 |---|---|---|---|---|
 | BLK-001 | 0 | 尚未选择并建立形式化模型工件 | 明确工具、入口文件和可执行状态迁移 | Open |
-| BLK-002 | 0 | 尚无 x86_64 → POSIR 细化草案 | 定义 MachineState、抽象函数和至少 Bootstrap 的对应关系 | Open |
+| BLK-002 | 0 | x86_64 → POSIR 细化草案已定义（MachineState、抽象函数、Bootstrap 对应），待真实 kernel 对照与全原语覆盖 | 定义 MachineState、抽象函数和至少 Bootstrap 的对应关系 | 草案已成 |
 
 ## 决策日志
 
@@ -89,7 +91,7 @@
 | S0-D1 | 一致的对象能力状态模型 | [x] 已定义，未证明 | SPEC-001 |
 | S0-D2 | 操作、错误、全局不变量和非目标 | [x] 已定义，未证明 | SPEC-001 |
 | S0-D3 | 关键研究假设与反例标准 | [x] 已定义 | DOC-001 |
-| S0-D4 | x86_64 机器状态到 POSIR 状态的细化草案 | [ ] 未完成 | BLK-002 |
+| S0-D4 | x86_64 机器状态到 POSIR 状态的细化草案 | [x] 已定义，未证明 | SPEC-013 |
 
 ### 退出条件
 
