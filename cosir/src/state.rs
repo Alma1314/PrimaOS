@@ -56,7 +56,10 @@ pub struct SegRange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // GPF/DivideError/InvalidOpcode 为可恢复类型锚，留待后续探针
 pub enum ExceptionKind {
-    PageFault { page_present: bool, writable_fault: bool },
+    PageFault {
+        page_present: bool,
+        writable_fault: bool,
+    },
     GeneralProtectionFault,
     DivideError,
     InvalidOpcode,

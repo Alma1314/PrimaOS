@@ -2,9 +2,7 @@ mod ops;
 mod state;
 
 use ops::{exc_resume, raise_exception, schedule};
-use state::{
-    ExceptionKind, SretFrame, State, Task, TaskStatus, ACCESS_R, ACCESS_W, ACCESS_X,
-};
+use state::{ACCESS_R, ACCESS_W, ACCESS_X, ExceptionKind, SretFrame, State, Task, TaskStatus};
 
 fn default_frame() -> SretFrame {
     let mut f = SretFrame {
@@ -45,10 +43,7 @@ fn build_state() -> State {
     let t = Task {
         id: 1,
         status: TaskStatus::Running,
-        vspace: vec![
-            (0x4000_0000, ACCESS_R | ACCESS_W),
-            (0x5000_0000, ACCESS_X),
-        ],
+        vspace: vec![(0x4000_0000, ACCESS_R | ACCESS_W), (0x5000_0000, ACCESS_X)],
     };
     st.tasks.insert(1, t);
     st
