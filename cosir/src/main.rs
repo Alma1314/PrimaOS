@@ -1,3 +1,4 @@
+mod machine;
 mod ops;
 mod state;
 
@@ -29,7 +30,11 @@ fn default_frame() -> SretFrame {
 }
 
 fn build_state() -> State {
-    let mut st = State::default();
+    // 交接点后探针已建立：bootstrap 已执行（该标志即 State.booted，Task 4 细化层将读取）
+    let mut st = State {
+        booted: true,
+        ..State::default()
+    };
     st.segments.insert(1, state::SegRange { len: 0x1000 });
     st.exc_sources.insert(
         1,
@@ -58,6 +63,7 @@ fn page_fault() -> ExceptionKind {
 
 fn main() {
     let mut st = build_state();
+    assert!(st.booted, "bootstrap 交接点后应已建立");
     raise_exception(&mut st, 1, 1, page_fault(), default_frame());
     exc_resume(&mut st, 1, 1, 1, 0, 0x5000_0000).expect("resume page fault");
     schedule(&mut st, 1);
