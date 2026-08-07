@@ -33,11 +33,11 @@ pub struct SretFrame {
     pub flags: u64,
 }
 
-#[allow(dead_code)]
+/// SretFrame 对齐（16 字节）即帧长度；`exc_resume` 用它做越界与对齐校验（前置 #5）。
 pub const SRET_FRAME_LEN: usize = core::mem::size_of::<SretFrame>();
 
 // 以下模型类型（TaskStatus 的 BlockedRecv、ExceptionKind 的若干可恢复变体、
-// PendingException.save_frame、Task.id/vspace）在本探针中不被构造/读取，但它们是
+// PendingException.save_frame、Task.id）在本探针中不被构造/读取，但它们是
 // §12.10/§12.9 细化域的完整模型表面，保留以维护规范保真度。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // BlockedRecv
@@ -93,11 +93,11 @@ pub struct PendingException {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // id/vspace 为 Task 模型字段，本探针暂不读取
+#[allow(dead_code)] // id 仍为 Task 模型字段，本探针暂不读取；vspace 已被 exc_resume 读取
 pub struct Task {
     pub id: TaskId,
     pub status: TaskStatus,
-    pub vspace: Vec<PageMapping>, // 简化：直接列映射，(addr, access)
+    pub vspace: Vec<PageMapping>, // 简化：直接列映射，(addr, access)；exc_resume 用其可执行映射（前置 #6）
 }
 
 #[derive(Default)]

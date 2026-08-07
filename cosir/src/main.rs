@@ -58,8 +58,8 @@ fn page_fault() -> ExceptionKind {
 
 fn main() {
     let mut st = build_state();
-    raise_exception(&mut st, 1, 1, page_fault(), default_frame()).expect("raise page fault");
-    exc_resume(&mut st, 1, 1, true, true).expect("resume page fault");
+    raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+    exc_resume(&mut st, 1, 1, 1, 0, 0x5000_0000).expect("resume page fault");
     schedule(&mut st, 1);
     assert_eq!(st.tasks[&1].status, TaskStatus::Running);
     println!("PASS cosir raise_exception");
@@ -72,11 +72,21 @@ fn main() {
 mod tests {
     use super::*;
     use ops::ResumeError;
+    use state::{SegId, VirtAddr};
+
+    // 合法 exc_resume 参数：帧段 1 偏移 0（0x1000 ≥ 0x88），resume_vaddr 在可执行映射上
+    const FRAME_SEG: SegId = 1;
+    const FRAME_OFF: usize = 0;
+    const RESUME_VADDR: VirtAddr = 0x5000_0000;
+
+    fn resume_ok(st: &mut State) {
+        exc_resume(st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).expect("resume should succeed");
+    }
 
     #[test]
     fn raise_exception_moves_running_to_faulted() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
         assert!(st.pending_exc.contains_key(&1));
     }
@@ -84,8 +94,8 @@ mod tests {
     #[test]
     fn exc_resume_recovers_faulted_to_ready() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
-        exc_resume(&mut st, 1, 1, true, true).unwrap();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        resume_ok(&mut st);
         assert_eq!(st.tasks[&1].status, TaskStatus::Ready);
         assert!(!st.pending_exc.contains_key(&1));
     }
@@ -95,24 +105,24 @@ mod tests {
         let mut st = build_state();
         st.tasks.get_mut(&1).unwrap().status = TaskStatus::Ready;
         // 从未 fault：pending 不存在
-        let err = exc_resume(&mut st, 1, 1, true, true).unwrap_err();
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::NoPendingException);
     }
 
     #[test]
     fn exc_resume_after_consumed_is_no_pending() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
-        exc_resume(&mut st, 1, 1, true, true).unwrap();
-        let err = exc_resume(&mut st, 1, 1, true, true).unwrap_err();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        resume_ok(&mut st);
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::NoPendingException);
     }
 
     #[test]
     fn exc_resume_double_fault_is_unrecoverable() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame()).unwrap();
-        let err = exc_resume(&mut st, 1, 1, true, true).unwrap_err();
+        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::UnrecoverableFault);
         // 不销毁 Task，仍处于 Faulted
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
@@ -121,9 +131,9 @@ mod tests {
     #[test]
     fn exc_resume_source_mismatch_is_invalid_source() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
         // 源不匹配：pending.source_id=1，调用方传 999
-        let err = exc_resume(&mut st, 1, 999, true, true).unwrap_err();
+        let err = exc_resume(&mut st, 1, 999, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::InvalidExcSource);
         // 源不匹配不消费帧、不改状态：仍 Faulted 且 pending 保留
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
@@ -131,25 +141,44 @@ mod tests {
     }
 
     #[test]
-    fn exc_resume_bad_frame_addr_rejected() {
+    fn exc_resume_missing_frame_seg_rejected() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
-        let err = exc_resume(&mut st, 1, 1, false, true).unwrap_err();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        let err = exc_resume(&mut st, 1, 1, 999, FRAME_OFF, RESUME_VADDR).unwrap_err();
+        assert_eq!(err, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_out_of_bounds_frame_rejected() {
+        let mut st = build_state();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        // 0x1000 + 0x88 > 0x1000：帧越界（帧段 1 len=0x1000）
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, 0x1000, RESUME_VADDR).unwrap_err();
+        assert_eq!(err, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_misaligned_frame_rejected() {
+        let mut st = build_state();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        // offset=1 不满足 16 字节（SRET_FRAME_LEN）对齐
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, 1, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::InvalidFrameAddr);
     }
 
     #[test]
     fn exc_resume_non_executable_target_rejected() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
-        let err = exc_resume(&mut st, 1, 1, true, false).unwrap_err();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        // 0x0000_0000 在 vspace 中无映射 / 不可执行
+        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, 0x0000_0000).unwrap_err();
         assert_eq!(err, ResumeError::NotExecutable);
     }
 
     #[test]
     fn schedule_faulted_without_resume_is_safe() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame()).unwrap();
+        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
         // Faulted 状态 schedule 不会回到 Running（原指令流不重播）
         schedule(&mut st, 1);
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
