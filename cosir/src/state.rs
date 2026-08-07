@@ -106,4 +106,6 @@ pub struct State {
     pub exc_sources: HashMap<ExcSourceId, ExceptionSource>,
     pub pending_exc: HashMap<TaskId, PendingException>,
     pub segments: HashMap<SegId, SegRange>,
+    /// POSIR 状态的 bootstrap 标志（真实部分）；默认 false
+    pub booted: bool,
 }

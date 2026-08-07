@@ -2086,3 +2086,65 @@ POSIR 抽象规范对满足以下 7 个条件的架构（von Neumann 架构或�
 | Node          | `node_create / node_destroy`                                   | 跨节点通信节点对象              |
 | Bootstrap     | `bootstrap`                                                    | 唯一的初始 Authority 来源      |
 
+## 20. 细化层：MachineState 与抽象函数
+
+本章属于 COSIR 细化层，不新增对 POSIR 可见的一等原语。它把 x86_64 机制层与 POSIR 抽象层的对应关系显式化（见 [[Prima OS]] §13.2），为阶段 1 真实内核实现（物理内存、页表/GDT/IDT/trap）提供细化蓝本。本章当前只实例化 **Bootstrap** 的细化对应；其它原语（MemorySegment 页表↔vspace、task_create 入口细化、异常/trap 递送）仅登记接口，留待后续细化切片展开。
+
+### 20.1 MachineState
+
+`MachineState` 描述 bootloader 把控制权交给内核那一刻的 x86_64 可观察机器状态（交接点：long mode、分页开、CR3/GDT/TSS/栈有效、已收到 `BootInfo`）。它是可执行状态模型探针（`cosir`）中细化域的起点。
+
+```text
+MachineState {
+    cr3:             Cr3              // 根页表物理地址
+    address_space:   List<MapEntry>   // 简化页表视图；(vaddr, size, access{R,W,X})
+    gdt:             GdtTable         // 基址/限长
+    tss:             Tss              // 处理器状态段（含 RSP0 中断栈）
+    rip:             VirtAddr         // kernel 入口
+    rsp:             VirtAddr         // 已设栈顶
+    boot_info:       BootInfoHandle   // 交接的 BootInfo 抽象（内存区域）
+    idt_ready:       Bool             // IDT 是否已装载（交接点通常尚未）
+    interrupt_state: InterruptState   // masked / unmasked
+    booted:          Bool             // 细化层可见：bootstrap 是否已执行（W14 唯一性）
+}
+```
+
+- 页表用简化 `MapEntry` 视图（`(vaddr, size, access)`），**不建模真实多级 PML4 遍历**——真实遍历属于阶段 1 页表/trap 框架工作（S1-D4）。
+- 不建模 GPR 全集；只建模对 Bootstrap 有意义的状态（rip/rsp/表/地址空间）。真实寄存器保存/恢复属于异常帧细化（§18.0 边界清单 #1）。
+- `MapEntry.access` 复用本规范的 R/W/X 访问位域并在探针中沿用 `cosir::state` 常量。
+
+### 20.2 抽象函数 abstract
+
+```text
+abstract : MachineState → POSIRState
+```
+
+抽象函数把机器态投影为 POSIR 抽象状态，遵循两段投影：
+
+1. 交接点且 `booted = false` → 投影为 POSIR `EmptyState`（无任务、无能力、未 booted）；
+2. Bootstrap 迁移后（`booted = true`）→ 投影为含 init Task 的 booted 态。
+
+抽象函数只做**投影**，不做安全判定：机器内部结构（页表布局细节、GDT 具体槽位等）不进入抽象态；安全判定仍由 POSIR 不变量与后续真实实现保证。
+
+### 20.3 Bootstrap 细化对应
+
+按 §14 的自定义实例化（唯一的无 Task Actor 铸造初始 Authority 的迁移）：
+
+| POSIR 抽象（§14） | x86_64 细化 |
+|---|---|
+| `EmptyState` | 交接点机器态：`kernel_main` 接管、无用户 Task、无能力表 |
+| `bootstrap` 迁移 | 内核固化 bootstrap 路径：铸造初始 Authority |
+| 初始 Root Capability 铸造至 init Task | 交接点建立 init 上下文：初始栈、入口、内存视图 |
+| `AlreadyBooted` 幂等保护 | 细化层保持 `MachineState.booted`，重复 bootstrap 不重复铸造 |
+| init 只获定义初始 Authority | 交接点后 init 的能力快照是 ObjectRef/CapRecord 的机器投影 |
+
+细化层不变量（仅细化层可见，不新增 POSIR 原语）：
+
+- **W14 唯一性细化**：`MachineState.booted` 与 POSIR `booted` 一一对应，交错不违背唯一性；
+- **初始 Authority 单调**：α 投影后 init Task 的能力集恰好等于 §14 定义的初始 Authority，无多余对象（对 S1-X2 的 α 层承接）；
+- **投影保真**：`α(booted) ≠ α(pre_bootstrap)`，即 bootstrap 确改变抽象态。
+
+### 20.4 范围边界与证伪
+
+本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
+
