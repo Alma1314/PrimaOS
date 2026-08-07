@@ -119,6 +119,18 @@ mod tests {
     }
 
     #[test]
+    fn exc_resume_source_mismatch_is_invalid_source() {
+        let mut st = build_state();
+        raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
+        // 源不匹配：pending.source_id=1，调用方传 999
+        let err = exc_resume(&mut st, 1, 999, true, true).unwrap_err();
+        assert_eq!(err, ResumeError::InvalidExcSource);
+        // 源不匹配不消费帧、不改状态：仍 Faulted 且 pending 保留
+        assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
+        assert!(st.pending_exc.contains_key(&1));
+    }
+
+    #[test]
     fn exc_resume_bad_frame_addr_rejected() {
         let mut st = build_state();
         raise_exception(&mut st, 1, 1, page_fault(), default_frame()).unwrap();
