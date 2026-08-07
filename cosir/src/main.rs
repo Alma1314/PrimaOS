@@ -1,7 +1,9 @@
+mod abstract_ops;
 mod machine;
 mod ops;
 mod state;
 
+use abstract_ops::bootstrap;
 use ops::{exc_resume, raise_exception, schedule};
 use state::{ACCESS_R, ACCESS_W, ACCESS_X, ExceptionKind, SretFrame, State, Task, TaskStatus};
 
@@ -61,6 +63,31 @@ fn page_fault() -> ExceptionKind {
     }
 }
 
+fn build_boot_machine() -> machine::MachineState {
+    machine::MachineState {
+        cr3: machine::Cr3(0x1000),
+        address_space: vec![machine::MapEntry {
+            vaddr: 0x4000_0000,
+            size: 0x1000,
+            access: state::ACCESS_R | state::ACCESS_X,
+        }],
+        gdt: machine::GdtTable {
+            base: 0x2000,
+            limit: 0x40,
+        },
+        tss: machine::Tss { rsp0: 0x7000_0000 },
+        rip: 0x5000_0000,
+        rsp: 0x6fff_f000,
+        boot_info: machine::BootInfoHandle {
+            phys_mem_start: 0x0,
+            phys_mem_len: 0x8000,
+        },
+        idt_ready: false,
+        interrupt_state: machine::InterruptState::Masked,
+        booted: false,
+    }
+}
+
 fn main() {
     let mut st = build_state();
     assert!(st.booted, "bootstrap 交接点后应已建立");
@@ -72,6 +99,14 @@ fn main() {
     println!("PASS cosir exc_resume");
     println!("PASS cosir schedule");
     println!("PASS cosir recoverable-fault roundtrip");
+
+    // BLK-002 细化：bootstrap 的 α 投影冒烟
+    let m = build_boot_machine();
+    let st_after = bootstrap(&m).expect("bootstrap should succeed");
+    assert!(st_after.booted);
+    assert!(st_after.tasks.contains_key(&abstract_ops::init_task_id()));
+    println!("PASS cosir bootstrap abstract");
+    println!("PASS cosir bootstrap alpha projection");
 }
 
 #[cfg(test)]
