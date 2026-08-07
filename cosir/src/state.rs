@@ -33,7 +33,7 @@ pub struct SretFrame {
     pub flags: u64,
 }
 
-/// SretFrame 对齐（16 字节）即帧长度；`exc_resume` 用它做越界与对齐校验（前置 #5）。
+/// SretFrame 周期（帧长 0x88）；`exc_resume` 用它做 frame_offset 整数倍对齐与越界校验（前置 #5）。
 pub const SRET_FRAME_LEN: usize = core::mem::size_of::<SretFrame>();
 
 // 以下模型类型（TaskStatus 的 BlockedRecv、ExceptionKind 的若干可恢复变体、

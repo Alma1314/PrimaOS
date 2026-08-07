@@ -161,7 +161,7 @@ mod tests {
     fn exc_resume_misaligned_frame_rejected() {
         let mut st = build_state();
         raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        // offset=1 不满足 16 字节（SRET_FRAME_LEN）对齐
+        // offset=1 不满足帧长（SRET_FRAME_LEN=0x88）整数倍对齐
         let err = exc_resume(&mut st, 1, 1, FRAME_SEG, 1, RESUME_VADDR).unwrap_err();
         assert_eq!(err, ResumeError::InvalidFrameAddr);
     }

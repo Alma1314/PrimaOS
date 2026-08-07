@@ -65,7 +65,7 @@ pub fn exc_resume(
     if !st.exc_sources.contains_key(&source_id) {
         return Err(ResumeError::InvalidExcSource);
     }
-    // (2) 帧段边界（前置 #5）：段存在、frame_offset 16 字节对齐、帧完全落在段内
+    // (2) 帧段边界（前置 #5）：段存在、frame_offset 帧长(0x88)整数倍对齐、帧完全落在段内
     let seg = st
         .segments
         .get(&frame_seg_id)
@@ -73,7 +73,8 @@ pub fn exc_resume(
     if !frame_offset.is_multiple_of(SRET_FRAME_LEN) {
         return Err(ResumeError::InvalidFrameAddr);
     }
-    if frame_offset + SRET_FRAME_LEN > seg.len {
+    let frame_end = frame_offset.checked_add(SRET_FRAME_LEN);
+    if frame_end.is_none_or(|end| end > seg.len) {
         return Err(ResumeError::InvalidFrameAddr);
     }
     // (3) resume_vaddr 可执行（前置 #6）：caller vspace 中有 base==resume_vaddr 的可执行映射
