@@ -197,7 +197,62 @@ pub fn memseg_map(
     page_count: u64,
     access: u8,
 ) -> Result<(), MemSegError> {
-    todo!("Task 4");
+    if page_count == 0 {
+        return Err(MemSegError::ZeroSize);
+    }
+    if access == 0 || access & !0x07 != 0 {
+        return Err(MemSegError::InvalidAccess);
+    }
+    let seg = st.segments.get(&seg_id).ok_or(MemSegError::InvalidSegment)?;
+    let seg = seg.clone(); // 借出来后释放，便于下面可变迁用
+    if !st.tasks.contains_key(&task_id) {
+        return Err(MemSegError::InvalidTask);
+    }
+    // 授权：调用方持有所请求访问对应的全部 segment 映射权限（SEG_MAP_* 复用 state ACCESS 位码，值相同）
+    if seg_cap_rights & access != access {
+        return Err(MemSegError::MissingMapRight);
+    }
+    if !task_manage_rights {
+        return Err(MemSegError::MissingRight);
+    }
+    // access ⊆ allowed_access（不会把段不允许的权限映射进地址空间）
+    if seg.allowed_access & access != access {
+        return Err(MemSegError::RightsExceeded);
+    }
+    // 区间在段内
+    if seg_offset + page_count > seg.frames.len() as u64 {
+        return Err(MemSegError::OutOfBounds);
+    }
+    // 目标区间全空（Overlap）——检查 vspace 视图
+    for i in 0..page_count {
+        let va = target_base + i * PAGE_SIZE;
+        if st.tasks[&task_id].vspace.contains_key(&va) {
+            return Err(MemSegError::Overlap);
+        }
+    }
+    // 逐页：写叶 PTE（物理视图 + POSIR 引用视图）+ 双视图同步
+    for i in 0..page_count {
+        let va = target_base + i * PAGE_SIZE;
+        let frame = seg.frames[(seg_offset + i) as usize];
+        let writable = access & crate::state::ACCESS_W != 0;
+        let nx = access & crate::state::ACCESS_X == 0;
+        let pte = Pte {
+            present: true,
+            writable,
+            user: true,
+            nx,
+            frame_phys: frame,
+            mapping: SegmentRef {
+                segment: seg_id,
+                offset: seg_offset + i,
+                access,
+            },
+        };
+        let task = st.tasks.get_mut(&task_id).unwrap();
+        map_vaddr(&mut task.table, va, pte);
+        task.vspace.insert(va, pte.mapping);
+    }
+    Ok(())
 }
 
 pub fn memseg_unmap(

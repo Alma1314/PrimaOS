@@ -63,3 +63,92 @@ fn alpha_detects_vspace_view_divergence() {
     let mut diag = Vec::new();
     assert!(!memseg_alpha_verbose(&st, &mut diag), "视图与树不一致应被 α 捕获");
 }
+
+#[test]
+fn map_inserts_leaf_and_vspace() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R | ACCESS_W)
+        .unwrap();
+    memseg_map(
+        &mut st,
+        seg_map_rights(),
+        true,
+        seg,
+        7,
+        0,
+        0x5000_0000,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .expect("map ok");
+    let task = &st.tasks[&7];
+    assert!(task.vspace.contains_key(&0x5000_0000));
+    assert_eq!(
+        task.vspace[&0x5000_0000].segment,
+        seg
+    );
+    let pte = crate::pagewalk::translate(&task.table, 0x5000_0000).expect("leaf present");
+    assert!(pte.mapping.access & ACCESS_W != 0);
+}
+
+#[test]
+fn map_overlap_rejected_state_unchanged() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R | ACCESS_W)
+        .unwrap();
+    memseg_map(
+        &mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 2, ACCESS_R | ACCESS_W,
+    )
+    .unwrap();
+    // 精确重叠：再 map 覆盖已映射块
+    let err = memseg_map(
+        &mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_W,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::Overlap);
+    let mut diag = Vec::new();
+    assert!(memseg_alpha_verbose(&st, &mut diag), "失败后状态仍 W6/W7 有效");
+}
+
+#[test]
+fn map_rights_exceeded_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    // 段只允许 R|W，却请求含 X → RightsExceeded
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R | ACCESS_W)
+        .unwrap();
+    let err = memseg_map(
+        &mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 1,
+        ACCESS_R | ACCESS_W | ACCESS_X,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::RightsExceeded);
+}
+
+#[test]
+fn map_missing_seg_map_right_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R | ACCESS_W)
+        .unwrap();
+    // 缺 SEG_MAP 授权 → MissingMapRight
+    let err = memseg_map(
+        &mut st, 0, true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_W,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::MissingMapRight);
+}
+
+#[test]
+fn map_out_of_bounds_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let err = memseg_map(
+        &mut st, seg_map_rights(), true, seg, 7, 1, 0x5000_0000, 1, ACCESS_R,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::OutOfBounds);
+}
