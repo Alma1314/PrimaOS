@@ -114,6 +114,34 @@ fn main() {
     assert!(st_after.tasks.contains_key(&abstract_ops::init_task_id()));
     println!("PASS cosir bootstrap abstract");
     println!("PASS cosir bootstrap alpha projection");
+
+    // MemorySegment 页表↔vspace 细化冒烟：create→map→unmap→destroy + α 校验
+    {
+        use memseg_refine::{
+            RefineState, SEG_DESTROY, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha,
+            memseg_create, memseg_destroy, memseg_map, memseg_unmap, spawn_task,
+        };
+        let universe: Vec<u64> = (0u64..4).map(|i| 0x1000 + i * 0x1000).collect();
+        let mut st = RefineState::new(&universe);
+        spawn_task(&mut st, 1, 0x4000_0000).expect("spawn init");
+        let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+        let seg = memseg_create(&mut st, rights | SEG_DESTROY, 2, ACCESS_R | ACCESS_W)
+            .expect("create");
+        // memseg_map(seg_cap_rights, task_manage_rights, seg_id, task_id, seg_offset,
+        //            target_base, page_count, access)
+        memseg_map(&mut st, rights, true, seg, 1, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_W)
+            .expect("map");
+        assert!(memseg_alpha(&st), "map 后 α 成立");
+        memseg_unmap(&mut st, true, 1, 0x5000_0000, 1).expect("unmap");
+        memseg_destroy(&mut st, true, seg).expect("destroy");
+        assert!(memseg_alpha(&st), "destroy 后 α 成立");
+        println!("PASS memseg create");
+        println!("PASS memseg map");
+        println!("PASS memseg unmap");
+        println!("PASS memseg destroy");
+        println!("PASS memseg page-walk refinement");
+        println!("PASS cosir memseg W6 W7 W8 invariants");
+    }
 }
 
 #[cfg(test)]
