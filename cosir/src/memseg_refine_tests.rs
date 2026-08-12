@@ -117,21 +117,6 @@ fn alpha_rejects_nx_mismatch() {
 }
 
 #[test]
-fn alpha_rejects_access_outside_segment() {
-    let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st, 7, 0x5000_0000).mapping.access = ACCESS_R | ACCESS_W;
-    mapped_pte_mut(&mut st, 7, 0x5000_0000).writable = true;
-    st.tasks
-        .get_mut(&7)
-        .unwrap()
-        .vspace
-        .get_mut(&0x5000_0000)
-        .unwrap()
-        .access = ACCESS_R | ACCESS_W;
-    assert!(!memseg_alpha(&st));
-}
-
-#[test]
 fn alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic() {
     const TID: u32 = 7;
     const VA: u64 = 0x5000_0000;
