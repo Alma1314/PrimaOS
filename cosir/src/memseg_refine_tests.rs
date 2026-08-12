@@ -318,6 +318,99 @@ fn create_rejects_exhausted_segment_id_atomically() {
 }
 
 #[test]
+fn map_rejects_page_index_multiplication_overflow_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let before = st.clone();
+    let err = memseg_map(
+        &mut st,
+        SEG_MAP_R,
+        true,
+        seg,
+        7,
+        0,
+        0x5000_0000,
+        u64::MAX / crate::pagewalk::PAGE_SIZE + 1,
+        ACCESS_R,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::ArithmeticOverflow);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn map_rejects_page_address_addition_overflow_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let before = st.clone();
+    let err = memseg_map(
+        &mut st,
+        SEG_MAP_R,
+        true,
+        seg,
+        7,
+        0,
+        u64::MAX - (crate::pagewalk::PAGE_SIZE - 1),
+        2,
+        ACCESS_R,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::ArithmeticOverflow);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn unmap_rejects_noncanonical_address_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let before = st.clone();
+    let err = memseg_unmap(&mut st, true, 7, 0x0000_8000_0000_0000, 1).unwrap_err();
+    assert_eq!(err, MemSegError::InvalidAddress);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn unmap_rejects_range_crossing_canonical_boundary_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let before = st.clone();
+    let err = memseg_unmap(&mut st, true, 7, 0x0000_7fff_ffff_f000, 2).unwrap_err();
+    assert_eq!(err, MemSegError::InvalidAddress);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn unmap_rejects_address_arithmetic_overflow_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let before = st.clone();
+    let err = memseg_unmap(
+        &mut st,
+        true,
+        7,
+        u64::MAX - (crate::pagewalk::PAGE_SIZE - 1),
+        2,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::ArithmeticOverflow);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn unmap_later_unmapped_page_leaves_refine_state_unchanged() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, SEG_MAP_R, 2, ACCESS_R).unwrap();
+    memseg_map(&mut st, SEG_MAP_R, true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
+    let before = st.clone();
+    let err = memseg_unmap(&mut st, true, 7, 0x5000_0000, 2).unwrap_err();
+    assert_eq!(err, MemSegError::NotMapped);
+    assert_eq!(st, before);
+}
+
+#[test]
 fn full_memseg_lifecycle_alpha_preserved() {
     let mut st = RefineState::new(&universe());
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();

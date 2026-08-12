@@ -76,10 +76,41 @@ fn map_rejects_page_offset_without_modifying_tree() {
 #[test]
 fn pagewalk_rejects_noncanonical_alias() {
     let mut table = new_task_table();
+    let before = table.clone();
     assert_eq!(
         map_vaddr(&mut table, 0x0000_8000_0000_0000, pte(1, 0, 0x1000)),
         Err(PageWalkError::NonCanonicalAddress),
     );
+    assert_eq!(table, before);
+}
+
+#[test]
+fn translate_rejects_unaligned_and_noncanonical_addresses() {
+    let table = base_tree();
+    assert_eq!(
+        translate(&table, 0x4000_0001),
+        Err(PageWalkError::UnalignedAddress),
+    );
+    assert_eq!(
+        translate(&table, 0x0000_8000_0000_0000),
+        Err(PageWalkError::NonCanonicalAddress),
+    );
+}
+
+#[test]
+fn unmap_rejects_invalid_addresses_without_modifying_tree() {
+    let mut table = base_tree();
+    let before = table.clone();
+    assert_eq!(
+        unmap_vaddr(&mut table, 0x4000_0001),
+        Err(PageWalkError::UnalignedAddress),
+    );
+    assert_eq!(table, before);
+    assert_eq!(
+        unmap_vaddr(&mut table, 0x0000_8000_0000_0000),
+        Err(PageWalkError::NonCanonicalAddress),
+    );
+    assert_eq!(table, before);
 }
 
 #[test]

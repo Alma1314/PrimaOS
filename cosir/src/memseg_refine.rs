@@ -240,14 +240,14 @@ pub fn memseg_map(
     if seg.allowed_access & access != access {
         return Err(MemSegError::RightsExceeded);
     }
+    checked_page_vaddr(target_base, 0)?;
+    checked_page_vaddr(target_base, page_count - 1)?;
     let seg_end = seg_offset
         .checked_add(page_count)
         .ok_or(MemSegError::ArithmeticOverflow)?;
     if seg_end > seg.frames.len() as u64 {
         return Err(MemSegError::OutOfBounds);
     }
-    checked_page_vaddr(target_base, 0)?;
-    checked_page_vaddr(target_base, page_count - 1)?;
 
     let mut pending = Vec::with_capacity(
         usize::try_from(page_count).map_err(|_| MemSegError::ArithmeticOverflow)?,
