@@ -1,7 +1,11 @@
 mod abstract_ops;
 mod machine;
 mod ops;
+mod pagewalk;
 mod state;
+
+#[cfg(test)]
+mod pagewalk_tests;
 
 use abstract_ops::bootstrap;
 use ops::{exc_resume, raise_exception, schedule};
