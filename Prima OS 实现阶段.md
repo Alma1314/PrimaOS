@@ -66,8 +66,8 @@
 
 | ISSUE ID | 问题与影响 | 当前证据 | 修复阶段 | 可执行验收条件 | 状态 |
 |---|---|---|---|---|---|
-| ISSUE-MEM-001 | pagewalk 接受未对齐/非 canonical 地址，high-half 投影缺少符号扩展 | MODEL-TEST 暴露缺口 | 阶段一 | 地址别名、对齐、高低半测试通过 | Open |
-| ISSUE-MEM-002 | 地址、页数、offset、usize 转换和 SegId 递增可能溢出 | MODEL-TEST 暴露缺口 | 阶段一 | 每个溢出返回稳定错误且状态不变 | Open |
+| ISSUE-MEM-001 | pagewalk 接受未对齐/非 canonical 地址，high-half 投影缺少符号扩展 | MODEL-TEST 暴露缺口 | 阶段一 | 地址别名、对齐、高低半测试通过；`cargo test -p cosir pagewalk_tests -- --nocapture`、`cargo test -p cosir memseg_refine_tests -- --nocapture`、`cargo test -p cosir` | Fixed |
+| ISSUE-MEM-002 | 地址、页数、offset、usize 转换和 SegId 递增可能溢出 | MODEL-TEST 暴露缺口 | 阶段一 | 每个溢出返回稳定错误且状态不变；`cargo test -p cosir pagewalk_tests -- --nocapture`、`cargo test -p cosir memseg_refine_tests -- --nocapture`、`cargo test -p cosir` | Fixed |
 | ISSUE-MEM-003 | α 未验证物理帧、offset 和 PTE 权限位 | REFINEMENT-DESIGN 不完整 | 阶段一 | 七项独立 mutation 均被拒绝 | Open |
 | ISSUE-MEM-004 | allocator 未实施严格有限集合语义 | MODEL-TEST 暴露缺口 | 阶段一 | 重复、外部帧、重复归还均显式失败 | Open |
 | ISSUE-MEM-005 | memseg_create 错误要求预存 Segment 映射权 | 与 POSIR §7.1 不一致 | 阶段一 | 删除 seg_cap_rights 参数 | Open |

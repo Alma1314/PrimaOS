@@ -2,7 +2,7 @@
 
 use crate::pagewalk::{
     PAGE_SIZE, FrameAllocator, PageTable, PhysAddr, Pte, SegmentRef, collect_leaves, map_vaddr,
-    new_task_table, unmap_vaddr,
+    new_task_table, unmap_vaddr, validate_page_vaddr,
 };
 use crate::state::{SegId, TaskId, VirtAddr};
 use std::collections::BTreeMap;
@@ -30,15 +30,18 @@ pub enum MemSegError {
     EntryMapping,
     StillMapped,
     MissingRight,
+    InvalidAddress,
+    ArithmeticOverflow,
+    SegmentIdExhausted,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Segment {
     pub frames: Vec<PhysAddr>,
     pub allowed_access: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskCtx {
     pub table: PageTable,
     pub vspace: BTreeMap<VirtAddr, SegmentRef>,
@@ -46,7 +49,7 @@ pub struct TaskCtx {
 }
 
 /// 细化域状态：活动 segment、物理帧池、每 Task 的 CR3 树 + vspace 双视图 + entry。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefineState {
     pub segments: BTreeMap<SegId, Segment>,
     pub alloc: FrameAllocator,
@@ -100,16 +103,21 @@ pub fn memseg_create(
     if seg_cap_rights & 0x07 == 0 {
         return Err(MemSegError::MissingMapRight);
     }
+    let page_count = usize::try_from(page_count).map_err(|_| MemSegError::ArithmeticOverflow)?;
+    let next_seg = st
+        .next_seg
+        .checked_add(1)
+        .ok_or(MemSegError::SegmentIdExhausted)?;
     // 先检查容量，避免部分分配（原子）
-    if st.alloc.free.len() < page_count as usize {
+    if st.alloc.free.len() < page_count {
         return Err(MemSegError::NoMemory);
     }
-    let mut frames = Vec::with_capacity(page_count as usize);
+    let mut frames = Vec::with_capacity(page_count);
     for _ in 0..page_count {
         frames.push(st.alloc.alloc().expect("容量已保证"));
     }
     let id = st.next_seg;
-    st.next_seg += 1;
+    st.next_seg = next_seg;
     st.segments.insert(
         id,
         Segment {
@@ -187,6 +195,17 @@ pub fn memseg_alpha(st: &RefineState) -> bool {
     memseg_alpha_verbose(st, &mut diag)
 }
 
+fn checked_page_vaddr(base: u64, index: u64) -> Result<u64, MemSegError> {
+    let delta = index
+        .checked_mul(PAGE_SIZE)
+        .ok_or(MemSegError::ArithmeticOverflow)?;
+    let va = base
+        .checked_add(delta)
+        .ok_or(MemSegError::ArithmeticOverflow)?;
+    validate_page_vaddr(va).map_err(|_| MemSegError::InvalidAddress)?;
+    Ok(va)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn memseg_map(
     st: &mut RefineState,
@@ -221,37 +240,49 @@ pub fn memseg_map(
     if seg.allowed_access & access != access {
         return Err(MemSegError::RightsExceeded);
     }
-    // 区间在段内
-    if seg_offset + page_count > seg.frames.len() as u64 {
+    let seg_end = seg_offset
+        .checked_add(page_count)
+        .ok_or(MemSegError::ArithmeticOverflow)?;
+    if seg_end > seg.frames.len() as u64 {
         return Err(MemSegError::OutOfBounds);
     }
-    // 目标区间全空（Overlap）——检查 vspace 视图
+    checked_page_vaddr(target_base, 0)?;
+    checked_page_vaddr(target_base, page_count - 1)?;
+
+    let mut pending = Vec::with_capacity(
+        usize::try_from(page_count).map_err(|_| MemSegError::ArithmeticOverflow)?,
+    );
     for i in 0..page_count {
-        let va = target_base + i * PAGE_SIZE;
+        let va = checked_page_vaddr(target_base, i)?;
+        let frame_index = seg_offset
+            .checked_add(i)
+            .ok_or(MemSegError::ArithmeticOverflow)?;
+        let frame_index = usize::try_from(frame_index)
+            .map_err(|_| MemSegError::ArithmeticOverflow)?;
         if st.tasks[&task_id].vspace.contains_key(&va) {
             return Err(MemSegError::Overlap);
         }
+        pending.push((va, frame_index));
     }
-    // 逐页：写叶 PTE（物理视图 + POSIR 引用视图）+ 双视图同步
-    for i in 0..page_count {
-        let va = target_base + i * PAGE_SIZE;
-        let frame = seg.frames[(seg_offset + i) as usize];
-        let writable = access & crate::state::ACCESS_W != 0;
-        let nx = access & crate::state::ACCESS_X == 0;
+
+    let writable = access & crate::state::ACCESS_W != 0;
+    let nx = access & crate::state::ACCESS_X == 0;
+    for (va, frame_index) in pending {
+        let offset = u64::try_from(frame_index).map_err(|_| MemSegError::ArithmeticOverflow)?;
         let pte = Pte {
             present: true,
             writable,
             user: true,
             nx,
-            frame_phys: frame,
+            frame_phys: seg.frames[frame_index],
             mapping: SegmentRef {
                 segment: seg_id,
-                offset: seg_offset + i,
+                offset,
                 access,
             },
         };
         let task = st.tasks.get_mut(&task_id).unwrap();
-        map_vaddr(&mut task.table, va, pte);
+        map_vaddr(&mut task.table, va, pte).map_err(|_| MemSegError::InvalidAddress)?;
         task.vspace.insert(va, pte.mapping);
     }
     Ok(())
@@ -273,26 +304,27 @@ pub fn memseg_unmap(
     if !st.tasks.contains_key(&task_id) {
         return Err(MemSegError::InvalidTask);
     }
+    checked_page_vaddr(target_base, 0)?;
+    checked_page_vaddr(target_base, page_count - 1)?;
+    let mut pending = Vec::with_capacity(
+        usize::try_from(page_count).map_err(|_| MemSegError::ArithmeticOverflow)?,
+    );
     // entry 页保护（W8）：目标区间不包含 entry 所在页
     let entry_page = st.tasks[&task_id].entry & !(PAGE_SIZE - 1);
     for i in 0..page_count {
-        let va = target_base + i * PAGE_SIZE;
+        let va = checked_page_vaddr(target_base, i)?;
         if va == entry_page {
             return Err(MemSegError::EntryMapping);
         }
-    }
-    // 区间全映射
-    for i in 0..page_count {
-        let va = target_base + i * PAGE_SIZE;
         if !st.tasks[&task_id].vspace.contains_key(&va) {
             return Err(MemSegError::NotMapped);
         }
+        pending.push(va);
     }
-    // 清叶 + 双视图
-    for i in 0..page_count {
-        let va = target_base + i * PAGE_SIZE;
+    // 完整预验证后再清叶 + 双视图
+    for va in pending {
         let task = st.tasks.get_mut(&task_id).unwrap();
-        let _ = unmap_vaddr(&mut task.table, va);
+        unmap_vaddr(&mut task.table, va).map_err(|_| MemSegError::InvalidAddress)?;
         task.vspace.remove(&va);
     }
     Ok(())

@@ -2,7 +2,7 @@ use crate::memseg_refine::{
     MemSegError, RefineState, memseg_alpha_verbose, memseg_create, memseg_destroy, memseg_map,
     memseg_unmap, spawn_task, SEG_DESTROY, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X,
 };
-use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X};
+use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 
 // 8 页物理帧
 fn universe() -> Vec<u64> {
@@ -11,6 +11,10 @@ fn universe() -> Vec<u64> {
 
 fn seg_map_rights() -> u8 {
     SEG_MAP_R | SEG_MAP_W | SEG_MAP_X
+}
+
+fn state() -> RefineState {
+    RefineState::new(&universe())
 }
 
 #[test]
@@ -88,7 +92,9 @@ fn map_inserts_leaf_and_vspace() {
         task.vspace[&0x5000_0000].segment,
         seg
     );
-    let pte = crate::pagewalk::translate(&task.table, 0x5000_0000).expect("leaf present");
+    let pte = crate::pagewalk::translate(&task.table, 0x5000_0000)
+        .unwrap()
+        .expect("leaf present");
     assert!(pte.mapping.access & ACCESS_W != 0);
 }
 
@@ -163,7 +169,7 @@ fn unmap_clears_leaf_and_vspace() {
     memseg_unmap(&mut st, true, 7, 0x5000_0000, 2).expect("unmap ok");
     let task = &st.tasks[&7];
     assert!(!task.vspace.contains_key(&0x5000_0000));
-    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).is_none());
+    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).unwrap().is_none());
     let mut diag = Vec::new();
     assert!(memseg_alpha_verbose(&st, &mut diag), "unmap 后仍 W6/W7 有效");
 }
@@ -182,7 +188,7 @@ fn unmap_entry_page_rejected() {
     // 树与视图不应被清除
     let task = &st.tasks[&7];
     assert!(task.vspace.contains_key(&0x5000_0000));
-    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).is_some());
+    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).unwrap().is_some());
 }
 
 #[test]
@@ -253,6 +259,62 @@ fn destroy_idempotent_double_frees_rejected() {
     // 再次 destroy → InvalidSegment（段已不在）
     let err = memseg_destroy(&mut st, true, seg).unwrap_err();
     assert_eq!(err, MemSegError::InvalidSegment);
+}
+
+#[test]
+fn map_rejects_range_crossing_canonical_boundary_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, SEG_MAP_R, 2, ACCESS_R).unwrap();
+    let before = st.clone();
+    let err = memseg_map(
+        &mut st,
+        SEG_MAP_R,
+        true,
+        seg,
+        7,
+        0,
+        0x0000_7fff_ffff_f000,
+        2,
+        ACCESS_R,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::InvalidAddress);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn map_rejects_segment_range_overflow_atomically() {
+    let mut st = state();
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let before = st.clone();
+    let err = memseg_map(
+        &mut st,
+        SEG_MAP_R,
+        true,
+        seg,
+        7,
+        u64::MAX,
+        0x5000_0000,
+        1,
+        ACCESS_R,
+    )
+    .unwrap_err();
+    assert_eq!(err, MemSegError::ArithmeticOverflow);
+    assert_eq!(st, before);
+}
+
+#[test]
+fn create_rejects_exhausted_segment_id_atomically() {
+    let mut st = state();
+    st.next_seg = SegId::MAX;
+    let before = st.clone();
+    assert_eq!(
+        memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R),
+        Err(MemSegError::SegmentIdExhausted)
+    );
+    assert_eq!(st, before);
 }
 
 #[test]

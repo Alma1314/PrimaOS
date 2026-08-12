@@ -7,6 +7,40 @@ pub const PAGE_SIZE: u64 = 0x1000;
 pub type PhysAddr = u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageWalkError {
+    UnalignedAddress,
+    NonCanonicalAddress,
+}
+
+pub fn is_canonical_vaddr(vaddr: u64) -> bool {
+    let upper = vaddr >> 48;
+    if vaddr & (1 << 47) == 0 {
+        upper == 0
+    } else {
+        upper == 0xffff
+    }
+}
+
+pub fn validate_page_vaddr(vaddr: u64) -> Result<(), PageWalkError> {
+    if vaddr & (PAGE_SIZE - 1) != 0 {
+        return Err(PageWalkError::UnalignedAddress);
+    }
+    if !is_canonical_vaddr(vaddr) {
+        return Err(PageWalkError::NonCanonicalAddress);
+    }
+    Ok(())
+}
+
+fn canonicalize_48bit(vaddr: u64) -> u64 {
+    let low = vaddr & 0x0000_ffff_ffff_ffff;
+    if low & (1 << 47) != 0 {
+        low | 0xffff_0000_0000_0000
+    } else {
+        low
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentRef {
     pub segment: SegId,
     pub offset: u64,
@@ -51,7 +85,8 @@ fn child_level_for(parent: NonLeafLevel) -> Option<NonLeafLevel> {
 
 pub fn new_task_table() -> PageTable { PageTable::default() }
 
-pub fn translate(table: &PageTable, vaddr: u64) -> Option<&Pte> {
+pub fn translate(table: &PageTable, vaddr: u64) -> Result<Option<&Pte>, PageWalkError> {
+    validate_page_vaddr(vaddr)?;
     fn go(node: &PageTableNode, vaddr: u64) -> Option<&Pte> {
         match node {
             PageTableNode::Leaf(slots) => slots[pt_index(vaddr)].as_ref(),
@@ -62,10 +97,15 @@ pub fn translate(table: &PageTable, vaddr: u64) -> Option<&Pte> {
             }
         }
     }
-    go(&table.root, vaddr)
+    Ok(go(&table.root, vaddr))
 }
 
-pub fn map_vaddr(table: &mut PageTable, vaddr: u64, pte: Pte) {
+pub fn map_vaddr(
+    table: &mut PageTable,
+    vaddr: u64,
+    pte: Pte,
+) -> Result<(), PageWalkError> {
+    validate_page_vaddr(vaddr)?;
     fn go(node: &mut PageTableNode, vaddr: u64, pte: &Pte) {
         match node {
             PageTableNode::Leaf(slots) => { slots[pt_index(vaddr)] = Some(*pte); }
@@ -85,9 +125,11 @@ pub fn map_vaddr(table: &mut PageTable, vaddr: u64, pte: Pte) {
         }
     }
     go(&mut table.root, vaddr, &pte);
+    Ok(())
 }
 
-pub fn unmap_vaddr(table: &mut PageTable, vaddr: u64) -> bool {
+pub fn unmap_vaddr(table: &mut PageTable, vaddr: u64) -> Result<bool, PageWalkError> {
+    validate_page_vaddr(vaddr)?;
     fn go(node: &mut PageTableNode, vaddr: u64) -> bool {
         match node {
             PageTableNode::Leaf(slots) => {
@@ -105,7 +147,7 @@ pub fn unmap_vaddr(table: &mut PageTable, vaddr: u64) -> bool {
             }
         }
     }
-    go(&mut table.root, vaddr)
+    Ok(go(&mut table.root, vaddr))
 }
 
 pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
@@ -114,7 +156,7 @@ pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
             PageTableNode::Leaf(slots) => {
                 for (i, o) in slots.iter().enumerate() {
                     if let Some(pte) = o {
-                        out.insert(base + ((i as u64) << 12), pte.mapping);
+                        out.insert(canonicalize_48bit(base + ((i as u64) << 12)), pte.mapping);
                     }
                 }
             }
@@ -132,7 +174,7 @@ pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
     go(&table.root, 0, out);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameAllocator {
     pub universe: Vec<PhysAddr>,
     pub free: Vec<PhysAddr>,
