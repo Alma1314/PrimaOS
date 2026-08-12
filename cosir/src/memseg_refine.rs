@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::pagewalk::{
-    PAGE_SIZE, FrameAllocator, PageTable, PhysAddr, Pte, SegmentRef, collect_leaves, map_vaddr,
-    new_task_table, unmap_vaddr, validate_page_vaddr,
+    FrameAllocator, PAGE_SIZE, PageTable, PhysAddr, Pte, SegmentRef, collect_leaves, map_vaddr,
+    new_task_table, unmap_vaddr, validate_page_vaddr, visit_leaves,
 };
 use crate::state::{SegId, TaskId, VirtAddr};
 use std::collections::BTreeMap;
@@ -66,7 +66,6 @@ impl RefineState {
             next_seg: 1,
         }
     }
-
 }
 
 /// 为 Task 建立空的 CR3 树 + 空 vspace 双视图，记录入口（W8 依据）。
@@ -141,20 +140,52 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
             ok = false;
             diag.push(format!("W7: task {tid} 树↔视图不一致"));
         }
-        for (va, sref) in &leaves {
-            match st.segments.get(&sref.segment) {
+        visit_leaves(
+            &tc.table,
+            &mut |va, pte| match st.segments.get(&pte.mapping.segment) {
                 None => {
                     ok = false;
-                    diag.push(format!("W7: task {tid} {va:#x} 指向不活动 segment {}", sref.segment));
+                    diag.push(format!(
+                        "W7: task {tid} {va:#x} 指向不活动 segment {}",
+                        pte.mapping.segment
+                    ));
                 }
                 Some(seg) => {
-                    if seg.allowed_access & sref.access != sref.access {
+                    let offset = usize::try_from(pte.mapping.offset).ok();
+                    let expected = offset.and_then(|i| seg.frames.get(i));
+                    if expected != Some(&pte.frame_phys) {
+                        ok = false;
+                        diag.push(format!(
+                            "W7: task {tid} {va:#x} 物理帧与 segment offset 不匹配"
+                        ));
+                    }
+                    if !pte.present {
+                        ok = false;
+                        diag.push(format!("W7: task {tid} {va:#x} 叶 PTE 不存在"));
+                    }
+                    if !pte.user {
+                        ok = false;
+                        diag.push(format!("W7: task {tid} {va:#x} 叶 PTE 非用户可访问"));
+                    }
+                    if pte.writable != (pte.mapping.access & crate::state::ACCESS_W != 0) {
+                        ok = false;
+                        diag.push(format!("W7: task {tid} {va:#x} writable 与映射权限不匹配"));
+                    }
+                    if pte.nx != (pte.mapping.access & crate::state::ACCESS_X == 0) {
+                        ok = false;
+                        diag.push(format!("W7: task {tid} {va:#x} NX 与映射权限不匹配"));
+                    }
+                    if pte.mapping.access == 0 || pte.mapping.access & !0x07 != 0 {
+                        ok = false;
+                        diag.push(format!("W7: task {tid} {va:#x} 映射权限编码无效"));
+                    }
+                    if seg.allowed_access & pte.mapping.access != pte.mapping.access {
                         ok = false;
                         diag.push(format!("W7: {va:#x} access 超出段权限"));
                     }
                 }
-            }
-        }
+            },
+        );
     }
 
     // W6 物理页唯一归属
@@ -224,7 +255,10 @@ pub fn memseg_map(
     if access == 0 || access & !0x07 != 0 {
         return Err(MemSegError::InvalidAccess);
     }
-    let seg = st.segments.get(&seg_id).ok_or(MemSegError::InvalidSegment)?;
+    let seg = st
+        .segments
+        .get(&seg_id)
+        .ok_or(MemSegError::InvalidSegment)?;
     let seg = seg.clone(); // 借出来后释放，便于下面可变迁用
     if !st.tasks.contains_key(&task_id) {
         return Err(MemSegError::InvalidTask);
@@ -257,8 +291,8 @@ pub fn memseg_map(
         let frame_index = seg_offset
             .checked_add(i)
             .ok_or(MemSegError::ArithmeticOverflow)?;
-        let frame_index = usize::try_from(frame_index)
-            .map_err(|_| MemSegError::ArithmeticOverflow)?;
+        let frame_index =
+            usize::try_from(frame_index).map_err(|_| MemSegError::ArithmeticOverflow)?;
         if st.tasks[&task_id].vspace.contains_key(&va) {
             return Err(MemSegError::Overlap);
         }
@@ -338,7 +372,10 @@ pub fn memseg_destroy(
     if !seg_destroy_right {
         return Err(MemSegError::MissingRight);
     }
-    let seg = st.segments.get(&seg_id).ok_or(MemSegError::InvalidSegment)?;
+    let seg = st
+        .segments
+        .get(&seg_id)
+        .ok_or(MemSegError::InvalidSegment)?;
     let frames = seg.frames.clone();
     // StillMapped：任何活动 Task 的 vspace 都不能引用 target
     for tc in st.tasks.values() {

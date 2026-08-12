@@ -58,22 +58,39 @@ pub struct Pte {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NonLeafLevel { Pml4, Pdpt, Pd }
+pub enum NonLeafLevel {
+    Pml4,
+    Pdpt,
+    Pd,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PageTableNode {
-    NonLeaf { level: NonLeafLevel, slots: Box<[Option<PageTableNode>; 512]> },
+    NonLeaf {
+        level: NonLeafLevel,
+        slots: Box<[Option<PageTableNode>; 512]>,
+    },
     Leaf(Box<[Option<Pte>; 512]>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub struct PageTable { pub root: PageTableNode }
+pub struct PageTable {
+    pub root: PageTableNode,
+}
 
-fn pt_index(v: u64) -> usize { ((v >> 12) & 0x1ff) as usize }
+fn pt_index(v: u64) -> usize {
+    ((v >> 12) & 0x1ff) as usize
+}
 #[allow(clippy::redundant_closure_call)]
-fn empty_slots<T>() -> Box<[Option<T>; 512]> { Box::new(std::array::from_fn(|_| None)) }
+fn empty_slots<T>() -> Box<[Option<T>; 512]> {
+    Box::new(std::array::from_fn(|_| None))
+}
 fn level_shift(level: NonLeafLevel) -> u32 {
-    match level { NonLeafLevel::Pml4 => 39, NonLeafLevel::Pdpt => 30, NonLeafLevel::Pd => 21 }
+    match level {
+        NonLeafLevel::Pml4 => 39,
+        NonLeafLevel::Pdpt => 30,
+        NonLeafLevel::Pd => 21,
+    }
 }
 fn child_level_for(parent: NonLeafLevel) -> Option<NonLeafLevel> {
     match parent {
@@ -83,7 +100,9 @@ fn child_level_for(parent: NonLeafLevel) -> Option<NonLeafLevel> {
     }
 }
 
-pub fn new_task_table() -> PageTable { PageTable::default() }
+pub fn new_task_table() -> PageTable {
+    PageTable::default()
+}
 
 pub fn translate(table: &PageTable, vaddr: u64) -> Result<Option<&Pte>, PageWalkError> {
     validate_page_vaddr(vaddr)?;
@@ -100,15 +119,13 @@ pub fn translate(table: &PageTable, vaddr: u64) -> Result<Option<&Pte>, PageWalk
     Ok(go(&table.root, vaddr))
 }
 
-pub fn map_vaddr(
-    table: &mut PageTable,
-    vaddr: u64,
-    pte: Pte,
-) -> Result<(), PageWalkError> {
+pub fn map_vaddr(table: &mut PageTable, vaddr: u64, pte: Pte) -> Result<(), PageWalkError> {
     validate_page_vaddr(vaddr)?;
     fn go(node: &mut PageTableNode, vaddr: u64, pte: &Pte) {
         match node {
-            PageTableNode::Leaf(slots) => { slots[pt_index(vaddr)] = Some(*pte); }
+            PageTableNode::Leaf(slots) => {
+                slots[pt_index(vaddr)] = Some(*pte);
+            }
             PageTableNode::NonLeaf { level, slots } => {
                 let idx = ((vaddr >> level_shift(*level)) & 0x1ff) as usize;
                 if slots[idx].is_none() {
@@ -142,7 +159,9 @@ pub fn unmap_vaddr(table: &mut PageTable, vaddr: u64) -> Result<bool, PageWalkEr
                     Some(child) => go(child, vaddr),
                     None => false,
                 };
-                if child_empty { slots[idx] = None; }
+                if child_empty {
+                    slots[idx] = None;
+                }
                 slots.iter().all(|o| o.is_none())
             }
         }
@@ -150,28 +169,39 @@ pub fn unmap_vaddr(table: &mut PageTable, vaddr: u64) -> Result<bool, PageWalkEr
     Ok(go(&mut table.root, vaddr))
 }
 
-pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
-    fn go(node: &PageTableNode, base: u64, out: &mut BTreeMap<u64, SegmentRef>) {
+pub fn visit_leaves(table: &PageTable, visitor: &mut impl FnMut(u64, &Pte)) {
+    fn go(node: &PageTableNode, base: u64, visitor: &mut impl FnMut(u64, &Pte)) {
         match node {
             PageTableNode::Leaf(slots) => {
-                for (i, o) in slots.iter().enumerate() {
-                    if let Some(pte) = o {
-                        out.insert(canonicalize_48bit(base + ((i as u64) << 12)), pte.mapping);
-                    }
+                for (i, pte) in slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, pte)| pte.as_ref().map(|pte| (i, pte)))
+                {
+                    visitor(canonicalize_48bit(base + ((i as u64) << 12)), pte);
                 }
             }
             PageTableNode::NonLeaf { level, slots } => {
                 let shift = level_shift(*level);
-                for (i, o) in slots.iter().enumerate() {
-                    if let Some(child) = o {
-                        go(child, base | ((i as u64) << shift), out);
-                    }
+                for (i, child) in slots
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, child)| child.as_ref().map(|child| (i, child)))
+                {
+                    go(child, base | ((i as u64) << shift), visitor);
                 }
             }
         }
     }
+
+    go(&table.root, 0, visitor);
+}
+
+pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
     out.clear();
-    go(&table.root, 0, out);
+    visit_leaves(table, &mut |va, pte| {
+        out.insert(va, pte.mapping);
+    });
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,9 +213,14 @@ pub struct FrameAllocator {
 impl FrameAllocator {
     pub fn new(universe: &[PhysAddr]) -> Self {
         let free = universe.to_vec();
-        FrameAllocator { universe: universe.to_vec(), free }
+        FrameAllocator {
+            universe: universe.to_vec(),
+            free,
+        }
     }
-    pub fn alloc(&mut self) -> Option<PhysAddr> { self.free.pop() }
+    pub fn alloc(&mut self) -> Option<PhysAddr> {
+        self.free.pop()
+    }
     pub fn free_frame(&mut self, p: PhysAddr) {
         assert!(!self.free.contains(&p), "W6: 帧重复归还");
         self.free.push(p);
