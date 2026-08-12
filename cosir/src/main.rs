@@ -122,7 +122,7 @@ fn main() {
             memseg_create, memseg_destroy, memseg_map, memseg_unmap, spawn_task,
         };
         let universe: Vec<u64> = (0u64..4).map(|i| 0x1000 + i * 0x1000).collect();
-        let mut st = RefineState::new(&universe);
+        let mut st = RefineState::new(&universe).expect("valid frame universe");
         spawn_task(&mut st, 1, 0x4000_0000).expect("spawn init");
         let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
         let seg = memseg_create(&mut st, rights | SEG_DESTROY, 2, ACCESS_R | ACCESS_W)

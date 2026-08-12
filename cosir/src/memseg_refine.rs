@@ -5,7 +5,7 @@ use crate::pagewalk::{
     new_task_table, unmap_vaddr, validate_page_vaddr, visit_leaves,
 };
 use crate::state::{SegId, TaskId, VirtAddr};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 // Capability 权限位掩码（细化层用于前置授权检查；非 POSIR 一等原语）
 // SEG_MAP_* 与 state::ACCESS_* 数值一致(R=0b001/W=0b010/X=0b100)。
@@ -33,6 +33,7 @@ pub enum MemSegError {
     InvalidAddress,
     ArithmeticOverflow,
     SegmentIdExhausted,
+    FrameAllocatorCorrupt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,13 +59,13 @@ pub struct RefineState {
 }
 
 impl RefineState {
-    pub fn new(universe: &[PhysAddr]) -> Self {
-        RefineState {
+    pub fn new(universe: &[PhysAddr]) -> Result<Self, MemSegError> {
+        Ok(RefineState {
             segments: BTreeMap::new(),
-            alloc: FrameAllocator::new(universe),
+            alloc: FrameAllocator::new(universe).map_err(|_| MemSegError::FrameAllocatorCorrupt)?,
             tasks: BTreeMap::new(),
             next_seg: 1,
-        }
+        })
     }
 }
 
@@ -188,31 +189,49 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
         );
     }
 
-    // W6 物理页唯一归属
-    // 收集所有活动 segment 帧
-    let mut used: BTreeMap<PhysAddr, SegId> = BTreeMap::new();
+    // W6 物理页有限集合划分：universe/free/used 各源无重复，且 free ⊎ used = universe。
+    let universe: BTreeSet<_> = st.alloc.universe.iter().copied().collect();
+    if universe.len() != st.alloc.universe.len() {
+        ok = false;
+        diag.push("W6: frame_universe 含重复帧".to_string());
+    }
+
+    let free: BTreeSet<_> = st.alloc.free.iter().copied().collect();
+    if free.len() != st.alloc.free.len() {
+        ok = false;
+        diag.push("W6: 空闲帧集合含重复帧".to_string());
+    }
+    if !free.is_subset(&universe) {
+        ok = false;
+        diag.push("W6: 空闲帧不属于 frame_universe".to_string());
+    }
+
+    let mut used = BTreeSet::new();
     for (sid, seg) in &st.segments {
-        for f in &seg.frames {
-            if let Some(prev) = used.insert(*f, *sid) {
+        let segment_frames: BTreeSet<_> = seg.frames.iter().copied().collect();
+        if segment_frames.len() != seg.frames.len() {
+            ok = false;
+            diag.push(format!("W6: segment {sid} 含重复帧"));
+        }
+        for frame in &seg.frames {
+            if !universe.contains(frame) {
                 ok = false;
-                diag.push(format!("W6: 帧 {f:#x} 被 segment {prev} 与 {sid} 共同引用"));
+                diag.push(format!(
+                    "W6: segment {sid} 的帧 {frame:#x} 不属于 frame_universe"
+                ));
+            }
+            if !used.insert(*frame) {
+                ok = false;
+                diag.push(format!("W6: 帧 {frame:#x} 被多个 segment 引用"));
             }
         }
     }
-    // 段帧与空闲帧不交
-    for f in &st.alloc.free {
-        if used.contains_key(f) {
-            ok = false;
-            diag.push(format!("W6: 空闲帧 {f:#x} 同时被 segment {} 引用", used[f]));
-        }
+
+    if !used.is_disjoint(&free) {
+        ok = false;
+        diag.push("W6: 段帧与空闲帧相交".to_string());
     }
-    // 并集 = universe
-    let mut combined: Vec<PhysAddr> = used.keys().copied().collect();
-    combined.extend(st.alloc.free.iter().copied());
-    combined.sort_unstable();
-    let mut univ = st.alloc.universe.clone();
-    univ.sort_unstable();
-    if combined != univ {
+    if used.union(&free).copied().collect::<BTreeSet<_>>() != universe {
         ok = false;
         diag.push("W6: 段帧∪空闲帧 ≠ frame_universe".to_string());
     }
@@ -385,9 +404,15 @@ pub fn memseg_destroy(
             }
         }
     }
-    st.segments.remove(&seg_id);
-    for f in frames {
-        st.alloc.free_frame(f);
+    // 在副本上预检全部归还；任一帧非法时原状态保持不变。
+    let mut alloc_after = st.alloc.clone();
+    for frame in frames {
+        alloc_after
+            .free_frame(frame)
+            .map_err(|_| MemSegError::FrameAllocatorCorrupt)?;
     }
+
+    st.segments.remove(&seg_id);
+    st.alloc = alloc_after;
     Ok(())
 }

@@ -1,6 +1,6 @@
 use crate::pagewalk::{
-    FrameAllocator, PageWalkError, Pte, SegmentRef, collect_leaves, map_vaddr, new_task_table,
-    translate, unmap_vaddr,
+    FrameAllocator, FrameAllocatorError, PageWalkError, Pte, SegmentRef, collect_leaves, map_vaddr,
+    new_task_table, translate, unmap_vaddr,
 };
 use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 use std::collections::BTreeMap;
@@ -127,11 +127,11 @@ fn high_half_leaf_roundtrips_with_sign_extension() {
 #[test]
 fn frame_allocator_alloc_free_roundtrip() {
     let univ: Vec<crate::pagewalk::PhysAddr> = vec![0x1000, 0x2000, 0x3000];
-    let mut a = FrameAllocator::new(&univ);
+    let mut a = FrameAllocator::new(&univ).unwrap();
     let p = a.alloc().expect("frame available");
     assert_eq!(p, 0x3000, "pop 取栈顶");
     assert_eq!(a.free.len(), 2);
-    a.free_frame(p);
+    a.free_frame(p).unwrap();
     assert!(a.free.contains(&p));
     assert_eq!(a.free.len(), 3);
 }
@@ -139,7 +139,33 @@ fn frame_allocator_alloc_free_roundtrip() {
 #[test]
 fn allocate_exhausts_universe_returns_none() {
     let univ: Vec<crate::pagewalk::PhysAddr> = vec![0x1000];
-    let mut a = FrameAllocator::new(&univ);
+    let mut a = FrameAllocator::new(&univ).unwrap();
     assert!(a.alloc().is_some());
     assert!(a.alloc().is_none(), "耗尽后返回 None");
+}
+
+#[test]
+fn allocator_rejects_duplicate_universe() {
+    assert_eq!(
+        FrameAllocator::new(&[0x1000, 0x1000]),
+        Err(FrameAllocatorError::DuplicateFrame)
+    );
+}
+
+#[test]
+fn allocator_rejects_unknown_return_atomically() {
+    let mut a = FrameAllocator::new(&[0x1000]).unwrap();
+    let before = a.clone();
+    assert_eq!(a.free_frame(0x2000), Err(FrameAllocatorError::UnknownFrame));
+    assert_eq!(a, before);
+}
+
+#[test]
+fn allocator_rejects_duplicate_return_atomically() {
+    let mut a = FrameAllocator::new(&[0x1000]).unwrap();
+    let f = a.alloc().unwrap();
+    a.free_frame(f).unwrap();
+    let before = a.clone();
+    assert_eq!(a.free_frame(f), Err(FrameAllocatorError::DuplicateFree));
+    assert_eq!(a, before);
 }

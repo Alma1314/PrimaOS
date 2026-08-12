@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::state::SegId;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const PAGE_SIZE: u64 = 0x1000;
 pub type PhysAddr = u64;
@@ -204,6 +204,13 @@ pub fn collect_leaves(table: &PageTable, out: &mut BTreeMap<u64, SegmentRef>) {
     });
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameAllocatorError {
+    DuplicateFrame,
+    UnknownFrame,
+    DuplicateFree,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameAllocator {
     pub universe: Vec<PhysAddr>,
@@ -211,19 +218,28 @@ pub struct FrameAllocator {
 }
 
 impl FrameAllocator {
-    pub fn new(universe: &[PhysAddr]) -> Self {
-        let free = universe.to_vec();
-        FrameAllocator {
-            universe: universe.to_vec(),
-            free,
+    pub fn new(universe: &[PhysAddr]) -> Result<Self, FrameAllocatorError> {
+        let unique: BTreeSet<_> = universe.iter().copied().collect();
+        if unique.len() != universe.len() {
+            return Err(FrameAllocatorError::DuplicateFrame);
         }
+        Ok(FrameAllocator {
+            universe: universe.to_vec(),
+            free: universe.to_vec(),
+        })
     }
     pub fn alloc(&mut self) -> Option<PhysAddr> {
         self.free.pop()
     }
-    pub fn free_frame(&mut self, p: PhysAddr) {
-        assert!(!self.free.contains(&p), "W6: 帧重复归还");
+    pub fn free_frame(&mut self, p: PhysAddr) -> Result<(), FrameAllocatorError> {
+        if !self.universe.contains(&p) {
+            return Err(FrameAllocatorError::UnknownFrame);
+        }
+        if self.free.contains(&p) {
+            return Err(FrameAllocatorError::DuplicateFree);
+        }
         self.free.push(p);
+        Ok(())
     }
 }
 
