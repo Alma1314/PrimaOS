@@ -1,16 +1,20 @@
 # BLK-002 细化续：MemorySegment 页表↔vspace 细化实现计划
 
+> **历史执行记录（已由后续纠偏取代）：** 本文保留 2026-08-12 的计划、历史代码块和当时的验收预期，不能作为当前可执行指令。证据等级、术语和模型边界以 [`../specs/2026-08-12-refinement-audit-remediation-design.md`](../specs/2026-08-12-refinement-audit-remediation-design.md) 为准：SPEC-014 仅为 host `MODEL-TEST + REFINEMENT-DESIGN`，不是实际 x86_64 kernel refinement。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 BLK-002 Bootstrap 细化基础上，把 MemorySegment 的 CR3/四级页表↔vspace 细化写进 COSIR 规范 §20，并用 `cosir` 探针（`pagewalk.rs` + `memseg_refine.rs`）可执行验证四个 memseg 操作（create/map/unmap/destroy）的树映射与 W6/W7/W8 不变量，作为 S1-D4/S2 真实内核蓝本。
+**Historical Goal (superseded):** 在 BLK-002 Bootstrap 细化基础上，曾计划把 MemorySegment 的 CR3/四级页表↔vspace 对应写进 COSIR 规范 §20。现行表述是：`cosir` 探针提供 host 四级索引树的 `MODEL-TEST + REFINEMENT-DESIGN`，不是 S1-D4/S2 真实内核蓝本的实现证据。
 
-**Architecture:** 分三部分。(1) 新建 `pagewalk.rs`——真实四级页表机制（Pml4→Pdpt→Pd→Leaf，仅 4KB 固定走到底），含 `SegmentRef`/`Pte`/`FrameAllocator` 与翻译/映射/回收函数，纯机制、无 POSIR 语义。(2) 新建 `memseg_refine.rs`——细化对应层：`RefineState`（segments/allocator/per-task table+vspace view+entry）、四个 memseg 操作的树迁移、α 投影 `memseg_alpha`（W6/W7/W8）、错误集。(3) `COSIR 原语规范.md` §20 扩展细化小节 + `Prima OS 实现阶段.md` 登记 SPEC-014 + `main.rs` 线束 PASS 摘要。
+**Historical Architecture (superseded):** 本计划曾把 `pagewalk.rs` 描述为真实四级页表机制、把 `Pte` 字段描述为真实硬件位，并将 `memseg_alpha` 叙为 W6/W7/W8 的完整验证。现行边界是：它们是 host 四级索引树与 x86_64-inspired candidate encoding；直接检查 W6/W7，并仅以 `memseg_unmap` 的 entry 页 guard 覆盖有限 W8 检查。它们不表示真实 CR3/PTE，也不覆盖完整 W8 α、非叶权限合成、页表页物理身份、TLB/多核或原子更新窗口。
+
+**Current harness output:** 历史代码块中任何旧 `PASS memseg ...` 行均已被 `PASS model-test memseg page-walk dual view` 和 `PASS model-test memseg W6/W7 checks` 取代。
 
 **Tech Stack:** Rust nightly-2026-07-30、Rust 2024 edition、Cargo workspace 已有 `kernel`/`xtask`/`cosir`。`cosir` 是 host 二进制，无新依赖。
 
 ## Global Constraints
 
-- 权威设计为 `docs/superpowers/specs/2026-08-12-memseg-pagewalk-refinement-design.md`。
+- 历史上曾以 `docs/superpowers/specs/2026-08-12-memseg-pagewalk-refinement-design.md` 为权威设计；现以 `docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md` 为证据、术语和模型边界的权威来源。
 - 固定 Rust 工具链 `nightly-2026-07-30`；`cosir` 是 host 二进制，不依赖 `bootloader`/`bootloader_api`，不触碰 real IDT/trap。
 - **四级固定走到底**：任意 vaddr 经 Pml4→Pdpt→Pd→leaf 四级索引（39/30/21/12 位移）到 4KB 叶；**不做大页递归/分裂/合并**。
 - **叶 PTE 双字段** `Pte{mapping: SegmentRef, frame_phys}`；`SegmentRef{segment, offset, access}` 是细化层完整引用视图（规范 §5.2 PageMapping 的忠实表达）。
@@ -27,16 +31,16 @@
 
 ---
 
-## File Structure
+## Historical File Structure
 
 - Create: `docs/superpowers/plans/2026-08-12-memseg-pagewalk-refinement-slice.md` — 本计划文件（最后提交）。
 - Modify: `COSIR 原语规范.md` — 在既有 §20 追加 MemorySegment 细化小节（四级表、页表位编码表、四操作细化对应、W6/W7/W8 承接）。
-- Create: `cosir/src/pagewalk.rs` — 四级页表机制 + SegmentRef/Pte/FrameAllocator + translate/map/unmap/collect_leaves。
+- Create: `cosir/src/pagewalk.rs` — host 四级索引树机制 + SegmentRef/Pte/FrameAllocator + translate/map/unmap/collect_leaves。
 - Create: `cosir/src/memseg_refine.rs` — RefineState + 四操作细化迁移 + memseg_alpha + 错误集 + 测试。
 - Modify: `cosir/src/main.rs` — 声明新模块；在验收线束追加 PASS 输出。
 - Modify: `Prima OS 实现阶段.md` — 新增 SPEC-014 证据、更新 BLK-002 描述与当前快照。
 
-> 说明：设计文档 §2 逐级结构（`Pml4`/`Pdpt`/`Pd`/`Pt` 各异构 struct）在本计划以**递归 enum + 显式级别标记**实现，语义等价（四级固定走到底、512 槽、4KB 叶）。理由：递归实现让 translate/map/unmap 的遍历与空表回收更简洁正确，是「真实四级」的忠实可执行表达。
+> 历史说明（已纠偏）：设计文档 §2 的逐级结构（`Pml4`/`Pdpt`/`Pd`/`Pt` 各异构 struct）在本计划以**递归 enum + 显式级别标记**实现，保留四级固定走到底、512 槽、4KB 叶的 host 模型形状。它是 x86_64-inspired candidate encoding，不是“真实四级”页表或真实 CR3/PTE 表达。
 
 ---
 
@@ -58,7 +62,7 @@ cargo test -p cosir
 cargo xtask test
 ```
 
-Expected：`cargo test -p cosir` 输出 `test result: ok. 17 passed; 0 failed`（12 exc_resume + 5 bootstrap）；`cargo xtask test` 输出尾部：
+Historical expected output（测试数和 PASS 字符串已过时；当前以实际输出和纠偏设计为准）：`cargo test -p cosir` 当时预期输出 `test result: ok. 17 passed; 0 failed`（12 exc_resume + 5 bootstrap）；`cargo xtask test` 当时预期输出尾部：
 
 ```text
 PASS build kernel
@@ -78,7 +82,7 @@ Expected：`COSIR 原语规范.md` 与 `Prima OS 实现阶段.md` 已被修改�
 
 ---
 
-### Task 2: 建立 pagewalk.rs——四级页表机制 + 帧分配器
+### Task 2: 建立 pagewalk.rs——host 四级索引树机制 + 帧分配器
 
 **Files:**
 - Create: `cosir/src/pagewalk.rs`
@@ -1521,9 +1525,9 @@ git commit -m "feat: implement memseg_destroy page return and full lifecycle tes
 - Modify: `COSIR 原语规范.md`（追加 MemorySegment 细化小节到 §20）
 - Modify: `Prima OS 实现阶段.md`（登记 SPEC-014、更新 BLK-002 描述与当前快照）
 
-**Interfaces:**
+**Interfaces (historical):**
 - Consumes: Task 3-6 全部导出。
-- Produces: 可复现的 PASS 摘要；规范与实施文档证据记录。
+- Produces: 历史 PASS 摘要和当时的规范/实施文档记录；现行证据结论以纠偏设计为准。
 
 - [ ] **Step 1: main.rs 线束追加 PASS 摘要**
 
@@ -1551,12 +1555,10 @@ git commit -m "feat: implement memseg_destroy page return and full lifecycle tes
         memseg_unmap(&mut st, true, 1, 0x5000_0000, 1).expect("unmap");
         memseg_destroy(&mut st, true, seg).expect("destroy");
         assert!(memseg_alpha(&st), "destroy 后 α 成立");
-        println!("PASS memseg create");
-        println!("PASS memseg map");
-        println!("PASS memseg unmap");
-        println!("PASS memseg destroy");
-        println!("PASS memseg page-walk refinement");
-        println!("PASS cosir memseg W6 W7 W8 invariants");
+        // 历史计划中的旧 PASS 文本已废止；现行线束使用校准后的模型证据标签。
+        println!("PASS model-test memseg page-walk dual view");
+        println!("PASS model-test memseg W6/W7 checks");
+        // W8 仅由 memseg_unmap 的 entry 页 guard 覆盖，不输出完整 W8 α PASS。
     }
 ```
 
@@ -1565,7 +1567,7 @@ git commit -m "feat: implement memseg_destroy page return and full lifecycle tes
 - [ ] **Step 2: 运行线束与 lint**
 
 Run：`cargo test -p cosir`
-Expected：`test result: ok. 42 passed; 0 failed`。
+Historical expected output（测试数已过时；当前以实际输出和纠偏设计为准）：`test result: ok. 42 passed; 0 failed`。
 
 Run：`cargo clippy --workspace --all-targets --no-deps -- -D warnings`
 Expected：无警告、退出码 0。若 `#![allow(dead_code)]` 或未用 `PAGE_SIZE` 告警，按 clippy 提示就地处理（保留允许属性即可）。
@@ -1577,31 +1579,33 @@ Expected：无警告、退出码 0。若 `#![allow(dead_code)]` 或未用 `PAGE_
 ```markdown
 ### 20.5 MemorySegment 页表 ↔ vspace 细化
 
-本小节为细化层展开：把 MemorySegment 的 CR3/四级页表↔vspace 对应显式化（对应 §18.0 边界清单 #5/#6）。不新增对 POSIR 可见的一等原语；四级页表机制（`pagewalk`）与细化迁移（`memseg_refine`）均为细化层探针实现，为阶段 1 页表/trap（S1-D4）与 vspace 管理（S2）提供蓝本。
+以下代码块是历史计划中的旧文本；现行 COSIR §20.5 与纠偏设计取代其证据表述。
 
-**四级页表结构（仅 4KB，四级固定走到底）。** 每 CPU Task 一棵 CR3 树：PML4 → PDPT → PD → PT（每级 512 槽）→ 4KB 叶。叶访问权限按下表编码：
+本小节曾把 MemorySegment 的 CR3/四级页表↔vspace 对应作为细化层展开。现行解释是 host 四级索引树↔vspace 的 `REFINEMENT-DESIGN`，不新增对 POSIR 可见的一等原语，也不是真实 x86_64 CR3 页表实现。
 
-| POSIR Access | real x86_64 位 |
+**host 四级索引树（仅 4KB，四级固定走到底）。** 每 CPU Task 在 host 模型中持有一棵每级 512 槽的索引树，最终指向 4KB 叶；层级形状与权限字段只是 x86_64-inspired candidate encoding。
+
+| POSIR Access | x86_64-inspired candidate encoding |
 |---|---|
-| R | present（真实只读由 writable=0 表达） |
-| W | writable（bit1） |
-| X | !nx（可执行 = NX 位清零） |
-| 用户态可达 | user（bit2） |
+| R | `present`（候选只读由 `writable=false` 表达） |
+| W | `writable` |
+| X | `!nx` |
+| 用户态可达 | `user` |
 
-**叶 PTE 双字段。** 叶同时携带物理地址视图与 POSIR 引用视图：`Pte{frame_phys, mapping}`。`mapping = SegmentRef{segment, offset, access}` 是 §5.2 `PageMapping` 的细化层忠实表达。`state` 简化 `vspace`（exc_resume 探针的 `(VirtAddr, u8)` tuple）与本切片无关。
+**host 叶双视图。** 模型叶 `Pte{frame_phys, mapping}` 检查物理地址视图与 POSIR 引用视图的一致性；它不是实际 PTE 或位级布局。`mapping = SegmentRef{segment, offset, access}` 是 §5.2 `PageMapping` 的模型视图。
 
-**四操作细化对应。**
+**四操作候选细化对应。**
 
-| POSIR 抽象（§7） | x86_64 细化 |
+| POSIR 抽象（§7） | host refinement design |
 |---|---|
-| `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment，铸造根 SegCap；不建树 |
-| `memseg_map` | 前置校验后遍历树到底插入叶 `Pte{frame_phys, mapping}`，同步 vspace 视图（W7） |
-| `memseg_unmap` | 前置校验（含 W8 不卸 entry 页）后清叶、回收空表结点、同步 vspace |
+| `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment；不建树 |
+| `memseg_map` | 前置校验后遍历 host 树到底插入模型叶并同步 vspace 视图（W7） |
+| `memseg_unmap` | 前置校验后清模型叶、回收空结点、同步 vspace；含 entry 页 guard |
 | `memseg_destroy` | 前置校验（无活动 vspace 引用，StillMapped）后删 Segment，归还帧（W6） |
 
-**不变量承接。** W6（物理页唯一归属：活动 segment 帧两两不交、与 free_frames 不交、并集 = frame_universe）由帧分配器与 α 验证；W7（虚拟映射有效：vspace 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）由 α 投影 `memseg_alpha` 验证；W8（可执行入口显式授权）由 `memseg_unmap` 拒绝卸 entry 页保障。
+**有限不变量检查。** W6 和 W7 由 host 模型测试检查。W8 仅覆盖 `memseg_unmap` 拒绝 entry 页的 guard，不能表述为完整 W8 α。未覆盖非叶 U/S、R/W、NX 权限合成，页表页物理身份及回收，TLB/多核可见性，真实 CR3/PTE 编码和原子更新窗口。
 
-**错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的"路径深表缺失"等机制内部状态折叠为对应 POSIR 错误，不外泄新错误原语。
+**错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的“路径深表缺失”等 host 机制状态折叠为对应 POSIR 错误，不外泄新错误原语。
 
 **未覆盖（留后续切片）。** 大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地。
 ```
