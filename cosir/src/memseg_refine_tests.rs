@@ -152,3 +152,53 @@ fn map_out_of_bounds_rejected() {
     .unwrap_err();
     assert_eq!(err, MemSegError::OutOfBounds);
 }
+
+#[test]
+fn unmap_clears_leaf_and_vspace() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R | ACCESS_W)
+        .unwrap();
+    memseg_map(&mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 2, ACCESS_R | ACCESS_W).unwrap();
+    memseg_unmap(&mut st, true, 7, 0x5000_0000, 2).expect("unmap ok");
+    let task = &st.tasks[&7];
+    assert!(!task.vspace.contains_key(&0x5000_0000));
+    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).is_none());
+    let mut diag = Vec::new();
+    assert!(memseg_alpha_verbose(&st, &mut diag), "unmap 后仍 W6/W7 有效");
+}
+
+#[test]
+fn unmap_entry_page_rejected() {
+    let mut st = RefineState::new(&universe());
+    // entry 设在 0x5000_0000 所在页
+    spawn_task(&mut st, 7, 0x5000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R | ACCESS_W | ACCESS_X)
+        .unwrap();
+    // 映射包含 entry 页
+    memseg_map(&mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_X).unwrap();
+    let err = memseg_unmap(&mut st, true, 7, 0x5000_0000, 1).unwrap_err();
+    assert_eq!(err, MemSegError::EntryMapping);
+    // 树与视图不应被清除
+    let task = &st.tasks[&7];
+    assert!(task.vspace.contains_key(&0x5000_0000));
+    assert!(crate::pagewalk::translate(&task.table, 0x5000_0000).is_some());
+}
+
+#[test]
+fn unmap_not_mapped_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let err = memseg_unmap(&mut st, true, 7, 0x6000_0000, 1).unwrap_err();
+    assert_eq!(err, MemSegError::NotMapped);
+}
+
+#[test]
+fn unmap_missing_task_vspace_right_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    memseg_map(&mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
+    let err = memseg_unmap(&mut st, false, 7, 0x5000_0000, 1).unwrap_err();
+    assert_eq!(err, MemSegError::MissingRight);
+}

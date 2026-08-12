@@ -262,7 +262,38 @@ pub fn memseg_unmap(
     target_base: VirtAddr,
     page_count: u64,
 ) -> Result<(), MemSegError> {
-    todo!("Task 5");
+    if page_count == 0 {
+        return Err(MemSegError::ZeroSize);
+    }
+    if !task_manage_rights {
+        return Err(MemSegError::MissingRight);
+    }
+    if !st.tasks.contains_key(&task_id) {
+        return Err(MemSegError::InvalidTask);
+    }
+    // entry 页保护（W8）：目标区间不包含 entry 所在页
+    let entry_page = st.tasks[&task_id].entry & !(PAGE_SIZE - 1);
+    for i in 0..page_count {
+        let va = target_base + i * PAGE_SIZE;
+        if va == entry_page {
+            return Err(MemSegError::EntryMapping);
+        }
+    }
+    // 区间全映射
+    for i in 0..page_count {
+        let va = target_base + i * PAGE_SIZE;
+        if !st.tasks[&task_id].vspace.contains_key(&va) {
+            return Err(MemSegError::NotMapped);
+        }
+    }
+    // 清叶 + 双视图
+    for i in 0..page_count {
+        let va = target_base + i * PAGE_SIZE;
+        let task = st.tasks.get_mut(&task_id).unwrap();
+        let _ = unmap_vaddr(&mut task.table, va);
+        task.vspace.remove(&va);
+    }
+    Ok(())
 }
 
 pub fn memseg_destroy(
