@@ -70,8 +70,21 @@ fn alpha_rejects_wrong_frame_phys() {
 
 #[test]
 fn alpha_rejects_bad_offset() {
+    const TID: u32 = 7;
+    const VA: u64 = 0x5000_0000;
+    const BAD_OFFSET: u64 = u64::MAX;
+
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st, 7, 0x5000_0000).mapping.offset = u64::MAX;
+    // 同步树 PTE 与 vspace：唯一被破坏的 α 条件是
+    // offset → segment.frames/frame_phys 物理叶关系。
+    mapped_pte_mut(&mut st, TID, VA).mapping.offset = BAD_OFFSET;
+    st.tasks
+        .get_mut(&TID)
+        .unwrap()
+        .vspace
+        .get_mut(&VA)
+        .unwrap()
+        .offset = BAD_OFFSET;
     assert!(!memseg_alpha(&st));
 }
 
