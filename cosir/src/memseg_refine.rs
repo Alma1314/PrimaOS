@@ -181,7 +181,7 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
                     }
                     if seg.allowed_access & pte.mapping.access != pte.mapping.access {
                         ok = false;
-                        diag.push(format!("W7: {va:#x} access 超出段权限"));
+                        diag.push(format!("W7: task {tid} {va:#x} access 超出段权限"));
                     }
                 }
             },

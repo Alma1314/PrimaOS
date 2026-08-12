@@ -36,7 +36,7 @@ fn mapped_state(access: u8) -> RefineState {
     st
 }
 
-fn mapped_pte_mut(st: &mut RefineState) -> &mut crate::pagewalk::Pte {
+fn mapped_pte_mut(st: &mut RefineState, tid: u32, va: u64) -> &mut crate::pagewalk::Pte {
     fn go(node: &mut crate::pagewalk::PageTableNode, va: u64) -> &mut crate::pagewalk::Pte {
         match node {
             crate::pagewalk::PageTableNode::Leaf(slots) => slots[((va >> 12) & 0x1ff) as usize]
@@ -58,55 +58,56 @@ fn mapped_pte_mut(st: &mut RefineState) -> &mut crate::pagewalk::Pte {
         }
     }
 
-    go(&mut st.tasks.get_mut(&7).unwrap().table.root, 0x5000_0000)
+    go(&mut st.tasks.get_mut(&tid).unwrap().table.root, va)
 }
 
 #[test]
 fn alpha_rejects_wrong_frame_phys() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).frame_phys = 0xdead_0000;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).frame_phys = 0xdead_0000;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_bad_offset() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).mapping.offset = u64::MAX;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).mapping.offset = u64::MAX;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_nonpresent_leaf() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).present = false;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).present = false;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_supervisor_leaf() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).user = false;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).user = false;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_writable_mismatch() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).writable = true;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).writable = true;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_nx_mismatch() {
     let mut st = mapped_state(ACCESS_R | ACCESS_X);
-    mapped_pte_mut(&mut st).nx = true;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).nx = true;
     assert!(!memseg_alpha(&st));
 }
 
 #[test]
 fn alpha_rejects_access_outside_segment() {
     let mut st = mapped_state(ACCESS_R);
-    mapped_pte_mut(&mut st).mapping.access = ACCESS_R | ACCESS_W;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).mapping.access = ACCESS_R | ACCESS_W;
+    mapped_pte_mut(&mut st, 7, 0x5000_0000).writable = true;
     st.tasks
         .get_mut(&7)
         .unwrap()
@@ -115,6 +116,36 @@ fn alpha_rejects_access_outside_segment() {
         .unwrap()
         .access = ACCESS_R | ACCESS_W;
     assert!(!memseg_alpha(&st));
+}
+
+#[test]
+fn alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic() {
+    const TID: u32 = 7;
+    const VA: u64 = 0x5000_0000;
+
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, TID, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights(), 1, ACCESS_R).unwrap();
+    memseg_map(&mut st, SEG_MAP_R, true, seg, TID, 0, VA, 1, ACCESS_R).unwrap();
+
+    // 同步树和 vspace 的访问视图，并使 PTE writable 与 R|W 访问匹配：
+    // 唯一被破坏的 α 条件是 access ⊆ segment.allowed_access。
+    mapped_pte_mut(&mut st, TID, VA).mapping.access = ACCESS_R | ACCESS_W;
+    mapped_pte_mut(&mut st, TID, VA).writable = true;
+    st.tasks
+        .get_mut(&TID)
+        .unwrap()
+        .vspace
+        .get_mut(&VA)
+        .unwrap()
+        .access = ACCESS_R | ACCESS_W;
+
+    let mut diag = Vec::new();
+    assert!(!memseg_alpha_verbose(&st, &mut diag));
+    assert!(
+        diag.iter().any(|message| message.contains("task 7") && message.contains("0x50000000")),
+        "allowed-subset diagnostic must identify task and virtual address: {diag:?}"
+    );
 }
 
 #[test]
