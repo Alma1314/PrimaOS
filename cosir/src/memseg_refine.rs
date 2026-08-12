@@ -128,6 +128,7 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
     for (tid, tc) in &st.tasks {
         let mut leaves: BTreeMap<VirtAddr, SegmentRef> = BTreeMap::new();
         collect_leaves(&tc.table, &mut leaves);
+        #[allow(clippy::op_ref)]
         if &leaves != &tc.vspace {
             ok = false;
             diag.push(format!("W7: task {tid} 树↔视图不一致"));
@@ -186,6 +187,7 @@ pub fn memseg_alpha(st: &RefineState) -> bool {
     memseg_alpha_verbose(st, &mut diag)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn memseg_map(
     st: &mut RefineState,
     seg_cap_rights: u8,

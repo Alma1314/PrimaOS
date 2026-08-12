@@ -51,8 +51,8 @@ fn child_level_for(parent: NonLeafLevel) -> Option<NonLeafLevel> {
 
 pub fn new_task_table() -> PageTable { PageTable::default() }
 
-pub fn translate<'a>(table: &'a PageTable, vaddr: u64) -> Option<&'a Pte> {
-    fn go<'a>(node: &'a PageTableNode, vaddr: u64) -> Option<&'a Pte> {
+pub fn translate(table: &PageTable, vaddr: u64) -> Option<&Pte> {
+    fn go(node: &PageTableNode, vaddr: u64) -> Option<&Pte> {
         match node {
             PageTableNode::Leaf(slots) => slots[pt_index(vaddr)].as_ref(),
             PageTableNode::NonLeaf { level, slots } => {

@@ -45,7 +45,7 @@ fn unmap_clears_leaf_and_reclaims_empty_tables() {
     let mut t = base_tree();
     assert!(translate(&t, 0x4000_0000).is_some());
     let empty = unmap_vaddr(&mut t, 0x4000_0000);
-    assert_eq!(empty, true, "叶被清后整棵子树应回收为空");
+    assert!(empty, "叶被清后整棵子树应回收为空");
     assert!(translate(&t, 0x4000_0000).is_none());
 }
 
