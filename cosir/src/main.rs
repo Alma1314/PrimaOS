@@ -148,8 +148,8 @@ fn main() {
         println!("PASS memseg map");
         println!("PASS memseg unmap");
         println!("PASS memseg destroy");
-        println!("PASS memseg page-walk refinement");
-        println!("PASS cosir memseg W6 W7 W8 invariants");
+        println!("PASS model-test memseg page-walk dual view");
+        println!("PASS model-test memseg W6/W7 checks");
     }
 }
 

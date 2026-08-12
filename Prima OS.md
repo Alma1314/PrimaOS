@@ -865,7 +865,7 @@ COSIR 在抽象层面不引用特定的 ISA，但它依赖以下 7 个介质的�
 
 ### 17.2 满足全部条件的目标架构
 
-以下 ISA/微架构满足 COSIR 的全部 7 个条件，因此 POSIR 抽象对其完全适用：
+以下 ISA/微架构满足 COSIR 的 7 个候选前提，因此列为 POSIR 的候选适用架构；是否适用仍须逐架构实例化 COSIR 并以兼容性与细化证据验证：
 
 | 架构 | 关键实现 | MMU | 特权模式 | 中断控制器 | 时钟 |
 |---|---|---|---|---|---|
@@ -873,7 +873,7 @@ COSIR 在抽象层面不引用特定的 ISA，但它依赖以下 7 个介质的�
 | **ARMv8-A+** (AArch64) | Cortex-A 系列 | 四级页表 (TTBR0/1)，ASID | EL0/EL1/EL2/EL3 | GICv3/v4 | Generic Timer (CNTPCT) |
 | **RISC-V** (≥RV64GC+S+M+U) | SiFive、Western Digital 等 | Sv39/Sv48/Sv57 页表，ASID | M/S/U 模式 | PLIC/APLIC + CLINT/ACLINT | mtime/mtimecmp |
 
-这些架构在抽象层次上等价——差异只在细化层：GIC 替代 APIC、VBAR_EL1 替代 IDT、TTBR 替代 CR3、Sv39 替代 PML4。POSIR 规范不需要改变。改变的只是 COSIR 的实例化代码。
+研究假设是这些架构的差异可限制在细化层，例如 GIC/APIC、VBAR_EL1/IDT、TTBR/CR3 与 Sv39/PML4 的替换，而不修改 POSIR。该命题目前只是候选可移植性假设；只有第二架构实例化及对应 `COMPAT-TEST` 后，才能判断 POSIR 是否确实无需改变。
 
 ### 17.3 不满足条件的架构及影响
 
@@ -924,7 +924,7 @@ SMP 上多个 CPU 核共享同一个 KernelState。POSIR 的单核假设（W9：
 
 ### 18.2 GPU / NPU / FPGA 异构计算
 
-GPU 等非 CPU 介质上的计算单元被建模为特殊类型的 Task。所有介质共享同一个 Capability 位置空间——GPU Task 通过 `task_create` 注入的初始 Capability 获得对显存 Segment 的访问权，与 CPU Task 的 Capability 语义完全相同。
+以下内容是待验证的映射假设，不是已建立的跨介质细化：GPU 等非 CPU 介质上的计算单元可尝试建模为特殊类型的 Task，并通过 `task_create` 注入的初始 Capability 获得显存 Segment 访问权。Capability 语义能否在 CPU 与异构执行环境间保持一致，必须由冻结的 observable semantics 与设备 `COMPAT-TEST` 验证。
 
 **计算介质的隔离矩阵：**
 
@@ -941,11 +941,11 @@ GPU 等非 CPU 介质上的计算单元被建模为特殊类型的 Task。所有
 - **GPU Task 持有 Capability 但不派生新 Capability。** 它们的 `initial_caps` 中的 Capability 不含 `Derive` 权限
 - **GPU 显存和 CPU 内存在物理池层面完全隔离。** W6 不变式对 CPU 池和 GPU 池分别适用
 
-**对原语的影响：无新增原语。** CPU 端的 GPU kernel 启动通过现有 `task_create`（含 `TaskKind = ComputeTask(GPU(CUDA))`）+ 用户态驱动服务 + DMA 缓冲区和中断通知完成。GPU 显存创建复用现有的 Segment 创建模型（页帧源从 `gpu_frame_universe` 获取）。
+**对原语的候选映射：** 当前假设 CPU 端 GPU kernel 启动可由现有 `task_create`（含 `TaskKind = ComputeTask(GPU(CUDA))`）+ 用户态驱动服务 + DMA 缓冲区和中断通知表达，GPU 显存可复用 Segment 创建模型（页帧源从 `gpu_frame_universe` 获取）。若实现或 `COMPAT-TEST` 要求新的可观察语义维度，则该假设被证伪并须修订原语模型。
 
 ### 18.3 多节点分布式
 
-分布式场景中，每个物理节点运行独立的 HexArc 内核实例，拥有本地 `KernelState`。节点通过新增的 Node 对象和跨节点扩展的 `send` 通信。
+以下内容同样是待验证的映射假设：分布式场景可让每个物理节点运行独立的 HexArc 内核实例并拥有本地 `KernelState`，节点通过 Node 对象和跨节点扩展的 `send` 通信。其超时、失败恢复和 Capability 转移的 observable semantics 尚未冻结，也尚无 `COMPAT-TEST`。
 
 **节点连接模型：**
 
@@ -974,7 +974,7 @@ Prima 的分布式模型明确拒绝"全局统一的 KernelState"——不寻求
 | 跨节点 RPC | `rpc_call(service, args)` | Node `send` + 本地 `recv`（回复路由通过服务协议） |
 | 分布式文件读取 | `read(node3:fd, buf, n)` | 本地文件服务 Capability 委托到远程节点 + 跨节点共享 Segment |
 
-**每个场景都是现有 11 类原语的组合，不引入新的维度。** 这为 H1 提供了额外的经验支撑——如果多介质和分布式不暴露新的独立语义维度，那么"表达力完备"的论据会更强。
+表中的分解只是候选组合，不构成 H1 的经验支撑。只有先冻结每个场景的 observable semantics，再形成覆盖成功、失败、并发与恢复行为的 `COMPAT-TEST`，且测试未暴露新的独立语义维度后，相关结果才可作为 H1 的有限支持；反例则要求修订映射或 H1。
 
 ## 19. 非目标
 

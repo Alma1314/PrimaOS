@@ -2024,11 +2024,11 @@ KernelState {
 
 ### 18.1 跨架构可移植性
 
-POSIR 抽象规范对满足以下 7 个条件的架构（von Neumann 架构或类似架构）完全适用：可寻址线性内存、特权级分离、地址转换硬件、有穷指令集、外部中断/异常、单调时钟、I/O 隔离边界（详见 [[Prima OS]] §17.1）。满足这些条件的架构包括 x86_64、ARMv8-A (AArch64) 和 RISC-V (RV64GC+M+S+U)。
+POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或类似架构）列为候选适用范围：可寻址线性内存、特权级分离、地址转换硬件、有穷指令集、外部中断/异常、单调时钟、I/O 隔离边界（详见 [[Prima OS]] §17.1）。x86_64、ARMv8-A (AArch64) 和 RISC-V (RV64GC+M+S+U) 是待分别实例化和验证的候选架构；当前证据不能证明跨架构完全适用。
 
 原语在跨架构可移植性上分为两类：
 
-**逻辑无关原语**——纯数据结构，不接触架构特定寄存器或指令。这些原语在 x86_64、ARM 和 RISC-V 之间**完全不用重写**：
+**候选逻辑无关原语**——设计上是纯数据结构，不接触架构特定寄存器或指令。当前假设这些原语可在 x86_64、ARM 和 RISC-V 之间保持状态迁移语义；是否无需重写须由第二架构实例化验证：
 
 | 原语 | 涉及内容 | 可移植原因 |
 |---|---|---|
@@ -2040,7 +2040,7 @@ POSIR 抽象规范对满足以下 7 个条件的架构（von Neumann 架构或�
 | Audit | 追加式事件日志 | 纯数据结构 |
 | Bootstrap | 初始状态构建 | 纯逻辑 |
 
-**架构特定原语**——需要直接操作硬件寄存器或处理器特定指令。这些原语的 POSIR 状态迁移**完全相同**，但 COSIR 细化实现**按架构重写**：
+**架构特定原语**——需要直接操作硬件寄存器或处理器特定指令。候选设计要求 POSIR 状态迁移保持不变、COSIR 细化实现按架构重写；该要求仍待跨架构证据检验：
 
 | 原语 | x86_64 细化 | ARMv8-A 细化 |
 |---|---|---|
@@ -2062,12 +2062,12 @@ POSIR 抽象规范对满足以下 7 个条件的架构（von Neumann 架构或�
 | 时间基准 | CPU 本地 TSC（可能跨核漂移） | 系统全局 CNTPCT（ARM Generic Timer 架构保证的一致性） |
 | 指令屏障 | SFENCE/MFENCE/LFENCE | DSB (全系统) / DMB (内存域) / ISB (指令流) — 更细粒度控制 |
 
-**因此，POSIR 的 11 类原语在 ARM 实例化时：**
-- **7 类完全不变**（Capability / Task 生命周期 / Send/Recv / Namespace / Timer 抽象 / Audit / Bootstrap）
-- **4 类需要 COSIR 细化重写**（MemorySegment / Exception / Timer 硬件 / Device）
-- 总代码量中，逻辑无关代码占多数的判断取决于数据结构代码 vs 页表代码的比例，而不是原语类别的比例
+**ARM 候选实例化预计：**
+- **7 类状态迁移候选不变**（Capability / Task 生命周期 / Send/Recv / Namespace / Timer 抽象 / Audit / Bootstrap）
+- **4 类预计需要 COSIR 细化重写**（MemorySegment / Exception / Timer 硬件 / Device）
+- 总代码量中，逻辑无关代码是否占多数取决于数据结构代码 vs 页表代码的比例，而不是原语类别的比例
 
-这不影响 POSIR 抽象规范的任何语句。它只验证”不同架构的 COSIR 实例化是否可以独立于 POSIR 进行”——即 POSIR/COSIR 分层是否真实。
+第二架构实验将检验“不同架构的 COSIR 实例化能否独立于 POSIR 进行”。若需要修改 POSIR，则构成对 POSIR/COSIR 分层或候选适用范围的反例，而不是仍宣称跨架构完全适用。
 
 ## 19. 原语总览
 
@@ -2088,7 +2088,7 @@ POSIR 抽象规范对满足以下 7 个条件的架构（von Neumann 架构或�
 
 ## 20. 细化层：MachineState 与抽象函数
 
-本章属于 COSIR 细化层，不新增对 POSIR 可见的一等原语。它把 x86_64 机制层与 POSIR 抽象层的对应关系显式化（见 [[Prima OS]] §13.2），为阶段 1 真实内核实现（物理内存、页表/GDT/IDT/trap）提供细化蓝本。本章当前只实例化 **Bootstrap** 的细化对应；其它原语（MemorySegment 页表↔vspace、task_create 入口细化、异常/trap 递送）仅登记接口，留待后续细化切片展开。
+本章属于 COSIR 细化层，不新增对 POSIR 可见的一等原语。它把 x86_64 机制层与 POSIR 抽象层的对应关系显式化（见 [[Prima OS]] §13.2），为阶段 1 真实内核实现（物理内存、页表/GDT/IDT/trap）提供细化蓝本。当前包含 **Bootstrap 投影**和 **MemorySegment host 四级索引树**两项设计；二者的证据等级均为 `REFINEMENT-DESIGN`，Rust 可执行状态模型的测试仅为 `MODEL-TEST`，不构成真实 CR3/PTE 实现的细化证明。task_create 入口细化和异常/trap 递送仍只登记接口，留待后续细化切片展开。
 
 ### 20.1 MachineState
 
@@ -2172,8 +2172,8 @@ abstract : MachineState → POSIRState
 | `memseg_unmap` | 前置校验（含 W8 不卸 entry 页）后清叶、回收空表结点、同步 vspace |
 | `memseg_destroy` | 前置校验（无活动 vspace 引用，StillMapped）后删 Segment，归还帧（W6） |
 
-**不变量承接。** W6（物理页唯一归属：活动 segment 帧两两不交、与 free_frames 不交、并集 = frame_universe）由帧分配器与 α 验证；W7（虚拟映射有效：vspace 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）由 α 投影 `memseg_alpha` 验证；W8（可执行入口显式授权）由 `memseg_unmap` 拒绝卸 entry 页保障。
+**不变量承接。** `MODEL-TEST` 检查 W6（物理页唯一归属：活动 segment 帧两两不交、与 free_frames 不交、并集 = frame_universe）以及 W7（vspace host 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）。W8 当前只覆盖 `memseg_unmap` 的 entry-page guard；尚未验证 task_create 入口建立、入口权限合成或执行期间入口持续可达，因此不得称为完整 W8 验证。
 
 **错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的"路径深表缺失"等机制内部状态折叠为对应 POSIR 错误，不外泄新错误原语。
 
-**未覆盖（留后续切片）。** 大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地。
+**未覆盖（留后续切片）。** 当前 host 四级索引树和双视图检查不覆盖：非叶权限合成、页表页的物理身份与所有权、TLB 维护、多核并发与 shootdown、真实 CR3/PTE 编码和访问，以及页表原子更新窗口。大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地同样未覆盖。以上边界完成前，证据保持 `REFINEMENT-DESIGN` + `MODEL-TEST`，不得称为真实 MemorySegment refinement PASS。

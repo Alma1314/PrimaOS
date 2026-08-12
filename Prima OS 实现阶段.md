@@ -41,8 +41,8 @@
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
 | exc_resume（本切片） | 2026-08-07 — 定义异常恢复原语 `exc_resume`、x86_64 SretFrame 帧布局（细化层定义）、Faulted 细化态与错误码；新增 §12.10，标注细化要求 #16 与边界清单 #1/#2 |
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
-| 最近细化证据 | 见 SPEC-014：MemorySegment 四级页表↔vspace 细化（COSIR §20.5）定义完成，Rust 可执行状态模型探针 42 tests 通过 |
-| BLK-002 细化（本切片） | 2026-08-12 — 覆盖 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cosir 新增 pagewalk/memseg_refine 模块；规范新增 §20.5；`cargo test -p cosir` 42 tests 通过；`cargo xtask test` 六条 PASS |
+| 最近细化证据 | 见 SPEC-014：MemorySegment host 四级索引树与 vspace 双视图的 `REFINEMENT-DESIGN` 已定义，Rust `MODEL-TEST` 42 tests 通过；不代表真实 CR3/PTE refinement，W8 仅覆盖 unmap entry-page guard |
+| BLK-002 细化（本切片） | 2026-08-12 — MemorySegment host 四级索引树与双视图的 `REFINEMENT-DESIGN`，`MODEL-TEST` 检查 W6/W7 且仅覆盖 W8 的 unmap entry-page guard；未覆盖非叶权限、页表页物理身份、TLB、多核、真实 CR3/PTE 和原子更新窗口；`cargo test -p cosir` 42 tests 通过 |
 
 当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现；尚无机器证明、物理内存发现、页表与 trap 框架、POSIR Bootstrap 或兼容性测试证据。
 
@@ -58,7 +58,7 @@
 | TEST-003 | 高负载失败保护验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 固定 30 秒失败保护、不增加自动重试；23 个 host 单元测试通过，QEMU 11.0.50 两次 BIOS run 输出六条 PASS，整条验收耗时 17.156 秒 | S1-D1、S1-D2、S1-X1 |
 | SPEC-012 | 细化规范与可执行模型 | `COSIR 原语规范.md` §12.10、`cosir/` | 2026-08-07 | 定义 `exc_resume` 原语、x86_64 SretFrame 与 Faulted 细化态；`cargo test -p cosir` 12 tests 通过；`cargo xtask test` 六条 PASS | S0-D1、S0-D2 |
 | SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
-| SPEC-014 | MODEL-TEST + REFINEMENT-DESIGN | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | 定义 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cargo test -p cosir 42 tests 通过 | S0-D4 |
+| SPEC-014 | MODEL-TEST + REFINEMENT-DESIGN | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | host 四级索引树与 vspace 双视图设计；`MODEL-TEST` 检查 W6/W7，W8 仅有 unmap entry-page guard；未覆盖非叶权限、页表页物理身份、TLB、多核、真实 CR3/PTE 与原子更新窗口；`cargo test -p cosir` 42 tests 通过 | S0-D4 |
 
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
 
@@ -71,7 +71,13 @@
 | ISSUE-MEM-003 | α 未验证物理帧、offset 和 PTE 权限位 | REFINEMENT-DESIGN 不完整 | 阶段一 | 七项独立 mutation 均被拒绝 | Fixed |
 | ISSUE-MEM-004 | allocator 未实施严格有限集合语义 | MODEL-TEST 暴露缺口 | 阶段一 | 重复、外部帧、重复归还均显式失败 | Fixed |
 | ISSUE-MEM-005 | memseg_create 错误要求预存 Segment 映射权 | 与 POSIR §7.1 不一致 | 阶段一 | 删除 seg_cap_rights 参数 | Fixed |
-| ISSUE-MEM-006 | SPEC-014/PASS 可能被外推为真实页表细化 | MODEL-TEST + REFINEMENT-DESIGN | 阶段一 | 三份权威文档和 harness 文案一致 | Open |
+| ISSUE-MEM-006 | SPEC-014/PASS 可能被外推为真实页表细化 | MODEL-TEST + REFINEMENT-DESIGN | 阶段一 | 三份权威文档和 harness 文案一致 | Fixed |
+
+## 研究停止条件与下一垂直切片
+
+阶段一采用以下停止条件：若真实实现要求修改已冻结的 POSIR observable semantics、需要新增 OS/架构专属原语才能维持映射、`COMPAT-TEST` 出现不可接受且无法由既有机制表达的语义偏差，或真实页表/trap trace 无法建立到抽象迁移的可审查对应，则停止扩大实现并记录为 H1/H3 或细化分层的反例。`MODEL-TEST` 或 `REFINEMENT-DESIGN` 不能解除这些停止条件，也不能单独升级为 refinement 结论。
+
+下一垂直切片固定为：**COW/page fault → handler → `exc_resume` → TLB → Linux trace**。该切片必须先冻结 page-fault/COW 的 observable semantics，再以真实 trap、页表更新和 TLB 行为建立端到端 trace，最后与选定 Linux 行为形成 `COMPAT-TEST`；在该闭环完成前不横向扩大 MemorySegment、跨架构或异构实现范围。
 
 ## 当前阻塞项
 
