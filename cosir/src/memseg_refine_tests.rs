@@ -1,6 +1,6 @@
 use crate::memseg_refine::{
-    MemSegError, RefineState, SEG_DESTROY, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha,
-    memseg_alpha_verbose, memseg_create, memseg_destroy, memseg_map, memseg_unmap, spawn_task,
+    MemSegError, RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_alpha_verbose,
+    memseg_create, memseg_destroy, memseg_map, memseg_unmap, spawn_task,
 };
 use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 
@@ -20,7 +20,7 @@ fn state() -> RefineState {
 fn mapped_state(access: u8) -> RefineState {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights(), 1, ACCESS_R | ACCESS_W | ACCESS_X).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W | ACCESS_X).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),
@@ -123,7 +123,7 @@ fn alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic() {
 
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, TID, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights(), 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     memseg_map(&mut st, SEG_MAP_R, true, seg, TID, 0, VA, 1, ACCESS_R).unwrap();
 
     // 同步树和 vspace 的访问视图，并使 PTE writable 与 R|W 访问匹配：
@@ -141,7 +141,8 @@ fn alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic() {
     let mut diag = Vec::new();
     assert!(!memseg_alpha_verbose(&st, &mut diag));
     assert!(
-        diag.iter().any(|message| message.contains("task 7") && message.contains("0x50000000")),
+        diag.iter()
+            .any(|message| message.contains("task 7") && message.contains("0x50000000")),
         "allowed-subset diagnostic must identify task and virtual address: {diag:?}"
     );
 }
@@ -154,15 +155,16 @@ fn alpha_rejects_duplicate_free_frame() {
 }
 
 #[test]
+fn create_requires_no_preexisting_segment_authority() {
+    let mut st = state();
+    let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W).unwrap();
+    assert_eq!(st.segments[&seg].allowed_access, ACCESS_R | ACCESS_W);
+}
+
+#[test]
 fn create_allocates_frames_and_segment() {
     let mut st = RefineState::new(&universe()).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .expect("create ok");
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).expect("create ok");
     let s = st.segments.get(&seg).expect("segment present");
     assert_eq!(s.frames.len(), 2);
     assert_eq!(s.allowed_access, ACCESS_R | ACCESS_W);
@@ -172,7 +174,7 @@ fn create_allocates_frames_and_segment() {
 #[test]
 fn create_exhausts_memory_returns_no_memory() {
     let mut st = RefineState::new(&universe()).unwrap();
-    let err = memseg_create(&mut st, seg_map_rights(), 9, ACCESS_R).unwrap_err();
+    let err = memseg_create(&mut st, 9, ACCESS_R).unwrap_err();
     assert_eq!(err, MemSegError::NoMemory);
     assert_eq!(st.alloc.free.len(), 8, "缺帧不改空闲池");
 }
@@ -222,13 +224,7 @@ fn alpha_detects_vspace_view_divergence() {
 fn map_inserts_leaf_and_vspace() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),
@@ -254,13 +250,7 @@ fn map_inserts_leaf_and_vspace() {
 fn map_overlap_rejected_state_unchanged() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),
@@ -299,13 +289,7 @@ fn map_rights_exceeded_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     // 段只允许 R|W，却请求含 X → RightsExceeded
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        1,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W).unwrap();
     let err = memseg_map(
         &mut st,
         seg_map_rights(),
@@ -325,13 +309,7 @@ fn map_rights_exceeded_rejected() {
 fn map_missing_seg_map_right_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        1,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W).unwrap();
     // 缺 SEG_MAP 授权 → MissingMapRight
     let err = memseg_map(
         &mut st,
@@ -352,7 +330,7 @@ fn map_missing_seg_map_right_rejected() {
 fn map_out_of_bounds_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let err = memseg_map(
         &mut st,
         seg_map_rights(),
@@ -372,13 +350,7 @@ fn map_out_of_bounds_rejected() {
 fn unmap_clears_leaf_and_vspace() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),
@@ -411,13 +383,7 @@ fn unmap_entry_page_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     // entry 设在 0x5000_0000 所在页
     spawn_task(&mut st, 7, 0x5000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W | ACCESS_X,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W | ACCESS_X).unwrap();
     // 映射包含 entry 页
     memseg_map(
         &mut st,
@@ -455,7 +421,7 @@ fn unmap_not_mapped_rejected() {
 fn unmap_missing_task_vspace_right_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),
@@ -475,7 +441,7 @@ fn unmap_missing_task_vspace_right_rejected() {
 #[test]
 fn destroy_rejects_corrupt_allocator_atomically() {
     let mut st = state();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let frame = st.segments[&seg].frames[0];
     st.alloc.free.push(frame);
     let before = st.clone();
@@ -490,7 +456,7 @@ fn destroy_rejects_corrupt_allocator_atomically() {
 fn destroy_returns_frames_and_removes_segment() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
     let before = st.alloc.free.len(); // = 6
     memseg_destroy(&mut st, true, seg).expect("destroy ok");
     assert!(!st.segments.contains_key(&seg));
@@ -503,7 +469,7 @@ fn destroy_returns_frames_and_removes_segment() {
 fn destroy_still_mapped_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     // 映射进 task 7 → destroy 应拒绝
     memseg_map(
         &mut st,
@@ -525,7 +491,7 @@ fn destroy_still_mapped_rejected() {
 #[test]
 fn destroy_missing_right_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let err = memseg_destroy(&mut st, false, seg).unwrap_err();
     assert_eq!(err, MemSegError::MissingRight);
     assert!(st.segments.contains_key(&seg));
@@ -542,7 +508,7 @@ fn destroy_invalid_segment_rejected() {
 fn destroy_idempotent_double_frees_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     memseg_destroy(&mut st, true, seg).unwrap();
     // 再次 destroy → InvalidSegment（段已不在）
     let err = memseg_destroy(&mut st, true, seg).unwrap_err();
@@ -553,7 +519,7 @@ fn destroy_idempotent_double_frees_rejected() {
 fn map_rejects_range_crossing_canonical_boundary_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 2, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
     let before = st.clone();
     let err = memseg_map(
         &mut st,
@@ -575,7 +541,7 @@ fn map_rejects_range_crossing_canonical_boundary_atomically() {
 fn map_rejects_segment_range_overflow_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
     let err = memseg_map(
         &mut st,
@@ -599,7 +565,7 @@ fn create_rejects_exhausted_segment_id_atomically() {
     st.next_seg = SegId::MAX;
     let before = st.clone();
     assert_eq!(
-        memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R),
+        memseg_create(&mut st, 1, ACCESS_R),
         Err(MemSegError::SegmentIdExhausted)
     );
     assert_eq!(st, before);
@@ -609,7 +575,7 @@ fn create_rejects_exhausted_segment_id_atomically() {
 fn map_rejects_page_index_multiplication_overflow_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
     let err = memseg_map(
         &mut st,
@@ -631,7 +597,7 @@ fn map_rejects_page_index_multiplication_overflow_atomically() {
 fn map_rejects_page_address_addition_overflow_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 1, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
     let err = memseg_map(
         &mut st,
@@ -690,7 +656,7 @@ fn unmap_rejects_address_arithmetic_overflow_atomically() {
 fn unmap_later_unmapped_page_leaves_refine_state_unchanged() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, SEG_MAP_R, 2, ACCESS_R).unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
     memseg_map(
         &mut st,
         SEG_MAP_R,
@@ -713,13 +679,7 @@ fn unmap_later_unmapped_page_leaves_refine_state_unchanged() {
 fn full_memseg_lifecycle_alpha_preserved() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(
-        &mut st,
-        seg_map_rights() | SEG_DESTROY,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
+    let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
     memseg_map(
         &mut st,
         seg_map_rights(),

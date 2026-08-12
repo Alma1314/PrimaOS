@@ -89,7 +89,6 @@ pub fn spawn_task(st: &mut RefineState, id: TaskId, entry: VirtAddr) -> Result<(
 /// 帧分配(W6) + 建 Segment + 铸造根 SegCap（本层返回 seg id）。
 pub fn memseg_create(
     st: &mut RefineState,
-    seg_cap_rights: u8,
     page_count: u64,
     allowed_access: u8,
 ) -> Result<SegId, MemSegError> {
@@ -98,10 +97,6 @@ pub fn memseg_create(
     }
     if allowed_access == 0 || allowed_access & !0x07 != 0 {
         return Err(MemSegError::InvalidAccess);
-    }
-    // 授权：需含 Seg 映射权限（R/W/X 任一）才可创建用户可见 segment
-    if seg_cap_rights & 0x07 == 0 {
-        return Err(MemSegError::MissingMapRight);
     }
     let page_count = usize::try_from(page_count).map_err(|_| MemSegError::ArithmeticOverflow)?;
     let next_seg = st

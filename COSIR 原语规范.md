@@ -529,7 +529,7 @@ memseg_create(page_count, allowed_access) -> CapId
 
 1. 从 `free_frames` 选择并移除恰好 `page_count` 个页帧；抽象状态把这些页视为已清零，不保留其前一归属的字节信息；
 2. 创建 Segment；
-3. 铸造一个根 Segment Capability，由调用者持有；
+3. 铸造一个根 Segment Capability，作为成功结果返回并由调用者持有；该根 Capability 不是创建前置条件；
 4. 根权限为 `Derive | SegDestroy`，并按 `allowed_access` 加入 `SegMapR/W/X`；
 5. 追加对象创建、页帧分配和 Capability 铸造事件。
 
@@ -2167,7 +2167,7 @@ abstract : MachineState → POSIRState
 
 | POSIR 抽象（§7） | x86_64 细化 |
 |---|---|
-| `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment，铸造根 SegCap；不建树 |
+| `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment，铸造并返回根 SegCap（成功结果，非创建前置 Capability）；不建树 |
 | `memseg_map` | 前置校验后遍历树到底插入叶 `Pte{frame_phys, mapping}`，同步 vspace 视图（W7） |
 | `memseg_unmap` | 前置校验（含 W8 不卸 entry 页）后清叶、回收空表结点、同步 vspace |
 | `memseg_destroy` | 前置校验（无活动 vspace 引用，StillMapped）后删 Segment，归还帧（W6） |
