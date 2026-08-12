@@ -41,8 +41,8 @@
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
 | exc_resume（本切片） | 2026-08-07 — 定义异常恢复原语 `exc_resume`、x86_64 SretFrame 帧布局（细化层定义）、Faulted 细化态与错误码；新增 §12.10，标注细化要求 #16 与边界清单 #1/#2 |
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
-| 最近细化证据 | 见 SPEC-012：exc_resume 原语与 Faulted 细化态（COSIR §12.10）定义完成，Rust 可执行状态模型探针 12 测试通过 |
-| BLK-002 细化（本切片） | 2026-08-07 — 定义 x86_64 MachineState（交接点起）、抽象函数 α 与 Bootstrap 细化对应；cosir 新增 machine/abstract_ops 模块；规范新增 §20；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS |
+| 最近细化证据 | 见 SPEC-014：MemorySegment 四级页表↔vspace 细化（COSIR §20.5）定义完成，Rust 可执行状态模型探针 42 tests 通过 |
+| BLK-002 细化（本切片） | 2026-08-12 — 覆盖 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cosir 新增 pagewalk/memseg_refine 模块；规范新增 §20.5；`cargo test -p cosir` 42 tests 通过；`cargo xtask test` 六条 PASS |
 
 当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现；尚无机器证明、物理内存发现、页表与 trap 框架、POSIR Bootstrap 或兼容性测试证据。
 
@@ -58,6 +58,7 @@
 | TEST-003 | 高负载失败保护验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 固定 30 秒失败保护、不增加自动重试；23 个 host 单元测试通过，QEMU 11.0.50 两次 BIOS run 输出六条 PASS，整条验收耗时 17.156 秒 | S1-D1、S1-D2、S1-X1 |
 | SPEC-012 | 细化规范与可执行模型 | `COSIR 原语规范.md` §12.10、`cosir/` | 2026-08-07 | 定义 `exc_resume` 原语、x86_64 SretFrame 与 Faulted 细化态；`cargo test -p cosir` 12 tests 通过；`cargo xtask test` 六条 PASS | S0-D1、S0-D2 |
 | SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
+| SPEC-014 | 细化规范与可执行模型 | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | 定义 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cargo test -p cosir 42 tests 通过；cargo xtask test 六条 PASS | S0-D4 |
 
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
 
@@ -66,7 +67,7 @@
 | ID | 阶段 | 问题 | 解除条件 | 状态 |
 |---|---|---|---|---|
 | BLK-001 | 0 | 尚未选择并建立形式化模型工件 | 明确工具、入口文件和可执行状态迁移 | Open |
-| BLK-002 | 0 | x86_64 → POSIR 细化草案已定义（MachineState、抽象函数、Bootstrap 对应），待真实 kernel 对照与全原语覆盖 | 定义 MachineState、抽象函数和至少 Bootstrap 的对应关系 | 草案已成 |
+| BLK-002 | 0 | 草案已放宽——已覆盖 MemorySegment 页表↔vspace 细化 | 定义 MachineState、抽象函数和至少 Bootstrap（及 MemorySegment）细化对应 | 草案已成 |
 
 ## 决策日志
 

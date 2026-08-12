@@ -795,14 +795,14 @@ Node 对象的 `KernelState` 字段：`nodes: NodeId ⇀ Node`，`next_node: Nod
 
 **计算介质的执行语义差异：**
 
-| | CPU Task | GPU Task | NPU Task | FPGA Task |
-|---|---|---|---|---|
-| vspace | MMU 页表（VirtPage → PageMapping） | 空 | 空 | 空 |
-| entry 含义 | 虚拟地址 | CUDA kernel 指针 / OpenCL kernel 句柄 | 模型文件路径 + 入口函数名 | 位流 ID + 入口信号 |
-| 内存池 | `frame_universe`（通用内存） | `gpu_frame_universe[CUDA]`（显存） | `gpu_frame_universe[NPUArch]` | `gpu_frame_universe[FPGA]` |
-| Running 语义 | CPU 核执行指令流 | GPU 流上 kernel 正在执行 | NPU 推理引擎活跃 | FPGA 电路正在运行 |
-| 阻塞类型 | BlockedRecv | 不支持 `recv`（GPU 不能独立发起 recv） | 同 GPU | 同 GPU |
-| Capability 持有 | 全面 | 仅 `initial_caps` 注入的 SegCap | 同 GPU | 同 GPU |
+|               | CPU Task                       | GPU Task                          | NPU Task                      | FPGA Task                  |
+| ------------- | ------------------------------ | --------------------------------- | ----------------------------- | -------------------------- |
+| vspace        | MMU 页表（VirtPage → PageMapping） | 空                                 | 空                             | 空                          |
+| entry 含义      | 虚拟地址                           | CUDA kernel 指针 / OpenCL kernel 句柄 | 模型文件路径 + 入口函数名                | 位流 ID + 入口信号               |
+| 内存池           | `frame_universe`（通用内存）         | `gpu_frame_universe[CUDA]`（显存）    | `gpu_frame_universe[NPUArch]` | `gpu_frame_universe[FPGA]` |
+| Running 语义    | CPU 核执行指令流                     | GPU 流上 kernel 正在执行                | NPU 推理引擎活跃                    | FPGA 电路正在运行                |
+| 阻塞类型          | BlockedRecv                    | 不支持 `recv`（GPU 不能独立发起 recv）       | 同 GPU                         | 同 GPU                      |
+| Capability 持有 | 全面                             | 仅 `initial_caps` 注入的 SegCap       | 同 GPU                         | 同 GPU                      |
 
 **GPU 内存操作：**
 
@@ -2148,3 +2148,32 @@ abstract : MachineState → POSIRState
 
 本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
 
+### 20.5 MemorySegment 页表 ↔ vspace 细化
+
+本小节为细化层展开：把 MemorySegment 的 CR3/四级页表↔vspace 对应显式化（对应 §18.0 边界清单 #5/#6）。不新增对 POSIR 可见的一等原语；四级页表机制（`pagewalk`）与细化迁移（`memseg_refine`）均为细化层探针实现，为阶段 1 页表/trap（S1-D4）与 vspace 管理（S2）提供蓝本。
+
+**四级页表结构（仅 4KB，四级固定走到底）。** 每 CPU Task 一棵 CR3 树：PML4 → PDPT → PD → PT（每级 512 槽）→ 4KB 叶。叶访问权限按下表编码：
+
+| POSIR Access | real x86_64 位 |
+|---|---|
+| R | present（真实只读由 writable=0 表达） |
+| W | writable（bit1） |
+| X | !nx（可执行 = NX 位清零） |
+| 用户态可达 | user（bit2） |
+
+**叶 PTE 双字段。** 叶同时携带物理地址视图与 POSIR 引用视图：`Pte{frame_phys, mapping}`。`mapping = SegmentRef{segment, offset, access}` 是 §5.2 `PageMapping` 的细化层忠实表达。`state` 简化 `vspace`（exc_resume 探针的 `(VirtAddr, u8)` tuple）与本切片无关。
+
+**四操作细化对应。**
+
+| POSIR 抽象（§7） | x86_64 细化 |
+|---|---|
+| `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment，铸造根 SegCap；不建树 |
+| `memseg_map` | 前置校验后遍历树到底插入叶 `Pte{frame_phys, mapping}`，同步 vspace 视图（W7） |
+| `memseg_unmap` | 前置校验（含 W8 不卸 entry 页）后清叶、回收空表结点、同步 vspace |
+| `memseg_destroy` | 前置校验（无活动 vspace 引用，StillMapped）后删 Segment，归还帧（W6） |
+
+**不变量承接。** W6（物理页唯一归属：活动 segment 帧两两不交、与 free_frames 不交、并集 = frame_universe）由帧分配器与 α 验证；W7（虚拟映射有效：vspace 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）由 α 投影 `memseg_alpha` 验证；W8（可执行入口显式授权）由 `memseg_unmap` 拒绝卸 entry 页保障。
+
+**错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的"路径深表缺失"等机制内部状态折叠为对应 POSIR 错误，不外泄新错误原语。
+
+**未覆盖（留后续切片）。** 大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地。
