@@ -202,3 +202,73 @@ fn unmap_missing_task_vspace_right_rejected() {
     let err = memseg_unmap(&mut st, false, 7, 0x5000_0000, 1).unwrap_err();
     assert_eq!(err, MemSegError::MissingRight);
 }
+
+#[test]
+fn destroy_returns_frames_and_removes_segment() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R).unwrap();
+    let before = st.alloc.free.len(); // = 6
+    memseg_destroy(&mut st, true, seg).expect("destroy ok");
+    assert!(!st.segments.contains_key(&seg));
+    assert_eq!(st.alloc.free.len(), before + 2, "两帧归还");
+    let mut diag = Vec::new();
+    assert!(memseg_alpha_verbose(&st, &mut diag), "destroy 后仍 W6 有效");
+}
+
+#[test]
+fn destroy_still_mapped_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    // 映射进 task 7 → destroy 应拒绝
+    memseg_map(&mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
+    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    assert_eq!(err, MemSegError::StillMapped);
+    assert!(st.segments.contains_key(&seg), "段不删除");
+}
+
+#[test]
+fn destroy_missing_right_rejected() {
+    let mut st = RefineState::new(&universe());
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    let err = memseg_destroy(&mut st, false, seg).unwrap_err();
+    assert_eq!(err, MemSegError::MissingRight);
+    assert!(st.segments.contains_key(&seg));
+}
+
+#[test]
+fn destroy_invalid_segment_rejected() {
+    let mut st = RefineState::new(&universe());
+    let err = memseg_destroy(&mut st, true, 999).unwrap_err();
+    assert_eq!(err, MemSegError::InvalidSegment);
+}
+
+#[test]
+fn destroy_idempotent_double_frees_rejected() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 1, ACCESS_R).unwrap();
+    memseg_destroy(&mut st, true, seg).unwrap();
+    // 再次 destroy → InvalidSegment（段已不在）
+    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    assert_eq!(err, MemSegError::InvalidSegment);
+}
+
+#[test]
+fn full_memseg_lifecycle_alpha_preserved() {
+    let mut st = RefineState::new(&universe());
+    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
+    let seg = memseg_create(&mut st, seg_map_rights() | SEG_DESTROY, 2, ACCESS_R | ACCESS_W).unwrap();
+    memseg_map(&mut st, seg_map_rights(), true, seg, 7, 0, 0x5000_0000, 2, ACCESS_R | ACCESS_W).unwrap();
+    memseg_unmap(&mut st, true, 7, 0x5000_0000, 1).unwrap(); // 释放第一页(0x5000_0000)
+    // 剩余一页(0x5000_1000)映射仍引用段 → 不可 destroy
+    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    assert_eq!(err, MemSegError::StillMapped);
+    memseg_unmap(&mut st, true, 7, 0x5000_1000, 1).unwrap(); // 释放最后一页(0x5000_1000)
+    memseg_destroy(&mut st, true, seg).expect("destroy ok after unmaps");
+    assert!(!st.segments.contains_key(&seg));
+    assert_eq!(st.alloc.free.len(), 8, "全部帧归还");
+    let mut diag = Vec::new();
+    assert!(memseg_alpha_verbose(&st, &mut diag), "完整生命周期后 α 恒真");
+}

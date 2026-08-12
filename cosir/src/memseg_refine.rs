@@ -301,5 +301,22 @@ pub fn memseg_destroy(
     seg_destroy_right: bool,
     seg_id: SegId,
 ) -> Result<(), MemSegError> {
-    todo!("Task 6");
+    if !seg_destroy_right {
+        return Err(MemSegError::MissingRight);
+    }
+    let seg = st.segments.get(&seg_id).ok_or(MemSegError::InvalidSegment)?;
+    let frames = seg.frames.clone();
+    // StillMapped：任何活动 Task 的 vspace 都不能引用 target
+    for tc in st.tasks.values() {
+        for sref in tc.vspace.values() {
+            if sref.segment == seg_id {
+                return Err(MemSegError::StillMapped);
+            }
+        }
+    }
+    st.segments.remove(&seg_id);
+    for f in frames {
+        st.alloc.free_frame(f);
+    }
+    Ok(())
 }
