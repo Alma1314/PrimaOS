@@ -58,9 +58,20 @@
 | TEST-003 | 高负载失败保护验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 固定 30 秒失败保护、不增加自动重试；23 个 host 单元测试通过，QEMU 11.0.50 两次 BIOS run 输出六条 PASS，整条验收耗时 17.156 秒 | S1-D1、S1-D2、S1-X1 |
 | SPEC-012 | 细化规范与可执行模型 | `COSIR 原语规范.md` §12.10、`cosir/` | 2026-08-07 | 定义 `exc_resume` 原语、x86_64 SretFrame 与 Faulted 细化态；`cargo test -p cosir` 12 tests 通过；`cargo xtask test` 六条 PASS | S0-D1、S0-D2 |
 | SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
-| SPEC-014 | 细化规范与可执行模型 | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | 定义 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cargo test -p cosir 42 tests 通过；cargo xtask test 六条 PASS | S0-D4 |
+| SPEC-014 | MODEL-TEST + REFINEMENT-DESIGN | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | 定义 MemorySegment 四级页表↔vspace 细化（页表位编码、四操作树映射、W6/W7/W8 α 验证）；cargo test -p cosir 42 tests 通过 | S0-D4 |
 
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
+
+## 已知问题与纠偏计划
+
+| ISSUE ID | 问题与影响 | 当前证据 | 修复阶段 | 可执行验收条件 | 状态 |
+|---|---|---|---|---|---|
+| ISSUE-MEM-001 | pagewalk 接受未对齐/非 canonical 地址，high-half 投影缺少符号扩展 | MODEL-TEST 暴露缺口 | 阶段一 | 地址别名、对齐、高低半测试通过 | Open |
+| ISSUE-MEM-002 | 地址、页数、offset、usize 转换和 SegId 递增可能溢出 | MODEL-TEST 暴露缺口 | 阶段一 | 每个溢出返回稳定错误且状态不变 | Open |
+| ISSUE-MEM-003 | α 未验证物理帧、offset 和 PTE 权限位 | REFINEMENT-DESIGN 不完整 | 阶段一 | 七项独立 mutation 均被拒绝 | Open |
+| ISSUE-MEM-004 | allocator 未实施严格有限集合语义 | MODEL-TEST 暴露缺口 | 阶段一 | 重复、外部帧、重复归还均显式失败 | Open |
+| ISSUE-MEM-005 | memseg_create 错误要求预存 Segment 映射权 | 与 POSIR §7.1 不一致 | 阶段一 | 删除 seg_cap_rights 参数 | Open |
+| ISSUE-MEM-006 | SPEC-014/PASS 可能被外推为真实页表细化 | MODEL-TEST + REFINEMENT-DESIGN | 阶段一 | 三份权威文档和 harness 文案一致 | Open |
 
 ## 当前阻塞项
 
