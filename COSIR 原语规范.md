@@ -2148,24 +2148,24 @@ abstract : MachineState → POSIRState
 
 本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
 
-### 20.5 MemorySegment 页表 ↔ vspace 细化
+### 20.5 MemorySegment host 四级索引树 ↔ vspace refinement design
 
-本小节为细化层展开：把 MemorySegment 的 CR3/四级页表↔vspace 对应显式化（对应 §18.0 边界清单 #5/#6）。不新增对 POSIR 可见的一等原语；四级页表机制（`pagewalk`）与细化迁移（`memseg_refine`）均为细化层探针实现，为阶段 1 页表/trap（S1-D4）与 vspace 管理（S2）提供蓝本。
+本小节给出细化层设计：把 MemorySegment 的 host 四级索引树与 vspace 的对应关系显式化（对应 §18.0 边界清单 #5/#6）。不新增对 POSIR 可见的一等原语；`pagewalk` 与 `memseg_refine` 是 host 可执行模型中的 `REFINEMENT-DESIGN` 探针，为阶段 1 页表/trap（S1-D4）与 vspace 管理（S2）提供候选蓝本，不是真实 x86_64 CR3 页表实现。
 
-**四级页表结构（仅 4KB，四级固定走到底）。** 每 CPU Task 一棵 CR3 树：PML4 → PDPT → PD → PT（每级 512 槽）→ 4KB 叶。叶访问权限按下表编码：
+**host 四级索引树（仅 4KB，四级固定走到底）。** 每 CPU Task 在 host 模型中持有一棵四级、每级 512 槽的索引树，最终指向 4KB 叶。层级形状和叶权限字段借鉴 x86_64，但既不表示真实 CR3，也不编码真实页表页或 PTE。候选字段对应如下：
 
-| POSIR Access | real x86_64 位 |
+| POSIR Access | x86_64-inspired candidate encoding |
 |---|---|
-| R | present（真实只读由 writable=0 表达） |
-| W | writable（bit1） |
-| X | !nx（可执行 = NX 位清零） |
-| 用户态可达 | user（bit2） |
+| R | `present`（候选只读由 `writable=false` 表达） |
+| W | `writable` |
+| X | `!nx` |
+| 用户态可达 | `user` |
 
-**叶 PTE 双字段。** 叶同时携带物理地址视图与 POSIR 引用视图：`Pte{frame_phys, mapping}`。`mapping = SegmentRef{segment, offset, access}` 是 §5.2 `PageMapping` 的细化层忠实表达。`state` 简化 `vspace`（exc_resume 探针的 `(VirtAddr, u8)` tuple）与本切片无关。
+**host 叶双视图。** 模型叶 `Pte{frame_phys, mapping}` 是为检查物理地址视图与 POSIR 引用视图一致性而定义的 host 记录；`Pte` 名称及 `present`/`writable`/`nx`/`user` 字段只是 x86_64-inspired candidate encoding，不是真实 CR3/PTE 或其位级布局。`mapping = SegmentRef{segment, offset, access}` 是 §5.2 `PageMapping` 的模型视图。`state` 简化 `vspace`（exc_resume 探针的 `(VirtAddr, u8)` tuple）与本切片无关。
 
-**四操作细化对应。**
+**四操作候选细化对应。**
 
-| POSIR 抽象（§7） | x86_64 细化 |
+| POSIR 抽象（§7） | host refinement design |
 |---|---|
 | `memseg_create` | 从 `free_frames` 取 `page_count` 帧（W6），建 Segment，铸造并返回根 SegCap（成功结果，非创建前置 Capability）；不建树 |
 | `memseg_map` | 前置校验后遍历树到底插入叶 `Pte{frame_phys, mapping}`，同步 vspace 视图（W7） |
