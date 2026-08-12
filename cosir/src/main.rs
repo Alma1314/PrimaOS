@@ -1,9 +1,12 @@
 mod abstract_ops;
 mod machine;
+mod memseg_refine;
 mod ops;
 mod pagewalk;
 mod state;
 
+#[cfg(test)]
+mod memseg_refine_tests;
 #[cfg(test)]
 mod pagewalk_tests;
 
