@@ -672,27 +672,38 @@ mod tests {
 
     #[test]
     fn exc_resume_consumes_frame_and_commits_resume_atomically() {
-        const OFFSET: usize = 16;
-        const SENTINEL: u8 = 0xa5;
+        const OFFSET: usize = 32;
+        const PREFIX: [u8; OFFSET] = [
+            0x13, 0x57, 0x9b, 0xdf, 0x24, 0x68, 0xac, 0xe0, 0x35, 0x79, 0xbd, 0xf1, 0x46, 0x8a,
+            0xce, 0x02, 0x58, 0x94, 0xd0, 0x1c, 0x63, 0xa7, 0xeb, 0x2f, 0x74, 0xb8, 0xfc, 0x40,
+            0x85, 0xc9, 0x0d, 0x51,
+        ];
+        const SUFFIX: [u8; 16] = [
+            0xa5, 0x3c, 0xd2, 0x69, 0x0f, 0xb4, 0x5a, 0xe1, 0x87, 0x2d, 0xc3, 0x78, 0x1e, 0x96,
+            0x4b, 0xf0,
+        ];
         let frame = resume_frame();
         let mut st = faulted_state_with_frame_at(OFFSET, frame);
-        st.segments.get_mut(&FRAME_SEG).unwrap().bytes[OFFSET - 1] = SENTINEL;
-        st.segments.get_mut(&FRAME_SEG).unwrap().bytes[OFFSET + state::SRET_FRAME_LEN] = SENTINEL;
+        let frame_end = OFFSET + state::SRET_FRAME_LEN;
+        let bytes = &mut st.segments.get_mut(&FRAME_SEG).unwrap().bytes;
+        bytes[..OFFSET].copy_from_slice(&PREFIX);
+        bytes.extend_from_slice(&SUFFIX);
+        let before = bytes.clone();
 
         exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, OFFSET).unwrap();
 
         assert_eq!(st.tasks[&CALLER].status, TaskStatus::Ready);
         assert!(!st.pending_exc.contains_key(&CALLER));
         assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
+        assert_eq!(st.segments[&FRAME_SEG].bytes[..OFFSET], before[..OFFSET]);
         assert!(
-            st.segments[&FRAME_SEG].bytes[OFFSET..OFFSET + state::SRET_FRAME_LEN]
+            st.segments[&FRAME_SEG].bytes[OFFSET..frame_end]
                 .iter()
                 .all(|byte| *byte == 0)
         );
-        assert_eq!(st.segments[&FRAME_SEG].bytes[OFFSET - 1], SENTINEL);
         assert_eq!(
-            st.segments[&FRAME_SEG].bytes[OFFSET + state::SRET_FRAME_LEN],
-            SENTINEL
+            st.segments[&FRAME_SEG].bytes[frame_end..],
+            before[frame_end..]
         );
         assert_eq!(
             st.audit,
