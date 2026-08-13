@@ -43,13 +43,13 @@ exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 
 错误域为 `InvalidExcSource`、`MissingRight`、`NotSubscribed`、`InvalidFrameAddr`、`InvalidFrame`、`NoPendingException`、`UnrecoverableFault`。任一失败都保持完整 State 不变，包括 Task、pending exception、capabilities、subscriptions、Segment bytes、kernel frame 和 Audit log。
 
-### 2.3 严格成功提交顺序
+### 2.3 成功提交顺序
 
 全部验证成功后，按固定顺序原子提交：
 
 ```text
-clear consumed Segment frame bytes
-→ clear pending exception
+fill consumed Segment frame bytes with 0
+→ remove pending exception
 → save validated kernel resume frame
 → append TaskResumed Audit event
 → Faulted → Ready
@@ -85,7 +85,7 @@ struct SretFrame align 16, size 0xA0 (160)
   0x98  ss:     u64
 ```
 
-内核从 Segment bytes 解码并验证完整帧。成功时将帧复制到内核持有的 `kernel_resume_frame`，随后清零 Segment 中已消费的 `0xA0` 字节；失败时两者均不改变。
+内核从 Segment bytes 解码并验证完整帧。成功提交先将 Segment 中已消费的 `0xA0` 字节 `fill(0)`，再移除 pending exception、保存帧至内核持有的 `kernel_resume_frame`、追加 Audit 并置为 `Ready`；失败时两者均不改变。源码审查确认该实现顺序。
 
 ## 4. 状态模型工件
 
@@ -94,10 +94,10 @@ host Rust 模型位于：
 ```text
 cosir/src/state.rs  // Capability、subscription、Segment bytes、SretFrame、pending/kernel frame、Audit
 cosir/src/ops.rs    // raise_exception、exc_resume、schedule 状态迁移
-cosir/src/tests.rs  // host MODEL-TEST
+cosir/src/main.rs   // host MODEL-TEST（含 #[cfg(test)] 测试）
 ```
 
-模型检查授权 mutation、wire format、RIP/RSP/CS/SS/RFLAGS 验证、不可恢复异常、重复消费、严格成功提交和失败完整 State 原子性。它只证明该 host 模型在这些输入上的行为，不证明真实 kernel/trap 返回，也不解除 BLK-001。
+`MODEL-TEST` 检查最终状态、精确的已消费 frame region、失败完整 State 原子性、二次消费与 Audit。它不直接观察内部 mutation 时序；该顺序由 `cosir/src/ops.rs` 的源码审查确认。它只证明该 host 模型在这些输入上的行为，不证明真实 kernel/trap 返回，也不解除 BLK-001。
 
 ## 5. 层归属
 

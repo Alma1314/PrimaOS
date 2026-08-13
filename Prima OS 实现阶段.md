@@ -56,7 +56,7 @@
 | TEST-001 | QEMU 集成测试 | `cargo xtask test` | 2026-08-05 | QEMU 11.0.50；固定 BIOS profile 连续启动两次，结构化串口序列和退出码均通过 | S1-D1、S1-D2、S1-X1 |
 | TEST-002 | 最终审查加固验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 23 个 host 单元测试通过；严格 LF/CRLF、reader 启动失败 cleanup 与 UART TEMT drain 加固后，QEMU 11.0.50 固定 BIOS profile 连续启动两次并输出六条稳定 PASS 摘要 | S1-D1、S1-D2、S1-X1 |
 | TEST-003 | 高负载失败保护验收 | `cargo test -p xtask`、`cargo xtask test` | 2026-08-06 | 固定 30 秒失败保护、不增加自动重试；23 个 host 单元测试通过，QEMU 11.0.50 两次 BIOS run 输出六条 PASS，整条验收耗时 17.156 秒 | S1-D1、S1-D2、S1-X1 |
-| SPEC-012 | MODEL-TEST | `COSIR 原语规范.md` §12.9/§12.10、`cosir/src/state.rs`、`cosir/src/ops.rs`、`cosir/src/tests.rs` | 2026-08-13 | host 模型检查 `exc_resume` Capability/订阅授权、`0xA0` little-endian 帧、RIP/RSP/CS/SS/RFLAGS、pending/source/kind、不可恢复异常、严格提交顺序与失败完整 State 原子性；不代表真实 trap/`iretq`、`KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S0-D1、S0-D2 |
+| SPEC-012 | MODEL-TEST + 源码审查 | `COSIR 原语规范.md` §12.9/§12.10、`cosir/src/main.rs`、`cosir/src/state.rs`、`cosir/src/ops.rs` | 2026-08-13 | `MODEL-TEST` 检查 `exc_resume` Capability/订阅授权、`0xA0` little-endian 帧、RIP/RSP/CS/SS/RFLAGS、pending/source/kind、不可恢复异常、最终状态、精确已消费 region、失败完整 State 原子性、二次消费与 Audit；不直接观察内部 mutation 时序。源码审查确认实现顺序为 frame bytes `fill(0)` → pending remove → kernel frame → Audit → Ready；不代表真实 trap/`iretq`、`KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S0-D1、S0-D2 |
 | SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
 | SPEC-014 | MODEL-TEST + REFINEMENT-DESIGN | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | host 四级索引树与 vspace 双视图设计；`MODEL-TEST` 检查 W6/W7，W8 仅有 unmap entry-page guard；未覆盖非叶权限、页表页物理身份、TLB、多核、真实 CR3/PTE 与原子更新窗口；`cargo test -p cosir` 42 tests 通过 | S0-D4 |
 | TEST-004 | 阶段一命令验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo test --workspace`、`cargo xtask test` | 2026-08-13 | 在 `60a61bd0e01d568541c43edf557ac12b341e0a1f`，cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29) 上全部退出码 0：fmt 无差异；cosir 69/69；workspace cosir 69/69 + xtask 23/23（92/92）；clippy 无 warnings；QEMU BIOS run=1/2 输出六条 PASS。直接支持 host `MODEL-TEST`、lint 与既有 QEMU 启动闭环无回归；不支持真实 CR3/PTE 细化、非叶权限/页表页物理身份、TLB、多核、真实硬件原子更新窗口、机器证明或阶段一退出条件已满足。 | S0-D4、S1-D1、S1-D2、S1-X1 |
@@ -75,8 +75,8 @@
 | ISSUE-MEM-006 | SPEC-014/PASS 可能被外推为真实页表细化 | MODEL-TEST + REFINEMENT-DESIGN | 阶段一 | 三份权威文档和 harness 文案一致 | Fixed |
 | ISSUE-EXC-001 | exc_resume 未检查 Capability、持有者、活跃状态和订阅 | MODEL-TEST 缺口 | 阶段二 | 每项授权 mutation 原子失败 | Fixed |
 | ISSUE-EXC-002 | 恢复帧没有实际字节编码，RIP/RSP/CS/SS/RFLAGS 未完整验证 | MODEL-TEST 缺口 | 阶段二 | wire-format 与字段 mutation tests 通过 | Fixed |
-| ISSUE-EXC-003 | 成功恢复未清零用户帧、保存 kernel frame 或追加 Audit | MODEL-TEST 缺口 | 阶段二 | 成功提交顺序和重复消费测试通过 | Fixed |
-| ISSUE-EXC-004 | §12.9/§12.10、旧设计与实现接口矛盾 | 三份文档已与三参数接口、`0xA0` 帧及当前 host 模型一致 | 阶段二 | 三份文档与最终接口一致 | Fixed |
+| ISSUE-EXC-003 | 成功恢复未清零用户帧、保存 kernel frame 或追加 Audit | MODEL-TEST 缺口 | 阶段二 | `MODEL-TEST` 的最终状态、精确 consumed region、二次消费与 Audit 检查通过；源码审查确认提交顺序 | Fixed |
+| ISSUE-EXC-004 | §12.9/§12.10、旧设计与实现接口矛盾 | 历史设计、规范与 tracker 已与三参数接口、`0xA0` 帧、实现提交顺序及 host 模型证据边界一致 | 阶段二 | 三份文档与最终接口、源码审查的提交顺序及 MODEL-TEST 范围一致 | Fixed |
 
 ## 研究停止条件与下一垂直切片
 
