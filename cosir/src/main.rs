@@ -583,6 +583,17 @@ mod tests {
     }
 
     #[test]
+    fn exc_resume_accepts_each_variable_allowed_user_rflags_bit() {
+        for variable_allowed_bit in [0, 2, 4, 6, 7, 8, 9, 10, 11, 18, 21] {
+            let mut st = resumable_state();
+            let mut frame = resume_frame();
+            frame.rflags = (1 << 1) | (1 << variable_allowed_bit);
+            replace_frame(&mut st, frame);
+            resume_ok(&mut st);
+        }
+    }
+
+    #[test]
     fn exc_resume_pending_source_kind_and_status_mutations_are_atomic() {
         let mut source = resumable_state();
         source.pending_exc.get_mut(&CALLER).unwrap().source_id = SOURCE + 1;
