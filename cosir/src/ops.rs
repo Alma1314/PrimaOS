@@ -1,18 +1,17 @@
 use crate::state::{
-    ACCESS_X, ExcSourceId, ExceptionKind, PendingException, SRET_FRAME_LEN, SegId, SretFrame,
-    State, TaskId, TaskStatus, VirtAddr,
+    CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapId, CapObject, ExcSourceId, ExceptionKind,
+    PendingException, SRET_FRAME_LEN, SretFrame, State, TaskId, TaskStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // MissingWrite / NotSubscribed 属 §12.10 错误域的保留变体，本探针不触发
 pub enum ResumeError {
+    InvalidExcSource,
+    MissingRight,
+    NotSubscribed,
+    InvalidFrameAddr,
+    InvalidFrame,
     NoPendingException,
     UnrecoverableFault,
-    InvalidFrameAddr,
-    NotExecutable,
-    MissingWrite,
-    InvalidExcSource,
-    NotSubscribed,
 }
 
 /// 异常发生：Running -> Faulted，并保存现场帧。
@@ -46,30 +45,55 @@ pub fn raise_exception(
     );
 }
 
-/// 恢复异常帧：Faulted -> Ready。
+/// 通过异常源与帧段 Capability 授权恢复：Faulted -> Ready。
 ///
-/// 语义（§12.10）：仅当 caller 有未恢复的异常帧、且源匹配、且 kind 可恢复时成功。
-/// 帧边界（前置 #5）与 resume_vaddr 可执行性（前置 #6）均从模型实数据推导，而非
-/// 调用者供应 bool：帧段不存在 / 越界 / 未对齐 → `InvalidFrameAddr`；
-/// resume_vaddr 不在 caller vspace 可执行映射上 → `NotExecutable`。
-/// 不可恢复异常（如 DoubleFault）→ `UnrecoverableFault` 且**不销毁 Task**（保持 Faulted）。
+/// 本阶段只建立 source cap → source object → subscription → frame cap → Segment
+/// 的纯授权检查；解码帧的完整验证与最终提交语义由后续任务细化。
 pub fn exc_resume(
     st: &mut State,
     caller: TaskId,
-    source_id: ExcSourceId,
-    frame_seg_id: SegId,
+    exc_source_cap: CapId,
+    sret_frame_seg_cap: CapId,
     frame_offset: usize,
-    resume_vaddr: VirtAddr,
 ) -> Result<(), ResumeError> {
-    // (1) 源存在性校验
+    let source_cap = st
+        .capabilities
+        .get(&exc_source_cap)
+        .filter(|cap| cap.active && cap.owner == caller)
+        .ok_or(ResumeError::InvalidExcSource)?;
+    let source_id = match source_cap.object {
+        CapObject::ExceptionSource(source_id) => source_id,
+        CapObject::Segment(_) => return Err(ResumeError::InvalidExcSource),
+    };
+    if source_cap.rights & CAP_EXC_SUBSCRIBE == 0 {
+        return Err(ResumeError::MissingRight);
+    }
     if !st.exc_sources.contains_key(&source_id) {
         return Err(ResumeError::InvalidExcSource);
     }
-    // (2) 帧段边界（前置 #5）：段存在、frame_offset 帧长(0x88)整数倍对齐、帧完全落在段内
+    if !st.subscriptions.contains(&(caller, source_id)) {
+        return Err(ResumeError::NotSubscribed);
+    }
+
+    let frame_cap = st
+        .capabilities
+        .get(&sret_frame_seg_cap)
+        .filter(|cap| cap.active && cap.owner == caller)
+        .ok_or(ResumeError::InvalidFrameAddr)?;
+    let frame_seg_id = match frame_cap.object {
+        CapObject::Segment(seg_id) => seg_id,
+        CapObject::ExceptionSource(_) => return Err(ResumeError::InvalidFrameAddr),
+    };
+    if frame_cap.rights & CAP_SEG_WRITE == 0 {
+        return Err(ResumeError::MissingRight);
+    }
     let seg = st
         .segments
         .get(&frame_seg_id)
         .ok_or(ResumeError::InvalidFrameAddr)?;
+    if !seg.kernel_readable {
+        return Err(ResumeError::InvalidFrame);
+    }
     if !frame_offset.is_multiple_of(SRET_FRAME_LEN) {
         return Err(ResumeError::InvalidFrameAddr);
     }
@@ -77,16 +101,7 @@ pub fn exc_resume(
     if frame_end.is_none_or(|end| end > seg.bytes.len()) {
         return Err(ResumeError::InvalidFrameAddr);
     }
-    // (3) resume_vaddr 可执行（前置 #6）：caller vspace 中有 base==resume_vaddr 的可执行映射
-    let executable = st.tasks.get(&caller).is_some_and(|task| {
-        task.vspace
-            .iter()
-            .any(|mapping| mapping.contains(resume_vaddr) && mapping.access & ACCESS_X != 0)
-    });
-    if !executable {
-        return Err(ResumeError::NotExecutable);
-    }
-    // (4) 待恢复帧必须存在且匹配源
+
     let pending = st
         .pending_exc
         .get(&caller)
@@ -97,7 +112,7 @@ pub fn exc_resume(
     if !pending.kind.is_recoverable() {
         return Err(ResumeError::UnrecoverableFault);
     }
-    // (5) 转换：Faulted -> Ready，并原子清除待恢复帧
+
     let task = st
         .tasks
         .get_mut(&caller)

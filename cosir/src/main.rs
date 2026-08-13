@@ -55,7 +55,7 @@ fn build_state() -> State {
         },
     );
     st.capabilities.insert(
-        1,
+        10,
         state::Capability {
             owner: 1,
             object: state::CapObject::ExceptionSource(1),
@@ -64,7 +64,7 @@ fn build_state() -> State {
         },
     );
     st.capabilities.insert(
-        2,
+        11,
         state::Capability {
             owner: 1,
             object: state::CapObject::Segment(1),
@@ -140,8 +140,14 @@ fn build_boot_machine() -> machine::MachineState {
 fn main() {
     let mut st = build_state();
     assert!(st.booted, "bootstrap 交接点后应已建立");
+    assert!(
+        st.tasks[&1]
+            .vspace
+            .iter()
+            .any(|mapping| mapping.contains(0x5000_0000))
+    );
     raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-    exc_resume(&mut st, 1, 1, 1, 0, 0x5000_0000).expect("resume page fault");
+    exc_resume(&mut st, 1, 10, 11, 0).expect("resume page fault");
     schedule(&mut st, 1);
     assert_eq!(st.tasks[&1].status, TaskStatus::Running);
     println!("PASS cosir raise_exception");
@@ -199,15 +205,30 @@ fn main() {
 mod tests {
     use super::*;
     use ops::ResumeError;
-    use state::{PageMapping, SegId, VirtAddr};
+    use state::{CapId, PageMapping, SegId};
 
-    // 合法 exc_resume 参数：帧段 1 偏移 0（0x1000 ≥ 0x88），resume_vaddr 在可执行映射上
+    const CALLER: state::TaskId = 1;
+    const SOURCE: state::ExcSourceId = 1;
+    const SOURCE_CAP: CapId = 10;
     const FRAME_SEG: SegId = 1;
+    const FRAME_CAP: CapId = 11;
     const FRAME_OFF: usize = 0;
-    const RESUME_VADDR: VirtAddr = 0x5000_0000;
 
     fn resume_ok(st: &mut State) {
-        exc_resume(st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).expect("resume should succeed");
+        exc_resume(st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).expect("resume should succeed");
+    }
+
+    fn resumable_state() -> State {
+        let mut st = build_state();
+        raise_exception(&mut st, CALLER, SOURCE, page_fault(), default_frame());
+        st
+    }
+
+    fn assert_resume_failure_unchanged(mut st: State, expected: ResumeError) {
+        let before = st.clone();
+        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).unwrap_err();
+        assert_eq!(err, expected);
+        assert_eq!(st, before);
     }
 
     fn valid_frame() -> SretFrame {
@@ -286,6 +307,98 @@ mod tests {
     }
 
     #[test]
+    fn exc_resume_rejects_missing_source_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.remove(&SOURCE_CAP);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_inactive_source_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&SOURCE_CAP).unwrap().active = false;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_foreign_source_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&SOURCE_CAP).unwrap().owner = CALLER + 1;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_source_cap_with_wrong_object_type_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&SOURCE_CAP).unwrap().object = state::CapObject::Segment(FRAME_SEG);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_source_cap_without_subscribe_right_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&SOURCE_CAP).unwrap().rights &= !state::CAP_EXC_SUBSCRIBE;
+        assert_resume_failure_unchanged(st, ResumeError::MissingRight);
+    }
+
+    #[test]
+    fn exc_resume_rejects_inactive_source_object_atomically() {
+        let mut st = resumable_state();
+        st.exc_sources.remove(&SOURCE);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_missing_subscription_atomically() {
+        let mut st = resumable_state();
+        st.subscriptions.remove(&(CALLER, SOURCE));
+        assert_resume_failure_unchanged(st, ResumeError::NotSubscribed);
+    }
+
+    #[test]
+    fn exc_resume_rejects_missing_frame_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.remove(&FRAME_CAP);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_rejects_inactive_frame_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().active = false;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_rejects_foreign_frame_cap_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().owner = CALLER + 1;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_rejects_frame_cap_with_wrong_object_type_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().object =
+            state::CapObject::ExceptionSource(SOURCE);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_rejects_frame_cap_without_write_right_atomically() {
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().rights &= !state::CAP_SEG_WRITE;
+        assert_resume_failure_unchanged(st, ResumeError::MissingRight);
+    }
+
+    #[test]
+    fn exc_resume_rejects_kernel_unreadable_frame_segment_atomically() {
+        let mut st = resumable_state();
+        st.segments.get_mut(&FRAME_SEG).unwrap().kernel_readable = false;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+    }
+
+    #[test]
     fn page_mapping_contains_only_its_half_open_range() {
         let m = PageMapping {
             base: 0x5000_0000,
@@ -331,8 +444,7 @@ mod tests {
         let mut st = build_state();
         st.tasks.get_mut(&1).unwrap().status = TaskStatus::Ready;
         // 从未 fault：pending 不存在
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
-        assert_eq!(err, ResumeError::NoPendingException);
+        assert_resume_failure_unchanged(st, ResumeError::NoPendingException);
     }
 
     #[test]
@@ -340,65 +452,46 @@ mod tests {
         let mut st = build_state();
         raise_exception(&mut st, 1, 1, page_fault(), default_frame());
         resume_ok(&mut st);
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
-        assert_eq!(err, ResumeError::NoPendingException);
+        assert_resume_failure_unchanged(st, ResumeError::NoPendingException);
     }
 
     #[test]
     fn exc_resume_double_fault_is_unrecoverable() {
         let mut st = build_state();
         raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
-        assert_eq!(err, ResumeError::UnrecoverableFault);
-        // 不销毁 Task，仍处于 Faulted
-        assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
+        assert_resume_failure_unchanged(st, ResumeError::UnrecoverableFault);
     }
 
     #[test]
     fn exc_resume_source_mismatch_is_invalid_source() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        // 源不匹配：pending.source_id=1，调用方传 999
-        let err = exc_resume(&mut st, 1, 999, FRAME_SEG, FRAME_OFF, RESUME_VADDR).unwrap_err();
-        assert_eq!(err, ResumeError::InvalidExcSource);
-        // 源不匹配不消费帧、不改状态：仍 Faulted 且 pending 保留
-        assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
-        assert!(st.pending_exc.contains_key(&1));
+        let mut st = resumable_state();
+        st.pending_exc.get_mut(&CALLER).unwrap().source_id = SOURCE + 1;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
     }
 
     #[test]
     fn exc_resume_missing_frame_seg_rejected() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        let err = exc_resume(&mut st, 1, 1, 999, FRAME_OFF, RESUME_VADDR).unwrap_err();
-        assert_eq!(err, ResumeError::InvalidFrameAddr);
+        let mut st = resumable_state();
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().object = state::CapObject::Segment(999);
+        assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
     }
 
     #[test]
     fn exc_resume_out_of_bounds_frame_rejected() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        // 0x1000 + 0x88 > 0x1000：帧越界（帧段 1 len=0x1000）
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, 0x1000, RESUME_VADDR).unwrap_err();
+        let mut st = resumable_state();
+        let before = st.clone();
+        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, 0x1000).unwrap_err();
         assert_eq!(err, ResumeError::InvalidFrameAddr);
+        assert_eq!(st, before);
     }
 
     #[test]
     fn exc_resume_misaligned_frame_rejected() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        // offset=1 不满足帧长（SRET_FRAME_LEN=0x88）整数倍对齐
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, 1, RESUME_VADDR).unwrap_err();
+        let mut st = resumable_state();
+        let before = st.clone();
+        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, 1).unwrap_err();
         assert_eq!(err, ResumeError::InvalidFrameAddr);
-    }
-
-    #[test]
-    fn exc_resume_non_executable_target_rejected() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
-        // 0x0000_0000 在 vspace 中无映射 / 不可执行
-        let err = exc_resume(&mut st, 1, 1, FRAME_SEG, FRAME_OFF, 0x0000_0000).unwrap_err();
-        assert_eq!(err, ResumeError::NotExecutable);
+        assert_eq!(st, before);
     }
 
     #[test]
