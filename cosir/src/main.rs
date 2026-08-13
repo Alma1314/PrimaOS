@@ -80,6 +80,7 @@ fn build_state() -> State {
                 page_present: false,
                 writable_fault: false,
             },
+            active: true,
         },
     );
     let t = Task {
@@ -343,6 +344,13 @@ mod tests {
 
     #[test]
     fn exc_resume_rejects_inactive_source_object_atomically() {
+        let mut st = resumable_state();
+        st.exc_sources.get_mut(&SOURCE).unwrap().active = false;
+        assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
+    }
+
+    #[test]
+    fn exc_resume_rejects_missing_source_object_atomically() {
         let mut st = resumable_state();
         st.exc_sources.remove(&SOURCE);
         assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);

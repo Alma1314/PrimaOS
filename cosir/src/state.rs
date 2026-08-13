@@ -184,6 +184,7 @@ impl ExceptionKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExceptionSource {
     pub supported_kind: ExceptionKind, // 简化：单一可支持类型锚
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

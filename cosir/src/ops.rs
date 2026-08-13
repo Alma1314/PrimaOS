@@ -68,7 +68,11 @@ pub fn exc_resume(
     if source_cap.rights & CAP_EXC_SUBSCRIBE == 0 {
         return Err(ResumeError::MissingRight);
     }
-    if !st.exc_sources.contains_key(&source_id) {
+    if !st
+        .exc_sources
+        .get(&source_id)
+        .is_some_and(|source| source.active)
+    {
         return Err(ResumeError::InvalidExcSource);
     }
     if !st.subscriptions.contains(&(caller, source_id)) {
