@@ -117,14 +117,15 @@ pub fn exc_resume(
         return Err(ResumeError::UnrecoverableFault);
     }
 
-    let task = st
-        .tasks
-        .get_mut(&caller)
-        .ok_or(ResumeError::InvalidExcSource)?;
+    let task = st.tasks.get(&caller).ok_or(ResumeError::InvalidExcSource)?;
     if task.status != TaskStatus::Faulted {
         return Err(ResumeError::NoPendingException);
     }
-    task.status = TaskStatus::Ready;
+
+    st.tasks
+        .get_mut(&caller)
+        .expect("validated task must still exist")
+        .status = TaskStatus::Ready;
     st.pending_exc.remove(&caller);
     Ok(())
 }
