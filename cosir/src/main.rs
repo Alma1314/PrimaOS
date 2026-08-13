@@ -213,25 +213,25 @@ mod tests {
     fn valid_frame() -> SretFrame {
         SretFrame {
             rax: 0x0102_0304_0506_0708,
-            rbx: 0,
-            rcx: 0,
-            rdx: 0,
-            rsi: 0,
-            rdi: 0,
-            rbp: 0,
-            rsp: 0x1112_1314_1516_1718,
-            r8: 0,
-            r9: 0,
-            r10: 0,
-            r11: 0,
-            r12: 0,
-            r13: 0,
-            r14: 0,
-            r15: 0,
-            rflags: 0x2122_2324_2526_2728,
-            rip: 0x3132_3334_3536_3738,
-            cs: state::USER_CS,
-            ss: state::USER_SS,
+            rbx: 0x1112_1314_1516_1718,
+            rcx: 0x2122_2324_2526_2728,
+            rdx: 0x3132_3334_3536_3738,
+            rsi: 0x4142_4344_4546_4748,
+            rdi: 0x5152_5354_5556_5758,
+            rbp: 0x6162_6364_6566_6768,
+            rsp: 0x7172_7374_7576_7778,
+            r8: 0x8182_8384_8586_8788,
+            r9: 0x9192_9394_9596_9798,
+            r10: 0xa1a2_a3a4_a5a6_a7a8,
+            r11: 0xb1b2_b3b4_b5b6_b7b8,
+            r12: 0xc1c2_c3c4_c5c6_c7c8,
+            r13: 0xd1d2_d3d4_d5d6_d7d8,
+            r14: 0xe1e2_e3e4_e5e6_e7e8,
+            r15: 0xf1f2_f3f4_f5f6_f7f8,
+            rflags: 0x0a0b_0c0d_0e0f_1011,
+            rip: 0x1a1b_1c1d_1e1f_2021,
+            cs: 0x2a2b_2c2d_2e2f_3031,
+            ss: 0x3a3b_3c3d_3e3f_4041,
         }
     }
 
@@ -239,13 +239,33 @@ mod tests {
     fn sret_frame_wire_layout_is_fixed_little_endian() {
         let f = valid_frame();
         let b = f.encode();
-        assert_eq!(b.len(), 0xa0);
+        assert_eq!(b.len(), state::SRET_FRAME_LEN);
         assert_eq!(state::SRET_FRAME_ALIGN, 16);
-        assert_eq!(&b[0x38..0x40], &f.rsp.to_le_bytes());
-        assert_eq!(&b[0x80..0x88], &f.rflags.to_le_bytes());
-        assert_eq!(&b[0x88..0x90], &f.rip.to_le_bytes());
-        assert_eq!(&b[0x90..0x98], &f.cs.to_le_bytes());
-        assert_eq!(&b[0x98..0xa0], &f.ss.to_le_bytes());
+
+        for (offset, value) in [
+            (0x00, f.rax),
+            (0x08, f.rbx),
+            (0x10, f.rcx),
+            (0x18, f.rdx),
+            (0x20, f.rsi),
+            (0x28, f.rdi),
+            (0x30, f.rbp),
+            (0x38, f.rsp),
+            (0x40, f.r8),
+            (0x48, f.r9),
+            (0x50, f.r10),
+            (0x58, f.r11),
+            (0x60, f.r12),
+            (0x68, f.r13),
+            (0x70, f.r14),
+            (0x78, f.r15),
+            (0x80, f.rflags),
+            (0x88, f.rip),
+            (0x90, f.cs),
+            (0x98, f.ss),
+        ] {
+            assert_eq!(&b[offset..offset + 8], &value.to_le_bytes());
+        }
     }
 
     #[test]
