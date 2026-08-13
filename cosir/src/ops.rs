@@ -74,14 +74,14 @@ pub fn exc_resume(
         return Err(ResumeError::InvalidFrameAddr);
     }
     let frame_end = frame_offset.checked_add(SRET_FRAME_LEN);
-    if frame_end.is_none_or(|end| end > seg.len) {
+    if frame_end.is_none_or(|end| end > seg.bytes.len()) {
         return Err(ResumeError::InvalidFrameAddr);
     }
     // (3) resume_vaddr 可执行（前置 #6）：caller vspace 中有 base==resume_vaddr 的可执行映射
     let executable = st.tasks.get(&caller).is_some_and(|task| {
         task.vspace
             .iter()
-            .any(|(base, access)| *base == resume_vaddr && access & ACCESS_X != 0)
+            .any(|mapping| mapping.contains(resume_vaddr) && mapping.access & ACCESS_X != 0)
     });
     if !executable {
         return Err(ResumeError::NotExecutable);

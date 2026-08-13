@@ -44,7 +44,32 @@ fn build_state() -> State {
         booted: true,
         ..State::default()
     };
-    st.segments.insert(1, state::SegRange { len: 0x1000 });
+    st.segments.insert(
+        1,
+        state::Segment {
+            bytes: vec![0; 0x1000],
+            kernel_readable: true,
+        },
+    );
+    st.capabilities.insert(
+        1,
+        state::Capability {
+            owner: 1,
+            object: state::CapObject::ExceptionSource(1),
+            rights: state::CAP_EXC_SUBSCRIBE,
+            active: true,
+        },
+    );
+    st.capabilities.insert(
+        2,
+        state::Capability {
+            owner: 1,
+            object: state::CapObject::Segment(1),
+            rights: state::CAP_SEG_WRITE,
+            active: true,
+        },
+    );
+    st.subscriptions.insert((1, 1));
     st.exc_sources.insert(
         1,
         state::ExceptionSource {
@@ -57,7 +82,21 @@ fn build_state() -> State {
     let t = Task {
         id: 1,
         status: TaskStatus::Running,
-        vspace: vec![(0x4000_0000, ACCESS_R | ACCESS_W), (0x5000_0000, ACCESS_X)],
+        vspace: vec![
+            state::PageMapping {
+                base: 0x4000_0000,
+                len: 0x1000,
+                access: ACCESS_R | ACCESS_W,
+                user: true,
+            },
+            state::PageMapping {
+                base: 0x5000_0000,
+                len: 0x1000,
+                access: ACCESS_X,
+                user: true,
+            },
+        ],
+        kernel_resume_frame: None,
     };
     st.tasks.insert(1, t);
     st
@@ -157,7 +196,7 @@ fn main() {
 mod tests {
     use super::*;
     use ops::ResumeError;
-    use state::{SegId, VirtAddr};
+    use state::{PageMapping, SegId, VirtAddr};
 
     // 合法 exc_resume 参数：帧段 1 偏移 0（0x1000 ≥ 0x88），resume_vaddr 在可执行映射上
     const FRAME_SEG: SegId = 1;
@@ -166,6 +205,25 @@ mod tests {
 
     fn resume_ok(st: &mut State) {
         exc_resume(st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).expect("resume should succeed");
+    }
+
+    #[test]
+    fn exc_resume_state_is_deeply_comparable() {
+        let st = build_state();
+        assert_eq!(st, st.clone());
+    }
+
+    #[test]
+    fn page_mapping_contains_only_its_half_open_range() {
+        let m = PageMapping {
+            base: 0x5000_0000,
+            len: 0x1000,
+            access: ACCESS_X,
+            user: true,
+        };
+        assert!(m.contains(0x5000_0000));
+        assert!(m.contains(0x5000_0fff));
+        assert!(!m.contains(0x5000_1000));
     }
 
     #[test]

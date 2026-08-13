@@ -26,6 +26,7 @@ pub fn abstract_state(m: &MachineState) -> State {
             id: init_task_id(),
             status: TaskStatus::Ready,
             vspace: Vec::new(),
+            kernel_resume_frame: None,
         };
         s.tasks.insert(init_task_id(), init);
     }
