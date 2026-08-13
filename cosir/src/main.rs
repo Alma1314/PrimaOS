@@ -23,7 +23,7 @@ fn default_frame() -> SretFrame {
         rsi: 0,
         rdi: 0,
         rbp: 0,
-        rsp: 0x7fff_f000,
+        rsp: 0x4000_0080,
         r8: 0,
         r9: 0,
         r10: 0,
@@ -33,7 +33,7 @@ fn default_frame() -> SretFrame {
         r14: 0,
         r15: 0,
         rflags: 0x202,
-        rip: 0,
+        rip: 0x5000_0080,
         cs: state::USER_CS,
         ss: state::USER_SS,
     };
@@ -50,7 +50,11 @@ fn build_state() -> State {
     st.segments.insert(
         1,
         state::Segment {
-            bytes: vec![0; 0x1000],
+            bytes: {
+                let mut bytes = vec![0; 0x1000];
+                bytes[..state::SRET_FRAME_LEN].copy_from_slice(&default_frame().encode());
+                bytes
+            },
             kernel_readable: true,
         },
     );
@@ -76,10 +80,7 @@ fn build_state() -> State {
     st.exc_sources.insert(
         1,
         state::ExceptionSource {
-            supported_kind: ExceptionKind::PageFault {
-                page_present: false,
-                writable_fault: false,
-            },
+            supported_kind: page_fault(),
             active: true,
         },
     );
@@ -219,17 +220,49 @@ mod tests {
         exc_resume(st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).expect("resume should succeed");
     }
 
-    fn resumable_state() -> State {
+    fn faulted_state_with_frame_at(offset: usize, frame: SretFrame) -> State {
         let mut st = build_state();
+        let bytes = frame.encode();
+        let seg = st.segments.get_mut(&FRAME_SEG).unwrap();
+        let end = offset + bytes.len();
+        if end > seg.bytes.len() {
+            seg.bytes.resize(end, 0);
+        }
+        seg.bytes[offset..end].copy_from_slice(&bytes);
         raise_exception(&mut st, CALLER, SOURCE, page_fault(), default_frame());
         st
     }
 
-    fn assert_resume_failure_unchanged(mut st: State, expected: ResumeError) {
+    fn resume_frame() -> SretFrame {
+        SretFrame {
+            rip: 0x5000_0080,
+            rsp: 0x4000_0080,
+            ..default_frame()
+        }
+    }
+
+    fn resumable_state() -> State {
+        faulted_state_with_frame_at(FRAME_OFF, resume_frame())
+    }
+
+    fn assert_resume_failure_at_unchanged(
+        mut st: State,
+        frame_offset: usize,
+        expected: ResumeError,
+    ) {
         let before = st.clone();
-        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).unwrap_err();
+        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, frame_offset).unwrap_err();
         assert_eq!(err, expected);
         assert_eq!(st, before);
+    }
+
+    fn assert_resume_failure_unchanged(st: State, expected: ResumeError) {
+        assert_resume_failure_at_unchanged(st, FRAME_OFF, expected);
+    }
+
+    fn replace_frame(st: &mut State, frame: SretFrame) {
+        st.segments.get_mut(&FRAME_SEG).unwrap().bytes[..state::SRET_FRAME_LEN]
+            .copy_from_slice(&frame.encode());
     }
 
     fn valid_frame() -> SretFrame {
@@ -407,6 +440,185 @@ mod tests {
     }
 
     #[test]
+    fn exc_resume_accepts_sixteen_byte_aligned_offset() {
+        let mut st = faulted_state_with_frame_at(16, resume_frame());
+        exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, 16).unwrap();
+    }
+
+    #[test]
+    fn exc_resume_frame_address_mutations_are_atomic() {
+        let st = resumable_state();
+        assert_resume_failure_at_unchanged(st.clone(), 1, ResumeError::InvalidFrameAddr);
+        assert_resume_failure_at_unchanged(
+            st.clone(),
+            usize::MAX - (state::SRET_FRAME_ALIGN - 1),
+            ResumeError::InvalidFrameAddr,
+        );
+
+        let mut short = st;
+        short
+            .segments
+            .get_mut(&FRAME_SEG)
+            .unwrap()
+            .bytes
+            .truncate(state::SRET_FRAME_LEN - 1);
+        assert_resume_failure_unchanged(short, ResumeError::InvalidFrameAddr);
+    }
+
+    #[test]
+    fn exc_resume_rip_mutations_are_atomic_and_interior_address_succeeds() {
+        for rip in [0x0000_8000_0000_0000, 0xffff_8000_0000_0000] {
+            let mut st = resumable_state();
+            st.tasks.get_mut(&CALLER).unwrap().vspace.push(PageMapping {
+                base: rip,
+                len: 0x1000,
+                access: ACCESS_X,
+                user: true,
+            });
+            let mut frame = resume_frame();
+            frame.rip = rip;
+            replace_frame(&mut st, frame);
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+
+        let mut unmapped = resumable_state();
+        let mut frame = resume_frame();
+        frame.rip = 0x5000_1000;
+        replace_frame(&mut unmapped, frame);
+        assert_resume_failure_unchanged(unmapped, ResumeError::InvalidFrame);
+
+        for (access, user) in [(ACCESS_R, true), (ACCESS_X, false)] {
+            let mut st = resumable_state();
+            let mapping = st
+                .tasks
+                .get_mut(&CALLER)
+                .unwrap()
+                .vspace
+                .get_mut(1)
+                .unwrap();
+            mapping.access = access;
+            mapping.user = user;
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+
+        let mut st = resumable_state();
+        resume_ok(&mut st);
+    }
+
+    #[test]
+    fn exc_resume_rsp_mutations_are_atomic_and_interior_address_succeeds() {
+        for rsp in [0x0000_8000_0000_0000, 0xffff_8000_0000_0000] {
+            let mut st = resumable_state();
+            st.tasks.get_mut(&CALLER).unwrap().vspace.push(PageMapping {
+                base: rsp,
+                len: 0x1000,
+                access: ACCESS_W,
+                user: true,
+            });
+            let mut frame = resume_frame();
+            frame.rsp = rsp;
+            replace_frame(&mut st, frame);
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+
+        let mut unmapped = resumable_state();
+        let mut frame = resume_frame();
+        frame.rsp = 0x4000_1000;
+        replace_frame(&mut unmapped, frame);
+        assert_resume_failure_unchanged(unmapped, ResumeError::InvalidFrame);
+
+        for (access, user) in [(ACCESS_R, true), (ACCESS_W, false)] {
+            let mut st = resumable_state();
+            let mapping = st
+                .tasks
+                .get_mut(&CALLER)
+                .unwrap()
+                .vspace
+                .get_mut(0)
+                .unwrap();
+            mapping.access = access;
+            mapping.user = user;
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+
+        let mut st = resumable_state();
+        resume_ok(&mut st);
+    }
+
+    #[test]
+    fn exc_resume_rejects_selector_mutations_atomically() {
+        for mutate in [
+            |frame: &mut SretFrame| frame.cs = state::USER_CS + 8,
+            |frame: &mut SretFrame| frame.ss = state::USER_SS + 8,
+        ] {
+            let mut st = resumable_state();
+            let mut frame = resume_frame();
+            mutate(&mut frame);
+            replace_frame(&mut st, frame);
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+    }
+
+    #[test]
+    fn exc_resume_rejects_each_rflags_mutation_atomically() {
+        let mutations = [
+            0,
+            0x202 | (1 << 12),
+            0x202 | (1 << 13),
+            0x202 | (1 << 14),
+            0x202 | (1 << 16),
+            0x202 | (1 << 17),
+            0x202 | (1 << 19),
+            0x202 | (1 << 20),
+            0x202 | (1 << 22),
+            0x202 | (1 << 63),
+        ];
+        for rflags in mutations {
+            let mut st = resumable_state();
+            let mut frame = resume_frame();
+            frame.rflags = rflags;
+            replace_frame(&mut st, frame);
+            assert_resume_failure_unchanged(st, ResumeError::InvalidFrame);
+        }
+    }
+
+    #[test]
+    fn exc_resume_pending_source_kind_and_status_mutations_are_atomic() {
+        let mut source = resumable_state();
+        source.pending_exc.get_mut(&CALLER).unwrap().source_id = SOURCE + 1;
+        assert_resume_failure_unchanged(source, ResumeError::InvalidExcSource);
+
+        let mut kind = resumable_state();
+        kind.exc_sources.get_mut(&SOURCE).unwrap().supported_kind =
+            ExceptionKind::GeneralProtectionFault;
+        assert_resume_failure_unchanged(kind, ResumeError::InvalidExcSource);
+
+        let mut field_kind = resumable_state();
+        field_kind
+            .exc_sources
+            .get_mut(&SOURCE)
+            .unwrap()
+            .supported_kind = ExceptionKind::PageFault {
+            page_present: true,
+            writable_fault: true,
+        };
+        assert_resume_failure_unchanged(field_kind, ResumeError::InvalidExcSource);
+
+        let mut double_fault = resumable_state();
+        double_fault.pending_exc.get_mut(&CALLER).unwrap().kind = ExceptionKind::DoubleFault;
+        double_fault
+            .exc_sources
+            .get_mut(&SOURCE)
+            .unwrap()
+            .supported_kind = ExceptionKind::DoubleFault;
+        assert_resume_failure_unchanged(double_fault, ResumeError::UnrecoverableFault);
+
+        let mut status = resumable_state();
+        status.tasks.get_mut(&CALLER).unwrap().status = TaskStatus::Ready;
+        assert_resume_failure_unchanged(status, ResumeError::NoPendingException);
+    }
+
+    #[test]
     fn page_mapping_contains_only_its_half_open_range() {
         let m = PageMapping {
             base: 0x5000_0000,
@@ -466,6 +678,7 @@ mod tests {
     #[test]
     fn exc_resume_double_fault_is_unrecoverable() {
         let mut st = build_state();
+        st.exc_sources.get_mut(&SOURCE).unwrap().supported_kind = ExceptionKind::DoubleFault;
         raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
         assert_resume_failure_unchanged(st, ResumeError::UnrecoverableFault);
     }
