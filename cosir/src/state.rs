@@ -43,8 +43,7 @@ pub struct Capability {
     pub active: bool,
 }
 
-#[repr(C, align(16))]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SretFrame {
     pub rax: u64,
     pub rbx: u64,
@@ -62,11 +61,81 @@ pub struct SretFrame {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-    pub flags: u64,
+    pub rflags: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub ss: u64,
 }
 
-/// SretFrame 周期（帧长 0x88）；`exc_resume` 用它做 frame_offset 整数倍对齐与越界校验（前置 #5）。
-pub const SRET_FRAME_LEN: usize = core::mem::size_of::<SretFrame>();
+pub const SRET_FRAME_LEN: usize = 0xA0;
+#[allow(dead_code)] // ABI constant is consumed by the kernel integration layer.
+pub const SRET_FRAME_ALIGN: usize = 16;
+pub const USER_CS: u64 = 0x1b;
+pub const USER_SS: u64 = 0x23;
+
+#[allow(dead_code)] // Wire codec is consumed by the kernel integration layer.
+impl SretFrame {
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != SRET_FRAME_LEN {
+            return None;
+        }
+
+        let word = |offset| {
+            let mut word = [0; 8];
+            word.copy_from_slice(&bytes[offset..offset + 8]);
+            u64::from_le_bytes(word)
+        };
+        Some(Self {
+            rax: word(0x00),
+            rbx: word(0x08),
+            rcx: word(0x10),
+            rdx: word(0x18),
+            rsi: word(0x20),
+            rdi: word(0x28),
+            rbp: word(0x30),
+            rsp: word(0x38),
+            r8: word(0x40),
+            r9: word(0x48),
+            r10: word(0x50),
+            r11: word(0x58),
+            r12: word(0x60),
+            r13: word(0x68),
+            r14: word(0x70),
+            r15: word(0x78),
+            rflags: word(0x80),
+            rip: word(0x88),
+            cs: word(0x90),
+            ss: word(0x98),
+        })
+    }
+
+    pub fn encode(self) -> [u8; SRET_FRAME_LEN] {
+        let mut bytes = [0; SRET_FRAME_LEN];
+        let mut put =
+            |offset, value: u64| bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        put(0x00, self.rax);
+        put(0x08, self.rbx);
+        put(0x10, self.rcx);
+        put(0x18, self.rdx);
+        put(0x20, self.rsi);
+        put(0x28, self.rdi);
+        put(0x30, self.rbp);
+        put(0x38, self.rsp);
+        put(0x40, self.r8);
+        put(0x48, self.r9);
+        put(0x50, self.r10);
+        put(0x58, self.r11);
+        put(0x60, self.r12);
+        put(0x68, self.r13);
+        put(0x70, self.r14);
+        put(0x78, self.r15);
+        put(0x80, self.rflags);
+        put(0x88, self.rip);
+        put(0x90, self.cs);
+        put(0x98, self.ss);
+        bytes
+    }
+}
 
 // 以下模型类型（TaskStatus 的 BlockedRecv、ExceptionKind 的若干可恢复变体、
 // PendingException.save_frame、Task.id）在本探针中不被构造/读取，但它们是

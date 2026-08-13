@@ -32,7 +32,10 @@ fn default_frame() -> SretFrame {
         r13: 0,
         r14: 0,
         r15: 0,
-        flags: 0x202,
+        rflags: 0x202,
+        rip: 0,
+        cs: state::USER_CS,
+        ss: state::USER_SS,
     };
     f.rax = 0x1234;
     f
@@ -205,6 +208,55 @@ mod tests {
 
     fn resume_ok(st: &mut State) {
         exc_resume(st, 1, 1, FRAME_SEG, FRAME_OFF, RESUME_VADDR).expect("resume should succeed");
+    }
+
+    fn valid_frame() -> SretFrame {
+        SretFrame {
+            rax: 0x0102_0304_0506_0708,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            rsp: 0x1112_1314_1516_1718,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            rflags: 0x2122_2324_2526_2728,
+            rip: 0x3132_3334_3536_3738,
+            cs: state::USER_CS,
+            ss: state::USER_SS,
+        }
+    }
+
+    #[test]
+    fn sret_frame_wire_layout_is_fixed_little_endian() {
+        let f = valid_frame();
+        let b = f.encode();
+        assert_eq!(b.len(), 0xa0);
+        assert_eq!(state::SRET_FRAME_ALIGN, 16);
+        assert_eq!(&b[0x38..0x40], &f.rsp.to_le_bytes());
+        assert_eq!(&b[0x80..0x88], &f.rflags.to_le_bytes());
+        assert_eq!(&b[0x88..0x90], &f.rip.to_le_bytes());
+        assert_eq!(&b[0x90..0x98], &f.cs.to_le_bytes());
+        assert_eq!(&b[0x98..0xa0], &f.ss.to_le_bytes());
+    }
+
+    #[test]
+    fn sret_frame_round_trips() {
+        let f = valid_frame();
+        assert_eq!(SretFrame::decode(&f.encode()), Some(f));
+    }
+
+    #[test]
+    fn sret_frame_rejects_wrong_length() {
+        assert_eq!(SretFrame::decode(&[0; state::SRET_FRAME_LEN - 1]), None);
     }
 
     #[test]
