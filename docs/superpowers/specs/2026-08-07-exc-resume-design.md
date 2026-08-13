@@ -45,7 +45,7 @@ exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 
 ### 2.3 成功提交顺序
 
-全部验证成功后，按固定顺序原子提交：
+全部验证成功后，按固定顺序原子提交。该提交段在模型内不产生可恢复的 `ResumeError`；其无界 host `Vec` 的 allocator abort/OOM 不在该模型内：
 
 ```text
 fill consumed Segment frame bytes with 0

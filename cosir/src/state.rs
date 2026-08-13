@@ -196,7 +196,7 @@ pub struct PendingException {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // TaskResumed 留待后续 exc_resume 提交路径构造
+#[allow(dead_code)] // AuditEvent 字段仅由模型测试与完整状态比较读取
 pub enum AuditEvent {
     TaskResumed {
         actor: TaskId,

@@ -4,7 +4,7 @@
 
 **Goal:** 在阶段一审查通过后，补全 `exc_resume` host 模型的 Capability、订阅、恢复帧验证、清零、Audit 和失败原子性。
 
-**Architecture:** 扩展现有 `state.rs` 的最小状态，不实现通用 Capability 系统；`ops.rs` 将恢复拆成纯验证与不可失败的原子提交。`SretFrame` 使用固定 little-endian wire format，从 Segment 字节读取 RIP/RSP/CS/SS/RFLAGS，不保留绕过授权的兼容接口。
+**Architecture:** 扩展现有 `state.rs` 的最小状态，不实现通用 Capability 系统；`ops.rs` 将恢复拆成纯验证与严格原子提交。该提交在模型内不产生可恢复的 `ResumeError`；无界 host `Vec` 的 allocator abort/OOM 不在模型内。`SretFrame` 使用固定 little-endian wire format，从 Segment 字节读取 RIP/RSP/CS/SS/RFLAGS，不保留绕过授权的兼容接口。
 
 **Tech Stack:** Rust std collections、固定字节编码、Cargo tests、Clippy、COSIR Markdown 规范。
 
@@ -356,7 +356,7 @@ fn exc_resume_consumes_frame_and_commits_resume_atomically() {
 
 再测试只清零帧区间、失败不追加 Audit、成功后二次调用返回 `NoPendingException` 且状态不变、schedule 只做 Ready→Running 且不消费 kernel frame。
 
-- [ ] **Step 2: 确认红灯并实现不可失败提交段**
+- [ ] **Step 2: 确认红灯并实现模型内不返回新错误的提交段**
 
 Run: `cargo test -p cosir exc_resume_consumes -- --nocapture`
 Expected: FAIL。
@@ -371,7 +371,7 @@ Segment frame bytes fill(0)
 → task.status = Ready
 ```
 
-提交段只使用已验证索引和 `expect("validated ...")`，不返回新错误。
+提交段只使用已验证索引和 `expect("validated ...")`，在模型内不返回新的可恢复 `ResumeError`；严格原子提交与正常错误的完整 State 不变语义保持不变，无界 host `Vec` 的 allocator abort/OOM 不在模型内。
 
 - [ ] **Step 3: 验证、更新和提交**
 

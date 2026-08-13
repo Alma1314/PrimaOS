@@ -1416,7 +1416,7 @@ exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 6. pending `ExceptionKind` 必须可恢复：`PageFault` / `GeneralProtectionFault` / `DivideError` / `InvalidOpcode`。`DoubleFault` 等不可恢复异常返回 `UnrecoverableFault` 并保持 `Faulted`；
 7. 上述 capability、subscription、Segment bytes、frame、Task、pending/source/kind 检查全部是纯验证；任何检查失败前不得修改任何 State 字段。
 
-成功动作按以下严格顺序作为一个原子提交：
+成功动作按以下严格顺序作为一个原子提交。该提交段在模型内不产生可恢复的 `ResumeError`；其无界 host `Vec` 的 allocator abort/OOM 不在该模型内：
 
 1. 清零 Segment 中 `[frame_offset, frame_offset + 0xA0)` 的已消费 frame bytes；
 2. 清除调用者的 `pending_exc`；

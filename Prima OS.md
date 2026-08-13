@@ -997,7 +997,7 @@ Prima 的分布式模型明确拒绝"全局统一的 KernelState"——不寻求
 | 通用 exception / syscall upcall | 静态 ELF、page fault、signal 都依赖它 | **已定义：** ExceptionSource 对象与订阅机制（COSIR §12） |
 | page fault 与 COW | `fork`、文件映射和按需分页需要 | **已定义模型：** PageFault ExceptionKind + 用户态 page fault handler（COSIR §12.8-12.9）；实际 COW 协议待实现验证 |
 | 设备 Capability | 用户态驱动与 DMA 隔离基础 | **已定义：** MMIO、I/O port、IRQ、DMA 对象能力化封装（COSIR §15） |
-| 异常帧格式与恢复路径 | 任务在异常后如何恢复执行（如 page fault handler 运行完毕后继续执行原 Task） | 尚未进入抽象规范；属于 COSIR 细化层（COSIR §12.9），需定义 `exc_resume` 原语或等效机制 |
+| 异常帧格式与恢复路径 | 任务在异常后如何恢复执行（如 page fault handler 运行完毕后继续执行原 Task） | **已定义模型：** COSIR 已定义三参数 `exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset)`、x86_64 固定 `0xA0` frame 与 host `MODEL-TEST`；真实 trap/`iretq`、`KERNEL-TRACE`、`REFINEMENT-PROOF` 仍开放 |
 | 资源计量与配额 | 防止无权限攻击转化为资源 DoS | 第一阶段排除，后续必须加入 |
 | 选择性撤销 | 服务重启、租约和权限回收需要 | 当前只支持 drop 与对象销毁 |
 | Audit 容量与隐私 | 无限日志不现实，过度披露可能泄密 | 抽象日志无界且消息不记明文；持久化前必须规定配额、保留期、丢弃证明和查询权限 |
