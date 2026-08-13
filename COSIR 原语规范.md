@@ -1387,68 +1387,46 @@ Exception 和 Send 是两个正交的通信维度：
 
 - 如果 `T` 订阅了 `page_fault_source`，异常通知通过 `enqueue_or_deliver` 送达 `T` 的邮箱（或直接交付，如果 `T` 当前正在 `BlockedRecv`）；
 - 如果 `T` 未订阅该源，则行为由平台定义：COSIR 可以实现 `T` 直接被销毁，或通知 `task_exit_source` 的所有订阅者，或通过预配置的默认处理路径。**抽象状态机不强制具体行为**，因为这是一种不可恢复错误；
-- `T` 在 `raise_exception` 完成时不再是 `Running`（因为指令流无法继续）。`T` 的状态被设置为 `Ready`，但 **COSIR 细化层必须保证**：当 `schedule` 选中 `T` 时，`T` 不会重新执行触发故障的指令，而是进入 COSIR 定义的"异常返回"路径（具体恢复机制见下文"恢复路径"段）。POSIR 抽象层将 faulted Task 建模为 `Ready` 是安全且充分的，因为：
-  - `Ready` 状态的 Task 不可执行任何操作（只有 `Running` Task 可调用内核操作）；
-  - `recv` 对 `Ready` Task 不可用（`recv` 要求 `Running`）；
-  - `schedule` 选中一个 faulted `Ready` Task 的行为由细化层定义——细化层在恢复执行上下文后交付异常帧，而不是交付 Task 的原始指令流；
-- 细化层可为 `TaskStatus` 增加 `Faulted` 等细化状态以管理异常帧和执行上下文保存，但这些状态不对 POSIR 层可见；
+- `T` 在 `raise_exception` 完成时不再是 `Running`（因为指令流无法继续），而进入细化层可见的 `Faulted` 状态并关联唯一的 `pending_exc`；`Faulted` 不对 POSIR 层可见，且调度器不会把它隐式恢复或重播原始指令流；
+- 只有 §12.10 定义的 `exc_resume` 成功提交后，`T` 才从 `Faulted` 变为 `Ready`；随后 `schedule` 仅执行通常的 `Ready → Running`。
 
-**恢复路径：**
+**恢复路径（`exc_resume`）：**
 
-- 页故障的恢复由 COSIR 细化层定义的"异常返回"机制完成。假设恢复路径存在，LibOS 在收到 `ExceptionRaised` 通知后可以：
-  1. 检查 `faulting_vaddr` 和 `cause`；
-  2. 决定是否映射新页、复制 COW 页或报告 SIGSEGV；
-  3. 通过 COSIR 定义的特定操作（当前抽象规范未覆盖的 ABI 细节）指示内核"恢复该 Task 的执行"；
-
-- 这一"恢复"操作不在当前 POSIR 抽象中定义，而是本规范 COSIR 细化层定义的 `exc_resume` 原语，类似于 seL4 的 `seL4_Reply` 从 page fault handler 恢复。恢复语义见下方 §12.10。
-
-**恢复路径（exc_resume）：**
-
-- 应对页故障的可恢复异常的恢复入口是本规范定义的 `exc_resume` 原语。其含义：内核仅恢复"一帧"（异常上下文），恢复目标（重播故障指令、跳处理程序或进程退出）由用户态 LibOS/运行时自管。帧字段布局是具体架构细化层的定义（见 §18.0 边界清单 #1），本抽象层只定义原语的抽象行为。
-- `exc_resume` 是当前 Running Task 的操作，绑定到其订阅的原异常 `ExceptionSource`；只作用于该 Task 自身的待恢复异常帧。调用需持有指向活跃 `ExceptionSource` 的 Capability 并含 `ExcSubscribe` 权限，且持有一个指向可写且内核可读 Segment 的 Capability 表示恢复帧。
-- 详细原语（前置条件 / 成功动作 / 错误）见下方 §12.10。
+- 页故障处理方检查 `faulting_vaddr` 与 `cause`，在用户态决定映射新页、复制 COW 页、重播故障指令、跳转处理程序或终止进程；内核只原子恢复一份经验证的异常上下文帧，不解释该策略。
+- 恢复入口绑定原异常源、调用者的活跃订阅和调用者自身的待恢复异常。授权与帧语义完整定义于 §12.10，不存在另一个未定义的恢复 ABI。
 
 **当前抽象模型的显式范围：**
 
-- **定义了：** 事件源对象、订阅语义、异常通知的递送路径、与现有消息模型的集成；
-- **不定义：** 异常帧的精确格式、`iretq` 返回路径、`exc_resume` 的参数和语义、硬件寄存器保存/恢复、中断栈切换；
-
-这是因为"如何从异常返回"主要是一个 ABI 问题（与 `sigreturn` 类似），而非授权或安全状态问题。它可以在 COSIR 细化层定义而不影响 POSIR 安全性论证。
+- **定义了：** 事件源对象、订阅与通知递送、`Faulted`/`pending_exc` 绑定、`exc_resume` 参数与授权、x86_64 帧编码、验证与原子提交语义；
+- **不声称：** host 模型已经接入真实 trap、真实 `iretq`，或提供 `KERNEL-TRACE` / `REFINEMENT-PROOF`。当前证据仅为 host `MODEL-TEST`。
 
 ### 12.10 `exc_resume` — 恢复被暂停的异常帧
 
 ```text
-exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset, resume_vaddr) -> ()
+exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 ```
 
-前置条件：
+前置条件与纯验证阶段：
 
-1. 调用者是当前 Running Task；
-2. `exc_source_cap` 由调用者持有且指向活跃 `ExceptionSource`，并含 `ExcSubscribe` 权限；
-3. 调用者对 `exc_source_cap` 所指源有活跃订阅；
-4. `sret_frame_seg_cap` 由调用者持有且指向调用者可写、内核可读的 Segment；
-5. `frame_offset + sret_frame_len ≤ seg.len()`，其中 `sret_frame_len` 由具体架构的 `SretFrame` 定义决定；`frame_offset` 满足该架构的对齐约束；
-6. `resume_vaddr` 在调用者 `vspace` 中是已映射、可执行、用户态可访问的虚拟地址；
-7. 调用者当前有未恢复的异常帧（细化 `Faulted` 态），且该帧对应的 `ExcSourceId` 与 `exc_source_cap` 所指源一致；
-8. 待恢复异常的 `ExceptionKind` 属可恢复类型：`PageFault` / `GeneralProtectionFault` / `DivideError` / `InvalidOpcode`。
+1. `exc_source_cap` 必须由调用者持有、处于 active、指向 active `ExceptionSource`，并含 `ExcSubscribe` 权限；调用者还必须位于该 source 的 active subscription 集合；
+2. `sret_frame_seg_cap` 必须由调用者持有、处于 active、指向调用者有 `SegWrite` 权限且内核可读的 Segment；Segment 保存实际 bytes；
+3. `frame_offset` 为 16-byte aligned，`frame_offset + 0xA0` 不溢出且不超过 Segment bytes；x86_64 `SretFrame` 是固定 `0xA0` 字节 little-endian 编码：`rax`、`rbx`、`rcx`、`rdx`、`rsi`、`rdi`、`rbp`、`rsp`、`r8`–`r15`、`rflags`、`rip`、`cs`、`ss` 各占连续的 8 字节槽；
+4. 帧中的 `RIP` 与 `RSP` 必须是 canonical 用户地址；`RIP` 位于调用者可执行用户映射，`RSP` 位于调用者可写用户映射；`CS`、`SS` 满足用户态 selector 策略，`RFLAGS` 不含禁止的特权或保留位；
+5. 调用者 Task 必须处于 `Faulted`，且有 `pending_exc`；pending 的 `source_id` 必须匹配 capability 指向的 source，pending `kind` 必须匹配 source 支持的 kind；
+6. pending `ExceptionKind` 必须可恢复：`PageFault` / `GeneralProtectionFault` / `DivideError` / `InvalidOpcode`。`DoubleFault` 等不可恢复异常返回 `UnrecoverableFault` 并保持 `Faulted`；
+7. 上述 capability、subscription、Segment bytes、frame、Task、pending/source/kind 检查全部是纯验证；任何检查失败前不得修改任何 State 字段。
 
-成功动作：
+成功动作按以下严格顺序作为一个原子提交：
 
-1. 将调用者 Task 从细化 `Faulted` 态置为 `Ready`，并原子清除待恢复帧标记；
-2. 追加 `TaskResumed(exc_source_id, resume_vaddr)` Audit 事件；
-3. 将 `sret_frame_seg_cap` 指向 Segment 中 `frame_offset` 起的 `sret_frame_len` 字节复制到内核后清零该区域。
+1. 清零 Segment 中 `[frame_offset, frame_offset + 0xA0)` 的已消费 frame bytes；
+2. 清除调用者的 `pending_exc`；
+3. 将已验证的完整 `SretFrame` 保存为内核持有的 `kernel_resume_frame`；
+4. 追加 `TaskResumed` Audit，记录 actor、source ID、两个 Capability ID、Segment ID、frame offset 与帧中 RIP；
+5. 将 Task 从 `Faulted` 置为 `Ready`。
 
-错误：`InvalidExcSource`、`MissingRight(ExcSubscribe)`、未订阅、`InvalidFrameAddr`、`NotExecutable`、`NoPendingException`、`UnrecoverableFault`。
+错误包括：`InvalidExcSource`、`MissingRight`、`NotSubscribed`、`InvalidFrameAddr`、`InvalidFrame`、`NoPendingException`、`UnrecoverableFault`。任一失败都保持**完整 State 原子不变**，包括 Task 状态、`pending_exc`、capabilities、subscriptions、Segment bytes、`kernel_resume_frame` 与 Audit log。
 
-错误语义：
-
-- `NoPendingException`：调用者没有未恢复的异常帧（含帧已消费后再次调用）；
-- `UnrecoverableFault`：待恢复异常的 `ExceptionKind` 属不可恢复（如 `DoubleFault`）。不销毁 Task，保留给用户态判断；
-- `InvalidFrameAddr`：`frame_offset + sret_frame_len > seg.len()` 或 `frame_offset` 未对齐；
-- `MissingRight(...)`：帧 Segment 无该 Task 写权限，或内核不可读；
-- `NotExecutable`：`resume_vaddr` 不在可执行映射上。
-
-恢复 `schedule` 交互：`exc_resume` 只把 Task 从 `Faulted` 置为 `Ready`；恢复帧在 `schedule` 选中该 Task 后由细化层交付（代替原始指令流），保持 §12.9 的"调度选中 faulted Task 时进入异常返回路径"不变。
+恢复与调度的交互：`exc_resume` 只提交一帧并执行 `Faulted → Ready`；`schedule` 之后只负责 `Ready → Running`，不隐式重播故障指令。当前 Rust 工件仅以 host `MODEL-TEST` 检查这些状态语义，不是实际 kernel/trap 返回实现。
 
 ## 13. Audit
 
@@ -1984,7 +1962,7 @@ KernelState {
 13. IOMMU domain 的创建、设备 assignment、DMA 地址翻译和故障处理；
 14. 设备枚举信息的传递与平台抽象；
 15. Cache coherence 保证（coherent vs non-coherent DMA）和 fence 指令放置；
-16. 异常帧格式、`iretq` 恢复路径和 `exc_resume` 的参数与语义：已由 §12.10 定义，待实现与形式化验证；
+16. 异常帧格式和 `exc_resume` 的参数与语义：已由 §12.10 定义并有 host `MODEL-TEST`；真实 trap 返回接入与形式化验证仍待完成；
 17. 异常源与中断控制器的集成（APIC/LAPIC 屏蔽、EOI、优先级）；
 18. SMP 核间同步：spinlock/qspinlock 实现、per-CPU 数据结构、RCU 或等效的无锁读路径、核间 TLB shootdown 协议（IPI 发送与确认）；
 19. 多物理内存池管理：GPU 显存帧池 (`gpu_frame_universe`) 与 CPU 帧池的隔离、PCIe BAR 映射一致性、GPU unified memory 页迁移（HMM）与 CPU-GPU 缓存一致性协议；
@@ -2003,8 +1981,8 @@ KernelState {
 
 | # | 项目 | POSIR 中的引用 | COSIR 细化层职责 |
 |---|---|---|---|
-| 1 | 异常帧格式与寄存器保存/恢复 | §12.9, §12.10 | x86_64 帧布局已设计（§3）；寄存器恢复目标由 `resume_vaddr` 给定，帧布局按架构实现 |
-| 2 | `exc_resume` / 异常返回原语 | §12.9, §12.10 | 已定义为 §12.10 原语；实现与形式化验证待阶段 2 后 |
+| 1 | 异常帧格式与寄存器保存/恢复 | §12.9, §12.10 | x86_64 `0xA0` little-endian 帧由 Segment bytes 提供，恢复目标取帧内 RIP；已有 host `MODEL-TEST`，真实 trap 返回仍待实现 |
+| 2 | `exc_resume` / 异常返回原语 | §12.9, §12.10 | 已定义为 §12.10 三参数原语并有 host `MODEL-TEST`；`KERNEL-TRACE` 与 `REFINEMENT-PROOF` 尚无 |
 | 3 | syscall 调用/返回协议 | §12.2 | syscall number 编码、参数寄存器、返回寄存器、错误码编码 |
 | 4 | ID 的不可伪造表示 | §3, §18 | opaque 句柄编码（索引 + generation 或受保护指针） |
 | 5 | 页表格式（PML4/TTBR/Sv39） | §7 | 多级页表遍历、权限位编码、W^X 策略 |
