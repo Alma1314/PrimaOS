@@ -1,7 +1,7 @@
 use crate::state::{
-    ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapId, CapObject, ExcSourceId,
-    ExceptionKind, PendingException, SRET_FRAME_ALIGN, SRET_FRAME_LEN, SretFrame, State, Task,
-    TaskId, TaskStatus, USER_CS, USER_SS,
+    ACCESS_W, ACCESS_X, AuditEvent, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapId, CapObject,
+    ExcSourceId, ExceptionKind, PendingException, SRET_FRAME_ALIGN, SRET_FRAME_LEN, SretFrame,
+    State, Task, TaskId, TaskStatus, USER_CS, USER_SS,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,8 +76,8 @@ fn valid_user_rflags(flags: u64) -> bool {
 
 /// 通过异常源与帧段 Capability 授权恢复：Faulted -> Ready。
 ///
-/// 本阶段解码并纯验证恢复帧，同时维持现有成功 transition；清零、
-/// kernel_resume_frame 与 Audit 的最终提交语义由后续任务细化。
+/// 所有授权、pending 与恢复帧验证均在 mutation 前完成；成功路径按固定顺序
+/// 原子消费用户帧、保存 kernel frame、记录 Audit，并将 Task 置为 Ready。
 pub fn exc_resume(
     st: &mut State,
     caller: TaskId,
@@ -132,12 +132,6 @@ pub fn exc_resume(
     if !seg.kernel_readable {
         return Err(ResumeError::InvalidFrame);
     }
-    let frame_bytes = seg
-        .bytes
-        .get(frame_offset..frame_end)
-        .ok_or(ResumeError::InvalidFrameAddr)?;
-    let frame = SretFrame::decode(frame_bytes).ok_or(ResumeError::InvalidFrame)?;
-
     let task = st.tasks.get(&caller).ok_or(ResumeError::InvalidExcSource)?;
     if task.status != TaskStatus::Faulted {
         return Err(ResumeError::NoPendingException);
@@ -152,6 +146,12 @@ pub fn exc_resume(
     if !pending.kind.is_recoverable() {
         return Err(ResumeError::UnrecoverableFault);
     }
+
+    let frame_bytes = seg
+        .bytes
+        .get(frame_offset..frame_end)
+        .ok_or(ResumeError::InvalidFrameAddr)?;
+    let frame = SretFrame::decode(frame_bytes).ok_or(ResumeError::InvalidFrame)?;
     if !is_user_canonical(frame.rip)
         || !has_user_access(task, frame.rip, ACCESS_X)
         || !is_user_canonical(frame.rsp)
@@ -163,11 +163,33 @@ pub fn exc_resume(
         return Err(ResumeError::InvalidFrame);
     }
 
+    st.segments
+        .get_mut(&frame_seg_id)
+        .expect("validated frame segment must still exist")
+        .bytes
+        .get_mut(frame_offset..frame_end)
+        .expect("validated frame range must still exist")
+        .fill(0);
+    st.pending_exc
+        .remove(&caller)
+        .expect("validated pending exception must still exist");
+    st.tasks
+        .get_mut(&caller)
+        .expect("validated task must still exist")
+        .kernel_resume_frame = Some(frame);
+    st.audit.push(AuditEvent::TaskResumed {
+        actor: caller,
+        source_id,
+        source_cap: exc_source_cap,
+        frame_cap: sret_frame_seg_cap,
+        frame_seg_id,
+        frame_offset,
+        rip: frame.rip,
+    });
     st.tasks
         .get_mut(&caller)
         .expect("validated task must still exist")
         .status = TaskStatus::Ready;
-    st.pending_exc.remove(&caller);
     Ok(())
 }
 

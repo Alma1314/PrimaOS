@@ -75,7 +75,7 @@
 | ISSUE-MEM-006 | SPEC-014/PASS 可能被外推为真实页表细化 | MODEL-TEST + REFINEMENT-DESIGN | 阶段一 | 三份权威文档和 harness 文案一致 | Fixed |
 | ISSUE-EXC-001 | exc_resume 未检查 Capability、持有者、活跃状态和订阅 | MODEL-TEST 缺口 | 阶段二 | 每项授权 mutation 原子失败 | Fixed |
 | ISSUE-EXC-002 | 恢复帧没有实际字节编码，RIP/RSP/CS/SS/RFLAGS 未完整验证 | MODEL-TEST 缺口 | 阶段二 | wire-format 与字段 mutation tests 通过 | Fixed |
-| ISSUE-EXC-003 | 成功恢复未清零用户帧、保存 kernel frame 或追加 Audit | MODEL-TEST 缺口 | 阶段二 | 成功提交顺序和重复消费测试通过 | Open |
+| ISSUE-EXC-003 | 成功恢复未清零用户帧、保存 kernel frame 或追加 Audit | MODEL-TEST 缺口 | 阶段二 | 成功提交顺序和重复消费测试通过 | Fixed |
 | ISSUE-EXC-004 | §12.9/§12.10、旧设计与实现接口矛盾 | REFINEMENT-DESIGN 不一致 | 阶段二 | 三份文档与最终接口一致 | Open |
 
 ## 研究停止条件与下一垂直切片

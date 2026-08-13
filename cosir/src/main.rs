@@ -207,7 +207,7 @@ fn main() {
 mod tests {
     use super::*;
     use ops::ResumeError;
-    use state::{CapId, PageMapping, SegId};
+    use state::{AuditEvent, CapId, PageMapping, SegId};
 
     const CALLER: state::TaskId = 1;
     const SOURCE: state::ExcSourceId = 1;
@@ -668,6 +668,86 @@ mod tests {
         resume_ok(&mut st);
         assert_eq!(st.tasks[&1].status, TaskStatus::Ready);
         assert!(!st.pending_exc.contains_key(&1));
+    }
+
+    #[test]
+    fn exc_resume_consumes_frame_and_commits_resume_atomically() {
+        const OFFSET: usize = 16;
+        const SENTINEL: u8 = 0xa5;
+        let frame = resume_frame();
+        let mut st = faulted_state_with_frame_at(OFFSET, frame);
+        st.segments.get_mut(&FRAME_SEG).unwrap().bytes[OFFSET - 1] = SENTINEL;
+        st.segments.get_mut(&FRAME_SEG).unwrap().bytes[OFFSET + state::SRET_FRAME_LEN] = SENTINEL;
+
+        exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, OFFSET).unwrap();
+
+        assert_eq!(st.tasks[&CALLER].status, TaskStatus::Ready);
+        assert!(!st.pending_exc.contains_key(&CALLER));
+        assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
+        assert!(
+            st.segments[&FRAME_SEG].bytes[OFFSET..OFFSET + state::SRET_FRAME_LEN]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert_eq!(st.segments[&FRAME_SEG].bytes[OFFSET - 1], SENTINEL);
+        assert_eq!(
+            st.segments[&FRAME_SEG].bytes[OFFSET + state::SRET_FRAME_LEN],
+            SENTINEL
+        );
+        assert_eq!(
+            st.audit,
+            vec![AuditEvent::TaskResumed {
+                actor: CALLER,
+                source_id: SOURCE,
+                source_cap: SOURCE_CAP,
+                frame_cap: FRAME_CAP,
+                frame_seg_id: FRAME_SEG,
+                frame_offset: OFFSET,
+                rip: frame.rip,
+            }]
+        );
+    }
+
+    #[test]
+    fn exc_resume_second_consumption_is_no_pending_and_preserves_complete_state() {
+        let mut st = resumable_state();
+        resume_ok(&mut st);
+        let after_first_resume = st.clone();
+
+        let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).unwrap_err();
+
+        assert_eq!(err, ResumeError::NoPendingException);
+        assert_eq!(st, after_first_resume);
+    }
+
+    #[test]
+    fn exc_resume_failure_does_not_append_audit() {
+        let mut st = resumable_state();
+        let mut frame = resume_frame();
+        frame.cs = state::USER_CS + 8;
+        replace_frame(&mut st, frame);
+        let before = st.clone();
+
+        assert_eq!(
+            exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF),
+            Err(ResumeError::InvalidFrame)
+        );
+        assert_eq!(st, before);
+        assert!(st.audit.is_empty());
+    }
+
+    #[test]
+    fn schedule_only_runs_ready_task_and_preserves_kernel_resume_frame() {
+        let frame = resume_frame();
+        let mut st = resumable_state();
+        resume_ok(&mut st);
+        assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
+
+        schedule(&mut st, CALLER);
+
+        assert_eq!(st.tasks[&CALLER].status, TaskStatus::Running);
+        assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
+        assert_eq!(st.audit.len(), 1);
     }
 
     #[test]
