@@ -227,6 +227,17 @@ mod tests {
     }
 
     #[test]
+    fn page_mapping_with_overflowing_end_contains_no_address() {
+        let m = PageMapping {
+            base: u64::MAX - 0x7f,
+            len: 0x100,
+            access: ACCESS_X,
+            user: true,
+        };
+        assert!(!m.contains(0));
+    }
+
+    #[test]
     fn raise_exception_moves_running_to_faulted() {
         let mut st = build_state();
         raise_exception(&mut st, 1, 1, page_fault(), default_frame());
