@@ -1,4 +1,7 @@
-use crate::cow_refine::{CHILD, COW_VA, CowProbe, PARENT, base_exc, new_refine, probe_write};
+use crate::cow_refine::{
+    CHILD, COW_VA, CowProbe, PARENT, WriteOutcome, base_exc, new_refine, probe_write, write_fault,
+};
+use crate::state::{ExceptionKind, TaskStatus};
 
 #[test]
 fn cross_model_state_is_deeply_comparable() {
@@ -40,4 +43,35 @@ fn probe_has_no_side_effects() {
     let before = pf.clone();
     let _ = probe_write(&pf, CHILD, COW_VA);
     assert_eq!(pf, before);
+}
+
+#[test]
+fn write_fault_on_readwrite_parent_writes_without_fault() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    assert_eq!(write_fault(&mut exc, &mut pf, PARENT, COW_VA), WriteOutcome::Wrote);
+    // 父仍 Running，未产生 pending
+    assert_eq!(exc.tasks[&PARENT].status, TaskStatus::Running);
+    assert!(!exc.pending_exc.contains_key(&PARENT));
+}
+
+#[test]
+fn write_fault_on_child_readonly_triggers_page_fault() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    let before_pf = pf.clone();
+    let out = write_fault(&mut exc, &mut pf, CHILD, COW_VA);
+    assert!(matches!(out, WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
+    assert!(exc.pending_exc.contains_key(&CHILD));
+    assert_eq!(pf, before_pf, "probe/写不修改页表");
+}
+
+#[test]
+fn write_fault_on_unmapped_is_faulted() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    let out = write_fault(&mut exc, &mut pf, CHILD, 0x0600_0000);
+    assert!(matches!(out, WriteOutcome::Faulted(ExceptionKind::PageFault { page_present: false, .. })));
+    assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
 }

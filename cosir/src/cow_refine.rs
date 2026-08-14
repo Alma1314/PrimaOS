@@ -3,6 +3,7 @@
 use crate::memseg_refine::{
     RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_create, memseg_map, spawn_task,
 };
+use crate::ops;
 use crate::pagewalk::{PAGE_SIZE, translate};
 use crate::state::{
     ACCESS_R, ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapObject, Capability,
@@ -81,6 +82,31 @@ pub fn probe_write(pf: &RefineState, task: TaskId, va: u64) -> CowProbe {
     } else {
         CowProbe::ReadOnly
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteOutcome {
+    Wrote,
+    Faulted(ExceptionKind),
+}
+
+/// 模拟写指令：可写→Wrote；只读或未映射→暂停 task 并递送 page fault。
+pub fn write_fault(exc: &mut State, pf: &mut RefineState, task: TaskId, va: u64) -> WriteOutcome {
+    let kind = match probe_write(pf, task, va) {
+        CowProbe::Writable => return WriteOutcome::Wrote,
+        CowProbe::ReadOnly => ExceptionKind::PageFault {
+            page_present: true,
+            writable_fault: true,
+        },
+        CowProbe::NotMapped => ExceptionKind::PageFault {
+            page_present: false,
+            writable_fault: true,
+        },
+    };
+    ops::schedule(exc, task); // 确保 task 处于可执行态（raise_exception 断言 Running）
+    let save = resume_frame();
+    ops::raise_exception(exc, task, page_fault_source_id(), kind, save);
+    WriteOutcome::Faulted(kind)
 }
 
 /// 异常源、capability、订阅、P/C task（Running）与 frame Segment(seg=2) 就绪的 ops 态。
