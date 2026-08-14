@@ -6,7 +6,7 @@ use crate::memseg_refine::{
     SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create, memseg_map, memseg_unmap,
 };
 use crate::ops;
-use crate::state::{ACCESS_R, ACCESS_W, ExceptionKind, TaskStatus};
+use crate::state::{ACCESS_R, ACCESS_W, AuditEvent, ExceptionKind, TaskStatus};
 
 #[test]
 fn cross_model_state_is_deeply_comparable() {
@@ -167,4 +167,96 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
     // 父子对原共享页的写隔离：父段帧集合未因子复制而丢失，子段副本帧集合保持
     assert_eq!(pf.segments[&1].frames, parent_frames);
     assert_eq!(pf.segments[&copy_seg].frames, copy_frames);
+}
+
+#[test]
+fn r2_resume_of_child_keeps_parent_state_intact() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    let parent_status_before = exc.tasks[&PARENT].status;
+    let parent_pending_before = exc.pending_exc.contains_key(&PARENT);
+    let parent_vspace_before = exc.tasks[&PARENT].vspace.clone();
+    let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+
+    // 子写只读 → fault；父不 fault（父页可写）
+    assert!(matches!(write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(!exc.pending_exc.contains_key(&PARENT));
+
+    // 子换私写
+    let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
+    memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
+    memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1, ACCESS_R | ACCESS_W).unwrap();
+    exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
+
+    // 子 exc_resume → Ready
+    let frame = resume_frame();
+    exc.segments.get_mut(&CODE_SEG).unwrap().bytes.copy_from_slice(&frame.encode());
+    ops::exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).unwrap();
+    assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Ready);
+    assert!(!exc.pending_exc.contains_key(&CHILD));
+
+    // 父的状态、pending、vspace 与 Audit 中父相关均不受影响
+    assert_eq!(exc.tasks[&PARENT].status, parent_status_before);
+    assert_eq!(exc.pending_exc.contains_key(&PARENT), parent_pending_before);
+    assert_eq!(exc.tasks[&PARENT].vspace, parent_vspace_before);
+    assert_eq!(exc.tasks[&PARENT].kernel_resume_frame, None);
+    assert!(exc.audit.iter().all(|ev| !matches!(ev, AuditEvent::TaskResumed { actor: PARENT, .. })));
+}
+
+#[test]
+fn r3_parent_writes_own_page_after_child_copy_does_not_fault() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+    let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
+    memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
+    memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1, ACCESS_R | ACCESS_W).unwrap();
+    exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
+
+    // 子可写后，父仍写自己的私有页 → Wrote（COW 后正常写不误触）
+    assert_eq!(crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+               WriteOutcome::Wrote);
+    assert_eq!(exc.tasks[&PARENT].status, TaskStatus::Running);
+    assert!(!exc.pending_exc.contains_key(&PARENT));
+}
+
+#[test]
+fn r4_kernel_only_cow_is_not_derivable_from_primitives() {
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    // 子fault
+    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    // 不换映射，直接把只读共享恢复 → 该页仍只读
+    let frame = resume_frame();
+    exc.segments.get_mut(&CODE_SEG).unwrap().bytes.copy_from_slice(&frame.encode());
+    crate::ops::exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).unwrap();
+    crate::ops::schedule(&mut exc, CHILD);
+    // 再写：仍只读共享，触发第二次 fault —— 说明内核式自动复制不存在
+    assert_eq!(crate::cow_refine::probe_write(&pf, CHILD, COW_VA), CowProbe::ReadOnly);
+    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+}
+
+#[test]
+fn r1_two_tasks_writing_shared_readonly_page_each_faults() {
+    // fixture 里 PARENT 页是 RW，无法对同一 va 同时让两个都不 fault。
+    // 用两个任务对同一 COW_VA 都只读的场景不可得（PARENT 是 RW）。
+    // 该用例表达：若两个 Task 都只读共享同一页（需第三个只读 Task），并发写各 fault，无合并原语。
+    let mut pf = new_refine();
+    let mut exc = base_exc();
+    // 把 PARENT 也降为只读（模拟两个只读共享者）
+    let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+    memseg_unmap(&mut pf, true, PARENT, COW_VA, 1).unwrap();
+    memseg_map(&mut pf, rights, true, 1, PARENT, 0, COW_VA, 1, ACCESS_R).unwrap();
+    exc.tasks.get_mut(&PARENT).unwrap().vspace[0].access = ACCESS_R;
+
+    // 两者各自 fault，均无合并：无互斥原语 → 用户态协调是显式责任
+    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(exc.pending_exc.contains_key(&PARENT));
+    assert!(exc.pending_exc.contains_key(&CHILD));
 }
