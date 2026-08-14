@@ -7,7 +7,7 @@ use crate::ops;
 use crate::pagewalk::{PAGE_SIZE, translate};
 use crate::state::{
     ACCESS_R, ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapObject, Capability,
-    ExceptionKind, ExcSourceId, PageMapping, SRET_FRAME_LEN, SretFrame, State, Task, TaskId,
+    ExcSourceId, ExceptionKind, PageMapping, SRET_FRAME_LEN, SretFrame, State, Task, TaskId,
     TaskStatus, USER_CS, USER_SS,
 };
 
@@ -37,34 +37,91 @@ pub fn new_refine() -> RefineState {
     let stack_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("create stack seg");
     assert_eq!(stack_seg, 3);
     // 数据：父私写、子只读
-    memseg_map(&mut pf, rights, true, data_seg, PARENT, 0, COW_VA, 1, ACCESS_R | ACCESS_W)
-        .expect("map parent data RW");
-    memseg_map(&mut pf, rights, true, data_seg, CHILD, 0, COW_VA, 1, ACCESS_R)
-        .expect("map child data R");
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        data_seg,
+        PARENT,
+        0,
+        COW_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .expect("map parent data RW");
+    memseg_map(
+        &mut pf, rights, true, data_seg, CHILD, 0, COW_VA, 1, ACCESS_R,
+    )
+    .expect("map child data R");
     // 代码：父子都可执行（frame RIP 落点）
-    memseg_map(&mut pf, rights, true, code_seg, PARENT, 0, CODE_VA, 1, ACCESS_X)
-        .expect("map parent code X");
-    memseg_map(&mut pf, rights, true, code_seg, CHILD, 0, CODE_VA, 1, ACCESS_X)
-        .expect("map child code X");
+    memseg_map(
+        &mut pf, rights, true, code_seg, PARENT, 0, CODE_VA, 1, ACCESS_X,
+    )
+    .expect("map parent code X");
+    memseg_map(
+        &mut pf, rights, true, code_seg, CHILD, 0, CODE_VA, 1, ACCESS_X,
+    )
+    .expect("map child code X");
     // 栈：父子都可写（frame RSP 落点，与 COW 只读共享页解耦）
-    memseg_map(&mut pf, rights, true, stack_seg, PARENT, 0, STACK_VA, 1, ACCESS_R | ACCESS_W)
-        .expect("map parent stack RW");
-    memseg_map(&mut pf, rights, true, stack_seg, CHILD, 0, STACK_VA, 1, ACCESS_R | ACCESS_W)
-        .expect("map child stack RW");
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        stack_seg,
+        PARENT,
+        0,
+        STACK_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .expect("map parent stack RW");
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        stack_seg,
+        CHILD,
+        0,
+        STACK_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .expect("map child stack RW");
     pf
 }
 
 /// 构造一个合法恢复帧：RIP 在可执行 CODE_VA、RSP 在可写 STACK_VA（user canonical）。
 pub fn resume_frame() -> SretFrame {
     SretFrame {
-        rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
-        rsp: STACK_VA + 0x80, r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
-        rflags: 0x202, rip: CODE_VA + 0x80, cs: USER_CS, ss: USER_SS,
+        rax: 0,
+        rbx: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        rbp: 0,
+        rsp: STACK_VA + 0x80,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+        rflags: 0x202,
+        rip: CODE_VA + 0x80,
+        cs: USER_CS,
+        ss: USER_SS,
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CowProbe { ReadOnly, Writable, NotMapped }
+pub enum CowProbe {
+    ReadOnly,
+    Writable,
+    NotMapped,
+}
 
 /// 纯查询该 vaddr 在 task 四级树中的可写观测（无副作用）。
 pub fn probe_write(pf: &RefineState, task: TaskId, va: u64) -> CowProbe {
@@ -136,7 +193,10 @@ pub fn base_exc() -> State {
     exc.exc_sources.insert(
         page_fault_source_id(),
         crate::state::ExceptionSource {
-            supported_kind: ExceptionKind::PageFault { page_present: true, writable_fault: true },
+            supported_kind: ExceptionKind::PageFault {
+                page_present: true,
+                writable_fault: true,
+            },
             active: true,
         },
     );
@@ -180,9 +240,24 @@ pub fn base_exc() -> State {
             id: PARENT,
             status: TaskStatus::Running,
             vspace: vec![
-                PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
-                PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
-                PageMapping { base: STACK_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
+                PageMapping {
+                    base: COW_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_R | ACCESS_W,
+                    user: true,
+                },
+                PageMapping {
+                    base: CODE_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_X,
+                    user: true,
+                },
+                PageMapping {
+                    base: STACK_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_R | ACCESS_W,
+                    user: true,
+                },
             ],
             kernel_resume_frame: None,
         },
@@ -193,9 +268,24 @@ pub fn base_exc() -> State {
             id: CHILD,
             status: TaskStatus::Running,
             vspace: vec![
-                PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R, user: true },
-                PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
-                PageMapping { base: STACK_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
+                PageMapping {
+                    base: COW_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_R,
+                    user: true,
+                },
+                PageMapping {
+                    base: CODE_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_X,
+                    user: true,
+                },
+                PageMapping {
+                    base: STACK_VA,
+                    len: PAGE_SIZE,
+                    access: ACCESS_R | ACCESS_W,
+                    user: true,
+                },
             ],
             kernel_resume_frame: None,
         },

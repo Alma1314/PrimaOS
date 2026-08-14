@@ -213,8 +213,7 @@ fn main() {
             probe_write, resume_frame, write_fault,
         };
         use memseg_refine::{
-            SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create, memseg_map,
-            memseg_unmap,
+            SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create, memseg_map, memseg_unmap,
         };
         use ops::exc_resume;
         use state::{ACCESS_R, ACCESS_W};

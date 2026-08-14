@@ -54,7 +54,10 @@ fn probe_has_no_side_effects() {
 fn write_fault_on_readwrite_parent_writes_without_fault() {
     let mut pf = new_refine();
     let mut exc = base_exc();
-    assert_eq!(write_fault(&mut exc, &mut pf, PARENT, COW_VA), WriteOutcome::Wrote);
+    assert_eq!(
+        write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+        WriteOutcome::Wrote
+    );
     // 父仍 Running，未产生 pending
     assert_eq!(exc.tasks[&PARENT].status, TaskStatus::Running);
     assert!(!exc.pending_exc.contains_key(&PARENT));
@@ -66,7 +69,10 @@ fn write_fault_on_child_readonly_triggers_page_fault() {
     let mut exc = base_exc();
     let before_pf = pf.clone();
     let out = write_fault(&mut exc, &mut pf, CHILD, COW_VA);
-    assert!(matches!(out, WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(
+        out,
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
     assert!(exc.pending_exc.contains_key(&CHILD));
     assert_eq!(pf, before_pf, "probe/写不修改页表");
@@ -77,7 +83,13 @@ fn write_fault_on_unmapped_is_faulted() {
     let mut pf = new_refine();
     let mut exc = base_exc();
     let out = write_fault(&mut exc, &mut pf, CHILD, 0x0600_0000);
-    assert!(matches!(out, WriteOutcome::Faulted(ExceptionKind::PageFault { page_present: false, .. })));
+    assert!(matches!(
+        out,
+        WriteOutcome::Faulted(ExceptionKind::PageFault {
+            page_present: false,
+            ..
+        })
+    ));
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
 }
 
@@ -93,7 +105,8 @@ fn shared_readonly_state_is_consistent() {
 fn inconsistent_when_child_upgraded_in_one_model_only() {
     let mut exc = base_exc();
     // 只改 ops 侧为 RW，RefineState 仍 R → 不一致
-    exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = crate::state::ACCESS_R | crate::state::ACCESS_W;
+    exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access =
+        crate::state::ACCESS_R | crate::state::ACCESS_W;
     let pf = new_refine();
     assert!(!cow_state_consistent(&pf, &exc, CHILD));
 }
@@ -118,15 +131,20 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
     let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
 
     // 1. 父可写，直接写成功
-    assert_eq!(write_fault(&mut exc, &mut pf, PARENT, COW_VA), WriteOutcome::Wrote);
+    assert_eq!(
+        write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+        WriteOutcome::Wrote
+    );
 
     // 2. 子只读共享，一致
     assert!(memseg_alpha(&pf));
     assert!(cow_state_consistent(&pf, &exc, CHILD));
 
     // 3. 子写只读 → page fault → Faulted
-    assert!(matches!(write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(
+        write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
     assert!(cow_state_consistent(&pf, &exc, CHILD));
 
@@ -136,7 +154,11 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
     let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
     let parent_frames = pf.segments[&1].frames.clone();
     let copy_frames = pf.segments[&copy_seg].frames.clone();
-    assert_eq!(parent_frames.len(), copy_frames.len(), "副本复制原段物理帧集合（同卡片数）");
+    assert_eq!(
+        parent_frames.len(),
+        copy_frames.len(),
+        "副本复制原段物理帧集合（同卡片数）"
+    );
     assert!(
         parent_frames.iter().all(|f| !copy_frames.contains(f)),
         "副本物理帧与原段相离，写隔离成立"
@@ -144,14 +166,28 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
 
     // 5. 子换为私写副本
     memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
-    memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1,
-               ACCESS_R | ACCESS_W).unwrap();
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        copy_seg,
+        CHILD,
+        0,
+        COW_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .unwrap();
     exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
     assert!(cow_state_consistent(&pf, &exc, CHILD));
 
     // 6. exc_resume：frame Segment(CODE_SEG) 写合法用户帧，帧 cap=FRAME_CAP
     let frame = resume_frame();
-    exc.segments.get_mut(&CODE_SEG).unwrap().bytes.copy_from_slice(&frame.encode());
+    exc.segments
+        .get_mut(&CODE_SEG)
+        .unwrap()
+        .bytes
+        .copy_from_slice(&frame.encode());
     ops::exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).expect("resume child");
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Ready);
 
@@ -179,19 +215,36 @@ fn r2_resume_of_child_keeps_parent_state_intact() {
     let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
 
     // 子写只读 → fault；父不 fault（父页可写）
-    assert!(matches!(write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(
+        write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
     assert!(!exc.pending_exc.contains_key(&PARENT));
 
     // 子换私写
     let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
     memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
-    memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1, ACCESS_R | ACCESS_W).unwrap();
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        copy_seg,
+        CHILD,
+        0,
+        COW_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .unwrap();
     exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
 
     // 子 exc_resume → Ready
     let frame = resume_frame();
-    exc.segments.get_mut(&CODE_SEG).unwrap().bytes.copy_from_slice(&frame.encode());
+    exc.segments
+        .get_mut(&CODE_SEG)
+        .unwrap()
+        .bytes
+        .copy_from_slice(&frame.encode());
     ops::exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).unwrap();
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Ready);
     assert!(!exc.pending_exc.contains_key(&CHILD));
@@ -201,7 +254,11 @@ fn r2_resume_of_child_keeps_parent_state_intact() {
     assert_eq!(exc.pending_exc.contains_key(&PARENT), parent_pending_before);
     assert_eq!(exc.tasks[&PARENT].vspace, parent_vspace_before);
     assert_eq!(exc.tasks[&PARENT].kernel_resume_frame, None);
-    assert!(exc.audit.iter().all(|ev| !matches!(ev, AuditEvent::TaskResumed { actor: PARENT, .. })));
+    assert!(
+        exc.audit
+            .iter()
+            .all(|ev| !matches!(ev, AuditEvent::TaskResumed { actor: PARENT, .. }))
+    );
 }
 
 #[test]
@@ -211,12 +268,25 @@ fn r3_parent_writes_own_page_after_child_copy_does_not_fault() {
     let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
     let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
     memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
-    memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1, ACCESS_R | ACCESS_W).unwrap();
+    memseg_map(
+        &mut pf,
+        rights,
+        true,
+        copy_seg,
+        CHILD,
+        0,
+        COW_VA,
+        1,
+        ACCESS_R | ACCESS_W,
+    )
+    .unwrap();
     exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
 
     // 子可写后，父仍写自己的私有页 → Wrote（COW 后正常写不误触）
-    assert_eq!(crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
-               WriteOutcome::Wrote);
+    assert_eq!(
+        crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+        WriteOutcome::Wrote
+    );
     assert_eq!(exc.tasks[&PARENT].status, TaskStatus::Running);
     assert!(!exc.pending_exc.contains_key(&PARENT));
 }
@@ -226,17 +296,28 @@ fn r4_kernel_only_cow_is_not_derivable_from_primitives() {
     let mut pf = new_refine();
     let mut exc = base_exc();
     // 子fault
-    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(
+        crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
     // 不换映射，直接把只读共享恢复 → 该页仍只读
     let frame = resume_frame();
-    exc.segments.get_mut(&CODE_SEG).unwrap().bytes.copy_from_slice(&frame.encode());
+    exc.segments
+        .get_mut(&CODE_SEG)
+        .unwrap()
+        .bytes
+        .copy_from_slice(&frame.encode());
     crate::ops::exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).unwrap();
     crate::ops::schedule(&mut exc, CHILD);
     // 再写：仍只读共享，触发第二次 fault —— 说明内核式自动复制不存在
-    assert_eq!(crate::cow_refine::probe_write(&pf, CHILD, COW_VA), CowProbe::ReadOnly);
-    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert_eq!(
+        crate::cow_refine::probe_write(&pf, CHILD, COW_VA),
+        CowProbe::ReadOnly
+    );
+    assert!(matches!(
+        crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
 }
 
 #[test]
@@ -253,10 +334,14 @@ fn r1_two_tasks_writing_shared_readonly_page_each_faults() {
     exc.tasks.get_mut(&PARENT).unwrap().vspace[0].access = ACCESS_R;
 
     // 两者各自 fault，均无合并：无互斥原语 → 用户态协调是显式责任
-    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
-    assert!(matches!(crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-                     WriteOutcome::Faulted(ExceptionKind::PageFault { .. })));
+    assert!(matches!(
+        crate::cow_refine::write_fault(&mut exc, &mut pf, PARENT, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
+    assert!(matches!(
+        crate::cow_refine::write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+        WriteOutcome::Faulted(ExceptionKind::PageFault { .. })
+    ));
     assert!(exc.pending_exc.contains_key(&PARENT));
     assert!(exc.pending_exc.contains_key(&CHILD));
 }
