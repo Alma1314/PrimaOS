@@ -131,10 +131,12 @@ pub fn base_exc() -> State {
         booted: true,
         ..State::default()
     };
+    // COW 写故障：子只读共享页物理存在（page_present=true），写触发可写访问故障。
+    // supported_kind 必须与 write_fault 对此类页实际递送的故障类型一致。
     exc.exc_sources.insert(
         page_fault_source_id(),
         crate::state::ExceptionSource {
-            supported_kind: ExceptionKind::PageFault { page_present: false, writable_fault: true },
+            supported_kind: ExceptionKind::PageFault { page_present: true, writable_fault: true },
             active: true,
         },
     );
