@@ -5,6 +5,7 @@ mod memseg_refine;
 mod ops;
 mod pagewalk;
 mod state;
+mod tlb_refine;
 
 #[cfg(test)]
 mod cow_refine_tests;
@@ -12,6 +13,8 @@ mod cow_refine_tests;
 mod memseg_refine_tests;
 #[cfg(test)]
 mod pagewalk_tests;
+#[cfg(test)]
+mod tlb_refine_tests;
 
 use abstract_ops::bootstrap;
 use ops::{exc_resume, raise_exception, schedule};
