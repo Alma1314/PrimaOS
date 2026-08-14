@@ -204,6 +204,83 @@ fn main() {
         println!("PASS model-test memseg page-walk dual view");
         println!("PASS model-test memseg W6/W7 checks");
     }
+
+    // COW 组合协议冒烟：共享只读 → 写触发 fault → 复制换私写 → exc_resume
+    // 依 §12.8：全程仅组合既有 memseg/ops 原语，未新增任何内核机制。
+    {
+        use cow_refine::{
+            CHILD, CODE_SEG, COW_VA, CowProbe, FRAME_CAP, PARENT, base_exc, new_refine,
+            probe_write, resume_frame, write_fault,
+        };
+        use memseg_refine::{
+            SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create, memseg_map,
+            memseg_unmap,
+        };
+        use ops::exc_resume;
+        use state::{ACCESS_R, ACCESS_W};
+        let mut pf = new_refine();
+        let mut exc = base_exc();
+        let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+        // 1. 父私写 COW_VA，子只读共享
+        assert_eq!(probe_write(&pf, PARENT, COW_VA), CowProbe::Writable);
+        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
+        println!("PASS cow shared read-only probe");
+        // 2. 子写只读共享页 → 递送 page fault → Faulted
+        assert!(matches!(
+            write_fault(&mut exc, &mut pf, CHILD, COW_VA),
+            cow_refine::WriteOutcome::Faulted(state::ExceptionKind::PageFault { .. })
+        ));
+        assert_eq!(exc.tasks[&CHILD].status, state::TaskStatus::Faulted);
+        println!("PASS cow write-page-fault");
+        // 3. 分配副本段：与父共享页同帧卡片数、物理帧相离 → 写隔离成立
+        let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("copy seg");
+        let parent_frames = pf.segments[&1].frames.clone();
+        let copy_frames = pf.segments[&copy_seg].frames.clone();
+        assert_eq!(
+            parent_frames.len(),
+            copy_frames.len(),
+            "副本应复制父共享页相同帧卡片数"
+        );
+        assert!(
+            parent_frames.iter().all(|f| !copy_frames.contains(f)),
+            "副本帧须与原共享页相离，写隔离才成立"
+        );
+        memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).expect("unmap read-only");
+        memseg_map(
+            &mut pf,
+            rights,
+            true,
+            copy_seg,
+            CHILD,
+            0,
+            COW_VA,
+            1,
+            ACCESS_R | ACCESS_W,
+        )
+        .expect("map private");
+        exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
+        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
+        println!("PASS cow copy-and-remap");
+        // 4. 写入合法用户恢复帧并 exc_resume → Ready（本 smoke 不再 schedule，维持 Roundtrip 步骤 7-8 已由测试覆盖）
+        let frame = resume_frame();
+        exc.segments
+            .get_mut(&CODE_SEG)
+            .unwrap()
+            .bytes
+            .copy_from_slice(&frame.encode());
+        exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).expect("resume child");
+        assert_eq!(exc.tasks[&CHILD].status, state::TaskStatus::Ready);
+        assert!(!exc.pending_exc.contains_key(&CHILD));
+        println!("PASS cow exc_resume roundtrip");
+        // 5. 终态：子私写可写；α 全程成立；未新增内核机制
+        assert_eq!(probe_write(&pf, CHILD, COW_VA), CowProbe::Writable);
+        assert_eq!(probe_write(&pf, PARENT, COW_VA), CowProbe::Writable);
+        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
+        assert!(memseg_alpha(&pf));
+        assert_eq!(pf.segments[&1].frames, parent_frames);
+        assert_eq!(pf.segments[&copy_seg].frames, copy_frames);
+        println!("PASS model-test cow fork no-new-kernel-mechanism");
+    }
 }
 
 #[cfg(test)]

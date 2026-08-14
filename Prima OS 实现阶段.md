@@ -43,6 +43,7 @@
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
 | 最近细化证据 | TEST-005：2026-08-13 在验收 HEAD `1f682db600947f49975eca91e045cae222bb8089` 上，Rust `MODEL-TEST` 100/100 与 workspace 123/123 通过，并获独立 verification PASS；仅为 host 模型、regression/lint 与既有 QEMU 启动闭环无回归，证据边界见 TEST-005。 |
 | BLK-002 细化（本切片） | 2026-08-13 — MemorySegment host 四级索引树与双视图的 `REFINEMENT-DESIGN`；`MODEL-TEST` 检查 canonical 地址拒绝、失败原子性、α mutation 隔离和 allocator partition。`cargo test -p cosir` 69 tests 通过；未覆盖真实 CR3/PTE、非叶权限与页表页物理身份、TLB、多核、真实硬件原子更新窗口或机器证明。 |
+| COW 组合（本切片） | 2026-08-14 — 以既有 memseg/ops 原语组合表达 COW fork：共享只读 → 写 fault → 复制换私写 → `exc_resume`。`MODEL-TEST` 检查成功路径与原位码，反例 R1（并发需用户态协调）与 R4（内核式自动 COW 不可表达）边界如实列出；R4 为对 §12.8 “用户态 COW” 的边界澄清、非 H1 反例。本切片无需新增内核原语；未作真实 trap/TLB/多核细化，见 SPEC-015。 |
 
 当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现；尚无机器证明、物理内存发现、页表与 trap 框架、POSIR Bootstrap 或兼容性测试证据。
 
@@ -59,6 +60,7 @@
 | SPEC-012 | MODEL-TEST + 源码审查 | `COSIR 原语规范.md` §12.9/§12.10、`cosir/src/main.rs`、`cosir/src/state.rs`、`cosir/src/ops.rs`；证据：TEST-005 | 2026-08-13 | `MODEL-TEST` 检查 `exc_resume` Capability/订阅授权、`0xA0` little-endian 帧、RIP/RSP/CS/SS/RFLAGS、pending/source/kind、不可恢复异常、最终状态、精确已消费 region、失败完整 State 原子性、二次消费与 Audit；不直接观察内部 mutation 时序。源码审查确认实现顺序为 frame bytes `fill(0)` → pending remove → kernel frame → Audit → Ready；TEST-005 的独立 verification 为 PASS（无 Critical/Important）。不代表真实 trap/`iretq`、`KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S0-D1、S0-D2 |
 | SPEC-013 | 细化规范与可执行模型 | `COSIR 原语规范.md` §20、`cosir/src/machine.rs`、`cosir/src/abstract_ops.rs` | 2026-08-07 | 定义 x86_64 MachineState、抽象函数 α 与 Bootstrap 细化对应；`cargo test -p cosir` 17 tests 通过；`cargo xtask test` 六条 PASS | S0-D4 |
 | SPEC-014 | MODEL-TEST + REFINEMENT-DESIGN | COSIR 原语规范 §20.5、cosir/src/pagewalk.rs、cosir/src/memseg_refine.rs | 2026-08-12 | host 四级索引树与 vspace 双视图设计；`MODEL-TEST` 检查 W6/W7，W8 仅有 unmap entry-page guard；未覆盖非叶权限、页表页物理身份、TLB、多核、真实 CR3/PTE 与原子更新窗口；`cargo test -p cosir` 42 tests 通过 | S0-D4 |
+| SPEC-015 | MODEL-TEST + REFINEMENT-DESIGN + 反例 | COSIR 原语规范 §12.8、cosir/src/cow_refine.rs、cosir/src/cow_refine_tests.rs、cosir/src/main.rs COW 冒烟 | 2026-08-14 | host `cow_refine` 组合既有 memseg/ops 原语证明可表达 COW fork，全程无需新增内核机制；成功路径 8 步（共享只读→写 fault→复制换私写→`exc_resume`→S4 终态）。反例 R1（并发写共享只读页各 fault，需用户态协调）与 R4（不换映射直接恢复则页仍只读、内核式自动复制不可表达）边界如实记录——R4 为对 §12.8“用户态 COW”的边界澄清、非 H1 反例。`cargo run -p cosir` 冒烟新增 5 条 PASS；不宣称 `KERNEL-TRACE`/`REFINEMENT-PROOF` | S0-D4 |
 | TEST-004 | 阶段一命令验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo test --workspace`、`cargo xtask test` | 2026-08-13 | 在 `60a61bd0e01d568541c43edf557ac12b341e0a1f`，cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29) 上全部退出码 0：fmt 无差异；cosir 69/69；workspace cosir 69/69 + xtask 23/23（92/92）；clippy 无 warnings；QEMU BIOS run=1/2 输出六条 PASS。直接支持 host `MODEL-TEST`、lint 与既有 QEMU 启动闭环无回归；不支持真实 CR3/PTE 细化、非叶权限/页表页物理身份、TLB、多核、真实硬件原子更新窗口、机器证明或阶段一退出条件已满足。 | S0-D4、S1-D1、S1-D2、S1-X1 |
 | TEST-005 | 阶段二 exc_resume 独立验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo test --workspace`、`cargo xtask test`、独立 verification | 2026-08-13 | 验收 HEAD `1f682db600947f49975eca91e045cae222bb8089`；cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29)、rustup 1.29.0 (28d1352db 2026-03-05)。fmt 无差异；cosir 100/100；workspace cosir 100/100 + xtask 23/23（123/123）；clippy 无 warnings；xtask 六条 PASS；独立 verification verdict PASS（无 Critical/Important）。仅支持 host `MODEL-TEST`、workspace regression/lint 与既有 QEMU 启动闭环无回归；xtask 不证明真实 trap/`iretq`。不证明 `KERNEL-TRACE`、`REFINEMENT-PROOF` 或机器证明，也不表示阶段退出条件整体满足。 | S0-D1、S0-D2、S1-D1、S1-D2、S1-X1 |
 
@@ -78,6 +80,8 @@
 | ISSUE-EXC-002 | 恢复帧没有实际字节编码，RIP/RSP/CS/SS/RFLAGS 未完整验证 | TEST-005 host `MODEL-TEST` 与独立 verification PASS | 阶段二 | wire-format 与字段 mutation tests 通过 | Fixed |
 | ISSUE-EXC-003 | 成功恢复未清零用户帧、保存 kernel frame 或追加 Audit | TEST-005 host `MODEL-TEST`、源码审查与独立 verification PASS | 阶段二 | `MODEL-TEST` 的最终状态、精确 consumed region、二次消费与 Audit 检查通过；源码审查确认提交顺序 | Fixed |
 | ISSUE-EXC-004 | §12.9/§12.10、旧设计与实现接口矛盾 | TEST-005、规范与 tracker 已与三参数接口、`0xA0` 帧、实现提交顺序及 host 模型证据边界一致 | 阶段二 | 三份文档与最终接口、源码审查的提交顺序及 MODEL-TEST 范围一致 | Fixed |
+| ISSUE-COW-001 | 内核式 COW 自动复制在既存原语下不可表达 | SPEC-015 反例 R4（host `MODEL-TEST`） | 阶段二 | R4 为对 §12.8“用户态 COW”的边界澄清，非 H1 反例；COW 复制必须由用户态/LibOS 显式换映射触发 | Open（边界澄清，非缺陷） |
+| ISSUE-COW-002 | 并发写共享只读页各 fault、无合并原语 | SPEC-015 反例 R1（host `MODEL-TEST`） | 阶段二 | 并发 COW 协调为用户态显式责任；切片未新增内核原语 | Open（边界澄清，非缺陷） |
 
 ## 研究停止条件与下一垂直切片
 

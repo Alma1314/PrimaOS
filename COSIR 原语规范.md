@@ -1373,6 +1373,8 @@ Exception 和 Send 是两个正交的通信维度：
 
 **这不是内核提供的 `fork`。** 它是用通用原语构造的 `fork` 语义。内核只知道"page fault 发生了"和"订阅了这个源的 Task 收到通知"。所有 COW 逻辑都在用户态。
 
+**证据边界：** 上述原语组合已在 host 模型 `cosir/src/cow_refine.rs` 下以 `MODEL-TEST`（反例 R1–R4 与成功路径 8 步，含 `main.rs` COW 冒烟）证明可表达 COW，且本切片**无需新增内核原语**。边界如实列出：反例 R4（不换映射直接恢复则该页仍只读，内核式自动 COW 复制不可从既存原语演绎）为对本节"用户态 COW"的边界澄清，非 H1 反例；反例 R1（两个 Task 并发写同一共享只读页时各 fault、无合并原语）表明并发 COW 协调是用户态显式责任。本证据仅为 host `MODEL-TEST`/`REFINEMENT-DESIGN`，**不宣称 `KERNEL-TRACE` 或 `REFINEMENT-PROOF`**。
+
 ### 12.9 Page fault 的异常源语义细节
 
 `PageFault` 是最复杂的异常类型，因为它涉及"Task 当前无法继续执行"的同步语义。以下详细定义页故障在抽象状态机中的行为：
