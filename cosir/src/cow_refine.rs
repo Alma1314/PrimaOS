@@ -14,6 +14,7 @@ pub const PARENT: TaskId = 1;
 pub const CHILD: TaskId = 2;
 pub const COW_VA: u64 = 0x4000_0000;
 pub const CODE_VA: u64 = 0x5000_0000;
+pub const STACK_VA: u64 = 0x6000_0000; // 独立可写用户页：恢复帧 RSP 落点（与 COW 只读共享页解耦）
 pub const CODE_SEG: u32 = 2; // frame 载体段：C 可写、内核可读
 pub const FRAME_CAP: u32 = 12; // C 对 CODE_SEG 的 SegWrite capability
 
@@ -21,17 +22,19 @@ pub fn page_fault_source_id() -> ExcSourceId {
     1
 }
 
-/// 帧池 4 帧；P(1) 与 C(2) 已 spawn；数据段 seg=1（RW）、可执行段 seg=2（X）。
+/// 帧池 4 帧；P(1) 与 C(2) 已 spawn；数据段 seg=1（RW）、可执行段 seg=2（X）、栈段 seg=3（RW）。
 pub fn new_refine() -> RefineState {
     let mut pf = RefineState::new(&[0x1000, 0x2000, 0x3000, 0x4000]).expect("valid frame universe");
     spawn_task(&mut pf, PARENT, CODE_VA).expect("spawn parent");
     spawn_task(&mut pf, CHILD, CODE_VA).expect("spawn child");
     let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
-    // 数据段 seg=1（RW）；代码段 seg=2（X，兼作 frame 载体）
+    // 数据段 seg=1（RW）；代码段 seg=2（X，兼作 frame 载体）；栈段 seg=3（RW，RSP 落点）
     let data_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("create data seg");
     assert_eq!(data_seg, 1);
     let code_seg = memseg_create(&mut pf, 1, ACCESS_X).expect("create code seg");
     assert_eq!(code_seg, 2);
+    let stack_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("create stack seg");
+    assert_eq!(stack_seg, 3);
     // 数据：父私写、子只读
     memseg_map(&mut pf, rights, true, data_seg, PARENT, 0, COW_VA, 1, ACCESS_R | ACCESS_W)
         .expect("map parent data RW");
@@ -42,14 +45,19 @@ pub fn new_refine() -> RefineState {
         .expect("map parent code X");
     memseg_map(&mut pf, rights, true, code_seg, CHILD, 0, CODE_VA, 1, ACCESS_X)
         .expect("map child code X");
+    // 栈：父子都可写（frame RSP 落点，与 COW 只读共享页解耦）
+    memseg_map(&mut pf, rights, true, stack_seg, PARENT, 0, STACK_VA, 1, ACCESS_R | ACCESS_W)
+        .expect("map parent stack RW");
+    memseg_map(&mut pf, rights, true, stack_seg, CHILD, 0, STACK_VA, 1, ACCESS_R | ACCESS_W)
+        .expect("map child stack RW");
     pf
 }
 
-/// 构造一个合法恢复帧：RIP 在可执行 CODE_VA、RSP 在可写 COW_VA（user canonical）。
+/// 构造一个合法恢复帧：RIP 在可执行 CODE_VA、RSP 在可写 STACK_VA（user canonical）。
 pub fn resume_frame() -> SretFrame {
     SretFrame {
         rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
-        rsp: COW_VA + 0x80, r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+        rsp: STACK_VA + 0x80, r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
         rflags: 0x202, rip: CODE_VA + 0x80, cs: USER_CS, ss: USER_SS,
     }
 }
@@ -109,6 +117,7 @@ pub fn base_exc() -> State {
             vspace: vec![
                 PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
                 PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
+                PageMapping { base: STACK_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
             ],
             kernel_resume_frame: None,
         },
@@ -121,6 +130,7 @@ pub fn base_exc() -> State {
             vspace: vec![
                 PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R, user: true },
                 PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
+                PageMapping { base: STACK_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
             ],
             kernel_resume_frame: None,
         },
