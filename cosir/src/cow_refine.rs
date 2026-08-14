@@ -3,7 +3,7 @@
 use crate::memseg_refine::{
     RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_create, memseg_map, spawn_task,
 };
-use crate::pagewalk::PAGE_SIZE;
+use crate::pagewalk::{PAGE_SIZE, translate};
 use crate::state::{
     ACCESS_R, ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapObject, Capability,
     ExceptionKind, ExcSourceId, PageMapping, SRET_FRAME_LEN, SretFrame, State, Task, TaskId,
@@ -59,6 +59,27 @@ pub fn resume_frame() -> SretFrame {
         rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
         rsp: STACK_VA + 0x80, r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
         rflags: 0x202, rip: CODE_VA + 0x80, cs: USER_CS, ss: USER_SS,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CowProbe { ReadOnly, Writable, NotMapped }
+
+/// 纯查询该 vaddr 在 task 四级树中的可写观测（无副作用）。
+pub fn probe_write(pf: &RefineState, task: TaskId, va: u64) -> CowProbe {
+    let Some(tc) = pf.tasks.get(&task) else {
+        return CowProbe::NotMapped;
+    };
+    let Ok(Some(pte)) = translate(&tc.table, va) else {
+        return CowProbe::NotMapped;
+    };
+    if !pte.present || !pte.user {
+        return CowProbe::NotMapped;
+    }
+    if pte.writable {
+        CowProbe::Writable
+    } else {
+        CowProbe::ReadOnly
     }
 }
 
