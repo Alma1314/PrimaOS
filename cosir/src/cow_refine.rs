@@ -109,6 +109,22 @@ pub fn write_fault(exc: &mut State, pf: &mut RefineState, task: TaskId, va: u64)
     WriteOutcome::Faulted(kind)
 }
 
+/// 跨模型一致性断言：COW_VA 页在 RefineState 四级树中的可观测权限
+/// 必须等于 ops 态中覆盖该页的 PageMapping 权限（且该 mapping 为 user）。
+/// 仅检查 COW_VA 页；两模型任一缺失该 Task 即不一致。
+pub fn cow_state_consistent(pf: &RefineState, exc: &State, task: TaskId) -> bool {
+    let (Some(tc), Some(tk)) = (pf.tasks.get(&task), exc.tasks.get(&task)) else {
+        return false;
+    };
+    let Some(pf_access) = tc.vspace.get(&COW_VA).map(|r| r.access) else {
+        return false;
+    };
+    match tk.vspace.iter().find(|m| m.contains(COW_VA)) {
+        Some(mapping) => mapping.user && mapping.access == pf_access,
+        None => false,
+    }
+}
+
 /// 异常源、capability、订阅、P/C task（Running）与 frame Segment(seg=2) 就绪的 ops 态。
 pub fn base_exc() -> State {
     let mut exc = State {
