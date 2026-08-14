@@ -283,6 +283,42 @@ fn main() {
         assert_eq!(pf.segments[&copy_seg].frames, copy_frames);
         println!("PASS model-test cow fork no-new-kernel-mechanism");
     }
+
+    // TLB 细化冒烟：非强制刷新 + 显式失效（spec 2026-08-15-tlb-refine-design.md）。
+    // 每 Task 独立 TLB；换映射后未失效命中陈旧只读 TLB，显式失效后走新可写 PTE。
+    {
+        use memseg_refine::{
+            RefineState, SEG_MAP_R, SEG_MAP_W, memseg_create, memseg_map, memseg_unmap, spawn_task,
+        };
+        use state::{ACCESS_R, ACCESS_W};
+        use tlb_refine::{access_allowed, flush_all, has_tlb, invalidate_va, translate};
+
+        let mut pf = RefineState::new(&[0x1000, 0x2000, 0x3000, 0x4000]).expect("universe");
+        spawn_task(&mut pf, 1, 0x6000_0000).expect("spawn");
+        let seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("seg");
+        let rights = SEG_MAP_R | SEG_MAP_W;
+        memseg_map(&mut pf, rights, true, seg, 1, 0, 0x4000_0000, 1, ACCESS_R).expect("map R");
+        let mut tlb = tlb_refine::TlbState::new();
+        let xl = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("walk fills");
+        assert!(!access_allowed(&xl, true), "只读 map 的首访不应许可写");
+        assert!(has_tlb(&tlb, 1, 0x4000_0000), "未命中后应填充 TLB");
+        // 换映射为可写（unmap+map），未失效
+        memseg_unmap(&mut pf, true, 1, 0x4000_0000, 1).expect("unmap");
+        let seg2 = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("seg2");
+        memseg_map(&mut pf, rights, true, seg2, 1, 0, 0x4000_0000, 1, ACCESS_W).expect("remap W");
+        let xl2 = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("stale hit");
+        assert!(!access_allowed(&xl2, true), "未 flush 应命中陈旧只读 TLB");
+        // 显式失效后走新可写 PTE
+        invalidate_va(&mut tlb, 1, 0x4000_0000).expect("invalidate");
+        assert!(!has_tlb(&tlb, 1, 0x4000_0000), "失效后不应命中");
+        let xl3 = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("walk new");
+        assert!(access_allowed(&xl3, true), "失效后应走新可写 PTE");
+        // flush_all 全量失效
+        let _ = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("refill");
+        flush_all(&mut tlb, 1).expect("flush all");
+        assert!(!has_tlb(&tlb, 1, 0x4000_0000), "flush_all 后应清空");
+        println!("PASS model-test tlb non-coherent refresh + explicit invalidation");
+    }
 }
 
 #[cfg(test)]
