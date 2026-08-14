@@ -1,10 +1,13 @@
 mod abstract_ops;
+mod cow_refine;
 mod machine;
 mod memseg_refine;
 mod ops;
 mod pagewalk;
 mod state;
 
+#[cfg(test)]
+mod cow_refine_tests;
 #[cfg(test)]
 mod memseg_refine_tests;
 #[cfg(test)]

@@ -1,0 +1,129 @@
+#![allow(dead_code)]
+
+use crate::memseg_refine::{
+    RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_create, memseg_map, spawn_task,
+};
+use crate::pagewalk::PAGE_SIZE;
+use crate::state::{
+    ACCESS_R, ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapObject, Capability,
+    ExceptionKind, ExcSourceId, PageMapping, SRET_FRAME_LEN, SretFrame, State, Task, TaskId,
+    TaskStatus, USER_CS, USER_SS,
+};
+
+pub const PARENT: TaskId = 1;
+pub const CHILD: TaskId = 2;
+pub const COW_VA: u64 = 0x4000_0000;
+pub const CODE_VA: u64 = 0x5000_0000;
+pub const CODE_SEG: u32 = 2; // frame 载体段：C 可写、内核可读
+pub const FRAME_CAP: u32 = 12; // C 对 CODE_SEG 的 SegWrite capability
+
+pub fn page_fault_source_id() -> ExcSourceId {
+    1
+}
+
+/// 帧池 4 帧；P(1) 与 C(2) 已 spawn；数据段 seg=1（RW）、可执行段 seg=2（X）。
+pub fn new_refine() -> RefineState {
+    let mut pf = RefineState::new(&[0x1000, 0x2000, 0x3000, 0x4000]).expect("valid frame universe");
+    spawn_task(&mut pf, PARENT, CODE_VA).expect("spawn parent");
+    spawn_task(&mut pf, CHILD, CODE_VA).expect("spawn child");
+    let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
+    // 数据段 seg=1（RW）；代码段 seg=2（X，兼作 frame 载体）
+    let data_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("create data seg");
+    assert_eq!(data_seg, 1);
+    let code_seg = memseg_create(&mut pf, 1, ACCESS_X).expect("create code seg");
+    assert_eq!(code_seg, 2);
+    // 数据：父私写、子只读
+    memseg_map(&mut pf, rights, true, data_seg, PARENT, 0, COW_VA, 1, ACCESS_R | ACCESS_W)
+        .expect("map parent data RW");
+    memseg_map(&mut pf, rights, true, data_seg, CHILD, 0, COW_VA, 1, ACCESS_R)
+        .expect("map child data R");
+    // 代码：父子都可执行（frame RIP 落点）
+    memseg_map(&mut pf, rights, true, code_seg, PARENT, 0, CODE_VA, 1, ACCESS_X)
+        .expect("map parent code X");
+    memseg_map(&mut pf, rights, true, code_seg, CHILD, 0, CODE_VA, 1, ACCESS_X)
+        .expect("map child code X");
+    pf
+}
+
+/// 构造一个合法恢复帧：RIP 在可执行 CODE_VA、RSP 在可写 COW_VA（user canonical）。
+pub fn resume_frame() -> SretFrame {
+    SretFrame {
+        rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+        rsp: COW_VA + 0x80, r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+        rflags: 0x202, rip: CODE_VA + 0x80, cs: USER_CS, ss: USER_SS,
+    }
+}
+
+/// 异常源、capability、订阅、P/C task（Running）与 frame Segment(seg=2) 就绪的 ops 态。
+pub fn base_exc() -> State {
+    let mut exc = State {
+        booted: true,
+        ..State::default()
+    };
+    exc.exc_sources.insert(
+        page_fault_source_id(),
+        crate::state::ExceptionSource {
+            supported_kind: ExceptionKind::PageFault { page_present: false, writable_fault: true },
+            active: true,
+        },
+    );
+    exc.capabilities.insert(
+        10,
+        Capability {
+            owner: CHILD,
+            object: CapObject::ExceptionSource(page_fault_source_id()),
+            rights: CAP_EXC_SUBSCRIBE,
+            active: true,
+        },
+    );
+    // frame 载体段 = 代码段 CODE_SEG；C 有写权
+    exc.capabilities.insert(
+        FRAME_CAP,
+        Capability {
+            owner: CHILD,
+            object: CapObject::Segment(CODE_SEG),
+            rights: CAP_SEG_WRITE,
+            active: true,
+        },
+    );
+    // 同时给 P 一个指向 / 无 frame 权（P 不参与 exc_resume，仅保持订阅）
+    exc.segments.insert(
+        CODE_SEG,
+        crate::state::Segment {
+            bytes: {
+                let frame = resume_frame();
+                let mut bytes = vec![0; SRET_FRAME_LEN];
+                bytes.copy_from_slice(&frame.encode());
+                bytes
+            },
+            kernel_readable: true,
+        },
+    );
+    exc.subscriptions.insert((PARENT, page_fault_source_id()));
+    exc.subscriptions.insert((CHILD, page_fault_source_id()));
+    exc.tasks.insert(
+        PARENT,
+        Task {
+            id: PARENT,
+            status: TaskStatus::Running,
+            vspace: vec![
+                PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R | ACCESS_W, user: true },
+                PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
+            ],
+            kernel_resume_frame: None,
+        },
+    );
+    exc.tasks.insert(
+        CHILD,
+        Task {
+            id: CHILD,
+            status: TaskStatus::Running,
+            vspace: vec![
+                PageMapping { base: COW_VA, len: PAGE_SIZE, access: ACCESS_R, user: true },
+                PageMapping { base: CODE_VA, len: PAGE_SIZE, access: ACCESS_X, user: true },
+            ],
+            kernel_resume_frame: None,
+        },
+    );
+    exc
+}
