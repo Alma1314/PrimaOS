@@ -1,8 +1,18 @@
 # COW fork 组合协议细化实现计划
 
+> Status: Completed / Archived
+>
+> 本文件是 2026-08-14 的历史实施计划，不再是当前可执行指令。当前治理与后继要求以 `docs/superpowers/specs/2026-08-16-primaos-audit-remediation-design.md` 和 `Prima OS 实现阶段.md` 为权威。
+>
+> Evidence: SPEC-015
+>
+> Implementation commits: `518670e`, `43d940b`, `18aac5f`, `1357a4d`, `a65fce6`, `5827d75`, `54f932f`
+>
+> Deprecated assumptions: “证明完整 COW fork”、无条件“无需新增内核机制”、副本复用原物理帧、测试手工同步双状态。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 新增 `cow_refine` 验证层，证伪验证 §12.8 声明的原语组合能否在 host 模型中精确表达 COW fork，无需新增内核机制，并诚实记录成功路径与反例边界。
+**历史 Goal（已弃用，非当前结论）：** 本计划曾拟新增 `cow_refine` 验证层，以测试 §12.8 声明的原语组合；“精确表达 COW fork”与“无需新增内核机制”均为已弃用的强主张，不能由本计划或 host `MODEL-TEST` 支持。成功路径与反例边界的当前证据范围以权威设计和 tracker 为准。
 
 **Architecture:** 新增 `cosir/src/cow_refine.rs`，同时持用既有 `memseg_refine::RefineState`（四级索引树/PTE/segment/帧池）与 `ops::State`（`Faulted`/`pending_exc`/`exc_resume`/Audit），以 `TaskId` 对齐；不修改两个既有模型。公开 `probe_write`（纯查询）、`write_fault`（组合动作，`Wrote|Faulted`）、`cow_state_consistent`（跨模型一致性断言）。TDD：先写失败测试，再最小实现，独立提交。
 
@@ -566,13 +576,20 @@ COW 8 步到 host 的映射（全部在测试函数内逐步执行并逐断言�
 1. P 私有 RW（fixture 已建）→ `write_fault(P)` = `Wrote`。
 2. C 只读共享（fixture 已建）→ `alpha` 与 `cow_state_consistent(C)` 成立。
 3. C 写 → `write_fault(C)` = `Faulted`；`cow_state_consistent(C)` 仍成立（仅 status 变）。
-4. 副本：`let copy_seg = memseg_create(&mut pf, 1, ACCESS_R|ACCESS_W)`（seg 2），复制原段帧地址集合。
-5. C 换私写：`memseg_unmap(pf, true, CHILD, COW_VA, 1)` + `memseg_map(pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1, ACCESS_R|ACCESS_W)`；同步 ops `tasks[CHILD].vspace[0].access = RW`。断言 `cow_state_consistent(C)`。
-6. `exc_resume`：准备 frame Segment 里写入 valid `SretFrame`（rip/rsp 落在 mapped user canonical：`COW_VA+0x80`），cap 10/11 已就绪；`exc_resume(&mut exc, CHILD, 10, 11, 0)` → Ok。
-7. `schedule(&mut exc, CHILD)` → C Running。
-8. 终态断言：`cow_state_consistent(C)` 为 true 且 access==RW；`write_fault(P)` 仍 `Wrote`；父段 seg 1 帧集合不变；子段 seg 2 帧集合 = 复制；`memseg_alpha` 全程成立。
+4. 历史错误（已更正）：曾将 `memseg_create` 后的新段误写为“复制原段帧地址集合”。现行 host 语义是分配页数相同且物理帧相离的新 Segment。
+5. C 换私写：历史计划曾使用 `memseg_unmap`/`memseg_map` 并手工同步 ops；现由 `CowSliceState::privatize_cow` 统一执行。
+6. `exc_resume`：现行组合路径在受保护恢复帧验证后恢复为 Ready，且不隐式调度。
+7. 显式 `CowSliceState::schedule(CHILD)` → C Running。
+8. 终态检查：组合不变量成立；子新段与父段页数相同、物理帧相离；不对帧字节内容作结论。
 
-**步骤 4 的"复制帧"表达**：memseg 的 copy 只复制物理帧地址集合语义（host 不模拟内存内容）。测试断言 `copy_seg` 拥有与原段相同的物理帧集合。
+**历史“复制帧”纠错。** 旧计划错误地把副本表述为复用原物理帧。现行 host 模型不模拟字节内容复制；私有化只检查页数相同和物理帧相离：
+
+```rust
+assert_eq!(parent_frames.len(), copy_frames.len());
+assert!(parent_frames.iter().all(|frame| !copy_frames.contains(frame)));
+```
+
+这不表示字节内容复制。
 
 - [ ] **Step 1: 写成功路径测试**
 
@@ -587,7 +604,7 @@ use crate::state::{ACCESS_R, ACCESS_W, ExceptionKind, TaskStatus};
 
 ```rust
 #[test]
-fn cow_roundtrip_proves_no_new_kernel_mechanism() {
+fn historical_cow_roundtrip_archived() {
     let mut pf = new_refine();
     let mut exc = base_exc();
     let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
@@ -605,11 +622,13 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
     assert_eq!(exc.tasks[&CHILD].status, TaskStatus::Faulted);
     assert!(crate::cow_refine::cow_state_consistent(&pf, &exc, CHILD));
 
-    // 4. 父（LibOS 角色）分配副本段并复制原帧集合
+    // 历史错误（已更正）：副本不复用原物理帧；host 模型仅表示等页数、相离分配。
     let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).unwrap();
     let parent_frames = pf.segments[&1].frames.clone();
     let copy_frames = pf.segments[&copy_seg].frames.clone();
-    assert_eq!(parent_frames, copy_frames, "副本复制原段物理帧集合");
+    assert_eq!(parent_frames.len(), copy_frames.len());
+    assert!(parent_frames.iter().all(|frame| !copy_frames.contains(frame)));
+    // 这不表示字节内容复制。
 
     // 5. 子换为私写副本
     memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).unwrap();
@@ -642,7 +661,7 @@ fn cow_roundtrip_proves_no_new_kernel_mechanism() {
 - [ ] **Step 2: 确认红灯**
 
 Run: `cargo test -p cosir cow_roundtrip -- --nocapture`
-Expected: FAIL（`cow_roundtrip_proves_no_new_kernel_mechanism` 缺失/未编译；`resume_frame` 等符号已由 Task 1 提供）。
+历史预期：旧函数 `cow_roundtrip_proves_no_new_kernel_mechanism` 曾应当在旧计划步骤中缺失/未编译；该名称为历史夸大措辞，不是当前测试或结论。 `resume_frame` 等符号当时由 Task 1 提供。
 
 - [ ] **Step 3: 实现使测试通过**
 
@@ -839,7 +858,10 @@ git commit -m "test: record COW concurrency and kernel-COW inexpressibility boun
                          cow_refine::WriteOutcome::Faulted(state::ExceptionKind::PageFault { .. })));
         let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("copy seg");
         let parent_frames = pf.segments[&1].frames.clone();
-        assert_eq!(pf.segments[&copy_seg].frames, parent_frames);
+        let copy_frames = pf.segments[&copy_seg].frames.clone();
+        assert_eq!(parent_frames.len(), copy_frames.len());
+        assert!(parent_frames.iter().all(|frame| !copy_frames.contains(frame)));
+        // 这不表示字节内容复制。
         memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).expect("unmap read-only");
         memseg_map(&mut pf, rights, true, copy_seg, CHILD, 0, COW_VA, 1,
                    ACCESS_R | ACCESS_W).expect("map private");
@@ -854,7 +876,7 @@ git commit -m "test: record COW concurrency and kernel-COW inexpressibility boun
         println!("PASS cow write-page-fault");
         println!("PASS cow copy-and-remap");
         println!("PASS cow exc_resume roundtrip");
-        println!("PASS model-test cow fork no-new-kernel-mechanism");
+        println!("PASS model-test cow fork archived-historical-scenario");
     }
 ```
 
@@ -862,7 +884,7 @@ Run:
 ```bash
 cargo run -p cosir
 ```
-Expected: 输出新增四条 `PASS cow ...` + 一条 `PASS model-test cow ...`，且程序退出 0。
+Expected（历史验收记录，非当前证据）：输出新增四条 `PASS cow ...` + 一条 `PASS model-test cow fork archived-historical-scenario`，且程序退出 0。该输出不证明 COW 可表达性或无需新增内核原语。
 
 - [ ] **Step 2: tracker 加证据条目**
 
@@ -870,7 +892,7 @@ Expected: 输出新增四条 `PASS cow ...` + 一条 `PASS model-test cow ...`�
 
 - [ ] **Step 3: COSIR §12.8 证据边界注释**
 
-在 `COSIR 原语规范.md` §12.8 末尾追加一句，声明该原语组合在 host 模型 `cow_refine` 下通过 `MODEL-TEST` 证明可表达 COW 且无需新增内核原语；反例 R1/R4 记录的并发协调与"内核式 COW 不可表达"边界如实列出；不宣称 `KERNEL-TRACE`/`REFINEMENT-PROOF`。
+历史错误（已弃用，非当前指令）：本计划曾要求在 `COSIR 原语规范.md` §12.8 追加“host 模型 `cow_refine` 下通过 `MODEL-TEST` 证明可表达 COW 且无需新增内核原语”的表述。该强主张不成立；host `MODEL-TEST` 仅记录受限场景观察，不能证明 COW 可表达性或无需新增内核原语。反例 R1/R4 的边界及当前证据范围以权威设计和 tracker 为准，且不宣称 `KERNEL-TRACE`/`REFINEMENT-PROOF`。
 
 - [ ] **Step 4: 检查并提交**
 

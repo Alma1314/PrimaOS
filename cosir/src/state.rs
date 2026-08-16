@@ -10,8 +10,20 @@ pub type VirtAddr = u64;
 pub const ACCESS_R: u8 = 0b001;
 pub const ACCESS_W: u8 = 0b010;
 pub const ACCESS_X: u8 = 0b100;
-pub const CAP_EXC_SUBSCRIBE: u8 = 0b0001;
-pub const CAP_SEG_WRITE: u8 = 0b0010;
+pub const CAP_EXC_SUBSCRIBE: u8 = 0b0000_0001;
+pub const CAP_SEG_MAP_R: u8 = 0b0000_0010;
+pub const CAP_SEG_MAP_W: u8 = 0b0000_0100;
+pub const CAP_SEG_MAP_X: u8 = 0b0000_1000;
+#[allow(dead_code)] // Task 6 consumes segment-destroy authority; Task 2 tests its disjoint bit.
+pub const CAP_SEG_DESTROY: u8 = 0b0001_0000;
+pub const CAP_TASK_MANAGE_VSPACE: u8 = 0b0010_0000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageMappingBacking {
+    pub segment: SegId,
+    pub offset: u64,
+    pub frame_phys: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageMapping {
@@ -19,6 +31,10 @@ pub struct PageMapping {
     pub len: u64,
     pub access: u8,
     pub user: bool,
+    /// Complete cross-model identity for mappings owned by a composite slice.
+    /// Standalone ops fixtures may leave this absent; CowSliceState rejects that
+    /// representation because access bits alone cannot establish refinement.
+    pub backing: Option<PageMappingBacking>,
 }
 
 impl PageMapping {
@@ -33,6 +49,7 @@ impl PageMapping {
 pub enum CapObject {
     ExceptionSource(ExcSourceId),
     Segment(SegId),
+    Task(TaskId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +209,8 @@ pub struct ExceptionSource {
 pub struct PendingException {
     pub source_id: ExcSourceId,
     pub kind: ExceptionKind,
+    /// Faulting virtual address for a PageFault; non-addressed exceptions record `None`.
+    pub fault_va: Option<VirtAddr>,
     pub save_frame: SretFrame,
 }
 

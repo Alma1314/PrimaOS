@@ -1,16 +1,12 @@
 use crate::memseg_refine::{
-    MemSegError, RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_alpha_verbose,
-    memseg_create, memseg_destroy, memseg_map, memseg_unmap, spawn_task,
+    MemSegError, RefineState, destroy_verified, map_verified, memseg_alpha, memseg_alpha_verbose,
+    memseg_create, spawn_task, unmap_verified,
 };
 use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 
 // 8 页物理帧
 fn universe() -> Vec<u64> {
     (0u64..8).map(|i| 0x1000 + i * 0x1000).collect()
-}
-
-fn seg_map_rights() -> u8 {
-    SEG_MAP_R | SEG_MAP_W | SEG_MAP_X
 }
 
 fn state() -> RefineState {
@@ -21,18 +17,7 @@ fn mapped_state(access: u8) -> RefineState {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W | ACCESS_X).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        access,
-    )
-    .unwrap();
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, access).unwrap();
     st
 }
 
@@ -124,7 +109,7 @@ fn alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, TID, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
-    memseg_map(&mut st, SEG_MAP_R, true, seg, TID, 0, VA, 1, ACCESS_R).unwrap();
+    map_verified(&mut st, seg, TID, 0, VA, 1, ACCESS_R).unwrap();
 
     // 同步树和 vspace 的访问视图，并使 PTE writable 与 R|W 访问匹配：
     // 唯一被破坏的 α 条件是 access ⊆ segment.allowed_access。
@@ -225,18 +210,7 @@ fn map_inserts_leaf_and_vspace() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R | ACCESS_W,
-    )
-    .expect("map ok");
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_W).expect("map ok");
     let task = &st.tasks[&7];
     assert!(task.vspace.contains_key(&0x5000_0000));
     assert_eq!(task.vspace[&0x5000_0000].segment, seg);
@@ -247,41 +221,17 @@ fn map_inserts_leaf_and_vspace() {
 }
 
 #[test]
-fn map_overlap_rejected_state_unchanged() {
+fn verified_map_rejects_overlap_atomically() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
-    // 精确重叠：再 map 覆盖已映射块
-    let err = memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap_err();
-    assert_eq!(err, MemSegError::Overlap);
-    let mut diag = Vec::new();
-    assert!(
-        memseg_alpha_verbose(&st, &mut diag),
-        "失败后状态仍 W6/W7 有效"
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
+    let before = st.clone();
+    assert_eq!(
+        map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R),
+        Err(MemSegError::Overlap)
     );
+    assert_eq!(st, before);
 }
 
 #[test]
@@ -290,10 +240,8 @@ fn map_rights_exceeded_rejected() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     // 段只允许 R|W，却请求含 X → RightsExceeded
     let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W).unwrap();
-    let err = memseg_map(
+    let err = map_verified(
         &mut st,
-        seg_map_rights(),
-        true,
         seg,
         7,
         0,
@@ -306,43 +254,11 @@ fn map_rights_exceeded_rejected() {
 }
 
 #[test]
-fn map_missing_seg_map_right_rejected() {
-    let mut st = RefineState::new(&universe()).unwrap();
-    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, 1, ACCESS_R | ACCESS_W).unwrap();
-    // 缺 SEG_MAP 授权 → MissingMapRight
-    let err = memseg_map(
-        &mut st,
-        0,
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap_err();
-    assert_eq!(err, MemSegError::MissingMapRight);
-}
-
-#[test]
 fn map_out_of_bounds_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
-    let err = memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        1,
-        0x5000_0000,
-        1,
-        ACCESS_R,
-    )
-    .unwrap_err();
+    let err = map_verified(&mut st, seg, 7, 1, 0x5000_0000, 1, ACCESS_R).unwrap_err();
     assert_eq!(err, MemSegError::OutOfBounds);
 }
 
@@ -351,19 +267,8 @@ fn unmap_clears_leaf_and_vspace() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
-    memseg_unmap(&mut st, true, 7, 0x5000_0000, 2).expect("unmap ok");
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 2, ACCESS_R | ACCESS_W).unwrap();
+    unmap_verified(&mut st, 7, 0x5000_0000, 2).expect("unmap ok");
     let task = &st.tasks[&7];
     assert!(!task.vspace.contains_key(&0x5000_0000));
     assert!(
@@ -385,19 +290,8 @@ fn unmap_entry_page_rejected() {
     spawn_task(&mut st, 7, 0x5000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W | ACCESS_X).unwrap();
     // 映射包含 entry 页
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R | ACCESS_X,
-    )
-    .unwrap();
-    let err = memseg_unmap(&mut st, true, 7, 0x5000_0000, 1).unwrap_err();
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_X).unwrap();
+    let err = unmap_verified(&mut st, 7, 0x5000_0000, 1).unwrap_err();
     assert_eq!(err, MemSegError::EntryMapping);
     // 树与视图不应被清除
     let task = &st.tasks[&7];
@@ -413,29 +307,8 @@ fn unmap_entry_page_rejected() {
 fn unmap_not_mapped_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let err = memseg_unmap(&mut st, true, 7, 0x6000_0000, 1).unwrap_err();
+    let err = unmap_verified(&mut st, 7, 0x6000_0000, 1).unwrap_err();
     assert_eq!(err, MemSegError::NotMapped);
-}
-
-#[test]
-fn unmap_missing_task_vspace_right_rejected() {
-    let mut st = RefineState::new(&universe()).unwrap();
-    spawn_task(&mut st, 7, 0x4000_0000).unwrap();
-    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R,
-    )
-    .unwrap();
-    let err = memseg_unmap(&mut st, false, 7, 0x5000_0000, 1).unwrap_err();
-    assert_eq!(err, MemSegError::MissingRight);
 }
 
 #[test]
@@ -446,7 +319,7 @@ fn destroy_rejects_corrupt_allocator_atomically() {
     st.alloc.free.push(frame);
     let before = st.clone();
     assert_eq!(
-        memseg_destroy(&mut st, true, seg),
+        destroy_verified(&mut st, seg),
         Err(MemSegError::FrameAllocatorCorrupt)
     );
     assert_eq!(st, before);
@@ -458,7 +331,7 @@ fn destroy_returns_frames_and_removes_segment() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
     let before = st.alloc.free.len(); // = 6
-    memseg_destroy(&mut st, true, seg).expect("destroy ok");
+    destroy_verified(&mut st, seg).expect("destroy ok");
     assert!(!st.segments.contains_key(&seg));
     assert_eq!(st.alloc.free.len(), before + 2, "两帧归还");
     let mut diag = Vec::new();
@@ -471,36 +344,16 @@ fn destroy_still_mapped_rejected() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     // 映射进 task 7 → destroy 应拒绝
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R,
-    )
-    .unwrap();
-    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
+    let err = destroy_verified(&mut st, seg).unwrap_err();
     assert_eq!(err, MemSegError::StillMapped);
     assert!(st.segments.contains_key(&seg), "段不删除");
 }
 
 #[test]
-fn destroy_missing_right_rejected() {
-    let mut st = RefineState::new(&universe()).unwrap();
-    let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
-    let err = memseg_destroy(&mut st, false, seg).unwrap_err();
-    assert_eq!(err, MemSegError::MissingRight);
-    assert!(st.segments.contains_key(&seg));
-}
-
-#[test]
 fn destroy_invalid_segment_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
-    let err = memseg_destroy(&mut st, true, 999).unwrap_err();
+    let err = destroy_verified(&mut st, 999).unwrap_err();
     assert_eq!(err, MemSegError::InvalidSegment);
 }
 
@@ -509,9 +362,9 @@ fn destroy_idempotent_double_frees_rejected() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
-    memseg_destroy(&mut st, true, seg).unwrap();
+    destroy_verified(&mut st, seg).unwrap();
     // 再次 destroy → InvalidSegment（段已不在）
-    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    let err = destroy_verified(&mut st, seg).unwrap_err();
     assert_eq!(err, MemSegError::InvalidSegment);
 }
 
@@ -521,18 +374,7 @@ fn map_rejects_range_crossing_canonical_boundary_atomically() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
     let before = st.clone();
-    let err = memseg_map(
-        &mut st,
-        SEG_MAP_R,
-        true,
-        seg,
-        7,
-        0,
-        0x0000_7fff_ffff_f000,
-        2,
-        ACCESS_R,
-    )
-    .unwrap_err();
+    let err = map_verified(&mut st, seg, 7, 0, 0x0000_7fff_ffff_f000, 2, ACCESS_R).unwrap_err();
     assert_eq!(err, MemSegError::InvalidAddress);
     assert_eq!(st, before);
 }
@@ -543,18 +385,7 @@ fn map_rejects_segment_range_overflow_atomically() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
-    let err = memseg_map(
-        &mut st,
-        SEG_MAP_R,
-        true,
-        seg,
-        7,
-        u64::MAX,
-        0x5000_0000,
-        1,
-        ACCESS_R,
-    )
-    .unwrap_err();
+    let err = map_verified(&mut st, seg, 7, u64::MAX, 0x5000_0000, 1, ACCESS_R).unwrap_err();
     assert_eq!(err, MemSegError::ArithmeticOverflow);
     assert_eq!(st, before);
 }
@@ -577,10 +408,8 @@ fn map_rejects_page_index_multiplication_overflow_atomically() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
-    let err = memseg_map(
+    let err = map_verified(
         &mut st,
-        SEG_MAP_R,
-        true,
         seg,
         7,
         0,
@@ -599,10 +428,8 @@ fn map_rejects_page_address_addition_overflow_atomically() {
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 1, ACCESS_R).unwrap();
     let before = st.clone();
-    let err = memseg_map(
+    let err = map_verified(
         &mut st,
-        SEG_MAP_R,
-        true,
         seg,
         7,
         0,
@@ -620,7 +447,7 @@ fn unmap_rejects_noncanonical_address_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let before = st.clone();
-    let err = memseg_unmap(&mut st, true, 7, 0x0000_8000_0000_0000, 1).unwrap_err();
+    let err = unmap_verified(&mut st, 7, 0x0000_8000_0000_0000, 1).unwrap_err();
     assert_eq!(err, MemSegError::InvalidAddress);
     assert_eq!(st, before);
 }
@@ -630,7 +457,7 @@ fn unmap_rejects_range_crossing_canonical_boundary_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let before = st.clone();
-    let err = memseg_unmap(&mut st, true, 7, 0x0000_7fff_ffff_f000, 2).unwrap_err();
+    let err = unmap_verified(&mut st, 7, 0x0000_7fff_ffff_f000, 2).unwrap_err();
     assert_eq!(err, MemSegError::InvalidAddress);
     assert_eq!(st, before);
 }
@@ -640,14 +467,8 @@ fn unmap_rejects_address_arithmetic_overflow_atomically() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let before = st.clone();
-    let err = memseg_unmap(
-        &mut st,
-        true,
-        7,
-        u64::MAX - (crate::pagewalk::PAGE_SIZE - 1),
-        2,
-    )
-    .unwrap_err();
+    let err =
+        unmap_verified(&mut st, 7, u64::MAX - (crate::pagewalk::PAGE_SIZE - 1), 2).unwrap_err();
     assert_eq!(err, MemSegError::ArithmeticOverflow);
     assert_eq!(st, before);
 }
@@ -657,20 +478,9 @@ fn unmap_later_unmapped_page_leaves_refine_state_unchanged() {
     let mut st = state();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R).unwrap();
-    memseg_map(
-        &mut st,
-        SEG_MAP_R,
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        1,
-        ACCESS_R,
-    )
-    .unwrap();
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 1, ACCESS_R).unwrap();
     let before = st.clone();
-    let err = memseg_unmap(&mut st, true, 7, 0x5000_0000, 2).unwrap_err();
+    let err = unmap_verified(&mut st, 7, 0x5000_0000, 2).unwrap_err();
     assert_eq!(err, MemSegError::NotMapped);
     assert_eq!(st, before);
 }
@@ -680,24 +490,13 @@ fn full_memseg_lifecycle_alpha_preserved() {
     let mut st = RefineState::new(&universe()).unwrap();
     spawn_task(&mut st, 7, 0x4000_0000).unwrap();
     let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).unwrap();
-    memseg_map(
-        &mut st,
-        seg_map_rights(),
-        true,
-        seg,
-        7,
-        0,
-        0x5000_0000,
-        2,
-        ACCESS_R | ACCESS_W,
-    )
-    .unwrap();
-    memseg_unmap(&mut st, true, 7, 0x5000_0000, 1).unwrap(); // 释放第一页(0x5000_0000)
+    map_verified(&mut st, seg, 7, 0, 0x5000_0000, 2, ACCESS_R | ACCESS_W).unwrap();
+    unmap_verified(&mut st, 7, 0x5000_0000, 1).unwrap(); // 释放第一页(0x5000_0000)
     // 剩余一页(0x5000_1000)映射仍引用段 → 不可 destroy
-    let err = memseg_destroy(&mut st, true, seg).unwrap_err();
+    let err = destroy_verified(&mut st, seg).unwrap_err();
     assert_eq!(err, MemSegError::StillMapped);
-    memseg_unmap(&mut st, true, 7, 0x5000_1000, 1).unwrap(); // 释放最后一页(0x5000_1000)
-    memseg_destroy(&mut st, true, seg).expect("destroy ok after unmaps");
+    unmap_verified(&mut st, 7, 0x5000_1000, 1).unwrap(); // 释放最后一页(0x5000_1000)
+    destroy_verified(&mut st, seg).expect("destroy ok after unmaps");
     assert!(!st.segments.contains_key(&seg));
     assert_eq!(st.alloc.free.len(), 8, "全部帧归还");
     let mut diag = Vec::new();

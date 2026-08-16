@@ -1,7 +1,9 @@
 
 > 状态：抽象语义规范
 >
-> 修订日期：2026-07-30
+> 修订日期：2026-08-16
+
+本文按 **11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 12 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“11 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
 ## 1. 文档定位
 
@@ -1373,7 +1375,7 @@ Exception 和 Send 是两个正交的通信维度：
 
 **这不是内核提供的 `fork`。** 它是用通用原语构造的 `fork` 语义。内核只知道"page fault 发生了"和"订阅了这个源的 Task 收到通知"。所有 COW 逻辑都在用户态。
 
-**证据边界：** 上述原语组合已在 host 模型 `cosir/src/cow_refine.rs` 下以 `MODEL-TEST`（反例 R1–R4 与成功路径 8 步，含 `main.rs` COW 冒烟）证明可表达 COW，且本切片**无需新增内核原语**。边界如实列出：反例 R4（不换映射直接恢复则该页仍只读，内核式自动 COW 复制不可从既存原语演绎）为对本节"用户态 COW"的边界澄清，非 H1 反例；反例 R1（两个 Task 并发写同一共享只读页时各 fault、无合并原语）表明并发 COW 协调是用户态显式责任。本证据仅为 host `MODEL-TEST`/`REFINEMENT-DESIGN`，**不宣称 `KERNEL-TRACE` 或 `REFINEMENT-PROOF`**。
+**证据边界：** 在明确限定的 host 组合场景中，MODEL-TEST 未发现为“共享只读映射 → 写保护 fault → 用户态显式分配相离新 Segment 并换映射 → exc_resume → 显式调度”新增 POSIR 一等原语的需求。该结论不覆盖帧字节复制、真实 trap/PTE/TLB、多核协议、KERNEL-TRACE 或 REFINEMENT-PROOF。反例 R4（不换映射直接恢复则该页仍只读，内核式自动 COW 复制不可从既存原语演绎）为对本节“用户态 COW”的边界澄清，非 H1 反例；反例 R1（两个 Task 并发写同一共享只读页时各 fault、无合并原语）表明并发 COW 协调是用户态显式责任。
 
 ### 12.9 Page fault 的异常源语义细节
 
@@ -1411,7 +1413,7 @@ exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 前置条件与纯验证阶段：
 
 1. `exc_source_cap` 必须由调用者持有、处于 active、指向 active `ExceptionSource`，并含 `ExcSubscribe` 权限；调用者还必须位于该 source 的 active subscription 集合；
-2. `sret_frame_seg_cap` 必须由调用者持有、处于 active、指向调用者有 `SegWrite` 权限且内核可读的 Segment；Segment 保存实际 bytes；
+2. `sret_frame_seg_cap` 必须由调用者持有、处于 active、指向调用者拥有 `SegMapW` Authority 且内核可读取 bytes 的 Segment；内核读取仅用于受保护的 `exc_resume` 实现，不新增用户可见 `SegWrite` 权限。
 3. `frame_offset` 为 16-byte aligned，`frame_offset + 0xA0` 不溢出且不超过 Segment bytes；x86_64 `SretFrame` 是固定 `0xA0` 字节 little-endian 编码：`rax`、`rbx`、`rcx`、`rdx`、`rsi`、`rdi`、`rbp`、`rsp`、`r8`–`r15`、`rflags`、`rip`、`cs`、`ss` 各占连续的 8 字节槽；
 4. 帧中的 `RIP` 与 `RSP` 必须是 canonical 用户地址；`RIP` 位于调用者可执行用户映射，`RSP` 位于调用者可写用户映射；`CS`、`SS` 满足用户态 selector 策略，`RFLAGS` 不含禁止的特权或保留位；
 5. 调用者 Task 必须处于 `Faulted`，且有 `pending_exc`；pending 的 `source_id` 必须匹配 capability 指向的 source，pending `kind` 必须匹配 source 支持的 kind；
@@ -1876,7 +1878,7 @@ KernelState {
 
 1. 初始空状态满足预启动良构条件；
 2. `bootstrap` 成功结果满足 `WellFormed`；
-3. 每个成功迁移保持 W1–W14；
+3. 每个成功迁移保持 W1–W16。对不涉及 ExceptionSource 或 Device 的迁移，可以通过未修改投影保持与受影响投影保持分解证明，但成功结果仍须满足完整 WellFormed。
 4. 每个失败迁移保持状态完全相同。
 
 ### 17.2 Capability 安全
@@ -1981,24 +1983,24 @@ KernelState {
 
 以下是 POSIR 抽象规范中提及但**故意不定义**、留待 COSIR 细化层实现的具体项目汇总：
 
-| # | 项目 | POSIR 中的引用 | COSIR 细化层职责 |
-|---|---|---|---|
-| 1 | 异常帧格式与寄存器保存/恢复 | §12.9, §12.10 | x86_64 `0xA0` little-endian 帧由 Segment bytes 提供，恢复目标取帧内 RIP；已有 host `MODEL-TEST`，真实 trap 返回仍待实现 |
-| 2 | `exc_resume` / 异常返回原语 | §12.9, §12.10 | 已定义为 §12.10 三参数原语并有 host `MODEL-TEST`；`KERNEL-TRACE` 与 `REFINEMENT-PROOF` 尚无 |
-| 3 | syscall 调用/返回协议 | §12.2 | syscall number 编码、参数寄存器、返回寄存器、错误码编码 |
-| 4 | ID 的不可伪造表示 | §3, §18 | opaque 句柄编码（索引 + generation 或受保护指针） |
-| 5 | 页表格式（PML4/TTBR/Sv39） | §7 | 多级页表遍历、权限位编码、W^X 策略 |
-| 6 | TLB 维护（INVLPG/TLBI/DSB） | §7 | 单页或全 TLB shootdown、ASID 管理 |
-| 7 | 中断控制器编程（APIC/GICv3） | §12, §15.7 | 中断路由、屏蔽、EOI、优先级 |
-| 8 | Timer 时钟硬件（LAPIC/Generic Timer） | §10 | 一次性和周期性模式、校准、频率 |
-| 9 | MMIO 的缓存策略（PAT/MTTR/MAIR） | §15.4 | WC/UC/WB 内存类型、fence 指令放置 |
-| 10 | I/O port 隔离（IOPL/TSS bitmap） | §15.5 | per-Task bitmap 配置、#GP 触发 |
-| 11 | IOMMU domain 和设备 assignment | §15.6 | DMA 地址翻译、故障处理、设备隔离 |
-| 12 | 页帧分配器数据结构 | §7.1 | buddy/bitmap/free list 选择 |
-| 13 | Audit 持久化与容量 | §13 | 日志配额、保留期、丢弃证明、查询权限 |
-| 14 | GPU kernel 提交接口 | §8.6 | CUDA stream / Vulkan command buffer 抽象 |
-| 15 | 跨节点网络传输协议 | §8.5 | 序列化格式、传输协议、超时策略、节点发现 |
-| 16 | Task 入口的 COSIR 细化处理 | §5.2 | 对 GPU Task 的 entry 解释为 kernel 句柄、对 CPU Task 解释为虚拟地址 |
+| #   | 项目                              | POSIR 中的引用    | COSIR 细化层职责                                                                                     |
+| --- | ------------------------------- | ------------- | ----------------------------------------------------------------------------------------------- |
+| 1   | 异常帧格式与寄存器保存/恢复                  | §12.9, §12.10 | x86_64 `0xA0` little-endian 帧由 Segment bytes 提供，恢复目标取帧内 RIP；已有 host `MODEL-TEST`，真实 trap 返回仍待实现 |
+| 2   | `exc_resume` / 异常返回原语           | §12.9, §12.10 | 已定义为 §12.10 三参数原语并有 host `MODEL-TEST`；`KERNEL-TRACE` 与 `REFINEMENT-PROOF` 尚无                    |
+| 3   | syscall 调用/返回协议                 | §12.2         | syscall number 编码、参数寄存器、返回寄存器、错误码编码                                                             |
+| 4   | ID 的不可伪造表示                      | §3, §18       | opaque 句柄编码（索引 + generation 或受保护指针）                                                             |
+| 5   | 页表格式（PML4/TTBR/Sv39）            | §7            | 多级页表遍历、权限位编码、W^X 策略                                                                             |
+| 6   | TLB 维护（INVLPG/TLBI/DSB）         | §7            | 单页或全 TLB shootdown、ASID 管理                                                                      |
+| 7   | 中断控制器编程（APIC/GICv3）             | §12, §15.7    | 中断路由、屏蔽、EOI、优先级                                                                                 |
+| 8   | Timer 时钟硬件（LAPIC/Generic Timer） | §10           | 一次性和周期性模式、校准、频率                                                                                 |
+| 9   | MMIO 的缓存策略（PAT/MTTR/MAIR）       | §15.4         | WC/UC/WB 内存类型、fence 指令放置                                                                        |
+| 10  | I/O port 隔离（IOPL/TSS bitmap）    | §15.5         | per-Task bitmap 配置、#GP 触发                                                                       |
+| 11  | IOMMU domain 和设备 assignment     | §15.6         | DMA 地址翻译、故障处理、设备隔离                                                                              |
+| 12  | 页帧分配器数据结构                       | §7.1          | buddy/bitmap/free list 选择                                                                       |
+| 13  | Audit 持久化与容量                    | §13           | 日志配额、保留期、丢弃证明、查询权限                                                                              |
+| 14  | GPU kernel 提交接口                 | §8.6          | CUDA stream / Vulkan command buffer 抽象                                                          |
+| 15  | 跨节点网络传输协议                       | §8.5          | 序列化格式、传输协议、超时策略、节点发现                                                                            |
+| 16  | Task 入口的 COSIR 细化处理             | §5.2          | 对 GPU Task 的 entry 解释为 kernel 句柄、对 CPU Task 解释为虚拟地址                                             |
 
 若在实现过程中发现需要在 POSIR 层面新增机制才能完成以上细化项中的某项，则该发现本身构成对 H3（小型可信机制层）或 H1（机制表达力）的潜在反例，必须记录在案。
 
@@ -2050,6 +2052,8 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 第二架构实验将检验“不同架构的 COSIR 实例化能否独立于 POSIR 进行”。若需要修改 POSIR，则构成对 POSIR/COSIR 分层或候选适用范围的反例，而不是仍宣称跨架构完全适用。
 
 ## 19. 原语总览
+
+本文按 **11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 12 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“11 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
 | 类别            | 公开操作                                                           | 核心作用                    |
 | ------------- | -------------------------------------------------------------- | ----------------------- |

@@ -1,10 +1,20 @@
 # tlb_refine Implementation Plan
 
+> Status: Completed / Archived
+>
+> 本文件是 2026-08-15 的历史实施计划，不再是当前可执行指令。当前治理与后继要求以 `docs/superpowers/specs/2026-08-16-primaos-audit-remediation-design.md` 和 `Prima OS 实现阶段.md` 为权威。
+>
+> Evidence: SPEC-016
+>
+> Implementation commits: `570fc60`, `9ea01ad`, `23603ea`, `45a90e3`
+>
+> Deprecated assumptions: `proving T1`、`for_write: bool`、硬件 TLB 外推和独立状态手工同步。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a per-Task TLB model with non-coherent refresh semantics (memseg_unmap/map never auto-invalidate) and explicit invalidation primitives, proving T1 (COW remap without flush hits stale read-only TLB).
+**Goal:** Historical plan for a per-Task TLB host model with non-coherent refresh semantics (map/unmap never auto-invalidate) and explicit invalidation primitives. `proving T1` was historical wording; current evidence is limited `MODEL-TEST` observation of the stale-read-only-cache scenario.
 
-**Architecture:** New independent `tlb_refine.rs` layer on top of the existing `memseg_refine::RefineState` (which already holds each Task's `PageTable`). A parallel `TlbState` holds one `Tlb` per Task. `tlb_translate` returns the cached translation on a TLB hit (never consulting the page table), otherwise falls back to `pagewalk::translate` and fills the TLB. `tlb_invalidate_va` / `tlb_flush_all` are explicit invalidation primitives that `memseg_map`/`memseg_unmap` never call. Follows the existing dual-view MODEL-TEST pattern.
+**Architecture:** Historical API sketch. The current implementation instead uses `AccessKind::{Read, Write, Execute}`, authoritative live-Task lifecycle checks, and `CowSliceState` composition; it does not manually synchronize independent state.
 
 **Tech Stack:** Rust (nightly-2026-07-30 via `rust-toolchain.toml`), `cargo` 1.99.0-nightly, `BTreeMap` from `std::collections`.
 

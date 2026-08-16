@@ -8,8 +8,6 @@ mod state;
 mod tlb_refine;
 
 #[cfg(test)]
-mod cow_refine_tests;
-#[cfg(test)]
 mod memseg_refine_tests;
 #[cfg(test)]
 mod pagewalk_tests;
@@ -17,7 +15,7 @@ mod pagewalk_tests;
 mod tlb_refine_tests;
 
 use abstract_ops::bootstrap;
-use ops::{exc_resume, raise_exception, schedule};
+use ops::{exc_resume, raise_exception};
 use state::{ACCESS_R, ACCESS_W, ACCESS_X, ExceptionKind, SretFrame, State, Task, TaskStatus};
 
 fn default_frame() -> SretFrame {
@@ -78,7 +76,7 @@ fn build_state() -> State {
         state::Capability {
             owner: 1,
             object: state::CapObject::Segment(1),
-            rights: state::CAP_SEG_WRITE,
+            rights: state::CAP_SEG_MAP_W,
             active: true,
         },
     );
@@ -99,12 +97,14 @@ fn build_state() -> State {
                 len: 0x1000,
                 access: ACCESS_R | ACCESS_W,
                 user: true,
+                backing: None,
             },
             state::PageMapping {
                 base: 0x5000_0000,
                 len: 0x1000,
                 access: ACCESS_X,
                 user: true,
+                backing: None,
             },
         ],
         kernel_resume_frame: None,
@@ -154,14 +154,19 @@ fn main() {
             .iter()
             .any(|mapping| mapping.contains(0x5000_0000))
     );
-    raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+    raise_exception(
+        &mut st,
+        1,
+        1,
+        page_fault(),
+        Some(0x5000_0000),
+        default_frame(),
+    );
     exc_resume(&mut st, 1, 10, 11, 0).expect("resume page fault");
-    schedule(&mut st, 1);
-    assert_eq!(st.tasks[&1].status, TaskStatus::Running);
+    assert_eq!(st.tasks[&1].status, TaskStatus::Ready);
     println!("PASS cosir raise_exception");
     println!("PASS cosir exc_resume");
-    println!("PASS cosir schedule");
-    println!("PASS cosir recoverable-fault roundtrip");
+    println!("PASS cosir recoverable-fault to Ready");
 
     // BLK-002 细化：bootstrap 的 α 投影冒烟
     let m = build_boot_machine();
@@ -174,31 +179,18 @@ fn main() {
     // MemorySegment 页表↔vspace 细化冒烟：create→map→unmap→destroy + α 校验
     {
         use memseg_refine::{
-            RefineState, SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create,
-            memseg_destroy, memseg_map, memseg_unmap, spawn_task,
+            RefineState, destroy_verified, map_verified, memseg_alpha, memseg_create, spawn_task,
+            unmap_verified,
         };
         let universe: Vec<u64> = (0u64..4).map(|i| 0x1000 + i * 0x1000).collect();
         let mut st = RefineState::new(&universe).expect("valid frame universe");
         spawn_task(&mut st, 1, 0x4000_0000).expect("spawn init");
-        let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
         let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).expect("create");
-        // memseg_map(seg_cap_rights, task_manage_rights, seg_id, task_id, seg_offset,
-        //            target_base, page_count, access)
-        memseg_map(
-            &mut st,
-            rights,
-            true,
-            seg,
-            1,
-            0,
-            0x5000_0000,
-            1,
-            ACCESS_R | ACCESS_W,
-        )
-        .expect("map");
+        // map_verified(seg_id, task_id, seg_offset, target_base, page_count, access)
+        map_verified(&mut st, seg, 1, 0, 0x5000_0000, 1, ACCESS_R | ACCESS_W).expect("map");
         assert!(memseg_alpha(&st), "map 后 α 成立");
-        memseg_unmap(&mut st, true, 1, 0x5000_0000, 1).expect("unmap");
-        memseg_destroy(&mut st, true, seg).expect("destroy");
+        unmap_verified(&mut st, 1, 0x5000_0000, 1).expect("unmap");
+        destroy_verified(&mut st, seg).expect("destroy");
         assert!(memseg_alpha(&st), "destroy 后 α 成立");
         println!("PASS memseg create");
         println!("PASS memseg map");
@@ -208,114 +200,85 @@ fn main() {
         println!("PASS model-test memseg W6/W7 checks");
     }
 
-    // COW 组合协议冒烟：共享只读 → 写触发 fault → 复制换私写 → exc_resume
-    // 依 §12.8：全程仅组合既有 memseg/ops 原语，未新增任何内核机制。
+    // COW 组合协议冒烟：共享只读 → 写 fault → 私有化 → 恢复 → 再调度写成功。
     {
         use cow_refine::{
-            CHILD, CODE_SEG, COW_VA, CowProbe, FRAME_CAP, PARENT, base_exc, new_refine,
-            probe_write, resume_frame, write_fault,
+            AccessOutcome, CHILD, CHILD_SELF_TASK_CAP, CHILD_TASK_CAP, COW_VA, CowSliceState,
+            DATA_SEG_CAP, FRAME_CAP, PARENT,
         };
-        use memseg_refine::{
-            SEG_MAP_R, SEG_MAP_W, SEG_MAP_X, memseg_alpha, memseg_create, memseg_map, memseg_unmap,
-        };
-        use ops::exc_resume;
         use state::{ACCESS_R, ACCESS_W};
-        let mut pf = new_refine();
-        let mut exc = base_exc();
-        let rights = SEG_MAP_R | SEG_MAP_W | SEG_MAP_X;
-        // 1. 父私写 COW_VA，子只读共享
-        assert_eq!(probe_write(&pf, PARENT, COW_VA), CowProbe::Writable);
-        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
-        println!("PASS cow shared read-only probe");
-        // 2. 子写只读共享页 → 递送 page fault → Faulted
+        use tlb_refine::AccessKind;
+
+        let mut slice = CowSliceState::new_cow_fixture();
+        slice
+            .establish_cow(PARENT, PARENT, CHILD, DATA_SEG_CAP, CHILD_TASK_CAP, COW_VA)
+            .expect("establish COW");
+        slice.yield_current(PARENT).expect("yield parent");
+        slice.schedule(CHILD).expect("schedule child");
         assert!(matches!(
-            write_fault(&mut exc, &mut pf, CHILD, COW_VA),
-            cow_refine::WriteOutcome::Faulted(state::ExceptionKind::PageFault { .. })
+            slice.access(CHILD, COW_VA, AccessKind::Write),
+            Ok(AccessOutcome::Faulted(_))
         ));
-        assert_eq!(exc.tasks[&CHILD].status, state::TaskStatus::Faulted);
-        println!("PASS cow write-page-fault");
-        // 3. 分配副本段：与父共享页同帧卡片数、物理帧相离 → 写隔离成立
-        let copy_seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("copy seg");
-        let parent_frames = pf.segments[&1].frames.clone();
-        let copy_frames = pf.segments[&copy_seg].frames.clone();
-        assert_eq!(
-            parent_frames.len(),
-            copy_frames.len(),
-            "副本应复制父共享页相同帧卡片数"
-        );
-        assert!(
-            parent_frames.iter().all(|f| !copy_frames.contains(f)),
-            "副本帧须与原共享页相离，写隔离才成立"
-        );
-        memseg_unmap(&mut pf, true, CHILD, COW_VA, 1).expect("unmap read-only");
-        memseg_map(
-            &mut pf,
-            rights,
-            true,
-            copy_seg,
-            CHILD,
-            0,
-            COW_VA,
-            1,
-            ACCESS_R | ACCESS_W,
-        )
-        .expect("map private");
-        exc.tasks.get_mut(&CHILD).unwrap().vspace[0].access = ACCESS_R | ACCESS_W;
-        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
-        println!("PASS cow copy-and-remap");
-        // 4. 写入合法用户恢复帧并 exc_resume → Ready（本 smoke 不再 schedule，维持 Roundtrip 步骤 7-8 已由测试覆盖）
-        let frame = resume_frame();
-        exc.segments
-            .get_mut(&CODE_SEG)
-            .unwrap()
-            .bytes
-            .copy_from_slice(&frame.encode());
-        exc_resume(&mut exc, CHILD, 10, FRAME_CAP, 0).expect("resume child");
-        assert_eq!(exc.tasks[&CHILD].status, state::TaskStatus::Ready);
-        assert!(!exc.pending_exc.contains_key(&CHILD));
-        println!("PASS cow exc_resume roundtrip");
-        // 5. 终态：子私写可写；α 全程成立；未新增内核机制
-        assert_eq!(probe_write(&pf, CHILD, COW_VA), CowProbe::Writable);
-        assert_eq!(probe_write(&pf, PARENT, COW_VA), CowProbe::Writable);
-        assert!(cow_refine::cow_state_consistent(&pf, &exc, CHILD));
-        assert!(memseg_alpha(&pf));
-        assert_eq!(pf.segments[&1].frames, parent_frames);
-        assert_eq!(pf.segments[&copy_seg].frames, copy_frames);
-        println!("PASS model-test cow fork no-new-kernel-mechanism");
+        let private = slice
+            .create_segment(CHILD, 1, ACCESS_R | ACCESS_W)
+            .expect("create private segment");
+        slice
+            .privatize_cow(CHILD, CHILD, private, CHILD_SELF_TASK_CAP, COW_VA)
+            .expect("privatize COW");
+        slice
+            .write_valid_resume_frame_for_test(CHILD)
+            .expect("write valid resume frame");
+        slice.resume(CHILD, 10, FRAME_CAP, 0).expect("resume child");
+        slice.schedule(CHILD).expect("reschedule child");
+        assert!(matches!(
+            slice.access(CHILD, COW_VA, AccessKind::Write),
+            Ok(AccessOutcome::Allowed(_))
+        ));
+        assert_eq!(slice.check_invariants(), Ok(()));
+        println!("PASS model-test cow limited host composition");
     }
 
     // TLB 细化冒烟：非强制刷新 + 显式失效（spec 2026-08-15-tlb-refine-design.md）。
     // 每 Task 独立 TLB；换映射后未失效命中陈旧只读 TLB，显式失效后走新可写 PTE。
     {
-        use memseg_refine::{
-            RefineState, SEG_MAP_R, SEG_MAP_W, memseg_create, memseg_map, memseg_unmap, spawn_task,
-        };
+        use memseg_refine::{RefineState, map_verified, memseg_create, spawn_task, unmap_verified};
         use state::{ACCESS_R, ACCESS_W};
-        use tlb_refine::{access_allowed, flush_all, has_tlb, invalidate_va, translate};
+        use tlb_refine::{
+            AccessKind, access_allowed, flush_all, has_tlb, invalidate_va, translate,
+        };
 
         let mut pf = RefineState::new(&[0x1000, 0x2000, 0x3000, 0x4000]).expect("universe");
         spawn_task(&mut pf, 1, 0x6000_0000).expect("spawn");
+        let ops = cow_refine::base_exc();
         let seg = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("seg");
-        let rights = SEG_MAP_R | SEG_MAP_W;
-        memseg_map(&mut pf, rights, true, seg, 1, 0, 0x4000_0000, 1, ACCESS_R).expect("map R");
+        map_verified(&mut pf, seg, 1, 0, 0x4000_0000, 1, ACCESS_R).expect("map R");
         let mut tlb = tlb_refine::TlbState::new();
-        let xl = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("walk fills");
-        assert!(!access_allowed(&xl, true), "只读 map 的首访不应许可写");
+        let xl = translate(&pf, &ops.tasks, &mut tlb, 1, 0x4000_0000).expect("walk fills");
+        assert!(
+            !access_allowed(&xl, AccessKind::Write),
+            "只读 map 的首访不应许可写"
+        );
         assert!(has_tlb(&tlb, 1, 0x4000_0000), "未命中后应填充 TLB");
         // 换映射为可写（unmap+map），未失效
-        memseg_unmap(&mut pf, true, 1, 0x4000_0000, 1).expect("unmap");
+        unmap_verified(&mut pf, 1, 0x4000_0000, 1).expect("unmap");
         let seg2 = memseg_create(&mut pf, 1, ACCESS_R | ACCESS_W).expect("seg2");
-        memseg_map(&mut pf, rights, true, seg2, 1, 0, 0x4000_0000, 1, ACCESS_W).expect("remap W");
-        let xl2 = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("stale hit");
-        assert!(!access_allowed(&xl2, true), "未 flush 应命中陈旧只读 TLB");
+        map_verified(&mut pf, seg2, 1, 0, 0x4000_0000, 1, ACCESS_W).expect("remap W");
+        let xl2 = translate(&pf, &ops.tasks, &mut tlb, 1, 0x4000_0000).expect("stale hit");
+        assert!(
+            !access_allowed(&xl2, AccessKind::Write),
+            "未 flush 应命中陈旧只读 TLB"
+        );
         // 显式失效后走新可写 PTE
-        invalidate_va(&mut tlb, 1, 0x4000_0000).expect("invalidate");
+        invalidate_va(&ops.tasks, &mut tlb, 1, 0x4000_0000).expect("invalidate");
         assert!(!has_tlb(&tlb, 1, 0x4000_0000), "失效后不应命中");
-        let xl3 = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("walk new");
-        assert!(access_allowed(&xl3, true), "失效后应走新可写 PTE");
+        let xl3 = translate(&pf, &ops.tasks, &mut tlb, 1, 0x4000_0000).expect("walk new");
+        assert!(
+            access_allowed(&xl3, AccessKind::Write),
+            "失效后应走新可写 PTE"
+        );
         // flush_all 全量失效
-        let _ = translate(&pf, &mut tlb, 1, 0x4000_0000).expect("refill");
-        flush_all(&mut tlb, 1).expect("flush all");
+        let _ = translate(&pf, &ops.tasks, &mut tlb, 1, 0x4000_0000).expect("refill");
+        flush_all(&ops.tasks, &mut tlb, 1).expect("flush all");
         assert!(!has_tlb(&tlb, 1, 0x4000_0000), "flush_all 后应清空");
         println!("PASS model-test tlb non-coherent refresh + explicit invalidation");
     }
@@ -347,7 +310,14 @@ mod tests {
             seg.bytes.resize(end, 0);
         }
         seg.bytes[offset..end].copy_from_slice(&bytes);
-        raise_exception(&mut st, CALLER, SOURCE, page_fault(), default_frame());
+        raise_exception(
+            &mut st,
+            CALLER,
+            SOURCE,
+            page_fault(),
+            Some(0x5000_0000),
+            default_frame(),
+        );
         st
     }
 
@@ -546,7 +516,7 @@ mod tests {
     #[test]
     fn exc_resume_rejects_frame_cap_without_write_right_atomically() {
         let mut st = resumable_state();
-        st.capabilities.get_mut(&FRAME_CAP).unwrap().rights &= !state::CAP_SEG_WRITE;
+        st.capabilities.get_mut(&FRAME_CAP).unwrap().rights &= !state::CAP_SEG_MAP_W;
         assert_resume_failure_unchanged(st, ResumeError::MissingRight);
     }
 
@@ -592,6 +562,7 @@ mod tests {
                 len: 0x1000,
                 access: ACCESS_X,
                 user: true,
+                backing: None,
             });
             let mut frame = resume_frame();
             frame.rip = rip;
@@ -632,6 +603,7 @@ mod tests {
                 len: 0x1000,
                 access: ACCESS_W,
                 user: true,
+                backing: None,
             });
             let mut frame = resume_frame();
             frame.rsp = rsp;
@@ -754,6 +726,7 @@ mod tests {
             len: 0x1000,
             access: ACCESS_X,
             user: true,
+            backing: None,
         };
         assert!(m.contains(0x5000_0000));
         assert!(m.contains(0x5000_0fff));
@@ -767,6 +740,7 @@ mod tests {
             len: 0x100,
             access: ACCESS_X,
             user: true,
+            backing: None,
         };
         assert!(!m.contains(0));
     }
@@ -774,7 +748,14 @@ mod tests {
     #[test]
     fn raise_exception_moves_running_to_faulted() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        raise_exception(
+            &mut st,
+            1,
+            1,
+            page_fault(),
+            Some(0x5000_0000),
+            default_frame(),
+        );
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
         assert!(st.pending_exc.contains_key(&1));
     }
@@ -782,7 +763,14 @@ mod tests {
     #[test]
     fn exc_resume_recovers_faulted_to_ready() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        raise_exception(
+            &mut st,
+            1,
+            1,
+            page_fault(),
+            Some(0x5000_0000),
+            default_frame(),
+        );
         resume_ok(&mut st);
         assert_eq!(st.tasks[&1].status, TaskStatus::Ready);
         assert!(!st.pending_exc.contains_key(&1));
@@ -866,20 +854,6 @@ mod tests {
     }
 
     #[test]
-    fn schedule_only_runs_ready_task_and_preserves_kernel_resume_frame() {
-        let frame = resume_frame();
-        let mut st = resumable_state();
-        resume_ok(&mut st);
-        assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
-
-        schedule(&mut st, CALLER);
-
-        assert_eq!(st.tasks[&CALLER].status, TaskStatus::Running);
-        assert_eq!(st.tasks[&CALLER].kernel_resume_frame, Some(frame));
-        assert_eq!(st.audit.len(), 1);
-    }
-
-    #[test]
     fn exc_resume_on_ready_is_no_pending() {
         let mut st = build_state();
         st.tasks.get_mut(&1).unwrap().status = TaskStatus::Ready;
@@ -890,7 +864,14 @@ mod tests {
     #[test]
     fn exc_resume_after_consumed_is_no_pending() {
         let mut st = build_state();
-        raise_exception(&mut st, 1, 1, page_fault(), default_frame());
+        raise_exception(
+            &mut st,
+            1,
+            1,
+            page_fault(),
+            Some(0x5000_0000),
+            default_frame(),
+        );
         resume_ok(&mut st);
         assert_resume_failure_unchanged(st, ResumeError::NoPendingException);
     }
@@ -899,7 +880,14 @@ mod tests {
     fn exc_resume_double_fault_is_unrecoverable() {
         let mut st = build_state();
         st.exc_sources.get_mut(&SOURCE).unwrap().supported_kind = ExceptionKind::DoubleFault;
-        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
+        raise_exception(
+            &mut st,
+            1,
+            1,
+            ExceptionKind::DoubleFault,
+            None,
+            default_frame(),
+        );
         assert_resume_failure_unchanged(st, ResumeError::UnrecoverableFault);
     }
 
@@ -933,22 +921,5 @@ mod tests {
         let err = exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, 1).unwrap_err();
         assert_eq!(err, ResumeError::InvalidFrameAddr);
         assert_eq!(st, before);
-    }
-
-    #[test]
-    fn schedule_faulted_without_resume_is_safe() {
-        let mut st = build_state();
-        raise_exception(&mut st, 1, 1, ExceptionKind::DoubleFault, default_frame());
-        // Faulted 状态 schedule 不会回到 Running（原指令流不重播）
-        schedule(&mut st, 1);
-        assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
-    }
-
-    #[test]
-    fn schedule_ready_becomes_running() {
-        let mut st = build_state();
-        st.tasks.get_mut(&1).unwrap().status = TaskStatus::Ready;
-        schedule(&mut st, 1);
-        assert_eq!(st.tasks[&1].status, TaskStatus::Running);
     }
 }

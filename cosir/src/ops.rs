@@ -1,5 +1,5 @@
 use crate::state::{
-    ACCESS_W, ACCESS_X, AuditEvent, CAP_EXC_SUBSCRIBE, CAP_SEG_WRITE, CapId, CapObject,
+    ACCESS_W, ACCESS_X, AuditEvent, CAP_EXC_SUBSCRIBE, CAP_SEG_MAP_W, CapId, CapObject,
     ExcSourceId, ExceptionKind, PendingException, SRET_FRAME_ALIGN, SRET_FRAME_LEN, SretFrame,
     State, Task, TaskId, TaskStatus, USER_CS, USER_SS,
 };
@@ -24,8 +24,14 @@ pub fn raise_exception(
     faulting_task: TaskId,
     source_id: ExcSourceId,
     kind: ExceptionKind,
+    fault_va: Option<u64>,
     save_frame: SretFrame,
 ) {
+    assert_eq!(
+        matches!(kind, ExceptionKind::PageFault { .. }),
+        fault_va.is_some(),
+        "raise_exception: PageFault must carry a fault VA and other exceptions must not"
+    );
     let task = st
         .tasks
         .get_mut(&faulting_task)
@@ -41,6 +47,7 @@ pub fn raise_exception(
         PendingException {
             source_id,
             kind,
+            fault_va,
             save_frame,
         },
     );
@@ -92,7 +99,7 @@ pub fn exc_resume(
         .ok_or(ResumeError::InvalidExcSource)?;
     let source_id = match source_cap.object {
         CapObject::ExceptionSource(source_id) => source_id,
-        CapObject::Segment(_) => return Err(ResumeError::InvalidExcSource),
+        CapObject::Segment(_) | CapObject::Task(_) => return Err(ResumeError::InvalidExcSource),
     };
     if source_cap.rights & CAP_EXC_SUBSCRIBE == 0 {
         return Err(ResumeError::MissingRight);
@@ -114,9 +121,11 @@ pub fn exc_resume(
         .ok_or(ResumeError::InvalidFrameAddr)?;
     let frame_seg_id = match frame_cap.object {
         CapObject::Segment(seg_id) => seg_id,
-        CapObject::ExceptionSource(_) => return Err(ResumeError::InvalidFrameAddr),
+        CapObject::ExceptionSource(_) | CapObject::Task(_) => {
+            return Err(ResumeError::InvalidFrameAddr);
+        }
     };
-    if frame_cap.rights & CAP_SEG_WRITE == 0 {
+    if frame_cap.rights & CAP_SEG_MAP_W == 0 {
         return Err(ResumeError::MissingRight);
     }
     if !frame_offset.is_multiple_of(SRET_FRAME_ALIGN) {
@@ -191,14 +200,4 @@ pub fn exc_resume(
         .expect("validated task must still exist")
         .status = TaskStatus::Ready;
     Ok(())
-}
-
-/// 调度选中 Task 进入 Running。仅 Ready -> Running；Faulted 状态不变
-/// （指令流重播由细化层在 resume 后交付，不在此处隐式发生）。
-pub fn schedule(st: &mut State, chosen: TaskId) {
-    if let Some(task) = st.tasks.get_mut(&chosen)
-        && task.status == TaskStatus::Ready
-    {
-        task.status = TaskStatus::Running;
-    }
 }

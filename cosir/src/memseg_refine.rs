@@ -7,13 +7,6 @@ use crate::pagewalk::{
 use crate::state::{SegId, TaskId, VirtAddr};
 use std::collections::{BTreeMap, BTreeSet};
 
-// Capability 权限位掩码（细化层用于前置授权检查；非 POSIR 一等原语）
-// SEG_MAP_* 与 state::ACCESS_* 数值一致(R=0b001/W=0b010/X=0b100)。
-pub const SEG_MAP_R: u8 = crate::state::ACCESS_R;
-pub const SEG_MAP_W: u8 = crate::state::ACCESS_W;
-pub const SEG_MAP_X: u8 = crate::state::ACCESS_X;
-pub const SEG_DESTROY: u8 = 0x08;
-
 /// 细化错误集：沿用规范错误名，不新增对 POSIR 可见的错误原语。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemSegError {
@@ -252,10 +245,8 @@ fn checked_page_vaddr(base: u64, index: u64) -> Result<u64, MemSegError> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn memseg_map(
+pub(crate) fn map_verified(
     st: &mut RefineState,
-    seg_cap_rights: u8,
-    task_manage_rights: bool,
     seg_id: SegId,
     task_id: TaskId,
     seg_offset: u64,
@@ -276,13 +267,6 @@ pub fn memseg_map(
     let seg = seg.clone(); // 借出来后释放，便于下面可变迁用
     if !st.tasks.contains_key(&task_id) {
         return Err(MemSegError::InvalidTask);
-    }
-    // 授权：调用方持有所请求访问对应的全部 segment 映射权限（SEG_MAP_* 复用 state ACCESS 位码，值相同）
-    if seg_cap_rights & access != access {
-        return Err(MemSegError::MissingMapRight);
-    }
-    if !task_manage_rights {
-        return Err(MemSegError::MissingRight);
     }
     // access ⊆ allowed_access（不会把段不允许的权限映射进地址空间）
     if seg.allowed_access & access != access {
@@ -336,18 +320,14 @@ pub fn memseg_map(
     Ok(())
 }
 
-pub fn memseg_unmap(
+pub(crate) fn unmap_verified(
     st: &mut RefineState,
-    task_manage_rights: bool,
     task_id: TaskId,
     target_base: VirtAddr,
     page_count: u64,
 ) -> Result<(), MemSegError> {
     if page_count == 0 {
         return Err(MemSegError::ZeroSize);
-    }
-    if !task_manage_rights {
-        return Err(MemSegError::MissingRight);
     }
     if !st.tasks.contains_key(&task_id) {
         return Err(MemSegError::InvalidTask);
@@ -378,14 +358,7 @@ pub fn memseg_unmap(
     Ok(())
 }
 
-pub fn memseg_destroy(
-    st: &mut RefineState,
-    seg_destroy_right: bool,
-    seg_id: SegId,
-) -> Result<(), MemSegError> {
-    if !seg_destroy_right {
-        return Err(MemSegError::MissingRight);
-    }
+pub(crate) fn destroy_verified(st: &mut RefineState, seg_id: SegId) -> Result<(), MemSegError> {
     let seg = st
         .segments
         .get(&seg_id)

@@ -146,7 +146,7 @@ tlb_flush_all(state, task_id) -> Result<(), TlbError>
 - `REFINEMENT-PROOF`；
 - 机器证明（BLK-001 仍 Open）。
 
-本切片证明的是：在既有 `pagewalk` + `memseg_refine` 之上，不加新内核原语，即可刻画"非强制刷新 + 显式失效"的 TLB 语义（TLB 一侧的 H1 边界验证），并让"COW 换映射后必须 flush"成为可检测命题。
+本切片的 host `MODEL-TEST` 仅观察到：在既有 `pagewalk` + `memseg_refine` 之上，可刻画“非自动刷新 + 显式失效”的有限 TLB 模型语义，并将“COW 换映射后必须显式失效”作为可检测命题。它不构成真实硬件 TLB、内核机制完备性或 H1 的证明。
 
 ## 9. 增量提交划分（供计划阶段参考）
 
