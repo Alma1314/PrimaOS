@@ -12,6 +12,9 @@ pub enum PageWalkError {
     NonCanonicalAddress,
 }
 
+/// x86_64 canonical 检验：接受低用户半区与高内核半区两类 canonical 48 位地址。
+/// 注意：这与 `ops::is_user_canonical` (用户态低半区 `≤ 0x0000_7fff_ffff_ffff`) 语义不同。
+/// 本函数判定"地址是否为 canonical"，不限制其必须落在用户半区。
 pub fn is_canonical_vaddr(vaddr: u64) -> bool {
     let upper = vaddr >> 48;
     if vaddr & (1 << 47) == 0 {

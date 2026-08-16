@@ -465,7 +465,7 @@ LibOS 应拆成可独立测试的职责：
 **尚未定义（属于细化层或后续阶段）：**
 
 - IOMMU domain 的精确映射与设备 assignment 协议；
-- Cache coherence 与 fence 语义（属于 COSIR 细化层 §17）；
+- Cache coherence 与 fence 语义（属于 COSIR 细化层 §18 细化要求 #15，以及 §15.9 的对象模型 Cache coherence 保证）；
 - PCI/设备树的枚举和热插拔协议；
 - MSI/MSI-X 中断（当前仅建模基于 IRQ 线的中断）。
 
@@ -926,7 +926,7 @@ SMP 上多个 CPU 核共享同一个 KernelState。POSIR 的单核假设（W9：
 
 > Running 的 CPU Task 数量 ≤ CPU 核数。每个 CPU 核至多运行一个 Task。
 
-**候选假设：SMP 不要求新增原语或修改 POSIR 语义。** 预计并发安全复杂性可由 COSIR 细化层的核间锁、TLB shootdown、per-CPU 数据结构、内存顺序（[[COSIR 原语规范]] §18 #18）及额外锁不变量承接；这不是既定结论。只有完成 SMP 实现，并以冻结 observable semantics 的 `COMPAT-TEST` 覆盖成功、失败和并发交错，同时通过丢失 shootdown、弱内存顺序等故障注入检验后，才能判断 11 类原语语义和 POSIR 状态机是否可保持不变；若测试暴露新的独立可观察语义，该假设即被证伪并须修改 POSIR。
+**候选假设：SMP 不要求新增原语或修改 POSIR 语义。** 预计并发安全复杂性可由 COSIR 细化层的核间锁、TLB shootdown、per-CPU 数据结构、内存顺序（[[COSIR 原语规范]] §18 细化要求 #5）及额外锁不变量承接；这不是既定结论。只有完成 SMP 实现，并以冻结 observable semantics 的 `COMPAT-TEST` 覆盖成功、失败和并发交错，同时通过丢失 shootdown、弱内存顺序等故障注入检验后，才能判断 11 类原语语义和 POSIR 状态机是否可保持不变；若测试暴露新的独立可观察语义，该假设即被证伪并须修改 POSIR。
 
 ### 18.2 GPU / NPU / FPGA 异构计算
 
@@ -967,11 +967,11 @@ Prima 的分布式模型明确拒绝"全局统一的 KernelState"——不寻求
 - **Timer 按节点独立。** 每个节点拥有独立的单调时钟。不要求跨节点时钟同步
 - **Capability 位置唯一性在节点内保证。** 跨节点移动时，`InTransit` 提供原子性语义（token 不会同时存在于两个节点），但不提供同步一致性（节点间无锁，传输耗时不确定）
 
-**候选原语映射：新增 1 类（Node）。** 当前设计尝试把 Node 的创建/销毁/连接状态查询映射为类似 Task、Namespace 的生命周期操作，并把跨节点 `send` 映射为带 `InTransit` 的两阶段异步传输；不得据此断言验证阶段、Capability 移动逻辑或失败恢复语义保持不变。只有分布式实现、冻结 observable semantics 后覆盖成功/超时/重试/分区/并发恢复的 `COMPAT-TEST`，以及丢包、重复、重排、节点崩溃等故障注入均未暴露额外状态或原语，才能判断 Node 是否足够；反例要求修改映射、增加原语或修订 POSIR。
+**候选原语映射：Node 已计入 §5 的基础 11 类常规机制，此处是其跨节点语义的具体化。** 当前设计尝试把 Node 的创建/销毁/连接状态查询映射为类似 Task、Namespace 的生命周期操作，并把跨节点 `send` 映射为带 `InTransit` 的两阶段异步传输；不得据此断言验证阶段、Capability 移动逻辑或失败恢复语义保持不变。只有分布式实现、冻结 observable semantics 后覆盖成功/超时/重试/分区/并发恢复的 `COMPAT-TEST`，以及丢包、重复、重排、节点崩溃等故障注入均未暴露额外状态或原语，才能判断 Node 是否足够；反例要求修改映射、增加原语或修订 POSIR。
 
 ### 18.4 多介质与分布式对 H1 的影响
 
-当前可证伪候选假设是：GPU kernel 启动、跨节点消息传递、NPU 推理等场景或许可由下表组合表达，而不产生现有原语加候选 Node 之外的新 OS API 语义维度或专属机制。该判断必须等待对应介质/分布式实现、冻结 observable semantics 的 `COMPAT-TEST` 与故障注入；在此之前，下表不是完备性结论：
+当前可证伪候选假设是：GPU kernel 启动、跨节点消息传递、NPU 推理等场景或许可由下表组合表达，而不产生现有 11 类常规机制（含 Node）之外的新 OS API 语义维度或专属机制。Node 作为对象能力类别已在 §5 定型，此处待验证的是其跨节点语义而非其存在性。该判断必须等待对应介质/分布式实现、冻结 observable semantics 的 `COMPAT-TEST` 与故障注入；在此之前，下表不是完备性结论：
 
 | 场景 | API 示例 | POSIR 分解 |
 |---|---|---|

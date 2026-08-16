@@ -19,6 +19,12 @@ pub enum ResumeError {
 ///
 /// 探针构造级不变量（§12.10 raise 侧）：Task 必须存在且处于 Running。无合法失败路径，
 /// 以 assert 表达而非错误码，避免复用 exc_resume 的 `ResumeError` 域污染错误域。
+///
+/// 模型范围边界：本函数只建模同步侧（Faulted + `pending_exc` 绑定 + 现场帧保存）。
+/// 规范 §9.12/§17.7 定义的"订阅者经 `enqueue_or_deliver` 收到通知"这条异步投递语义
+/// (subscriptions 集合存在、但异常路径上不被读取以生成投递) **未在 host MODEL-TEST
+/// 建模**，与整个 Send/Recv 消息机制未建模一致。这是一个文档化的模型范围边界，
+/// 不得据此未来在无实现的情况下宣称"通知递送已模型化/已验证"。
 pub fn raise_exception(
     st: &mut State,
     faulting_task: TaskId,
@@ -53,6 +59,10 @@ pub fn raise_exception(
     );
 }
 
+/// 用户态 canonical 检验：地址必须落入用户低半区 (`≤ 0x0000_7fff_ffff_ffff`)，
+/// 对应规范 §12.10 "canonical 用户地址"。与 `pagewalk::is_canonical_vaddr`
+/// (接受内核高半区 canonical) 不同；此处刻意拒绝高半区，防止 exc_resume
+/// 恢复到内核地址，是安全边界而非定义矛盾。
 fn is_user_canonical(addr: u64) -> bool {
     addr <= 0x0000_7fff_ffff_ffff
 }

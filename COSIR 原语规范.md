@@ -1530,9 +1530,12 @@ ObjectRef = Segment(SegId)
           | Task(TaskId)
           | Namespace(NsId)
           | Timer(TimerId)
-          | ExcSource(ExcSourceId)
-          | Device(DevId)
+          | ExcSource(ExcSourceId)   // 见 §12.2
+          | Device(DevId)            // 见 §15.2
+          | Node(NodeId)             // 见 §8.5
 ```
+
+Node 是一等对象，定义于 §8.5；此处将其并入 ObjectRef 汇总，与 §19 总览列出的机制类别一致。`NodeId : Nat` 的定义见 §8.5。
 
 ### 15.3 权限
 

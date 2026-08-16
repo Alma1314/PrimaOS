@@ -1332,12 +1332,15 @@ fn cow_slice_child_write_fault_private_resume_schedule_succeeds() {
 }
 
 #[test]
-fn r1_single_core_shared_readonly_writers_each_fault() {
+fn r1_fixed_two_task_order_writes_each_fault_on_shared_readonly() {
     let mut slice = CowSliceState::new_cow_fixture();
     slice
         .establish_cow(PARENT, PARENT, CHILD, DATA_SEG_CAP, CHILD_TASK_CAP, COW_VA)
         .unwrap();
 
+    // 单一 fixture 的固定 2-Task 顺序（parent 写 fault → schedule child → child 写 fault），
+    // 不含并发交错。仅为 SPEC-015 反例 R1 的顺序外推提供宿主证据，不能读作
+    // "多核并发下各 writer 必 fault"的一般性主张。
     assert!(matches!(
         slice.access(PARENT, COW_VA, AccessKind::Write),
         Ok(AccessOutcome::Faulted(_))
