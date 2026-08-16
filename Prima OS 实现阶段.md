@@ -2,7 +2,7 @@
 
 > 文档类型：实施进度与证据跟踪
 >
-> 更新日期：2026-08-07
+> 更新日期：2026-08-16
 >
 > 架构与阶段定义：[[Prima OS]]
 >
@@ -109,6 +109,8 @@
 | 2026-07-30 | 新增 Device 原语封装 I/O 资源 | MMIO/DMA 的物理资源隔离、地址连续性和缓存策略与通用 Segment 根本不同 | I/O 对象独立于 MemorySegment；用户态驱动通过 Capability 访问硬件 |
 | 2026-07-31 | 规范审查与修复 | 修正 COSIR 原语规范中 18 项语义/一致性/完整性/实现细节问题 | 见审查报告（本次会话）；ObjectRef 统一、CapMoved 审计事件补充、Node 完整定义、POSIR/COSIR 边界清单等 |
 | 2026-08-06 | BIOS 测试失败保护固定为 30 秒 | 原 10 秒阈值在主机 CPU 高负载下出现间歇误报；同一镜像与参数在负载回落后实测仍需 7.079 秒启动 | 不增加自动重试；成功仍必须同时满足 QEMU 退出码 33 与严格 PRIMA 事件序列 |
+| 2026-08-16 | 内核实现代码按“唯一允许 unsafe 的细化 crate + safe 机制 crate”组织 | 借鉴 framekernel 内核内特权分离：unsafe 收敛使可信代码可度量、可审计（见差距分析报告 G2，docs/superpowers/reports/2026-08-16-framekernel-gap-analysis.md） | 约束未来 kernel/COSIR 实现代码；待代码量增长后执行审计与重组（G8） |
+| 2026-08-16 | COW 切片真实复制路径采用 POD read/write 接口形态 | host 模型不模拟内存字节；真实 trap 层表达“复制帧内容”参照 framekernel untyped memory 的读写接口而非引用（报告 G9） | 作为下一垂直切片的设计输入 |
 
 ## 阶段 0 — 语义基线
 
