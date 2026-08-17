@@ -954,15 +954,14 @@ git commit -m "feat(B2): read CR3 page table and validate translate"
   - `kernel::protocol::gdt_tss_ready()` / `gdt_tss_error()`。
   - 事件序列：`gdt_tss_ready`(6) 插在 `page_table_ready`(5) 与 `boot_complete`(7) 之间（`boot_complete` 变 7）。
 
-**GDT/TSS 最终字节布局（x86-64，已按 OSDev 标准核实，implementer 不得改动）：**
-- 每个 GDT 项是 `[u8; 16]`（16 字节描述符）。常规段只用低 8 字节，高 8 字节为 0。
-  - 槽 0（null）：`[0; 16]`。
-  - 槽 1（kernel code）：`limit_low=0xffff, access=0x9A, flags=0x20`（64 位代码段：present, DPL0, non-system, type=exec-read, **L=1**），base=0。
-    - 字节：`[0xff, 0xff, 0x00, 0x00, 0x00, 0x9A, 0x20, 0x00, 0,0,0,0,0,0,0,0]`。
-  - 槽 2（kernel data）：`limit_low=0xffff, access=0x92, flags=0x00`（present, DPL0, non-system, data-rw）。
-    - 字节：`[0xff, 0xff, 0x00, 0x00, 0x00, 0x92, 0x00, 0x00, 0,0,0,0,0,0,0,0]`。
-  - 槽 3（TSS）：16 字节系统段描述符，由 `install_tss` 按真实 TSS 基址/limit 填充（见 Step 5）。
-- `Tss`（标准 x86-64 布局，`#[repr(C)]`）：`reserved0:u32, rsp0:u64, rsp1:u64, rsp2:u64, reserved1:u64, ist[7]:u64, reserved2:u64, reserved3:u16, iopb:u16`。本片只设 `rsp0`，其余 0，`iopb=104`（= TSS 字节数偏移，长度固定 104）。
+**GDT/TSS 最终字节布局（x86-64，按 QEMU 验证过的 shipped 布局，implementer 不得改动）：**
+- `Gdt` 持有一个 `[u8; 64]` 原始字节表，按选择子 index 寻址，字节偏移 = `index * 8`。
+  - 槽 0（null，偏移 0..8）：全 0。
+  - 槽 1（kernel code，偏移 8..16）：`limit_low=0xffff, access=0x9A, flags=0x20`（64 位代码段：present, DPL0, non-system, type=exec-read, **L=1**），base=0。低 8 字节：`[0xff, 0xff, 0x00, 0x00, 0x00, 0x9A, 0x20, 0x00]`。
+  - 槽 2（kernel data，偏移 16..24）：`limit_low=0xffff, access=0x92, flags=0x00`（present, DPL0, non-system, data-rw）。低 8 字节：`[0xff, 0xff, 0x00, 0x00, 0x00, 0x92, 0x00, 0x00]`。
+  - 槽 3（TSS，偏移 24..39）：16 字节系统段描述符（占 `index*8` 的连续两个槽），由 `install_tss_desc` 按真实 TSS 基址/limit 填充（见 Step 5）。GDTR limit = `(24 + 16) - 1 = 39`。
+- `Tss`（标准 x86-64 布局，`#[repr(C, packed)]`）：`reserved0:u32, rsp0:u64, rsp1:u64, rsp2:u64, reserved1:u64, ist[7]:u64, reserved2:u64, reserved3:u16, iopb:u16`。本片只设 `rsp0`，其余 0，`iopb=104`（= TSS 字节数偏移，长度固定 104）。
+- TSS 16 字节描述符高 8 字节按 Intel SDM 长模式系统段格式：字节 `[8..12)` = `base[63:32]`（`base>>32/40/48/56`），字节 `[12..16)` = reserved(0)。（此编码经 host decode-back 测试钉住。）
 
 - [ ] **Step 1: 完整创建 `kernel/src/gdt.rs`（实现 + 测试，一次到位）**
 
@@ -1046,15 +1045,18 @@ impl Tss {
 /// # Safety
 ///
 /// 仅可在单核 boot 早期、内核尚未允许并发时调用一次。`gdt`/`tss` 必须存活到内核结束。
+///
+/// x86 字节偏移常量（index*8）：`CODE_OFF=8`、`DATA_OFF=16`、`TSS_OFF=24`。
 pub unsafe fn init(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
-    gdt.items[0] = Descriptor::null();
-    gdt.items[1] = Descriptor::kernel_code();
-    gdt.items[2] = Descriptor::kernel_data();
+    // 槽 0 = null（全 0）；槽 1 = code 低 8 字节；槽 2 = data 低 8 字节。index*8 排布。
+    gdt.bytes[0..16].copy_from_slice(&[0; 16]);
+    gdt.bytes[CODE_OFF..CODE_OFF + 8].copy_from_slice(&Descriptor::kernel_code().0[..8]);
+    gdt.bytes[DATA_OFF..DATA_OFF + 8].copy_from_slice(&Descriptor::kernel_data().0[..8]);
     install_tss_desc(gdt, tss)?;
 
-    // lgdt
-    let len = (gdt.items.len() * 16) as u16 - 1;
-    let base = gdt.items.as_ptr() as u64;
+    // lgdt：limit 覆盖到 TSS 描述符末尾（16 字节系统描述符结束处，再 -1）= 39。
+    let len = (TSS_OFF + 16) as u16 - 1;
+    let base = gdt.bytes.as_ptr() as u64;
     let mut gdtr = [0u8; 10];
     gdtr[0..2].copy_from_slice(&len.to_le_bytes());
     gdtr[2..10].copy_from_slice(&base.to_le_bytes());
@@ -1090,34 +1092,27 @@ fn install_tss_desc(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
     d[5] = 0x89; // present | DPL0 | sys | 64-bit available TSS (type=0x9)
     d[6] = hi_flags;
     d[7] = ((base >> 24) & 0xff) as u8;
-    // 高 8 字节：base [31:24]..[63:32] + reserved
-    d[8] = ((base >> 24) & 0xff) as u8;
-    d[9] = ((base >> 32) & 0xff) as u8;
-    d[10] = ((base >> 40) & 0xff) as u8;
-    d[11] = ((base >> 48) & 0xff) as u8;
-    d[12] = ((base >> 56) & 0xff) as u8;
-    d[13..16].copy_from_slice(&[0, 0, 0]);
-    gdt.items[3] = Descriptor(d);
+    // 高 8 字节：按 Intel SDM 长模式系统段格式，[8..12) = base[63:32]，[12..16) = reserved(0)。
+    d[8] = ((base >> 32) & 0xff) as u8;
+    d[9] = ((base >> 40) & 0xff) as u8;
+    d[10] = ((base >> 48) & 0xff) as u8;
+    d[11] = ((base >> 56) & 0xff) as u8;
+    d[12..16].copy_from_slice(&[0, 0, 0, 0]);
+    gdt.bytes[TSS_OFF..TSS_OFF + 16].copy_from_slice(&d);
     Ok(())
 }
 
-/// GDT 容器（4 槽，各 16 字节）。
-#[repr(C, packed(2))]
+/// GDT 容器：按 x86 字节偏移（index*8）排布的原始字节表。容量 64 字节，
+/// 足以容纳到槽 3 的 16 字节 TSS 描述符（偏移 24..39）。GDTR limit = 39。
+#[repr(align(8))]
 #[derive(Clone)]
 pub struct Gdt {
-    items: [Descriptor; 4],
+    bytes: [u8; 64],
 }
 
 impl Gdt {
     const fn new() -> Self {
-        Gdt {
-            items: [
-                Descriptor::null(),
-                Descriptor::kernel_code(),
-                Descriptor::kernel_data(),
-                Descriptor([0; 16]),
-            ],
-        }
+        Gdt { bytes: [0; 64] }
     }
 }
 
@@ -1328,7 +1323,7 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-/// IDT 条目（64-bit interrupt gate，16 字节）。
+/// IDT 条目（64-bit interrupt gate，16 字节；末 4 字节 reserved）。
 #[repr(C, packed(2))]
 #[derive(Clone, Copy, Default)]
 pub struct Entry {
@@ -1338,6 +1333,7 @@ pub struct Entry {
     type_attr: u8,
     offset_mid: u16,
     offset_high: u32,
+    reserved: u32,
 }
 
 /// IDT 表（256 项）。
@@ -1373,6 +1369,7 @@ impl Idt {
             type_attr: 0x8e, // present | DPL0 | 64-bit interrupt gate
             offset_mid: ((h >> 16) & 0xffff) as u16,
             offset_high: (h >> 32) as u32,
+            reserved: 0,
         };
     }
 }
@@ -1458,6 +1455,7 @@ mod tests {
             type_attr: 0x8e,
             offset_mid: 0x5566,
             offset_high: 0x1122_3344,
+            reserved: 0,
         };
         // offset = offset_low | offset_mid<<16 | offset_high<<32
         let offset = (e.offset_low as u64) | ((e.offset_mid as u64) << 16) | ((e.offset_high as u64) << 32);

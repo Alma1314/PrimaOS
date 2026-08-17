@@ -146,13 +146,14 @@ fn install_tss_desc(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
     d[5] = 0x89; // present | DPL0 | sys | 64-bit available TSS (type=0x9)
     d[6] = hi_flags;
     d[7] = ((base >> 24) & 0xff) as u8;
-    // 高 8 字节：base [31:24]..[63:32] + reserved
-    d[8] = ((base >> 24) & 0xff) as u8;
-    d[9] = ((base >> 32) & 0xff) as u8;
-    d[10] = ((base >> 40) & 0xff) as u8;
-    d[11] = ((base >> 48) & 0xff) as u8;
-    d[12] = ((base >> 56) & 0xff) as u8;
-    d[13..16].copy_from_slice(&[0, 0, 0]);
+    // 高 8 字节：base [32:40]..[56:64] + reserved
+    // 高 8 字节：base [32:40]..[56:64] + reserved。按 Intel SDM 长模式系统段格式，
+    // 16 字节 TSS 描述符的 [8..12) = base[63:32]，[12..16) = reserved(0)。
+    d[8] = ((base >> 32) & 0xff) as u8;
+    d[9] = ((base >> 40) & 0xff) as u8;
+    d[10] = ((base >> 48) & 0xff) as u8;
+    d[11] = ((base >> 56) & 0xff) as u8;
+    d[12..16].copy_from_slice(&[0, 0, 0, 0]);
     gdt.bytes[TSS_OFF..TSS_OFF + 16].copy_from_slice(&d);
     Ok(())
 }
@@ -273,5 +274,30 @@ mod tests {
         let mut g = Gdt::new();
         build_gdt_bytes(&mut g, &Tss::new(0));
         assert_eq!((TSS_OFF + 16) as u16 - 1, 39);
+    }
+
+    #[test]
+    fn tss_desc_upper_base_bytes() {
+        // 钉住 16 字节 TSS 描述符的高 8 字节编码（Intel SDM 长模式系统段格式）：
+        // [8..12) = base[63:32]，[12..16) = reserved(0)。
+        // `Tss` 实例在 host .bss/栈上通常落在高半虚拟地址（含 base<63:32> 非零位），
+        // 能复现并防止此前的 off-by-one 回归（曾把 base>>24/32/40/48 放在 [8..12)）。
+        let real = Tss::new(0);
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &real);
+        let real_base = core::ptr::addr_of!(real) as u64;
+        // 低 8 字节里 base 分布在 d[2..5]（base[0:32]）与 d[7]（base[24:32]）：
+        // d[0]=limit low、d[1]=limit mid、d[5]=access、d[6]=flags。
+        let expected_base = real_base.to_le_bytes(); // [b0..b7] = base[0:8]..[56:64]
+        let d = &g.bytes[TSS_OFF..TSS_OFF + 16];
+        // 低 8 字节里 base 分布在 d[2..5]（base[0:32]）与 d[7]（base[24:32]）：
+        // d[0]=limit low、d[1]=limit mid、d[5]=access、d[6]=flags。
+        assert_eq!(d[2], expected_base[0]);
+        assert_eq!(d[3], expected_base[1]);
+        assert_eq!(d[4], expected_base[2]);
+        assert_eq!(d[7], expected_base[3]);
+        // 高 8 字节：字节 [8..12) = base[63:32]，字节 [12..16) = reserved(0)。
+        assert_eq!(&d[8..12], &expected_base[4..8]);
+        assert_eq!(&d[12..16], &[0, 0, 0, 0]);
     }
 }

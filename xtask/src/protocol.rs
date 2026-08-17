@@ -87,7 +87,7 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::MemoryReady)
         .expect("memory_ready is in the expected sequence");
-    validate_memory_data(memory.data.as_deref())?;
+    let memory_kstart = validate_memory_data(memory.data.as_deref())?;
 
     let phys = events
         .iter()
@@ -99,7 +99,15 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::PageTableReady)
         .expect("page_table_ready is in the expected sequence");
-    validate_page_table_data(page_table.data.as_deref())?;
+    let page_table_translated = validate_page_table_data(page_table.data.as_deref())?;
+
+    // 跨事件不变式：translate(kernel_image_offset) 必须解析回内核镜像实际装载的物理基址
+    // （即 memory_ready.kstart）。这是“页表 translate 恢复内核地址”的诚实证明。
+    if memory_kstart != page_table_translated {
+        return Err(format!(
+            "page_table_ready.translated (0x{page_table_translated:x}) must equal memory_ready.kstart (0x{memory_kstart:x}) — translate of kernel_image_offset should recover kernel_addr"
+        ));
+    }
 
     let trap = events
         .iter()
@@ -129,7 +137,7 @@ fn validate_trap_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_page_table_data(data: Option<&str>) -> Result<(), String> {
+fn validate_page_table_data(data: Option<&str>) -> Result<u64, String> {
     let data = data.ok_or_else(|| "page_table_ready event is missing its data field".to_owned())?;
     let mut translated = None;
     for pair in data.split(';') {
@@ -146,10 +154,10 @@ fn validate_page_table_data(data: Option<&str>) -> Result<(), String> {
     if translated == 0 {
         return Err("translated physical address must be > 0".to_owned());
     }
-    Ok(())
+    Ok(translated)
 }
 
-fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
+fn validate_memory_data(data: Option<&str>) -> Result<u64, String> {
     let data = data.ok_or_else(|| "memory_ready event is missing its data field".to_owned())?;
 
     let mut usable = None;
@@ -203,7 +211,7 @@ fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
         ));
     }
 
-    Ok(())
+    Ok(kstart)
 }
 
 fn validate_physical_map_data(data: Option<&str>) -> Result<(), String> {
@@ -337,9 +345,9 @@ mod tests {
         "SeaBIOS boot text\r\n",
         "PRIMA|v=1|seq=1|event=boot_start|status=ok\r\n",
         "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\r\n",
+        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x200000;kend=0x300000\r\n",
         "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\r\n",
-        "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\r\n",
+        "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x200000\r\n",
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=boot_complete|status=ok\r\n",
@@ -583,6 +591,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_page_table_translated_mismatch() {
+        // memory_ready.kstart (0x200000) 与 page_table_ready.translated (0xf0000000) 不一致：
+        // translate(kernel_image_offset) 未恢复内核装载物理基址，必须拒绝。
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x200000;kend=0x300000\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("must equal memory_ready.kstart"), "{error}");
+    }
+
+    #[test]
     fn rejects_page_table_ready_zero() {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
@@ -637,9 +663,9 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x200000;kend=0x300000\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
-            "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
+            "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x200000\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
             "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=5\n",
             "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
