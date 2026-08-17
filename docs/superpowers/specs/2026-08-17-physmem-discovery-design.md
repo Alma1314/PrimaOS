@@ -6,7 +6,7 @@
 >
 > 项目：Prima OS（`kernel/` 真实内核）
 >
-> 状态：已获用户确认（2026-08-17）
+> 状态：已获用户确认（2026-08-17）；**2026-08-17 修正**：bootloader_api 将内核镜像所在区标为 `Bootloader`（已从 `Usable` 排除），故 `free_frames = usable_frames`（非 `usable − image`），强制不变量为镜像与 Usable 帧不相交（`ImageOverlapsUsable`）而非 `image ⊆ Usable`。
 
 ## 1. 背景与动机
 
@@ -19,8 +19,8 @@
 ## 2. 目标
 
 - 把 `kernel` 拆成 **lib（安全纯逻辑）+ bin（薄入口）**，使帧清单逻辑可 host 单测（承接 G2「safe 机制 crate」方向，不新增 unsafe）。
-- 在真实 bootloader 交接处解析 `BootInfo.memory_regions`，构建**物理帧清单**：`frame_universe`（Usable 区 4KB 帧）与保留区（内核镜像 `image_frames`），并给出 `free_frames = usable - image`。
-- 校验 §14 bootstrap 前置（镜像非空且 `image_frames ⊆ frame_universe`），并保证 `image ∩ free = ∅` 由构造成立（W6 帧级）。
+- 在真实 bootloader 交接处解析 `BootInfo.memory_regions`，构建**物理帧清单**：`usable_frames`（Usable 区 4KB 帧，即内核可自由使用帧）与保留区（内核镜像 `image_frames`），并给出 `free_frames = usable`。
+- 校验 §14 帧级不变量：内核镜像范围与所有 Usable 帧**不相交**（`image ∩ usable = ∅`，W6 帧级唯一归属，防把镜像帧当空闲发放）；镜像非空。**镜像本身被 bootloader 标为 `Bootloader` 区，已从 `Usable` 排除，故无需从 `usable` 减去。**
 - 以 host 单测（确定性覆盖边界情形）+ QEMU boot-trace 集成断言（真实交接）双证据收尾。
 
 ## 3. 非目标
@@ -46,9 +46,9 @@ lib 依赖 `bootloader_api`；其 `MemoryRegion` / `MemoryRegionKind` 类型在 
 pub const FRAME_SIZE: u64 = 4096;
 
 pub struct FrameInventory {
-    pub usable_frames: usize,   // Usable 区 4KB 帧总数
-    pub image_frames: usize,    // 内核镜像保留帧数
-    pub free_frames: usize,     // usable - image
+    pub usable_frames: usize,   // Usable 区 4KB 帧总数（= 内核可自由使用帧）
+    pub image_frames: usize,    // 内核镜像帧数（位于 Bootloader 保留区，报告用）
+    pub free_frames: usize,     // = usable（镜像已由 bootloader 从 Usable 排除）
     pub usable_regions: usize,  // Usable 区个数
     pub kernel_phys_start: u64, // align_down(kernel_addr)
     pub kernel_phys_end: u64,   // align_up(kernel_addr + kernel_len)
@@ -56,7 +56,7 @@ pub struct FrameInventory {
 
 pub enum MemError {
     EmptyImage,                    // kernel_len == 0
-    ImageNotUsable,                // 镜像帧未完全落在 Usable 区
+    ImageOverlapsUsable,           // 镜像帧与某个 Usable 帧重叠（破坏 W6）
     RegionsNotSortedOrOverlapping, // 区域未按地址排序/重叠（防重复计数，护 W6）
 }
 
@@ -70,18 +70,19 @@ pub fn build_inventory(
 ### 4.2 帧计数语义
 
 - 帧区间统一按 `[align_up(start, FRAME_SIZE), align_down(end, FRAME_SIZE))` 截取；非 4KB 对齐的边界页丢弃，不计入。
-- 只统计 `MemoryRegionKind::Usable` 区；`Bootloader` / `UnknownUefi` / `UnknownBios` 区忽略（bootloader 已把自身占用标为 `Bootloader`）。
+- 只统计 `MemoryRegionKind::Usable` 区；`Bootloader` / `UnknownUefi` / `UnknownBios` 区忽略（bootloader 已把自身占用、含内核镜像、页表、boot info 标为 `Bootloader`）。
 - 区域按地址排序且不重叠：`region[i].start >= region[i-1].end`，否则 `RegionsNotSortedOrOverlapping`（重叠会导致重复计数，破坏 W6 帧级唯一归属）。
-- 镜像帧 `[align_down(kernel_addr), align_up(kernel_addr + kernel_len))` 必须全部落在 Usable 区（§14 前置 `image_frames ⊆ frame_universe`）；`kernel_len == 0` 则 `EmptyImage`。
-- `free_frames = usable_frames - image_frames`；镜像完全在 Usable 内时该差即真正的空闲帧数。
+- **内核镜像不落在 Usable 内**：bootloader 把镜像存放的物理区标为 `Bootloader`，因此镜像帧不在 `usable_frames` 中，`free_frames = usable_frames`（无需减去镜像）。镜像帧 `[align_down(kernel_addr), align_up(kernel_addr + kernel_len))` 必须与所有 Usable 帧**不相交**（`image ∩ usable = ∅`，§14 W6）——若任一帧重叠则 `ImageOverlapsUsable`（防把镜像帧当空闲发放、与镜像自身帧唯一归属冲突）；`kernel_len == 0` 则 `EmptyImage`。
+- `free_frames = usable_frames`；`image_frames` 单独报告为保留区（S1-D3「页帧清单与保留区域」）。
 
 ## 5. 协议扩展
 
 PRIMA 记录从固定 5 字段扩为「5 或 6 字段」，新增可选第 6 字段 `data`（`;` 分隔 `k=v` 对）：
 
 ```
-PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=126976;image=32;free=126944;regions=3;kstart=0x0;kend=0x20000
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=126976;image=32;free=126976;regions=3;kstart=0x0;kend=0x20000
 ```
+（示例中 `free == usable`：镜像已由 bootloader 从 Usable 排除，不扣减。）
 
 - 成功事件序列：`boot_start`(1) → `serial_ready`(2) → `memory_ready`(3) → `boot_complete`(4)。
 - 错误路径：`boot_start` → `serial_ready` → `memory_error`（`data` 含 `err=<variant>`）→ 直接 `qemu::exit(PANIC)`（**不经过** Rust panic handler，保留结构化错误信号）。
@@ -100,14 +101,14 @@ PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=126976;image=32;free=12
 
 ### 7.1 host 单测（`kernel/src/mem.rs` `#[cfg(test)]`，约 10 例）
 
-单 Usable 区帧计数；非 4KB 对齐边界页丢弃；非 Usable 区忽略；镜像保留并计 `free = usable - image`；镜像非对齐向上取整（`kstart/kend`）；`EmptyImage`；`ImageNotUsable`；重叠/乱序区域报错；多 Usable 区求和；镜像跨连续 Usable 区正常。
+单 Usable 区帧计数；非 4KB 对齐边界页丢弃；非 Usable 区忽略；镜像保留（`free = usable`，镜像不扣减）；镜像非对齐向上取整（`kstart/kend`）；`EmptyImage`；`ImageOverlapsUsable`（镜像与 Usable 帧重叠）；不重叠/乱序区域报错；多 Usable 区求和；镜像不与 Usable 相交时 `free == usable`。
 
 ### 7.2 QEMU 集成（xtask）
 
 `cargo xtask test` 两次 run 均要求：QEMU 退出码 33；合法 4 事件序列；`memory_ready` 数据满足
 
 ```
-free > 0 ∧ image > 0 ∧ usable == image + free ∧ kstart % 4096 == 0 ∧ kend % 4096 == 0 ∧ kstart < kend
+free > 0 ∧ image > 0 ∧ free == usable ∧ kstart % 4096 == 0 ∧ kend % 4096 == 0 ∧ kstart < kend
 ```
 
 ### 7.3 验收命令（对齐 TEST-006 口径）
@@ -123,7 +124,7 @@ cargo xtask test
 
 ## 8. 证据边界（措辞纪律）
 
-本切片仅证明：真实 bootloader 交接处，内核正确解析内存图并算出满足 §14 bootstrap 前置（镜像非空且 ⊆ usable）的帧清单，`image ∩ free = ∅` 由构造保证（W6 帧级）。
+本切片仅证明：真实 bootloader 交接处，内核正确解析内存图并算出满足 §14 帧级不变量（镜像非空且与所有 Usable 帧**不相交** `image ∩ usable = ∅`）的帧清单；`usable == free`（镜像已由 bootloader 从 Usable 排除），`image ∩ free = ∅` 由构造保证（W6 帧级）。
 
 **不宣称**：
 
