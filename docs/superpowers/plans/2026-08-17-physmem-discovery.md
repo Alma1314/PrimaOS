@@ -115,7 +115,7 @@ git commit -m "refactor: split kernel crate into lib and bin targets"
 - Consumes: `kernel::mem::FRAME_SIZE`（Task 1）。
 - Produces:
   - `kernel::mem::FrameInventory { usable_frames: usize, image_frames: usize, free_frames: usize, usable_regions: usize, kernel_phys_start: u64, kernel_phys_end: u64 }`（`Debug, Clone, Copy, PartialEq, Eq`）。
-  - `kernel::mem::MemError { EmptyImage, ImageNotUsable, RegionsNotSortedOrOverlapping }`（`Debug, Clone, Copy, PartialEq, Eq`）。
+  - `kernel::mem::MemError { EmptyImage, ImageOverlapsUsable, RegionsNotSortedOrOverlapping }`（`Debug, Clone, Copy, PartialEq, Eq`）。
   - `kernel::mem::build_inventory(regions: &[bootloader_api::info::MemoryRegion], kernel_addr: u64, kernel_len: u64) -> Result<FrameInventory, MemError>`。
 
 - [ ] **Step 1: 追加失败测试（先红）**
@@ -138,22 +138,22 @@ mod tests {
 
     #[test]
     fn counts_frames_in_a_single_usable_region() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x0, 0x1000).unwrap();
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 16);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.free_frames, 16); // == usable，镜像不扣减
         assert_eq!(inv.usable_regions, 1);
-        assert_eq!(inv.kernel_phys_start, 0x0);
-        assert_eq!(inv.kernel_phys_end, 0x1000);
+        assert_eq!(inv.kernel_phys_start, 0x100_0000);
+        assert_eq!(inv.kernel_phys_end, 0x100_1000);
     }
 
     #[test]
     fn drops_unaligned_region_boundary_pages() {
-        let regions = [usable(0x0800, 0x5200)];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let regions = [usable(0x0800, 0x5200), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
-        assert_eq!(inv.free_frames, 3);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
@@ -162,28 +162,32 @@ mod tests {
             bootloader(0x0, 0x1000),
             usable(0x1000, 0x5000),
             MemoryRegion { start: 0x5000, end: 0x6000, kind: MemoryRegionKind::UnknownBios(2) },
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
         assert_eq!(inv.usable_regions, 1);
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
-    fn reserves_kernel_image_frames_from_free() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
+    fn image_frames_reported_but_not_subtracted() {
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_2000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x2000).unwrap();
         assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 14);
+        assert_eq!(inv.free_frames, 16); // 镜像已从 Usable 排除，free == usable
     }
 
     #[test]
     fn rounds_unaligned_kernel_image_up_to_full_frames() {
-        let regions = [usable(0x0, 0x1_0000)];
+        let regions = [usable(0x2000, 0x1_2000), bootloader(0x0, 0x2000)];
         let inv = build_inventory(&regions, 0x1800, 0x800).unwrap();
         assert_eq!(inv.kernel_phys_start, 0x1000);
         assert_eq!(inv.kernel_phys_end, 0x2000);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.usable_frames, 16);
+        assert_eq!(inv.free_frames, 16);
     }
 
     #[test]
@@ -193,9 +197,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_kernel_image_outside_usable() {
-        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x5000)];
-        assert_eq!(build_inventory(&regions, 0x0, 0x1000), Err(MemError::ImageNotUsable));
+    fn rejects_image_overlapping_usable() {
+        let regions = [usable(0x0, 0x5000)];
+        assert_eq!(
+            build_inventory(&regions, 0x1000, 0x1000),
+            Err(MemError::ImageOverlapsUsable)
+        );
     }
 
     #[test]
@@ -213,20 +220,26 @@ mod tests {
             usable(0x0, 0x2000),
             bootloader(0x2000, 0x3000),
             usable(0x3000, 0x7000),
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 6);
         assert_eq!(inv.usable_regions, 2);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 5);
+        assert_eq!(inv.free_frames, 6);
     }
 
     #[test]
-    fn accepts_kernel_image_spanning_adjacent_usable_regions() {
-        let regions = [usable(0x0, 0x3000), usable(0x3000, 0x6000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
-        assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 4);
+    fn image_in_bootloader_does_not_reduce_free() {
+        let regions = [
+            usable(0x0, 0x3000),
+            bootloader(0x4000, 0x5000), // 镜像落在该 Bootloader 区，不计入 usable
+            usable(0x5000, 0x8000),
+        ];
+        let inv = build_inventory(&regions, 0x4000, 0x1000).unwrap();
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.usable_frames, 6);
+        assert_eq!(inv.free_frames, 6);
     }
 }
 ```
@@ -256,7 +269,7 @@ pub struct FrameInventory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemError {
     EmptyImage,
-    ImageNotUsable,
+    ImageOverlapsUsable,
     RegionsNotSortedOrOverlapping,
 }
 
@@ -294,7 +307,8 @@ pub fn build_inventory(
     let kernel_phys_end = align_up(kernel_addr + kernel_len, FRAME_SIZE);
     let image_frames = ((kernel_phys_end - kernel_phys_start) / FRAME_SIZE) as usize;
 
-    let mut image_in_usable = 0usize;
+    // 内核镜像由 bootloader 存放在 Bootloader 区（不在 Usable 内）。校验镜像与所有
+    // Usable 帧不相交（W6）：若任一 frames 重叠，则该帧既被视为空闲又被镜像占用。
     for region in regions {
         if region.kind != MemoryRegionKind::Usable {
             continue;
@@ -302,17 +316,15 @@ pub fn build_inventory(
         let lo = align_up(region.start, FRAME_SIZE).max(kernel_phys_start);
         let hi = align_down(region.end, FRAME_SIZE).min(kernel_phys_end);
         if hi > lo {
-            image_in_usable += ((hi - lo) / FRAME_SIZE) as usize;
+            return Err(MemError::ImageOverlapsUsable);
         }
-    }
-    if image_in_usable < image_frames {
-        return Err(MemError::ImageNotUsable);
     }
 
     Ok(FrameInventory {
         usable_frames,
         image_frames,
-        free_frames: usable_frames - image_frames,
+        // 镜像已从 Usable 排除，Usable 帧即自由帧，不扣减镜像。
+        free_frames: usable_frames,
         usable_regions,
         kernel_phys_start,
         kernel_phys_end,
@@ -342,22 +354,22 @@ mod tests {
 
     #[test]
     fn counts_frames_in_a_single_usable_region() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x0, 0x1000).unwrap();
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 16);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.free_frames, 16); // == usable，镜像不扣减
         assert_eq!(inv.usable_regions, 1);
-        assert_eq!(inv.kernel_phys_start, 0x0);
-        assert_eq!(inv.kernel_phys_end, 0x1000);
+        assert_eq!(inv.kernel_phys_start, 0x100_0000);
+        assert_eq!(inv.kernel_phys_end, 0x100_1000);
     }
 
     #[test]
     fn drops_unaligned_region_boundary_pages() {
-        let regions = [usable(0x0800, 0x5200)];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let regions = [usable(0x0800, 0x5200), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
-        assert_eq!(inv.free_frames, 3);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
@@ -366,28 +378,32 @@ mod tests {
             bootloader(0x0, 0x1000),
             usable(0x1000, 0x5000),
             MemoryRegion { start: 0x5000, end: 0x6000, kind: MemoryRegionKind::UnknownBios(2) },
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
         assert_eq!(inv.usable_regions, 1);
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
-    fn reserves_kernel_image_frames_from_free() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
+    fn image_frames_reported_but_not_subtracted() {
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_2000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x2000).unwrap();
         assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 14);
+        assert_eq!(inv.free_frames, 16); // 镜像已从 Usable 排除，free == usable
     }
 
     #[test]
     fn rounds_unaligned_kernel_image_up_to_full_frames() {
-        let regions = [usable(0x0, 0x1_0000)];
+        let regions = [usable(0x2000, 0x1_2000), bootloader(0x0, 0x2000)];
         let inv = build_inventory(&regions, 0x1800, 0x800).unwrap();
         assert_eq!(inv.kernel_phys_start, 0x1000);
         assert_eq!(inv.kernel_phys_end, 0x2000);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.usable_frames, 16);
+        assert_eq!(inv.free_frames, 16);
     }
 
     #[test]
@@ -397,9 +413,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_kernel_image_outside_usable() {
-        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x5000)];
-        assert_eq!(build_inventory(&regions, 0x0, 0x1000), Err(MemError::ImageNotUsable));
+    fn rejects_image_overlapping_usable() {
+        let regions = [usable(0x0, 0x5000)];
+        assert_eq!(
+            build_inventory(&regions, 0x1000, 0x1000),
+            Err(MemError::ImageOverlapsUsable)
+        );
     }
 
     #[test]
@@ -417,20 +436,26 @@ mod tests {
             usable(0x0, 0x2000),
             bootloader(0x2000, 0x3000),
             usable(0x3000, 0x7000),
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 6);
         assert_eq!(inv.usable_regions, 2);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 5);
+        assert_eq!(inv.free_frames, 6);
     }
 
     #[test]
-    fn accepts_kernel_image_spanning_adjacent_usable_regions() {
-        let regions = [usable(0x0, 0x3000), usable(0x3000, 0x6000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
-        assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 4);
+    fn image_in_bootloader_does_not_reduce_free() {
+        let regions = [
+            usable(0x0, 0x3000),
+            bootloader(0x4000, 0x5000), // 镜像落在该 Bootloader 区，不计入 usable
+            usable(0x5000, 0x8000),
+        ];
+        let inv = build_inventory(&regions, 0x4000, 0x1000).unwrap();
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.usable_frames, 6);
+        assert_eq!(inv.free_frames, 6);
     }
 }
 ```
@@ -582,9 +607,9 @@ fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
     if free == 0 {
         return Err("free frame count must be > 0".to_owned());
     }
-    if usable != image + free {
+    if free != usable {
         return Err(format!(
-            "usable ({usable}) must equal image ({image}) + free ({free})"
+            "free ({free}) must equal usable ({usable}) because the kernel image is carried by the bootloader outside Usable"
         ));
     }
     if kstart % 4096 != 0 || kend % 4096 != 0 {
@@ -681,7 +706,7 @@ mod tests {
         "SeaBIOS boot text\r\n",
         "PRIMA|v=1|seq=1|event=boot_start|status=ok\r\n",
         "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\r\n",
+        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\r\n",
         "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\n",
     );
 
@@ -701,7 +726,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok",
         );
         let error = validate_output(output).unwrap_err();
@@ -713,7 +738,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r",
         );
         let error = validate_output(output).unwrap_err();
@@ -725,7 +750,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\r\n",
         );
         let error = validate_output(output).unwrap_err();
@@ -746,7 +771,7 @@ mod tests {
     fn rejects_out_of_order_event() {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
@@ -834,7 +859,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x1;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x1;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
@@ -846,7 +871,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok|data=foo=1\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
@@ -858,7 +883,7 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=15;regions=1;kstart=0x0;kend=0x1000;bogus=1\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000;bogus=1\n",
             "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
@@ -924,7 +949,7 @@ pub(crate) fn memory_error(error: MemError) {
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",
-        MemError::ImageNotUsable => "ImageNotUsable",
+        MemError::ImageOverlapsUsable => "ImageOverlapsUsable",
         MemError::RegionsNotSortedOrOverlapping => "RegionsNotSortedOrOverlapping",
     }
 }
@@ -1111,7 +1136,7 @@ cargo xtask test
 2b. 在证据索引表末尾（SPEC-016 行之后）新增一行（把 `<K>`/`<X>`/`<W>` 替换为 Step 1 实测值）：
 
 ```
-| SPEC-017 | 真实内核 MODEL-TEST + QEMU 集成断言 | `kernel/src/mem.rs`（`build_inventory`/`MemError`/`FrameInventory`）、`kernel/src/main.rs`、`kernel/src/protocol.rs`、`xtask/src/protocol.rs` | 2026-08-17 | 真实 bootloader 交接处解析 `BootInfo.memory_regions` 构建 4KB 帧清单：只统计 `Usable` 区、保留内核镜像帧（§14 `image_frames ⊆ frame_universe`）、`free = usable - image`、`image ∩ free = ∅` 由构造成立。host 单测覆盖对齐截断/非 Usable 忽略/镜像保留/`EmptyImage`/`ImageNotUsable`/重叠区报错/多区求和/镜像跨区；QEMU boot-trace 断言 `memory_ready` 数据满足 `free>0 ∧ image>0 ∧ usable==image+free ∧ kstart/kend 4KB 对齐 ∧ kstart<kend`。验收：`cargo test -p kernel` `<K>`/`<K>`、`cargo test -p xtask` `<X>`/`<X>`、workspace `<W>`/`<W>`、clippy 零告警、`cargo xtask test` 两 run 退出码 33。不宣称帧分配器（§18.0 #12）、真实页表（S1-D4）、物理内存读写（默认配置无 `physical_memory_offset`）、COW 端到端 `KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S1-D3 |
+| SPEC-017 | 真实内核 MODEL-TEST + QEMU 集成断言 | `kernel/src/mem.rs`（`build_inventory`/`MemError`/`FrameInventory`）、`kernel/src/main.rs`、`kernel/src/protocol.rs`、`xtask/src/protocol.rs` | 2026-08-17 | 真实 bootloader 交接处解析 `BootInfo.memory_regions` 构建 4KB 帧清单：只统计 `Usable` 区（内核可自由使用帧）、报告保持内核镜像帧（`image_frames`）；bootloader 把内核镜像所在区标为 `Bootloader`（已从 `Usable` 排除），故 `free_frames = usable_frames`，强制不变量为镜像与所有 Usable 帧**不相交**（`image ∩ usable = ∅`，W6 帧级）、`image_frames > 0`。host 单测覆盖对齐截断/非 Usable 忽略/镜像不扣减（`free == usable`）/镜像对齐取整/`EmptyImage`/`ImageOverlapsUsable`/重叠区报错/多区求和/镜像落 Bootloader 区不占 usable；QEMU boot-trace 断言 `memory_ready` 数据满足 `free>0 ∧ image>0 ∧ free==usable ∧ kstart/kend 4KB 对齐 ∧ kstart<kend`。验收：`cargo test -p kernel` `<K>`/`<K>`、`cargo test -p xtask` `<X>`/`<X>`、workspace `<W>`/`<W>`、clippy 零告警、`cargo xtask test` 两 run 退出码 33。不宣称帧分配器（§18.0 #12）、真实页表（S1-D4）、物理内存读写（默认配置无 `physical_memory_offset`）、COW 端到端 `KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S1-D3 |
 ```
 
 2c. 在「当前快照」表新增一行（放「最近审计验收」之后）：
