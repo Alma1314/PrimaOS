@@ -2,29 +2,24 @@
 enum EventKind {
     BootStart,
     SerialReady,
+    MemoryReady,
     BootComplete,
     Panic,
+    MemoryError,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
     kind: EventKind,
+    data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [Event; 3] = [
-    Event {
-        sequence: 1,
-        kind: EventKind::BootStart,
-    },
-    Event {
-        sequence: 2,
-        kind: EventKind::SerialReady,
-    },
-    Event {
-        sequence: 3,
-        kind: EventKind::BootComplete,
-    },
+const EXPECTED_EVENTS: [(u32, EventKind); 4] = [
+    (1, EventKind::BootStart),
+    (2, EventKind::SerialReady),
+    (3, EventKind::MemoryReady),
+    (4, EventKind::BootComplete),
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
@@ -49,24 +44,105 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         }
     }
 
-    if events.iter().any(|event| event.kind == EventKind::Panic) {
-        return Err("kernel emitted panic event".to_owned());
+    if events
+        .iter()
+        .any(|event| matches!(event.kind, EventKind::Panic | EventKind::MemoryError))
+    {
+        return Err("kernel emitted panic or memory_error event".to_owned());
     }
 
-    if events.as_slice() != EXPECTED_EVENTS.as_slice() {
+    let observed: Vec<(u32, EventKind)> = events
+        .iter()
+        .map(|event| (event.sequence, event.kind))
+        .collect();
+    if observed != EXPECTED_EVENTS {
         return Err(format!(
-            "unexpected PRIMA event sequence: expected {EXPECTED_EVENTS:?}, got {events:?}"
+            "unexpected PRIMA event sequence: expected {EXPECTED_EVENTS:?}, got {observed:?}"
+        ));
+    }
+
+    let memory = events
+        .iter()
+        .find(|event| event.kind == EventKind::MemoryReady)
+        .expect("memory_ready is in the expected sequence");
+    validate_memory_data(memory.data.as_deref())
+}
+
+fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "memory_ready event is missing its data field".to_owned())?;
+
+    let mut usable = None;
+    let mut image = None;
+    let mut free = None;
+    let mut kstart = None;
+    let mut kend = None;
+
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "usable" => usable = Some(parse_count(value)?),
+            "image" => image = Some(parse_count(value)?),
+            "free" => free = Some(parse_count(value)?),
+            "kstart" => kstart = Some(parse_addr(value)?),
+            "kend" => kend = Some(parse_addr(value)?),
+            "regions" => {
+                parse_count(value)?;
+            }
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+
+    let usable = usable.ok_or_else(|| "missing usable in memory_ready data".to_owned())?;
+    let image = image.ok_or_else(|| "missing image in memory_ready data".to_owned())?;
+    let free = free.ok_or_else(|| "missing free in memory_ready data".to_owned())?;
+    let kstart = kstart.ok_or_else(|| "missing kstart in memory_ready data".to_owned())?;
+    let kend = kend.ok_or_else(|| "missing kend in memory_ready data".to_owned())?;
+
+    if image == 0 {
+        return Err("image frame count must be > 0".to_owned());
+    }
+    if free == 0 {
+        return Err("free frame count must be > 0".to_owned());
+    }
+    if free != usable {
+        return Err(format!(
+            "free ({free}) must equal usable ({usable}) because the kernel image is carried by the bootloader outside Usable"
+        ));
+    }
+    if kstart % 4096 != 0 || kend % 4096 != 0 {
+        return Err(format!(
+            "kernel image addresses must be page-aligned: kstart=0x{kstart:x}, kend=0x{kend:x}"
+        ));
+    }
+    if kstart >= kend {
+        return Err(format!(
+            "kernel image start (0x{kstart:x}) must be below end (0x{kend:x})"
         ));
     }
 
     Ok(())
 }
 
+fn parse_count(value: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|error| format!("invalid count {value}: {error}"))
+}
+
+fn parse_addr(value: &str) -> Result<u64, String> {
+    let hex = value
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("invalid address (missing 0x prefix): {value}"))?;
+    u64::from_str_radix(hex, 16).map_err(|error| format!("invalid address {value}: {error}"))
+}
+
 fn parse_line(line: &str) -> Result<Event, String> {
     let fields: Vec<&str> = line.split('|').collect();
-    if fields.len() != 5 {
+    if fields.len() != 5 && fields.len() != 6 {
         return Err(format!(
-            "PRIMA line must contain five fields, got {}: {line}",
+            "PRIMA line must contain five or six fields, got {}: {line}",
             fields.len()
         ));
     }
@@ -88,16 +164,41 @@ fn parse_line(line: &str) -> Result<Event, String> {
     let status = fields[4]
         .strip_prefix("status=")
         .ok_or_else(|| format!("invalid status field: {}", fields[4]))?;
+    let data = if fields.len() == 6 {
+        Some(
+            fields[5]
+                .strip_prefix("data=")
+                .ok_or_else(|| format!("invalid data field: {}", fields[5]))?
+                .to_owned(),
+        )
+    } else {
+        None
+    };
 
     let kind = match (event, status) {
         ("boot_start", "ok") => EventKind::BootStart,
         ("serial_ready", "ok") => EventKind::SerialReady,
+        ("memory_ready", "ok") => EventKind::MemoryReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
+        ("memory_error", "error") => EventKind::MemoryError,
         ("panic", "error") => EventKind::Panic,
         _ => return Err(format!("unsupported event/status pair: {event}/{status}")),
     };
 
-    Ok(Event { sequence, kind })
+    match (kind, &data) {
+        (EventKind::MemoryReady | EventKind::MemoryError, None) => {
+            return Err(format!("{event} event is missing its data field"));
+        }
+        (EventKind::MemoryReady | EventKind::MemoryError, Some(_)) => {}
+        (_, Some(_)) => return Err(format!("{event} event must not carry a data field")),
+        (_, None) => {}
+    }
+
+    Ok(Event {
+        sequence,
+        kind,
+        data,
+    })
 }
 
 #[cfg(test)]
@@ -108,7 +209,8 @@ mod tests {
         "SeaBIOS boot text\r\n",
         "PRIMA|v=1|seq=1|event=boot_start|status=ok\r\n",
         "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-        "PRIMA|v=1|seq=3|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\r\n",
+        "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -127,11 +229,10 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=boot_complete|status=ok",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok",
         );
-
         let error = validate_output(output).unwrap_err();
-
         assert!(error.contains("LF or CRLF"), "{error}");
     }
 
@@ -140,11 +241,10 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\r",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r",
         );
-
         let error = validate_output(output).unwrap_err();
-
         assert!(error.contains("LF or CRLF"), "{error}");
     }
 
@@ -153,11 +253,10 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\r\r\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\r\n",
         );
-
         let error = validate_output(output).unwrap_err();
-
         assert!(error.contains("LF or CRLF"), "{error}");
     }
 
@@ -165,7 +264,8 @@ mod tests {
     fn rejects_missing_event() {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
-            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
         assert!(validate_output(output).unwrap_err().contains("sequence"));
     }
@@ -173,9 +273,10 @@ mod tests {
     #[test]
     fn rejects_out_of_order_event() {
         let output = concat!(
-            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
-            "PRIMA|v=1|seq=3|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
         );
         assert!(validate_output(output).unwrap_err().contains("sequence"));
     }
@@ -184,7 +285,7 @@ mod tests {
     fn rejects_duplicate_event() {
         let output = format!(
             "{}{}",
-            VALID, "PRIMA|v=1|seq=3|event=boot_complete|status=ok\n"
+            VALID, "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n"
         );
         assert!(validate_output(&output).unwrap_err().contains("sequence"));
     }
@@ -192,30 +293,101 @@ mod tests {
     #[test]
     fn rejects_malformed_prima_line() {
         let error = validate_output("PRIMA|v=1|seq=1|event=boot_start\n").unwrap_err();
-        assert!(error.contains("five fields"));
+        assert!(error.contains("five or six fields"), "{error}");
     }
 
     #[test]
     fn rejects_unsupported_version() {
         let error = validate_output("PRIMA|v=2|seq=1|event=boot_start|status=ok\n").unwrap_err();
-        assert!(error.contains("version"));
+        assert!(error.contains("version"), "{error}");
     }
 
     #[test]
     fn rejects_invalid_status() {
         let error = validate_output("PRIMA|v=1|seq=1|event=boot_start|status=error\n").unwrap_err();
-        assert!(error.contains("event/status"));
+        assert!(error.contains("event/status"), "{error}");
     }
 
     #[test]
     fn rejects_invalid_sequence_number() {
         let error = validate_output("PRIMA|v=1|seq=x|event=boot_start|status=ok\n").unwrap_err();
-        assert!(error.contains("sequence number"));
+        assert!(error.contains("sequence number"), "{error}");
     }
 
     #[test]
     fn rejects_panic_event() {
-        let output = format!("{}{}", VALID, "PRIMA|v=1|seq=4|event=panic|status=error\n");
-        assert!(validate_output(&output).unwrap_err().contains("panic"));
+        let output = format!("{}{}", VALID, "PRIMA|v=1|seq=5|event=panic|status=error\n");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("panic"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memory_error_event() {
+        let output = format!(
+            "{}{}",
+            VALID, "PRIMA|v=1|seq=5|event=memory_error|status=error|data=err=EmptyImage\n"
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("memory_error"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memory_ready_missing_data() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("missing its data field"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memory_ready_inconsistent_counts() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=5;free=10;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("must equal"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memory_ready_unaligned_address() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x1;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("page-aligned"), "{error}");
+    }
+
+    #[test]
+    fn rejects_non_data_event_carrying_data() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok|data=foo=1\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("must not carry"), "{error}");
+    }
+
+    #[test]
+    fn rejects_unknown_data_key() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000;bogus=1\n",
+            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("unknown data key"), "{error}");
     }
 }
