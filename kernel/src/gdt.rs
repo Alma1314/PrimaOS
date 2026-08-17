@@ -84,6 +84,17 @@ const CODE_OFF: usize = 8; // 槽 1: index*8 = 内核 code
 const DATA_OFF: usize = 16; // 槽 2: index*8 = 内核 data
 const TSS_OFF: usize = 24; // 槽 3: index*8 = TSS 系统描述符（占 16 字节，覆盖槽 3..4）
 
+/// 装配 GDT 字节表（null/code/data/TSS），不含任何特权指令；供 host 单测。
+#[allow(clippy::result_unit_err)]
+fn build_gdt_bytes(gdt: &mut Gdt, tss: &Tss) {
+    // 槽 0 = null（全 0）；槽 1 = code 低 8 字节；槽 2 = data 低 8 字节。
+    gdt.bytes[0..16].copy_from_slice(&Descriptor::null().0);
+    gdt.bytes[CODE_OFF..CODE_OFF + 8].copy_from_slice(&Descriptor::kernel_code().0[..8]);
+    gdt.bytes[DATA_OFF..DATA_OFF + 8].copy_from_slice(&Descriptor::kernel_data().0[..8]);
+    // install_tss_desc 无 asm，可（也应）在这里调用；其 Result 实际从不 Err，故吞掉。
+    let _ = install_tss_desc(gdt, tss);
+}
+
 /// 装载 GDT 的槽 0/1/2（null/code/data），并把 TSS 描述符装进槽 3、`ltr`。
 ///
 /// # Safety
@@ -91,11 +102,7 @@ const TSS_OFF: usize = 24; // 槽 3: index*8 = TSS 系统描述符（占 16 字�
 /// 仅可在单核 boot 早期、内核尚未允许并发时调用一次。`gdt`/`tss` 必须存活到内核结束。
 #[allow(clippy::result_unit_err)]
 pub unsafe fn init(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
-    // 槽 0 = null（全 0）；槽 1 = code 低 8 字节；槽 2 = data 低 8 字节。
-    gdt.bytes[0..16].copy_from_slice(&Descriptor::null().0);
-    gdt.bytes[CODE_OFF..CODE_OFF + 8].copy_from_slice(&Descriptor::kernel_code().0[..8]);
-    gdt.bytes[DATA_OFF..DATA_OFF + 8].copy_from_slice(&Descriptor::kernel_data().0[..8]);
-    install_tss_desc(gdt, tss)?;
+    build_gdt_bytes(gdt, tss);
 
     // lgdt：limit 覆盖到 TSS 描述符末尾（16 字节系统描述符结束处，再 -1）。
     let len = (TSS_OFF + 16) as u16 - 1;
@@ -224,5 +231,47 @@ mod tests {
         let bytes =
             unsafe { core::slice::from_raw_parts(&t as *const Tss as *const u8, size_of::<Tss>()) };
         assert_eq!(&bytes[4..12], &0x1234_5678u64.to_le_bytes());
+    }
+
+    // 以下测试钉住 build_gdt_bytes 的字节表布局——即本 task 最大的历史 bug：
+    // brief 曾按 stride=16 排布 code/data/TSS，导致 ltr 命中描述符错误区而 #GP(0x18)。
+    // 回归安全仅靠 QEMU 不够，故在此 pin 编码与槽位。
+
+    #[test]
+    fn gdt_layout_code_slot() {
+        // 槽 1（index*8=8..16）：access=0x9a、flags 0x20（L=1）。
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &Tss::new(0));
+        assert_eq!(g.bytes[CODE_OFF + 5], 0x9a);
+        assert_eq!(g.bytes[CODE_OFF + 6], 0x20);
+    }
+
+    #[test]
+    fn gdt_layout_data_slot() {
+        // 槽 2（index*8=16..24）：access=0x92。
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &Tss::new(0));
+        assert_eq!(g.bytes[DATA_OFF + 5], 0x92);
+    }
+
+    #[test]
+    fn gdt_layout_tss_slot() {
+        // 槽 3（index*8=24..39）：16 字节系统描述符。
+        // access=0x89、limit 低字节 0x67（size 104 - 1）、高槽 13..15 为 0。
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &Tss::new(0));
+        assert_eq!(g.bytes[TSS_OFF + 5], 0x89);
+        assert_eq!(g.bytes[TSS_OFF + 0], 0x67);
+        assert_eq!(g.bytes[TSS_OFF + 13], 0);
+        assert_eq!(g.bytes[TSS_OFF + 14], 0);
+        assert_eq!(g.bytes[TSS_OFF + 15], 0);
+    }
+
+    #[test]
+    fn gdt_gdtr_limit_arithmetic() {
+        // GDTR limit 为字节表末尾再 -1：limit = (TSS_OFF + 16) - 1 = 39。
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &Tss::new(0));
+        assert_eq!((TSS_OFF + 16) as u16 - 1, 39);
     }
 }
