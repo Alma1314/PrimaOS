@@ -6,12 +6,14 @@ enum EventKind {
     PhysicalMapReady,
     PageTableReady,
     GdtTssReady,
+    TrapReady,
     BootComplete,
     Panic,
     MemoryError,
     PhysicalMapError,
     PageTableError,
     GdtTssError,
+    IdtError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,14 +23,15 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 7] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 8] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
     (4, EventKind::PhysicalMapReady),
     (5, EventKind::PageTableReady),
     (6, EventKind::GdtTssReady),
-    (7, EventKind::BootComplete),
+    (7, EventKind::TrapReady),
+    (8, EventKind::BootComplete),
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
@@ -61,10 +64,11 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
                 | EventKind::PhysicalMapError
                 | EventKind::PageTableError
                 | EventKind::GdtTssError
+                | EventKind::IdtError
         )
     }) {
         return Err(
-            "kernel emitted panic, memory_error, physical_map_error, page_table_error, or gdt_tss_error event"
+            "kernel emitted panic, memory_error, physical_map_error, page_table_error, gdt_tss_error, or idt_error event"
                 .to_owned(),
         );
     }
@@ -95,7 +99,34 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::PageTableReady)
         .expect("page_table_ready is in the expected sequence");
-    validate_page_table_data(page_table.data.as_deref())
+    validate_page_table_data(page_table.data.as_deref())?;
+
+    let trap = events
+        .iter()
+        .find(|event| event.kind == EventKind::TrapReady)
+        .expect("trap_ready is in the expected sequence");
+    validate_trap_data(trap.data.as_deref())
+}
+
+fn validate_trap_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "trap_ready event is missing its data field".to_owned())?;
+    let mut seen = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        if key != "seen" {
+            return Err(format!("unknown data key: {key}"));
+        }
+        seen = Some(parse_count(value)?);
+    }
+    let seen = seen.ok_or_else(|| "missing seen in trap_ready data".to_owned())?;
+    if seen != 3 {
+        return Err(format!(
+            "trap_ready seen must be 3 (breakpoint), got {seen}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_page_table_data(data: Option<&str>) -> Result<(), String> {
@@ -255,11 +286,13 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("physical_map_ready", "ok") => EventKind::PhysicalMapReady,
         ("page_table_ready", "ok") => EventKind::PageTableReady,
         ("gdt_tss_ready", "ok") => EventKind::GdtTssReady,
+        ("trap_ready", "ok") => EventKind::TrapReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
         ("page_table_error", "error") => EventKind::PageTableError,
         ("gdt_tss_error", "error") => EventKind::GdtTssError,
+        ("idt_error", "error") => EventKind::IdtError,
         ("panic", "error") => EventKind::Panic,
         _ => return Err(format!("unsupported event/status pair: {event}/{status}")),
     };
@@ -269,7 +302,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             EventKind::MemoryReady
             | EventKind::MemoryError
             | EventKind::PhysicalMapReady
-            | EventKind::PageTableReady,
+            | EventKind::PageTableReady
+            | EventKind::TrapReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -278,7 +312,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             EventKind::MemoryReady
             | EventKind::MemoryError
             | EventKind::PhysicalMapReady
-            | EventKind::PageTableReady,
+            | EventKind::PageTableReady
+            | EventKind::TrapReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -306,7 +341,8 @@ mod tests {
         "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\r\n",
         "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\r\n",
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-        "PRIMA|v=1|seq=7|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+        "PRIMA|v=1|seq=8|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -457,7 +493,8 @@ mod tests {
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must equal"), "{error}");
@@ -472,7 +509,8 @@ mod tests {
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("page-aligned"), "{error}");
@@ -501,7 +539,8 @@ mod tests {
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("unknown data key"), "{error}");
@@ -526,7 +565,8 @@ mod tests {
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000001000;va=0xffff800000000000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must be >= offset"), "{error}");
@@ -551,7 +591,8 @@ mod tests {
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x0\n",
             "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
-            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must be > 0"), "{error}");
@@ -579,5 +620,31 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("gdt_tss_error"), "{error}");
+    }
+
+    #[test]
+    fn rejects_idt_error() {
+        let output = format!(
+            "{}{}",
+            VALID, "PRIMA|v=1|seq=9|event=idt_error|status=error\n"
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("idt_error"), "{error}");
+    }
+
+    #[test]
+    fn rejects_trap_wrong_seen() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=5\n",
+            "PRIMA|v=1|seq=8|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("seen must be 3"), "{error}");
     }
 }

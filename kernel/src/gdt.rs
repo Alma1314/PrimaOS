@@ -261,7 +261,7 @@ mod tests {
         let mut g = Gdt::new();
         build_gdt_bytes(&mut g, &Tss::new(0));
         assert_eq!(g.bytes[TSS_OFF + 5], 0x89);
-        assert_eq!(g.bytes[TSS_OFF + 0], 0x67);
+        assert_eq!(g.bytes[TSS_OFF], 0x67);
         assert_eq!(g.bytes[TSS_OFF + 13], 0);
         assert_eq!(g.bytes[TSS_OFF + 14], 0);
         assert_eq!(g.bytes[TSS_OFF + 15], 0);

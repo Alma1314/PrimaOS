@@ -55,6 +55,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             qemu::exit(qemu::PANIC)
                                         }
                                     }
+
+                                    // B4: 装载 IDT，触发 int3，验证 trap → handler → iretq 闭环。
+                                    match kernel::idt::init_idt() {
+                                        Ok(()) => {
+                                            kernel::idt::trigger_int3();
+                                            let seen = kernel::idt::trap_seen();
+                                            protocol::trap_ready(seen);
+                                        }
+                                        Err(()) => {
+                                            protocol::idt_error();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                    }
                                     protocol::boot_complete();
                                     serial::flush();
                                     qemu::exit(qemu::SUCCESS)

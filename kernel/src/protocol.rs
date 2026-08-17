@@ -79,6 +79,18 @@ pub(crate) fn gdt_tss_error() {
     serial::write_bytes(b"\r\n");
 }
 
+pub(crate) fn trap_ready(seen: u8) {
+    write_prefix("trap_ready", "ok");
+    serial::write_bytes(b"|data=seen=");
+    write_u32(seen as u32);
+    serial::write_bytes(b"\r\n");
+}
+
+pub(crate) fn idt_error() {
+    write_prefix("idt_error", "error");
+    serial::write_bytes(b"\r\n");
+}
+
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",
