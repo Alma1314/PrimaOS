@@ -58,6 +58,18 @@ pub(crate) fn physical_map_error() {
     serial::write_bytes(b"\r\n");
 }
 
+pub(crate) fn page_table_ready(translated: u64) {
+    write_prefix("page_table_ready", "ok");
+    serial::write_bytes(b"|data=translated=");
+    write_hex_u64(translated);
+    serial::write_bytes(b"\r\n");
+}
+
+pub(crate) fn page_table_error() {
+    write_prefix("page_table_error", "error");
+    serial::write_bytes(b"\r\n");
+}
+
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",
