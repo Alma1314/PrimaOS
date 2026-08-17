@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn rounds_unaligned_kernel_image_up_to_full_frames() {
-        let regions = [usable(0x2000, 0x1_2000), bootloader(0x0, 0x2000)];
+        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x1_2000)];
         let inv = build_inventory(&regions, 0x1800, 0x800).unwrap();
         assert_eq!(inv.kernel_phys_start, 0x1000);
         assert_eq!(inv.kernel_phys_end, 0x2000);
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn rounds_unaligned_kernel_image_up_to_full_frames() {
-        let regions = [usable(0x2000, 0x1_2000), bootloader(0x0, 0x2000)];
+        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x1_2000)];
         let inv = build_inventory(&regions, 0x1800, 0x800).unwrap();
         assert_eq!(inv.kernel_phys_start, 0x1000);
         assert_eq!(inv.kernel_phys_end, 0x2000);

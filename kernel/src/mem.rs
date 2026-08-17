@@ -15,7 +15,7 @@ pub struct FrameInventory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemError {
     EmptyImage,
-    ImageNotUsable,
+    ImageOverlapsUsable,
     RegionsNotSortedOrOverlapping,
 }
 
@@ -53,7 +53,8 @@ pub fn build_inventory(
     let kernel_phys_end = align_up(kernel_addr + kernel_len, FRAME_SIZE);
     let image_frames = ((kernel_phys_end - kernel_phys_start) / FRAME_SIZE) as usize;
 
-    let mut image_in_usable = 0usize;
+    // bootloader 把内核镜像存放在 Bootloader 区（不在 Usable 内）。校验镜像与所有
+    // Usable 帧不相交（W6）：若任一帧重叠，则该帧既被视为空闲又被镜像占用。
     for region in regions {
         if region.kind != MemoryRegionKind::Usable {
             continue;
@@ -61,17 +62,15 @@ pub fn build_inventory(
         let lo = align_up(region.start, FRAME_SIZE).max(kernel_phys_start);
         let hi = align_down(region.end, FRAME_SIZE).min(kernel_phys_end);
         if hi > lo {
-            image_in_usable += ((hi - lo) / FRAME_SIZE) as usize;
+            return Err(MemError::ImageOverlapsUsable);
         }
-    }
-    if image_in_usable < image_frames {
-        return Err(MemError::ImageNotUsable);
     }
 
     Ok(FrameInventory {
         usable_frames,
         image_frames,
-        free_frames: usable_frames - image_frames,
+        // 镜像已从 Usable 排除，Usable 帧即自由帧，不扣减镜像。
+        free_frames: usable_frames,
         usable_regions,
         kernel_phys_start,
         kernel_phys_end,
@@ -109,22 +108,22 @@ mod tests {
 
     #[test]
     fn counts_frames_in_a_single_usable_region() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x0, 0x1000).unwrap();
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 16);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.free_frames, 16); // == usable，镜像不扣减
         assert_eq!(inv.usable_regions, 1);
-        assert_eq!(inv.kernel_phys_start, 0x0);
-        assert_eq!(inv.kernel_phys_end, 0x1000);
+        assert_eq!(inv.kernel_phys_start, 0x100_0000);
+        assert_eq!(inv.kernel_phys_end, 0x100_1000);
     }
 
     #[test]
     fn drops_unaligned_region_boundary_pages() {
-        let regions = [usable(0x0800, 0x5200)];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let regions = [usable(0x0800, 0x5200), bootloader(0x100_0000, 0x100_1000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
-        assert_eq!(inv.free_frames, 3);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
@@ -137,28 +136,32 @@ mod tests {
                 end: 0x6000,
                 kind: MemoryRegionKind::UnknownBios(2),
             },
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 4);
         assert_eq!(inv.usable_regions, 1);
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.free_frames, 4);
     }
 
     #[test]
-    fn reserves_kernel_image_frames_from_free() {
-        let regions = [usable(0x0, 0x1_0000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
+    fn image_frames_reported_but_not_subtracted() {
+        let regions = [usable(0x0, 0x1_0000), bootloader(0x100_0000, 0x100_2000)];
+        let inv = build_inventory(&regions, 0x100_0000, 0x2000).unwrap();
         assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 14);
+        assert_eq!(inv.free_frames, 16); // 镜像已从 Usable 排除，free == usable
     }
 
     #[test]
     fn rounds_unaligned_kernel_image_up_to_full_frames() {
-        let regions = [usable(0x0, 0x1_0000)];
+        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x1_2000)];
         let inv = build_inventory(&regions, 0x1800, 0x800).unwrap();
         assert_eq!(inv.kernel_phys_start, 0x1000);
         assert_eq!(inv.kernel_phys_end, 0x2000);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 15);
+        assert_eq!(inv.usable_frames, 16);
+        assert_eq!(inv.free_frames, 16);
     }
 
     #[test]
@@ -171,11 +174,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_kernel_image_outside_usable() {
-        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x5000)];
+    fn rejects_image_overlapping_usable() {
+        let regions = [usable(0x0, 0x5000)];
         assert_eq!(
-            build_inventory(&regions, 0x0, 0x1000),
-            Err(MemError::ImageNotUsable)
+            build_inventory(&regions, 0x1000, 0x1000),
+            Err(MemError::ImageOverlapsUsable)
         );
     }
 
@@ -194,19 +197,25 @@ mod tests {
             usable(0x0, 0x2000),
             bootloader(0x2000, 0x3000),
             usable(0x3000, 0x7000),
+            bootloader(0x100_0000, 0x100_1000),
         ];
-        let inv = build_inventory(&regions, 0x1000, 0x1000).unwrap();
+        let inv = build_inventory(&regions, 0x100_0000, 0x1000).unwrap();
         assert_eq!(inv.usable_frames, 6);
         assert_eq!(inv.usable_regions, 2);
         assert_eq!(inv.image_frames, 1);
-        assert_eq!(inv.free_frames, 5);
+        assert_eq!(inv.free_frames, 6);
     }
 
     #[test]
-    fn accepts_kernel_image_spanning_adjacent_usable_regions() {
-        let regions = [usable(0x0, 0x3000), usable(0x3000, 0x6000)];
-        let inv = build_inventory(&regions, 0x2000, 0x2000).unwrap();
-        assert_eq!(inv.image_frames, 2);
-        assert_eq!(inv.free_frames, 4);
+    fn image_in_bootloader_does_not_reduce_free() {
+        let regions = [
+            usable(0x0, 0x3000),
+            bootloader(0x4000, 0x5000), // 镜像落在该 Bootloader 区，不计入 usable
+            usable(0x5000, 0x8000),
+        ];
+        let inv = build_inventory(&regions, 0x4000, 0x1000).unwrap();
+        assert_eq!(inv.image_frames, 1);
+        assert_eq!(inv.usable_frames, 6);
+        assert_eq!(inv.free_frames, 6);
     }
 }
