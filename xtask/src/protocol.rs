@@ -3,9 +3,11 @@ enum EventKind {
     BootStart,
     SerialReady,
     MemoryReady,
+    PhysicalMapReady,
     BootComplete,
     Panic,
     MemoryError,
+    PhysicalMapError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -15,11 +17,12 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 4] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 5] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
-    (4, EventKind::BootComplete),
+    (4, EventKind::PhysicalMapReady),
+    (5, EventKind::BootComplete),
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
@@ -44,11 +47,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         }
     }
 
-    if events
-        .iter()
-        .any(|event| matches!(event.kind, EventKind::Panic | EventKind::MemoryError))
-    {
-        return Err("kernel emitted panic or memory_error event".to_owned());
+    if events.iter().any(|event| {
+        matches!(
+            event.kind,
+            EventKind::Panic | EventKind::MemoryError | EventKind::PhysicalMapError
+        )
+    }) {
+        return Err("kernel emitted panic, memory_error, or physical_map_error event".to_owned());
     }
 
     let observed: Vec<(u32, EventKind)> = events
@@ -65,7 +70,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::MemoryReady)
         .expect("memory_ready is in the expected sequence");
-    validate_memory_data(memory.data.as_deref())
+    validate_memory_data(memory.data.as_deref())?;
+
+    let phys = events
+        .iter()
+        .find(|event| event.kind == EventKind::PhysicalMapReady)
+        .expect("physical_map_ready is in the expected sequence");
+    validate_physical_map_data(phys.data.as_deref())
 }
 
 fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
@@ -125,6 +136,29 @@ fn validate_memory_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_physical_map_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "physical_map_ready event is missing its data field".to_owned())?;
+    let mut offset = None;
+    let mut va = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "offset" => offset = Some(parse_addr(value)?),
+            "va" => va = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let offset = offset.ok_or_else(|| "missing offset in physical_map_ready data".to_owned())?;
+    let va = va.ok_or_else(|| "missing va in physical_map_ready data".to_owned())?;
+    if va < offset {
+        return Err(format!("va (0x{va:x}) must be >= offset (0x{offset:x})"));
+    }
+    Ok(())
+}
+
 fn parse_count(value: &str) -> Result<usize, String> {
     value
         .parse::<usize>()
@@ -179,17 +213,23 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("boot_start", "ok") => EventKind::BootStart,
         ("serial_ready", "ok") => EventKind::SerialReady,
         ("memory_ready", "ok") => EventKind::MemoryReady,
+        ("physical_map_ready", "ok") => EventKind::PhysicalMapReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
+        ("physical_map_error", "error") => EventKind::PhysicalMapError,
         ("panic", "error") => EventKind::Panic,
         _ => return Err(format!("unsupported event/status pair: {event}/{status}")),
     };
 
     match (kind, &data) {
-        (EventKind::MemoryReady | EventKind::MemoryError, None) => {
+        (EventKind::MemoryReady | EventKind::MemoryError | EventKind::PhysicalMapReady, None) => {
             return Err(format!("{event} event is missing its data field"));
         }
-        (EventKind::MemoryReady | EventKind::MemoryError, Some(_)) => {}
+        (
+            EventKind::MemoryReady | EventKind::MemoryError | EventKind::PhysicalMapReady,
+            Some(_),
+        ) => {}
+        (EventKind::PhysicalMapError, Some(_)) | (EventKind::PhysicalMapError, None) => {}
         (_, Some(_)) => return Err(format!("{event} event must not carry a data field")),
         (_, None) => {}
     }
@@ -210,7 +250,8 @@ mod tests {
         "PRIMA|v=1|seq=1|event=boot_start|status=ok\r\n",
         "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
         "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\r\n",
-        "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\r\n",
+        "PRIMA|v=1|seq=5|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -230,7 +271,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("LF or CRLF"), "{error}");
@@ -242,7 +284,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\r",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("LF or CRLF"), "{error}");
@@ -254,7 +297,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\r\r\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\r\r\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("LF or CRLF"), "{error}");
@@ -265,7 +309,8 @@ mod tests {
         let output = concat!(
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         assert!(validate_output(output).unwrap_err().contains("sequence"));
     }
@@ -276,7 +321,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         assert!(validate_output(output).unwrap_err().contains("sequence"));
     }
@@ -285,7 +331,7 @@ mod tests {
     fn rejects_duplicate_event() {
         let output = format!(
             "{}{}",
-            VALID, "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n"
+            VALID, "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n"
         );
         assert!(validate_output(&output).unwrap_err().contains("sequence"));
     }
@@ -316,7 +362,7 @@ mod tests {
 
     #[test]
     fn rejects_panic_event() {
-        let output = format!("{}{}", VALID, "PRIMA|v=1|seq=5|event=panic|status=error\n");
+        let output = format!("{}{}", VALID, "PRIMA|v=1|seq=6|event=panic|status=error\n");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("panic"), "{error}");
     }
@@ -325,7 +371,7 @@ mod tests {
     fn rejects_memory_error_event() {
         let output = format!(
             "{}{}",
-            VALID, "PRIMA|v=1|seq=5|event=memory_error|status=error|data=err=EmptyImage\n"
+            VALID, "PRIMA|v=1|seq=6|event=memory_error|status=error|data=err=EmptyImage\n"
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("memory_error"), "{error}");
@@ -337,7 +383,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("missing its data field"), "{error}");
@@ -349,7 +396,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=5;free=10;regions=1;kstart=0x0;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must equal"), "{error}");
@@ -361,7 +409,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x1;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("page-aligned"), "{error}");
@@ -373,7 +422,8 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok|data=foo=1\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must not carry"), "{error}");
@@ -385,9 +435,33 @@ mod tests {
             "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
             "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000;bogus=1\n",
-            "PRIMA|v=1|seq=4|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("unknown data key"), "{error}");
+    }
+
+    #[test]
+    fn rejects_physical_map_error() {
+        let output = format!(
+            "{}{}",
+            VALID, "PRIMA|v=1|seq=6|event=physical_map_error|status=error\n"
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("physical_map_error"), "{error}");
+    }
+
+    #[test]
+    fn rejects_physical_map_ready_bad_address() {
+        let output = concat!(
+            "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
+            "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
+            "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
+            "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000001000;va=0xffff800000000000\n",
+            "PRIMA|v=1|seq=5|event=boot_complete|status=ok\n",
+        );
+        let error = validate_output(output).unwrap_err();
+        assert!(error.contains("must be >= offset"), "{error}");
     }
 }

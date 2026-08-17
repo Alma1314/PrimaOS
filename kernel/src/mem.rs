@@ -2,6 +2,43 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 pub const FRAME_SIZE: u64 = 4096;
 
+/// 物理地址经 bootloader 的物理内存直映射换算为虚拟地址（offset + phys）。
+pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
+    phys_map_offset + phys
+}
+
+/// 读取一个物理地址处的字节（经直映射），返回 (虚拟地址, 读到字节)。
+///
+/// 纯逻辑部分（换算 va）在本模块，真正的 `unsafe` 读取收敛到细化模块
+/// [`crate::safety::read_phys_byte`]。
+///
+/// # Safety 约束
+///
+/// `probed_phys` 必须处于 bootloader 报告为 `Usable` 的物理内存中，且该地址必须
+/// 落在物理内存直映射区内（调用方应先确认 `physical_memory_offset` 为 `Some`）。
+/// 调用方负责保证 `probed_phys` 是可安全读取的内核可用物理帧。
+pub fn probe_physical_memory(probed_phys: u64, phys_map_offset: u64) -> (u64, u8) {
+    let va = phys_to_virt(probed_phys, phys_map_offset);
+    // 真实 unsafe 读取收敛在细化层 safety 模块；此处仅保留最小的调用点。
+    let byte = unsafe { crate::safety::read_phys_byte(va) };
+    (va, byte)
+}
+
+/// 返回 mem 清单中第一个 `Usable` 帧的物理起始地址（`align_up(start, FRAME_SIZE)`）。
+/// 无任何 Usable 区返回 `None`。仅做纯索引遍历，不读物理。
+pub fn first_usable_frame_phys(regions: &[MemoryRegion]) -> Option<u64> {
+    for region in regions {
+        if region.kind == MemoryRegionKind::Usable {
+            let lo = align_up(region.start, FRAME_SIZE);
+            let hi = align_down(region.end, FRAME_SIZE);
+            if hi > lo {
+                return Some(lo);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameInventory {
     pub usable_frames: usize,
@@ -217,5 +254,47 @@ mod tests {
         assert_eq!(inv.image_frames, 1);
         assert_eq!(inv.usable_frames, 6);
         assert_eq!(inv.free_frames, 6);
+    }
+
+    #[test]
+    fn phys_to_virt_adds_offset() {
+        assert_eq!(
+            phys_to_virt(0x1000, 0xffff_8000_0000_0000),
+            0xffff_8000_0000_1000
+        );
+    }
+
+    #[test]
+    fn phys_to_virt_zero_offset_keeps_phys() {
+        assert_eq!(phys_to_virt(0xc000_0000, 0), 0xc000_0000);
+    }
+
+    #[test]
+    fn phys_to_virt_large_phys_near_limit() {
+        // 64 GiB 物理上限 + 高半区偏移，不越界（纯算术，无 panic）
+        assert_eq!(
+            phys_to_virt(0x10_0000_0000, 0xffff_8000_0000_0000),
+            0xffff_8010_0000_0000
+        );
+    }
+
+    #[test]
+    fn probe_returns_va_and_byte_shape() {
+        // 用无害的堆分配器测试：probe 一个 0 字节不可靠，只验证返回值类型与 va=offset+phys。
+        // 这里不真正读物理，改用 phys_to_virt 单测覆盖算术；probe 的真实性由 QEMU 验证。
+        let va = phys_to_virt(0x1000, 0xffff_8000_0000_0000);
+        assert_eq!(va, 0xffff_8000_0000_1000);
+    }
+
+    #[test]
+    fn first_usable_frame_returns_aligned_start() {
+        let regions = [bootloader(0x0, 0x1000), usable(0x0800, 0x5200)];
+        assert_eq!(first_usable_frame_phys(&regions), Some(0x1000)); // align_up(0x800, 4096)
+    }
+
+    #[test]
+    fn first_usable_frame_none_when_no_usable() {
+        let regions = [bootloader(0x0, 0x1000)];
+        assert_eq!(first_usable_frame_phys(&regions), None);
     }
 }

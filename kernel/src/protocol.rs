@@ -44,6 +44,20 @@ pub(crate) fn memory_error(error: MemError) {
     serial::write_bytes(b"\r\n");
 }
 
+pub(crate) fn physical_map_ready(offset: u64, va: u64) {
+    write_prefix("physical_map_ready", "ok");
+    serial::write_bytes(b"|data=offset=");
+    write_hex_u64(offset);
+    serial::write_bytes(b";va=");
+    write_hex_u64(va);
+    serial::write_bytes(b"\r\n");
+}
+
+pub(crate) fn physical_map_error() {
+    write_prefix("physical_map_error", "error");
+    serial::write_bytes(b"\r\n");
+}
+
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",
