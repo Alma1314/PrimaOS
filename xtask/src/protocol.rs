@@ -5,11 +5,13 @@ enum EventKind {
     MemoryReady,
     PhysicalMapReady,
     PageTableReady,
+    GdtTssReady,
     BootComplete,
     Panic,
     MemoryError,
     PhysicalMapError,
     PageTableError,
+    GdtTssError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,13 +21,14 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 6] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 7] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
     (4, EventKind::PhysicalMapReady),
     (5, EventKind::PageTableReady),
-    (6, EventKind::BootComplete),
+    (6, EventKind::GdtTssReady),
+    (7, EventKind::BootComplete),
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
@@ -57,10 +60,11 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
                 | EventKind::MemoryError
                 | EventKind::PhysicalMapError
                 | EventKind::PageTableError
+                | EventKind::GdtTssError
         )
     }) {
         return Err(
-            "kernel emitted panic, memory_error, physical_map_error, or page_table_error event"
+            "kernel emitted panic, memory_error, physical_map_error, page_table_error, or gdt_tss_error event"
                 .to_owned(),
         );
     }
@@ -250,10 +254,12 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("memory_ready", "ok") => EventKind::MemoryReady,
         ("physical_map_ready", "ok") => EventKind::PhysicalMapReady,
         ("page_table_ready", "ok") => EventKind::PageTableReady,
+        ("gdt_tss_ready", "ok") => EventKind::GdtTssReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
         ("page_table_error", "error") => EventKind::PageTableError,
+        ("gdt_tss_error", "error") => EventKind::GdtTssError,
         ("panic", "error") => EventKind::Panic,
         _ => return Err(format!("unsupported event/status pair: {event}/{status}")),
     };
@@ -299,7 +305,8 @@ mod tests {
         "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\r\n",
         "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\r\n",
         "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\r\n",
-        "PRIMA|v=1|seq=6|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+        "PRIMA|v=1|seq=7|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -449,7 +456,8 @@ mod tests {
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=5;free=10;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
-            "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must equal"), "{error}");
@@ -463,7 +471,8 @@ mod tests {
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x1;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
-            "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("page-aligned"), "{error}");
@@ -491,7 +500,8 @@ mod tests {
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000;bogus=1\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
-            "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("unknown data key"), "{error}");
@@ -515,7 +525,8 @@ mod tests {
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000001000;va=0xffff800000000000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0xf0000000\n",
-            "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must be >= offset"), "{error}");
@@ -539,7 +550,8 @@ mod tests {
             "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x0;kend=0x1000\n",
             "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\n",
             "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x0\n",
-            "PRIMA|v=1|seq=6|event=boot_complete|status=ok\n",
+            "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
+            "PRIMA|v=1|seq=7|event=boot_complete|status=ok\n",
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("must be > 0"), "{error}");
@@ -557,5 +569,15 @@ mod tests {
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("missing its data field"), "{error}");
+    }
+
+    #[test]
+    fn rejects_gdt_tss_error() {
+        let output = format!(
+            "{}{}",
+            VALID, "PRIMA|v=1|seq=8|event=gdt_tss_error|status=error\n"
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("gdt_tss_error"), "{error}");
     }
 }

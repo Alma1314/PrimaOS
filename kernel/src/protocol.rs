@@ -70,6 +70,15 @@ pub(crate) fn page_table_error() {
     serial::write_bytes(b"\r\n");
 }
 
+pub(crate) fn gdt_tss_ready() {
+    write_event("gdt_tss_ready", "ok");
+}
+
+pub(crate) fn gdt_tss_error() {
+    write_prefix("gdt_tss_error", "error");
+    serial::write_bytes(b"\r\n");
+}
+
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",

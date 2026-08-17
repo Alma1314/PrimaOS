@@ -43,6 +43,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             match kernel::cpu::translate(pml4_va, target_va, map) {
                                 Ok(translated_phys) => {
                                     protocol::page_table_ready(translated_phys);
+
+                                    // B3: 装载 GDT + 最小 TSS（rsp0 = 内核栈顶）。
+                                    let rsp0 =
+                                        boot_info.kernel_stack_bottom + boot_info.kernel_stack_len;
+                                    match kernel::gdt::init_kernel_gdt(rsp0) {
+                                        Ok(()) => protocol::gdt_tss_ready(),
+                                        Err(()) => {
+                                            protocol::gdt_tss_error();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                    }
                                     protocol::boot_complete();
                                     serial::flush();
                                     qemu::exit(qemu::SUCCESS)
