@@ -1,18 +1,10 @@
-mod abstract_ops;
-mod cow_refine;
-mod machine;
-mod memseg_refine;
-mod ops;
-mod pagewalk;
-mod state;
-mod tlb_refine;
-
-#[cfg(test)]
-mod memseg_refine_tests;
-#[cfg(test)]
-mod pagewalk_tests;
-#[cfg(test)]
-mod tlb_refine_tests;
+use cosir::abstract_ops;
+use cosir::cow_refine;
+use cosir::machine;
+use cosir::memseg_refine;
+use cosir::ops;
+use cosir::state;
+use cosir::tlb_refine;
 
 use abstract_ops::bootstrap;
 use ops::{exc_resume, raise_exception};

@@ -245,7 +245,7 @@ fn checked_page_vaddr(base: u64, index: u64) -> Result<u64, MemSegError> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn map_verified(
+pub fn map_verified(
     st: &mut RefineState,
     seg_id: SegId,
     task_id: TaskId,
@@ -320,7 +320,7 @@ pub(crate) fn map_verified(
     Ok(())
 }
 
-pub(crate) fn unmap_verified(
+pub fn unmap_verified(
     st: &mut RefineState,
     task_id: TaskId,
     target_base: VirtAddr,
@@ -358,7 +358,7 @@ pub(crate) fn unmap_verified(
     Ok(())
 }
 
-pub(crate) fn destroy_verified(st: &mut RefineState, seg_id: SegId) -> Result<(), MemSegError> {
+pub fn destroy_verified(st: &mut RefineState, seg_id: SegId) -> Result<(), MemSegError> {
     let seg = st
         .segments
         .get(&seg_id)
