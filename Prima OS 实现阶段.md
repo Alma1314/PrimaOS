@@ -2,7 +2,7 @@
 
 > 文档类型：实施进度与证据跟踪
 >
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 >
 > 架构与阶段定义：[[Prima OS]]
 >
@@ -37,7 +37,7 @@
 | 已满足退出条件的最高阶段 | 无 |
 | 当前实现代码 | 阶段 1 启动闭环探索实现：`kernel/`、`xtask/` |
 | 当前主要工件 | [[Prima OS]]、[[COSIR 原语规范]]、Rust/QEMU 启动闭环 |
-| 当前首要缺口 | 形式化工具中的可执行状态模型（BLK-001） |
+| 当前首要缺口 | 形式化工具中的可执行状态模型（BLK-001）已由 Lean b/cosir 对拍（SPEC-019）关闭；后续缺口为 tlb/memseg/cow 的 Lean 建模与 S0-X1 独立规格审查 |
 | 最近规范修订 | 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
 | exc_resume（本切片） | 2026-08-07 — 定义异常恢复原语 `exc_resume`、x86_64 SretFrame 帧布局（细化层定义）、Faulted 细化态与错误码；新增 §12.10，标注细化要求 #16 与边界清单 #1/#2 |
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
@@ -45,6 +45,7 @@
 | 最近审计验收 | TEST-006：2026-08-16，cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29)；`cargo test -p cosir` 180/180、workspace 203/203（cosir 180 + xtask 23）、clippy 零告警，`cargo xtask test` 六条 PASS（QEMU BIOS run=1/2、run=2/2 均通过）。仅支持 host `MODEL-TEST`、lint 与既有启动闭环无回归；不支持 `KERNEL-TRACE`、`REFINEMENT-PROOF`、`COMPAT-TEST`、真实硬件 TLB 或 BLK-001 关闭。 |
 | 物理内存发现（本切片） | 2026-08-17 — 真实内核 `mem::build_inventory` 帧清单 + `memory_ready` 协议上报 + xtask 结构不变式断言；证据 SPEC-017 |
 | 页表/GDT/IDT/trap（本切片） | 2026-08-17 — 真实内核物理直映射 + CR3 页表 page-walk translate + GDT/TSS 装载 + IDT 最小 trap 闭环（`extern "x86-interrupt"`）；证据 SPEC-018 |
+| Lean 形式化（本切片） | 2026-08-18 — Lean 4 + lake 可执行状态模型（`Formal.State`/`Bootstrap`/`ExcResume`）与 cosir host 对拍；`MODEL-TEST`；证据 SPEC-019；关闭 BLK-001、支持 S0-X3；tlb/memseg/cow 的 Lean 建模登记为后续切片待办 |
 | BLK-002 细化（本切片） | 2026-08-13 — MemorySegment host 四级索引树与双视图的 `REFINEMENT-DESIGN`；`MODEL-TEST` 检查 canonical 地址拒绝、失败原子性、α mutation 隔离和 allocator partition。`cargo test -p cosir` 69 tests 通过；未覆盖真实 CR3/PTE、非叶权限与页表页物理身份、TLB、多核、真实硬件原子更新窗口或机器证明。 |
 | COW 组合（本切片） | 在明确限定的 host 组合场景中，MODEL-TEST 未发现为“共享只读映射 → 写保护 fault → 用户态显式分配相离新 Segment 并换映射 → exc_resume → 显式调度”新增 POSIR 一等原语的需求。该结论不覆盖帧字节复制、真实 trap/PTE/TLB、多核协议、KERNEL-TRACE 或 REFINEMENT-PROOF。 |
 | TLB 细化（本切片） | host MODEL-TEST 仅观察到该 per-task、无替换策略缓存模型中的非自动刷新与显式失效行为；不外推为真实硬件 TLB、CR3/PCID、invlpg/INVPCID、多核 shootdown 或内存顺序结论。 |
@@ -68,6 +69,7 @@
 | SPEC-016 | MODEL-TEST + 源码审查 | COSIR 原语规范 §8、cosir/src/tlb_refine.rs、cosir/src/tlb_refine_tests.rs、cosir/src/main.rs TLB 冒烟 | 2026-08-15 | host 模型 per-task TLB，非一致刷新 + 显式 `invalidate_va`/`flush_all`，不模拟替换策略；地址必须 canonical 页对齐（`validate_page_vaddr`）。`MODEL-TEST` 检查写前显式失效的后读一致、逐地址 `has_tlb` 是否存在与失效作用域、`NoSuchTask`/无效地址错误面。源码审查两个 Minor（不放大证据，随终审复核）：`access_allowed` 读路径以 `access != 0`（而非字面 R 位）判定、`translate` 经 `pf.tasks` 而 `invalidate_va`/`flush_all` 经 `per_task` 检查存在性。总验收 2026-08-15(cargo 1.99.0-nightly 3efb1f477、rustc 1.99.0-nightly 1a833e165)：`cargo test -p cosir` 124/124（117 既有 + 7 新 TLB）、`cargo run -p cosir` 冒烟新增 `PASS model-test tlb non-coherent refresh + explicit invalidation` 退出 0、clippy `--workspace --all-targets --no-deps -- -D warnings` 零告警、`cargo test --workspace` cosir + xtask 全绿、`cargo xtask test` qemu bios run=1/2 六条 PASS 退出 0。证据仅为 `MODEL-TEST`；不宣称 `KERNEL-TRACE`/`REFINEMENT-PROOF`、真实硬件 TLB，不含替换策略、多核 shootdown 或 CR3 切换自动失效 | S0-D4 |
 | SPEC-017 | 真实内核 MODEL-TEST + QEMU 集成断言 | `kernel/src/mem.rs`（`build_inventory`/`MemError`/`FrameInventory`）、`kernel/src/main.rs`、`kernel/src/protocol.rs`、`xtask/src/protocol.rs` | 2026-08-17 | 真实 bootloader 交接处解析 `BootInfo.memory_regions` 构建 4KB 帧清单：只统计 `Usable` 区（内核可自由使用帧）、报告内核镜像帧（`image_frames`）；bootloader_api 把内核镜像所在区标为 `Bootloader`（已从 `Usable` 排除），故 `free_frames = usable_frames`，强制不变量为镜像与所有 Usable 帧不相交（`image ∩ usable = ∅`，W6 帧级）且 `image_frames > 0`。host 单测覆盖对齐截断/非 Usable 忽略/镜像不扣减（`free == usable`）/镜像对齐取整/`EmptyImage`/`ImageOverlapsUsable`/重叠区报错/多区求和/镜像落 Bootloader 区不占 usable；QEMU boot-trace 断言 `memory_ready` 数据满足 `free>0 ∧ image>0 ∧ free==usable ∧ kstart/kend 4KB 对齐 ∧ kstart<kend`。总验收 2026-08-17(cargo 1.99.0-nightly 3efb1f477、rustc 1.99.0-nightly 1a833e165)：`cargo test -p kernel` 10/10、`cargo test -p xtask` 29/29、`cargo test -p cosir` 180/180、`cargo test --workspace` 219/219、clippy 零告警、`cargo xtask test` qemu bios run=1/2 六条 PASS 退出 0。不宣称帧分配器（§18.0 #12）、真实页表（S1-D4）、物理内存读写（默认配置无 `physical_memory_offset`）、COW 端到端 `KERNEL-TRACE` 或 `REFINEMENT-PROOF` | S1-D3 |
 | SPEC-018 | 真实内核 MODEL-TEST + QEMU 集成断言 | `kernel/src/cpu.rs`（`cr3`/`translate`/`PageTableEntry`）、`kernel/src/gdt.rs`（`Gdt`/`Tss`/`init_kernel_gdt`）、`kernel/src/idt.rs`（`Idt`/`extern "x86-interrupt"` handler/`trigger_int3`）、`kernel/src/safety.rs`、`kernel/src/config.rs`、`kernel/src/protocol.rs`、`xtask/src/protocol.rs` | 2026-08-17 | 真实 bootloader 交接处启用物理内存直映射（`BootloaderConfig.mappings.physical_memory`，`BootInfo.physical_memory_offset` 回传），沿 CR3 页表 page-walk `translate(kernel_image_offset)` 恢复内核物理基址（QEMU 实测 `page_table_ready.translated == memory_ready.kstart`，两者相等由 xtask 跨事件断言强制）；装载 GDT（`[u8;64]` 按 `index*8` 布局，code selector 0x8 / data 0x10 / TSS 0x18，仅 reload ds/es、保留 bootloader ss）+ 最小 TSS（`#[repr(C,packed)]` 104 字节、rsp0@4、iopb=104）；装载 IDT（16 字节中断门 Entry 含 reserved 字段）并以 `extern "x86-interrupt"` breakpoint handler + `int3` 完成最小 trap 闭环（QEMU `trap_ready seen==3` 证明 trap→handler→iretq 真实发生、恰好一次）。host 单测 pin 各描述符字节编码（`build_gdt_bytes`/`tss_desc_upper_base_bytes` 按 Intel SDM、`PageTableEntry` 位布局、`translate` 多层 4KiB 页、`Idt`/`Entry` 尺寸）。unsafe 收敛到细化模块（`config.rs`/`cpu.rs`/`gdt.rs`/`idt.rs`/`safety.rs`），lib crate 加 `#![deny(unsafe_op_in_unsafe_fn)]`。事件序列从切片 A 的 4 扩为 8：boot_start(1) serial_ready(2) memory_ready(3) physical_map_ready(4) page_table_ready(5) gdt_tss_ready(6) trap_ready(7) boot_complete(8)，前 3 个切片 A 冻结事件未动。总验收 2026-08-17：`cargo test --workspace` 259/259（cosir 180 + kernel 41 + xtask 38）、clippy `-D warnings` 零告警、`cargo fmt --all --check` 无差异、`cargo xtask test` qemu bios run=1/2 六条 PASS 退出 0。不宣称自建页表（沿用 bootloader CR3）、ring3/用户态栈切换、完整异常分派（16 向量+IRQ+PIC）、`KERNEL-TRACE`、`REFINEMENT-PROOF` 或机器证明；TSS upper-base 编码经 host decode-back 测试钉住（Intel SDM 长模式系统段格式） | S1-D4 |
+| SPEC-019 | 可执行状态模型（Lean） | `lean/Formal.lean`（入口，import 全覆盖）、`lean/Formal/State.lean`、`lean/Formal/Bootstrap.lean`、`lean/Formal/ExcResume.lean`、`lean/README.md`（映照契约）、`cosir/tests/lean_backtrace.rs` | 2026-08-18 | 选用 Lean 4 + lake 作为形式化模型工件；`Formal.State` 定义 `Object`/`Capability`/`State`/`WellFormed = True`/`initTaskId = 1`，`Formal.Bootstrap` 定义 `alpha`/`emptyState`/`bootedState`/`bootstrap` + 5 条 `by rfl` 定理（幂等唯一性、init 铸造、α 投影保真、WellFormed），`Formal.ExcResume` 定义最小 `excResume` + 4 条 `by rfl` 定理（失败原子性、owner 不匹配、成功返回、成功不吞能力）。证据等级 `MODEL-TEST`：Lean `#eval`/`theorem` 为参考语义，cosir `tests/lean_backtrace.rs` 对拍 bootstrap 幂等性/init task 与 exc_resume 失败原子性，两端一致。`cd lean && lake build` 无错误，三个 olean（`Formal.State`/`Formal.Bootstrap`/`Formal.ExcResume`）全部编译且入口冒烟 `#eval` 输出 `booted` false/true。仅支撑 bootstrap+exc_resume；不宣称 `REFINEMENT-PROOF`、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明或真实硬件；tlb/memseg/cow 的 Lean 建模登记为后续切片待办；S0-X1（独立规格审查）另行推进 | S0-X3、BLK-001 |
 | TEST-004 | 阶段一命令验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo test --workspace`、`cargo xtask test` | 2026-08-13 | 在 `60a61bd0e01d568541c43edf557ac12b341e0a1f`，cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29) 上全部退出码 0：fmt 无差异；cosir 69/69；workspace cosir 69/69 + xtask 23/23（92/92）；clippy 无 warnings；QEMU BIOS run=1/2 输出六条 PASS。直接支持 host `MODEL-TEST`、lint 与既有 QEMU 启动闭环无回归；不支持真实 CR3/PTE 细化、非叶权限/页表页物理身份、TLB、多核、真实硬件原子更新窗口、机器证明或阶段一退出条件已满足。 | S0-D4、S1-D1、S1-D2、S1-X1 |
 | TEST-005 | 阶段二 exc_resume 独立验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo test --workspace`、`cargo xtask test`、独立 verification | 2026-08-13 | 验收 HEAD `1f682db600947f49975eca91e045cae222bb8089`；cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29)、rustup 1.29.0 (28d1352db 2026-03-05)。fmt 无差异；cosir 100/100；workspace cosir 100/100 + xtask 23/23（123/123）；clippy 无 warnings；xtask 六条 PASS；独立 verification verdict PASS（无 Critical/Important）。仅支持 host `MODEL-TEST`、workspace regression/lint 与既有 QEMU 启动闭环无回归；xtask 不证明真实 trap/`iretq`。不证明 `KERNEL-TRACE`、`REFINEMENT-PROOF` 或机器证明，也不表示阶段退出条件整体满足。 | S0-D1、S0-D2、S1-D1、S1-D2、S1-X1 |
 | TEST-006 | 最终整体审查修复验收 | `cargo fmt --all --check`、`cargo test -p cosir`、`cargo test --workspace`、`cargo clippy --workspace --all-targets --no-deps -- -D warnings`、`cargo xtask test`、`git diff --check` | 2026-08-16 | cargo 1.99.0-nightly (3efb1f477 2026-07-17)、rustc 1.99.0-nightly (1a833e165 2026-07-29)；fmt 无差异；cosir 180/180；workspace cosir 180/180 + xtask 23/23（203/203）；clippy 零 warnings；QEMU BIOS run=1/2、run=2/2 均通过，均输出六条 PASS；`git diff --check` 无错误。仅支持 host `MODEL-TEST`、workspace regression/lint 与既有 QEMU 启动闭环无回归；不支持 `KERNEL-TRACE`、`REFINEMENT-PROOF`、`COMPAT-TEST`、真实硬件 TLB、帧字节复制或 BLK-001 关闭，且不表示阶段退出条件满足。 | S0-D1、S0-D2、S0-D4、S1-D1、S1-D2、S1-X1 |
@@ -106,7 +108,7 @@
 
 | ID | 阶段 | 问题 | 解除条件 | 状态 |
 |---|---|---|---|---|
-| BLK-001 | 0 | 尚未选择并建立形式化模型工件 | 明确工具、入口文件和可执行状态迁移 | Open |
+| BLK-001 | 0 | 尚未选择并建立形式化模型工件 | 明确工具、入口文件和可执行状态迁移 | Closed |
 | BLK-002 | 0 | 草案已放宽——已覆盖 MemorySegment 页表↔vspace 细化 | 定义 MachineState、抽象函数和至少 Bootstrap（及 MemorySegment）细化对应 | 草案已成 |
 
 ## 决策日志
@@ -142,9 +144,10 @@
 |---|---|---|---|
 | S0-X1 | 规范没有已知且未记录的对象生命周期空洞 | [ ] | 需要独立规格审查或机器检查证据 |
 | S0-X2 | 每项操作具有明确成功与失败语义 | [ ] | 需要逐操作覆盖报告 |
-| S0-X3 | 形式化工具能够表达并执行状态与迁移 | [ ] | BLK-001 |
+| S0-X3 | 形式化工具能够表达并执行状态与迁移 | [x] | SPEC-019 |
 
 阶段 0 不能因文档篇幅完整而直接关闭；必须补齐形式化工件、覆盖报告和细化草案。
+本阶段仍**进行中**：S0-X1（独立规格审查）需另行推进，不在 BLK-001 切片内完成；S0-X2 逐操作覆盖报告亦未完成。S0-X3 由 BLK-001（Lean 可执行模型 + cosir 对拍，证据 SPEC-019）满足。
 
 ## 阶段 1 — 启动与最小平台层
 
