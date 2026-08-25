@@ -11,6 +11,8 @@ pub enum PageWalkError {
     UnalignedAddress,
     NonCanonicalAddress,
     InvalidStructure,
+    NoTableFrame,
+    FrameOwnership,
 }
 
 /// x86_64 canonical 检验：接受低用户半区与高内核半区两类 canonical 48 位地址。
@@ -80,6 +82,7 @@ pub enum PageTableNode {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PageTable {
     pub root: PageTableNode,
+    pub table_frames: Vec<PhysAddr>,
 }
 
 impl PageTable {
@@ -112,6 +115,21 @@ impl PageTable {
         }
 
         check_node(&self.root, Some(NonLeafLevel::Pml4), true)
+    }
+
+    pub fn check_frame_ownership(&self, allocator: &FrameAllocator) -> Result<(), PageWalkError> {
+        self.check_invariants()?;
+        let frames: BTreeSet<_> = self.table_frames.iter().copied().collect();
+        let universe: BTreeSet<_> = allocator.universe.iter().copied().collect();
+        let free: BTreeSet<_> = allocator.free.iter().copied().collect();
+        if frames.len() != self.table_frames.len()
+            || frames.len() != count_nodes(&self.root)
+            || !frames.is_subset(&universe)
+            || !frames.is_disjoint(&free)
+        {
+            return Err(PageWalkError::FrameOwnership);
+        }
+        Ok(())
     }
 }
 
@@ -302,4 +320,72 @@ impl Default for PageTableNode {
             slots: empty_slots(),
         }
     }
+}
+
+fn count_nodes(node: &PageTableNode) -> usize {
+    match node {
+        PageTableNode::Leaf(_) => 1,
+        PageTableNode::NonLeaf { slots, .. } => {
+            1 + slots.iter().flatten().map(count_nodes).sum::<usize>()
+        }
+    }
+}
+
+pub fn new_owned_task_table(allocator: &mut FrameAllocator) -> Result<PageTable, PageWalkError> {
+    let frame = allocator.alloc().ok_or(PageWalkError::NoTableFrame)?;
+    let table = PageTable {
+        root: PageTableNode::default(),
+        table_frames: vec![frame],
+    };
+    table.check_frame_ownership(allocator)?;
+    Ok(table)
+}
+
+pub fn map_vaddr_owned(
+    table: &mut PageTable,
+    allocator: &mut FrameAllocator,
+    vaddr: u64,
+    pte: Pte,
+) -> Result<(), PageWalkError> {
+    let mut pending_table = table.clone();
+    let mut pending_allocator = allocator.clone();
+    let before = count_nodes(&pending_table.root);
+    map_vaddr(&mut pending_table, vaddr, pte)?;
+    let new_nodes = count_nodes(&pending_table.root) - before;
+    for _ in 0..new_nodes {
+        pending_table.table_frames.push(
+            pending_allocator
+                .alloc()
+                .ok_or(PageWalkError::NoTableFrame)?,
+        );
+    }
+    pending_table.check_frame_ownership(&pending_allocator)?;
+    *table = pending_table;
+    *allocator = pending_allocator;
+    Ok(())
+}
+
+pub fn unmap_vaddr_owned(
+    table: &mut PageTable,
+    allocator: &mut FrameAllocator,
+    vaddr: u64,
+) -> Result<bool, PageWalkError> {
+    let mut pending_table = table.clone();
+    let mut pending_allocator = allocator.clone();
+    let before = count_nodes(&pending_table.root);
+    let removed = unmap_vaddr(&mut pending_table, vaddr)?;
+    let removed_nodes = before - count_nodes(&pending_table.root);
+    for _ in 0..removed_nodes {
+        let frame = pending_table
+            .table_frames
+            .pop()
+            .ok_or(PageWalkError::FrameOwnership)?;
+        pending_allocator
+            .free_frame(frame)
+            .map_err(|_| PageWalkError::FrameOwnership)?;
+    }
+    pending_table.check_frame_ownership(&pending_allocator)?;
+    *table = pending_table;
+    *allocator = pending_allocator;
+    Ok(removed)
 }

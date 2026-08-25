@@ -75,6 +75,9 @@ pub fn translate(
         Err(PageWalkError::UnalignedAddress) => return Err(TlbError::UnalignedAddress),
         Err(PageWalkError::NonCanonicalAddress) => return Err(TlbError::NonCanonicalAddress),
         Err(PageWalkError::InvalidStructure) => return Err(TlbError::NotMapped),
+        Err(PageWalkError::NoTableFrame | PageWalkError::FrameOwnership) => {
+            return Err(TlbError::NotMapped);
+        }
         Ok(()) => {}
     }
     tasks.get(&task).ok_or(TlbError::NoSuchTask)?;
@@ -108,6 +111,9 @@ pub fn invalidate_va(
         Err(PageWalkError::UnalignedAddress) => return Err(TlbError::UnalignedAddress),
         Err(PageWalkError::NonCanonicalAddress) => return Err(TlbError::NonCanonicalAddress),
         Err(PageWalkError::InvalidStructure) => return Err(TlbError::NotMapped),
+        Err(PageWalkError::NoTableFrame | PageWalkError::FrameOwnership) => {
+            return Err(TlbError::NotMapped);
+        }
         Ok(()) => {}
     }
     tasks.get(&task).ok_or(TlbError::NoSuchTask)?;

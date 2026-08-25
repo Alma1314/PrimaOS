@@ -1,6 +1,7 @@
 use crate::pagewalk::{
     FrameAllocator, FrameAllocatorError, NonLeafLevel, PageTableNode, PageWalkError, Pte,
-    SegmentRef, collect_leaves, map_vaddr, new_task_table, translate, unmap_vaddr,
+    SegmentRef, collect_leaves, map_vaddr, map_vaddr_owned, new_owned_task_table, new_task_table,
+    translate, unmap_vaddr, unmap_vaddr_owned,
 };
 use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 use std::collections::BTreeMap;
@@ -204,6 +205,26 @@ fn page_table_structure_rejects_wrong_level_and_orphan_node() {
     assert_eq!(
         orphan.check_invariants(),
         Err(PageWalkError::InvalidStructure)
+    );
+}
+
+#[test]
+fn owned_page_table_allocates_and_reclaims_backing_frames() {
+    let mut allocator = FrameAllocator::new(&[0x1000, 0x2000, 0x3000, 0x4000, 0x5000]).unwrap();
+    let mut table = new_owned_task_table(&mut allocator).unwrap();
+    assert_eq!(table.table_frames.len(), 1);
+    assert_eq!(allocator.free.len(), 4);
+
+    map_vaddr_owned(&mut table, &mut allocator, 0x4000_0000, pte(1, 0, 0x1000)).unwrap();
+    assert_eq!(table.table_frames.len(), 4);
+    assert_eq!(allocator.free.len(), 1);
+    unmap_vaddr_owned(&mut table, &mut allocator, 0x4000_0000).unwrap();
+    assert_eq!(table.table_frames.len(), 1);
+    assert_eq!(allocator.free.len(), 4);
+    table.table_frames[0] = 0x2000;
+    assert_eq!(
+        table.check_frame_ownership(&allocator),
+        Err(PageWalkError::FrameOwnership)
     );
 }
 
