@@ -1,6 +1,6 @@
 use crate::pagewalk::{
-    FrameAllocator, FrameAllocatorError, PageWalkError, Pte, SegmentRef, collect_leaves, map_vaddr,
-    new_task_table, translate, unmap_vaddr,
+    FrameAllocator, FrameAllocatorError, NonLeafLevel, PageTableNode, PageWalkError, Pte,
+    SegmentRef, collect_leaves, map_vaddr, new_task_table, translate, unmap_vaddr,
 };
 use crate::state::{ACCESS_R, ACCESS_W, ACCESS_X, SegId};
 use std::collections::BTreeMap;
@@ -169,6 +169,42 @@ fn allocator_rejects_duplicate_return_atomically() {
     let before = a.clone();
     assert_eq!(a.free_frame(f), Err(FrameAllocatorError::DuplicateFree));
     assert_eq!(a, before);
+}
+
+#[test]
+fn page_table_structure_is_valid_after_map_and_unmap() {
+    let mut table = new_task_table();
+    assert_eq!(table.check_invariants(), Ok(()));
+    map_vaddr(&mut table, 0x4000_0000, pte(1, 0, 0x1000)).unwrap();
+    assert_eq!(table.check_invariants(), Ok(()));
+    unmap_vaddr(&mut table, 0x4000_0000).unwrap();
+    assert_eq!(table.check_invariants(), Ok(()));
+}
+
+#[test]
+fn page_table_structure_rejects_wrong_level_and_orphan_node() {
+    let mut wrong_root = new_task_table();
+    wrong_root.root = PageTableNode::NonLeaf {
+        level: NonLeafLevel::Pdpt,
+        slots: Box::new(std::array::from_fn(|_| None)),
+    };
+    assert_eq!(
+        wrong_root.check_invariants(),
+        Err(PageWalkError::InvalidStructure)
+    );
+
+    let mut orphan = new_task_table();
+    let child = PageTableNode::NonLeaf {
+        level: NonLeafLevel::Pdpt,
+        slots: Box::new(std::array::from_fn(|_| None)),
+    };
+    if let PageTableNode::NonLeaf { slots, .. } = &mut orphan.root {
+        slots[0] = Some(child);
+    }
+    assert_eq!(
+        orphan.check_invariants(),
+        Err(PageWalkError::InvalidStructure)
+    );
 }
 
 #[test]

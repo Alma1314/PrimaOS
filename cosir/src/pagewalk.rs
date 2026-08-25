@@ -10,6 +10,7 @@ pub type PhysAddr = u64;
 pub enum PageWalkError {
     UnalignedAddress,
     NonCanonicalAddress,
+    InvalidStructure,
 }
 
 /// x86_64 canonical 检验：接受低用户半区与高内核半区两类 canonical 48 位地址。
@@ -79,6 +80,39 @@ pub enum PageTableNode {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct PageTable {
     pub root: PageTableNode,
+}
+
+impl PageTable {
+    pub fn check_invariants(&self) -> Result<(), PageWalkError> {
+        fn check_node(
+            node: &PageTableNode,
+            expected: Option<NonLeafLevel>,
+            is_root: bool,
+        ) -> Result<(), PageWalkError> {
+            match (expected, node) {
+                (Some(expected), PageTableNode::NonLeaf { level, slots }) if *level == expected => {
+                    let has_child = slots.iter().any(Option::is_some);
+                    if !is_root && !has_child {
+                        return Err(PageWalkError::InvalidStructure);
+                    }
+                    let child_level = child_level_for(expected);
+                    for child in slots.iter().flatten() {
+                        check_node(child, child_level, false)?;
+                    }
+                    Ok(())
+                }
+                (None, PageTableNode::Leaf(slots)) => {
+                    if slots.iter().all(Option::is_none) {
+                        return Err(PageWalkError::InvalidStructure);
+                    }
+                    Ok(())
+                }
+                _ => Err(PageWalkError::InvalidStructure),
+            }
+        }
+
+        check_node(&self.root, Some(NonLeafLevel::Pml4), true)
+    }
 }
 
 fn pt_index(v: u64) -> usize {

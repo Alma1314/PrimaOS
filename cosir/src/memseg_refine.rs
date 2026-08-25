@@ -122,6 +122,10 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
 
     // W7 双视图一致 + 指向活动 Segment + access≤allowed
     for (tid, tc) in &st.tasks {
+        if tc.table.check_invariants().is_err() {
+            ok = false;
+            diag.push(format!("W7: task {tid} 页表树结构不合法"));
+        }
         let mut leaves: BTreeMap<VirtAddr, SegmentRef> = BTreeMap::new();
         collect_leaves(&tc.table, &mut leaves);
         #[allow(clippy::op_ref)]
