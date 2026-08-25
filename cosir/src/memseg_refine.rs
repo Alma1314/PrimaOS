@@ -179,19 +179,18 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
 
     // W6 物理页有限集合划分：universe/free/used 各源无重复，且 free ⊎ used = universe。
     let universe: BTreeSet<_> = st.alloc.universe.iter().copied().collect();
-    if universe.len() != st.alloc.universe.len() {
-        ok = false;
-        diag.push("W6: frame_universe 含重复帧".to_string());
-    }
-
     let free: BTreeSet<_> = st.alloc.free.iter().copied().collect();
-    if free.len() != st.alloc.free.len() {
+    if st.alloc.check_invariants().is_err() {
         ok = false;
-        diag.push("W6: 空闲帧集合含重复帧".to_string());
-    }
-    if !free.is_subset(&universe) {
-        ok = false;
-        diag.push("W6: 空闲帧不属于 frame_universe".to_string());
+        if universe.len() != st.alloc.universe.len() {
+            diag.push("W6: frame_universe 含重复帧".to_string());
+        }
+        if free.len() != st.alloc.free.len() {
+            diag.push("W6: 空闲帧集合含重复帧".to_string());
+        }
+        if !free.is_subset(&universe) {
+            diag.push("W6: 空闲帧不属于 frame_universe".to_string());
+        }
     }
 
     let mut used = BTreeSet::new();

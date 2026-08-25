@@ -134,6 +134,7 @@ fn frame_allocator_alloc_free_roundtrip() {
     a.free_frame(p).unwrap();
     assert!(a.free.contains(&p));
     assert_eq!(a.free.len(), 3);
+    assert_eq!(a.check_invariants(), Ok(()));
 }
 
 #[test]
@@ -168,4 +169,25 @@ fn allocator_rejects_duplicate_return_atomically() {
     let before = a.clone();
     assert_eq!(a.free_frame(f), Err(FrameAllocatorError::DuplicateFree));
     assert_eq!(a, before);
+}
+
+#[test]
+fn allocator_invariants_reject_duplicate_free_state() {
+    let mut allocator = FrameAllocator::new(&[0x1000, 0x2000]).unwrap();
+    allocator.alloc();
+    allocator.free.push(0x1000);
+    assert_eq!(
+        allocator.check_invariants(),
+        Err(FrameAllocatorError::InvariantViolation)
+    );
+}
+
+#[test]
+fn allocator_invariants_reject_free_frame_outside_universe() {
+    let mut allocator = FrameAllocator::new(&[0x1000]).unwrap();
+    allocator.free[0] = 0x2000;
+    assert_eq!(
+        allocator.check_invariants(),
+        Err(FrameAllocatorError::InvariantViolation)
+    );
 }

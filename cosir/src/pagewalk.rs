@@ -212,6 +212,7 @@ pub enum FrameAllocatorError {
     DuplicateFrame,
     UnknownFrame,
     DuplicateFree,
+    InvariantViolation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,10 +227,12 @@ impl FrameAllocator {
         if unique.len() != universe.len() {
             return Err(FrameAllocatorError::DuplicateFrame);
         }
-        Ok(FrameAllocator {
+        let allocator = FrameAllocator {
             universe: universe.to_vec(),
             free: universe.to_vec(),
-        })
+        };
+        allocator.check_invariants()?;
+        Ok(allocator)
     }
     pub fn alloc(&mut self) -> Option<PhysAddr> {
         self.free.pop()
@@ -242,6 +245,18 @@ impl FrameAllocator {
             return Err(FrameAllocatorError::DuplicateFree);
         }
         self.free.push(p);
+        Ok(())
+    }
+
+    pub fn check_invariants(&self) -> Result<(), FrameAllocatorError> {
+        let universe: BTreeSet<_> = self.universe.iter().copied().collect();
+        let free: BTreeSet<_> = self.free.iter().copied().collect();
+        if universe.len() != self.universe.len()
+            || free.len() != self.free.len()
+            || !free.is_subset(&universe)
+        {
+            return Err(FrameAllocatorError::InvariantViolation);
+        }
         Ok(())
     }
 }
