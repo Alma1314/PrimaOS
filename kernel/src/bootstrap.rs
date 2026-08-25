@@ -711,9 +711,117 @@ pub enum BootstrapError {
     EmptyImage,
     ImageRangeOverflow,
     InvalidFrameOwnership,
+    InvalidAuthority,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorityError {
+    InvalidCount,
+    DuplicateCapability,
+    MissingPosition,
+    PositionMismatch,
+    InvalidHolder,
+    InvalidParent,
+    RightsEscalation,
+    InvalidInactiveState,
 }
 
 impl BootstrapState {
+    pub fn validate_authority(&self) -> Result<(), AuthorityError> {
+        if self.positions.count != INITIAL_CAPABILITY_COUNT as usize + self.derivations.count
+            || self.positions.count > MAX_CAPABILITY_POSITIONS
+            || self.derivations.count > MAX_DERIVED_CAPABILITIES
+            || self.audit.count > MAX_AUDIT_EVENTS
+        {
+            return Err(AuthorityError::InvalidCount);
+        }
+
+        let mut ids = [0u32; MAX_CAPABILITY_POSITIONS];
+        let mut id_count = 0;
+        for capability in &self.capabilities {
+            if id_count == ids.len() || ids[..id_count].contains(&capability.id) {
+                return Err(AuthorityError::DuplicateCapability);
+            }
+            ids[id_count] = capability.id;
+            id_count += 1;
+            if !self.tasks.is_live(capability.holder) || capability.rights.is_empty() {
+                return Err(AuthorityError::InvalidHolder);
+            }
+        }
+        for derived in self.derivations.entries[..self.derivations.count]
+            .iter()
+            .flatten()
+        {
+            if id_count == ids.len() || ids[..id_count].contains(&derived.id) {
+                return Err(AuthorityError::DuplicateCapability);
+            }
+            ids[id_count] = derived.id;
+            id_count += 1;
+            let parent_rights = self
+                .capabilities
+                .iter()
+                .find(|capability| capability.id == derived.parent)
+                .map(|capability| capability.rights)
+                .or_else(|| {
+                    self.derivations.entries[..self.derivations.count]
+                        .iter()
+                        .flatten()
+                        .find(|capability| capability.id == derived.parent)
+                        .map(|capability| capability.rights)
+                })
+                .ok_or(AuthorityError::InvalidParent)?;
+            if !rights_subset(parent_rights, derived.rights) {
+                return Err(AuthorityError::RightsEscalation);
+            }
+            if derived.active && !self.tasks.is_live(derived.holder) {
+                return Err(AuthorityError::InvalidHolder);
+            }
+        }
+
+        for &cap_id in ids.iter().take(id_count) {
+            let position = self.positions.entries[..self.positions.count]
+                .iter()
+                .flatten()
+                .find(|entry| entry.cap_id == cap_id)
+                .ok_or(AuthorityError::MissingPosition)?;
+            let active = self.derivations.entries[..self.derivations.count]
+                .iter()
+                .flatten()
+                .find(|entry| entry.id == cap_id)
+                .map(|entry| entry.active)
+                .unwrap_or(true);
+            if position.active != active {
+                return Err(AuthorityError::PositionMismatch);
+            }
+            match position.location {
+                CapabilityLocation::HeldByTask(task_id) => {
+                    if !self.tasks.is_live(task_id) {
+                        return Err(AuthorityError::InvalidHolder);
+                    }
+                }
+                CapabilityLocation::InMessage(message_id) => {
+                    let queued =
+                        self.ipc.entries[..self.ipc.count]
+                            .iter()
+                            .flatten()
+                            .any(|message| {
+                                message.id == message_id
+                                    && message.capabilities[..message.capability_count]
+                                        .contains(&cap_id)
+                            });
+                    if !queued {
+                        return Err(AuthorityError::PositionMismatch);
+                    }
+                }
+                CapabilityLocation::Dropped if position.active => {
+                    return Err(AuthorityError::InvalidInactiveState);
+                }
+                CapabilityLocation::Dropped => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn derive_capability(
         &mut self,
         parent: u32,
@@ -1072,6 +1180,7 @@ impl fmt::Display for BootstrapError {
             Self::EmptyImage => formatter.write_str("empty image"),
             Self::ImageRangeOverflow => formatter.write_str("image range overflow"),
             Self::InvalidFrameOwnership => formatter.write_str("invalid frame ownership"),
+            Self::InvalidAuthority => formatter.write_str("invalid authority"),
         }
     }
 }
@@ -1143,7 +1252,7 @@ pub fn create_state(
         },
     ];
     let positions = CapabilityPositionTable::from_capabilities(&capabilities);
-    Ok(BootstrapState {
+    let state = BootstrapState {
         snapshot,
         capabilities,
         positions,
@@ -1157,15 +1266,20 @@ pub fn create_state(
             image_frames: inventory.image_frames as u64,
             free_frames: inventory.free_frames as u64,
         },
-    })
+    };
+    state
+        .validate_authority()
+        .map_err(|_| BootstrapError::InvalidAuthority)?;
+    Ok(state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AuditEvent, BootstrapError, CapabilityPositionError, DeriveError, IMAGE_RIGHTS,
-        INIT_TASK_ID, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, NAMESPACE_RIGHTS,
-        TASK_RIGHTS, TaskError, TaskStatus, create_snapshot, create_state,
+        AuditEvent, AuthorityError, BootstrapError, CapabilityPositionError, DeriveError,
+        IMAGE_CAP_ID, IMAGE_RIGHTS, INIT_TASK_ID, INITIAL_CAPABILITY_COUNT, InitialObject,
+        IpcError, NAMESPACE_RIGHTS, TASK_RIGHTS, TaskError, TaskStatus, create_snapshot,
+        create_state,
     };
     use crate::mem::FrameInventory;
 
@@ -1218,6 +1332,43 @@ mod tests {
         assert_ne!(
             state.frame_ownership.image_start,
             state.frame_ownership.image_end
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn authority_validation_rejects_position_and_rights_corruption() {
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        state.positions.entries[0].as_mut().unwrap().active = false;
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::PositionMismatch)
+        );
+
+        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        state.positions.entries[0].as_mut().unwrap().location =
+            super::CapabilityLocation::HeldByTask(99);
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::InvalidHolder)
+        );
+
+        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        state
+            .derive_capability(IMAGE_CAP_ID, 4, INIT_TASK_ID, "SegMapR")
+            .unwrap();
+        state.derivations.entries[0].as_mut().unwrap().rights = "all";
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::RightsEscalation)
         );
     }
 
