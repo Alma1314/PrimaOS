@@ -72,6 +72,7 @@ pub enum AllocatorError {
     TooManyRanges,
     InvalidRange,
     ImageOverlap,
+    InvariantViolation,
     NoFrame,
 }
 
@@ -122,6 +123,7 @@ impl FreeFrameAllocator {
             allocator.range_count += 1;
             allocator.remaining += ((end - start) / FRAME_SIZE) as usize;
         }
+        allocator.check_invariants(image_start, image_end)?;
         Ok(allocator)
     }
 
@@ -164,6 +166,63 @@ impl FreeFrameAllocator {
         self.recycled[self.recycled_count] = frame;
         self.recycled_count += 1;
         self.remaining += 1;
+        Ok(())
+    }
+
+    pub fn check_invariants(&self, image_start: u64, image_end: u64) -> Result<(), AllocatorError> {
+        if image_start >= image_end
+            || !image_start.is_multiple_of(FRAME_SIZE)
+            || !image_end.is_multiple_of(FRAME_SIZE)
+            || self.range_count > MAX_FREE_RANGES
+            || self.recycled_count > MAX_RECYCLED_FRAMES
+        {
+            return Err(AllocatorError::InvariantViolation);
+        }
+
+        let mut previous_end = 0;
+        let mut expected_remaining = self.recycled_count;
+        for (index, range) in self.ranges.iter().enumerate() {
+            if index >= self.range_count {
+                if range.is_some() {
+                    return Err(AllocatorError::InvariantViolation);
+                }
+                continue;
+            }
+            let Some(range) = range else {
+                return Err(AllocatorError::InvariantViolation);
+            };
+            if range.start >= range.end
+                || range.next < range.start
+                || range.next > range.end
+                || !range.start.is_multiple_of(FRAME_SIZE)
+                || !range.end.is_multiple_of(FRAME_SIZE)
+                || !range.next.is_multiple_of(FRAME_SIZE)
+                || range.start < previous_end
+            {
+                return Err(AllocatorError::InvariantViolation);
+            }
+            if range.start < image_end && image_start < range.end {
+                return Err(AllocatorError::ImageOverlap);
+            }
+            expected_remaining += ((range.end - range.next) / FRAME_SIZE) as usize;
+            previous_end = range.end;
+        }
+
+        for index in 0..self.recycled_count {
+            let frame = self.recycled[index];
+            if !frame.is_multiple_of(FRAME_SIZE)
+                || self.recycled[..index].contains(&frame)
+                || !self.ranges[..self.range_count]
+                    .iter()
+                    .flatten()
+                    .any(|range| range.start <= frame && frame < range.next)
+            {
+                return Err(AllocatorError::InvariantViolation);
+            }
+        }
+        if expected_remaining != self.remaining {
+            return Err(AllocatorError::InvariantViolation);
+        }
         Ok(())
     }
 }
@@ -303,6 +362,35 @@ mod tests {
         assert_eq!(allocator.release(frame), Err(AllocatorError::InvalidRange));
         assert_eq!(allocator.allocate(), Ok(frame));
         allocator.release(frame).unwrap();
+        allocator.check_invariants(0x4000, 0x5000).unwrap();
+    }
+
+    #[test]
+    fn allocator_detects_recycled_frame_in_free_tail() {
+        let regions = [usable(0x0, 0x4000)];
+        let mut allocator = FreeFrameAllocator::from_regions(&regions, 0x5000, 0x6000).unwrap();
+        allocator.allocate().unwrap();
+        allocator.recycled[0] = 0x2000;
+        allocator.recycled_count = 1;
+        assert_eq!(
+            allocator.check_invariants(0x5000, 0x6000),
+            Err(AllocatorError::InvariantViolation)
+        );
+    }
+
+    #[test]
+    fn allocator_detects_duplicate_recycled_frame() {
+        let regions = [usable(0x0, 0x4000)];
+        let mut allocator = FreeFrameAllocator::from_regions(&regions, 0x5000, 0x6000).unwrap();
+        let first = allocator.allocate().unwrap();
+        let second = allocator.allocate().unwrap();
+        allocator.release(first).unwrap();
+        allocator.release(second).unwrap();
+        allocator.recycled[1] = first;
+        assert_eq!(
+            allocator.check_invariants(0x5000, 0x6000),
+            Err(AllocatorError::InvariantViolation)
+        );
     }
 
     #[test]
