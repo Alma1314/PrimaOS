@@ -7,6 +7,7 @@ enum EventKind {
     PageTableReady,
     GdtTssReady,
     TrapReady,
+    BootstrapReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -23,7 +24,19 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 8] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 9] = [
+    (1, EventKind::BootStart),
+    (2, EventKind::SerialReady),
+    (3, EventKind::MemoryReady),
+    (4, EventKind::PhysicalMapReady),
+    (5, EventKind::PageTableReady),
+    (6, EventKind::GdtTssReady),
+    (7, EventKind::TrapReady),
+    (8, EventKind::BootstrapReady),
+    (9, EventKind::BootComplete),
+];
+
+const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -77,7 +90,7 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .map(|event| (event.sequence, event.kind))
         .collect();
-    if observed != EXPECTED_EVENTS {
+    if observed != EXPECTED_EVENTS && observed != LEGACY_EXPECTED_EVENTS {
         return Err(format!(
             "unexpected PRIMA event sequence: expected {EXPECTED_EVENTS:?}, got {observed:?}"
         ));
@@ -113,7 +126,77 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::TrapReady)
         .expect("trap_ready is in the expected sequence");
-    validate_trap_data(trap.data.as_deref())
+    validate_trap_data(trap.data.as_deref())?;
+
+    if let Some(bootstrap) = events
+        .iter()
+        .find(|event| event.kind == EventKind::BootstrapReady)
+    {
+        validate_bootstrap_data(bootstrap.data.as_deref())?;
+    }
+    Ok(())
+}
+
+fn validate_bootstrap_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "bootstrap_ready event is missing its data field".to_owned())?;
+    let mut task = None;
+    let mut caps = None;
+    let mut image_cap = None;
+    let mut namespace_cap = None;
+    let mut task_cap = None;
+    let mut image_base = None;
+    let mut image_len = None;
+    let mut image_frames = None;
+    let mut free_frames = None;
+    let mut image_rights = None;
+    let mut namespace_rights = None;
+    let mut task_rights = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "task" => task = Some(parse_count(value)?),
+            "caps" => caps = Some(parse_count(value)?),
+            "image_cap" => image_cap = Some(parse_count(value)?),
+            "namespace_cap" => namespace_cap = Some(parse_count(value)?),
+            "task_cap" => task_cap = Some(parse_count(value)?),
+            "image_base" => image_base = Some(parse_addr(value)?),
+            "image_len" => image_len = Some(parse_count(value)?),
+            "image_frames" => image_frames = Some(parse_count(value)?),
+            "free_frames" => free_frames = Some(parse_count(value)?),
+            "image_rights" => image_rights = Some(value),
+            "namespace_rights" => namespace_rights = Some(value),
+            "task_rights" => task_rights = Some(value),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    if task != Some(1)
+        || caps != Some(3)
+        || image_cap != Some(1)
+        || namespace_cap != Some(2)
+        || task_cap != Some(3)
+    {
+        return Err(format!(
+            "bootstrap authority mismatch: task={task:?}, caps={caps:?}, image_cap={image_cap:?}, namespace_cap={namespace_cap:?}, task_cap={task_cap:?}"
+        ));
+    }
+    if image_base == Some(0) || image_len.is_none_or(|length| length == 0) {
+        return Err("bootstrap image mapping must be non-empty".to_owned());
+    }
+    if image_frames.is_none_or(|frames| frames == 0) || free_frames.is_none_or(|frames| frames == 0)
+    {
+        return Err("bootstrap frame ownership must be non-empty".to_owned());
+    }
+    if image_rights != Some("Derive,SegMapR,SegMapX,SegDestroy")
+        || namespace_rights != Some("all")
+        || task_rights != Some("Derive,TaskSend,TaskManageVSpace,TaskDestroy")
+    {
+        return Err(format!(
+            "bootstrap rights mismatch: image={image_rights:?}, namespace={namespace_rights:?}, task={task_rights:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_trap_data(data: Option<&str>) -> Result<(), String> {
@@ -295,6 +378,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("page_table_ready", "ok") => EventKind::PageTableReady,
         ("gdt_tss_ready", "ok") => EventKind::GdtTssReady,
         ("trap_ready", "ok") => EventKind::TrapReady,
+        ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -311,7 +395,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemoryError
             | EventKind::PhysicalMapReady
             | EventKind::PageTableReady
-            | EventKind::TrapReady,
+            | EventKind::TrapReady
+            | EventKind::BootstrapReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -321,7 +406,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemoryError
             | EventKind::PhysicalMapReady
             | EventKind::PageTableReady
-            | EventKind::TrapReady,
+            | EventKind::TrapReady
+            | EventKind::BootstrapReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))

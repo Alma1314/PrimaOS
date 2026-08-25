@@ -21,6 +21,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let regions: &[bootloader_api::info::MemoryRegion] = &boot_info.memory_regions;
     match mem::build_inventory(regions, boot_info.kernel_addr, boot_info.kernel_len) {
         Ok(inventory) => {
+            match kernel::mem::FreeFrameAllocator::from_regions(
+                regions,
+                inventory.kernel_phys_start,
+                inventory.kernel_phys_end,
+            ) {
+                Ok(allocator) if allocator.remaining() == inventory.free_frames => {}
+                Ok(_) | Err(_) => {
+                    protocol::panic_event();
+                    serial::flush();
+                    qemu::exit(qemu::PANIC)
+                }
+            }
             protocol::memory_ready(&inventory);
 
             // B1: 启用物理直映射后，读 boot info 的物理内存偏移；若为 None 说明配置未生效。
@@ -65,6 +77,18 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         }
                                         Err(()) => {
                                             protocol::idt_error();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                    }
+                                    match kernel::bootstrap::create_state(
+                                        boot_info.kernel_image_offset,
+                                        boot_info.kernel_len,
+                                        &inventory,
+                                    ) {
+                                        Ok(state) => protocol::bootstrap_ready(&state.snapshot),
+                                        Err(_) => {
+                                            protocol::panic_event();
                                             serial::flush();
                                             qemu::exit(qemu::PANIC)
                                         }

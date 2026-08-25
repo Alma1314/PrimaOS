@@ -1,5 +1,6 @@
 use crate::serial;
 use core::sync::atomic::{AtomicU32, Ordering};
+use kernel::bootstrap::BootstrapSnapshot;
 use kernel::mem::{FrameInventory, MemError};
 
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
@@ -14,6 +15,33 @@ pub(crate) fn serial_ready() {
 
 pub(crate) fn boot_complete() {
     write_event("boot_complete", "ok");
+}
+
+pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
+    write_prefix("bootstrap_ready", "ok");
+    serial::write_bytes(b"|data=task=");
+    write_u32(snapshot.task_id);
+    serial::write_bytes(b";caps=3;image_cap=");
+    write_u32(snapshot.image_cap_id);
+    serial::write_bytes(b";namespace_cap=");
+    write_u32(snapshot.namespace_cap_id);
+    serial::write_bytes(b";task_cap=");
+    write_u32(snapshot.task_cap_id);
+    serial::write_bytes(b";image_base=");
+    write_hex_u64(snapshot.image_base);
+    serial::write_bytes(b";image_len=");
+    write_u64(snapshot.image_len);
+    serial::write_bytes(b";image_frames=");
+    write_u64(snapshot.image_frames);
+    serial::write_bytes(b";free_frames=");
+    write_u64(snapshot.free_frames);
+    serial::write_bytes(b";image_rights=");
+    serial::write_bytes(snapshot.image_rights.as_bytes());
+    serial::write_bytes(b";namespace_rights=");
+    serial::write_bytes(snapshot.namespace_rights.as_bytes());
+    serial::write_bytes(b";task_rights=");
+    serial::write_bytes(snapshot.task_rights.as_bytes());
+    serial::write_bytes(b"\r\n");
 }
 
 pub(crate) fn panic_event() {
