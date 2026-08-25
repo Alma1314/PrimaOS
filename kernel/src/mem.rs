@@ -234,6 +234,35 @@ pub enum MemError {
     RegionsNotSortedOrOverlapping,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageTableOwnershipError {
+    Unaligned,
+    OutsideMemoryMap,
+    ClassifiedUsable,
+}
+
+pub fn validate_external_page_table_root(
+    regions: &[MemoryRegion],
+    root_phys: u64,
+) -> Result<(), PageTableOwnershipError> {
+    if !root_phys.is_multiple_of(FRAME_SIZE) {
+        return Err(PageTableOwnershipError::Unaligned);
+    }
+    let root_end = root_phys
+        .checked_add(FRAME_SIZE)
+        .ok_or(PageTableOwnershipError::OutsideMemoryMap)?;
+    for region in regions {
+        if region.start <= root_phys && root_end <= region.end {
+            return if region.kind == MemoryRegionKind::Usable {
+                Err(PageTableOwnershipError::ClassifiedUsable)
+            } else {
+                Ok(())
+            };
+        }
+    }
+    Err(PageTableOwnershipError::OutsideMemoryMap)
+}
+
 pub fn build_inventory(
     regions: &[MemoryRegion],
     kernel_addr: u64,
@@ -319,6 +348,29 @@ mod tests {
             end,
             kind: MemoryRegionKind::Bootloader,
         }
+    }
+
+    #[test]
+    fn external_page_table_root_must_not_be_usable() {
+        let regions = [bootloader(0x0, 0x2000), usable(0x2000, 0x4000)];
+        assert_eq!(validate_external_page_table_root(&regions, 0x1000), Ok(()));
+        assert_eq!(
+            validate_external_page_table_root(&regions, 0x2000),
+            Err(PageTableOwnershipError::ClassifiedUsable)
+        );
+    }
+
+    #[test]
+    fn external_page_table_root_rejects_bad_address() {
+        let regions = [bootloader(0x0, 0x2000)];
+        assert_eq!(
+            validate_external_page_table_root(&regions, 0x0800),
+            Err(PageTableOwnershipError::Unaligned)
+        );
+        assert_eq!(
+            validate_external_page_table_root(&regions, 0x3000),
+            Err(PageTableOwnershipError::OutsideMemoryMap)
+        );
     }
 
     #[test]
