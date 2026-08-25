@@ -33,6 +33,19 @@ pub enum AuditEvent {
     TaskDestroyed {
         task_id: u32,
     },
+    CapabilityDerived {
+        cap_id: u32,
+        parent: u32,
+        holder: u32,
+    },
+    CapabilityMoved {
+        cap_id: u32,
+        from: CapabilityLocation,
+        to: CapabilityLocation,
+    },
+    CapabilityRevoked {
+        cap_id: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,6 +393,7 @@ pub enum DeriveError {
     DuplicateCapability,
     RightsEscalation,
     CapacityExceeded,
+    AuditFull,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,7 +455,7 @@ impl CapabilityDerivationTable {
         Ok(())
     }
 
-    fn revoke_subtree(&mut self, root: u32) {
+    fn revoke_subtree(&mut self, root: u32) -> ([u32; MAX_DERIVED_CAPABILITIES], usize) {
         let mut revoked = [0u32; MAX_DERIVED_CAPABILITIES];
         let mut revoked_count = 1;
         revoked[0] = root;
@@ -469,6 +483,7 @@ impl CapabilityDerivationTable {
                 break;
             }
         }
+        (revoked, revoked_count)
     }
 }
 
@@ -496,6 +511,7 @@ pub enum CapabilityPositionError {
     ProtectedTask,
     HolderMismatch,
     Inactive,
+    AuditFull,
 }
 
 impl CapabilityPositionTable {
@@ -705,6 +721,9 @@ impl BootstrapState {
         holder: u32,
         rights: &'static str,
     ) -> Result<(), DeriveError> {
+        if !self.audit.can_append(1) {
+            return Err(DeriveError::AuditFull);
+        }
         self.derivations
             .derive_from_initial(&self.capabilities, parent, child, holder, rights)?;
         self.positions
@@ -715,8 +734,15 @@ impl BootstrapState {
                 CapabilityPositionError::NoSuchCapability
                 | CapabilityPositionError::HolderMismatch
                 | CapabilityPositionError::Inactive
-                | CapabilityPositionError::ProtectedTask => DeriveError::CapacityExceeded,
-            })
+                | CapabilityPositionError::ProtectedTask
+                | CapabilityPositionError::AuditFull => DeriveError::CapacityExceeded,
+            })?;
+        self.audit.append(AuditEvent::CapabilityDerived {
+            cap_id: child,
+            parent,
+            holder,
+        });
+        Ok(())
     }
 
     pub fn revoke_capability(
@@ -735,8 +761,13 @@ impl BootstrapState {
         if entry.location != CapabilityLocation::HeldByTask(holder) {
             return Err(CapabilityPositionError::HolderMismatch);
         }
+        let mut preview = self.derivations;
+        let (_, revoked_count) = preview.revoke_subtree(cap_id);
+        if !self.audit.can_append(revoked_count) {
+            return Err(CapabilityPositionError::AuditFull);
+        }
+        let (revoked_ids, revoked_count) = self.derivations.revoke_subtree(cap_id);
         self.positions.revoke(cap_id);
-        self.derivations.revoke_subtree(cap_id);
         for capability in self.derivations.entries[..self.derivations.count]
             .iter()
             .flatten()
@@ -745,6 +776,28 @@ impl BootstrapState {
                 self.positions.revoke(capability.id);
             }
         }
+        for revoked_id in revoked_ids[..revoked_count].iter().copied() {
+            self.audit
+                .append(AuditEvent::CapabilityRevoked { cap_id: revoked_id });
+        }
+        Ok(())
+    }
+
+    pub fn move_capability(
+        &mut self,
+        cap_id: u32,
+        from_task: u32,
+        to_task: u32,
+    ) -> Result<(), CapabilityPositionError> {
+        if !self.audit.can_append(1) {
+            return Err(CapabilityPositionError::AuditFull);
+        }
+        self.positions.move_to_task(cap_id, from_task, to_task)?;
+        self.audit.append(AuditEvent::CapabilityMoved {
+            cap_id,
+            from: CapabilityLocation::HeldByTask(from_task),
+            to: CapabilityLocation::HeldByTask(to_task),
+        });
         Ok(())
     }
 
@@ -910,7 +963,8 @@ impl BootstrapState {
                         | CapabilityPositionError::Inactive
                         | CapabilityPositionError::DuplicateCapability
                         | CapabilityPositionError::CapacityExceeded
-                        | CapabilityPositionError::ProtectedTask => IpcError::InvalidCapability,
+                        | CapabilityPositionError::ProtectedTask
+                        | CapabilityPositionError::AuditFull => IpcError::InvalidCapability,
                     })?;
             }
             self.tasks
@@ -937,7 +991,8 @@ impl BootstrapState {
                         | CapabilityPositionError::Inactive
                         | CapabilityPositionError::DuplicateCapability
                         | CapabilityPositionError::CapacityExceeded
-                        | CapabilityPositionError::ProtectedTask => IpcError::InvalidCapability,
+                        | CapabilityPositionError::ProtectedTask
+                        | CapabilityPositionError::AuditFull => IpcError::InvalidCapability,
                     })?;
             }
             self.ipc.send(message)?;
@@ -1193,7 +1248,13 @@ mod tests {
             kernel_phys_end: 0x1000_3000,
         };
         let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
-        state.positions.move_to_task(1, INIT_TASK_ID, 2).unwrap();
+        state.move_capability(1, INIT_TASK_ID, 2).unwrap();
+        assert!(
+            state.audit.entries[..state.audit.count]
+                .iter()
+                .flatten()
+                .any(|event| matches!(event, AuditEvent::CapabilityMoved { cap_id: 1, .. }))
+        );
         assert_eq!(
             state.positions.move_to_task(1, INIT_TASK_ID, 3),
             Err(CapabilityPositionError::HolderMismatch)
@@ -1269,6 +1330,11 @@ mod tests {
         state.revoke_capability(1, INIT_TASK_ID).unwrap();
         assert!(!state.derivations.entries[0].unwrap().active);
         assert!(!state.derivations.entries[1].unwrap().active);
+        for cap_id in [1, 4, 5] {
+            assert!(state.audit.entries[..state.audit.count].iter().flatten().any(
+                |event| matches!(event, AuditEvent::CapabilityRevoked { cap_id: id } if *id == cap_id)
+            ));
+        }
         assert_eq!(
             state.positions.move_to_task(5, 2, 3),
             Err(CapabilityPositionError::Inactive)
