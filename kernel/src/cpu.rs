@@ -11,6 +11,13 @@ pub enum TranslateError {
     InvalidLevel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageTableAuditError {
+    TooManyTables,
+    InvalidLevel,
+    UnownedTable,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PageTableEntry {
@@ -96,6 +103,56 @@ pub fn translate(
     Ok(pt.next_phys() | offset)
 }
 
+pub fn audit_reachable_page_tables(
+    root_phys: u64,
+    map: impl Fn(u64) -> u64 + Copy,
+    mut validate: impl FnMut(u64) -> Result<(), ()>,
+) -> Result<usize, PageTableAuditError> {
+    const MAX_TABLES: usize = 1024;
+
+    fn walk(
+        table_phys: u64,
+        level: u8,
+        map: impl Fn(u64) -> u64 + Copy,
+        validate: &mut impl FnMut(u64) -> Result<(), ()>,
+        seen: &mut [u64; 1024],
+        count: &mut usize,
+    ) -> Result<(), PageTableAuditError> {
+        if seen[..*count].contains(&table_phys) {
+            return Ok(());
+        }
+        if *count == seen.len() {
+            return Err(PageTableAuditError::TooManyTables);
+        }
+        validate(table_phys).map_err(|_| PageTableAuditError::UnownedTable)?;
+        seen[*count] = table_phys;
+        *count += 1;
+
+        let table_va = map(table_phys);
+        for index in 0..512 {
+            let raw =
+                unsafe { core::ptr::read_volatile((table_va + (index as u64) * 8) as *const u64) };
+            let entry = PageTableEntry { flags: raw };
+            if !entry.is_present() {
+                continue;
+            }
+            if level == 4 && entry.huge() {
+                return Err(PageTableAuditError::InvalidLevel);
+            }
+            if level == 1 || (entry.huge() && (level == 2 || level == 3)) {
+                continue;
+            }
+            walk(entry.next_phys(), level - 1, map, validate, seen, count)?;
+        }
+        Ok(())
+    }
+
+    let mut seen = [0; MAX_TABLES];
+    let mut count = 0;
+    walk(root_phys, 4, map, &mut validate, &mut seen, &mut count)?;
+    Ok(count)
+}
+
 /// 在 host 单测中使用的恒等映射（物理==虚拟），纯逻辑测试用。
 #[cfg(test)]
 fn identity_map(phys: u64) -> u64 {
@@ -123,6 +180,38 @@ mod tests {
         let layout = Layout::from_size_align(4096, 4096).expect("4K page layout");
         unsafe {
             dealloc(ptr as *mut u8, layout);
+        }
+    }
+
+    #[test]
+    fn audit_reachable_page_tables_visits_all_levels() {
+        let pml4 = unsafe { alloc_page() };
+        let pdpt = unsafe { alloc_page() };
+        let pd = unsafe { alloc_page() };
+        let pt = unsafe { alloc_page() };
+        unsafe {
+            *pml4.add(0) = pdpt as u64 | 1;
+            *pdpt.add(0) = pd as u64 | 1;
+            *pd.add(0) = pt as u64 | 1;
+            *pt.add(0) = 0x2000 | 1;
+        }
+        let mut visited = Vec::new();
+        let count = audit_reachable_page_tables(
+            pml4 as u64,
+            |phys| phys,
+            |phys| {
+                visited.push(phys);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(count, 4);
+        assert_eq!(visited.len(), 4);
+        unsafe {
+            free_page(pml4);
+            free_page(pdpt);
+            free_page(pd);
+            free_page(pt);
         }
     }
 

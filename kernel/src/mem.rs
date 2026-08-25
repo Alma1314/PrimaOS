@@ -263,6 +263,26 @@ pub fn validate_external_page_table_root(
     Err(PageTableOwnershipError::OutsideMemoryMap)
 }
 
+pub fn validate_reachable_page_table_frame(
+    regions: &[MemoryRegion],
+    frame_phys: u64,
+) -> Result<(), PageTableOwnershipError> {
+    if !frame_phys.is_multiple_of(FRAME_SIZE) {
+        return Err(PageTableOwnershipError::Unaligned);
+    }
+    let frame_end = frame_phys
+        .checked_add(FRAME_SIZE)
+        .ok_or(PageTableOwnershipError::OutsideMemoryMap)?;
+    if regions
+        .iter()
+        .any(|region| region.start <= frame_phys && frame_end <= region.end)
+    {
+        Ok(())
+    } else {
+        Err(PageTableOwnershipError::OutsideMemoryMap)
+    }
+}
+
 pub fn build_inventory(
     regions: &[MemoryRegion],
     kernel_addr: u64,

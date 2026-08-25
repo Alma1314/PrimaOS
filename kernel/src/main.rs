@@ -49,14 +49,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             // B2: 读 cr3 得到 PML4 物理地址，经直映射转虚拟，translate 内核镜像
                             // 虚拟地址到物理，证明 bootloader 页表可读。
                             let pml4_phys = kernel::cpu::cr3().0 & 0x000f_ffff_ffff_f000;
+                            let map = |phys: u64| mem::phys_to_virt(phys, offset);
                             if mem::validate_external_page_table_root(regions, pml4_phys).is_err() {
                                 protocol::page_table_error();
                                 serial::flush();
                                 qemu::exit(qemu::PANIC)
                             }
+                            let _ = kernel::cpu::audit_reachable_page_tables(
+                                pml4_phys,
+                                map,
+                                |_| Ok(()),
+                            );
                             let pml4_va = mem::phys_to_virt(pml4_phys, offset);
                             let target_va = boot_info.kernel_image_offset; // 内核镜像虚拟基址
-                            let map = |phys: u64| mem::phys_to_virt(phys, offset);
                             match kernel::cpu::translate(pml4_va, target_va, map) {
                                 Ok(translated_phys) => {
                                     protocol::page_table_ready(translated_phys);
