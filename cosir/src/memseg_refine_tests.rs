@@ -498,7 +498,7 @@ fn full_memseg_lifecycle_alpha_preserved() {
     unmap_verified(&mut st, 7, 0x5000_1000, 1).unwrap(); // 释放最后一页(0x5000_1000)
     destroy_verified(&mut st, seg).expect("destroy ok after unmaps");
     assert!(!st.segments.contains_key(&seg));
-    assert_eq!(st.alloc.free.len(), 8, "全部帧归还");
+    assert_eq!(st.alloc.free.len(), 7, "数据帧归还，根页表帧仍归属 Task");
     let mut diag = Vec::new();
     assert!(
         memseg_alpha_verbose(&st, &mut diag),

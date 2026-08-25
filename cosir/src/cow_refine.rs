@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::memseg_refine::{
-    MemSegError, RefineState, destroy_verified, map_verified, memseg_create, spawn_task,
-    unmap_verified,
+    MemSegError, RefineState, destroy_task_memory, destroy_verified, map_verified, memseg_create,
+    spawn_task, unmap_verified,
 };
 use crate::ops::{self, ResumeError};
 use crate::pagewalk::{PAGE_SIZE, translate, validate_page_vaddr};
@@ -303,20 +303,19 @@ impl CowSliceState {
     }
 
     pub fn check_invariants(&self) -> Result<(), CowError> {
+        if self
+            .tlb
+            .task_ids()
+            .any(|task_id| !self.ops.tasks.contains_key(task_id))
+        {
+            return Err(CowError::TlbLifecycleInconsistent);
+        }
         let memory_tasks: std::collections::BTreeSet<_> =
             self.memory.tasks.keys().copied().collect();
         let ops_tasks: std::collections::BTreeSet<_> = self.ops.tasks.keys().copied().collect();
         if memory_tasks != ops_tasks || !crate::memseg_refine::memseg_alpha(&self.memory) {
             return Err(CowError::CorruptCompositeState);
         }
-        if self
-            .tlb
-            .task_ids()
-            .any(|task_id| !ops_tasks.contains(task_id))
-        {
-            return Err(CowError::TlbLifecycleInconsistent);
-        }
-
         let running: Vec<_> = self
             .ops
             .tasks
@@ -895,7 +894,7 @@ impl CowSliceState {
         }
 
         let mut pending = self.clone();
-        pending.memory.tasks.remove(&task);
+        destroy_task_memory(&mut pending.memory, task).map_err(CowError::MemSeg)?;
         pending.ops.tasks.remove(&task);
         pending.ops.pending_exc.remove(&task);
         pending
@@ -984,9 +983,9 @@ pub fn page_fault_source_id() -> ExcSourceId {
     1
 }
 
-/// 帧池 6 帧；P(1) 与 C(2) 已 spawn；数据段 seg=1（RW）、可执行段 seg=2（X）、栈段 seg=3（RW）。
+/// 帧池 24 帧；P(1) 与 C(2) 已 spawn；数据段 seg=1（RW）、可执行段 seg=2（X）、栈段 seg=3（RW）。
 pub fn new_refine() -> RefineState {
-    let mut pf = RefineState::new(&[0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000])
+    let mut pf = RefineState::new(&(0u64..24).map(|i| 0x1000 + i * 0x1000).collect::<Vec<_>>())
         .expect("valid frame universe");
     spawn_task(&mut pf, PARENT, CODE_VA).expect("spawn parent");
     spawn_task(&mut pf, CHILD, CODE_VA).expect("spawn child");

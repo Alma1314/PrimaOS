@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::pagewalk::{
-    FrameAllocator, PAGE_SIZE, PageTable, PhysAddr, Pte, SegmentRef, collect_leaves, map_vaddr,
-    new_task_table, unmap_vaddr, validate_page_vaddr, visit_leaves,
+    FrameAllocator, PAGE_SIZE, PageTable, PhysAddr, Pte, SegmentRef, collect_leaves,
+    map_vaddr_owned, new_owned_task_table, unmap_vaddr_owned, validate_page_vaddr, visit_leaves,
 };
 use crate::state::{SegId, TaskId, VirtAddr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,10 +67,14 @@ pub fn spawn_task(st: &mut RefineState, id: TaskId, entry: VirtAddr) -> Result<(
     if st.tasks.contains_key(&id) {
         return Err(MemSegError::InvalidTask);
     }
+    let table = new_owned_task_table(&mut st.alloc).map_err(|error| match error {
+        crate::pagewalk::PageWalkError::NoTableFrame => MemSegError::NoMemory,
+        _ => MemSegError::FrameAllocatorCorrupt,
+    })?;
     st.tasks.insert(
         id,
         TaskCtx {
-            table: new_task_table(),
+            table,
             vspace: BTreeMap::new(),
             entry,
         },
@@ -218,13 +222,43 @@ pub fn memseg_alpha_verbose(st: &RefineState, diag: &mut Vec<String>) -> bool {
         }
     }
 
-    if !used.is_disjoint(&free) {
+    let mut table_used = BTreeSet::new();
+    for (tid, task) in &st.tasks {
+        if task.table.check_frame_ownership(&st.alloc).is_err() {
+            ok = false;
+            diag.push(format!("W6: task {tid} 页表帧归属非法"));
+        }
+        for frame in &task.table.table_frames {
+            if !universe.contains(frame) {
+                ok = false;
+                diag.push(format!(
+                    "W6: task {tid} 页表帧 {frame:#x} 不属于 frame_universe"
+                ));
+            }
+            if !table_used.insert(*frame) {
+                ok = false;
+                diag.push(format!("W6: 页表帧 {frame:#x} 被多个 Task 引用"));
+            }
+        }
+    }
+
+    if !used.is_disjoint(&table_used) {
+        ok = false;
+        diag.push("W6: Segment 帧与页表帧相交".to_string());
+    }
+    if !used.is_disjoint(&free) || !table_used.is_disjoint(&free) {
         ok = false;
         diag.push("W6: 段帧与空闲帧相交".to_string());
     }
-    if used.union(&free).copied().collect::<BTreeSet<_>>() != universe {
+    if used
+        .union(&table_used)
+        .chain(free.iter())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != universe
+    {
         ok = false;
-        diag.push("W6: 段帧∪空闲帧 ≠ frame_universe".to_string());
+        diag.push("W6: 段帧∪页表帧∪空闲帧 ≠ frame_universe".to_string());
     }
 
     ok
@@ -302,6 +336,9 @@ pub fn map_verified(
 
     let writable = access & crate::state::ACCESS_W != 0;
     let nx = access & crate::state::ACCESS_X == 0;
+    let mut pending_table = st.tasks[&task_id].table.clone();
+    let mut pending_vspace = st.tasks[&task_id].vspace.clone();
+    let mut pending_alloc = st.alloc.clone();
     for (va, frame_index) in pending {
         let offset = u64::try_from(frame_index).map_err(|_| MemSegError::ArithmeticOverflow)?;
         let pte = Pte {
@@ -316,10 +353,14 @@ pub fn map_verified(
                 access,
             },
         };
-        let task = st.tasks.get_mut(&task_id).unwrap();
-        map_vaddr(&mut task.table, va, pte).map_err(|_| MemSegError::InvalidAddress)?;
-        task.vspace.insert(va, pte.mapping);
+        map_vaddr_owned(&mut pending_table, &mut pending_alloc, va, pte)
+            .map_err(|_| MemSegError::FrameAllocatorCorrupt)?;
+        pending_vspace.insert(va, pte.mapping);
     }
+    let task = st.tasks.get_mut(&task_id).unwrap();
+    task.table = pending_table;
+    task.vspace = pending_vspace;
+    st.alloc = pending_alloc;
     Ok(())
 }
 
@@ -352,12 +393,31 @@ pub fn unmap_verified(
         }
         pending.push(va);
     }
-    // 完整预验证后再清叶 + 双视图
+    let mut pending_table = st.tasks[&task_id].table.clone();
+    let mut pending_vspace = st.tasks[&task_id].vspace.clone();
+    let mut pending_alloc = st.alloc.clone();
     for va in pending {
-        let task = st.tasks.get_mut(&task_id).unwrap();
-        unmap_vaddr(&mut task.table, va).map_err(|_| MemSegError::InvalidAddress)?;
-        task.vspace.remove(&va);
+        unmap_vaddr_owned(&mut pending_table, &mut pending_alloc, va)
+            .map_err(|_| MemSegError::FrameAllocatorCorrupt)?;
+        pending_vspace.remove(&va);
     }
+    let task = st.tasks.get_mut(&task_id).unwrap();
+    task.table = pending_table;
+    task.vspace = pending_vspace;
+    st.alloc = pending_alloc;
+    Ok(())
+}
+
+pub fn destroy_task_memory(st: &mut RefineState, task_id: TaskId) -> Result<(), MemSegError> {
+    let task = st.tasks.get(&task_id).ok_or(MemSegError::InvalidTask)?;
+    let mut allocator = st.alloc.clone();
+    for frame in &task.table.table_frames {
+        allocator
+            .free_frame(*frame)
+            .map_err(|_| MemSegError::FrameAllocatorCorrupt)?;
+    }
+    st.tasks.remove(&task_id);
+    st.alloc = allocator;
     Ok(())
 }
 

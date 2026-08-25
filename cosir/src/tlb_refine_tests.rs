@@ -16,10 +16,8 @@ const ENTRY: u64 = 0x6000_0000;
 // 两个 Task，各自把自己独立的 data 段映射到唯一地址，避免共享（每 Task 独立）。
 // universe 含足够帧：最重用例（stale_frame_survives_without_flush）需 5 帧。
 fn two_task_state() -> (RefineState, State, TlbState) {
-    let mut memory = RefineState::new(&[
-        0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000, 0x8000,
-    ])
-    .expect("universe");
+    let mut memory = RefineState::new(&(0u64..16).map(|i| 0x1000 + i * 0x1000).collect::<Vec<_>>())
+        .expect("universe");
     spawn_task(&mut memory, T1, ENTRY).expect("spawn");
     spawn_task(&mut memory, T2, ENTRY).expect("spawn");
     let t1seg = memseg_create(&mut memory, 1, ACCESS_R | ACCESS_W).expect("seg");

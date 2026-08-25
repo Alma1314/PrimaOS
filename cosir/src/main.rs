@@ -174,7 +174,7 @@ fn main() {
             RefineState, destroy_verified, map_verified, memseg_alpha, memseg_create, spawn_task,
             unmap_verified,
         };
-        let universe: Vec<u64> = (0u64..4).map(|i| 0x1000 + i * 0x1000).collect();
+        let universe: Vec<u64> = (0u64..8).map(|i| 0x1000 + i * 0x1000).collect();
         let mut st = RefineState::new(&universe).expect("valid frame universe");
         spawn_task(&mut st, 1, 0x4000_0000).expect("spawn init");
         let seg = memseg_create(&mut st, 2, ACCESS_R | ACCESS_W).expect("create");
