@@ -1,7 +1,7 @@
 
 > 状态：抽象语义规范
 >
-> 修订日期：2026-08-16
+> 修订日期：2026-08-26
 
 本文按 **11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 12 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“11 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
@@ -2161,8 +2161,8 @@ abstract : MachineState → POSIRState
 | `memseg_unmap` | 前置校验（含 W8 不卸 entry 页）后清叶、回收空表结点、同步 vspace |
 | `memseg_destroy` | 前置校验（无活动 vspace 引用，StillMapped）后删 Segment，归还帧（W6） |
 
-**不变量承接。** `MODEL-TEST` 检查 W6（物理页唯一归属：活动 segment 帧两两不交、与 free_frames 不交、并集 = frame_universe）以及 W7（vspace host 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）。W8 当前只覆盖 `memseg_unmap` 的 entry-page guard；尚未验证 task_create 入口建立、入口权限合成或执行期间入口持续可达，因此不得称为完整 W8 验证。
+**不变量承接。** `MODEL-TEST` 检查 W6（物理页唯一归属：活动 segment 帧与页表 backing 帧两两不交、与 free_frames 不交、并集 = frame_universe；页表帧归属由 `FrameAllocator::check_invariants` 统一校验，纳入后守恒为 segment 帧∪页表帧∪空闲帧）以及 W7（vspace host 视图与树叶映射集一致、每 VirtPage 单映射、映射指向活动 Segment 且 access≤allowed_access）。W8 当前只覆盖 `memseg_unmap` 的 entry-page guard；尚未验证 task_create 入口建立、入口权限合成或执行期间入口持续可达，因此不得称为完整 W8 验证。
 
 **错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的"路径深表缺失"等机制内部状态折叠为对应 POSIR 错误，不外泄新错误原语。
 
-**未覆盖（留后续切片）。** 当前 host 四级索引树和双视图检查不覆盖：非叶权限合成、页表页的物理身份与所有权、TLB 维护、多核并发与 shootdown、真实 CR3/PTE 编码和访问，以及页表原子更新窗口。大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地同样未覆盖。以上边界完成前，证据保持 `REFINEMENT-DESIGN` + `MODEL-TEST`，不得称为真实 MemorySegment refinement PASS。
+**未覆盖（留后续切片）。** 当前 host 四级索引树和双视图检查不再覆盖的包括：非叶权限合成、TLB 维护、多核并发与 shootdown、真实 CR3/PTE 编码和访问，以及页表原子更新窗口。**页表页的物理身份与所有权**在细化模型中已覆盖为 `new_owned_task_table`/`map_vaddr_owned`/`unmap_vaddr_owned` 的 backing frame 分配/回收与 `check_frame_ownership`（见 SPEC-035/036），但真实内核沿现有 CR3 可达页表树的审计（SPEC-037/038）仅确认外部根页帧归属，**不证明子页表物理所有权**，故真实内核自建页表的所有权与回收仍留后续切片。大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地同样未覆盖。以上边界完成前，证据保持 `REFINEMENT-DESIGN` + `MODEL-TEST`，不得称为真实 MemorySegment refinement PASS。

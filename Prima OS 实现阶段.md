@@ -2,7 +2,7 @@
 
 > 文档类型：实施进度与证据跟踪
 >
-> 更新日期：2026-08-18
+> 更新日期：2026-08-29
 >
 > 架构与阶段定义：[[Prima OS]]
 >
@@ -37,7 +37,7 @@
 | 已满足退出条件的最高阶段 | 无 |
 | 当前实现代码 | 阶段 1 启动闭环探索实现：`kernel/`、`xtask/` |
 | 当前主要工件 | [[Prima OS]]、[[COSIR 原语规范]]、Rust/QEMU 启动闭环 |
-| 当前首要缺口 | S1-D5 Bootstrap 快照、固定 Task 生命周期与 Capability/消息生命周期审计基础已接入；后续缺口为完整 IPC 消息原子提交/阻塞恢复、S1-X2 初始 Authority 细化、S1-X3 活动 Segment/页帧全局归属，以及 S0-X1/S0-X2 |
+| 当前首要缺口 | 已冻结的下一垂直切片 **COW/page fault → handler → `exc_resume` → TLB → Linux trace** 尚未闭环（须先冻结 page-fault/COW observable semantics，再以真实 trap/页表/TLB 建立端到端 trace 与 `COMPAT-TEST`）；当前 S1-X2（初始 Authority）经 SPEC-039 仅收紧、S1-X3（页帧全局归属）经 SPEC-032~038 仅收紧，均未关闭；S0-X1（独立规格审查）与 S0-X2（逐操作覆盖报告）仍待补齐 |
 | 最近规范修订 | 2026-08-26 — 白皮书 §6.2 补全选择性撤销的撤销域定义（撤销域/派生树一致性/与 cap_drop 正交/token 中间态/在途位置不纳入），§8.5 新增"下一阶段机制能力映射"（归属层+假说+规范锚点表），白皮书与 COSIR 规范 §4.7 回链同步（DOC-006）；此前 2026-07-31 — 规范审查修复：ObjectRef 统一、ExternalInterrupt 语义明确、CapMoved 审计事件补充、Node 对象完整定义、DMA 帧/页帧信息流说明、POSIR/COSIR 边界清单、ns_mount 跨节点约束、task_create 增加 kind 参数、task_yield 调度时机明确、应用域/LibOS 关系精确化、细化要求从 21 项扩展到 25 项 |
 | exc_resume（本切片） | 2026-08-07 — 定义异常恢复原语 `exc_resume`、x86_64 SretFrame 帧布局（细化层定义）、Faulted 细化态与错误码；新增 §12.10，标注细化要求 #16 与边界清单 #1/#2 |
 | 最近实现证据 | 2026-08-06 — 固定 30 秒失败保护后 `cargo xtask test` 在 QEMU 11.0.50 上连续完成两次 BIOS 启动；整条验收耗时 17.156 秒，23 个 host 单元测试全部通过 |
@@ -51,8 +51,12 @@
 | BLK-002 细化（本切片） | 2026-08-13 — MemorySegment host 四级索引树与双视图的 `REFINEMENT-DESIGN`；`MODEL-TEST` 检查 canonical 地址拒绝、失败原子性、α mutation 隔离和 allocator partition。`cargo test -p cosir` 69 tests 通过；未覆盖真实 CR3/PTE、非叶权限与页表页物理身份、TLB、多核、真实硬件原子更新窗口或机器证明。 |
 | COW 组合（本切片） | 在明确限定的 host 组合场景中，MODEL-TEST 未发现为“共享只读映射 → 写保护 fault → 用户态显式分配相离新 Segment 并换映射 → exc_resume → 显式调度”新增 POSIR 一等原语的需求。该结论不覆盖帧字节复制、真实 trap/PTE/TLB、多核协议、KERNEL-TRACE 或 REFINEMENT-PROOF。 |
 | TLB 细化（本切片） | host MODEL-TEST 仅观察到该 per-task、无替换策略缓存模型中的非自动刷新与显式失效行为；不外推为真实硬件 TLB、CR3/PCID、invlpg/INVPCID、多核 shootdown 或内存顺序结论。 |
+| Capability 生命周期与撤销（本切片） | 2026-08-25 — `derive_capability`/`revoke_capability`/`revoke_task_capabilities` 实现初始与派生根的子树撤销传播、跨两级回收与审计（SPEC-022/023）；`validate_authority`（SPEC-039）校验 ID 唯一、位置/活动一致、holder 存活与派生权限单调。证据 `MODEL-TEST`；仅收紧 S1-X2，不关闭。 |
+| Task/IPC/Audit（本切片） | 2026-08-25 — `TaskTable`（单 Running、schedule/yield、销毁前清理）、`IpcQueue`/`send_message`/`receive_message`（FIFO + blocked 唤醒 + 直接交付）、`AuditLog`（MessageSent/Received/Dropped/Derived/Moved/Revoked/TaskDestroyed）全链路引入，覆盖 S2-D4/D5 与 S3-D5（SPEC-024~031）。证据 `MODEL-TEST`；不关闭 S1-X3、IPC 生命周期联动或完整 Authority 不变量。 |
+| 页帧所有权与页表审计（本切片） | 2026-08-26 — cosir 细化模型为页表节点引入 backing frame 分配/回收与 W6 守恒扩展（Segment∪页表帧∪空闲帧，SPEC-033~036）；真实内核读取 CR3、审计可达页表树并确认外部根页帧归属（SPEC-037/038）。均未接入内核自建页表，仅收紧 S1-X3，不关闭。 |
 
-当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现、真实内核物理内存发现（S1-D3，SPEC-017）、真实页表/GDT/IDT/trap 框架（S1-D4，SPEC-018）与 Bootstrap 初始 Authority 快照（S1-D5，SPEC-020）；尚无机器证明、完整 POSIR Bootstrap、用户态执行或兼容性测试证据。
+
+当前已形成架构白皮书和抽象语义规范，并有阶段 1 启动闭环探索实现：真实内核物理内存发现（S1-D3，SPEC-017）、真实页表/GDT/IDT/trap 框架（S1-D4，SPEC-018）、Bootstrap 初始 Authority 快照（S1-D5，SPEC-020）、Capability 动态位置/撤销/任务表/IPC/Audit（S1-X2/S2、S3，SPEC-021~031）与页帧所有权/页表审计（S1-X3，SPEC-032~039），并建立 Lean 4 可执行状态模型（S0-X3，SPEC-019，BLK-001 关闭）。尚无机器证明、完整 POSIR Bootstrap、用户态执行、真实内核自建页表或兼容性测试证据；S0-X1/S0-X2 仍待补齐，S1-X2/S1-X3 均仅收紧未关闭。
 
 ## 证据索引
 
