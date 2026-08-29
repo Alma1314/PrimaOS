@@ -7,6 +7,7 @@ enum EventKind {
     PageTableReady,
     GdtTssReady,
     TrapReady,
+    PageFaultReady,
     BootstrapReady,
     BootComplete,
     Panic,
@@ -17,6 +18,9 @@ enum EventKind {
     IdtError,
 }
 
+/// 切片 C：#PF 捕获闭环的探测地址，与 `kernel/src/main.rs` 的 `PROBE_FAULT_VA` 一致。
+const PROBE_FAULT_VA: u64 = 0x0000_0000_0004_0000;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -24,7 +28,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 9] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 10] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -32,8 +36,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 9] = [
     (5, EventKind::PageTableReady),
     (6, EventKind::GdtTssReady),
     (7, EventKind::TrapReady),
-    (8, EventKind::BootstrapReady),
-    (9, EventKind::BootComplete),
+    (8, EventKind::PageFaultReady),
+    (9, EventKind::BootstrapReady),
+    (10, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -128,6 +133,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .expect("trap_ready is in the expected sequence");
     validate_trap_data(trap.data.as_deref())?;
 
+    if let Some(page_fault) = events
+        .iter()
+        .find(|event| event.kind == EventKind::PageFaultReady)
+    {
+        validate_page_fault_data(page_fault.data.as_deref())?;
+    }
+
     if let Some(bootstrap) = events
         .iter()
         .find(|event| event.kind == EventKind::BootstrapReady)
@@ -215,6 +227,36 @@ fn validate_trap_data(data: Option<&str>) -> Result<(), String> {
     if seen != 3 {
         return Err(format!(
             "trap_ready seen must be 3 (breakpoint), got {seen}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_page_fault_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "page_fault_ready event is missing its data field".to_owned())?;
+    let mut addr = None;
+    let mut not_mapped = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "addr" => addr = Some(parse_addr(value)?),
+            "not_mapped" => not_mapped = Some(parse_count(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let addr = addr.ok_or_else(|| "missing addr in page_fault_ready data".to_owned())?;
+    let not_mapped =
+        not_mapped.ok_or_else(|| "missing not_mapped in page_fault_ready data".to_owned())?;
+    if addr != PROBE_FAULT_VA {
+        return Err(format!(
+            "page_fault_ready addr (0x{addr:x}) must equal probe address 0x{PROBE_FAULT_VA:x}"
+        ));
+    }
+    if not_mapped != 1 {
+        return Err(format!(
+            "page_fault_ready not_mapped must be 1 (probe address untranslatable), got {not_mapped}"
         ));
     }
     Ok(())
@@ -378,6 +420,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("page_table_ready", "ok") => EventKind::PageTableReady,
         ("gdt_tss_ready", "ok") => EventKind::GdtTssReady,
         ("trap_ready", "ok") => EventKind::TrapReady,
+        ("page_fault_ready", "ok") => EventKind::PageFaultReady,
         ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -396,6 +439,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PhysicalMapReady
             | EventKind::PageTableReady
             | EventKind::TrapReady
+            | EventKind::PageFaultReady
             | EventKind::BootstrapReady,
             None,
         ) => {
@@ -407,6 +451,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PhysicalMapReady
             | EventKind::PageTableReady
             | EventKind::TrapReady
+            | EventKind::PageFaultReady
             | EventKind::BootstrapReady,
             Some(_),
         ) => {}
@@ -436,7 +481,9 @@ mod tests {
         "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x200000\r\n",
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
-        "PRIMA|v=1|seq=8|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;not_mapped=1\n",
+        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
+        "PRIMA|v=1|seq=10|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -758,5 +805,35 @@ mod tests {
         );
         let error = validate_output(output).unwrap_err();
         assert!(error.contains("seen must be 3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_page_fault_wrong_addr() {
+        let output = VALID.replace(
+            "data=addr=0x40000;not_mapped=1",
+            "data=addr=0x50000;not_mapped=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal probe address"), "{error}");
+    }
+
+    #[test]
+    fn rejects_page_fault_mapped() {
+        let output = VALID.replace(
+            "data=addr=0x40000;not_mapped=1",
+            "data=addr=0x40000;not_mapped=0",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("not_mapped must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_page_fault_missing_data() {
+        let output = VALID.replace(
+            "|event=page_fault_ready|status=ok|data=addr=0x40000;not_mapped=1",
+            "|event=page_fault_ready|status=ok",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
     }
 }

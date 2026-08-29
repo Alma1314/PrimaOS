@@ -114,6 +114,15 @@ pub(crate) fn trap_ready(seen: u8) {
     serial::write_bytes(b"\r\n");
 }
 
+pub(crate) fn page_fault_ready(fault_addr: u64, not_mapped: bool) {
+    write_prefix("page_fault_ready", "ok");
+    serial::write_bytes(b"|data=addr=");
+    write_hex_u64(fault_addr);
+    serial::write_bytes(b";not_mapped=");
+    write_u32(if not_mapped { 1 } else { 0 });
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn idt_error() {
     write_prefix("idt_error", "error");
     serial::write_bytes(b"\r\n");

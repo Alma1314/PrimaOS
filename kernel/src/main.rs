@@ -11,6 +11,13 @@ use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 use kernel::mem;
 
+/// 切片 C：#PF 捕获闭环的探测地址。
+///
+/// 选一个 bootloader 不映射的 canonical 低地址（内核镜像与物理直映射都在高地址）。
+/// 触发前用 `translate` 自证该地址未映射（`PageNotMapped`），再触发真实 #PF，
+/// handler 读回的 CR2 应等于该地址。xtask 侧用同一值断言。
+const PROBE_FAULT_VA: u64 = 0x0000_0000_0004_0000;
+
 entry_point!(kernel_main, config = &config::BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
@@ -91,6 +98,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             qemu::exit(qemu::PANIC)
                                         }
                                     }
+
+                                    // C：触发一次真实 #PF，验证 异常现场(CR2+error code) → handler
+                                    // → 缺页判定 → 上报 的闭环。触发前用 translate 自证探测地址确实
+                                    // 未映射（不是内核分页缺陷），trigger_page_fault 读该地址触发 #PF，
+                                    // handler 记录 CR2（应等于探测地址）后 iretq 返回。
+                                    let not_mapped = matches!(
+                                        kernel::cpu::translate(pml4_va, PROBE_FAULT_VA, map),
+                                        Err(kernel::cpu::TranslateError::PageNotMapped)
+                                    );
+                                    kernel::idt::trigger_page_fault(PROBE_FAULT_VA);
+                                    protocol::page_fault_ready(
+                                        kernel::idt::fault_addr(),
+                                        not_mapped,
+                                    );
+
                                     match kernel::bootstrap::create_state(
                                         boot_info.kernel_image_offset,
                                         boot_info.kernel_len,
