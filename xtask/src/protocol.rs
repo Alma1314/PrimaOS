@@ -235,28 +235,35 @@ fn validate_trap_data(data: Option<&str>) -> Result<(), String> {
 fn validate_page_fault_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "page_fault_ready event is missing its data field".to_owned())?;
     let mut addr = None;
-    let mut not_mapped = None;
+    let mut err = None;
+    let mut class = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
             .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
         match key {
             "addr" => addr = Some(parse_addr(value)?),
-            "not_mapped" => not_mapped = Some(parse_count(value)?),
+            "err" => err = Some(parse_addr(value)?),
+            "class" => class = Some(value.to_owned()),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
     let addr = addr.ok_or_else(|| "missing addr in page_fault_ready data".to_owned())?;
-    let not_mapped =
-        not_mapped.ok_or_else(|| "missing not_mapped in page_fault_ready data".to_owned())?;
+    let err = err.ok_or_else(|| "missing err in page_fault_ready data".to_owned())?;
+    let class = class.ok_or_else(|| "missing class in page_fault_ready data".to_owned())?;
     if addr != PROBE_FAULT_VA {
         return Err(format!(
             "page_fault_ready addr (0x{addr:x}) must equal probe address 0x{PROBE_FAULT_VA:x}"
         ));
     }
-    if not_mapped != 1 {
+    if err != 0 {
         return Err(format!(
-            "page_fault_ready not_mapped must be 1 (probe address untranslatable), got {not_mapped}"
+            "page_fault_ready err must be 0x0 for absent-read probe, got 0x{err:x}"
+        ));
+    }
+    if class != "not_present" {
+        return Err(format!(
+            "page_fault_ready class must be not_present for absent-read probe, got {class}"
         ));
     }
     Ok(())
@@ -481,7 +488,7 @@ mod tests {
         "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x200000\r\n",
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
-        "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;not_mapped=1\n",
+        "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
         "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
         "PRIMA|v=1|seq=10|event=boot_complete|status=ok\r\n",
     );
@@ -809,28 +816,41 @@ mod tests {
 
     #[test]
     fn rejects_page_fault_wrong_addr() {
+        // addr wrong but err/class consistent
         let output = VALID.replace(
-            "data=addr=0x40000;not_mapped=1",
-            "data=addr=0x50000;not_mapped=1",
+            "data=addr=0x40000;err=0x0;class=not_present",
+            "data=addr=0x50000;err=0x0;class=not_present",
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must equal probe address"), "{error}");
     }
 
     #[test]
-    fn rejects_page_fault_mapped() {
+    fn rejects_page_fault_wrong_class() {
+        // class claim inconsistent with hardware absent-read evidence (replaces old "mapped" fiction)
         let output = VALID.replace(
-            "data=addr=0x40000;not_mapped=1",
-            "data=addr=0x40000;not_mapped=0",
+            "data=addr=0x40000;err=0x0;class=not_present",
+            "data=addr=0x40000;err=0x0;class=write_protection",
         );
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("not_mapped must be 1"), "{error}");
+        assert!(error.contains("class must be not_present"), "{error}");
+    }
+
+    #[test]
+    fn rejects_page_fault_bad_err() {
+        // err nonzero contradicts the absent-read supervisor fault signature (err stays 0x0 here)
+        let output = VALID.replace(
+            "data=addr=0x40000;err=0x0;class=not_present",
+            "data=addr=0x40000;err=0x2;class=not_present",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("err must be 0x0"), "{error}");
     }
 
     #[test]
     fn rejects_page_fault_missing_data() {
         let output = VALID.replace(
-            "|event=page_fault_ready|status=ok|data=addr=0x40000;not_mapped=1",
+            "|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present",
             "|event=page_fault_ready|status=ok",
         );
         let error = validate_output(&output).unwrap_err();
