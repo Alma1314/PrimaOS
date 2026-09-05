@@ -56,6 +56,29 @@ pub fn cr3() -> PhysAddr {
     PhysAddr(value)
 }
 
+/// CR0 的 WP 位掩码（bit 16）。WP=1 ⇒ supervisor 写只读页产生 #PF；0 = 允许通过。
+///
+/// `read_cr0_wp` 是"本次是否可能造出 supervisor 写保护现场"的总闸门，不依赖页表形态。
+/// 真实现场只能在内核层（CPL0）读 CR0；纯逻辑抽到 [`wp_of`] 供 host 单测。
+pub const CR0_WP: u64 = 1 << 16;
+
+/// 从一段已读出的 CR0 值里判断 WP 位是否置位（纯算术，无特权指令，可 host 单测钉住）。
+pub fn wp_of(cr0: u64) -> bool {
+    cr0 & CR0_WP != 0
+}
+
+/// 读 CR0 的 WP 位：1 = supervisor 写只读页产生 #PF；0 = 允许通过。
+///
+/// 读 cr0 无副作用，但属特权操作，仅在内核已运行于 CPL0（由 bootloader 进入）时可读，
+/// 切不可在 host 用户态单测直接调用。
+pub fn read_cr0_wp() -> bool {
+    let mut cr0: u64;
+    unsafe {
+        core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, preserves_flags));
+    }
+    wp_of(cr0)
+}
+
 /// 读一个 `PageTableEntry` 数组的第 `index` 项。
 /// `table_mapped_va` 是页表页已映射到虚拟地址空间中的地址（调用方负责转换）。
 fn read_entry(table_mapped_va: u64, index: usize) -> Result<PageTableEntry, TranslateError> {
@@ -325,5 +348,24 @@ mod tests {
             free_page(pdpt);
             free_page(pml4);
         }
+    }
+
+    #[test]
+    fn read_cr0_wp_wp_bit_decision_is_legal_and_stable() {
+        // `mov reg, cr0` 是特权指令（仅 CPL0 可读）。host `cargo test` 把本 crate 以 std
+        // 用户态进程编译运行，直接执行会触发 STATUS_PRIVILEGED_INSTRUCTION。因此真实现场
+        // 性验证归 QEMU/kernel（本 slice Task 6）；此处钉住纯决策逻辑 `wp_of`：
+        // CR0 现场 = 0/1 皆可能（平台相关），故不断言常量真值，只断言合法 bool +
+        // 掩码取中幂等稳定。这镜像了 fault.rs"无 asm、纯逻辑 host 可测"的既有纪律。
+        assert_eq!(CR0_WP, 1 << 16);
+        assert!(!wp_of(0));
+        assert!(wp_of(CR0_WP));
+        assert!(!wp_of(CR0_WP >> 1)); // bit15 不清 WP
+        assert!(wp_of(u64::MAX));
+        // 幂等（稳定）：同一致现场多次求值一致，且是合法 bool。
+        let a = wp_of(0x112_0000u64);
+        let b = wp_of(0x112_0000u64);
+        assert_eq!(a, b);
+        assert!(a == false); // 0x0000_0011_2000_0000 未含 bit16
     }
 }
