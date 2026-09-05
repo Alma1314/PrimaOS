@@ -133,6 +133,9 @@ pub fn trap_seen() -> u8 {
 /// 原子语义读、以裸 mov 写在单核 boot 阶段写——同一处理器上无竞争。
 static FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 
+/// 记录最近一次 #PF 的 error code（初始 0）。由裸入口在弹出前写入、`last_fault_err` 读取。
+static FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
+
 /// 触发 #PF 的故障指令长度（字节）。
 ///
 /// #PF 是 fault 类异常：CPU 把返回地址设为故障指令本身，iretq 后会用同一 rip
@@ -168,10 +171,14 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         "push r13",
         "push r14",
         "push r15",
-        // 读 CR2 并写入 FAULT_ADDR。
+        // 读 CR2 并写入 FAULT_ADDR（既有）。
         "mov rax, cr2",
         "lea rbx, [rip + {fault}]",
         "mov qword ptr [rbx], rax",
+        // 保存硬件压栈的 error code：6 个 push 后位于 [rsp+48]，pop/弹栈前读取。
+        "lea rdi, [rip + {err}]",
+        "mov rsi, qword ptr [rsp + 48]",
+        "mov qword ptr [rdi], rsi",
         // 返回地址前移 FAULT_SKIP_LEN，跳过故障指令。
         // 栈（6 个 push 之后）：[0..47] 保存的寄存器；[48] error_code；
         // [56] rip（故障指令）；[64] cs；[72] rflags。
@@ -189,6 +196,7 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         "add rsp, 8",
         "iretq",
         fault = sym FAULT_ADDR,
+        err = sym FAULT_ERROR,
         skip = const FAULT_SKIP_LEN,
     )
 }
@@ -196,6 +204,11 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
 /// 读取最近一次 #PF 的 CR2 地址（初始 0）。
 pub fn fault_addr() -> u64 {
     FAULT_ADDR.load(Ordering::Relaxed)
+}
+
+/// 读取最近一次 #PF 的 error code（初始 0；CPU 压入为 64 位零扩展，低 32 位有效）。
+pub fn last_fault_err() -> u64 {
+    FAULT_ERROR.load(Ordering::Relaxed)
 }
 
 /// 触发一次读 `addr` 的 page fault：读该线性地址，若未映射则 #PF。
@@ -285,6 +298,12 @@ mod tests {
         assert_eq!(e.selector, 0x8);
         assert_eq!(e.ist, 0);
         assert_eq!(e.type_attr, 0x8e);
+    }
+
+    #[test]
+    fn last_fault_err_defaults_to_zero() {
+        assert_eq!(FAULT_ERROR.load(Ordering::Relaxed), 0);
+        assert_eq!(last_fault_err(), 0);
     }
 
     #[test]
