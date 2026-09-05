@@ -401,7 +401,7 @@ Remove the now-unused `not_mapped` local and its `matches!(...)` call. Keep the 
 
 - [ ] **Step 3: Compile kernel**
 
-Run: `cargo build -p kernel`
+Run: `cargo build -p kernel` (bare host `cargo build -p kernel` can't link the `#![no_main]` freestanding bin — build against `--target x86_64-unknown-none`)
 Expected: clean compile; no `unused`/`deny` breakage. Fix only genuinely-dead refs the compiler names.
 
 - [ ] **Step 4: Commit**

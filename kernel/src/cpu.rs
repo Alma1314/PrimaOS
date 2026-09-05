@@ -366,6 +366,6 @@ mod tests {
         let a = wp_of(0x112_0000u64);
         let b = wp_of(0x112_0000u64);
         assert_eq!(a, b);
-        assert!(a == false); // 0x0000_0011_2000_0000 未含 bit16
+        assert!(!a); // 0x0000_0011_2000_0000 未含 bit16
     }
 }

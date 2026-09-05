@@ -122,9 +122,9 @@ pub fn read_cr0_wp() -> bool;
 ### 2.4 `kernel/src/protocol.rs` / `xtask/src/protocol.rs`（事件字段语义化）
 
 把 `page_fault_ready(addr; not_mapped=<0|1>)` 泛化为携带 error code 与分类落点：
-`page_fault_ready(addr; err=<hex>; class=<NotPresent|WriteProtection|Other>)`。
+`page_fault_ready(addr; err=<hex>; class=not_present|write_protection|other)`。
 
-QEMU 侧现 trigger 场景：ring0 读 `0x40000`（absent）→ 期望 `class=NotPresent`。xtask 断言译码落点
+QEMU 侧现 trigger 场景：ring0 读 `0x40000`（absent）→ 期望 `class=not_present`。xtask 断言译码落点
 而非一序 bool，从而"译码正确"成为可跨 boot 验证的不变契约。
 
 ### 2.5 `kernel/src/main.rs`（串联 + best-effort 写保护触发）
