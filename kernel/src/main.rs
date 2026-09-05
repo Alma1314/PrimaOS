@@ -99,18 +99,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         }
                                     }
 
-                                    // C：触发一次真实 #PF，验证 异常现场(CR2+error code) → handler
-                                    // → 缺页判定 → 上报 的闭环。触发前用 translate 自证探测地址确实
-                                    // 未映射（不是内核分页缺陷），trigger_page_fault 读该地址触发 #PF，
-                                    // handler 记录 CR2（应等于探测地址）后 iretq 返回。
-                                    let not_mapped = matches!(
-                                        kernel::cpu::translate(pml4_va, PROBE_FAULT_VA, map),
-                                        Err(kernel::cpu::TranslateError::PageNotMapped)
-                                    );
+                                    // C：触发一次真实 #PF。handler 已把 CR2 记入 fault_addr、
+                                    // error code 记入 last_fault_err。分类由 CPU 给的 error code
+                                    // 决定（读一个 absent 页 → P=0,W/R=0 → err=0x0 → not_present），
+                                    // 不再需要软件先 translate 自证。
                                     kernel::idt::trigger_page_fault(PROBE_FAULT_VA);
+                                    let fault_err = kernel::idt::last_fault_err();
+                                    let class = kernel::fault::classify(fault_err);
                                     protocol::page_fault_ready(
                                         kernel::idt::fault_addr(),
-                                        not_mapped,
+                                        fault_err,
+                                        class.as_str(),
                                     );
 
                                     match kernel::bootstrap::create_state(

@@ -114,12 +114,14 @@ pub(crate) fn trap_ready(seen: u8) {
     serial::write_bytes(b"\r\n");
 }
 
-pub(crate) fn page_fault_ready(fault_addr: u64, not_mapped: bool) {
+pub(crate) fn page_fault_ready(fault_addr: u64, fault_err: u64, class: &str) {
     write_prefix("page_fault_ready", "ok");
     serial::write_bytes(b"|data=addr=");
     write_hex_u64(fault_addr);
-    serial::write_bytes(b";not_mapped=");
-    write_u32(if not_mapped { 1 } else { 0 });
+    serial::write_bytes(b";err=");
+    write_hex_u64(fault_err);
+    serial::write_bytes(b";class=");
+    serial::write_bytes(class.as_bytes());
     serial::write_bytes(b"\r\n");
 }
 
