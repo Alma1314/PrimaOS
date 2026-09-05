@@ -112,6 +112,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         class.as_str(),
                                     );
 
+                                    // 观测：读 CR0.WP，看 supervisor 写只读页在当前环境是否故障。
+                                    // 仅供日志/未来自建页表证实写保护现场；不硬断言、不加 PRIMA 事件，
+                                    // 也不在 CR3 缺一个 present-只读页时伪造现场。
+                                    let wp = kernel::cpu::read_cr0_wp();
+                                    serial::write_bytes(b"[pf] cr0.wp=");
+                                    serial::write_bytes(if wp { b"1" } else { b"0" });
+                                    serial::write_bytes(b"\r\n");
+
                                     match kernel::bootstrap::create_state(
                                         boot_info.kernel_image_offset,
                                         boot_info.kernel_len,
