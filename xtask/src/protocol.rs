@@ -10,6 +10,7 @@ enum EventKind {
     PageFaultReady,
     BootstrapReady,
     VspaceReady,
+    CowReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -34,6 +35,15 @@ const VSPACE_VA: u64 = 0x0000_0080_0000_0000;
 const MAGIC_A: u64 = 0xaaaa_0000_1111_2222;
 const MAGIC_B: u64 = 0xbbbb_0000_3333_4444;
 
+/// 切片 F：COW 见证的镜像常量，与 `kernel/src/cow.rs` 的
+/// `COW_VA`/`pattern` 一致（跨 crate 需人工同步）。
+const COW_VA: u64 = 0x0000_0800_0000_0000;
+const COW_PATTERN_WORDS: u64 = 512;
+
+fn cow_pattern(index: u64) -> u64 {
+    0xC0FF_EE00_0000_0000 | index
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -41,7 +51,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 12] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 13] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -52,8 +62,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 12] = [
     (8, EventKind::PageFaultReady),
     (9, EventKind::BootstrapReady),
     (10, EventKind::VspaceReady),
-    (11, EventKind::ExcResumeReady),
-    (12, EventKind::BootComplete),
+    (11, EventKind::CowReady),
+    (12, EventKind::ExcResumeReady),
+    (13, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -169,11 +180,111 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_vspace_data(vspace.data.as_deref())?;
     }
 
+    if let Some(cow) = events
+        .iter()
+        .find(|event| event.kind == EventKind::CowReady)
+    {
+        validate_cow_data(cow.data.as_deref())?;
+    }
+
     if let Some(resume) = events
         .iter()
         .find(|event| event.kind == EventKind::ExcResumeReady)
     {
         validate_exc_resume_data(resume.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
+fn validate_cow_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "cow_ready event is missing its data field".to_owned())?;
+    let mut va = None;
+    let mut shared = None;
+    let mut private = None;
+    let mut err = None;
+    let mut class = None;
+    let mut shared0 = None;
+    let mut private0 = None;
+    let mut private1 = None;
+    let mut private_last = None;
+    let mut read_back = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "va" => va = Some(parse_addr(value)?),
+            "shared" => shared = Some(parse_addr(value)?),
+            "private" => private = Some(parse_addr(value)?),
+            "err" => err = Some(parse_addr(value)?),
+            "class" => class = Some(value.to_owned()),
+            "shared0" => shared0 = Some(parse_addr(value)?),
+            "private0" => private0 = Some(parse_addr(value)?),
+            "private1" => private1 = Some(parse_addr(value)?),
+            "private_last" => private_last = Some(parse_addr(value)?),
+            "read_back" => read_back = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let va = va.ok_or_else(|| "missing va in cow_ready data".to_owned())?;
+    let shared = shared.ok_or_else(|| "missing shared in cow_ready data".to_owned())?;
+    let private = private.ok_or_else(|| "missing private in cow_ready data".to_owned())?;
+    let err = err.ok_or_else(|| "missing err in cow_ready data".to_owned())?;
+    let class = class.ok_or_else(|| "missing class in cow_ready data".to_owned())?;
+    let shared0 = shared0.ok_or_else(|| "missing shared0 in cow_ready data".to_owned())?;
+    let private0 = private0.ok_or_else(|| "missing private0 in cow_ready data".to_owned())?;
+    let private1 = private1.ok_or_else(|| "missing private1 in cow_ready data".to_owned())?;
+    let private_last =
+        private_last.ok_or_else(|| "missing private_last in cow_ready data".to_owned())?;
+    let read_back = read_back.ok_or_else(|| "missing read_back in cow_ready data".to_owned())?;
+    if va != COW_VA {
+        return Err(format!(
+            "cow_ready va (0x{va:x}) must equal COW_VA 0x{COW_VA:x}"
+        ));
+    }
+    if private == shared {
+        return Err(format!(
+            "cow_ready private must differ from shared (0x{shared:x}) — no private frame was allocated"
+        ));
+    }
+    if err != 0x3 {
+        return Err(format!(
+            "cow_ready err must be 0x3 (present|write) for a read-only page write, got 0x{err:x}"
+        ));
+    }
+    if class != "write_protection" {
+        return Err(format!(
+            "cow_ready class must be write_protection, got {class}"
+        ));
+    }
+    if shared0 != cow_pattern(0) {
+        return Err(format!(
+            "cow_ready shared0 (0x{shared0:x}) must be unchanged 0x{:x} — copy-on-write must not modify the shared frame",
+            cow_pattern(0)
+        ));
+    }
+    if private0 != va {
+        return Err(format!(
+            "cow_ready private0 (0x{private0:x}) must equal va 0x{va:x} — retried store must have executed"
+        ));
+    }
+    if private1 != cow_pattern(1) {
+        return Err(format!(
+            "cow_ready private1 (0x{private1:x}) must equal 0x{:x} — frame bytes not fully copied",
+            cow_pattern(1)
+        ));
+    }
+    if private_last != cow_pattern(COW_PATTERN_WORDS - 1) {
+        return Err(format!(
+            "cow_ready private_last (0x{private_last:x}) must equal 0x{:x} — frame tail not copied",
+            cow_pattern(COW_PATTERN_WORDS - 1)
+        ));
+    }
+    if read_back != va {
+        return Err(format!(
+            "cow_ready read_back (0x{read_back:x}) must equal va 0x{va:x} — retry did not take effect"
+        ));
     }
     Ok(())
 }
@@ -607,6 +718,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("page_fault_ready", "ok") => EventKind::PageFaultReady,
         ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
         ("vspace_ready", "ok") => EventKind::VspaceReady,
+        ("cow_ready", "ok") => EventKind::CowReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -628,6 +740,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PageFaultReady
             | EventKind::BootstrapReady
             | EventKind::VspaceReady
+            | EventKind::CowReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -642,6 +755,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PageFaultReady
             | EventKind::BootstrapReady
             | EventKind::VspaceReady
+            | EventKind::CowReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -674,8 +788,9 @@ mod tests {
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
         "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
-        "PRIMA|v=1|seq=11|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=12|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
+        "PRIMA|v=1|seq=12|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=13|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1123,6 +1238,66 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("class must be write_protection"), "{error}");
+    }
+
+    /// 切片 F 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const COW_DATA: &str = "va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000";
+
+    #[test]
+    fn rejects_cow_alias_frame() {
+        let output = VALID.replace(
+            COW_DATA,
+            &COW_DATA.replace("private=0xb000", "private=0x6000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("private must differ from shared"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cow_shared_modified() {
+        let output = VALID.replace(
+            COW_DATA,
+            &COW_DATA.replace("shared0=0xc0ffee0000000000", "shared0=0x80000000000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("shared0"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cow_incomplete_copy() {
+        let output = VALID.replace(
+            COW_DATA,
+            &COW_DATA.replace("private1=0xc0ffee0000000001", "private1=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("private1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cow_failed_retry() {
+        let output = VALID.replace(
+            COW_DATA,
+            &COW_DATA.replace("read_back=0x80000000000", "read_back=0xc0ffee0000000000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("read_back"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cow_wrong_err() {
+        let output = VALID.replace(COW_DATA, &COW_DATA.replace("err=0x3", "err=0x0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("err must be 0x3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cow_wrong_va() {
+        let output = VALID.replace(
+            COW_DATA,
+            &COW_DATA.replace("va=0x80000000000", "va=0x40000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal COW_VA"), "{error}");
     }
 
     #[test]

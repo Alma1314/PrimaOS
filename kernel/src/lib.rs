@@ -3,6 +3,7 @@
 #![feature(abi_x86_interrupt)]
 
 pub mod bootstrap;
+pub mod cow;
 pub mod cpu;
 pub mod exc;
 pub mod fault;

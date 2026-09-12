@@ -147,6 +147,24 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         }
                                     }
 
+                                    // F：真实 COW —— 只读映射写故障 → 逐字节复制 →
+                                    // 换映射可写 → 重试原故障指令成功。
+                                    if kernel::cow::prepare(&mut allocator, pml4_phys, offset)
+                                        .is_err()
+                                    {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
+                                    match kernel::cow::run() {
+                                        Ok(witness) => protocol::cow_ready(&witness),
+                                        Err(_) => {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                    }
+
                                     // D：用捕获到的 #PF 现场帧构造一帧验证过的恢复帧，
                                     // 经真实 `iretq` 跳入 resume_landing；此后不再返回
                                     // 本路径，`boot_complete` 由恢复后的落点发出。

@@ -151,7 +151,7 @@ static mut FAULT_FRAME: SretFrame = SretFrame::ZERO;
 /// 重试故障指令，若不加处理将无限循环。`page_fault_entry` 把返回地址前移该
 /// 常量，落到故障指令之后继续执行。与 `trigger_page_fault` 的 `mov rax, [rax]`
 /// 指令（REX.W 8B + modrm，固定 3 字节）成对保证。
-const FAULT_SKIP_LEN: u64 = 3;
+pub const FAULT_SKIP_LEN: u64 = 3;
 
 /// vector 14（page fault）入口（裸函数）。
 ///
@@ -248,10 +248,15 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         "mov r10, qword ptr [rsp + 0x78]",
         "lea r11, [rip + {err}]",
         "mov qword ptr [r11], r10",
-        // 返回地址前移 FAULT_SKIP_LEN（必须在捕获 rip 之后，顺序不可换）。
-        "mov r10, qword ptr [rsp + 0x80]",
-        "add r10, {skip}",
-        "mov qword ptr [rsp + 0x80], r10",
+        // 询问 Rust 分派器该回到哪个 RIP：默认 rip+FAULT_SKIP_LEN（跳过），
+        // COW 命中时返回原 rip 以重试。15 个 GPR 已全部存于栈上，故 call 可自由
+        // 破坏 caller-saved 寄存器；用 rbp 保存栈顶并对齐到 16 字节满足 SysV。
+        "lea rdi, [rip + {frame}]",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "call {dispatch}",
+        "mov rsp, rbp",
+        "mov qword ptr [rsp + 0x80], rax",
         // 恢复全部 15 个 GPR（逆序），不清空现场。
         "pop rax",
         "pop rbx",
@@ -274,7 +279,7 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         frame = sym FAULT_FRAME,
         fault = sym FAULT_ADDR,
         err = sym FAULT_ERROR,
-        skip = const FAULT_SKIP_LEN,
+        dispatch = sym crate::cow::dispatch,
     )
 }
 

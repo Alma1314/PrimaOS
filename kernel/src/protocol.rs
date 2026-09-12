@@ -156,6 +156,32 @@ pub(crate) fn vspace_ready(witness: &kernel::vspace::Witness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 F：真实 COW（写故障 → 帧字节复制 → 换映射 → 重试原指令）的证据。
+pub(crate) fn cow_ready(witness: &kernel::cow::CowWitness) {
+    write_prefix("cow_ready", "ok");
+    serial::write_bytes(b"|data=va=");
+    write_hex_u64(witness.va);
+    serial::write_bytes(b";shared=");
+    write_hex_u64(witness.shared);
+    serial::write_bytes(b";private=");
+    write_hex_u64(witness.private);
+    serial::write_bytes(b";err=");
+    write_hex_u64(witness.err);
+    serial::write_bytes(b";class=");
+    serial::write_bytes(witness.class.as_bytes());
+    serial::write_bytes(b";shared0=");
+    write_hex_u64(witness.shared0);
+    serial::write_bytes(b";private0=");
+    write_hex_u64(witness.private0);
+    serial::write_bytes(b";private1=");
+    write_hex_u64(witness.private1);
+    serial::write_bytes(b";private_last=");
+    write_hex_u64(witness.private_last);
+    serial::write_bytes(b";read_back=");
+    write_hex_u64(witness.read_back);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 D：经真实 `iretq` 恢复进一帧后，从落点上报的恢复证据。
 ///
 /// `sentinel`/`sentinel2` 是落点实际读回的 `r12`/`r13`；`resumed` 为两个哨兵均
