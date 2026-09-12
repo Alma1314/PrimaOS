@@ -435,7 +435,7 @@ LibOS 应拆成可独立测试的职责：
 | 能力 | 驱动因素 | 机制层应提供的原语（归属） | 对应规范锚点 | 验证的假说 | 优先级与现状 |
 |---|---|---|---|---|---|
 | 真实页帧分配与页表所有权打通 | COSIR 细化模型需推进到真实 CR3/自建页表 | 页帧分配器 + 页表生命周期（COSIR 细化层） | 边界清单 #5/#12；COSIR §20 | H3 | ★★★ 进行中（S1-X3；SPEC-032~038 仍为模型分层时收紧、未关闭） |
-| COW/page-fault → handler → exc_resume → TLB 端到端 | 验证对象能力能否表达写时复制（H1） | 既有 Exception/MemorySegment/exc_resume（机制层） | COSIR §12.8-12.10 | H1 硬证据 | ★★★ 下一垂直切片，已冻结（见 §14.1 停止条件） |
+| COW/page-fault → handler → exc_resume → TLB 端到端 | 验证对象能力能否表达写时复制（H1） | 既有 Exception/MemorySegment/exc_resume（机制层） | COSIR §12.8-12.10 | H1 硬证据 | ★★★ 进行中：page fault → handler → 验证式 exc_resume 桥接已落地（SPEC-042，ring0-only、无 ring3/授权语义）；真实 TLB 与 Linux trace/COMPAT-TEST 待做 |
 | 首个 LibOS + POSIX 源码兼容冒烟 | 兑现 OS personality 可替换 | 用户态服务 + LibOS | §8.2 | H1/H4 | ★★☆ 未开始 |
 | 选择性撤销的完整撤销域语义 | Bootstrap 已超前落地子树撤销，缺语义定义 | Capability derive/drop（机制层） | §6.2 实现注记；COSIR §4.7 撤销边界 | H3 | ★★☆ 撤销域已定义（见 §6.2 实现注记、DOC-006），并发/跨节点（`InTransit`）传播语义待后续阶段 |
 | 用户态驱动 + MMIO/DMA 隔离 | 防越权攻击转化为资源 DoS | Device 原语真实化（机制层） | §10；COSIR §15；边界清单 #9-11 | H2 | ★★☆ 未开始 |
@@ -1038,7 +1038,7 @@ Prima 的分布式模型明确拒绝"全局统一的 KernelState"——不寻求
 | 通用 exception / syscall upcall | 静态 ELF、page fault、signal 都依赖它 | **已定义：** ExceptionSource 对象与订阅机制（COSIR §12） |
 | page fault 与 COW | `fork`、文件映射和按需分页需要 | **已定义模型：** PageFault ExceptionKind + 用户态 page fault handler（COSIR §12.8-12.9）；实际 COW 协议待实现验证 |
 | 设备 Capability | 用户态驱动与 DMA 隔离基础 | **已定义：** MMIO、I/O port、IRQ、DMA 对象能力化封装（COSIR §15） |
-| 异常帧格式与恢复路径 | 任务在异常后如何恢复执行（如 page fault handler 运行完毕后继续执行原 Task） | **已定义模型：** COSIR 已定义三参数 `exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset)`、x86_64 固定 `0xA0` frame 与 host `MODEL-TEST`；真实 trap/`iretq`、`KERNEL-TRACE`、`REFINEMENT-PROOF` 仍开放 |
+| 异常帧格式与恢复路径 | 任务在异常后如何恢复执行（如 page fault handler 运行完毕后继续执行原 Task） | **已定义模型：** COSIR 已定义三参数 `exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset)`、x86_64 固定 `0xA0` frame 与 host `MODEL-TEST`；内核侧已完成真实 `iretq` 恢复跳板（SPEC-042：完整现场捕获 + 纯校验 + 64 位 iretq 帧，QEMU 实测），但仅 ring0、未实现授权/订阅语义，ring3 递送、`KERNEL-TRACE`、`REFINEMENT-PROOF` 仍开放 |
 | 资源计量与配额 | 防止无权限攻击转化为资源 DoS | 第一阶段排除，后续必须加入 |
 | 选择性撤销 | 服务重启、租约和权限回收需要 | 当前只支持 drop 与对象销毁；探索阶段已在 Bootstrap 状态先行落地细化形式的子树撤销（见 §6.2 实现注记，SPEC-022/023），完整撤销域语义仍待后续阶段 |
 | Audit 容量与隐私 | 无限日志不现实，过度披露可能泄密 | 抽象日志无界且消息不记明文；持久化前必须规定配额、保留期、丢弃证明和查询权限 |
