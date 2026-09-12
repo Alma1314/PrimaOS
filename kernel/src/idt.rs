@@ -7,6 +7,8 @@ use core::arch::asm;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use crate::exc::SretFrame;
+
 /// IDT 条目（64-bit interrupt gate，16 字节）。
 ///
 /// x86-64 中断门描述符共 16 字节：offset_low(2) + selector(2) + ist(1) +
@@ -136,6 +138,13 @@ static FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 /// 记录最近一次 #PF 的 error code（初始 0）。由裸入口在弹出前写入、`last_fault_err` 读取。
 static FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
 
+/// 最近一次 #PF 的完整现场帧（初始全零）。
+///
+/// 由 `page_fault_entry` 裸入口在弹出 GPR 前写入，`fault_frame` 读取。以 `static
+/// mut` 而非原子：帧是 20×u64，单核 boot 早期写入与读取之间不会并发（与既有的
+/// `FAULT_ADDR`/`FAULT_ERROR` 同属"同一处理器上无竞争"的假设）。
+static mut FAULT_FRAME: SretFrame = SretFrame::ZERO;
+
 /// 触发 #PF 的故障指令长度（字节）。
 ///
 /// #PF 是 fault 类异常：CPU 把返回地址设为故障指令本身，iretq 后会用同一 rip
@@ -146,55 +155,123 @@ const FAULT_SKIP_LEN: u64 = 3;
 
 /// vector 14（page fault）入口（裸函数）。
 ///
-/// #PF 是带 error code 的 fault 类异常。naked 入口手动完成最小现场处理：
-/// 读 CR2 记录到 `FAULT_ADDR`、把返回地址前移 `FAULT_SKIP_LEN`（跳过触发指令，
-/// 避免 iretq 后重试同一故障指令而死循环）、弹出硬件压栈的 error code，再 iretq。
+/// #PF 是带 error code 的 fault 类异常。naked 入口完成两件事：
+/// 1. **完整现场捕获**：把全部 15 个 GPR、硬件压栈的 rip/cs/rflags、合成的原始
+///    rsp 与实时 ss 写入 `FAULT_FRAME`（供 `fault_frame` 读取与后续恢复验证）；
+/// 2. **最小继续**：把返回地址前移 `FAULT_SKIP_LEN`（跳过触发指令，避免 iretq 后
+///    重试同一故障指令而死循环）、弹出 error code，再 iretq，恢复全部 GPR。
+///
 /// 之所以不用 Rust 的 `extern "x86-interrupt"` 第二参（error code）ABI，是因为当前
 /// nightly 工具链（2026-07-30）对带 error code 的 x86-interrupt 函数在
 /// `x86_64-unknown-none` 上会误生成 16 字节对齐错误；裸入口自控寄存与栈更直接。
 ///
+/// 栈布局假设：进入时（CPL0、ist=0，无特权级切换）CPU 压入 `err, rip, cs, rflags`
+/// 四个 qword，`rsp` 指向 error code。入口再压 15 个 GPR（0x78 字节）后：
+/// `[rsp+0x00..0x70]` = 15 个 GPR（rax…r15），`[rsp+0x78]` err、`[rsp+0x80]` rip、
+/// `[rsp+0x88]` cs、`[rsp+0x90]` rflags；合成的原始 rsp = `rsp + 0x98`。
+///
 /// # Safety
 ///
 /// 该函数是 naked 的异常入口，只能由 CPU 在 #PF（vector 14）经 IDT 调用，不能
-/// 当作普通函数从 Rust 侧调用。其 naked 汇编硬编码触发了入口栈布局假设：进入时
-/// `rsp` 指向硬件压栈的 error code，且返回地址（rip/cs/rflags）在其上方 8/16/24
-/// 字节处；它会在 iretq 前弹出 error code 并把 rip 前移 `FAULT_SKIP_LEN`。任何
-/// 违反该进入约定的调用都是未定义行为。
+/// 当作普通函数从 Rust 侧调用。其 naked 汇编硬编码上述入口栈布局；任何违反该
+/// 进入约定的调用都是未定义行为。
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn page_fault_entry() -> ! {
     core::arch::naked_asm!(
-        // 保存将被使用的 callee-saved 寄存器（触发路径的现场不允许破坏）。
-        "push rbp",
-        "push rbx",
-        "push r12",
-        "push r13",
-        "push r14",
+        // 保存全部 15 个 GPR：压栈顺序使压出的块与 SretFrame 字段序对齐
+        // （rax 最后压、位于最低地址；rsp 槽由 lea 合成，不经压栈）。
         "push r15",
-        // 读 CR2 并写入 FAULT_ADDR（既有）。
-        "mov rax, cr2",
-        "lea rbx, [rip + {fault}]",
-        "mov qword ptr [rbx], rax",
-        // 保存硬件压栈的 error code：6 个 push 后位于 [rsp+48]，pop/弹栈前读取。
-        "lea rdi, [rip + {err}]",
-        "mov rsi, qword ptr [rsp + 48]",
-        "mov qword ptr [rdi], rsi",
-        // 返回地址前移 FAULT_SKIP_LEN，跳过故障指令。
-        // 栈（6 个 push 之后）：[0..47] 保存的寄存器；[48] error_code；
-        // [56] rip（故障指令）；[64] cs；[72] rflags。
-        "mov rax, qword ptr [rsp + 56]",
-        "add rax, {skip}",
-        "mov qword ptr [rsp + 56], rax",
-        // 恢复被保存的寄存器。
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        // 把压出的 GPR 块逐字段搬入 FAULT_FRAME。r11 作帧基址、r10 作暂存：
+        // 两者的原值都已在栈上（故可安全改写），且 rsp 从不作暂存。
+        "lea r11, [rip + {frame}]",
+        "mov r10, qword ptr [rsp + 0x00]",
+        "mov qword ptr [r11 + 0x00], r10", // rax
+        "mov r10, qword ptr [rsp + 0x08]",
+        "mov qword ptr [r11 + 0x08], r10", // rbx
+        "mov r10, qword ptr [rsp + 0x10]",
+        "mov qword ptr [r11 + 0x10], r10", // rcx
+        "mov r10, qword ptr [rsp + 0x18]",
+        "mov qword ptr [r11 + 0x18], r10", // rdx
+        "mov r10, qword ptr [rsp + 0x20]",
+        "mov qword ptr [r11 + 0x20], r10", // rsi
+        "mov r10, qword ptr [rsp + 0x28]",
+        "mov qword ptr [r11 + 0x28], r10", // rdi
+        "mov r10, qword ptr [rsp + 0x30]",
+        "mov qword ptr [r11 + 0x30], r10", // rbp
+        "lea r10, [rsp + 0x98]",
+        "mov qword ptr [r11 + 0x38], r10", // 合成的原始 rsp
+        "mov r10, qword ptr [rsp + 0x38]",
+        "mov qword ptr [r11 + 0x40], r10", // r8
+        "mov r10, qword ptr [rsp + 0x40]",
+        "mov qword ptr [r11 + 0x48], r10", // r9
+        "mov r10, qword ptr [rsp + 0x48]",
+        "mov qword ptr [r11 + 0x50], r10", // r10
+        "mov r10, qword ptr [rsp + 0x50]",
+        "mov qword ptr [r11 + 0x58], r10", // r11
+        "mov r10, qword ptr [rsp + 0x58]",
+        "mov qword ptr [r11 + 0x60], r10", // r12
+        "mov r10, qword ptr [rsp + 0x60]",
+        "mov qword ptr [r11 + 0x68], r10", // r13
+        "mov r10, qword ptr [rsp + 0x68]",
+        "mov qword ptr [r11 + 0x70], r10", // r14
+        "mov r10, qword ptr [rsp + 0x70]",
+        "mov qword ptr [r11 + 0x78], r10", // r15
+        "mov r10, qword ptr [rsp + 0x90]",
+        "mov qword ptr [r11 + 0x80], r10", // rflags
+        "mov r10, qword ptr [rsp + 0x80]",
+        "mov qword ptr [r11 + 0x88], r10", // rip（故障指令地址，稍后再前移）
+        "mov r10, qword ptr [rsp + 0x88]",
+        "mov qword ptr [r11 + 0x90], r10", // cs
+        // 实时 ss：`mov r16, Sreg` 高位不保证清零，故先 xor；64 位下 push ss 是 #UD。
+        "xor eax, eax",
+        "mov ax, ss",
+        "mov qword ptr [r11 + 0x98], rax", // ss
+        // 既有证据面：CR2 与 error code。
+        "mov r10, cr2",
+        "lea r11, [rip + {fault}]",
+        "mov qword ptr [r11], r10",
+        "mov r10, qword ptr [rsp + 0x78]",
+        "lea r11, [rip + {err}]",
+        "mov qword ptr [r11], r10",
+        // 返回地址前移 FAULT_SKIP_LEN（必须在捕获 rip 之后，顺序不可换）。
+        "mov r10, qword ptr [rsp + 0x80]",
+        "add r10, {skip}",
+        "mov qword ptr [rsp + 0x80], r10",
+        // 恢复全部 15 个 GPR（逆序），不清空现场。
+        "pop rax",
         "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
         "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
         // 弹出硬件压栈的 error code，使 rsp 指向 rip。
         "add rsp, 8",
         "iretq",
+        frame = sym FAULT_FRAME,
         fault = sym FAULT_ADDR,
         err = sym FAULT_ERROR,
         skip = const FAULT_SKIP_LEN,
@@ -209,6 +286,12 @@ pub fn fault_addr() -> u64 {
 /// 读取最近一次 #PF 的 error code（初始 0；CPU 压入为 64 位零扩展，低 32 位有效）。
 pub fn last_fault_err() -> u64 {
     FAULT_ERROR.load(Ordering::Relaxed)
+}
+
+/// 读取最近一次 #PF 捕获的完整现场帧（初始全零）。
+pub fn fault_frame() -> SretFrame {
+    // 单核 boot 早期，handler 与读取不会并发；用 addr_of 避免 `static_mut_refs`。
+    unsafe { core::ptr::read(core::ptr::addr_of!(FAULT_FRAME)) }
 }
 
 /// 触发一次读 `addr` 的 page fault：读该线性地址，若未映射则 #PF。
@@ -304,6 +387,11 @@ mod tests {
     fn last_fault_err_defaults_to_zero() {
         assert_eq!(FAULT_ERROR.load(Ordering::Relaxed), 0);
         assert_eq!(last_fault_err(), 0);
+    }
+
+    #[test]
+    fn fault_frame_defaults_to_zero() {
+        assert_eq!(fault_frame(), SretFrame::ZERO);
     }
 
     #[test]
