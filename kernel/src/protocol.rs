@@ -130,6 +130,31 @@ pub(crate) fn idt_error() {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 D：经真实 `iretq` 恢复进一帧后，从落点上报的恢复证据。
+///
+/// `sentinel`/`sentinel2` 是落点实际读回的 `r12`/`r13`；`resumed` 为两个哨兵均
+/// 匹配的布尔、`rsp_ok` 为栈已切到恢复栈顶、`flags_ok` 为 RFLAGS 车道恢复。
+pub(crate) fn exc_resume_ready(
+    sentinel: u64,
+    sentinel2: u64,
+    resumed: u32,
+    rsp_ok: u32,
+    flags_ok: u32,
+) {
+    write_prefix("exc_resume_ready", "ok");
+    serial::write_bytes(b"|data=sentinel=");
+    write_hex_u64(sentinel);
+    serial::write_bytes(b";sentinel2=");
+    write_hex_u64(sentinel2);
+    serial::write_bytes(b";resumed=");
+    write_u32(resumed);
+    serial::write_bytes(b";rsp_ok=");
+    write_u32(rsp_ok);
+    serial::write_bytes(b";flags_ok=");
+    write_u32(flags_ok);
+    serial::write_bytes(b"\r\n");
+}
+
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",

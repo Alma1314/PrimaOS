@@ -5,6 +5,7 @@
 mod config;
 mod protocol;
 mod qemu;
+mod resume;
 mod serial;
 
 use bootloader_api::{BootInfo, entry_point};
@@ -132,9 +133,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             qemu::exit(qemu::PANIC)
                                         }
                                     }
-                                    protocol::boot_complete();
-                                    serial::flush();
-                                    qemu::exit(qemu::SUCCESS)
+
+                                    // D：用捕获到的 #PF 现场帧构造一帧验证过的恢复帧，
+                                    // 经真实 `iretq` 跳入 resume_landing；此后不再返回
+                                    // 本路径，`boot_complete` 由恢复后的落点发出。
+                                    resume::run_and_exit();
                                 }
                                 Err(_) => {
                                     protocol::page_table_error();
