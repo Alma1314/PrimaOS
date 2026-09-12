@@ -435,7 +435,7 @@ LibOS 应拆成可独立测试的职责：
 | 能力 | 驱动因素 | 机制层应提供的原语（归属） | 对应规范锚点 | 验证的假说 | 优先级与现状 |
 |---|---|---|---|---|---|
 | 真实页帧分配与页表所有权打通 | COSIR 细化模型需推进到真实 CR3/自建页表 | 页帧分配器 + 页表生命周期（COSIR 细化层） | 边界清单 #5/#12；COSIR §20 | H3 | ★★★ 进行中（S1-X3；SPEC-032~038 模型分层收紧 + SPEC-043 真实内核在空闲 PML4 槽自建 4 级映射并见证翻译/TLB，仍未整体关闭） |
-| COW/page-fault → handler → exc_resume → TLB 端到端 | 验证对象能力能否表达写时复制（H1） | 既有 Exception/MemorySegment/exc_resume（机制层） | COSIR §12.8-12.10 | H1 硬证据 | ★★★ 进行中：内核侧机制已全部落地——#PF 捕获/验证式 exc_resume（SPEC-042）、自建页表/TLB 刷新（SPEC-043）、真实 COW 帧字节复制+换映射+重试（SPEC-044）；余 ring3 用户态 COW 协议与 Linux trace/COMPAT-TEST |
+| COW/page-fault → handler → exc_resume → TLB 端到端 | 验证对象能力能否表达写时复制（H1） | 既有 Exception/MemorySegment/exc_resume（机制层） | COSIR §12.8-12.10 | H1 硬证据 | ★★★ 进行中：内核侧机制全部落地——#PF 捕获/验证式 exc_resume（SPEC-042）、自建页表/TLB（SPEC-043）、真实 COW（SPEC-044），并已推进到 ring3 用户态写故障→内核 COW→回用户态重试（SPEC-045）；余完整 syscall ABI、多任务用户态协议与 Linux trace/COMPAT-TEST |
 | 首个 LibOS + POSIX 源码兼容冒烟 | 兑现 OS personality 可替换 | 用户态服务 + LibOS | §8.2 | H1/H4 | ★★☆ 未开始 |
 | 选择性撤销的完整撤销域语义 | Bootstrap 已超前落地子树撤销，缺语义定义 | Capability derive/drop（机制层） | §6.2 实现注记；COSIR §4.7 撤销边界 | H3 | ★★☆ 撤销域已定义（见 §6.2 实现注记、DOC-006），并发/跨节点（`InTransit`）传播语义待后续阶段 |
 | 用户态驱动 + MMIO/DMA 隔离 | 防越权攻击转化为资源 DoS | Device 原语真实化（机制层） | §10；COSIR §15；边界清单 #9-11 | H2 | ★★☆ 未开始 |
