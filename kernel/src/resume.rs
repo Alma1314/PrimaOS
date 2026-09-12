@@ -92,6 +92,17 @@ extern "C" fn after_resume() -> ! {
     qemu::exit(qemu::SUCCESS)
 }
 
+/// 切片 G：用户任务以 `int3` 从 CPL3 陷入内核时的收尾回调（由 `idt` 调用，不返回）。
+///
+/// 此时最近一次 #PF 的 error code 仍是用户写只读页的 `0x7`（P|W|US），据此构造
+/// [`kernel::user::UserWitness`]、发出 `user_cow_ready`，随后继续切片 D 的帧恢复见证。
+pub extern "C" fn user_trap_exit() -> ! {
+    let err = kernel::idt::last_fault_err();
+    let witness = kernel::user::witness(err);
+    protocol::user_cow_ready(&witness);
+    run_and_exit();
+}
+
 /// 构造并校验一帧恢复帧，然后真实 `iretq` 进去（不返回）。
 ///
 /// 帧的 RIP 指向 [`resume_landing`]、RSP 指向恢复栈顶、CS/SS 为内核选择子、

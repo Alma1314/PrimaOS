@@ -60,26 +60,36 @@ impl Idt {
         }
     }
 
-    /// 把 `handler` 装入第 `index` 号向量，selector 为内核代码段 RPL0（0x8）。
+    /// 把 `handler` 装入第 `index` 号向量，selector 为内核代码段 RPL0（0x8）、DPL0。
     pub fn set_handler(&mut self, index: u8, handler: HandlerFunc) {
         let h = handler as *const () as u64;
-        self.entries[index as usize] = Self::gate_entry(h);
+        self.entries[index as usize] = Self::gate_entry(h, 0);
+    }
+
+    /// 同 [`Idt::set_handler`]，但把门描述符 DPL 设为 3。
+    ///
+    /// 软件中断（如 `int3`）在 CPL3 调用时要求门 DPL ≥ CPL，否则 #GP；故用户态可触发
+    /// 的向量必须用 DPL3 门。CPL0 调用不受影响（DPL ≥ CPL 仍成立）。
+    pub fn set_handler_dpl3(&mut self, index: u8, handler: HandlerFunc) {
+        let h = handler as *const () as u64;
+        self.entries[index as usize] = Self::gate_entry(h, 3);
     }
 
     /// 直接把 `handler_addr` 装入第 `index` 号向量。用于注册非 `HandlerFunc`
     /// 形态的裸函数入口（如 #PF 的 `page_fault_entry`），它们由 CPU 经 IDT 直接
     /// 调用、自带手动现场处理与 iretq。
     pub fn set_handler_addr(&mut self, index: u8, handler_addr: u64) {
-        self.entries[index as usize] = Self::gate_entry(handler_addr);
+        self.entries[index as usize] = Self::gate_entry(handler_addr, 0);
     }
 
-    /// 构造一个指向 `handler_addr` 的 64-bit interrupt gate 条目。
-    fn gate_entry(handler_addr: u64) -> Entry {
+    /// 构造一个指向 `handler_addr` 的 64-bit interrupt gate 条目（DPL = `dpl`）。
+    fn gate_entry(handler_addr: u64, dpl: u8) -> Entry {
         Entry {
             offset_low: (handler_addr & 0xffff) as u16,
             selector: 0x8,
             ist: 0,
-            type_attr: 0x8e, // present | DPL0 | 64-bit interrupt gate
+            // present | DPL | 64-bit interrupt gate
+            type_attr: 0x8e | ((dpl & 3) << 5),
             offset_mid: ((handler_addr >> 16) & 0xffff) as u16,
             offset_high: (handler_addr >> 32) as u32,
             reserved: 0,
@@ -112,8 +122,27 @@ pub fn load_idt(idt: &Idt) -> Result<(), ()> {
 
 static TRAP_VECTOR_SEEN: AtomicU8 = AtomicU8::new(0);
 
-/// vector 3（breakpoint）handler —— 记录触发，返回后 iretq 回到 int3 之后。
+/// 切片 G：用户任务以 `int3` 从 CPL3 陷入时调用的收尾回调（由二进制 crate 注册）。
+///
+/// `breakpoint_handler` 位于 lib crate，无法访问 `protocol`/`qemu`；故经此函数指针把
+/// "用户任务完成"的收尾（发事件 + 退出 QEMU）委派给二进制 crate。为 0 时按普通 int3 处理。
+static USER_TRAP_HANDLER: AtomicU64 = AtomicU64::new(0);
+
+/// 注册用户 `int3` 收尾回调。回调不得返回。
+pub fn set_user_trap_handler(handler: extern "C" fn() -> !) {
+    USER_TRAP_HANDLER.store(handler as usize as u64, Ordering::Relaxed);
+}
+
+/// vector 3（breakpoint）handler。
+///
+/// 若已注册用户收尾回调（切片 G 进入用户态前注册），则调用它（不返回）；否则按普通
+/// int3 记录触发，返回后 iretq 回到 int3 之后。
 extern "x86-interrupt" fn breakpoint_handler(_frame: &mut InterruptStackFrame) {
+    let raw = USER_TRAP_HANDLER.load(Ordering::Relaxed);
+    if raw != 0 {
+        let handler: extern "C" fn() -> ! = unsafe { core::mem::transmute(raw as usize) };
+        handler();
+    }
     TRAP_VECTOR_SEEN.store(3, Ordering::Relaxed);
 }
 
@@ -137,6 +166,28 @@ static FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
 
 /// 记录最近一次 #PF 的 error code（初始 0）。由裸入口在弹出前写入、`last_fault_err` 读取。
 static FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
+
+/// 切片 G：最近一次来自 CPL3 的 #PF 的返回现场（特权切换时硬件压入的 5 个 qword）。
+///
+/// CPL3→CPL0 的 #PF 硬件压 6 个 qword（`err, rip, cs, rflags, rsp, ss`），入口据此重建
+/// iretq 帧以回到用户态。偏移与 CPL0 路径的前 4 项相同，故都用固定栈偏移读取。
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserFrame {
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+static mut USER_FRAME: UserFrame = UserFrame {
+    rip: 0,
+    cs: 0,
+    rflags: 0,
+    rsp: 0,
+    ss: 0,
+};
 
 /// 最近一次 #PF 的完整现场帧（初始全零）。
 ///
@@ -248,9 +299,56 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         "mov r10, qword ptr [rsp + 0x78]",
         "lea r11, [rip + {err}]",
         "mov qword ptr [r11], r10",
-        // 询问 Rust 分派器该回到哪个 RIP：默认 rip+FAULT_SKIP_LEN（跳过），
-        // COW 命中时返回原 rip 以重试。15 个 GPR 已全部存于栈上，故 call 可自由
-        // 破坏 caller-saved 寄存器；用 rbp 保存栈顶并对齐到 16 字节满足 SysV。
+        // 判定故障来源的 CPL：CS 位于 [rsp+0x88]（CPL0/CPL3 两条路径该偏移均成立）。
+        "mov r10, qword ptr [rsp + 0x88]",
+        "test r10, 3",
+        "jz 2f",
+        // ---- CPL3 路径：保存用户返回现场（含特权切换多压的 rsp/ss）----
+        "lea r11, [rip + {uframe}]",
+        "mov r10, qword ptr [rsp + 0x80]",
+        "mov qword ptr [r11 + 0x00], r10", // rip
+        "mov r10, qword ptr [rsp + 0x88]",
+        "mov qword ptr [r11 + 0x08], r10", // cs
+        "mov r10, qword ptr [rsp + 0x90]",
+        "mov qword ptr [r11 + 0x10], r10", // rflags
+        "mov r10, qword ptr [rsp + 0x98]",
+        "mov qword ptr [r11 + 0x18], r10", // rsp
+        "mov r10, qword ptr [rsp + 0xA0]",
+        "mov qword ptr [r11 + 0x20], r10", // ss
+        // 询问分派器返回的 RIP（默认跳过、COW 命中则重试）。
+        "lea rdi, [rip + {frame}]",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "call {dispatch}",
+        "mov rsp, rbp",
+        "lea r11, [rip + {uframe}]",
+        "mov qword ptr [r11 + 0x00], rax",
+        // 恢复全部 15 个 GPR（用户态现场），丢弃 6 qword 硬件帧，重建 iretq 帧。
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "add rsp, 48",
+        "lea r11, [rip + {uframe}]",
+        "push qword ptr [r11 + 0x20]", // ss
+        "push qword ptr [r11 + 0x18]", // rsp
+        "push qword ptr [r11 + 0x10]", // rflags
+        "push qword ptr [r11 + 0x08]", // cs
+        "push qword ptr [r11 + 0x00]", // rip
+        "iretq",
+        "2:",
+        // ---- CPL0 路径（原逻辑）----
         "lea rdi, [rip + {frame}]",
         "mov rbp, rsp",
         "and rsp, -16",
@@ -279,6 +377,7 @@ pub unsafe extern "C" fn page_fault_entry() -> ! {
         frame = sym FAULT_FRAME,
         fault = sym FAULT_ADDR,
         err = sym FAULT_ERROR,
+        uframe = sym USER_FRAME,
         dispatch = sym crate::cow::dispatch,
     )
 }
@@ -343,7 +442,8 @@ pub fn init_idt() -> Result<(), ()> {
     }
     let rt_mut = core::ptr::addr_of_mut!(IDT_ITEM);
     unsafe {
-        (*rt_mut).set_handler(3, breakpoint_handler);
+        // vector 3 用 DPL3 门：切片 G 的用户任务在 CPL3 执行 `int3` 陷入内核。
+        (*rt_mut).set_handler_dpl3(3, breakpoint_handler);
         // #PF 用裸入口（自带现场处理与 iretq）。
         let entry_addr = page_fault_entry as *const () as u64;
         (*rt_mut).set_handler_addr(14, entry_addr);
@@ -401,6 +501,19 @@ mod tests {
         assert_eq!(e.selector, 0x8);
         assert_eq!(e.ist, 0);
         assert_eq!(e.type_attr, 0x8e);
+    }
+
+    #[test]
+    fn set_handler_dpl3_sets_gate_dpl() {
+        let mut idt = Idt::new();
+        idt.set_handler_dpl3(3, breakpoint_handler);
+        let e = idt.entries[3];
+        // present | DPL3 | 64-bit interrupt gate = 0xee
+        assert_eq!(e.type_attr, 0xee);
+        // 其余 DPL0 门不受影响。
+        let mut idt2 = Idt::new();
+        idt2.set_handler(3, breakpoint_handler);
+        assert_eq!(idt2.entries[3].type_attr, 0x8e);
     }
 
     #[test]

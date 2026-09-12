@@ -11,4 +11,5 @@ pub mod gdt;
 pub mod idt;
 pub mod mem;
 pub(crate) mod safety;
+pub mod user;
 pub mod vspace;

@@ -78,9 +78,38 @@ struct CowContext {
     shared: u64,
     private: u64,
     copied: bool,
+    /// 可选注册的第二个 COW 区域（切片 G 的用户页 X）。`user=true` 时换映射需保留 U/S 位。
+    user_va: u64,
+    user_shared: u64,
+    user_private: u64,
+    user_copied: bool,
 }
 
 static mut COW_CTX: Option<CowContext> = None;
+
+/// 从 COW 上下文的**唯一**分配器取一帧。切片 G 的页表页与私有帧都经此分配，避免多份
+/// `FreeFrameAllocator` 副本各自推进 `next` 而重复发放同一物理帧。
+pub fn alloc_frame() -> Option<u64> {
+    unsafe {
+        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
+        (*ctx_ptr)
+            .as_mut()
+            .and_then(|ctx| ctx.alloc.allocate().ok())
+    }
+}
+
+/// 注册第二个 COW 区域（用户页）：写它时同样执行复制 + 换映射 + 重试。
+pub fn register_user_region(va: u64, shared: u64) {
+    unsafe {
+        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
+        if let Some(ctx) = (*ctx_ptr).as_mut() {
+            ctx.user_va = va;
+            ctx.user_shared = shared;
+            ctx.user_private = 0;
+            ctx.user_copied = false;
+        }
+    }
+}
 
 fn read_qword(va: u64) -> u64 {
     unsafe { core::ptr::read_volatile(va as *const u64) }
@@ -130,16 +159,50 @@ pub fn prepare(
             shared,
             private: 0,
             copied: false,
+            user_va: 0,
+            user_shared: 0,
+            user_private: 0,
+            user_copied: false,
         });
     }
     Ok(())
 }
 
+/// 对某个已注册 COW 区域执行一次复制 + 换映射；成功返回 `true`。
+///
+/// `user` 决定换映射后是否保留 U/S 位（用户页需要）。
+fn cow_region(
+    root_phys: u64,
+    offset: u64,
+    alloc: &mut FreeFrameAllocator,
+    va: u64,
+    shared: u64,
+    user: bool,
+) -> Option<u64> {
+    let private = alloc.allocate().ok()?;
+
+    // 逐字节（qword）复制共享帧内容到私有帧（POD read/write 形态，不依赖 rep movs）。
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let src = map(shared);
+    let dst = map(private);
+    for index in 0..PATTERN_WORDS {
+        write_qword(
+            dst + (index as u64) * 8,
+            read_qword(src + (index as u64) * 8),
+        );
+    }
+
+    // 换映射为可写并刷新，使重试的原故障指令成功。
+    vspace::set_leaf(root_phys, va, map, private, true, user).ok()?;
+    unsafe { vspace::invlpg(va) };
+    Some(private)
+}
+
 /// #PF 分派器：由 `page_fault_entry` 在捕获现场后调用，返回 iretq 应恢复到的 RIP。
 ///
-/// 默认跳过故障指令（`rip + FAULT_SKIP_LEN`）。仅当这是首次对 [`COW_VA`] 的
-/// `present∧write` 写故障时，执行真正的 COW（分配 + 逐字节复制 + 换映射 + `invlpg`）
-/// 并返回原 `rip` 以重试。
+/// 默认跳过故障指令（`rip + FAULT_SKIP_LEN`）。命中已注册 COW 区域（内核 [`COW_VA`] 或
+/// 用户页 [`crate::user::USER_X_VA`]）的首次写故障时，执行复制 + 换映射 + `invlpg` 并
+/// 返回原 `rip` 以**重试**。
 ///
 /// # Safety
 ///
@@ -150,38 +213,32 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
         let Some(ctx) = (*ctx_ptr).as_mut() else {
             return frame.rip + crate::idt::FAULT_SKIP_LEN;
         };
-        let (root_phys, offset, shared, copied) =
-            (ctx.root_phys, ctx.offset, ctx.shared, ctx.copied);
         let cr2 = crate::idt::fault_addr();
         let err = crate::idt::last_fault_err();
-        if copied || cr2 != COW_VA || err != 0x3 {
+        let write = err & 0x2 != 0;
+        if !write {
             return frame.rip + crate::idt::FAULT_SKIP_LEN;
         }
+        let (root_phys, offset) = (ctx.root_phys, ctx.offset);
 
-        let Ok(private) = ctx.alloc.allocate() else {
-            return frame.rip + crate::idt::FAULT_SKIP_LEN;
-        };
-
-        // 逐字节（qword）复制共享帧内容到私有帧（POD read/write 形态，不依赖 rep movs）。
-        let map = |phys: u64| phys_to_virt(phys, offset);
-        let src = map(shared);
-        let dst = map(private);
-        for index in 0..PATTERN_WORDS {
-            write_qword(
-                dst + (index as u64) * 8,
-                read_qword(src + (index as u64) * 8),
-            );
+        if !ctx.copied && cr2 == COW_VA {
+            if let Some(private) =
+                cow_region(root_phys, offset, &mut ctx.alloc, COW_VA, ctx.shared, false)
+            {
+                ctx.private = private;
+                ctx.copied = true;
+                return frame.rip;
+            }
+        } else if !ctx.user_copied && ctx.user_va != 0 && cr2 == ctx.user_va {
+            let shared = ctx.user_shared;
+            let va = ctx.user_va;
+            if let Some(private) = cow_region(root_phys, offset, &mut ctx.alloc, va, shared, true) {
+                ctx.user_private = private;
+                ctx.user_copied = true;
+                return frame.rip;
+            }
         }
-
-        // 换映射为可写并刷新，然后重试原故障指令。
-        if vspace::set_leaf(root_phys, COW_VA, map, private, true, false).is_err() {
-            return frame.rip + crate::idt::FAULT_SKIP_LEN;
-        }
-        vspace::invlpg(COW_VA);
-
-        ctx.private = private;
-        ctx.copied = true;
-        frame.rip
+        frame.rip + crate::idt::FAULT_SKIP_LEN
     }
 }
 

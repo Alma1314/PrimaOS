@@ -165,10 +165,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         }
                                     }
 
-                                    // D：用捕获到的 #PF 现场帧构造一帧验证过的恢复帧，
-                                    // 经真实 `iretq` 跳入 resume_landing；此后不再返回
-                                    // 本路径，`boot_complete` 由恢复后的落点发出。
-                                    resume::run_and_exit();
+                                    // G：最小 ring3 用户任务 —— 进入 CPL3 执行用户代码，
+                                    // 写只读用户页触发真实用户态 #PF，内核 COW 后重试成功，
+                                    // 用户代码以 int3 陷入内核 → user_trap_exit 收尾（随后
+                                    // 继续 D 的帧恢复见证并 boot_complete）。
+                                    kernel::idt::set_user_trap_handler(resume::user_trap_exit);
+                                    if kernel::user::prepare(pml4_phys, offset).is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
+                                    kernel::user::enter();
                                 }
                                 Err(_) => {
                                     protocol::page_table_error();

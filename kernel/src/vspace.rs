@@ -108,6 +108,10 @@ pub fn map_4k(
         *slot = alloc().ok_or(VspaceError::NoFrame)?;
     }
 
+    // 中间层同样需要 U/S 位：CPL3 必须能穿越每一级；否则用户访问会在中间层被判为
+    // supervisor-only 而保护性 #PF（取指时表现为 P=1,US=1,ID=1）。
+    let intermediate = table_flags() | if user { PT_USER } else { 0 };
+
     let idx = indices(va);
     let mut table = root_phys;
     let mut fresh_iter = fresh[..needed].iter();
@@ -117,9 +121,13 @@ pub fn map_4k(
         if entry & PT_PRESENT == 0 {
             let frame = *fresh_iter.next().expect("count_missing matched alloc");
             zero_table(map(frame));
-            write_raw(entry_addr, frame | table_flags());
+            write_raw(entry_addr, frame | intermediate);
             table = frame;
         } else {
+            // 已存在的中间项可能是 supervisor-only（如切片 E 建的），补上 U/S。
+            if user && entry & PT_USER == 0 {
+                write_raw(entry_addr, entry | PT_USER);
+            }
             table = entry & PT_ADDR_MASK;
         }
     }

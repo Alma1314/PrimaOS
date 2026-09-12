@@ -119,10 +119,8 @@ fn build_gdt_bytes(gdt: &mut Gdt, tss: &Tss) {
     gdt.bytes[0..16].copy_from_slice(&Descriptor::null().0);
     gdt.bytes[CODE_OFF..CODE_OFF + 8].copy_from_slice(&Descriptor::kernel_code().0[..8]);
     gdt.bytes[DATA_OFF..DATA_OFF + 8].copy_from_slice(&Descriptor::kernel_data().0[..8]);
-    gdt.bytes[USER_DATA_OFF..USER_DATA_OFF + 8]
-        .copy_from_slice(&Descriptor::user_data().0[..8]);
-    gdt.bytes[USER_CODE_OFF..USER_CODE_OFF + 8]
-        .copy_from_slice(&Descriptor::user_code().0[..8]);
+    gdt.bytes[USER_DATA_OFF..USER_DATA_OFF + 8].copy_from_slice(&Descriptor::user_data().0[..8]);
+    gdt.bytes[USER_CODE_OFF..USER_CODE_OFF + 8].copy_from_slice(&Descriptor::user_code().0[..8]);
     // install_tss_desc 无 asm，可（也应）在这里调用；其 Result 实际从不 Err，故吞掉。
     let _ = install_tss_desc(gdt, tss);
 }
