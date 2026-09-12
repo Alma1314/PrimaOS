@@ -53,17 +53,17 @@ fn stack_bounds() -> (u64, u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn resume_landing() -> ! {
     core::arch::naked_asm!(
+        // 先捕获落点实测值，再做任何调用（调用会破坏 RFLAGS）。
+        "pushfq",
+        "pop r10",
+        "lea r11, [rip + {sflags}]",
+        "mov qword ptr [r11], r10",
         "lea r10, [rip + {s12}]",
         "mov qword ptr [r10], r12",
         "lea r10, [rip + {s13}]",
         "mov qword ptr [r10], r13",
         "lea r10, [rip + {srsp}]",
         "mov qword ptr [r10], rsp",
-        // 读回 RFLAGS（pushfq/pop 不破坏约定；此处尚未进入 Rust 函数）。
-        "pushfq",
-        "pop r10",
-        "lea r11, [rip + {sflags}]",
-        "mov qword ptr [r11], r10",
         "call {after}",
         s12 = sym SEEN_R12,
         s13 = sym SEEN_R13,

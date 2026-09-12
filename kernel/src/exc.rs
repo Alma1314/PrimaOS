@@ -248,18 +248,23 @@ pub fn validate_for_kernel_resume(
 /// `exc_resume_entry` 读取的恢复帧指针（由 [`resume`] 在跳转前写入）。
 static RESUME_FRAME_PTR: AtomicU64 = AtomicU64::new(0);
 
-/// 经真实 `iretq` 恢复进一帧：把栈切到帧内 `rsp`，压入 `rflags/cs/rip`，加载
-/// 除 `rsp` 外的全部 GPR，再 `iretq`。
+/// 经真实 `iretq` 恢复进一帧：压入完整 64 位 `iretq` 帧
+/// （`ss, rsp, rflags, cs, rip`），加载除 `rsp` 外的全部 GPR，再 `iretq`。
 ///
 /// 调用前必须已用 [`validate_for_kernel_resume`] 校验该帧；本函数自身不做校验
-/// （纯跳板，保持 naked 与最小）。同 CPL 下 `iretq` 只弹出 `rip/cs/rflags`（不加载
-/// SS/RSP），故 `iretq` 后 `rsp` 恰好等于 `frame.rsp`。
+/// （纯跳板，保持 naked 与最小）。
+///
+/// **64 位 `iretq` 语义（本实现的关键约束）：** x86-64 下 `iretq` 无条件弹出 5 元
+/// 帧 `RIP/CS/RFLAGS/RSP/SS`（不像 legacy 模式那样按特权级差异决定是否弹 SS:RSP），
+/// `RSP` 由帧内值决定、无需预先切栈。这正是本跳板与切片 C "只处理 error code 后
+/// iretq" 的根本区别：它能真正恢复一个完整上下文。
 ///
 /// # Safety
 ///
 /// 调用者必须保证 `frame` 指向的 `SretFrame` 在整个跳转期间有效、已通过
-/// [`validate_for_kernel_resume`]、且 `frame.rsp` 指向一块可写的 canonical 栈。
-/// 该函数不返回：控制权转移至 `frame.rip`。
+/// [`validate_for_kernel_resume`]、且 `frame.rsp` 指向一块可写的 canonical 栈、
+/// `frame.cs`/`frame.ss` 是当前 GDT 中合法的内核选择子。该函数不返回：控制权
+/// 转移至 `frame.rip`。
 pub unsafe fn resume(frame: &SretFrame) -> ! {
     unsafe {
         RESUME_FRAME_PTR.store(frame as *const SretFrame as u64, Ordering::Relaxed);
@@ -270,8 +275,8 @@ pub unsafe fn resume(frame: &SretFrame) -> ! {
 /// 恢复跳板的裸入口：见 [`resume`] 的语义与安全约定。
 ///
 /// 由于本 nightly 上裸函数的参数 ABI 不可靠，帧指针经 `RESUME_FRAME_PTR` 静态传递。
-/// 寄存器纪律：`r10` 作帧基址，直到最后一步才加载自身；`rsp` 在压入 iretq 三件套
-/// 前切走，之后不再作基址。
+/// 寄存器纪律：`r10` 作帧基址，直到最后一步才加载自身；压栈只用当前（boot）栈，
+/// 新 `rsp` 由 iret 帧内的值决定。
 ///
 /// # Safety
 ///
@@ -283,9 +288,10 @@ pub unsafe extern "C" fn exc_resume_entry() -> ! {
     core::arch::naked_asm!(
         "lea r10, [rip + {ptr}]",
         "mov r10, qword ptr [r10]",
-        // 切栈：之后帧基址仍在 r10。
-        "mov rsp, qword ptr [r10 + 0x38]",
-        // iretq 三件套：rflags 先压（最高地址），rip 最后压（最先弹）。
+        // 压入完整 64 位 iret 帧：ss 先压（最高地址）、rip 最后压（最先弹）。
+        // 弹出顺序 RIP/CS/RFLAGS/RSP/SS —— 与 SretFrame 的 0x88/0x90/0x80/0x38/0x98 对应。
+        "push qword ptr [r10 + 0x98]",
+        "push qword ptr [r10 + 0x38]",
         "push qword ptr [r10 + 0x80]",
         "push qword ptr [r10 + 0x90]",
         "push qword ptr [r10 + 0x88]",
