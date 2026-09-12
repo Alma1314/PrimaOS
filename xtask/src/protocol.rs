@@ -11,6 +11,7 @@ enum EventKind {
     BootstrapReady,
     VspaceReady,
     CowReady,
+    UserCowReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -44,6 +45,13 @@ fn cow_pattern(index: u64) -> u64 {
     0xC0FF_EE00_0000_0000 | index
 }
 
+/// 切片 G：ring3 用户任务的镜像常量，与 `kernel/src/user.rs` 一致（跨 crate 需人工同步）。
+const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
+const USER_X_VA: u64 = USER_BASE_VA + 0x2000;
+const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
+/// #PF error code 的 US 位（bit 2）：置位表示故障来自 CPL3。
+const PF_US: u64 = 1 << 2;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -51,7 +59,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 13] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 14] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -63,8 +71,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 13] = [
     (9, EventKind::BootstrapReady),
     (10, EventKind::VspaceReady),
     (11, EventKind::CowReady),
-    (12, EventKind::ExcResumeReady),
-    (13, EventKind::BootComplete),
+    (12, EventKind::UserCowReady),
+    (13, EventKind::ExcResumeReady),
+    (14, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -187,11 +196,96 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_cow_data(cow.data.as_deref())?;
     }
 
+    if let Some(user_cow) = events
+        .iter()
+        .find(|event| event.kind == EventKind::UserCowReady)
+    {
+        validate_user_cow_data(user_cow.data.as_deref())?;
+    }
+
     if let Some(resume) = events
         .iter()
         .find(|event| event.kind == EventKind::ExcResumeReady)
     {
         validate_exc_resume_data(resume.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 校验切片 G 的用户态 COW 证据：故障来自 CPL3（US 位）、共享帧未被改、整页已复制、
+/// 重试成功、用户代码跑到 int3 写入回执。
+fn validate_user_cow_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "user_cow_ready event is missing its data field".to_owned())?;
+    let mut va = None;
+    let mut err = None;
+    let mut class = None;
+    let mut shared0 = None;
+    let mut private0 = None;
+    let mut private1 = None;
+    let mut receipt = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "va" => va = Some(parse_addr(value)?),
+            "err" => err = Some(parse_addr(value)?),
+            "class" => class = Some(value.to_owned()),
+            "shared0" => shared0 = Some(parse_addr(value)?),
+            "private0" => private0 = Some(parse_addr(value)?),
+            "private1" => private1 = Some(parse_addr(value)?),
+            "receipt" => receipt = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let va = va.ok_or_else(|| "missing va in user_cow_ready data".to_owned())?;
+    let err = err.ok_or_else(|| "missing err in user_cow_ready data".to_owned())?;
+    let class = class.ok_or_else(|| "missing class in user_cow_ready data".to_owned())?;
+    let shared0 = shared0.ok_or_else(|| "missing shared0 in user_cow_ready data".to_owned())?;
+    let private0 = private0.ok_or_else(|| "missing private0 in user_cow_ready data".to_owned())?;
+    let private1 = private1.ok_or_else(|| "missing private1 in user_cow_ready data".to_owned())?;
+    let receipt = receipt.ok_or_else(|| "missing receipt in user_cow_ready data".to_owned())?;
+    if va != USER_X_VA {
+        return Err(format!(
+            "user_cow_ready va (0x{va:x}) must equal user page 0x{USER_X_VA:x}"
+        ));
+    }
+    if err & PF_US == 0 {
+        return Err(format!(
+            "user_cow_ready err (0x{err:x}) must have the US bit set — the fault must originate from CPL3"
+        ));
+    }
+    if err & 0x3 != 0x3 {
+        return Err(format!(
+            "user_cow_ready err must be present|write (0x3 low bits) for a user read-only write, got 0x{err:x}"
+        ));
+    }
+    if class != "write_protection" {
+        return Err(format!(
+            "user_cow_ready class must be write_protection, got {class}"
+        ));
+    }
+    if shared0 != cow_pattern(0) {
+        return Err(format!(
+            "user_cow_ready shared0 (0x{shared0:x}) must be unchanged 0x{:x} — copy-on-write must not modify the shared frame",
+            cow_pattern(0)
+        ));
+    }
+    if private0 != USER_STORE_VALUE {
+        return Err(format!(
+            "user_cow_ready private0 (0x{private0:x}) must equal 0x{USER_STORE_VALUE:x} — the retried user store must have executed"
+        ));
+    }
+    if private1 != cow_pattern(1) {
+        return Err(format!(
+            "user_cow_ready private1 (0x{private1:x}) must equal 0x{:x} — user frame bytes not fully copied",
+            cow_pattern(1)
+        ));
+    }
+    if receipt != USER_STORE_VALUE {
+        return Err(format!(
+            "user_cow_ready receipt (0x{receipt:x}) must equal 0x{USER_STORE_VALUE:x} — user code did not reach its receipt store / int3"
+        ));
     }
     Ok(())
 }
@@ -719,6 +813,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
         ("vspace_ready", "ok") => EventKind::VspaceReady,
         ("cow_ready", "ok") => EventKind::CowReady,
+        ("user_cow_ready", "ok") => EventKind::UserCowReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -741,6 +836,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::BootstrapReady
             | EventKind::VspaceReady
             | EventKind::CowReady
+            | EventKind::UserCowReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -756,6 +852,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::BootstrapReady
             | EventKind::VspaceReady
             | EventKind::CowReady
+            | EventKind::UserCowReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -789,8 +886,9 @@ mod tests {
         "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
-        "PRIMA|v=1|seq=12|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=13|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
+        "PRIMA|v=1|seq=13|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=14|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1298,6 +1396,57 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must equal COW_VA"), "{error}");
+    }
+
+    /// 切片 G 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const USER_COW_DATA: &str = "va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef";
+
+    #[test]
+    fn rejects_user_cow_not_from_cpl3() {
+        // 去掉 US 位（0x3）⇒ 故障并非来自 CPL3，不能作为用户态递送证据。
+        let output = VALID.replace(USER_COW_DATA, &USER_COW_DATA.replace("err=0x7", "err=0x3"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("US bit"), "{error}");
+    }
+
+    #[test]
+    fn rejects_user_cow_shared_modified() {
+        let output = VALID.replace(
+            USER_COW_DATA,
+            &USER_COW_DATA.replace("shared0=0xc0ffee0000000000", "shared0=0x5a5a1234deadbeef"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("shared0"), "{error}");
+    }
+
+    #[test]
+    fn rejects_user_cow_failed_retry() {
+        let output = VALID.replace(
+            USER_COW_DATA,
+            &USER_COW_DATA.replace("private0=0x5a5a1234deadbeef", "private0=0xc0ffee0000000000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("private0"), "{error}");
+    }
+
+    #[test]
+    fn rejects_user_cow_missing_receipt() {
+        let output = VALID.replace(
+            USER_COW_DATA,
+            &USER_COW_DATA.replace("receipt=0x5a5a1234deadbeef", "receipt=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipt"), "{error}");
+    }
+
+    #[test]
+    fn rejects_user_cow_wrong_va() {
+        let output = VALID.replace(
+            USER_COW_DATA,
+            &USER_COW_DATA.replace("va=0xa0000002000", "va=0xa0000000000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal user page"), "{error}");
     }
 
     #[test]
