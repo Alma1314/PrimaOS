@@ -37,6 +37,24 @@ impl Descriptor {
             0, 0, 0, 0, 0, 0, 0, 0,
         ])
     }
+    /// 用户代码段（DPL3、64 位、exec-read）。供 `iretq` 进入 CPL3。
+    const fn user_code() -> Self {
+        Descriptor([
+            0xff, 0xff, 0x00, 0x00, 0x00, //
+            0xfa, // access: present | DPL3 | non-system | exec-read
+            0x20, // flags: L=1 (64-bit code)
+            0x00, 0, 0, 0, 0, 0, 0, 0, 0,
+        ])
+    }
+    /// 用户数据段（DPL3、data-rw）。
+    const fn user_data() -> Self {
+        Descriptor([
+            0xff, 0xff, 0x00, 0x00, 0x00, //
+            0xf2, // access: present | DPL3 | non-system | data-rw
+            0x00, // flags = 0
+            0x00, 0, 0, 0, 0, 0, 0, 0, 0,
+        ])
+    }
     #[cfg(test)]
     fn as_bytes(&self) -> &[u8; 16] {
         &self.0
@@ -83,6 +101,16 @@ impl Tss {
 const CODE_OFF: usize = 8; // 槽 1: index*8 = 内核 code
 const DATA_OFF: usize = 16; // 槽 2: index*8 = 内核 data
 const TSS_OFF: usize = 24; // 槽 3: index*8 = TSS 系统描述符（占 16 字节，覆盖槽 3..4）
+/// 用户数据段（槽 5，选择子 0x2b）。
+pub const USER_DATA_OFF: usize = 40;
+/// 用户代码段（槽 6，选择子 0x33）。
+pub const USER_CODE_OFF: usize = 48;
+/// 用户代码段选择子（index 6<<3 | RPL3）。
+pub const USER_CS: u16 = (USER_CODE_OFF as u16) | 3;
+/// 用户数据段选择子（index 5<<3 | RPL3）。
+pub const USER_DS: u16 = (USER_DATA_OFF as u16) | 3;
+/// `lgdt` limit：覆盖到最后一个用户描述符槽末尾减 1。
+const GDT_LIMIT: u16 = (USER_CODE_OFF + 8 - 1) as u16;
 
 /// 装配 GDT 字节表（null/code/data/TSS），不含任何特权指令；供 host 单测。
 #[allow(clippy::result_unit_err)]
@@ -91,6 +119,10 @@ fn build_gdt_bytes(gdt: &mut Gdt, tss: &Tss) {
     gdt.bytes[0..16].copy_from_slice(&Descriptor::null().0);
     gdt.bytes[CODE_OFF..CODE_OFF + 8].copy_from_slice(&Descriptor::kernel_code().0[..8]);
     gdt.bytes[DATA_OFF..DATA_OFF + 8].copy_from_slice(&Descriptor::kernel_data().0[..8]);
+    gdt.bytes[USER_DATA_OFF..USER_DATA_OFF + 8]
+        .copy_from_slice(&Descriptor::user_data().0[..8]);
+    gdt.bytes[USER_CODE_OFF..USER_CODE_OFF + 8]
+        .copy_from_slice(&Descriptor::user_code().0[..8]);
     // install_tss_desc 无 asm，可（也应）在这里调用；其 Result 实际从不 Err，故吞掉。
     let _ = install_tss_desc(gdt, tss);
 }
@@ -104,8 +136,8 @@ fn build_gdt_bytes(gdt: &mut Gdt, tss: &Tss) {
 pub unsafe fn init(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
     build_gdt_bytes(gdt, tss);
 
-    // lgdt：limit 覆盖到 TSS 描述符末尾（16 字节系统描述符结束处，再 -1）。
-    let len = (TSS_OFF + 16) as u16 - 1;
+    // lgdt：limit 覆盖到最后一个用户描述符槽末尾（含 TSS 与其后的用户段）。
+    let len = GDT_LIMIT;
     let base = gdt.bytes.as_ptr() as u64;
     let mut gdtr = [0u8; 10];
     gdtr[0..2].copy_from_slice(&len.to_le_bytes());
@@ -269,11 +301,44 @@ mod tests {
     }
 
     #[test]
-    fn gdt_gdtr_limit_arithmetic() {
-        // GDTR limit 为字节表末尾再 -1：limit = (TSS_OFF + 16) - 1 = 39。
+    fn user_descriptor_layout() {
+        assert_eq!(Descriptor::user_code().as_bytes()[5], 0xfa); // DPL3 exec-read
+        assert_eq!(Descriptor::user_code().as_bytes()[6], 0x20); // L=1
+        assert_eq!(Descriptor::user_data().as_bytes()[5], 0xf2); // DPL3 data-rw
+        assert_eq!(Descriptor::user_data().as_bytes()[6], 0x00);
+    }
+
+    #[test]
+    fn gdt_layout_user_slots() {
         let mut g = Gdt::new();
         build_gdt_bytes(&mut g, &Tss::new(0));
-        assert_eq!((TSS_OFF + 16) as u16 - 1, 39);
+        assert_eq!(g.bytes[USER_DATA_OFF + 5], 0xf2);
+        assert_eq!(g.bytes[USER_CODE_OFF + 5], 0xfa);
+        assert_eq!(g.bytes[USER_CODE_OFF + 6], 0x20);
+    }
+
+    #[test]
+    fn user_selectors_are_slot_offset_plus_rpl3() {
+        assert_eq!(USER_DS, 0x2b); // 槽 5 (0x28) | RPL3
+        assert_eq!(USER_CS, 0x33); // 槽 6 (0x30) | RPL3
+    }
+
+    #[test]
+    fn gdt_capacity_covers_user_code_slot() {
+        // 用户代码槽末尾在 56，必须落在 64 字节容量内。
+        assert!(USER_CODE_OFF + 8 <= 64);
+    }
+
+    #[test]
+    fn gdt_gdtr_limit_covers_user_descriptors() {
+        // limit = 最后一个用户槽末尾 - 1 = 55，且不越过字节表容量。
+        let mut g = Gdt::new();
+        build_gdt_bytes(&mut g, &Tss::new(0));
+        assert_eq!(GDT_LIMIT, 55);
+        assert!((GDT_LIMIT as usize) < 64);
+        assert!(GDT_LIMIT as usize >= USER_CODE_OFF + 7);
+        // TSS 与用户数据槽不重叠（TSS 覆盖 24..40）。
+        assert_eq!(TSS_OFF + 16, USER_DATA_OFF);
     }
 
     #[test]
