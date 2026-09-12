@@ -9,6 +9,8 @@
 //! 内核代码段/数据段选择子，不做用户态投递、不检查 capability/subscription、
 //! 不实现抽象模型的 `Faulted → Ready`/`TaskResumed` audit 语义。
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 /// `SretFrame` 的字节长度（20 × u64）。
 pub const SRET_FRAME_LEN: usize = 0xA0;
 
@@ -241,6 +243,71 @@ pub fn validate_for_kernel_resume(
         return Err(KernelResumeError::BadRflags);
     }
     Ok(())
+}
+
+/// `exc_resume_entry` 读取的恢复帧指针（由 [`resume`] 在跳转前写入）。
+static RESUME_FRAME_PTR: AtomicU64 = AtomicU64::new(0);
+
+/// 经真实 `iretq` 恢复进一帧：把栈切到帧内 `rsp`，压入 `rflags/cs/rip`，加载
+/// 除 `rsp` 外的全部 GPR，再 `iretq`。
+///
+/// 调用前必须已用 [`validate_for_kernel_resume`] 校验该帧；本函数自身不做校验
+/// （纯跳板，保持 naked 与最小）。同 CPL 下 `iretq` 只弹出 `rip/cs/rflags`（不加载
+/// SS/RSP），故 `iretq` 后 `rsp` 恰好等于 `frame.rsp`。
+///
+/// # Safety
+///
+/// 调用者必须保证 `frame` 指向的 `SretFrame` 在整个跳转期间有效、已通过
+/// [`validate_for_kernel_resume`]、且 `frame.rsp` 指向一块可写的 canonical 栈。
+/// 该函数不返回：控制权转移至 `frame.rip`。
+pub unsafe fn resume(frame: &SretFrame) -> ! {
+    unsafe {
+        RESUME_FRAME_PTR.store(frame as *const SretFrame as u64, Ordering::Relaxed);
+        exc_resume_entry();
+    }
+}
+
+/// 恢复跳板的裸入口：见 [`resume`] 的语义与安全约定。
+///
+/// 由于本 nightly 上裸函数的参数 ABI 不可靠，帧指针经 `RESUME_FRAME_PTR` 静态传递。
+/// 寄存器纪律：`r10` 作帧基址，直到最后一步才加载自身；`rsp` 在压入 iretq 三件套
+/// 前切走，之后不再作基址。
+///
+/// # Safety
+///
+/// 只能经 [`resume`] 调用（由它写入 `RESUME_FRAME_PTR` 并保证帧有效且已校验）。
+/// 直接调用会让 `r10` 取自未初始化/陈旧的指针，导致 iretq 到任意地址。
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn exc_resume_entry() -> ! {
+    core::arch::naked_asm!(
+        "lea r10, [rip + {ptr}]",
+        "mov r10, qword ptr [r10]",
+        // 切栈：之后帧基址仍在 r10。
+        "mov rsp, qword ptr [r10 + 0x38]",
+        // iretq 三件套：rflags 先压（最高地址），rip 最后压（最先弹）。
+        "push qword ptr [r10 + 0x80]",
+        "push qword ptr [r10 + 0x90]",
+        "push qword ptr [r10 + 0x88]",
+        // 加载 GPR（跳过 rsp 槽 0x38；r10 最后加载）。
+        "mov rax, qword ptr [r10 + 0x00]",
+        "mov rbx, qword ptr [r10 + 0x08]",
+        "mov rcx, qword ptr [r10 + 0x10]",
+        "mov rdx, qword ptr [r10 + 0x18]",
+        "mov rsi, qword ptr [r10 + 0x20]",
+        "mov rdi, qword ptr [r10 + 0x28]",
+        "mov rbp, qword ptr [r10 + 0x30]",
+        "mov r8, qword ptr [r10 + 0x40]",
+        "mov r9, qword ptr [r10 + 0x48]",
+        "mov r11, qword ptr [r10 + 0x58]",
+        "mov r12, qword ptr [r10 + 0x60]",
+        "mov r13, qword ptr [r10 + 0x68]",
+        "mov r14, qword ptr [r10 + 0x70]",
+        "mov r15, qword ptr [r10 + 0x78]",
+        "mov r10, qword ptr [r10 + 0x50]",
+        "iretq",
+        ptr = sym RESUME_FRAME_PTR,
+    )
 }
 
 #[cfg(test)]
