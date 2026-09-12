@@ -130,6 +130,32 @@ pub(crate) fn idt_error() {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 E：自建映射见证（PTE 翻译 / 重映射 + invlpg / 真实写保护 #PF）。
+pub(crate) fn vspace_ready(witness: &kernel::vspace::Witness) {
+    write_prefix("vspace_ready", "ok");
+    serial::write_bytes(b"|data=va=");
+    write_hex_u64(witness.va);
+    serial::write_bytes(b";frame_a=");
+    write_hex_u64(witness.frame_a);
+    serial::write_bytes(b";frame_b=");
+    write_hex_u64(witness.frame_b);
+    serial::write_bytes(b";read_before=");
+    write_hex_u64(witness.read_before);
+    serial::write_bytes(b";stale_read=");
+    write_hex_u64(witness.stale_read);
+    serial::write_bytes(b";read_after=");
+    write_hex_u64(witness.read_after);
+    serial::write_bytes(b";translated=");
+    write_hex_u64(witness.translated);
+    serial::write_bytes(b";wp_addr=");
+    write_hex_u64(witness.wp_addr);
+    serial::write_bytes(b";wp_err=");
+    write_hex_u64(witness.wp_err);
+    serial::write_bytes(b";class=");
+    serial::write_bytes(kernel::fault::classify(witness.wp_err).as_str().as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 D：经真实 `iretq` 恢复进一帧后，从落点上报的恢复证据。
 ///
 /// `sentinel`/`sentinel2` 是落点实际读回的 `r12`/`r13`；`resumed` 为两个哨兵均

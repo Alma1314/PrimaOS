@@ -294,6 +294,21 @@ pub fn fault_frame() -> SretFrame {
     unsafe { core::ptr::read(core::ptr::addr_of!(FAULT_FRAME)) }
 }
 
+/// 触发一次写只读页的 page fault：向 `addr` 写入，若该页 present 但只读则 #PF。
+///
+/// 故障指令固定为 `mov qword ptr [rax], rax`（`48 89 00`，3 字节），与 handler 的
+/// `FAULT_SKIP_LEN` 成对。写故障的 error code 为 `P|W`（0x3），`fault::classify`
+/// 判为 `WriteProtection`。
+pub fn trigger_page_fault_write(addr: u64) {
+    unsafe {
+        core::arch::asm!(
+            "mov qword ptr [rax], rax",
+            inout("rax") addr => _,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
 /// 触发一次读 `addr` 的 page fault：读该线性地址，若未映射则 #PF。
 ///
 /// 故障指令固定为 `mov tmp, [addr]`（REX.W 8B，基址寻址，3 字节），与 handler

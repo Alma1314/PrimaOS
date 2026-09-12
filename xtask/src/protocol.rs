@@ -9,6 +9,7 @@ enum EventKind {
     TrapReady,
     PageFaultReady,
     BootstrapReady,
+    VspaceReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -27,6 +28,12 @@ const PROBE_FAULT_VA: u64 = 0x0000_0000_0004_0000;
 const RESUME_SENTINEL_A: u64 = 0x1234_5678_9abc_def0;
 const RESUME_SENTINEL_B: u64 = 0x0fed_cba9_8765_4321;
 
+/// 切片 E：自建映射见证的镜像常量，与 `kernel/src/vspace.rs` 的
+/// `VSPACE_VA`/`MAGIC_A`/`MAGIC_B` 一致（跨 crate 需人工同步）。
+const VSPACE_VA: u64 = 0x0000_0080_0000_0000;
+const MAGIC_A: u64 = 0xaaaa_0000_1111_2222;
+const MAGIC_B: u64 = 0xbbbb_0000_3333_4444;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -34,7 +41,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 11] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 12] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -44,8 +51,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 11] = [
     (7, EventKind::TrapReady),
     (8, EventKind::PageFaultReady),
     (9, EventKind::BootstrapReady),
-    (10, EventKind::ExcResumeReady),
-    (11, EventKind::BootComplete),
+    (10, EventKind::VspaceReady),
+    (11, EventKind::ExcResumeReady),
+    (12, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -154,11 +162,111 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_bootstrap_data(bootstrap.data.as_deref())?;
     }
 
+    if let Some(vspace) = events
+        .iter()
+        .find(|event| event.kind == EventKind::VspaceReady)
+    {
+        validate_vspace_data(vspace.data.as_deref())?;
+    }
+
     if let Some(resume) = events
         .iter()
         .find(|event| event.kind == EventKind::ExcResumeReady)
     {
         validate_exc_resume_data(resume.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 校验切片 E 的自建映射见证：PTE 翻译、重映射 + invlpg 刷新、真实写保护 #PF。
+fn validate_vspace_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "vspace_ready event is missing its data field".to_owned())?;
+    let mut va = None;
+    let mut frame_a = None;
+    let mut frame_b = None;
+    let mut read_before = None;
+    let mut stale_read = None;
+    let mut read_after = None;
+    let mut translated = None;
+    let mut wp_addr = None;
+    let mut wp_err = None;
+    let mut class = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "va" => va = Some(parse_addr(value)?),
+            "frame_a" => frame_a = Some(parse_addr(value)?),
+            "frame_b" => frame_b = Some(parse_addr(value)?),
+            "read_before" => read_before = Some(parse_addr(value)?),
+            "stale_read" => stale_read = Some(parse_addr(value)?),
+            "read_after" => read_after = Some(parse_addr(value)?),
+            "translated" => translated = Some(parse_addr(value)?),
+            "wp_addr" => wp_addr = Some(parse_addr(value)?),
+            "wp_err" => wp_err = Some(parse_addr(value)?),
+            "class" => class = Some(value.to_owned()),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let va = va.ok_or_else(|| "missing va in vspace_ready data".to_owned())?;
+    let frame_a = frame_a.ok_or_else(|| "missing frame_a in vspace_ready data".to_owned())?;
+    let frame_b = frame_b.ok_or_else(|| "missing frame_b in vspace_ready data".to_owned())?;
+    let read_before =
+        read_before.ok_or_else(|| "missing read_before in vspace_ready data".to_owned())?;
+    let stale_read =
+        stale_read.ok_or_else(|| "missing stale_read in vspace_ready data".to_owned())?;
+    let read_after =
+        read_after.ok_or_else(|| "missing read_after in vspace_ready data".to_owned())?;
+    let translated =
+        translated.ok_or_else(|| "missing translated in vspace_ready data".to_owned())?;
+    let wp_addr = wp_addr.ok_or_else(|| "missing wp_addr in vspace_ready data".to_owned())?;
+    let wp_err = wp_err.ok_or_else(|| "missing wp_err in vspace_ready data".to_owned())?;
+    let class = class.ok_or_else(|| "missing class in vspace_ready data".to_owned())?;
+    if va != VSPACE_VA {
+        return Err(format!(
+            "vspace_ready va (0x{va:x}) must equal self-built VA 0x{VSPACE_VA:x}"
+        ));
+    }
+    if frame_a == frame_b {
+        return Err(format!(
+            "vspace_ready frame_a and frame_b must be distinct frames, both 0x{frame_a:x}"
+        ));
+    }
+    if read_before != MAGIC_A {
+        return Err(format!(
+            "vspace_ready read_before (0x{read_before:x}) must equal MAGIC_A 0x{MAGIC_A:x} — PTE translation failed"
+        ));
+    }
+    if stale_read != MAGIC_A && stale_read != MAGIC_B {
+        return Err(format!(
+            "vspace_ready stale_read (0x{stale_read:x}) must be MAGIC_A 0x{MAGIC_A:x} (stale TLB) or MAGIC_B 0x{MAGIC_B:x} (already coherent)"
+        ));
+    }
+    if read_after != MAGIC_B {
+        return Err(format!(
+            "vspace_ready read_after (0x{read_after:x}) must equal MAGIC_B 0x{MAGIC_B:x} — remap + invlpg failed"
+        ));
+    }
+    if translated != frame_b {
+        return Err(format!(
+            "vspace_ready translated (0x{translated:x}) must equal frame_b 0x{frame_b:x}"
+        ));
+    }
+    if wp_addr != VSPACE_VA {
+        return Err(format!(
+            "vspace_ready wp_addr (0x{wp_addr:x}) must equal self-built VA 0x{VSPACE_VA:x}"
+        ));
+    }
+    if wp_err != 0x3 {
+        return Err(format!(
+            "vspace_ready wp_err must be 0x3 (present|write) for a read-only page write, got 0x{wp_err:x}"
+        ));
+    }
+    if class != "write_protection" {
+        return Err(format!(
+            "vspace_ready class must be write_protection, got {class}"
+        ));
     }
     Ok(())
 }
@@ -498,6 +606,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("trap_ready", "ok") => EventKind::TrapReady,
         ("page_fault_ready", "ok") => EventKind::PageFaultReady,
         ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
+        ("vspace_ready", "ok") => EventKind::VspaceReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -518,6 +627,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::TrapReady
             | EventKind::PageFaultReady
             | EventKind::BootstrapReady
+            | EventKind::VspaceReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -531,6 +641,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::TrapReady
             | EventKind::PageFaultReady
             | EventKind::BootstrapReady
+            | EventKind::VspaceReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -562,8 +673,9 @@ mod tests {
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
         "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
-        "PRIMA|v=1|seq=10|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=11|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
+        "PRIMA|v=1|seq=11|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=12|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -933,6 +1045,85 @@ mod tests {
     /// 切片 D 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
     const RESUME_DATA: &str =
         "sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1";
+
+    /// 切片 E 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const VSPACE_DATA: &str = "va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection";
+
+    #[test]
+    fn rejects_vspace_wrong_va() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace("va=0x8000000000", "va=0x8000001000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal self-built VA"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_wrong_read_after() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace(
+                "read_after=0xbbbb000033334444",
+                "read_after=0xaaaa000011112222",
+            ),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("read_after"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_bad_translation() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace(
+                "read_before=0xaaaa000011112222",
+                "read_before=0xDeadBeef00000000",
+            ),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("read_before"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_unknown_stale_value() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace("stale_read=0xaaaa000011112222", "stale_read=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("stale_read"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_translated_frame_mismatch() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace("translated=0x1000", "translated=0x2000"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("translated"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_wrong_wp_err() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace("wp_err=0x3", "wp_err=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("wp_err must be 0x3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_vspace_wrong_wp_class() {
+        let output = VALID.replace(
+            VSPACE_DATA,
+            &VSPACE_DATA.replace("class=write_protection", "class=not_present"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("class must be write_protection"), "{error}");
+    }
 
     #[test]
     fn rejects_exc_resume_wrong_sentinel() {

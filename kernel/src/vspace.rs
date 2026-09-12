@@ -32,6 +32,8 @@ pub enum VspaceError {
     NoFrame,
     /// 目标映射的中间层级不存在（`set_leaf`/`read_leaf` 只走已建好的路径）。
     BadRoot,
+    /// 演示用的 PML4 槽已被占用（拒绝覆盖 bootloader 已有映射）。
+    SlotOccupied,
 }
 
 /// 从虚拟地址取出 4 级索引 `[i4, i3, i2, i1]`。
@@ -175,6 +177,84 @@ pub unsafe fn invlpg(va: u64) {
     unsafe {
         asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
     }
+}
+
+/// 检查 `va` 所在的 PML4 槽是否空闲（未被 bootloader 占用）。
+pub fn slot_free(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> bool {
+    let idx = indices(va);
+    read_raw(map(root_phys) + (idx[0] as u64) * 8) & PT_PRESENT == 0
+}
+
+/// 一次自建映射见证的实测结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Witness {
+    pub va: u64,
+    pub frame_a: u64,
+    pub frame_b: u64,
+    /// 映射到 A 后经 VA 读回的值（应 [`MAGIC_A`]）：证明 PTE 驱动翻译。
+    pub read_before: u64,
+    /// 改叶指向 B、未刷新时经 VA 读回的值（信息：陈旧=真 TLB，亦可能 QEMU 已失效）。
+    pub stale_read: u64,
+    /// `invlpg` 后经 VA 读回的值（应 [`MAGIC_B`]）：证明真实页表更新 + TLB 刷新。
+    pub read_after: u64,
+    /// `cpu::translate` 对同一 VA 解析出的物理帧（应等于 `frame_b`）。
+    pub translated: u64,
+    /// 写只读页 #PF 的硬件 error code（应 0x3）。
+    pub wp_err: u64,
+    /// 写只读页 #PF 的 CR2（应等于 `va`）。
+    pub wp_addr: u64,
+}
+
+/// 在 `root_phys` 下运行一次自建映射见证（内核/QEMU 专用，host 不可执行）。
+///
+/// 步骤：分配 A/B 两帧并写入魔数 → 建 `VA→A` 映射并读回 → 改叶 `VA→B` 观察刷新
+/// 前后的读值 → `cpu::translate` 对账 → 改叶为只读并触发真实写保护 #PF。
+pub fn run_witness(
+    root_phys: u64,
+    offset: u64,
+    mut alloc: impl FnMut() -> Option<u64>,
+) -> Result<Witness, VspaceError> {
+    let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
+    if !slot_free(root_phys, VSPACE_VA, map) {
+        return Err(VspaceError::SlotOccupied);
+    }
+
+    let frame_a = alloc().ok_or(VspaceError::NoFrame)?;
+    let frame_b = alloc().ok_or(VspaceError::NoFrame)?;
+    zero_table(map(frame_a));
+    zero_table(map(frame_b));
+    write_raw(map(frame_a), MAGIC_A);
+    write_raw(map(frame_b), MAGIC_B);
+
+    map_4k(root_phys, VSPACE_VA, map, &mut alloc, frame_a, true)?;
+    unsafe { invlpg(VSPACE_VA) };
+    let read_before = read_raw(VSPACE_VA);
+
+    set_leaf(root_phys, VSPACE_VA, map, frame_b, true)?;
+    let stale_read = read_raw(VSPACE_VA); // 信息：刷新前
+    unsafe { invlpg(VSPACE_VA) };
+    let read_after = read_raw(VSPACE_VA);
+
+    let translated = crate::cpu::translate(map(root_phys), VSPACE_VA, map).unwrap_or(0);
+
+    // 只读叶 + 写 → 真实 `present∧write` #PF（classify → WriteProtection）。
+    set_leaf(root_phys, VSPACE_VA, map, frame_a, false)?;
+    unsafe { invlpg(VSPACE_VA) };
+    crate::idt::trigger_page_fault_write(VSPACE_VA);
+    let wp_err = crate::idt::last_fault_err();
+    let wp_addr = crate::idt::fault_addr();
+
+    Ok(Witness {
+        va: VSPACE_VA,
+        frame_a,
+        frame_b,
+        read_before,
+        stale_read,
+        read_after,
+        translated,
+        wp_err,
+        wp_addr,
+    })
 }
 
 #[cfg(test)]
