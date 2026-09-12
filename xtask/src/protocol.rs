@@ -9,6 +9,7 @@ enum EventKind {
     TrapReady,
     PageFaultReady,
     BootstrapReady,
+    ExcResumeReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -21,6 +22,11 @@ enum EventKind {
 /// 切片 C：#PF 捕获闭环的探测地址，与 `kernel/src/main.rs` 的 `PROBE_FAULT_VA` 一致。
 const PROBE_FAULT_VA: u64 = 0x0000_0000_0004_0000;
 
+/// 切片 D：恢复落点应读回的哨兵寄存器值，与 `kernel/src/exc.rs` 的
+/// `RESUME_SENTINEL_A`/`RESUME_SENTINEL_B` 镜像一致（跨 crate 常量需人工同步）。
+const RESUME_SENTINEL_A: u64 = 0x1234_5678_9abc_def0;
+const RESUME_SENTINEL_B: u64 = 0x0fed_cba9_8765_4321;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -28,7 +34,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 10] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 11] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -38,7 +44,8 @@ const EXPECTED_EVENTS: [(u32, EventKind); 10] = [
     (7, EventKind::TrapReady),
     (8, EventKind::PageFaultReady),
     (9, EventKind::BootstrapReady),
-    (10, EventKind::BootComplete),
+    (10, EventKind::ExcResumeReady),
+    (11, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -145,6 +152,68 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::BootstrapReady)
     {
         validate_bootstrap_data(bootstrap.data.as_deref())?;
+    }
+
+    if let Some(resume) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ExcResumeReady)
+    {
+        validate_exc_resume_data(resume.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 校验切片 D 的恢复证据：落点读回的哨兵必须等于已知常量，三条布尔车道均为 1。
+fn validate_exc_resume_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "exc_resume_ready event is missing its data field".to_owned())?;
+    let mut sentinel = None;
+    let mut sentinel2 = None;
+    let mut resumed = None;
+    let mut rsp_ok = None;
+    let mut flags_ok = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "sentinel" => sentinel = Some(parse_addr(value)?),
+            "sentinel2" => sentinel2 = Some(parse_addr(value)?),
+            "resumed" => resumed = Some(parse_count(value)?),
+            "rsp_ok" => rsp_ok = Some(parse_count(value)?),
+            "flags_ok" => flags_ok = Some(parse_count(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let sentinel =
+        sentinel.ok_or_else(|| "missing sentinel in exc_resume_ready data".to_owned())?;
+    let sentinel2 =
+        sentinel2.ok_or_else(|| "missing sentinel2 in exc_resume_ready data".to_owned())?;
+    let resumed = resumed.ok_or_else(|| "missing resumed in exc_resume_ready data".to_owned())?;
+    let rsp_ok = rsp_ok.ok_or_else(|| "missing rsp_ok in exc_resume_ready data".to_owned())?;
+    let flags_ok =
+        flags_ok.ok_or_else(|| "missing flags_ok in exc_resume_ready data".to_owned())?;
+    if sentinel != RESUME_SENTINEL_A {
+        return Err(format!(
+            "exc_resume_ready sentinel (0x{sentinel:x}) must equal 0x{RESUME_SENTINEL_A:x} — r12 was not restored"
+        ));
+    }
+    if sentinel2 != RESUME_SENTINEL_B {
+        return Err(format!(
+            "exc_resume_ready sentinel2 (0x{sentinel2:x}) must equal 0x{RESUME_SENTINEL_B:x} — r13 was not restored"
+        ));
+    }
+    if resumed != 1 {
+        return Err(format!("exc_resume_ready resumed must be 1, got {resumed}"));
+    }
+    if rsp_ok != 1 {
+        return Err(format!(
+            "exc_resume_ready rsp_ok must be 1 (stack switched to resume stack top), got {rsp_ok}"
+        ));
+    }
+    if flags_ok != 1 {
+        return Err(format!(
+            "exc_resume_ready flags_ok must be 1 (RFLAGS lane restored), got {flags_ok}"
+        ));
     }
     Ok(())
 }
@@ -429,6 +498,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("trap_ready", "ok") => EventKind::TrapReady,
         ("page_fault_ready", "ok") => EventKind::PageFaultReady,
         ("bootstrap_ready", "ok") => EventKind::BootstrapReady,
+        ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -447,7 +517,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PageTableReady
             | EventKind::TrapReady
             | EventKind::PageFaultReady
-            | EventKind::BootstrapReady,
+            | EventKind::BootstrapReady
+            | EventKind::ExcResumeReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -459,7 +530,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PageTableReady
             | EventKind::TrapReady
             | EventKind::PageFaultReady
-            | EventKind::BootstrapReady,
+            | EventKind::BootstrapReady
+            | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -490,7 +562,8 @@ mod tests {
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
         "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
-        "PRIMA|v=1|seq=10|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=10|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=11|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -852,6 +925,70 @@ mod tests {
         let output = VALID.replace(
             "|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present",
             "|event=page_fault_ready|status=ok",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("missing"), "{error}");
+    }
+
+    /// 切片 D 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const RESUME_DATA: &str =
+        "sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1";
+
+    #[test]
+    fn rejects_exc_resume_wrong_sentinel() {
+        let output = VALID.replace(
+            RESUME_DATA,
+            "sentinel=0x123456789abcdef1;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("sentinel"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_resume_wrong_sentinel2() {
+        let output = VALID.replace(
+            RESUME_DATA,
+            "sentinel=0x123456789abcdef0;sentinel2=0x0;resumed=1;rsp_ok=1;flags_ok=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("sentinel2"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_resume_not_resumed() {
+        let output = VALID.replace(
+            RESUME_DATA,
+            "sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=0;rsp_ok=1;flags_ok=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("resumed must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_resume_rsp_not_ok() {
+        let output = VALID.replace(
+            RESUME_DATA,
+            "sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=0;flags_ok=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("rsp_ok must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_resume_flags_not_ok() {
+        let output = VALID.replace(
+            RESUME_DATA,
+            "sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=0",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("flags_ok must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_resume_missing_data() {
+        let output = VALID.replace(
+            "|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1",
+            "|event=exc_resume_ready|status=ok",
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("missing"), "{error}");
