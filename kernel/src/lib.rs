@@ -10,3 +10,4 @@ pub mod gdt;
 pub mod idt;
 pub mod mem;
 pub(crate) mod safety;
+pub mod vspace;
