@@ -117,6 +117,7 @@ pub fn prepare(
         || alloc.allocate().ok(),
         shared,
         false,
+        false,
     )?;
     unsafe { vspace::invlpg(COW_VA) };
 
@@ -173,7 +174,7 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
         }
 
         // 换映射为可写并刷新，然后重试原故障指令。
-        if vspace::set_leaf(root_phys, COW_VA, map, private, true).is_err() {
+        if vspace::set_leaf(root_phys, COW_VA, map, private, true, false).is_err() {
             return frame.rip + crate::idt::FAULT_SKIP_LEN;
         }
         vspace::invlpg(COW_VA);

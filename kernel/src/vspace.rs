@@ -13,6 +13,9 @@ pub const PT_PRESENT: u64 = 1;
 /// PTE writable 位（bit 1）。
 pub const PT_WRITABLE: u64 = 1 << 1;
 
+/// PTE user 位（bit 2）：CPL3 可访问该页。
+pub const PT_USER: u64 = 1 << 2;
+
 /// PTE 物理地址掩码（bits 12..51）。
 pub const PT_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -46,9 +49,9 @@ pub const fn indices(va: u64) -> [usize; 4] {
     ]
 }
 
-/// 叶 PTE 标志（present + 可选 writable）。
-pub const fn pte_flags(writable: bool) -> u64 {
-    PT_PRESENT | if writable { PT_WRITABLE } else { 0 }
+/// 叶 PTE 标志（present + 可选 writable + 可选 user）。
+pub const fn pte_flags(writable: bool, user: bool) -> u64 {
+    PT_PRESENT | if writable { PT_WRITABLE } else { 0 } | if user { PT_USER } else { 0 }
 }
 
 /// 中间层页表项标志：present + writable（写只读叶的故障必须落在叶上）。
@@ -97,6 +100,7 @@ pub fn map_4k(
     mut alloc: impl FnMut() -> Option<u64>,
     frame_phys: u64,
     writable: bool,
+    user: bool,
 ) -> Result<(), VspaceError> {
     let needed = count_missing(root_phys, va, &map);
     let mut fresh = [0u64; 4];
@@ -121,7 +125,7 @@ pub fn map_4k(
     }
     write_raw(
         map(table) + (idx[3] as u64) * 8,
-        frame_phys | pte_flags(writable),
+        frame_phys | pte_flags(writable, user),
     );
     Ok(())
 }
@@ -133,12 +137,13 @@ pub fn set_leaf(
     map: impl Fn(u64) -> u64,
     frame_phys: u64,
     writable: bool,
+    user: bool,
 ) -> Result<(), VspaceError> {
     let table = walk_to_leaf_table(root_phys, va, &map)?;
     let idx = indices(va);
     write_raw(
         map(table) + (idx[3] as u64) * 8,
-        frame_phys | pte_flags(writable),
+        frame_phys | pte_flags(writable, user),
     );
     Ok(())
 }
@@ -226,11 +231,11 @@ pub fn run_witness(
     write_raw(map(frame_a), MAGIC_A);
     write_raw(map(frame_b), MAGIC_B);
 
-    map_4k(root_phys, VSPACE_VA, map, &mut alloc, frame_a, true)?;
+    map_4k(root_phys, VSPACE_VA, map, &mut alloc, frame_a, true, false)?;
     unsafe { invlpg(VSPACE_VA) };
     let read_before = read_raw(VSPACE_VA);
 
-    set_leaf(root_phys, VSPACE_VA, map, frame_b, true)?;
+    set_leaf(root_phys, VSPACE_VA, map, frame_b, true, false)?;
     let stale_read = read_raw(VSPACE_VA); // 信息：刷新前
     unsafe { invlpg(VSPACE_VA) };
     let read_after = read_raw(VSPACE_VA);
@@ -238,7 +243,7 @@ pub fn run_witness(
     let translated = crate::cpu::translate(map(root_phys), VSPACE_VA, map).unwrap_or(0);
 
     // 只读叶 + 写 → 真实 `present∧write` #PF（classify → WriteProtection）。
-    set_leaf(root_phys, VSPACE_VA, map, frame_a, false)?;
+    set_leaf(root_phys, VSPACE_VA, map, frame_a, false, false)?;
     unsafe { invlpg(VSPACE_VA) };
     crate::idt::trigger_page_fault_write(VSPACE_VA);
     let wp_err = crate::idt::last_fault_err();
@@ -296,8 +301,10 @@ mod tests {
 
     #[test]
     fn pte_flags_sets_present_and_writable() {
-        assert_eq!(pte_flags(true), PT_PRESENT | PT_WRITABLE);
-        assert_eq!(pte_flags(false), PT_PRESENT);
+        assert_eq!(pte_flags(true, false), PT_PRESENT | PT_WRITABLE);
+        assert_eq!(pte_flags(false, false), PT_PRESENT);
+        assert_eq!(pte_flags(true, true), PT_PRESENT | PT_WRITABLE | PT_USER);
+        assert_eq!(pte_flags(false, true), PT_PRESENT | PT_USER);
         assert_eq!(table_flags(), PT_PRESENT | PT_WRITABLE);
     }
 
@@ -314,11 +321,20 @@ mod tests {
         let root = pool.alloc().unwrap();
         let frame = pool.alloc().unwrap();
 
-        map_4k(root, VSPACE_VA, identity, || pool.alloc(), frame, true).unwrap();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            frame,
+            true,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             read_leaf(root, VSPACE_VA, identity).unwrap(),
-            frame | pte_flags(true)
+            frame | pte_flags(true, false)
         );
         // 逐级 present：PML4[1] -> PDPT -> PD -> PT
         let idx = indices(VSPACE_VA);
@@ -339,7 +355,16 @@ mod tests {
         let frame_a = pool.alloc().unwrap();
         let frame_b = pool.alloc().unwrap();
 
-        map_4k(root, VSPACE_VA, identity, || pool.alloc(), frame_a, true).unwrap();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            frame_a,
+            true,
+            false,
+        )
+        .unwrap();
         let pages_after_first = pool.pages.len();
         // 同一路径的第二条映射只改叶，不新建页表页。
         map_4k(
@@ -349,17 +374,18 @@ mod tests {
             || pool.alloc(),
             frame_b,
             true,
+            false,
         )
         .unwrap();
         assert_eq!(pool.pages.len(), pages_after_first);
 
         assert_eq!(
             read_leaf(root, VSPACE_VA, identity).unwrap(),
-            frame_a | pte_flags(true)
+            frame_a | pte_flags(true, false)
         );
         assert_eq!(
             read_leaf(root, VSPACE_VA + 0x1000, identity).unwrap(),
-            frame_b | pte_flags(true)
+            frame_b | pte_flags(true, false)
         );
     }
 
@@ -370,7 +396,7 @@ mod tests {
         let frame = pool.alloc().unwrap();
 
         // 空分配器：需要 4 个页表页，必然失败。
-        let result = map_4k(root, VSPACE_VA, identity, || None, frame, true);
+        let result = map_4k(root, VSPACE_VA, identity, || None, frame, true, false);
         assert_eq!(result, Err(VspaceError::NoFrame));
         // 未产生任何写入：PML4[1] 仍为 0。
         assert_eq!(read_raw(root + 8), 0);
@@ -382,11 +408,20 @@ mod tests {
         let root = pool.alloc().unwrap();
         let frame = pool.alloc().unwrap();
 
-        map_4k(root, VSPACE_VA, identity, || pool.alloc(), frame, true).unwrap();
-        set_leaf(root, VSPACE_VA, identity, frame, false).unwrap();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            frame,
+            true,
+            false,
+        )
+        .unwrap();
+        set_leaf(root, VSPACE_VA, identity, frame, false, false).unwrap();
         assert_eq!(
             read_leaf(root, VSPACE_VA, identity).unwrap(),
-            frame | pte_flags(false)
+            frame | pte_flags(false, false)
         );
         assert_eq!(
             read_leaf(root, VSPACE_VA, identity).unwrap() & PT_WRITABLE,
@@ -400,7 +435,7 @@ mod tests {
         let root = pool.alloc().unwrap();
         let frame = pool.alloc().unwrap();
         assert_eq!(
-            set_leaf(root, VSPACE_VA, identity, frame, true),
+            set_leaf(root, VSPACE_VA, identity, frame, true, false),
             Err(VspaceError::BadRoot)
         );
     }
