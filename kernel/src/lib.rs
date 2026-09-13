@@ -10,6 +10,8 @@ pub mod fault;
 pub mod gdt;
 pub mod idt;
 pub mod mem;
+pub mod msr;
 pub(crate) mod safety;
+pub mod syscall;
 pub mod user;
 pub mod vspace;

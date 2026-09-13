@@ -98,6 +98,16 @@ pub fn alloc_frame() -> Option<u64> {
     }
 }
 
+/// 返回 COW 上下文的 `(根页表物理地址, 物理直映射偏移)`（尚未 `prepare` 时为 `None`）。
+///
+/// 供 syscall 层在同一用户地址空间（bootloader CR3）上校验用户缓冲指针。
+pub fn root_and_offset() -> Option<(u64, u64)> {
+    unsafe {
+        let ctx_ptr = core::ptr::addr_of!(COW_CTX);
+        (*ctx_ptr).as_ref().map(|ctx| (ctx.root_phys, ctx.offset))
+    }
+}
+
 /// 注册第二个 COW 区域（用户页）：写它时同样执行复制 + 换映射 + 重试。
 pub fn register_user_region(va: u64, shared: u64) {
     unsafe {

@@ -100,6 +100,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     let err = kernel::idt::last_fault_err();
     let witness = kernel::user::witness(err);
     protocol::user_cow_ready(&witness);
+    // 切片 H：用户代码在 COW 之后还完成了两次 `int 0x80`（合法回显 + 非法号拒绝）。
+    let syscall = kernel::syscall::witness();
+    protocol::syscall_ready(&syscall);
     run_and_exit();
 }
 

@@ -12,6 +12,7 @@ enum EventKind {
     VspaceReady,
     CowReady,
     UserCowReady,
+    SyscallReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -52,6 +53,21 @@ const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 /// #PF error code 的 US 位（bit 2）：置位表示故障来自 CPL3。
 const PF_US: u64 = 1 << 2;
 
+/// 切片 H/I：syscall ABI 的镜像常量，与 `kernel/src/syscall.rs` 一致（跨 crate 需人工同步）。
+const SYS_BAD: u64 = 0xDEAD;
+const ECHO_MASK: u64 = 0xFFFF_0000_FFFF_0000;
+const SYS_ECHO_ARG: u64 = 0x0123_4567_89AB_CDEF;
+const SUM_EXPECTED: u64 = 0x3F3F_3F3F_3F3F_3F3F;
+/// 负 errno 二补码（EINVAL=-22、EFAULT=-14、ENOSYS=-38）。
+const EFAULT: u64 = 0xFFFF_FFFF_FFFF_FFF2;
+const EINVAL: u64 = 0xFFFF_FFFF_FFFF_FFEA;
+const ENOSYS: u64 = 0xFFFF_FFFF_FFFF_FFDA;
+const USER_CS: u64 = 0x33;
+
+fn echo_expected() -> u64 {
+    SYS_ECHO_ARG ^ ECHO_MASK
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Event {
     sequence: u32,
@@ -59,7 +75,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 14] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 15] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -72,8 +88,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 14] = [
     (10, EventKind::VspaceReady),
     (11, EventKind::CowReady),
     (12, EventKind::UserCowReady),
-    (13, EventKind::ExcResumeReady),
-    (14, EventKind::BootComplete),
+    (13, EventKind::SyscallReady),
+    (14, EventKind::ExcResumeReady),
+    (15, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -203,6 +220,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_user_cow_data(user_cow.data.as_deref())?;
     }
 
+    if let Some(syscall) = events
+        .iter()
+        .find(|event| event.kind == EventKind::SyscallReady)
+    {
+        validate_syscall_data(syscall.data.as_deref())?;
+    }
+
     if let Some(resume) = events
         .iter()
         .find(|event| event.kind == EventKind::ExcResumeReady)
@@ -288,6 +312,162 @@ fn validate_user_cow_data(data: Option<&str>) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// 校验切片 H/I 的 syscall ABI v1 证据：6 次 `int 0x80` 均来自 CPL3（CS=0x33），
+/// 覆盖多寄存器参数（SUM4）、用户缓冲读入（COPY_IN）与三类 errno 编码（EFAULT/EINVAL/ENOSYS），
+/// 且用户把每个返回值都写回了回执页。
+fn validate_syscall_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "syscall_ready event is missing its data field".to_owned())?;
+    let mut calls = None;
+    let mut cs = None;
+    let mut cs_all = None;
+    let mut echo_ret = None;
+    let mut sum_ret = None;
+    let mut copy_ret = None;
+    let mut fault_ret = None;
+    let mut invalid_ret = None;
+    let mut bad_ret = None;
+    let mut receipt0 = None;
+    let mut receipt1 = None;
+    let mut receipt2 = None;
+    let mut receipt3 = None;
+    let mut receipt4 = None;
+    let mut receipt5 = None;
+    let mut receipt6 = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "calls" => calls = Some(parse_decimal(value, "calls")?),
+            "cs" => cs = Some(parse_addr(value)?),
+            "cs_all" => cs_all = Some(parse_decimal(value, "cs_all")?),
+            "echo_ret" => echo_ret = Some(parse_addr(value)?),
+            "sum_ret" => sum_ret = Some(parse_addr(value)?),
+            "copy_ret" => copy_ret = Some(parse_addr(value)?),
+            "fault_ret" => fault_ret = Some(parse_addr(value)?),
+            "invalid_ret" => invalid_ret = Some(parse_addr(value)?),
+            "bad_ret" => bad_ret = Some(parse_addr(value)?),
+            "receipt0" => receipt0 = Some(parse_addr(value)?),
+            "receipt1" => receipt1 = Some(parse_addr(value)?),
+            "receipt2" => receipt2 = Some(parse_addr(value)?),
+            "receipt3" => receipt3 = Some(parse_addr(value)?),
+            "receipt4" => receipt4 = Some(parse_addr(value)?),
+            "receipt5" => receipt5 = Some(parse_addr(value)?),
+            "receipt6" => receipt6 = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let calls = calls.ok_or_else(|| "missing calls in syscall_ready data".to_owned())?;
+    let cs = cs.ok_or_else(|| "missing cs in syscall_ready data".to_owned())?;
+    let cs_all = cs_all.ok_or_else(|| "missing cs_all in syscall_ready data".to_owned())?;
+    let echo_ret = echo_ret.ok_or_else(|| "missing echo_ret in syscall_ready data".to_owned())?;
+    let sum_ret = sum_ret.ok_or_else(|| "missing sum_ret in syscall_ready data".to_owned())?;
+    let copy_ret = copy_ret.ok_or_else(|| "missing copy_ret in syscall_ready data".to_owned())?;
+    let fault_ret =
+        fault_ret.ok_or_else(|| "missing fault_ret in syscall_ready data".to_owned())?;
+    let invalid_ret =
+        invalid_ret.ok_or_else(|| "missing invalid_ret in syscall_ready data".to_owned())?;
+    let bad_ret = bad_ret.ok_or_else(|| "missing bad_ret in syscall_ready data".to_owned())?;
+    let receipt0 = receipt0.ok_or_else(|| "missing receipt0 in syscall_ready data".to_owned())?;
+    let receipt1 = receipt1.ok_or_else(|| "missing receipt1 in syscall_ready data".to_owned())?;
+    let receipt2 = receipt2.ok_or_else(|| "missing receipt2 in syscall_ready data".to_owned())?;
+    let receipt3 = receipt3.ok_or_else(|| "missing receipt3 in syscall_ready data".to_owned())?;
+    let receipt4 = receipt4.ok_or_else(|| "missing receipt4 in syscall_ready data".to_owned())?;
+    let receipt5 = receipt5.ok_or_else(|| "missing receipt5 in syscall_ready data".to_owned())?;
+    let receipt6 = receipt6.ok_or_else(|| "missing receipt6 in syscall_ready data".to_owned())?;
+
+    if calls != 6 {
+        return Err(format!(
+            "syscall_ready calls ({calls}) must be 6 — ECHO + SUM4 + COPY_IN ok + COPY_IN fault + reserved + unknown"
+        ));
+    }
+    if cs != USER_CS || cs & 3 != 3 {
+        return Err(format!(
+            "syscall_ready cs (0x{cs:x}) must equal CPL3 user code selector 0x{USER_CS:x} — the syscall must originate from CPL3"
+        ));
+    }
+    if cs_all != 1 {
+        return Err(format!(
+            "syscall_ready cs_all ({cs_all}) must be 1 — every syscall must originate from CPL3"
+        ));
+    }
+    if echo_ret != echo_expected() {
+        return Err(format!(
+            "syscall_ready echo_ret (0x{echo_ret:x}) must equal 0x{:x} — kernel echo result was not produced",
+            echo_expected()
+        ));
+    }
+    if sum_ret != SUM_EXPECTED {
+        return Err(format!(
+            "syscall_ready sum_ret (0x{sum_ret:x}) must equal 0x{SUM_EXPECTED:x} — multi-register arguments were not passed"
+        ));
+    }
+    if copy_ret != USER_STORE_VALUE {
+        return Err(format!(
+            "syscall_ready copy_ret (0x{copy_ret:x}) must equal 0x{USER_STORE_VALUE:x} — COPY_IN did not read the post-COW private user page"
+        ));
+    }
+    if fault_ret != EFAULT {
+        return Err(format!(
+            "syscall_ready fault_ret (0x{fault_ret:x}) must be -EFAULT 0x{EFAULT:x} for the bad user pointer"
+        ));
+    }
+    if invalid_ret != EINVAL {
+        return Err(format!(
+            "syscall_ready invalid_ret (0x{invalid_ret:x}) must be -EINVAL 0x{EINVAL:x} for the reserved number 0"
+        ));
+    }
+    if bad_ret != ENOSYS {
+        return Err(format!(
+            "syscall_ready bad_ret (0x{bad_ret:x}) must be -ENOSYS 0x{ENOSYS:x} for number 0x{SYS_BAD:x}"
+        ));
+    }
+    if receipt0 != USER_STORE_VALUE {
+        return Err(format!(
+            "syscall_ready receipt0 (0x{receipt0:x}) must equal 0x{USER_STORE_VALUE:x} — COW receipt missing before syscalls"
+        ));
+    }
+    if receipt1 != echo_expected() {
+        return Err(format!(
+            "syscall_ready receipt1 (0x{receipt1:x}) must equal 0x{:x} — user did not store the echo result",
+            echo_expected()
+        ));
+    }
+    if receipt2 != SUM_EXPECTED {
+        return Err(format!(
+            "syscall_ready receipt2 (0x{receipt2:x}) must equal 0x{SUM_EXPECTED:x} — user did not store the sum result"
+        ));
+    }
+    if receipt3 != USER_STORE_VALUE {
+        return Err(format!(
+            "syscall_ready receipt3 (0x{receipt3:x}) must equal 0x{USER_STORE_VALUE:x} — user did not store the COPY_IN result"
+        ));
+    }
+    if receipt4 != EFAULT {
+        return Err(format!(
+            "syscall_ready receipt4 (0x{receipt4:x}) must equal 0x{EFAULT:x} — user did not store the EFAULT result"
+        ));
+    }
+    if receipt5 != EINVAL {
+        return Err(format!(
+            "syscall_ready receipt5 (0x{receipt5:x}) must equal 0x{EINVAL:x} — user did not store the EINVAL result"
+        ));
+    }
+    if receipt6 != ENOSYS {
+        return Err(format!(
+            "syscall_ready receipt6 (0x{receipt6:x}) must equal 0x{ENOSYS:x} — user did not store the ENOSYS result"
+        ));
+    }
+    Ok(())
+}
+
+/// 解析十进制计数（`calls`/`cs_all`）。
+fn parse_decimal(value: &str, key: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|error| format!("invalid {key} count {value}: {error}"))
 }
 
 /// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
@@ -814,6 +994,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("vspace_ready", "ok") => EventKind::VspaceReady,
         ("cow_ready", "ok") => EventKind::CowReady,
         ("user_cow_ready", "ok") => EventKind::UserCowReady,
+        ("syscall_ready", "ok") => EventKind::SyscallReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -837,6 +1018,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::VspaceReady
             | EventKind::CowReady
             | EventKind::UserCowReady
+            | EventKind::SyscallReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -853,6 +1035,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::VspaceReady
             | EventKind::CowReady
             | EventKind::UserCowReady
+            | EventKind::SyscallReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -887,8 +1070,9 @@ mod tests {
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
-        "PRIMA|v=1|seq=13|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=14|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=6;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
+        "PRIMA|v=1|seq=14|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=15|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1447,6 +1631,90 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must equal user page"), "{error}");
+    }
+
+    /// 切片 H/I 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const SYSCALL_DATA: &str = "calls=6;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda";
+
+    #[test]
+    fn rejects_syscall_not_from_cpl3() {
+        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("cs=0x33", "cs=0x8"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_not_all_from_cpl3() {
+        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("cs_all=1", "cs_all=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("cs_all"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_wrong_sum() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("sum_ret=0x3f3f3f3f3f3f3f3f", "sum_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("sum_ret"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_wrong_copy_result() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("copy_ret=0x5a5a1234deadbeef", "copy_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("copy_ret"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_fault_not_efault() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("fault_ret=0xfffffffffffffff2", "fault_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("EFAULT"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_reserved_not_einval() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("invalid_ret=0xffffffffffffffea", "invalid_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("EINVAL"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_illegal_number_accepted() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("bad_ret=0xffffffffffffffda", "bad_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("ENOSYS"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_missing_receipt() {
+        let output = VALID.replace(
+            SYSCALL_DATA,
+            &SYSCALL_DATA.replace("receipt3=0x5a5a1234deadbeef", "receipt3=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipt3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_syscall_wrong_call_count() {
+        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=6", "calls=5"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("calls"), "{error}");
     }
 
     #[test]

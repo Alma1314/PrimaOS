@@ -202,6 +202,44 @@ pub(crate) fn user_cow_ready(witness: &kernel::user::UserWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 H：最小 syscall ABI 的见证（CPL3 `int 0x80` → 内核分派 → 返回 CPL3）。
+pub(crate) fn syscall_ready(witness: &kernel::syscall::SyscallWitness) {
+    write_prefix("syscall_ready", "ok");
+    serial::write_bytes(b"|data=calls=");
+    write_u64(witness.calls);
+    serial::write_bytes(b";cs=");
+    write_hex_u64(witness.cs);
+    serial::write_bytes(b";cs_all=");
+    write_u32(witness.cs_all);
+    serial::write_bytes(b";echo_ret=");
+    write_hex_u64(witness.echo_ret);
+    serial::write_bytes(b";sum_ret=");
+    write_hex_u64(witness.sum_ret);
+    serial::write_bytes(b";copy_ret=");
+    write_hex_u64(witness.copy_ret);
+    serial::write_bytes(b";fault_ret=");
+    write_hex_u64(witness.fault_ret);
+    serial::write_bytes(b";invalid_ret=");
+    write_hex_u64(witness.invalid_ret);
+    serial::write_bytes(b";bad_ret=");
+    write_hex_u64(witness.bad_ret);
+    serial::write_bytes(b";receipt0=");
+    write_hex_u64(witness.receipt0);
+    serial::write_bytes(b";receipt1=");
+    write_hex_u64(witness.receipt1);
+    serial::write_bytes(b";receipt2=");
+    write_hex_u64(witness.receipt2);
+    serial::write_bytes(b";receipt3=");
+    write_hex_u64(witness.receipt3);
+    serial::write_bytes(b";receipt4=");
+    write_hex_u64(witness.receipt4);
+    serial::write_bytes(b";receipt5=");
+    write_hex_u64(witness.receipt5);
+    serial::write_bytes(b";receipt6=");
+    write_hex_u64(witness.receipt6);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 D：经真实 `iretq` 恢复进一帧后，从落点上报的恢复证据。
 ///
 /// `sentinel`/`sentinel2` 是落点实际读回的 `r12`/`r13`；`resumed` 为两个哨兵均

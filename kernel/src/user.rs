@@ -3,16 +3,21 @@
 //! 用户代码（手写机器码）：
 //! 1. 把 [`USER_X_VA`]（**只读+user**）的地址装入 `rdx`、把 [`USER_STORE_VALUE`] 装入
 //!    `rax`，执行 3 字节 store → 真实 `present∧write∧user` #PF（`err=0x7`，US 位证明来自 CPL3）；
-//! 2. 内核 COW 换映射后**重试**该 store，成功；
-//! 3. 把回执值写入 [`USER_Y_VA`]（可写+user）；
+//! 2. 内核 COW 换映射后**重试**该 store，成功，并把回执值写入 [`USER_Y_VA`]；
+//! 3. 连续 6 次 `int 0x80`（syscall ABI v1）：ECHO、SUM4（多寄存器）、COPY_IN 合法指针、
+//!    COPY_IN 坏指针（`EFAULT`）、保留号 `0`（`EINVAL`）、未登记号（`ENOSYS`），依次把
+//!    返回值写入 `Y+8..Y+48`；
 //! 4. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
 //!
-//! **范围边界：** 单核、非抢占、单任务最小见证；不实现完整 syscall ABI，不实现抽象模型的
-//! `exc_resume` 授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
+//! **范围边界：** 单核、非抢占、单任务最小见证；syscall 部分是**递送**而非抽象模型的
+//! capability/订阅授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
 
 use crate::exc::SretFrame;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
+use crate::syscall::{
+    BAD_PTR, COPY_LEN, COPY_PTR, SUM_ARGS, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_SUM4,
+};
 use crate::vspace::{self, VspaceError};
 
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
@@ -31,59 +36,101 @@ pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 37;
+pub const USER_CODE_LEN: usize = 223;
+
+/// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
+const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
+    let mut i = 0;
+    while i < bytes.len() {
+        code[at + i] = bytes[i];
+        i += 1;
+    }
+}
+
+/// 写入 `opcode0 opcode1 <imm64>` 形态的指令（`mov r64, imm64`）。
+const fn put_imm64(code: &mut [u8; USER_CODE_LEN], at: usize, opcode0: u8, opcode1: u8, imm: u64) {
+    code[at] = opcode0;
+    code[at + 1] = opcode1;
+    put(code, at + 2, &imm.to_le_bytes());
+}
 
 /// 组装用户代码机器码：
-/// `mov rdx, USER_X_VA; mov rax, USER_STORE_VALUE; mov [rdx], rax;`
-/// `mov rcx, USER_Y_VA; mov [rcx], rax; int3`
+/// `mov rdx, X; mov rax, VAL; mov [rdx], rax;`（COW 故障点）
+/// `mov rcx, Y; mov [rcx], rax;`（回执 0）
+/// `mov rdi, ARG; mov rax, SYS_ECHO; int 0x80; mov [rcx+8], rax;`（回执 1）
+/// `mov rdi/rsi/rdx/r10, SUM_ARGS; mov rax, SYS_SUM4; int 0x80; mov [rcx+16], rax;`（回执 2）
+/// `mov rdi, X; mov rsi, 8; mov rax, SYS_COPY_IN; int 0x80; mov [rcx+24], rax;`（回执 3）
+/// `mov rdi, BAD_PTR; mov rsi, 8; mov rax, SYS_COPY_IN; int 0x80; mov [rcx+32], rax;`（回执 4）
+/// `mov rax, 0; int 0x80; mov [rcx+40], rax;`（回执 5）
+/// `mov rax, SYS_BAD; int 0x80; mov [rcx+48], rax; int3`（回执 6）
 pub const fn user_code() -> [u8; USER_CODE_LEN] {
-    let x = USER_X_VA.to_le_bytes();
-    let y = USER_Y_VA.to_le_bytes();
-    let v = USER_STORE_VALUE.to_le_bytes();
     let mut code = [0u8; USER_CODE_LEN];
-    // 0: 48 BA <imm64>  mov rdx, X
-    code[0] = 0x48;
-    code[1] = 0xBA;
-    code[2] = x[0];
-    code[3] = x[1];
-    code[4] = x[2];
-    code[5] = x[3];
-    code[6] = x[4];
-    code[7] = x[5];
-    code[8] = x[6];
-    code[9] = x[7];
-    // 10: 48 B8 <imm64>  mov rax, VAL
-    code[10] = 0x48;
-    code[11] = 0xB8;
-    code[12] = v[0];
-    code[13] = v[1];
-    code[14] = v[2];
-    code[15] = v[3];
-    code[16] = v[4];
-    code[17] = v[5];
-    code[18] = v[6];
-    code[19] = v[7];
-    // 20: 48 89 02  mov [rdx], rax  （3 字节，与 FAULT_SKIP_LEN 成对）
-    code[20] = 0x48;
-    code[21] = 0x89;
-    code[22] = 0x02;
-    // 23: 48 B9 <imm64>  mov rcx, Y
-    code[23] = 0x48;
-    code[24] = 0xB9;
-    code[25] = y[0];
-    code[26] = y[1];
-    code[27] = y[2];
-    code[28] = y[3];
-    code[29] = y[4];
-    code[30] = y[5];
-    code[31] = y[6];
-    code[32] = y[7];
-    // 33: 48 89 01  mov [rcx], rax
-    code[33] = 0x48;
-    code[34] = 0x89;
-    code[35] = 0x01;
-    // 36: CC  int3
-    code[36] = 0xCC;
+    // 0: mov rdx, X
+    put_imm64(&mut code, 0, 0x48, 0xBA, USER_X_VA);
+    // 10: mov rax, VAL
+    put_imm64(&mut code, 10, 0x48, 0xB8, USER_STORE_VALUE);
+    // 20: mov [rdx], rax  （3 字节，与 FAULT_SKIP_LEN 成对）
+    put(&mut code, 20, &[0x48, 0x89, 0x02]);
+    // 23: mov rcx, Y
+    put_imm64(&mut code, 23, 0x48, 0xB9, USER_Y_VA);
+    // 33: mov [rcx], rax
+    put(&mut code, 33, &[0x48, 0x89, 0x01]);
+    // 36: mov rdi, SYS_ECHO_ARG
+    put_imm64(&mut code, 36, 0x48, 0xBF, SYS_ECHO_ARG);
+    // 46: mov rax, SYS_ECHO
+    put_imm64(&mut code, 46, 0x48, 0xB8, SYS_ECHO);
+    // 56: int 0x80
+    put(&mut code, 56, &[0xCD, 0x80]);
+    // 58: mov [rcx+8], rax
+    put(&mut code, 58, &[0x48, 0x89, 0x41, 0x08]);
+    // 62: mov rdi, SUM_ARGS[0]
+    put_imm64(&mut code, 62, 0x48, 0xBF, SUM_ARGS[0]);
+    // 72: mov rsi, SUM_ARGS[1]
+    put_imm64(&mut code, 72, 0x48, 0xBE, SUM_ARGS[1]);
+    // 82: mov rdx, SUM_ARGS[2]
+    put_imm64(&mut code, 82, 0x48, 0xBA, SUM_ARGS[2]);
+    // 92: mov r10, SUM_ARGS[3]
+    put_imm64(&mut code, 92, 0x49, 0xBA, SUM_ARGS[3]);
+    // 102: mov rax, SYS_SUM4
+    put_imm64(&mut code, 102, 0x48, 0xB8, SYS_SUM4);
+    // 112: int 0x80
+    put(&mut code, 112, &[0xCD, 0x80]);
+    // 114: mov [rcx+16], rax
+    put(&mut code, 114, &[0x48, 0x89, 0x41, 0x10]);
+    // 118: mov rdi, COPY_PTR
+    put_imm64(&mut code, 118, 0x48, 0xBF, COPY_PTR);
+    // 128: mov rsi, COPY_LEN
+    put_imm64(&mut code, 128, 0x48, 0xBE, COPY_LEN);
+    // 138: mov rax, SYS_COPY_IN
+    put_imm64(&mut code, 138, 0x48, 0xB8, SYS_COPY_IN);
+    // 148: int 0x80
+    put(&mut code, 148, &[0xCD, 0x80]);
+    // 150: mov [rcx+24], rax
+    put(&mut code, 150, &[0x48, 0x89, 0x41, 0x18]);
+    // 154: mov rdi, BAD_PTR
+    put_imm64(&mut code, 154, 0x48, 0xBF, BAD_PTR);
+    // 164: mov rsi, COPY_LEN
+    put_imm64(&mut code, 164, 0x48, 0xBE, COPY_LEN);
+    // 174: mov rax, SYS_COPY_IN
+    put_imm64(&mut code, 174, 0x48, 0xB8, SYS_COPY_IN);
+    // 184: int 0x80
+    put(&mut code, 184, &[0xCD, 0x80]);
+    // 186: mov [rcx+32], rax
+    put(&mut code, 186, &[0x48, 0x89, 0x41, 0x20]);
+    // 190: mov rax, 0（保留号）
+    put_imm64(&mut code, 190, 0x48, 0xB8, 0);
+    // 200: int 0x80
+    put(&mut code, 200, &[0xCD, 0x80]);
+    // 202: mov [rcx+40], rax
+    put(&mut code, 202, &[0x48, 0x89, 0x41, 0x28]);
+    // 206: mov rax, SYS_BAD
+    put_imm64(&mut code, 206, 0x48, 0xB8, SYS_BAD);
+    // 216: int 0x80
+    put(&mut code, 216, &[0xCD, 0x80]);
+    // 218: mov [rcx+48], rax
+    put(&mut code, 218, &[0x48, 0x89, 0x41, 0x30]);
+    // 222: int3
+    code[222] = 0xCC;
     code
 }
 
@@ -271,15 +318,63 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
+        assert_eq!(USER_CODE_LEN, 223);
+        // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
+        assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
         assert_eq!(&code[10..12], &[0x48, 0xB8]); // mov rax, imm64
+        assert_eq!(&code[12..20], &USER_STORE_VALUE.to_le_bytes());
         assert_eq!(&code[20..23], &[0x48, 0x89, 0x02]); // mov [rdx], rax (3 bytes)
         assert_eq!(&code[23..25], &[0x48, 0xB9]); // mov rcx, imm64
-        assert_eq!(&code[33..36], &[0x48, 0x89, 0x01]); // mov [rcx], rax
-        assert_eq!(code[36], 0xCC); // int3
-        assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
-        assert_eq!(&code[12..20], &USER_STORE_VALUE.to_le_bytes());
         assert_eq!(&code[25..33], &USER_Y_VA.to_le_bytes());
+        assert_eq!(&code[33..36], &[0x48, 0x89, 0x01]); // mov [rcx], rax
+        // 回执 1：SYS_ECHO。
+        assert_eq!(&code[36..38], &[0x48, 0xBF]); // mov rdi, imm64
+        assert_eq!(&code[38..46], &SYS_ECHO_ARG.to_le_bytes());
+        assert_eq!(&code[46..48], &[0x48, 0xB8]); // mov rax, imm64
+        assert_eq!(&code[48..56], &SYS_ECHO.to_le_bytes());
+        assert_eq!(&code[56..58], &[0xCD, 0x80]); // int 0x80
+        assert_eq!(&code[58..62], &[0x48, 0x89, 0x41, 0x08]); // mov [rcx+8], rax
+        // 回执 2：SYS_SUM4，参数经 rdi/rsi/rdx/r10。
+        assert_eq!(&code[62..64], &[0x48, 0xBF]);
+        assert_eq!(&code[64..72], &SUM_ARGS[0].to_le_bytes());
+        assert_eq!(&code[72..74], &[0x48, 0xBE]);
+        assert_eq!(&code[74..82], &SUM_ARGS[1].to_le_bytes());
+        assert_eq!(&code[82..84], &[0x48, 0xBA]);
+        assert_eq!(&code[84..92], &SUM_ARGS[2].to_le_bytes());
+        assert_eq!(&code[92..94], &[0x49, 0xBA]); // mov r10, imm64
+        assert_eq!(&code[94..102], &SUM_ARGS[3].to_le_bytes());
+        assert_eq!(&code[102..104], &[0x48, 0xB8]);
+        assert_eq!(&code[104..112], &SYS_SUM4.to_le_bytes());
+        assert_eq!(&code[112..114], &[0xCD, 0x80]);
+        assert_eq!(&code[114..118], &[0x48, 0x89, 0x41, 0x10]);
+        // 回执 3/4：SYS_COPY_IN 合法与坏指针。
+        assert_eq!(&code[118..120], &[0x48, 0xBF]);
+        assert_eq!(&code[120..128], &COPY_PTR.to_le_bytes());
+        assert_eq!(&code[128..130], &[0x48, 0xBE]);
+        assert_eq!(&code[130..138], &COPY_LEN.to_le_bytes());
+        assert_eq!(&code[138..140], &[0x48, 0xB8]);
+        assert_eq!(&code[140..148], &SYS_COPY_IN.to_le_bytes());
+        assert_eq!(&code[148..150], &[0xCD, 0x80]);
+        assert_eq!(&code[150..154], &[0x48, 0x89, 0x41, 0x18]);
+        assert_eq!(&code[154..156], &[0x48, 0xBF]);
+        assert_eq!(&code[156..164], &BAD_PTR.to_le_bytes());
+        assert_eq!(&code[164..166], &[0x48, 0xBE]);
+        assert_eq!(&code[166..174], &COPY_LEN.to_le_bytes());
+        assert_eq!(&code[174..176], &[0x48, 0xB8]);
+        assert_eq!(&code[176..184], &SYS_COPY_IN.to_le_bytes());
+        assert_eq!(&code[184..186], &[0xCD, 0x80]);
+        assert_eq!(&code[186..190], &[0x48, 0x89, 0x41, 0x20]);
+        // 回执 5/6：保留号 0 与未登记号。
+        assert_eq!(&code[190..192], &[0x48, 0xB8]);
+        assert_eq!(&code[192..200], &0u64.to_le_bytes());
+        assert_eq!(&code[200..202], &[0xCD, 0x80]);
+        assert_eq!(&code[202..206], &[0x48, 0x89, 0x41, 0x28]);
+        assert_eq!(&code[206..208], &[0x48, 0xB8]);
+        assert_eq!(&code[208..216], &SYS_BAD.to_le_bytes());
+        assert_eq!(&code[216..218], &[0xCD, 0x80]);
+        assert_eq!(&code[218..222], &[0x48, 0x89, 0x41, 0x30]);
+        assert_eq!(code[222], 0xCC); // int3
     }
 
     #[test]
