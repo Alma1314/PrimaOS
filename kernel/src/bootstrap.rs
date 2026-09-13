@@ -726,6 +726,21 @@ pub enum AuthorityError {
     InvalidInactiveState,
 }
 
+/// 切片 K：授权查询失败原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthError {
+    /// 授权表尚未安装（`install` 未调用）。
+    NotInstalled,
+    /// 找不到该 Capability ID。
+    NoSuchCapability,
+    /// Capability 已失效（位置 inactive 或派生 inactive）。
+    Inactive,
+    /// Capability 不在 `caller` 手中。
+    NotHolder,
+    /// 持有者缺少所请求的权限。
+    MissingRight,
+}
+
 impl BootstrapState {
     pub fn validate_authority(&self) -> Result<(), AuthorityError> {
         if self.positions.count != INITIAL_CAPABILITY_COUNT as usize + self.derivations.count
@@ -820,6 +835,41 @@ impl BootstrapState {
             }
         }
         Ok(())
+    }
+
+    /// 切片 K：授权查询——`caller` 是否持有 `cap_id` 且该 Capability 具备 `right`。
+    ///
+    /// 成功返回 `cap_id` 作为授予凭据；失败区分“无此 Capability / 已失效 / 非持有者 /
+    /// 缺权限”。逐操作权限与位置语义仍以 [[COSIR 原语规范]] 为准。
+    pub fn authorize(&self, caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError> {
+        let position = self.positions.entries[..self.positions.count]
+            .iter()
+            .flatten()
+            .find(|entry| entry.cap_id == cap_id)
+            .ok_or(AuthError::NoSuchCapability)?;
+        if !position.active {
+            return Err(AuthError::Inactive);
+        }
+        if position.location != CapabilityLocation::HeldByTask(caller) {
+            return Err(AuthError::NotHolder);
+        }
+        let rights = self
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == cap_id)
+            .map(|capability| capability.rights)
+            .or_else(|| {
+                self.derivations.entries[..self.derivations.count]
+                    .iter()
+                    .flatten()
+                    .find(|capability| capability.id == cap_id)
+                    .map(|capability| capability.rights)
+            })
+            .ok_or(AuthError::NoSuchCapability)?;
+        if !has_right(rights, right) {
+            return Err(AuthError::MissingRight);
+        }
+        Ok(cap_id)
     }
 
     pub fn derive_capability(
@@ -1273,13 +1323,35 @@ pub fn create_state(
     Ok(state)
 }
 
+/// 切片 K：全局 Bootstrap 授权表的存储（单核 boot 早期安装一次）。
+static mut BOOTSTRAP_STATE: Option<BootstrapState> = None;
+
+/// 安装 Bootstrap 授权表，供 syscall 授权查询使用（在进入 CPL3 前调用一次）。
+pub fn install(state: BootstrapState) {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        *slot = Some(state);
+    }
+}
+
+/// 查询全局授权表：`caller` 是否持有 `cap_id` 且具备 `right`。
+pub fn authorize(caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        match (*slot).as_ref() {
+            Some(state) => state.authorize(caller, cap_id, right),
+            None => Err(AuthError::NotInstalled),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        AuditEvent, AuthorityError, BootstrapError, CapabilityPositionError, DeriveError,
-        IMAGE_CAP_ID, IMAGE_RIGHTS, INIT_TASK_ID, INITIAL_CAPABILITY_COUNT, InitialObject,
-        IpcError, NAMESPACE_RIGHTS, TASK_RIGHTS, TaskError, TaskStatus, create_snapshot,
-        create_state,
+        AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityPositionError,
+        DeriveError, IMAGE_CAP_ID, IMAGE_RIGHTS, INIT_TASK_ID, INITIAL_CAPABILITY_COUNT,
+        InitialObject, IpcError, NAMESPACE_RIGHTS, TASK_RIGHTS, TaskError, TaskStatus,
+        create_snapshot, create_state,
     };
     use crate::mem::FrameInventory;
 
@@ -1647,5 +1719,69 @@ mod tests {
             Err(IpcError::CapabilityHolderMismatch)
         );
         assert_eq!(state.ipc.count, 0);
+    }
+
+    fn authorized_state() -> super::BootstrapState {
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        create_state(0x4000_0000, 0x3000, &inventory).unwrap()
+    }
+
+    #[test]
+    fn authorize_grants_held_capability_with_right() {
+        let state = authorized_state();
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapR"),
+            Ok(1)
+        );
+        // namespace 的权限为 "all"，任意权限均可。
+        assert_eq!(state.authorize(INIT_TASK_ID, 2, "SegMapW"), Ok(2));
+    }
+
+    #[test]
+    fn authorize_denies_missing_right() {
+        let state = authorized_state();
+        // 初始 image cap 只有 SegMapR/MapX/Destroy，没有 SegMapW。
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapW"),
+            Err(AuthError::MissingRight)
+        );
+    }
+
+    #[test]
+    fn authorize_reports_unknown_capability() {
+        let state = authorized_state();
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, 999, "SegMapR"),
+            Err(AuthError::NoSuchCapability)
+        );
+    }
+
+    #[test]
+    fn authorize_rejects_non_holder() {
+        let state = authorized_state();
+        assert_eq!(
+            state.authorize(2, IMAGE_CAP_ID, "SegMapR"),
+            Err(AuthError::NotHolder)
+        );
+    }
+
+    #[test]
+    fn authorize_rejects_inactive_capability() {
+        let mut state = authorized_state();
+        state
+            .positions
+            .drop_from_task(IMAGE_CAP_ID, INIT_TASK_ID)
+            .unwrap();
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapR"),
+            Err(AuthError::Inactive)
+        );
     }
 }

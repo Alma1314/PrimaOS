@@ -103,6 +103,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 H/I：用户代码在 COW 之后完成 6 次 `int 0x80`（ABI v1 电池）。
     let syscall = kernel::syscall::witness();
     protocol::syscall_ready(&syscall);
+    // 切片 K：随后 3 次 `int 0x80` 能力授权查询。
+    let auth = kernel::syscall::auth_witness();
+    protocol::syscall_auth_ready(&auth);
     // 切片 J：此后还有一次 `syscall` 指令快路径往返。
     let fast = kernel::syscall::fast_witness();
     protocol::syscall_fast_ready(&fast);

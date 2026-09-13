@@ -21,6 +21,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::bootstrap::{self, AuthError, IMAGE_CAP_ID, INIT_TASK_ID};
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
@@ -32,6 +33,8 @@ pub const SYS_ECHO: u64 = 1;
 pub const SYS_SUM4: u64 = 2;
 /// 合法 syscall 号：从用户缓冲读入最多 8 字节并组装为 u64。
 pub const SYS_COPY_IN: u64 = 3;
+/// 合法 syscall 号：能力授权查询（`args[0]=cap_id`、`args[1]=right code`）。
+pub const SYS_AUTHORIZE: u64 = 4;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
 
@@ -66,13 +69,30 @@ pub const COPY_EXPECTED: u64 = USER_STORE_VALUE;
 /// [`SYS_COPY_IN`] 的坏指针：与用户页同 PML4 槽但中间层缺失，应 `EFAULT`。
 pub const BAD_PTR: u64 = USER_BASE_VA + 0x20_0000;
 
+/// 切片 K：授权查询的调用者 Task（当前唯一 ring3 任务，等同 Bootstrap init Task）。
+pub const AUTHORIZE_TASK: u32 = INIT_TASK_ID;
+/// 授权查询使用的 Capability：Bootstrap 初始 image cap（持有者拥有 `SegMapR` 但无 `SegMapW`）。
+pub const AUTHORIZE_CAP: u64 = IMAGE_CAP_ID as u64;
+/// 成功授予时返回的凭据（即被授权的 cap id）。
+pub const AUTHORIZE_GRANTED: u64 = IMAGE_CAP_ID as u64;
+/// 权限编码：`SegMapR`（init image cap 具备）。
+pub const RIGHT_SEGMAPR: u64 = 1;
+/// 权限编码：`SegMapW`（init image cap 不具备，用于见证拒绝）。
+pub const RIGHT_SEGMAPW: u64 = 2;
+/// 授权查询用的不存在 Capability ID（见证 `ENOENT`）。
+pub const UNSET_CAP: u64 = 999;
+
 /// errno 编码（Linux 兼容负值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Errno {
-    /// 参数非法（保留号、长度越界等）。
-    Invalid = 22,
+    /// 找不到对象（不存在的 Capability）。
+    NoEnt = 2,
+    /// 权限不足（缺权限 / 非持有者 / 已失效）。
+    Access = 13,
     /// 用户指针不可读（未映射或非 user 页）。
     Fault = 14,
+    /// 参数非法（保留号、长度越界等）。
+    Invalid = 22,
     /// 未登记的服务号。
     NoSys = 38,
 }
@@ -85,9 +105,39 @@ pub const fn encode_errno(errno: Errno) -> u64 {
 /// errno 的稳定名字（协议/日志用）。
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
-        Errno::Invalid => "EINVAL",
+        Errno::NoEnt => "ENOENT",
+        Errno::Access => "EACCES",
         Errno::Fault => "EFAULT",
+        Errno::Invalid => "EINVAL",
         Errno::NoSys => "ENOSYS",
+    }
+}
+
+/// 权限编码到权限名的映射（纯函数，host 可测）。
+pub const fn right_name(code: u64) -> Option<&'static str> {
+    match code {
+        RIGHT_SEGMAPR => Some("SegMapR"),
+        RIGHT_SEGMAPW => Some("SegMapW"),
+        _ => None,
+    }
+}
+
+/// 授权失败原因到 errno 的映射（纯函数，host 可测）。
+pub const fn auth_errno(error: AuthError) -> Errno {
+    match error {
+        AuthError::NoSuchCapability | AuthError::NotInstalled => Errno::NoEnt,
+        AuthError::Inactive | AuthError::NotHolder | AuthError::MissingRight => Errno::Access,
+    }
+}
+
+/// 切片 K：授权查询服务——查 Bootstrap 授权表并编码结果。
+fn authorize_call(cap_id: u64, right_code: u64) -> u64 {
+    let Some(right) = right_name(right_code) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::authorize(AUTHORIZE_TASK, cap_id as u32, right) {
+        Ok(granted) => granted as u64,
+        Err(error) => encode_errno(auth_errno(error)),
     }
 }
 
@@ -155,7 +205,9 @@ struct CallRecord {
 }
 
 /// 记录前 [`MAX_CALLS`] 次 syscall 进入（单核 boot 早期，无并发）。
-const MAX_CALLS: usize = 6;
+///
+/// 顺序：ABI 电池 6 次 + 授权查询 3 次（快路径单独记录，不占此处）。
+const MAX_CALLS: usize = 9;
 
 static mut CALLS: [CallRecord; MAX_CALLS] = [CallRecord { cs: 0, ret: 0 }; MAX_CALLS];
 
@@ -201,6 +253,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
             Ok(value) => value,
             Err(errno) => encode_errno(errno),
         }
+    } else if num == SYS_AUTHORIZE {
+        authorize_call(args[0], args[1])
     } else {
         dispatch_plain(num, args)
     }
@@ -342,11 +396,11 @@ pub fn fast_witness() -> FastWitness {
 /// 一次 syscall ABI 见证的实测证据。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SyscallWitness {
-    /// 进入的 syscall 次数（应为 6）。
+    /// 进入的 syscall 次数（应为 [`MAX_CALLS`]）。
     pub calls: u64,
     /// 第一次进入时的 CS（应 [`USER_CS`]，RPL=3）。
     pub cs: u64,
-    /// 全部 6 次进入是否都来自 CPL3（CS 均为 [`USER_CS`]）。
+    /// 全部进入是否都来自 CPL3（CS 均为 [`USER_CS`]）。
     pub cs_all: u32,
     /// [`SYS_ECHO`] 的返回值。
     pub echo_ret: u64,
@@ -379,7 +433,7 @@ pub struct SyscallWitness {
 impl SyscallWitness {
     /// 纯判定：一次 syscall ABI v1 见证是否满足全部成功条件（host 可测）。
     pub fn evidence_ok(&self) -> bool {
-        self.calls == 6
+        self.calls == MAX_CALLS as u64
             && self.cs == USER_CS as u64
             && self.cs_all == 1
             && self.echo_ret == echo_expected(SYS_ECHO_ARG)
@@ -402,14 +456,24 @@ fn read_qword(va: u64) -> u64 {
     unsafe { core::ptr::read_volatile(va as *const u64) }
 }
 
+/// 读取前 [`MAX_CALLS`] 条进入记录（单核 boot 早期，无并发）。
+fn call_records() -> [CallRecord; MAX_CALLS] {
+    unsafe {
+        let ptr = core::ptr::addr_of!(CALLS);
+        *ptr
+    }
+}
+
+/// 全部进入记录是否都来自 CPL3。
+fn records_all_cpl3(records: &[CallRecord; MAX_CALLS]) -> u32 {
+    records.iter().all(|record| record.cs == USER_CS as u64) as u32
+}
+
 /// 收集 syscall ABI 见证（在用户 `int3` 收尾回调中调用）。
 pub fn witness() -> SyscallWitness {
     let calls = COUNT.load(Ordering::Relaxed);
-    let records = unsafe {
-        let ptr = core::ptr::addr_of!(CALLS);
-        *ptr
-    };
-    let cs_all = records.iter().all(|record| record.cs == USER_CS as u64) as u32;
+    let records = call_records();
+    let cs_all = records_all_cpl3(&records);
     SyscallWitness {
         calls,
         cs: records[0].cs,
@@ -427,6 +491,52 @@ pub fn witness() -> SyscallWitness {
         receipt4: read_qword(USER_Y_VA + 32),
         receipt5: read_qword(USER_Y_VA + 40),
         receipt6: read_qword(USER_Y_VA + 48),
+    }
+}
+
+/// 切片 K：一次能力授权查询见证的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuthWitness {
+    /// 全部进入是否都来自 CPL3。
+    pub cs_all: u32,
+    /// 持有 `SegMapR` 的查询返回值（应 [`AUTHORIZE_GRANTED`]）。
+    pub granted_ret: u64,
+    /// 缺少 `SegMapW` 的查询返回值（应 `EACCES`）。
+    pub denied_ret: u64,
+    /// 不存在 Capability 的查询返回值（应 `ENOENT`）。
+    pub unknown_ret: u64,
+    /// 回执页 Y+64：授予结果。
+    pub receipt_granted: u64,
+    /// Y+72：拒绝结果。
+    pub receipt_denied: u64,
+    /// Y+80：`ENOENT` 结果。
+    pub receipt_unknown: u64,
+}
+
+impl AuthWitness {
+    /// 纯判定：一次授权查询见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.cs_all == 1
+            && self.granted_ret == AUTHORIZE_GRANTED
+            && self.denied_ret == encode_errno(Errno::Access)
+            && self.unknown_ret == encode_errno(Errno::NoEnt)
+            && self.receipt_granted == self.granted_ret
+            && self.receipt_denied == self.denied_ret
+            && self.receipt_unknown == self.unknown_ret
+    }
+}
+
+/// 收集能力授权查询见证（在用户 `int3` 收尾回调中调用）。
+pub fn auth_witness() -> AuthWitness {
+    let records = call_records();
+    AuthWitness {
+        cs_all: records_all_cpl3(&records),
+        granted_ret: records[6].ret,
+        denied_ret: records[7].ret,
+        unknown_ret: records[8].ret,
+        receipt_granted: read_qword(USER_Y_VA + 64),
+        receipt_denied: read_qword(USER_Y_VA + 72),
+        receipt_unknown: read_qword(USER_Y_VA + 80),
     }
 }
 
@@ -489,12 +599,12 @@ mod tests {
     #[test]
     fn bad_ptr_is_in_same_pml4_slot_but_distinct_page() {
         assert_eq!((BAD_PTR >> 39) & 0x1ff, (USER_X_VA >> 39) & 0x1ff);
-        assert!(((BAD_PTR >> 21) & 0x1ff) != ((USER_X_VA >> 21) & 0x1ff));
+        const { assert!(((BAD_PTR >> 21) & 0x1ff) != ((USER_X_VA >> 21) & 0x1ff)) };
     }
 
     fn valid() -> SyscallWitness {
         SyscallWitness {
-            calls: 6,
+            calls: MAX_CALLS as u64,
             cs: USER_CS as u64,
             cs_all: 1,
             echo_ret: echo_expected(SYS_ECHO_ARG),
@@ -614,6 +724,69 @@ mod tests {
     fn rejects_fast_path_receipt_mismatch() {
         let mut w = valid_fast();
         w.receipt = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn right_name_maps_known_codes() {
+        assert_eq!(right_name(RIGHT_SEGMAPR), Some("SegMapR"));
+        assert_eq!(right_name(RIGHT_SEGMAPW), Some("SegMapW"));
+        assert_eq!(right_name(0), None);
+    }
+
+    #[test]
+    fn auth_errno_maps_failure_reasons() {
+        assert_eq!(auth_errno(AuthError::NoSuchCapability), Errno::NoEnt);
+        assert_eq!(auth_errno(AuthError::NotInstalled), Errno::NoEnt);
+        assert_eq!(auth_errno(AuthError::MissingRight), Errno::Access);
+        assert_eq!(auth_errno(AuthError::NotHolder), Errno::Access);
+        assert_eq!(auth_errno(AuthError::Inactive), Errno::Access);
+        assert_eq!(encode_errno(Errno::Access), 0xFFFF_FFFF_FFFF_FFF3); // -13
+        assert_eq!(encode_errno(Errno::NoEnt), 0xFFFF_FFFF_FFFF_FFFE); // -2
+    }
+
+    fn valid_auth() -> AuthWitness {
+        AuthWitness {
+            cs_all: 1,
+            granted_ret: AUTHORIZE_GRANTED,
+            denied_ret: encode_errno(Errno::Access),
+            unknown_ret: encode_errno(Errno::NoEnt),
+            receipt_granted: AUTHORIZE_GRANTED,
+            receipt_denied: encode_errno(Errno::Access),
+            receipt_unknown: encode_errno(Errno::NoEnt),
+        }
+    }
+
+    #[test]
+    fn accepts_complete_auth_evidence() {
+        assert!(valid_auth().evidence_ok());
+    }
+
+    #[test]
+    fn rejects_auth_denied_accepted() {
+        let mut w = valid_auth();
+        w.denied_ret = AUTHORIZE_GRANTED; // 缺权限却被授予
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_auth_unknown_cap_granted() {
+        let mut w = valid_auth();
+        w.unknown_ret = AUTHORIZE_GRANTED;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_auth_non_cpl3() {
+        let mut w = valid_auth();
+        w.cs_all = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_auth_receipt_mismatch() {
+        let mut w = valid_auth();
+        w.receipt_denied = 0;
         assert!(!w.evidence_ok());
     }
 }

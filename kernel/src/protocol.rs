@@ -240,6 +240,26 @@ pub(crate) fn syscall_ready(witness: &kernel::syscall::SyscallWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 K：能力授权查询见证（授予 / 缺权限拒绝 / 不存在 Capability）。
+pub(crate) fn syscall_auth_ready(witness: &kernel::syscall::AuthWitness) {
+    write_prefix("syscall_auth_ready", "ok");
+    serial::write_bytes(b"|data=cs_all=");
+    write_u32(witness.cs_all);
+    serial::write_bytes(b";granted_ret=");
+    write_hex_u64(witness.granted_ret);
+    serial::write_bytes(b";denied_ret=");
+    write_hex_u64(witness.denied_ret);
+    serial::write_bytes(b";unknown_ret=");
+    write_hex_u64(witness.unknown_ret);
+    serial::write_bytes(b";receipt_granted=");
+    write_hex_u64(witness.receipt_granted);
+    serial::write_bytes(b";receipt_denied=");
+    write_hex_u64(witness.receipt_denied);
+    serial::write_bytes(b";receipt_unknown=");
+    write_hex_u64(witness.receipt_unknown);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
 pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_prefix("syscall_fast_ready", "ok");

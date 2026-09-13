@@ -7,8 +7,10 @@
 //! 3. 连续 6 次 `int 0x80`（syscall ABI v1）：ECHO、SUM4（多寄存器）、COPY_IN 合法指针、
 //!    COPY_IN 坏指针（`EFAULT`）、保留号 `0`（`EINVAL`）、未登记号（`ENOSYS`），依次把
 //!    返回值写入 `Y+8..Y+48`；
-//! 4. 一次 `syscall` 指令（x86-64 快路径，SPEC-048）：ECHO，把返回值写入 `Y+56`；
-//! 5. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
+//! 4. 3 次能力授权查询（SPEC-049）：持有 `SegMapR`（授予）、缺 `SegMapW`（`EACCES`）、
+//!    不存在的 cap（`ENOENT`），依次写入 `Y+64..Y+80`；
+//! 5. 一次 `syscall` 指令（x86-64 快路径，SPEC-048）：ECHO，把返回值写入 `Y+56`；
+//! 6. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
 //!
 //! **范围边界：** 单核、非抢占、单任务最小见证；syscall 部分是**递送**而非抽象模型的
 //! capability/订阅授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
@@ -17,8 +19,8 @@ use crate::exc::SretFrame;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::syscall::{
-    BAD_PTR, COPY_LEN, COPY_PTR, FAST_ARG, SUM_ARGS, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG,
-    SYS_SUM4,
+    AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
+    SYS_AUTHORIZE, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_SUM4, UNSET_CAP,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -38,7 +40,7 @@ pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 259;
+pub const USER_CODE_LEN: usize = 357;
 
 /// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
 const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
@@ -131,18 +133,46 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 216, &[0xCD, 0x80]);
     // 218: mov [rcx+48], rax
     put(&mut code, 218, &[0x48, 0x89, 0x41, 0x30]);
-    // 222: mov rdi, FAST_ARG
-    put_imm64(&mut code, 222, 0x48, 0xBF, FAST_ARG);
-    // 232: mov rax, SYS_ECHO
-    put_imm64(&mut code, 232, 0x48, 0xB8, SYS_ECHO);
-    // 242: 0F 05  syscall（快路径；破坏 rcx/r11）
-    put(&mut code, 242, &[0x0F, 0x05]);
-    // 244: mov rcx, Y（syscall 破坏了 rcx，需重载回执基址）
-    put_imm64(&mut code, 244, 0x48, 0xB9, USER_Y_VA);
-    // 254: mov [rcx+56], rax
-    put(&mut code, 254, &[0x48, 0x89, 0x41, 0x38]);
-    // 258: int3
-    code[258] = 0xCC;
+    // 222: mov rdi, AUTHORIZE_CAP
+    put_imm64(&mut code, 222, 0x48, 0xBF, AUTHORIZE_CAP);
+    // 232: mov rsi, RIGHT_SEGMAPR
+    put_imm64(&mut code, 232, 0x48, 0xBE, RIGHT_SEGMAPR);
+    // 242: mov rax, SYS_AUTHORIZE
+    put_imm64(&mut code, 242, 0x48, 0xB8, SYS_AUTHORIZE);
+    // 252: int 0x80 → 授予
+    put(&mut code, 252, &[0xCD, 0x80]);
+    // 254: mov [rcx+64], rax
+    put(&mut code, 254, &[0x48, 0x89, 0x41, 0x40]);
+    // 258: mov rsi, RIGHT_SEGMAPW（rdi 仍是 cap）
+    put_imm64(&mut code, 258, 0x48, 0xBE, RIGHT_SEGMAPW);
+    // 268: mov rax, SYS_AUTHORIZE
+    put_imm64(&mut code, 268, 0x48, 0xB8, SYS_AUTHORIZE);
+    // 278: int 0x80 → 拒绝
+    put(&mut code, 278, &[0xCD, 0x80]);
+    // 280: mov [rcx+72], rax
+    put(&mut code, 280, &[0x48, 0x89, 0x41, 0x48]);
+    // 284: mov rdi, UNSET_CAP
+    put_imm64(&mut code, 284, 0x48, 0xBF, UNSET_CAP);
+    // 294: mov rsi, RIGHT_SEGMAPR
+    put_imm64(&mut code, 294, 0x48, 0xBE, RIGHT_SEGMAPR);
+    // 304: mov rax, SYS_AUTHORIZE
+    put_imm64(&mut code, 304, 0x48, 0xB8, SYS_AUTHORIZE);
+    // 314: int 0x80 → ENOENT
+    put(&mut code, 314, &[0xCD, 0x80]);
+    // 316: mov [rcx+80], rax
+    put(&mut code, 316, &[0x48, 0x89, 0x41, 0x50]);
+    // 320: mov rdi, FAST_ARG
+    put_imm64(&mut code, 320, 0x48, 0xBF, FAST_ARG);
+    // 330: mov rax, SYS_ECHO
+    put_imm64(&mut code, 330, 0x48, 0xB8, SYS_ECHO);
+    // 340: 0F 05  syscall（快路径；破坏 rcx/r11）
+    put(&mut code, 340, &[0x0F, 0x05]);
+    // 342: mov rcx, Y（syscall 破坏了 rcx，需重载回执基址）
+    put_imm64(&mut code, 342, 0x48, 0xB9, USER_Y_VA);
+    // 352: mov [rcx+56], rax
+    put(&mut code, 352, &[0x48, 0x89, 0x41, 0x38]);
+    // 356: int3
+    code[356] = 0xCC;
     code
 }
 
@@ -330,7 +360,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 259);
+        assert_eq!(USER_CODE_LEN, 357);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -386,16 +416,39 @@ mod tests {
         assert_eq!(&code[208..216], &SYS_BAD.to_le_bytes());
         assert_eq!(&code[216..218], &[0xCD, 0x80]);
         assert_eq!(&code[218..222], &[0x48, 0x89, 0x41, 0x30]);
-        // 快路径：syscall 指令调用 ECHO，再重载 rcx 写 Y+56。
+        // 授权查询三次。
         assert_eq!(&code[222..224], &[0x48, 0xBF]);
-        assert_eq!(&code[224..232], &FAST_ARG.to_le_bytes());
-        assert_eq!(&code[232..234], &[0x48, 0xB8]);
-        assert_eq!(&code[234..242], &SYS_ECHO.to_le_bytes());
-        assert_eq!(&code[242..244], &[0x0F, 0x05]); // syscall
-        assert_eq!(&code[244..246], &[0x48, 0xB9]); // mov rcx, imm64
-        assert_eq!(&code[246..254], &USER_Y_VA.to_le_bytes());
-        assert_eq!(&code[254..258], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
-        assert_eq!(code[258], 0xCC); // int3
+        assert_eq!(&code[224..232], &AUTHORIZE_CAP.to_le_bytes());
+        assert_eq!(&code[232..234], &[0x48, 0xBE]);
+        assert_eq!(&code[234..242], &RIGHT_SEGMAPR.to_le_bytes());
+        assert_eq!(&code[242..244], &[0x48, 0xB8]);
+        assert_eq!(&code[244..252], &SYS_AUTHORIZE.to_le_bytes());
+        assert_eq!(&code[252..254], &[0xCD, 0x80]);
+        assert_eq!(&code[254..258], &[0x48, 0x89, 0x41, 0x40]); // [rcx+64]
+        assert_eq!(&code[258..260], &[0x48, 0xBE]);
+        assert_eq!(&code[260..268], &RIGHT_SEGMAPW.to_le_bytes());
+        assert_eq!(&code[268..270], &[0x48, 0xB8]);
+        assert_eq!(&code[270..278], &SYS_AUTHORIZE.to_le_bytes());
+        assert_eq!(&code[278..280], &[0xCD, 0x80]);
+        assert_eq!(&code[280..284], &[0x48, 0x89, 0x41, 0x48]); // [rcx+72]
+        assert_eq!(&code[284..286], &[0x48, 0xBF]);
+        assert_eq!(&code[286..294], &UNSET_CAP.to_le_bytes());
+        assert_eq!(&code[294..296], &[0x48, 0xBE]);
+        assert_eq!(&code[296..304], &RIGHT_SEGMAPR.to_le_bytes());
+        assert_eq!(&code[304..306], &[0x48, 0xB8]);
+        assert_eq!(&code[306..314], &SYS_AUTHORIZE.to_le_bytes());
+        assert_eq!(&code[314..316], &[0xCD, 0x80]);
+        assert_eq!(&code[316..320], &[0x48, 0x89, 0x41, 0x50]); // [rcx+80]
+        // 快路径：syscall 指令调用 ECHO，再重载 rcx 写 Y+56。
+        assert_eq!(&code[320..322], &[0x48, 0xBF]);
+        assert_eq!(&code[322..330], &FAST_ARG.to_le_bytes());
+        assert_eq!(&code[330..332], &[0x48, 0xB8]);
+        assert_eq!(&code[332..340], &SYS_ECHO.to_le_bytes());
+        assert_eq!(&code[340..342], &[0x0F, 0x05]); // syscall
+        assert_eq!(&code[342..344], &[0x48, 0xB9]); // mov rcx, imm64
+        assert_eq!(&code[344..352], &USER_Y_VA.to_le_bytes());
+        assert_eq!(&code[352..356], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
+        assert_eq!(code[356], 0xCC); // int3
     }
 
     #[test]

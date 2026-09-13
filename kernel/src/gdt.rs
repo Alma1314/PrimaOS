@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn gdt_capacity_covers_user_code_slot() {
         // 用户代码槽末尾在 56，必须落在 64 字节容量内。
-        assert!(USER_CODE_OFF + 8 <= 64);
+        const { assert!(USER_CODE_OFF + 8 <= 64) };
     }
 
     #[test]

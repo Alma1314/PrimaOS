@@ -126,7 +126,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         boot_info.kernel_len,
                                         &inventory,
                                     ) {
-                                        Ok(state) => protocol::bootstrap_ready(&state.snapshot),
+                                        Ok(state) => {
+                                            protocol::bootstrap_ready(&state.snapshot);
+                                            // K：安装授权表，供后续 syscall 授权查询使用。
+                                            kernel::bootstrap::install(state);
+                                        }
                                         Err(_) => {
                                             protocol::panic_event();
                                             serial::flush();

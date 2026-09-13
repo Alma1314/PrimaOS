@@ -13,6 +13,7 @@ enum EventKind {
     CowReady,
     UserCowReady,
     SyscallReady,
+    SyscallAuthReady,
     SyscallFastReady,
     ExcResumeReady,
     BootComplete,
@@ -66,6 +67,13 @@ const EINVAL: u64 = 0xFFFF_FFFF_FFFF_FFEA;
 const ENOSYS: u64 = 0xFFFF_FFFF_FFFF_FFDA;
 const USER_CS: u64 = 0x33;
 
+/// 切片 K：能力授权查询的镜像常量，与 `kernel/src/{syscall,bootstrap}.rs` 一致。
+const IMAGE_CAP_ID: u64 = 1;
+const AUTH_GRANTED: u64 = IMAGE_CAP_ID;
+/// 负 errno 二补码（ENOENT=-2、EACCES=-13）。
+const ENOENT: u64 = 0xFFFF_FFFF_FFFF_FFFE;
+const EACCES: u64 = 0xFFFF_FFFF_FFFF_FFF3;
+
 /// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
 const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 const FAST_STAR: u64 = 0x0020_0008_0000_0000;
@@ -86,7 +94,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 16] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 17] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -100,9 +108,10 @@ const EXPECTED_EVENTS: [(u32, EventKind); 16] = [
     (11, EventKind::CowReady),
     (12, EventKind::UserCowReady),
     (13, EventKind::SyscallReady),
-    (14, EventKind::SyscallFastReady),
-    (15, EventKind::ExcResumeReady),
-    (16, EventKind::BootComplete),
+    (14, EventKind::SyscallAuthReady),
+    (15, EventKind::SyscallFastReady),
+    (16, EventKind::ExcResumeReady),
+    (17, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -237,6 +246,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::SyscallReady)
     {
         validate_syscall_data(syscall.data.as_deref())?;
+    }
+
+    if let Some(auth) = events
+        .iter()
+        .find(|event| event.kind == EventKind::SyscallAuthReady)
+    {
+        validate_syscall_auth_data(auth.data.as_deref())?;
     }
 
     if let Some(fast) = events
@@ -397,9 +413,9 @@ fn validate_syscall_data(data: Option<&str>) -> Result<(), String> {
     let receipt5 = receipt5.ok_or_else(|| "missing receipt5 in syscall_ready data".to_owned())?;
     let receipt6 = receipt6.ok_or_else(|| "missing receipt6 in syscall_ready data".to_owned())?;
 
-    if calls != 6 {
+    if calls != 9 {
         return Err(format!(
-            "syscall_ready calls ({calls}) must be 6 — ECHO + SUM4 + COPY_IN ok + COPY_IN fault + reserved + unknown"
+            "syscall_ready calls ({calls}) must be 9 — 6 ABI battery + 3 authorization probes"
         ));
     }
     if cs != USER_CS || cs & 3 != 3 {
@@ -576,6 +592,85 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
     if lstar_ok != 1 {
         return Err(format!(
             "syscall_fast_ready lstar_ok ({lstar_ok}) must be 1 — IA32_LSTAR must point at the fast entry"
+        ));
+    }
+    Ok(())
+}
+
+/// 校验切片 K 的能力授权查询证据：全部来自 CPL3；持有 `SegMapR` 授予成功（返回 cap id）、
+/// 缺 `SegMapW` 返回 `EACCES`、不存在 Capability 返回 `ENOENT`，且用户写回回执。
+fn validate_syscall_auth_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "syscall_auth_ready event is missing its data field".to_owned())?;
+    let mut cs_all = None;
+    let mut granted_ret = None;
+    let mut denied_ret = None;
+    let mut unknown_ret = None;
+    let mut receipt_granted = None;
+    let mut receipt_denied = None;
+    let mut receipt_unknown = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "cs_all" => cs_all = Some(parse_decimal(value, "cs_all")?),
+            "granted_ret" => granted_ret = Some(parse_addr(value)?),
+            "denied_ret" => denied_ret = Some(parse_addr(value)?),
+            "unknown_ret" => unknown_ret = Some(parse_addr(value)?),
+            "receipt_granted" => receipt_granted = Some(parse_addr(value)?),
+            "receipt_denied" => receipt_denied = Some(parse_addr(value)?),
+            "receipt_unknown" => receipt_unknown = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let cs_all = cs_all.ok_or_else(|| "missing cs_all in syscall_auth_ready data".to_owned())?;
+    let granted_ret =
+        granted_ret.ok_or_else(|| "missing granted_ret in syscall_auth_ready data".to_owned())?;
+    let denied_ret =
+        denied_ret.ok_or_else(|| "missing denied_ret in syscall_auth_ready data".to_owned())?;
+    let unknown_ret =
+        unknown_ret.ok_or_else(|| "missing unknown_ret in syscall_auth_ready data".to_owned())?;
+    let receipt_granted = receipt_granted
+        .ok_or_else(|| "missing receipt_granted in syscall_auth_ready data".to_owned())?;
+    let receipt_denied = receipt_denied
+        .ok_or_else(|| "missing receipt_denied in syscall_auth_ready data".to_owned())?;
+    let receipt_unknown = receipt_unknown
+        .ok_or_else(|| "missing receipt_unknown in syscall_auth_ready data".to_owned())?;
+
+    if cs_all != 1 {
+        return Err(format!(
+            "syscall_auth_ready cs_all ({cs_all}) must be 1 — every authorization probe must originate from CPL3"
+        ));
+    }
+    if granted_ret != AUTH_GRANTED {
+        return Err(format!(
+            "syscall_auth_ready granted_ret (0x{granted_ret:x}) must equal granted cap id 0x{AUTH_GRANTED:x}"
+        ));
+    }
+    if denied_ret != EACCES {
+        return Err(format!(
+            "syscall_auth_ready denied_ret (0x{denied_ret:x}) must be -EACCES 0x{EACCES:x} — missing SegMapW must be denied"
+        ));
+    }
+    if unknown_ret != ENOENT {
+        return Err(format!(
+            "syscall_auth_ready unknown_ret (0x{unknown_ret:x}) must be -ENOENT 0x{ENOENT:x} — unknown capability id must be rejected"
+        ));
+    }
+    if receipt_granted != granted_ret {
+        return Err(format!(
+            "syscall_auth_ready receipt_granted (0x{receipt_granted:x}) must equal granted_ret 0x{granted_ret:x}"
+        ));
+    }
+    if receipt_denied != denied_ret {
+        return Err(format!(
+            "syscall_auth_ready receipt_denied (0x{receipt_denied:x}) must equal denied_ret 0x{denied_ret:x}"
+        ));
+    }
+    if receipt_unknown != unknown_ret {
+        return Err(format!(
+            "syscall_auth_ready receipt_unknown (0x{receipt_unknown:x}) must equal unknown_ret 0x{unknown_ret:x}"
         ));
     }
     Ok(())
@@ -1106,6 +1201,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("cow_ready", "ok") => EventKind::CowReady,
         ("user_cow_ready", "ok") => EventKind::UserCowReady,
         ("syscall_ready", "ok") => EventKind::SyscallReady,
+        ("syscall_auth_ready", "ok") => EventKind::SyscallAuthReady,
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
@@ -1131,6 +1227,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CowReady
             | EventKind::UserCowReady
             | EventKind::SyscallReady
+            | EventKind::SyscallAuthReady
             | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             None,
@@ -1149,6 +1246,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CowReady
             | EventKind::UserCowReady
             | EventKind::SyscallReady
+            | EventKind::SyscallAuthReady
             | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             Some(_),
@@ -1184,10 +1282,11 @@ mod tests {
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
-        "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=6;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
-        "PRIMA|v=1|seq=14|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
-        "PRIMA|v=1|seq=15|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=16|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=9;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
+        "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x1;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x1;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
+        "PRIMA|v=1|seq=15|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
+        "PRIMA|v=1|seq=16|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=17|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1749,7 +1848,7 @@ mod tests {
     }
 
     /// 切片 H/I 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const SYSCALL_DATA: &str = "calls=6;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda";
+    const SYSCALL_DATA: &str = "calls=9;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda";
 
     #[test]
     fn rejects_syscall_not_from_cpl3() {
@@ -1827,9 +1926,59 @@ mod tests {
 
     #[test]
     fn rejects_syscall_wrong_call_count() {
-        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=6", "calls=5"));
+        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=9", "calls=8"));
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("calls"), "{error}");
+    }
+
+    /// 切片 K 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const AUTH_DATA: &str = "cs_all=1;granted_ret=0x1;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x1;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe";
+
+    #[test]
+    fn rejects_auth_not_all_cpl3() {
+        let output = VALID.replace(AUTH_DATA, &AUTH_DATA.replace("cs_all=1", "cs_all=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_auth_denied_as_granted() {
+        let output = VALID.replace(
+            AUTH_DATA,
+            &AUTH_DATA.replace("denied_ret=0xfffffffffffffff3", "denied_ret=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("EACCES"), "{error}");
+    }
+
+    #[test]
+    fn rejects_auth_unknown_cap_granted() {
+        let output = VALID.replace(
+            AUTH_DATA,
+            &AUTH_DATA.replace("unknown_ret=0xfffffffffffffffe", "unknown_ret=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("ENOENT"), "{error}");
+    }
+
+    #[test]
+    fn rejects_auth_wrong_grant() {
+        let output = VALID.replace(
+            AUTH_DATA,
+            &AUTH_DATA.replace("granted_ret=0x1", "granted_ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("granted cap id"), "{error}");
+    }
+
+    #[test]
+    fn rejects_auth_receipt_mismatch() {
+        let output = VALID.replace(
+            AUTH_DATA,
+            &AUTH_DATA.replace("receipt_denied=0xfffffffffffffff3", "receipt_denied=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipt_denied"), "{error}");
     }
 
     /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
