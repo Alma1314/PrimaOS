@@ -247,6 +247,8 @@ cap_drop(cap) -> ()
 
 `cap_drop` 不要求目标对象仍然存活，因此可用于清理 stale token。
 
+错误：`InvalidCap`（`cap` 不是有效 CapId）、`NotHeld`（不在 `HeldBy(caller)`）、`StructuralCap`（是活动 Task 的结构性根 Namespace Capability）。目标对象已销毁不构成失败，stale token 仍可成功丢弃。
+
 ### 4.6 Capability 移动
 
 Capability 没有用户可直接调用的任意 `move`。位置变化只发生在规范列出的原子操作内：
@@ -263,6 +265,8 @@ Capability 没有用户可直接调用的任意 `move`。位置变化只发生�
 - 跨节点 `send` 超时：`InTransit(...)` → `HeldBy(sender)`（回退到源位置）。
 
 每次位置变化必须记录原位置和新位置；删除位置时新位置为 `None`。直接交付必须记录关联的 `MsgId`。移动不改变 `CapRecord`，且一个成功迁移中不得出现 Capability 暂时没有位置的可观察中间状态——`InTransit` 本身就是一个位置，不是"没有位置"。
+
+Capability 移动不是用户可直接调用的操作，因此没有独立的成功/失败语义；其失败语义继承自触发它的外层操作（如 `send`、`recv`、`task_create`、`ns_*` 的错误清单），外层操作失败时移动不发生。
 
 ### 4.7 撤销边界
 
@@ -494,6 +498,16 @@ s —[actor, op/Error(e)]→ s
 
 如果多个错误同时成立，抽象规范允许返回任一适用错误。需要稳定 ABI 的实现层必须另行固定错误优先级。
 
+#### 6.2.1 默认失败语义（覆盖全部操作的兜底规则）
+
+为保证每个操作都有明确的失败语义，规定：
+
+- **显式错误清单优先：** 若操作小节给出“错误：”清单，该清单即其失败域；失败时按 §6.2 保持 `State` 不变。
+- **默认规则兜底：** 若操作小节未给出“错误：”清单，则其失败语义为——失败当且仅当该操作列出的任一前置条件不满足；失败时返回 §6.2 第 1–5 阶段中适用阶段的标准错误标识，并保持 `State` 不变；实现可返回任一适用错误。
+- **显式无失败分支：** 若操作小节声明“无失败分支”，则在 §6.1 的 Actor 约束成立且其前置条件由内核保证成立时，该操作不产生失败结果。
+
+据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode` 在首次出现的小节内就地定义。
+
 ### 6.3 内部辅助操作 `enqueue_or_deliver`
 
 内核发送消息时统一执行。对于 Task 发起的 `send`，输入 Capability 在操作开始时都位于 `HeldBy(sender)`；内核事件当前不携带 Capability：
@@ -514,6 +528,8 @@ s —[actor, op/Error(e)]→ s
    - 为每个被移动的 Capability 追加 `CapMoved` 事件，记录从 `HeldBy(sender)` 到 `InMessage(msg)` 的位置变化；
 
 直接交付和排队交付都消耗一个永久不复用的 `MsgId`，并使用相同格式的 `MessageSent`。
+
+**失败语义：无失败分支。** `enqueue_or_deliver` 是 `KernelActor` 内部辅助，其输入（发送方/接收方位置、目标 Task 存活、非结构性 Capability）已由触发它的外层操作按 §6.2 预先验证；本步骤不引入新的失败域，也不产生用户可观察的错误返回。
 
 ## 7. MemorySegment 操作
 
@@ -687,6 +703,8 @@ task_destroy(task_cap) -> ()
 
 指向被销毁 Task 的 Capability 变为 stale token。
 
+错误：`InvalidTask`（`task_cap` 不指向有效 Task）、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(TaskDestroy)`。
+
 ### 8.3 `task_yield`
 
 ```text
@@ -694,6 +712,8 @@ task_yield() -> ()
 ```
 
 当前 Task 从 `Running` 变为 `Ready`。它不是 Capability 操作。`task_yield` 成功后当前没有 Running Task，因此必须在返回用户态之前通过 `schedule` 选择新 Task——延迟到下一次定时器中断才调度会令 CPU 在 `Ready` Task 存在时空闲，不符合 W9 的调度状态一致性。
+
+**失败语义：无失败分支。** 调用者由 §6.1 保证是 `Running` Task；本操作不检查 Capability、不接受参数、不访问其它对象，因此不存在失败结果。
 
 ### 8.4 `schedule`
 
@@ -712,6 +732,8 @@ schedule(chosen_task) -> Option<RecvResult>
 2. 将其 `pending_return` 作为恢复结果交给用户上下文并清空该字段。
 
 选择可以是非确定的；本规范不要求公平。任意时刻至多有一个 Running Task。
+
+**失败语义：无失败分支。** `schedule` 是 `KernelActor` 内部迁移；其两条前置条件（当前无 Running Task、`chosen_task` 为 `Ready`）由调度器本身维护，用户输入不能触发或绕过，故不产生可返回的错误。
 
 ### 8.5 跨节点与异地 Task
 
@@ -753,11 +775,15 @@ node_create(transport) → node_cap
 
 铸造完整根 Node Capability，权限为 `{Derive, NodeConnect, NodeDestroy}`。`NodeConnect` 授权在与该节点建立传输连接时使用此 Capability；`NodeDestroy` 授权销毁该 Node 对象。
 
+**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件；`transport` 是内核提供的传输实现，其可用性属资源问题（§6.2 排除），不作为抽象层失败。
+
 ```text
 node_destroy(node_cap) -> ()
 ```
 
 前置条件：`node_cap` 授权 `NodeDestroy`。成功时从活动 Node 表删除目标，并关闭所有通过此 Node 建立的连接。任何使用此 Node 的 `InTransit` Capability 在目标节点不可达时回退到源位置，否则阻塞至传输完成。销毁后的 Node Capability 变为 stale token。
+
+错误：`InvalidNode`（`node_cap` 未指向有效 Node；本规范中该标识统一表示“Node Capability 参数无效”）、`NotHeld`、`MissingRight(NodeDestroy)`。
 
 Node 对象的权限集合纳入 §4.1 的权限表：
 
@@ -881,6 +907,8 @@ recv() -> RecvResult | Blocked
 
 `recv` 不需要 Capability；安全边界位于发送方必须持有目标 Task 的 `TaskSend`。
 
+**失败语义：无失败分支。** 空邮箱返回 `Blocked` 是正常成功路径而非错误；调用者由 §6.1 保证是 `Running` Task，本操作不接受参数、不检查 Capability。
+
 ## 10. Timer
 
 ### 10.1 时间模型
@@ -892,6 +920,8 @@ time_now() -> Instant
 ```
 
 `time_now` 是纯查询，不改变状态。
+
+**失败语义：无失败分支。** 无参数、无前置条件、不检查 Capability。
 
 ### 10.2 `timer_set`
 
@@ -915,6 +945,8 @@ timer_set(deadline) -> timer_cap
 
 Timer 通知不携带或移动 Timer Capability；接收方通过不可伪造的 `KernelEvent` 中的 `TimerId` 识别来源。
 
+**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件，不接受 Capability 参数；过去/当前 deadline 显式非错误。实现层 ID 或日志空间耗尽属 §6.2 明确排除的资源可用性问题，不作为抽象层失败。
+
 ### 10.3 `advance_time`
 
 ```text
@@ -931,6 +963,8 @@ advance_time(new_now) -> ()
 
 迁移完成后必须满足：所有 `Pending` Timer 都有 `deadline > now`。
 
+错误：`InvalidTime`（`new_now < now`，违反时间单调性）。`InvalidTime` 定义为本规范中“时间参数违反 `now` 单调不减”的失败标识。失败时 `now` 与全部 Timer 状态不变。
+
 ### 10.4 `timer_cancel`
 
 ```text
@@ -942,6 +976,8 @@ timer_cancel(timer_cap) -> ()
 - `Pending`：进入 `Cancelled(ByTask(caller))`，追加 `TimerCancelled`，不产生通知；
 - `Fired`：返回 `AlreadyFired`，状态不变；
 - `Cancelled`：返回 `AlreadyCancelled`，状态不变。
+
+错误：`InvalidTimer`（`timer_cap` 不指向有效 Timer）、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(TimerCancel)`。`InvalidTimer` 定义为本规范中“Capability 参数未指向有效 Timer 对象”的失败标识。`AlreadyFired`/`AlreadyCancelled` 是状态返回而非失败，且保持状态不变。
 
 ### 10.5 `timer_destroy`
 
@@ -958,6 +994,8 @@ timer_destroy(timer_cap) -> ()
 - 若已 `Cancelled`，不产生新的取消事件；
 - 最后追加对象销毁事件并删除活动 Timer；
 - 指向该 Timer 的 Capability 全部成为 stale token。
+
+错误：`InvalidTimer`、`NotHeld`、`MissingRight(TimerDestroy)`。
 
 ### 10.6 Exactly-once 边界
 
@@ -991,6 +1029,8 @@ Derive | NsResolve | NsBind | NsUnbind |
 NsMount | NsUnmount | NsDestroy
 ```
 
+**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件、不接受 Capability 参数；实现层元数据空间耗尽属 §6.2 明确排除的资源可用性问题，不作为抽象层失败。
+
 ### 11.3 `ns_bind`
 
 ```text
@@ -1009,6 +1049,8 @@ ns_bind(ns_cap, path, cap) -> ()
 
 绑定项只有在 Capability 含 `Derive` 时才能通过 `ns_resolve` 发放子 Capability。不含 `Derive` 的绑定仍可作为不可导出的保管项，并可由 `ns_unbind` 取回。
 
+错误：`InvalidNamespace`、`MissingRight(NsBind)`、`InvalidPath`（`path` 非法或为空）、`Overlap`（存在终端祖先、同名条目或后代条目）、`InvalidCap`（`cap` 不是有效 CapId）、`NotHeld`、`StructuralCap`。
+
 ### 11.4 `ns_unbind`
 
 ```text
@@ -1023,6 +1065,8 @@ ns_unbind(ns_cap, path) -> CapId
 成功动作：删除条目，并把 `cap` 从 Namespace 移到 `HeldBy(caller)`。
 
 被绑定 Capability 的目标可以已经销毁；`ns_unbind` 仍允许取回 stale token 以便 Audit 或清理。
+
+错误：`InvalidNamespace`、`MissingRight(NsUnbind)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Bound(cap)`）。目标已销毁不构成失败。
 
 ### 11.5 `ns_mount`
 
@@ -1048,6 +1092,8 @@ ns_mount(destination_ns_cap, path, source_ns_cap) -> ()
 
 挂载明确使用 Capability，而不是裸 `NsId`。
 
+错误：`InvalidNamespace`、`MissingRight(NsMount)`、`InvalidCap`（`source_ns_cap` 不是有效 CapId）、`NotHeld`、`NotDelegable`（`source_ns_cap` 缺 `NsResolve`/`Derive`）、`InvalidPath`、`Overlap`（`path` 冲突）、`MountCycle`（新增 `destination → source` 边会形成 Mount 环）。`MountCycle` 定义为本规范中“挂载边引入环”的失败标识。跨节点挂载由 `InvalidNamespace`（目标不在同一节点）拒绝。
+
 ### 11.6 `ns_unmount`
 
 ```text
@@ -1060,6 +1106,8 @@ ns_unmount(ns_cap, path) -> ()
 - `path` 精确指向 `Mount(cap)`。
 
 成功动作：删除挂载条目并删除挂载子 Capability 的位置；源 Namespace、父 Capability 和已经解析出去的子 Capability 均不受影响。即使源 Namespace 已销毁、挂载 Capability 已 stale，也允许清理。
+
+错误：`InvalidNamespace`、`MissingRight(NsUnmount)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Mount(cap)`）。源 Namespace 已销毁、挂载 Capability 已 stale 均不构成失败。
 
 ### 11.7 `ns_resolve`
 
@@ -1111,6 +1159,8 @@ ns_destroy(ns_cap) -> ()
 4. 指向该 Namespace、但位于其他容器中的 Capability 变为 stale token。
 
 其他 Namespace 中指向它的挂载项不会被全局扫描删除；解析这些项会得到 `MountTargetDead`，管理者可随后 `ns_unmount`。这一选择避免销毁操作隐式改写无授权的其他 Namespace。
+
+错误：`InvalidNamespace`、`NotHeld`、`MissingRight(NsDestroy)`、`StructuralCap`（是活动 Task 的结构性根 Namespace）。
 
 ## 12. Exception / Upcall
 
@@ -1263,6 +1313,8 @@ exc_unsubscribe(exc_source_cap) -> ()
 
 `exc_unsubscribe` 不消耗 Capability。调用者可以在任何时候取消订阅，包括异常源已销毁后（此时操作返回 `TargetDead`）。
 
+错误：`InvalidExcSource`（`exc_source_cap` 不是有效 CapId 或未指向 ExcSource）、`NotHeld`、`MissingRight(ExcSubscribe)`、`NotSubscribed`（调用者当前未订阅此源）、`TargetDead`（源已销毁）。`TargetDead` 是终态清理路径的明确失败返回，失败时订阅表不变。
+
 ### 12.5 异常递送
 
 异常在具体硬件事件发生时由 `KernelActor` 触发。内核执行：
@@ -1289,6 +1341,8 @@ raise_exception(exc_source_id, kind) -> ()
 如果 `faulting_task`（见 `ExceptionKind` 中的 task 字段）是 Running Task 且异常不可恢复（例如 DoubleFault），则该 Task 被标记为不可继续执行。当前抽象模型把这种行为建模为：Task 在 `raise_exception` 完成后不再 Running，必须通过 `schedule` 选择新 Task。具体恢复路径（如 `iretq` 到异常返回入口）由 COSIR 细化定义。
 
 **重复的 ExceptionRaised 事件具有相同的 `ExcSourceId` 和 `ExceptionKind` 类型，但 `faulting_vaddr`（对页故障）或其他字段值可以不同。** 每个事件都有独立的 `EventId`。
+
+**失败语义：无失败分支。** `raise_exception` 是 `KernelActor` 内部迁移；`exc_source_id` 由内核保证指向活跃源，`kind` 与源声明不一致属内核缺陷（§12.3），不作为抽象层可返回的错误。本步骤不引入用户可触发的失败。
 
 ### 12.6 异常源创建与销毁
 
@@ -1338,6 +1392,8 @@ exc_source_destroy(exc_source_cap) -> ()
 5. 指向该源的 Capability 变为 stale token。
 
 销毁异常源不会向订阅者发送通知。已经排队但未交付的通知不受影响。
+
+错误：`InvalidExcSource`、`NotHeld`、`MissingRight(ExcSourceDestroy)`。
 
 ### 12.7 与 Send/Recv 的关系
 
@@ -1472,6 +1528,8 @@ audit(cap) -> AuditTrace
 
 `audit` 是纯查询，不参与权限判定，也不改变状态。权限判定只依赖当前活动对象、Capability 描述和位置。
 
+错误：`InvalidCap`（`cap` 不是有效 CapId）、`NotHeld`（不在 `HeldBy(caller)`）。目标对象已销毁不构成失败——审计链仍可返回其创建与销毁事件。
+
 ## 14. Bootstrap
 
 ```text
@@ -1605,11 +1663,13 @@ dev_mmio_map(dev_cap, task_cap, target_base, access) -> ()
 
 成功动作：对 region 中每个页建立 `vspace` 映射（类似 `memseg_map`，但映射的是设备物理地址，不是 Segment）。
 
+错误：`InvalidDevice`（`dev_cap` 未指向有效设备；本规范中该标识统一表示“设备 Capability 参数无效”）、`MissingRight(DevMMIOR)`/`MissingRight(DevMMIOW)`（按 `access`）、`InvalidAccess`（`access` 为空或超出 `region.allowed_access`）、`InvalidTask`、`MissingRight(TaskManageVSpace)`、`Overlap`（`[target_base, target_base + size_pages)` 已被映射）。
+
 ```text
 dev_mmio_unmap(task_cap, target_base, size_pages) -> ()
 ```
 
-语义同 `memseg_unmap`，作用于通过 `dev_mmio_map` 建立的映射。
+语义同 `memseg_unmap`，作用于通过 `dev_mmio_map` 建立的映射；错误集合同 §7.3 `memseg_unmap`。
 
 ### 15.5 I/O Port（仅 x86_64）
 
@@ -1633,6 +1693,8 @@ I/O port 授权在 Task 切换时由 COSIR 细化层通过 IOPL 或 TSS I/O bitm
 **架构警告：** 在 x86_64 细化中，IOPL（I/O Privilege Level）和 TSS（Task State Segment）I/O bitmap 的授权粒度是 **per-Task** 而非 **per-port**。持有任一 `IOPortRange` Capability 的 Task 在获得 I/O 特权（IOPL=3 或 bitmap 清零对应位）后，硬件层面可以访问其 bitmap 覆盖范围内的所有端口。COSIR 细化层可以将 bitmap 精确配置到每个 Task 实际持有 Capability 的端口范围，确保"超出授权范围的端口指令触发 #GP 异常"。但这一精确性取决于 bitmap 的每端口位控制机制——如果平台在单个 bitmap 中覆盖了 Task 未授权的端口范围，则 Task 在硬件层面可能获得超出 Capability 授权的端口访问能力。
 
 抽象状态机的安全声明（§17.8）依赖 COSIR 细化层正确地实现了 per-port bitmap 隔离。具体实现必须确保每个 Task 的 TSS I/O bitmap 或等效机制严格限制到仅其持有 `IOPortRange` Capability 覆盖的端口范围。
+
+**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件（`base_port`/`port_count` 由平台枚举提供，`port_count > 0` 为构造约束）；资源耗尽按 §6.2 排除。
 
 ### 15.6 DMA 缓冲区
 
@@ -1691,6 +1753,8 @@ dev_irq_create(irq_number) -> dev_cap
 3. 铸造根 Capability，权限为 `{Derive, DevInterruptSubscribe, DevDestroy}`；
 4. 将 `ExcSubscribe` Capability 放在 `HeldBy(caller)`，使创建者可以自行委托中断订阅。
 
+**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件；`irq_number` 由平台设备枚举提供，其合法性属细化层职责，不作为抽象层失败。
+
 硬件中断到来时，COSIR 细化层：
 
 1. 识别 `irq_number` 对应的 `InterruptLine` 设备；
@@ -1705,6 +1769,8 @@ dev_irq_mask(dev_cap) / dev_irq_unmask(dev_cap) -> ()
 前置条件：持有 `DevInterruptSubscribe`。
 
 成功动作：在 COSIR 细化层，这控制中断控制器的屏蔽位。抽象状态机不建模具体的屏蔽状态——它只建模"订阅者仍然可以接收通知"这一事实。
+
+错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(DevInterruptSubscribe)`。
 
 ### 15.8 设备销毁
 
@@ -1722,6 +1788,8 @@ dev_destroy(dev_cap) -> ()
 - **InterruptLine：** 同时销毁关联的 `ExcSource`（所有订阅被终止，但排队的通知保留）；删除设备对象。
 
 销毁后的设备 Capability 变为 stale token。
+
+错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(DevDestroy)`。
 
 ### 15.9 现有对象模型的扩展
 
