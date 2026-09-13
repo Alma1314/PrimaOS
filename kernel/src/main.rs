@@ -130,6 +130,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             protocol::bootstrap_ready(&state.snapshot);
                                             // K：安装授权表，供后续 syscall 授权查询使用。
                                             kernel::bootstrap::install(state);
+                                            // L：显式创建预定义异常源，并实证一次 pending 直投。
+                                            if kernel::bootstrap::platform_init_exception_sources()
+                                                .is_err()
+                                            {
+                                                protocol::panic_event();
+                                                serial::flush();
+                                                qemu::exit(qemu::PANIC)
+                                            }
                                         }
                                         Err(_) => {
                                             protocol::panic_event();

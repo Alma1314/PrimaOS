@@ -260,6 +260,62 @@ pub(crate) fn syscall_auth_ready(witness: &kernel::syscall::AuthWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 L：异常订阅/取消订阅见证（真实 Capability 门控 + Audit 计数）。
+pub(crate) fn exc_ready(witness: &kernel::syscall::ExcWitness) {
+    write_prefix("exc_ready", "ok");
+    serial::write_bytes(b"|data=cs_all=");
+    write_u32(witness.cs_all);
+    serial::write_bytes(b";sub_ret=");
+    write_hex_u64(witness.sub_ret);
+    serial::write_bytes(b";dup_ret=");
+    write_hex_u64(witness.dup_ret);
+    serial::write_bytes(b";kind_ret=");
+    write_hex_u64(witness.kind_ret);
+    serial::write_bytes(b";sub2_ret=");
+    write_hex_u64(witness.sub2_ret);
+    serial::write_bytes(b";unsub_ret=");
+    write_hex_u64(witness.unsub_ret);
+    serial::write_bytes(b";unsub2_ret=");
+    write_hex_u64(witness.unsub2_ret);
+    serial::write_bytes(b";receipt_sub=");
+    write_hex_u64(witness.receipt_sub);
+    serial::write_bytes(b";receipt_dup=");
+    write_hex_u64(witness.receipt_dup);
+    serial::write_bytes(b";receipt_kind=");
+    write_hex_u64(witness.receipt_kind);
+    serial::write_bytes(b";receipt_sub2=");
+    write_hex_u64(witness.receipt_sub2);
+    serial::write_bytes(b";receipt_unsub=");
+    write_hex_u64(witness.receipt_unsub);
+    serial::write_bytes(b";receipt_unsub2=");
+    write_hex_u64(witness.receipt_unsub2);
+    serial::write_bytes(b";audit_created=");
+    write_u32(witness.audit_created as u32);
+    serial::write_bytes(b";audit_subscribed=");
+    write_u32(witness.audit_subscribed as u32);
+    serial::write_bytes(b";audit_unsubscribed=");
+    write_u32(witness.audit_unsubscribed as u32);
+    serial::write_bytes(b"\r\n");
+}
+
+/// 切片 L：平台初始化那次 pending 直投见证（BlockedRecv → pending → Ready）。
+pub(crate) fn exc_pending_ready(witness: &kernel::syscall::PendingWitness) {
+    write_prefix("exc_pending_ready", "ok");
+    serial::write_bytes(b"|data=delivered=");
+    write_u32(witness.delivered as u32);
+    serial::write_bytes(b";pending=");
+    write_u32(witness.pending as u32);
+    serial::write_bytes(b";message_id=");
+    write_u32(witness.message_id);
+    serial::write_bytes(b";payload=");
+    write_hex_u64(witness.payload);
+    serial::write_bytes(b";task_ready_after=");
+    write_u32(witness.task_ready_after as u32);
+    serial::write_bytes(b";audit_raised=");
+    write_u32(witness.audit_raised as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
 pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_prefix("syscall_fast_ready", "ok");

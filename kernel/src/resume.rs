@@ -106,6 +106,11 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 K：随后 3 次 `int 0x80` 能力授权查询。
     let auth = kernel::syscall::auth_witness();
     protocol::syscall_auth_ready(&auth);
+    // 切片 L：随后 6 次 `int 0x80` 异常订阅/取消订阅，以及平台初始化那次 pending 直投。
+    let exc = kernel::syscall::exc_witness();
+    protocol::exc_ready(&exc);
+    let pending = kernel::syscall::pending_witness();
+    protocol::exc_pending_ready(&pending);
     // 切片 J：此后还有一次 `syscall` 指令快路径往返。
     let fast = kernel::syscall::fast_witness();
     protocol::syscall_fast_ready(&fast);

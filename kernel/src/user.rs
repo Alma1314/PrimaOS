@@ -9,8 +9,11 @@
 //!    返回值写入 `Y+8..Y+48`；
 //! 4. 3 次能力授权查询（SPEC-049）：持有 `SegMapR`（授予）、缺 `SegMapW`（`EACCES`）、
 //!    不存在的 cap（`ENOENT`），依次写入 `Y+64..Y+80`；
-//! 5. 一次 `syscall` 指令（x86-64 快路径，SPEC-048）：ECHO，把返回值写入 `Y+56`；
-//! 6. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
+//! 5. 6 次异常订阅（SPEC-050）：订阅 `page_fault`（授予）、重复订阅（`EACCES`）、
+//!    kind 不符（`EINVAL`）、订阅 `syscall_trap`（授予）、取消订阅、再次取消（`EACCES`），
+//!    依次写入 `Y+88..Y+128`；
+//! 6. 一次 `syscall` 指令（x86-64 快路径，SPEC-048）：ECHO，把返回值写入 `Y+56`；
+//! 7. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
 //!
 //! **范围边界：** 单核、非抢占、单任务最小见证；syscall 部分是**递送**而非抽象模型的
 //! capability/订阅授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
@@ -19,8 +22,10 @@ use crate::exc::SretFrame;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::syscall::{
-    AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
-    SYS_AUTHORIZE, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_SUM4, UNSET_CAP,
+    AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP,
+    EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
+    SYS_AUTHORIZE, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE,
+    SYS_EXC_UNSUBSCRIBE, SYS_SUM4, UNSET_CAP,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -40,7 +45,7 @@ pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 357;
+pub const USER_CODE_LEN: usize = 526;
 
 /// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
 const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
@@ -66,7 +71,10 @@ const fn put_imm64(code: &mut [u8; USER_CODE_LEN], at: usize, opcode0: u8, opcod
 /// `mov rdi, X; mov rsi, 8; mov rax, SYS_COPY_IN; int 0x80; mov [rcx+24], rax;`（回执 3）
 /// `mov rdi, BAD_PTR; mov rsi, 8; mov rax, SYS_COPY_IN; int 0x80; mov [rcx+32], rax;`（回执 4）
 /// `mov rax, 0; int 0x80; mov [rcx+40], rax;`（回执 5）
-/// `mov rax, SYS_BAD; int 0x80; mov [rcx+48], rax; int3`（回执 6）
+/// `mov rax, SYS_BAD; int 0x80; mov [rcx+48], rax;`（回执 6）
+/// 6 次异常订阅（SPEC-050）：订阅 page_fault 成功、重复（`EACCES`）、kind 不符（`EINVAL`）、
+/// 订阅 syscall_trap 成功、取消成功、再次取消（`EACCES`），写 `Y+88..Y+128`；
+/// `mov rdi, FAST_ARG; mov rax, SYS_ECHO; syscall; mov rcx, Y; mov [rcx+56], rax; int3`。
 pub const fn user_code() -> [u8; USER_CODE_LEN] {
     let mut code = [0u8; USER_CODE_LEN];
     // 0: mov rdx, X
@@ -161,18 +169,68 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 314, &[0xCD, 0x80]);
     // 316: mov [rcx+80], rax
     put(&mut code, 316, &[0x48, 0x89, 0x41, 0x50]);
-    // 320: mov rdi, FAST_ARG
-    put_imm64(&mut code, 320, 0x48, 0xBF, FAST_ARG);
-    // 330: mov rax, SYS_ECHO
-    put_imm64(&mut code, 330, 0x48, 0xB8, SYS_ECHO);
-    // 340: 0F 05  syscall（快路径；破坏 rcx/r11）
-    put(&mut code, 340, &[0x0F, 0x05]);
-    // 342: mov rcx, Y（syscall 破坏了 rcx，需重载回执基址）
-    put_imm64(&mut code, 342, 0x48, 0xB9, USER_Y_VA);
-    // 352: mov [rcx+56], rax
-    put(&mut code, 352, &[0x48, 0x89, 0x41, 0x38]);
-    // 356: int3
-    code[356] = 0xCC;
+    // 320: mov rdi, EXC_PAGE_FAULT_CAP
+    put_imm64(&mut code, 320, 0x48, 0xBF, EXC_PAGE_FAULT_CAP);
+    // 330: mov rsi, EXC_KIND_PAGEFAULT
+    put_imm64(&mut code, 330, 0x48, 0xBE, EXC_KIND_PAGEFAULT);
+    // 340: mov rax, SYS_EXC_SUBSCRIBE
+    put_imm64(&mut code, 340, 0x48, 0xB8, SYS_EXC_SUBSCRIBE);
+    // 350: int 0x80 → 订阅成功（返回 source_id 1）
+    put(&mut code, 350, &[0xCD, 0x80]);
+    // 352: mov [rcx+88], rax
+    put(&mut code, 352, &[0x48, 0x89, 0x41, 0x58]);
+    // 356: mov rsi, EXC_KIND_PAGEFAULT（rdi 仍是 cap）
+    put_imm64(&mut code, 356, 0x48, 0xBE, EXC_KIND_PAGEFAULT);
+    // 366: mov rax, SYS_EXC_SUBSCRIBE
+    put_imm64(&mut code, 366, 0x48, 0xB8, SYS_EXC_SUBSCRIBE);
+    // 376: int 0x80 → 重复订阅（EACCES）
+    put(&mut code, 376, &[0xCD, 0x80]);
+    // 378: mov [rcx+96], rax
+    put(&mut code, 378, &[0x48, 0x89, 0x41, 0x60]);
+    // 382: mov rsi, EXC_KIND_SYSCALLTRAP
+    put_imm64(&mut code, 382, 0x48, 0xBE, EXC_KIND_SYSCALLTRAP);
+    // 392: mov rax, SYS_EXC_SUBSCRIBE
+    put_imm64(&mut code, 392, 0x48, 0xB8, SYS_EXC_SUBSCRIBE);
+    // 402: int 0x80 → kind 不符（EINVAL）
+    put(&mut code, 402, &[0xCD, 0x80]);
+    // 404: mov [rcx+104], rax
+    put(&mut code, 404, &[0x48, 0x89, 0x41, 0x68]);
+    // 408: mov rdi, EXC_SYSCALL_TRAP_CAP
+    put_imm64(&mut code, 408, 0x48, 0xBF, EXC_SYSCALL_TRAP_CAP);
+    // 418: mov rsi, EXC_KIND_SYSCALLTRAP
+    put_imm64(&mut code, 418, 0x48, 0xBE, EXC_KIND_SYSCALLTRAP);
+    // 428: mov rax, SYS_EXC_SUBSCRIBE
+    put_imm64(&mut code, 428, 0x48, 0xB8, SYS_EXC_SUBSCRIBE);
+    // 438: int 0x80 → 订阅成功（返回 source_id 2）
+    put(&mut code, 438, &[0xCD, 0x80]);
+    // 440: mov [rcx+112], rax
+    put(&mut code, 440, &[0x48, 0x89, 0x41, 0x70]);
+    // 444: mov rdi, EXC_PAGE_FAULT_CAP
+    put_imm64(&mut code, 444, 0x48, 0xBF, EXC_PAGE_FAULT_CAP);
+    // 454: mov rax, SYS_EXC_UNSUBSCRIBE
+    put_imm64(&mut code, 454, 0x48, 0xB8, SYS_EXC_UNSUBSCRIBE);
+    // 464: int 0x80 → 取消成功（返回 source_id 1）
+    put(&mut code, 464, &[0xCD, 0x80]);
+    // 466: mov [rcx+120], rax
+    put(&mut code, 466, &[0x48, 0x89, 0x41, 0x78]);
+    // 470: mov rax, SYS_EXC_UNSUBSCRIBE（rdi 仍是 page_fault cap）
+    put_imm64(&mut code, 470, 0x48, 0xB8, SYS_EXC_UNSUBSCRIBE);
+    // 480: int 0x80 → 未订阅（EACCES）
+    put(&mut code, 480, &[0xCD, 0x80]);
+    // 482: mov [rcx+128], rax（disp32：0x80 作 disp8 会被符号扩展成 -128）
+    put(&mut code, 482, &[0x48, 0x89, 0x81, 0x80, 0x00, 0x00, 0x00]);
+    // 489: mov rdi, FAST_ARG
+    put_imm64(&mut code, 489, 0x48, 0xBF, FAST_ARG);
+    // 499: mov rax, SYS_ECHO
+    put_imm64(&mut code, 499, 0x48, 0xB8, SYS_ECHO);
+    // 509: 0F 05  syscall（快路径；破坏 rcx/r11）
+    put(&mut code, 509, &[0x0F, 0x05]);
+    // 511: mov rcx, Y（syscall 破坏了 rcx，需重载回执基址）
+    put_imm64(&mut code, 511, 0x48, 0xB9, USER_Y_VA);
+    // 521: mov [rcx+56], rax
+    put(&mut code, 521, &[0x48, 0x89, 0x41, 0x38]);
+    // 525: int3
+    code[525] = 0xCC;
     code
 }
 
@@ -360,7 +418,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 357);
+        assert_eq!(USER_CODE_LEN, 526);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -439,16 +497,55 @@ mod tests {
         assert_eq!(&code[306..314], &SYS_AUTHORIZE.to_le_bytes());
         assert_eq!(&code[314..316], &[0xCD, 0x80]);
         assert_eq!(&code[316..320], &[0x48, 0x89, 0x41, 0x50]); // [rcx+80]
-        // 快路径：syscall 指令调用 ECHO，再重载 rcx 写 Y+56。
+        // 异常订阅六次（SPEC-050）。
         assert_eq!(&code[320..322], &[0x48, 0xBF]);
-        assert_eq!(&code[322..330], &FAST_ARG.to_le_bytes());
-        assert_eq!(&code[330..332], &[0x48, 0xB8]);
-        assert_eq!(&code[332..340], &SYS_ECHO.to_le_bytes());
-        assert_eq!(&code[340..342], &[0x0F, 0x05]); // syscall
-        assert_eq!(&code[342..344], &[0x48, 0xB9]); // mov rcx, imm64
-        assert_eq!(&code[344..352], &USER_Y_VA.to_le_bytes());
-        assert_eq!(&code[352..356], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
-        assert_eq!(code[356], 0xCC); // int3
+        assert_eq!(&code[322..330], &EXC_PAGE_FAULT_CAP.to_le_bytes());
+        assert_eq!(&code[330..332], &[0x48, 0xBE]);
+        assert_eq!(&code[332..340], &EXC_KIND_PAGEFAULT.to_le_bytes());
+        assert_eq!(&code[340..342], &[0x48, 0xB8]);
+        assert_eq!(&code[342..350], &SYS_EXC_SUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[350..352], &[0xCD, 0x80]);
+        assert_eq!(&code[352..356], &[0x48, 0x89, 0x41, 0x58]); // [rcx+88]
+        assert_eq!(&code[356..358], &[0x48, 0xBE]);
+        assert_eq!(&code[358..366], &EXC_KIND_PAGEFAULT.to_le_bytes());
+        assert_eq!(&code[366..368], &[0x48, 0xB8]);
+        assert_eq!(&code[368..376], &SYS_EXC_SUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[376..378], &[0xCD, 0x80]);
+        assert_eq!(&code[378..382], &[0x48, 0x89, 0x41, 0x60]); // [rcx+96]
+        assert_eq!(&code[382..384], &[0x48, 0xBE]);
+        assert_eq!(&code[384..392], &EXC_KIND_SYSCALLTRAP.to_le_bytes());
+        assert_eq!(&code[392..394], &[0x48, 0xB8]);
+        assert_eq!(&code[394..402], &SYS_EXC_SUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[402..404], &[0xCD, 0x80]);
+        assert_eq!(&code[404..408], &[0x48, 0x89, 0x41, 0x68]); // [rcx+104]
+        assert_eq!(&code[408..410], &[0x48, 0xBF]);
+        assert_eq!(&code[410..418], &EXC_SYSCALL_TRAP_CAP.to_le_bytes());
+        assert_eq!(&code[418..420], &[0x48, 0xBE]);
+        assert_eq!(&code[420..428], &EXC_KIND_SYSCALLTRAP.to_le_bytes());
+        assert_eq!(&code[428..430], &[0x48, 0xB8]);
+        assert_eq!(&code[430..438], &SYS_EXC_SUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[438..440], &[0xCD, 0x80]);
+        assert_eq!(&code[440..444], &[0x48, 0x89, 0x41, 0x70]); // [rcx+112]
+        assert_eq!(&code[444..446], &[0x48, 0xBF]);
+        assert_eq!(&code[446..454], &EXC_PAGE_FAULT_CAP.to_le_bytes());
+        assert_eq!(&code[454..456], &[0x48, 0xB8]);
+        assert_eq!(&code[456..464], &SYS_EXC_UNSUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[464..466], &[0xCD, 0x80]);
+        assert_eq!(&code[466..470], &[0x48, 0x89, 0x41, 0x78]); // [rcx+120]
+        assert_eq!(&code[470..472], &[0x48, 0xB8]);
+        assert_eq!(&code[472..480], &SYS_EXC_UNSUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[480..482], &[0xCD, 0x80]);
+        assert_eq!(&code[482..489], &[0x48, 0x89, 0x81, 0x80, 0, 0, 0]); // [rcx+128] disp32
+        // 快路径：syscall 指令调用 ECHO，再重载 rcx 写 Y+56。
+        assert_eq!(&code[489..491], &[0x48, 0xBF]);
+        assert_eq!(&code[491..499], &FAST_ARG.to_le_bytes());
+        assert_eq!(&code[499..501], &[0x48, 0xB8]);
+        assert_eq!(&code[501..509], &SYS_ECHO.to_le_bytes());
+        assert_eq!(&code[509..511], &[0x0F, 0x05]); // syscall
+        assert_eq!(&code[511..513], &[0x48, 0xB9]); // mov rcx, imm64
+        assert_eq!(&code[513..521], &USER_Y_VA.to_le_bytes());
+        assert_eq!(&code[521..525], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
+        assert_eq!(code[525], 0xCC); // int3
     }
 
     #[test]

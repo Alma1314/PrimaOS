@@ -16,6 +16,21 @@ const MAX_CAPABILITY_POSITIONS: usize =
 const MAX_TASKS: usize = 8;
 const MAX_AUDIT_EVENTS: usize = 32;
 
+/// 切片 L：内核 actor 的 Task ID。异常通知以此作为发送者，永不参与 `is_live` 校验。
+pub const KERNEL_ACTOR: u32 = 0;
+/// 切片 L：异常源数量上限（page_fault_source + syscall_trap_source + 余量）。
+const MAX_EXC_SOURCES: usize = 4;
+/// 切片 L：单个异常源的订阅者上限。
+const MAX_SUBSCRIBERS: usize = 4;
+/// 切片 L：异常源 Capability ID 起始值（避开初始 1~3 与测试派生 ID）。
+pub const EXC_SOURCE_CAP_BASE: u32 = 64;
+/// 切片 L：异常源根 Capability 的权限串（对齐 §12.6）。
+pub const EXC_SOURCE_RIGHTS: &str = "Derive,ExcSubscribe,ExcSourceDestroy";
+/// 切片 L：预定义 `page_fault_source` 的 ID。
+pub const PAGE_FAULT_SOURCE_ID: u32 = 1;
+/// 切片 L：预定义 `syscall_trap_source` 的 ID。
+pub const SYSCALL_TRAP_SOURCE_ID: u32 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuditEvent {
     MessageSent {
@@ -45,6 +60,28 @@ pub enum AuditEvent {
     },
     CapabilityRevoked {
         cap_id: u32,
+    },
+    /// 切片 L：异常源创建（§12.6）。
+    ExcSourceCreated {
+        source_id: u32,
+        cap_id: u32,
+        kind: ExcKind,
+    },
+    /// 切片 L：订阅成功（§12.4）。
+    ExcSubscribed {
+        source_id: u32,
+        task: u32,
+        kind: ExcKind,
+    },
+    /// 切片 L：取消订阅（§12.4）。
+    ExcUnsubscribed {
+        source_id: u32,
+        task: u32,
+    },
+    /// 切片 L：异常触发（§12.5）。
+    ExceptionRaised {
+        source_id: u32,
+        kind: ExcKind,
     },
 }
 
@@ -503,6 +540,152 @@ fn has_right(rights: &str, wanted: &str) -> bool {
     rights == "all" || rights.split(',').any(|right| right == wanted)
 }
 
+// ---------------------------------------------------------------------------
+// 切片 L：异常源 / 订阅 / pending 递送（COSIR §12.4~12.6）
+// ---------------------------------------------------------------------------
+
+/// 切片 L：异常种类。当前只建模两个预定义单 kind 源。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExcKind {
+    /// 页故障（对应 `page_fault_source`）。
+    PageFault,
+    /// syscall trap（对应 `syscall_trap_source`）。
+    SyscallTrap,
+}
+
+/// 异常种类的稳定编码（协议/镜像常量与 syscall 共用）。
+pub const fn kind_code(kind: ExcKind) -> u32 {
+    match kind {
+        ExcKind::PageFault => 1,
+        ExcKind::SyscallTrap => 2,
+    }
+}
+
+/// 异常种类的稳定名字（日志用）。
+pub const fn kind_name(kind: ExcKind) -> &'static str {
+    match kind {
+        ExcKind::PageFault => "page_fault",
+        ExcKind::SyscallTrap => "syscall_trap",
+    }
+}
+
+/// 切片 L：订阅生命周期与递送的错误（对齐 §12.4/§12.5 错误名）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExcError {
+    /// 授权表尚未安装。
+    NotInstalled,
+    /// 找不到源（cap 不指向任何异常源）。
+    NoSuchSource,
+    /// 源不支持的 kind（`InvalidKind`）。
+    InvalidKind,
+    /// kind 与源的 kind 不兼容（`KindMismatch`）。
+    KindMismatch,
+    /// 缺 `ExcSubscribe`（`MissingRight`）。
+    MissingRight,
+    /// cap 不在调用者手中。
+    NotHolder,
+    /// 已订阅同一源（`AlreadySubscribed`）。
+    AlreadySubscribed,
+    /// 未订阅（`NotSubscribed`）。
+    NotSubscribed,
+    /// 订阅者/源容量已满。
+    Full,
+    /// Audit 容量已满。
+    AuditFull,
+    /// 目标 Task 不存在或已死。
+    NoSuchTask,
+}
+
+/// 切片 L：一个异常源。capability 元数据内联在源记录里，**不进入 positions 表**，
+/// 以免破坏 `positions.count == 3 + derivations.count` 不变量。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcSource {
+    pub id: u32,
+    pub kind: ExcKind,
+    /// 指向本源的根 Capability ID（holder 为创建时的 init Task）。
+    pub cap_id: u32,
+    pub cap_holder: u32,
+    pub cap_rights: &'static str,
+    pub subscribers: [Option<u32>; MAX_SUBSCRIBERS],
+    pub count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcSourceTable {
+    pub entries: [Option<ExcSource>; MAX_EXC_SOURCES],
+    pub count: usize,
+    next_cap_id: u32,
+}
+
+impl ExcSourceTable {
+    const fn empty() -> Self {
+        Self {
+            entries: [None; MAX_EXC_SOURCES],
+            count: 0,
+            next_cap_id: EXC_SOURCE_CAP_BASE,
+        }
+    }
+
+    pub fn find(&self, source_id: u32) -> Option<&ExcSource> {
+        self.entries[..self.count]
+            .iter()
+            .flatten()
+            .find(|source| source.id == source_id)
+    }
+
+    pub fn find_by_cap(&self, cap_id: u32) -> Option<&ExcSource> {
+        self.entries[..self.count]
+            .iter()
+            .flatten()
+            .find(|source| source.cap_id == cap_id)
+    }
+
+    fn find_mut(&mut self, source_id: u32) -> Option<&mut ExcSource> {
+        self.entries[..self.count]
+            .iter_mut()
+            .flatten()
+            .find(|source| source.id == source_id)
+    }
+}
+
+/// 切片 L：一次 `raise_exception` 的实测结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RaiseOutcome {
+    /// 投递到的订阅者数量。
+    pub delivered: usize,
+    /// 经 BlockedRecv 直投（写入 pending 并唤醒）的数量。
+    pub pending: usize,
+    /// 通知消息 ID。
+    pub message_id: u32,
+    /// 通知 payload（编码 source_id + kind）。
+    pub payload: u64,
+}
+
+/// 切片 L：平台初始化期间那次 pending 递送的留证。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcBootRecord {
+    pub delivered: usize,
+    pub pending: usize,
+    pub message_id: u32,
+    pub payload: u64,
+    /// 取回 pending 后目标 Task 的状态是否回到 Ready。
+    pub task_ready_after: bool,
+}
+
+/// 切片 L：四类异常相关 Audit 事件的计数（供见证对账）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcAuditCounts {
+    pub created: usize,
+    pub subscribed: usize,
+    pub unsubscribed: usize,
+    pub raised: usize,
+}
+
+/// 切片 L：异常通知 payload——低位 16 位 source_id，高 16 位 kind 编码。
+pub const fn exc_notification_payload(source_id: u32, kind: ExcKind) -> u64 {
+    (source_id as u64 & 0xFFFF) | ((kind_code(kind) as u64) << 16)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityPositionError {
     NoSuchCapability,
@@ -704,6 +887,10 @@ pub struct BootstrapState {
     pub ipc: IpcQueue,
     pub audit: AuditLog,
     pub frame_ownership: FrameOwnership,
+    /// 切片 L：异常源表（capability 元数据内联，不入 positions）。
+    pub exc_sources: ExcSourceTable,
+    /// 切片 L：平台初始化期间 pending 递送的留证。
+    pub exc_boot: Option<ExcBootRecord>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -834,6 +1021,41 @@ impl BootstrapState {
                 CapabilityLocation::Dropped => {}
             }
         }
+
+        // 切片 L：异常源 Capability 的独立校验。它们不进入 positions，故不能沿用
+        // `ids` 数组（容量只按 positions 计）；改为与初始/派生 Capability 交叉查重。
+        for source in self.exc_sources.entries[..self.exc_sources.count]
+            .iter()
+            .flatten()
+        {
+            if !self.tasks.is_live(source.cap_holder) || source.cap_rights.is_empty() {
+                return Err(AuthorityError::InvalidHolder);
+            }
+            if self
+                .capabilities
+                .iter()
+                .any(|capability| capability.id == source.cap_id)
+                || self.derivations.entries[..self.derivations.count]
+                    .iter()
+                    .flatten()
+                    .any(|capability| capability.id == source.cap_id)
+            {
+                return Err(AuthorityError::DuplicateCapability);
+            }
+            let duplicate = self.exc_sources.entries[..self.exc_sources.count]
+                .iter()
+                .flatten()
+                .filter(|candidate| candidate.cap_id == source.cap_id || candidate.id == source.id)
+                .count();
+            if duplicate > 1 || source.count > MAX_SUBSCRIBERS {
+                return Err(AuthorityError::DuplicateCapability);
+            }
+            for subscriber in source.subscribers[..source.count].iter().flatten() {
+                if !self.tasks.is_live(*subscriber) {
+                    return Err(AuthorityError::InvalidHolder);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -842,6 +1064,16 @@ impl BootstrapState {
     /// 成功返回 `cap_id` 作为授予凭据；失败区分“无此 Capability / 已失效 / 非持有者 /
     /// 缺权限”。逐操作权限与位置语义仍以 [[COSIR 原语规范]] 为准。
     pub fn authorize(&self, caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError> {
+        // 切片 L：异常源 Capability 不进入 positions，单独查 holder/rights。
+        if let Some(source) = self.exc_sources.find_by_cap(cap_id) {
+            if source.cap_holder != caller {
+                return Err(AuthError::NotHolder);
+            }
+            if !has_right(source.cap_rights, right) {
+                return Err(AuthError::MissingRight);
+            }
+            return Ok(cap_id);
+        }
         let position = self.positions.entries[..self.positions.count]
             .iter()
             .flatten()
@@ -870,6 +1102,315 @@ impl BootstrapState {
             return Err(AuthError::MissingRight);
         }
         Ok(cap_id)
+    }
+
+    /// 切片 L：`cap_id` 是否已被任何既有 Capability（初始/派生/异常源）占用。
+    fn capability_id_taken(&self, cap_id: u32) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.id == cap_id)
+            || self.derivations.entries[..self.derivations.count]
+                .iter()
+                .flatten()
+                .any(|capability| capability.id == cap_id)
+            || self.exc_sources.entries[..self.exc_sources.count]
+                .iter()
+                .flatten()
+                .any(|source| source.cap_id == cap_id)
+    }
+
+    /// 切片 L：创建一个异常源并铸造其根 Capability（holder 为 init Task）。
+    ///
+    /// 返回 `(source_id, cap_id)`。追加 `ExcSourceCreated` Audit（§12.6）。
+    pub fn exc_source_create(&mut self, kind: ExcKind) -> Result<(u32, u32), ExcError> {
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        if self.exc_sources.count == MAX_EXC_SOURCES {
+            return Err(ExcError::Full);
+        }
+        let source_id = self.exc_sources.count as u32 + 1;
+        let mut cap_id = self.exc_sources.next_cap_id;
+        while self.capability_id_taken(cap_id) {
+            cap_id += 1;
+        }
+        self.exc_sources.next_cap_id = cap_id + 1;
+        self.exc_sources.entries[self.exc_sources.count] = Some(ExcSource {
+            id: source_id,
+            kind,
+            cap_id,
+            cap_holder: INIT_TASK_ID,
+            cap_rights: EXC_SOURCE_RIGHTS,
+            subscribers: [None; MAX_SUBSCRIBERS],
+            count: 0,
+        });
+        self.exc_sources.count += 1;
+        self.audit.append(AuditEvent::ExcSourceCreated {
+            source_id,
+            cap_id,
+            kind,
+        });
+        Ok((source_id, cap_id))
+    }
+
+    /// 切片 L：`caller` 用持有的 `cap_id` 订阅 `kind`（§12.4）。
+    ///
+    /// 成功返回 source_id；失败不修改任何状态、不追加 Audit。
+    pub fn exc_subscribe(
+        &mut self,
+        caller: u32,
+        cap_id: u32,
+        kind: ExcKind,
+    ) -> Result<u32, ExcError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ExcError::NoSuchTask);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        let source = self
+            .exc_sources
+            .find_by_cap(cap_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        let source_id = source.id;
+        if source.cap_holder != caller {
+            return Err(ExcError::NotHolder);
+        }
+        if !has_right(source.cap_rights, "ExcSubscribe") {
+            return Err(ExcError::MissingRight);
+        }
+        if source.kind != kind {
+            return Err(ExcError::KindMismatch);
+        }
+        let source = self
+            .exc_sources
+            .find_mut(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.subscribers[..source.count]
+            .iter()
+            .flatten()
+            .any(|task| *task == caller)
+        {
+            return Err(ExcError::AlreadySubscribed);
+        }
+        if source.count == MAX_SUBSCRIBERS {
+            return Err(ExcError::Full);
+        }
+        source.subscribers[source.count] = Some(caller);
+        source.count += 1;
+        self.audit.append(AuditEvent::ExcSubscribed {
+            source_id,
+            task: caller,
+            kind,
+        });
+        Ok(source_id)
+    }
+
+    /// 切片 L：`caller` 取消对 `cap_id` 所指源的订阅（§12.4）。
+    pub fn exc_unsubscribe(&mut self, caller: u32, cap_id: u32) -> Result<u32, ExcError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ExcError::NoSuchTask);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        let source = self
+            .exc_sources
+            .find_by_cap(cap_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        let source_id = source.id;
+        if source.cap_holder != caller {
+            return Err(ExcError::NotHolder);
+        }
+        if !has_right(source.cap_rights, "ExcSubscribe") {
+            return Err(ExcError::MissingRight);
+        }
+        let source = self
+            .exc_sources
+            .find_mut(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        let Some(position) = source.subscribers[..source.count]
+            .iter()
+            .position(|task| task.is_some_and(|task| task == caller))
+        else {
+            return Err(ExcError::NotSubscribed);
+        };
+        for index in position..source.count - 1 {
+            source.subscribers[index] = source.subscribers[index + 1];
+        }
+        source.subscribers[source.count - 1] = None;
+        source.count -= 1;
+        self.audit.append(AuditEvent::ExcUnsubscribed {
+            source_id,
+            task: caller,
+        });
+        Ok(source_id)
+    }
+
+    /// 切片 L：内核侧登记订阅（不经理 Capability 门控），供平台初始化使用。
+    fn exc_source_add_subscriber(&mut self, source_id: u32, task: u32) -> Result<(), ExcError> {
+        if !self.tasks.is_live(task) {
+            return Err(ExcError::NoSuchTask);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        let kind = self
+            .exc_sources
+            .find(source_id)
+            .ok_or(ExcError::NoSuchSource)?
+            .kind;
+        let source = self
+            .exc_sources
+            .find_mut(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.subscribers[..source.count]
+            .iter()
+            .flatten()
+            .any(|subscriber| *subscriber == task)
+        {
+            return Err(ExcError::AlreadySubscribed);
+        }
+        if source.count == MAX_SUBSCRIBERS {
+            return Err(ExcError::Full);
+        }
+        source.subscribers[source.count] = Some(task);
+        source.count += 1;
+        self.audit.append(AuditEvent::ExcSubscribed {
+            source_id,
+            task,
+            kind,
+        });
+        Ok(())
+    }
+
+    /// 切片 L：`raise_exception`——追加 `ExceptionRaised` 并向每个订阅者递送通知（§12.5）。
+    ///
+    /// BlockedRecv 的订阅者走直投：`set_pending` 写入 pending 并置 Ready，追加
+    /// `MessageSent`+`MessageReceived`；其余订阅者入 IPC 队列，追加 `MessageSent`。
+    /// 容量在修改任何状态前预检，保证原子性。
+    pub fn exc_raise(&mut self, source_id: u32, kind: ExcKind) -> Result<RaiseOutcome, ExcError> {
+        let source = self
+            .exc_sources
+            .find(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.kind != kind {
+            return Err(ExcError::KindMismatch);
+        }
+        let mut subscribers = [None; MAX_SUBSCRIBERS];
+        let mut count = 0;
+        for task in source.subscribers[..source.count].iter().flatten() {
+            subscribers[count] = Some(*task);
+            count += 1;
+        }
+        let direct = subscribers[..count]
+            .iter()
+            .flatten()
+            .filter(|task| self.tasks.is_blocked_recv(**task))
+            .count();
+        let queued = count - direct;
+        let audit_events = 1 + direct * 2 + queued;
+        if !self.audit.can_append(audit_events) {
+            return Err(ExcError::AuditFull);
+        }
+        if queued > 0 && self.ipc.count + queued > MAX_MESSAGES {
+            return Err(ExcError::Full);
+        }
+        let payload = exc_notification_payload(source_id, kind);
+        self.audit
+            .append(AuditEvent::ExceptionRaised { source_id, kind });
+        let mut delivered = 0;
+        let mut pending = 0;
+        let mut first_message_id = 0;
+        for task in subscribers[..count].iter().flatten().copied() {
+            let message_id = self.ipc.allocate_id();
+            if first_message_id == 0 {
+                first_message_id = message_id;
+            }
+            let message = IpcMessage {
+                id: message_id,
+                sender: KERNEL_ACTOR,
+                receiver: task,
+                payload,
+                capabilities: [0; MAX_MESSAGE_CAPABILITIES],
+                capability_count: 0,
+            };
+            if self.tasks.is_blocked_recv(task) {
+                self.tasks
+                    .set_pending(task, message)
+                    .map_err(|_| ExcError::NoSuchTask)?;
+                self.audit.append(AuditEvent::MessageSent {
+                    message_id,
+                    sender: KERNEL_ACTOR,
+                    receiver: task,
+                });
+                self.audit.append(AuditEvent::MessageReceived {
+                    message_id,
+                    receiver: task,
+                });
+                pending += 1;
+            } else {
+                self.ipc.send(message).map_err(|_| ExcError::Full)?;
+                self.audit.append(AuditEvent::MessageSent {
+                    message_id,
+                    sender: KERNEL_ACTOR,
+                    receiver: task,
+                });
+            }
+            delivered += 1;
+        }
+        Ok(RaiseOutcome {
+            delivered,
+            pending,
+            message_id: first_message_id,
+            payload,
+        })
+    }
+
+    /// 切片 L：平台初始化——显式创建两个预定义异常源，并实证一次 pending 直投。
+    ///
+    /// task 2 订阅 page_fault_source 后进入 BlockedRecv；`exc_raise` 直投写入其
+    /// pending 并置 Ready，随后取回消息，留证于 `exc_boot`。
+    pub fn platform_init(&mut self) -> Result<(), ExcError> {
+        let (page_fault_source, _) = self.exc_source_create(ExcKind::PageFault)?;
+        let _ = self.exc_source_create(ExcKind::SyscallTrap)?;
+        self.create_task(2).map_err(|_| ExcError::Full)?;
+        self.exc_source_add_subscriber(page_fault_source, 2)?;
+        self.tasks.block_recv(2).map_err(|_| ExcError::NoSuchTask)?;
+        let outcome = self.exc_raise(page_fault_source, ExcKind::PageFault)?;
+        let message = self.tasks.take_pending(2);
+        let task_ready_after = self
+            .tasks
+            .find(2)
+            .is_some_and(|task| task.status == TaskStatus::Ready);
+        self.exc_boot = Some(ExcBootRecord {
+            delivered: outcome.delivered,
+            pending: outcome.pending,
+            message_id: message.map(|message| message.id).unwrap_or(0),
+            payload: message.map(|message| message.payload).unwrap_or(0),
+            task_ready_after,
+        });
+        Ok(())
+    }
+
+    /// 切片 L：四类异常相关 Audit 事件的计数。
+    pub fn exc_audit_counts(&self) -> ExcAuditCounts {
+        let mut counts = ExcAuditCounts {
+            created: 0,
+            subscribed: 0,
+            unsubscribed: 0,
+            raised: 0,
+        };
+        for event in self.audit.entries[..self.audit.count].iter().flatten() {
+            match event {
+                AuditEvent::ExcSourceCreated { .. } => counts.created += 1,
+                AuditEvent::ExcSubscribed { .. } => counts.subscribed += 1,
+                AuditEvent::ExcUnsubscribed { .. } => counts.unsubscribed += 1,
+                AuditEvent::ExceptionRaised { .. } => counts.raised += 1,
+                _ => {}
+            }
+        }
+        counts
     }
 
     pub fn derive_capability(
@@ -1316,6 +1857,8 @@ pub fn create_state(
             image_frames: inventory.image_frames as u64,
             free_frames: inventory.free_frames as u64,
         },
+        exc_sources: ExcSourceTable::empty(),
+        exc_boot: None,
     };
     state
         .validate_authority()
@@ -1345,13 +1888,63 @@ pub fn authorize(caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError
     }
 }
 
+/// 切片 L：平台初始化——创建预定义异常源并实证一次 pending 直投（进入 CPL3 前调用）。
+pub fn platform_init_exception_sources() -> Result<(), ExcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.platform_init(),
+            None => Err(ExcError::NotInstalled),
+        }
+    }
+}
+
+/// 切片 L：全局订阅查询（供 syscall 层使用）。
+pub fn exc_subscribe(caller: u32, cap_id: u32, kind: ExcKind) -> Result<u32, ExcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.exc_subscribe(caller, cap_id, kind),
+            None => Err(ExcError::NotInstalled),
+        }
+    }
+}
+
+/// 切片 L：全局取消订阅（供 syscall 层使用）。
+pub fn exc_unsubscribe(caller: u32, cap_id: u32) -> Result<u32, ExcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.exc_unsubscribe(caller, cap_id),
+            None => Err(ExcError::NotInstalled),
+        }
+    }
+}
+
+/// 切片 L：读取异常相关 Audit 计数（授权表未安装时返回 `None`）。
+pub fn exc_audit_counts() -> Option<ExcAuditCounts> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot).as_ref().map(|state| state.exc_audit_counts())
+    }
+}
+
+/// 切片 L：读取平台初始化期间的 pending 递送留证。
+pub fn exc_boot_record() -> Option<ExcBootRecord> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot).as_ref().and_then(|state| state.exc_boot)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityPositionError,
-        DeriveError, IMAGE_CAP_ID, IMAGE_RIGHTS, INIT_TASK_ID, INITIAL_CAPABILITY_COUNT,
-        InitialObject, IpcError, NAMESPACE_RIGHTS, TASK_RIGHTS, TaskError, TaskStatus,
-        create_snapshot, create_state,
+        DeriveError, EXC_SOURCE_RIGHTS, ExcError, ExcKind, IMAGE_CAP_ID, IMAGE_RIGHTS,
+        INIT_TASK_ID, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR,
+        NAMESPACE_RIGHTS, PAGE_FAULT_SOURCE_ID, SYSCALL_TRAP_SOURCE_ID, TASK_RIGHTS, TaskError,
+        TaskStatus, create_snapshot, create_state,
     };
     use crate::mem::FrameInventory;
 
@@ -1782,6 +2375,199 @@ mod tests {
         assert_eq!(
             state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapR"),
             Err(AuthError::Inactive)
+        );
+    }
+
+    fn exc_state() -> super::BootstrapState {
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        state.exc_source_create(ExcKind::PageFault).unwrap();
+        state.exc_source_create(ExcKind::SyscallTrap).unwrap();
+        state
+    }
+
+    #[test]
+    fn exc_source_create_mints_distinct_caps_and_audits() {
+        let state = exc_state();
+        assert_eq!(state.exc_sources.count, 2);
+        let page_fault = state.exc_sources.find(PAGE_FAULT_SOURCE_ID).unwrap();
+        assert_eq!(page_fault.kind, ExcKind::PageFault);
+        assert_eq!(page_fault.cap_id, 64);
+        assert_eq!(page_fault.cap_holder, INIT_TASK_ID);
+        assert_eq!(page_fault.cap_rights, EXC_SOURCE_RIGHTS);
+        assert_eq!(
+            state
+                .exc_sources
+                .find(SYSCALL_TRAP_SOURCE_ID)
+                .unwrap()
+                .cap_id,
+            65
+        );
+        let counts = state.exc_audit_counts();
+        assert_eq!(counts.created, 2);
+        assert_eq!(counts.subscribed, 0);
+        assert!(state.validate_authority().is_ok());
+    }
+
+    #[test]
+    fn exc_subscribe_checks_holder_kind_and_duplicates() {
+        let mut state = exc_state();
+        let page_cap = state.exc_sources.find(PAGE_FAULT_SOURCE_ID).unwrap().cap_id;
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
+            Ok(PAGE_FAULT_SOURCE_ID)
+        );
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
+            Err(ExcError::AlreadySubscribed)
+        );
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::SyscallTrap),
+            Err(ExcError::KindMismatch)
+        );
+        assert_eq!(
+            state.exc_subscribe(2, page_cap, ExcKind::PageFault),
+            Err(ExcError::NoSuchTask)
+        );
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, 999, ExcKind::PageFault),
+            Err(ExcError::NoSuchSource)
+        );
+        // 缺少 ExcSubscribe：把源 cap 权限改窄后触发 MissingRight。
+        state.exc_sources.entries[0].as_mut().unwrap().cap_rights = "Derive";
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
+            Err(ExcError::MissingRight)
+        );
+        // 非持有者：holder 仍是 init 时用别的 task id 会被 NoSuchTask 拦下，故直接改 holder。
+        state.exc_sources.entries[0].as_mut().unwrap().cap_rights = EXC_SOURCE_RIGHTS;
+        state.exc_sources.entries[0].as_mut().unwrap().cap_holder = 2;
+        assert_eq!(
+            state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
+            Err(ExcError::NotHolder)
+        );
+    }
+
+    #[test]
+    fn exc_unsubscribe_removes_and_audits_only_when_subscribed() {
+        let mut state = exc_state();
+        let page_cap = state.exc_sources.find(PAGE_FAULT_SOURCE_ID).unwrap().cap_id;
+        state
+            .exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault)
+            .unwrap();
+        assert_eq!(
+            state.exc_unsubscribe(INIT_TASK_ID, page_cap),
+            Ok(PAGE_FAULT_SOURCE_ID)
+        );
+        assert_eq!(
+            state.exc_unsubscribe(INIT_TASK_ID, page_cap),
+            Err(ExcError::NotSubscribed)
+        );
+        assert_eq!(
+            state.exc_sources.find(PAGE_FAULT_SOURCE_ID).unwrap().count,
+            0
+        );
+        assert_eq!(state.exc_audit_counts().unsubscribed, 1);
+    }
+
+    #[test]
+    fn exc_raise_writes_pending_for_blocked_subscriber() {
+        let mut state = exc_state();
+        let page_source = PAGE_FAULT_SOURCE_ID;
+        state.create_task(2).unwrap();
+        state.exc_source_add_subscriber(page_source, 2).unwrap();
+        state.tasks.block_recv(2).unwrap();
+
+        let outcome = state.exc_raise(page_source, ExcKind::PageFault).unwrap();
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(outcome.pending, 1);
+        assert_eq!(outcome.payload, (1 << 16) | 1);
+        assert_eq!(
+            state.tasks.find(2).unwrap().status,
+            TaskStatus::Ready,
+            "直投应把 BlockedRecv 唤醒为 Ready"
+        );
+        let message = state.tasks.take_pending(2).unwrap();
+        assert_eq!(message.sender, KERNEL_ACTOR);
+        assert_eq!(message.payload, outcome.payload);
+        assert_eq!(message.id, outcome.message_id);
+        assert_eq!(state.ipc.count, 0);
+        let counts = state.exc_audit_counts();
+        assert_eq!(counts.subscribed, 1);
+        assert_eq!(counts.raised, 1);
+        assert!(state.validate_authority().is_ok());
+    }
+
+    #[test]
+    fn exc_raise_queues_notification_for_running_subscriber() {
+        let mut state = exc_state();
+        let page_source = PAGE_FAULT_SOURCE_ID;
+        state.create_task(2).unwrap();
+        state.exc_source_add_subscriber(page_source, 2).unwrap();
+
+        let outcome = state.exc_raise(page_source, ExcKind::PageFault).unwrap();
+        assert_eq!(outcome.delivered, 1);
+        assert_eq!(outcome.pending, 0);
+        assert_eq!(state.ipc.count, 1);
+        let queued = state.ipc.entries[0].unwrap();
+        assert_eq!(queued.sender, KERNEL_ACTOR);
+        assert_eq!(queued.receiver, 2);
+        assert_eq!(queued.payload, outcome.payload);
+        assert!(state.validate_authority().is_ok());
+    }
+
+    #[test]
+    fn exc_raise_rejects_unknown_source_and_kind_mismatch() {
+        let mut state = exc_state();
+        assert_eq!(
+            state.exc_raise(99, ExcKind::PageFault),
+            Err(ExcError::NoSuchSource)
+        );
+        assert_eq!(
+            state.exc_raise(PAGE_FAULT_SOURCE_ID, ExcKind::SyscallTrap),
+            Err(ExcError::KindMismatch)
+        );
+    }
+
+    #[test]
+    fn platform_init_witnesses_pending_delivery_and_audits() {
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        state.platform_init().unwrap();
+        let boot = state.exc_boot.unwrap();
+        assert_eq!(boot.delivered, 1);
+        assert_eq!(boot.pending, 1);
+        assert!(boot.task_ready_after);
+        assert_eq!(boot.payload, (1 << 16) | 1);
+        assert_eq!(boot.message_id, 1);
+        let counts = state.exc_audit_counts();
+        assert_eq!(counts.created, 2);
+        assert_eq!(counts.subscribed, 1);
+        assert_eq!(counts.raised, 1);
+        assert!(state.validate_authority().is_ok());
+    }
+
+    #[test]
+    fn validate_authority_rejects_source_cap_collision() {
+        let mut state = exc_state();
+        state.exc_sources.entries[0].as_mut().unwrap().cap_id = IMAGE_CAP_ID;
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::DuplicateCapability)
         );
     }
 }

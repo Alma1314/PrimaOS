@@ -14,6 +14,8 @@ enum EventKind {
     UserCowReady,
     SyscallReady,
     SyscallAuthReady,
+    ExcReady,
+    ExcPendingReady,
     SyscallFastReady,
     ExcResumeReady,
     BootComplete,
@@ -74,6 +76,12 @@ const AUTH_GRANTED: u64 = IMAGE_CAP_ID;
 const ENOENT: u64 = 0xFFFF_FFFF_FFFF_FFFE;
 const EACCES: u64 = 0xFFFF_FFFF_FFFF_FFF3;
 
+/// 切片 L：异常订阅的镜像常量，与 `kernel/src/{syscall,bootstrap}.rs` 一致。
+const EXC_PAGE_FAULT_SOURCE: u64 = 1;
+const EXC_SYSCALL_TRAP_SOURCE: u64 = 2;
+/// 平台初始化那次 page_fault 通知 payload = source_id(1) | kind(1)<<16。
+const EXC_PAGE_FAULT_PAYLOAD: u64 = 0x1_0001;
+
 /// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
 const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 const FAST_STAR: u64 = 0x0020_0008_0000_0000;
@@ -94,7 +102,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 17] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 19] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -109,9 +117,11 @@ const EXPECTED_EVENTS: [(u32, EventKind); 17] = [
     (12, EventKind::UserCowReady),
     (13, EventKind::SyscallReady),
     (14, EventKind::SyscallAuthReady),
-    (15, EventKind::SyscallFastReady),
-    (16, EventKind::ExcResumeReady),
-    (17, EventKind::BootComplete),
+    (15, EventKind::ExcReady),
+    (16, EventKind::ExcPendingReady),
+    (17, EventKind::SyscallFastReady),
+    (18, EventKind::ExcResumeReady),
+    (19, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -253,6 +263,20 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::SyscallAuthReady)
     {
         validate_syscall_auth_data(auth.data.as_deref())?;
+    }
+
+    if let Some(exc) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ExcReady)
+    {
+        validate_exc_data(exc.data.as_deref())?;
+    }
+
+    if let Some(pending) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ExcPendingReady)
+    {
+        validate_exc_pending_data(pending.data.as_deref())?;
     }
 
     if let Some(fast) = events
@@ -413,9 +437,9 @@ fn validate_syscall_data(data: Option<&str>) -> Result<(), String> {
     let receipt5 = receipt5.ok_or_else(|| "missing receipt5 in syscall_ready data".to_owned())?;
     let receipt6 = receipt6.ok_or_else(|| "missing receipt6 in syscall_ready data".to_owned())?;
 
-    if calls != 9 {
+    if calls != 15 {
         return Err(format!(
-            "syscall_ready calls ({calls}) must be 9 — 6 ABI battery + 3 authorization probes"
+            "syscall_ready calls ({calls}) must be 15 — 6 ABI battery + 3 authorization probes + 6 exception subscription probes"
         ));
     }
     if cs != USER_CS || cs & 3 != 3 {
@@ -671,6 +695,204 @@ fn validate_syscall_auth_data(data: Option<&str>) -> Result<(), String> {
     if receipt_unknown != unknown_ret {
         return Err(format!(
             "syscall_auth_ready receipt_unknown (0x{receipt_unknown:x}) must equal unknown_ret 0x{unknown_ret:x}"
+        ));
+    }
+    Ok(())
+}
+
+/// 校验切片 L 的异常订阅证据：全部来自 CPL3；订阅成功（返回 source_id）、重复订阅
+/// `EACCES`、kind 不符 `EINVAL`、取消成功、再次取消 `EACCES`，回执与返回值一致，
+/// 且 Audit 计数符合成功状态修改的次数。
+fn validate_exc_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "exc_ready event is missing its data field".to_owned())?;
+    let mut cs_all = None;
+    let mut sub_ret = None;
+    let mut dup_ret = None;
+    let mut kind_ret = None;
+    let mut sub2_ret = None;
+    let mut unsub_ret = None;
+    let mut unsub2_ret = None;
+    let mut receipt_sub = None;
+    let mut receipt_dup = None;
+    let mut receipt_kind = None;
+    let mut receipt_sub2 = None;
+    let mut receipt_unsub = None;
+    let mut receipt_unsub2 = None;
+    let mut audit_created = None;
+    let mut audit_subscribed = None;
+    let mut audit_unsubscribed = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "cs_all" => cs_all = Some(parse_decimal(value, "cs_all")?),
+            "sub_ret" => sub_ret = Some(parse_addr(value)?),
+            "dup_ret" => dup_ret = Some(parse_addr(value)?),
+            "kind_ret" => kind_ret = Some(parse_addr(value)?),
+            "sub2_ret" => sub2_ret = Some(parse_addr(value)?),
+            "unsub_ret" => unsub_ret = Some(parse_addr(value)?),
+            "unsub2_ret" => unsub2_ret = Some(parse_addr(value)?),
+            "receipt_sub" => receipt_sub = Some(parse_addr(value)?),
+            "receipt_dup" => receipt_dup = Some(parse_addr(value)?),
+            "receipt_kind" => receipt_kind = Some(parse_addr(value)?),
+            "receipt_sub2" => receipt_sub2 = Some(parse_addr(value)?),
+            "receipt_unsub" => receipt_unsub = Some(parse_addr(value)?),
+            "receipt_unsub2" => receipt_unsub2 = Some(parse_addr(value)?),
+            "audit_created" => audit_created = Some(parse_decimal(value, "audit_created")?),
+            "audit_subscribed" => {
+                audit_subscribed = Some(parse_decimal(value, "audit_subscribed")?)
+            }
+            "audit_unsubscribed" => {
+                audit_unsubscribed = Some(parse_decimal(value, "audit_unsubscribed")?)
+            }
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let cs_all = cs_all.ok_or_else(|| "missing cs_all in exc_ready data".to_owned())?;
+    let sub_ret = sub_ret.ok_or_else(|| "missing sub_ret in exc_ready data".to_owned())?;
+    let dup_ret = dup_ret.ok_or_else(|| "missing dup_ret in exc_ready data".to_owned())?;
+    let kind_ret = kind_ret.ok_or_else(|| "missing kind_ret in exc_ready data".to_owned())?;
+    let sub2_ret = sub2_ret.ok_or_else(|| "missing sub2_ret in exc_ready data".to_owned())?;
+    let unsub_ret = unsub_ret.ok_or_else(|| "missing unsub_ret in exc_ready data".to_owned())?;
+    let unsub2_ret = unsub2_ret.ok_or_else(|| "missing unsub2_ret in exc_ready data".to_owned())?;
+    let receipt_sub =
+        receipt_sub.ok_or_else(|| "missing receipt_sub in exc_ready data".to_owned())?;
+    let receipt_dup =
+        receipt_dup.ok_or_else(|| "missing receipt_dup in exc_ready data".to_owned())?;
+    let receipt_kind =
+        receipt_kind.ok_or_else(|| "missing receipt_kind in exc_ready data".to_owned())?;
+    let receipt_sub2 =
+        receipt_sub2.ok_or_else(|| "missing receipt_sub2 in exc_ready data".to_owned())?;
+    let receipt_unsub =
+        receipt_unsub.ok_or_else(|| "missing receipt_unsub in exc_ready data".to_owned())?;
+    let receipt_unsub2 =
+        receipt_unsub2.ok_or_else(|| "missing receipt_unsub2 in exc_ready data".to_owned())?;
+    let audit_created =
+        audit_created.ok_or_else(|| "missing audit_created in exc_ready data".to_owned())?;
+    let audit_subscribed =
+        audit_subscribed.ok_or_else(|| "missing audit_subscribed in exc_ready data".to_owned())?;
+    let audit_unsubscribed = audit_unsubscribed
+        .ok_or_else(|| "missing audit_unsubscribed in exc_ready data".to_owned())?;
+
+    if cs_all != 1 {
+        return Err(format!(
+            "exc_ready cs_all ({cs_all}) must be 1 — every subscription probe must originate from CPL3"
+        ));
+    }
+    if sub_ret != EXC_PAGE_FAULT_SOURCE {
+        return Err(format!(
+            "exc_ready sub_ret (0x{sub_ret:x}) must equal page_fault source id 0x{EXC_PAGE_FAULT_SOURCE:x}"
+        ));
+    }
+    if dup_ret != EACCES {
+        return Err(format!(
+            "exc_ready dup_ret (0x{dup_ret:x}) must be -EACCES 0x{EACCES:x} — duplicate subscription must be denied"
+        ));
+    }
+    if kind_ret != EINVAL {
+        return Err(format!(
+            "exc_ready kind_ret (0x{kind_ret:x}) must be -EINVAL 0x{EINVAL:x} — kind mismatch must be rejected"
+        ));
+    }
+    if sub2_ret != EXC_SYSCALL_TRAP_SOURCE {
+        return Err(format!(
+            "exc_ready sub2_ret (0x{sub2_ret:x}) must equal syscall_trap source id 0x{EXC_SYSCALL_TRAP_SOURCE:x}"
+        ));
+    }
+    if unsub_ret != EXC_PAGE_FAULT_SOURCE {
+        return Err(format!(
+            "exc_ready unsub_ret (0x{unsub_ret:x}) must equal page_fault source id 0x{EXC_PAGE_FAULT_SOURCE:x}"
+        ));
+    }
+    if unsub2_ret != EACCES {
+        return Err(format!(
+            "exc_ready unsub2_ret (0x{unsub2_ret:x}) must be -EACCES 0x{EACCES:x} — unsubscribing twice must be denied"
+        ));
+    }
+    if receipt_sub != sub_ret
+        || receipt_dup != dup_ret
+        || receipt_kind != kind_ret
+        || receipt_sub2 != sub2_ret
+        || receipt_unsub != unsub_ret
+        || receipt_unsub2 != unsub2_ret
+    {
+        return Err(format!(
+            "exc_ready receipts must equal their syscall returns (sub 0x{receipt_sub:x}/0x{sub_ret:x}, dup 0x{receipt_dup:x}/0x{dup_ret:x}, kind 0x{receipt_kind:x}/0x{kind_ret:x}, sub2 0x{receipt_sub2:x}/0x{sub2_ret:x}, unsub 0x{receipt_unsub:x}/0x{unsub_ret:x}, unsub2 0x{receipt_unsub2:x}/0x{unsub2_ret:x})"
+        ));
+    }
+    if audit_created != 2 || audit_subscribed != 3 || audit_unsubscribed != 1 {
+        return Err(format!(
+            "exc_ready audit counts must be created=2 subscribed=3 unsubscribed=1, got created={audit_created} subscribed={audit_subscribed} unsubscribed={audit_unsubscribed}"
+        ));
+    }
+    Ok(())
+}
+
+/// 校验切片 L 的 pending 直投证据：一次投递、经 BlockedRecv 写 pending、目标回到 Ready、
+/// payload 为 page_fault 通知编码，且追加了 `ExceptionRaised` Audit。
+fn validate_exc_pending_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "exc_pending_ready event is missing its data field".to_owned())?;
+    let mut delivered = None;
+    let mut pending = None;
+    let mut message_id = None;
+    let mut payload = None;
+    let mut task_ready_after = None;
+    let mut audit_raised = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "delivered" => delivered = Some(parse_decimal(value, "delivered")?),
+            "pending" => pending = Some(parse_decimal(value, "pending")?),
+            "message_id" => message_id = Some(parse_decimal(value, "message_id")?),
+            "payload" => payload = Some(parse_addr(value)?),
+            "task_ready_after" => {
+                task_ready_after = Some(parse_decimal(value, "task_ready_after")?)
+            }
+            "audit_raised" => audit_raised = Some(parse_decimal(value, "audit_raised")?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let delivered =
+        delivered.ok_or_else(|| "missing delivered in exc_pending_ready data".to_owned())?;
+    let pending = pending.ok_or_else(|| "missing pending in exc_pending_ready data".to_owned())?;
+    let message_id =
+        message_id.ok_or_else(|| "missing message_id in exc_pending_ready data".to_owned())?;
+    let payload = payload.ok_or_else(|| "missing payload in exc_pending_ready data".to_owned())?;
+    let task_ready_after = task_ready_after
+        .ok_or_else(|| "missing task_ready_after in exc_pending_ready data".to_owned())?;
+    let audit_raised =
+        audit_raised.ok_or_else(|| "missing audit_raised in exc_pending_ready data".to_owned())?;
+
+    if delivered != 1 {
+        return Err(format!(
+            "exc_pending_ready delivered ({delivered}) must be 1 — exactly one notification"
+        ));
+    }
+    if pending != 1 {
+        return Err(format!(
+            "exc_pending_ready pending ({pending}) must be 1 — delivery must take the pending_return path"
+        ));
+    }
+    if message_id == 0 {
+        return Err("exc_pending_ready message_id must be non-zero".to_owned());
+    }
+    if payload != EXC_PAGE_FAULT_PAYLOAD {
+        return Err(format!(
+            "exc_pending_ready payload (0x{payload:x}) must equal page_fault notification 0x{EXC_PAGE_FAULT_PAYLOAD:x}"
+        ));
+    }
+    if task_ready_after != 1 {
+        return Err(format!(
+            "exc_pending_ready task_ready_after ({task_ready_after}) must be 1 — BlockedRecv must be woken to Ready"
+        ));
+    }
+    if audit_raised != 1 {
+        return Err(format!(
+            "exc_pending_ready audit_raised ({audit_raised}) must be 1 — one ExceptionRaised audit event"
         ));
     }
     Ok(())
@@ -1202,6 +1424,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("user_cow_ready", "ok") => EventKind::UserCowReady,
         ("syscall_ready", "ok") => EventKind::SyscallReady,
         ("syscall_auth_ready", "ok") => EventKind::SyscallAuthReady,
+        ("exc_ready", "ok") => EventKind::ExcReady,
+        ("exc_pending_ready", "ok") => EventKind::ExcPendingReady,
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
@@ -1228,6 +1452,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::UserCowReady
             | EventKind::SyscallReady
             | EventKind::SyscallAuthReady
+            | EventKind::ExcReady
+            | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             None,
@@ -1247,6 +1473,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::UserCowReady
             | EventKind::SyscallReady
             | EventKind::SyscallAuthReady
+            | EventKind::ExcReady
+            | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             Some(_),
@@ -1282,11 +1510,13 @@ mod tests {
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
-        "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=9;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
+        "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
         "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x1;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x1;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
-        "PRIMA|v=1|seq=15|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
-        "PRIMA|v=1|seq=16|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=17|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
+        "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
+        "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
+        "PRIMA|v=1|seq=18|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=19|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1848,7 +2078,7 @@ mod tests {
     }
 
     /// 切片 H/I 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const SYSCALL_DATA: &str = "calls=9;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda";
+    const SYSCALL_DATA: &str = "calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda";
 
     #[test]
     fn rejects_syscall_not_from_cpl3() {
@@ -1926,7 +2156,7 @@ mod tests {
 
     #[test]
     fn rejects_syscall_wrong_call_count() {
-        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=9", "calls=8"));
+        let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=15", "calls=14"));
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("calls"), "{error}");
     }
@@ -1979,6 +2209,88 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("receipt_denied"), "{error}");
+    }
+
+    /// 切片 L 的完整证据串（与 `VALID` 中的两行一致），便于替换构造反例。
+    const EXC_DATA: &str = "cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1";
+    const PENDING_DATA: &str =
+        "delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1";
+
+    #[test]
+    fn rejects_exc_not_all_cpl3() {
+        let output = VALID.replace(EXC_DATA, &EXC_DATA.replace("cs_all=1", "cs_all=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_duplicate_as_granted() {
+        let output = VALID.replace(
+            EXC_DATA,
+            &EXC_DATA.replace("dup_ret=0xfffffffffffffff3", "dup_ret=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("duplicate"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_kind_mismatch_accepted() {
+        let output = VALID.replace(
+            EXC_DATA,
+            &EXC_DATA.replace("kind_ret=0xffffffffffffffea", "kind_ret=0x2"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("kind mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wrong_audit_counts() {
+        let output = VALID.replace(
+            EXC_DATA,
+            &EXC_DATA.replace("audit_subscribed=3", "audit_subscribed=2"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("audit counts"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_receipt_mismatch() {
+        let output = VALID.replace(
+            EXC_DATA,
+            &EXC_DATA.replace("receipt_unsub2=0xfffffffffffffff3", "receipt_unsub2=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipts"), "{error}");
+    }
+
+    #[test]
+    fn rejects_pending_without_direct_delivery() {
+        let output = VALID.replace(
+            PENDING_DATA,
+            &PENDING_DATA.replace("pending=1", "pending=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("pending_return"), "{error}");
+    }
+
+    #[test]
+    fn rejects_pending_wrong_payload() {
+        let output = VALID.replace(
+            PENDING_DATA,
+            &PENDING_DATA.replace("payload=0x10001", "payload=0x2"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("payload"), "{error}");
+    }
+
+    #[test]
+    fn rejects_pending_task_not_ready() {
+        let output = VALID.replace(
+            PENDING_DATA,
+            &PENDING_DATA.replace("task_ready_after=1", "task_ready_after=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("Ready"), "{error}");
     }
 
     /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。

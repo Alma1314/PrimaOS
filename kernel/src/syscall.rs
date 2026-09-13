@@ -21,7 +21,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::bootstrap::{self, AuthError, IMAGE_CAP_ID, INIT_TASK_ID};
+use crate::bootstrap::{
+    self, AuthError, ExcAuditCounts, ExcError, ExcKind, IMAGE_CAP_ID, INIT_TASK_ID,
+};
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
@@ -35,6 +37,10 @@ pub const SYS_SUM4: u64 = 2;
 pub const SYS_COPY_IN: u64 = 3;
 /// 合法 syscall 号：能力授权查询（`args[0]=cap_id`、`args[1]=right code`）。
 pub const SYS_AUTHORIZE: u64 = 4;
+/// 切片 L：异常订阅（`args[0]=exc source cap_id`、`args[1]=kind code`）。
+pub const SYS_EXC_SUBSCRIBE: u64 = 5;
+/// 切片 L：取消异常订阅（`args[0]=exc source cap_id`）。
+pub const SYS_EXC_UNSUBSCRIBE: u64 = 6;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
 
@@ -82,6 +88,21 @@ pub const RIGHT_SEGMAPW: u64 = 2;
 /// 授权查询用的不存在 Capability ID（见证 `ENOENT`）。
 pub const UNSET_CAP: u64 = 999;
 
+/// 切片 L：初始化创建的 `page_fault_source` Capability ID（镜像常量，见 bootstrap.rs）。
+pub const EXC_PAGE_FAULT_CAP: u64 = bootstrap::EXC_SOURCE_CAP_BASE as u64;
+/// 切片 L：初始化创建的 `syscall_trap_source` Capability ID。
+pub const EXC_SYSCALL_TRAP_CAP: u64 = bootstrap::EXC_SOURCE_CAP_BASE as u64 + 1;
+/// 切片 L：异常种类编码（镜像 `bootstrap::kind_code`）。
+pub const EXC_KIND_PAGEFAULT: u64 = 1;
+/// 切片 L：异常种类编码（镜像 `bootstrap::kind_code`）。
+pub const EXC_KIND_SYSCALLTRAP: u64 = 2;
+/// 切片 L：预定义 `page_fault_source` 的 ID（订阅成功返回的凭据）。
+pub const EXC_PAGE_FAULT_SOURCE: u64 = bootstrap::PAGE_FAULT_SOURCE_ID as u64;
+/// 切片 L：预定义 `syscall_trap_source` 的 ID。
+pub const EXC_SYSCALL_TRAP_SOURCE: u64 = bootstrap::SYSCALL_TRAP_SOURCE_ID as u64;
+/// 切片 L：平台初始化那次 page_fault 通知的期望 payload。
+pub const EXC_PAGE_FAULT_PAYLOAD: u64 = EXC_PAGE_FAULT_SOURCE | (EXC_KIND_PAGEFAULT << 16);
+
 /// errno 编码（Linux 兼容负值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Errno {
@@ -93,6 +114,8 @@ pub enum Errno {
     Fault = 14,
     /// 参数非法（保留号、长度越界等）。
     Invalid = 22,
+    /// 空间不足（队列/Audit 容量已满）。
+    NoSpace = 28,
     /// 未登记的服务号。
     NoSys = 38,
 }
@@ -109,6 +132,7 @@ pub const fn errno_name(errno: Errno) -> &'static str {
         Errno::Access => "EACCES",
         Errno::Fault => "EFAULT",
         Errno::Invalid => "EINVAL",
+        Errno::NoSpace => "ENOSPC",
         Errno::NoSys => "ENOSYS",
     }
 }
@@ -138,6 +162,47 @@ fn authorize_call(cap_id: u64, right_code: u64) -> u64 {
     match bootstrap::authorize(AUTHORIZE_TASK, cap_id as u32, right) {
         Ok(granted) => granted as u64,
         Err(error) => encode_errno(auth_errno(error)),
+    }
+}
+
+/// 切片 L：异常种类编码到 [`ExcKind`] 的映射（纯函数，host 可测）。
+pub const fn kind_of(code: u64) -> Option<ExcKind> {
+    match code {
+        EXC_KIND_PAGEFAULT => Some(ExcKind::PageFault),
+        EXC_KIND_SYSCALLTRAP => Some(ExcKind::SyscallTrap),
+        _ => None,
+    }
+}
+
+/// 切片 L：订阅错误到 errno 的映射（纯函数，host 可测）。
+pub const fn exc_errno(error: ExcError) -> Errno {
+    match error {
+        ExcError::NoSuchSource | ExcError::NoSuchTask | ExcError::NotInstalled => Errno::NoEnt,
+        ExcError::NotHolder
+        | ExcError::MissingRight
+        | ExcError::AlreadySubscribed
+        | ExcError::NotSubscribed => Errno::Access,
+        ExcError::InvalidKind | ExcError::KindMismatch => Errno::Invalid,
+        ExcError::Full | ExcError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// 切片 L：订阅服务——经全局授权表登记订阅。
+fn exc_subscribe_call(cap_id: u64, kind_code: u64) -> u64 {
+    let Some(kind) = kind_of(kind_code) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::exc_subscribe(AUTHORIZE_TASK, cap_id as u32, kind) {
+        Ok(source_id) => source_id as u64,
+        Err(error) => encode_errno(exc_errno(error)),
+    }
+}
+
+/// 切片 L：取消订阅服务——经全局授权表移除订阅。
+fn exc_unsubscribe_call(cap_id: u64) -> u64 {
+    match bootstrap::exc_unsubscribe(AUTHORIZE_TASK, cap_id as u32) {
+        Ok(source_id) => source_id as u64,
+        Err(error) => encode_errno(exc_errno(error)),
     }
 }
 
@@ -206,8 +271,8 @@ struct CallRecord {
 
 /// 记录前 [`MAX_CALLS`] 次 syscall 进入（单核 boot 早期，无并发）。
 ///
-/// 顺序：ABI 电池 6 次 + 授权查询 3 次（快路径单独记录，不占此处）。
-const MAX_CALLS: usize = 9;
+/// 顺序：ABI 电池 6 次 + 授权查询 3 次 + 订阅/取消订阅 6 次（快路径单独记录，不占此处）。
+const MAX_CALLS: usize = 15;
 
 static mut CALLS: [CallRecord; MAX_CALLS] = [CallRecord { cs: 0, ret: 0 }; MAX_CALLS];
 
@@ -255,6 +320,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         }
     } else if num == SYS_AUTHORIZE {
         authorize_call(args[0], args[1])
+    } else if num == SYS_EXC_SUBSCRIBE {
+        exc_subscribe_call(args[0], args[1])
+    } else if num == SYS_EXC_UNSUBSCRIBE {
+        exc_unsubscribe_call(args[0])
     } else {
         dispatch_plain(num, args)
     }
@@ -540,6 +609,148 @@ pub fn auth_witness() -> AuthWitness {
     }
 }
 
+/// 切片 L：读取全局异常 Audit 计数；授权表未安装（host 单测）时全 0。
+fn exc_audit_snapshot() -> ExcAuditCounts {
+    bootstrap::exc_audit_counts().unwrap_or(ExcAuditCounts {
+        created: 0,
+        subscribed: 0,
+        unsubscribed: 0,
+        raised: 0,
+    })
+}
+
+/// 切片 L：一次异常订阅/取消订阅见证的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcWitness {
+    /// 全部进入是否都来自 CPL3。
+    pub cs_all: u32,
+    /// `page_fault_source` 订阅成功返回值（应 1）。
+    pub sub_ret: u64,
+    /// 重复订阅（应 `EACCES`）。
+    pub dup_ret: u64,
+    /// kind 不符（应 `EINVAL`）。
+    pub kind_ret: u64,
+    /// `syscall_trap_source` 订阅成功返回值（应 2）。
+    pub sub2_ret: u64,
+    /// 取消订阅成功返回值（应 1）。
+    pub unsub_ret: u64,
+    /// 再次取消（应 `EACCES`）。
+    pub unsub2_ret: u64,
+    pub receipt_sub: u64,
+    pub receipt_dup: u64,
+    pub receipt_kind: u64,
+    pub receipt_sub2: u64,
+    pub receipt_unsub: u64,
+    pub receipt_unsub2: u64,
+    /// `ExcSourceCreated` Audit 计数（应 2）。
+    pub audit_created: usize,
+    /// `ExcSubscribed` Audit 计数（应 3：boot task2 + init 两次）。
+    pub audit_subscribed: usize,
+    /// `ExcUnsubscribed` Audit 计数（应 1）。
+    pub audit_unsubscribed: usize,
+}
+
+fn exc_denied_ret() -> u64 {
+    encode_errno(Errno::Access)
+}
+
+fn exc_invalid_ret() -> u64 {
+    encode_errno(Errno::Invalid)
+}
+
+impl ExcWitness {
+    /// 纯判定：一次异常订阅见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.cs_all == 1
+            && self.sub_ret == EXC_PAGE_FAULT_SOURCE
+            && self.dup_ret == exc_denied_ret()
+            && self.kind_ret == exc_invalid_ret()
+            && self.sub2_ret == EXC_SYSCALL_TRAP_SOURCE
+            && self.unsub_ret == EXC_PAGE_FAULT_SOURCE
+            && self.unsub2_ret == exc_denied_ret()
+            && self.receipt_sub == self.sub_ret
+            && self.receipt_dup == self.dup_ret
+            && self.receipt_kind == self.kind_ret
+            && self.receipt_sub2 == self.sub2_ret
+            && self.receipt_unsub == self.unsub_ret
+            && self.receipt_unsub2 == self.unsub2_ret
+            && self.audit_created == 2
+            && self.audit_subscribed == 3
+            && self.audit_unsubscribed == 1
+    }
+}
+
+/// 收集异常订阅见证（在用户 `int3` 收尾回调中调用）。
+pub fn exc_witness() -> ExcWitness {
+    let records = call_records();
+    let audit = exc_audit_snapshot();
+    ExcWitness {
+        cs_all: records_all_cpl3(&records),
+        sub_ret: records[9].ret,
+        dup_ret: records[10].ret,
+        kind_ret: records[11].ret,
+        sub2_ret: records[12].ret,
+        unsub_ret: records[13].ret,
+        unsub2_ret: records[14].ret,
+        receipt_sub: read_qword(USER_Y_VA + 88),
+        receipt_dup: read_qword(USER_Y_VA + 96),
+        receipt_kind: read_qword(USER_Y_VA + 104),
+        receipt_sub2: read_qword(USER_Y_VA + 112),
+        receipt_unsub: read_qword(USER_Y_VA + 120),
+        receipt_unsub2: read_qword(USER_Y_VA + 128),
+        audit_created: audit.created,
+        audit_subscribed: audit.subscribed,
+        audit_unsubscribed: audit.unsubscribed,
+    }
+}
+
+/// 切片 L：平台初始化那次 pending 直投的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingWitness {
+    pub delivered: usize,
+    pub pending: usize,
+    pub message_id: u32,
+    pub payload: u64,
+    pub task_ready_after: bool,
+    /// `ExceptionRaised` Audit 计数（应 1）。
+    pub audit_raised: usize,
+}
+
+impl PendingWitness {
+    /// 纯判定：pending 直投见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.delivered == 1
+            && self.pending == 1
+            && self.message_id != 0
+            && self.payload == EXC_PAGE_FAULT_PAYLOAD
+            && self.task_ready_after
+            && self.audit_raised == 1
+    }
+}
+
+/// 收集 pending 直投见证（在用户 `int3` 收尾回调中调用）。
+pub fn pending_witness() -> PendingWitness {
+    let audit = exc_audit_snapshot();
+    match bootstrap::exc_boot_record() {
+        Some(boot) => PendingWitness {
+            delivered: boot.delivered,
+            pending: boot.pending,
+            message_id: boot.message_id,
+            payload: boot.payload,
+            task_ready_after: boot.task_ready_after,
+            audit_raised: audit.raised,
+        },
+        None => PendingWitness {
+            delivered: 0,
+            pending: 0,
+            message_id: 0,
+            payload: 0,
+            task_ready_after: false,
+            audit_raised: audit.raised,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,6 +998,132 @@ mod tests {
     fn rejects_auth_receipt_mismatch() {
         let mut w = valid_auth();
         w.receipt_denied = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn kind_of_maps_known_codes() {
+        assert_eq!(kind_of(EXC_KIND_PAGEFAULT), Some(ExcKind::PageFault));
+        assert_eq!(kind_of(EXC_KIND_SYSCALLTRAP), Some(ExcKind::SyscallTrap));
+        assert_eq!(kind_of(0), None);
+        assert_eq!(kind_of(99), None);
+    }
+
+    #[test]
+    fn exc_errno_maps_failure_reasons() {
+        assert_eq!(exc_errno(ExcError::NoSuchSource), Errno::NoEnt);
+        assert_eq!(exc_errno(ExcError::NoSuchTask), Errno::NoEnt);
+        assert_eq!(exc_errno(ExcError::NotInstalled), Errno::NoEnt);
+        assert_eq!(exc_errno(ExcError::NotHolder), Errno::Access);
+        assert_eq!(exc_errno(ExcError::MissingRight), Errno::Access);
+        assert_eq!(exc_errno(ExcError::AlreadySubscribed), Errno::Access);
+        assert_eq!(exc_errno(ExcError::NotSubscribed), Errno::Access);
+        assert_eq!(exc_errno(ExcError::InvalidKind), Errno::Invalid);
+        assert_eq!(exc_errno(ExcError::KindMismatch), Errno::Invalid);
+        assert_eq!(exc_errno(ExcError::Full), Errno::NoSpace);
+        assert_eq!(exc_errno(ExcError::AuditFull), Errno::NoSpace);
+        assert_eq!(encode_errno(Errno::NoSpace), 0xFFFF_FFFF_FFFF_FFE4); // -28
+    }
+
+    fn valid_exc() -> ExcWitness {
+        ExcWitness {
+            cs_all: 1,
+            sub_ret: EXC_PAGE_FAULT_SOURCE,
+            dup_ret: exc_denied_ret(),
+            kind_ret: exc_invalid_ret(),
+            sub2_ret: EXC_SYSCALL_TRAP_SOURCE,
+            unsub_ret: EXC_PAGE_FAULT_SOURCE,
+            unsub2_ret: exc_denied_ret(),
+            receipt_sub: EXC_PAGE_FAULT_SOURCE,
+            receipt_dup: exc_denied_ret(),
+            receipt_kind: exc_invalid_ret(),
+            receipt_sub2: EXC_SYSCALL_TRAP_SOURCE,
+            receipt_unsub: EXC_PAGE_FAULT_SOURCE,
+            receipt_unsub2: exc_denied_ret(),
+            audit_created: 2,
+            audit_subscribed: 3,
+            audit_unsubscribed: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_exc_evidence() {
+        assert!(valid_exc().evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_duplicate_accepted() {
+        let mut w = valid_exc();
+        w.dup_ret = EXC_PAGE_FAULT_SOURCE;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_kind_mismatch_accepted() {
+        let mut w = valid_exc();
+        w.kind_ret = EXC_SYSCALL_TRAP_SOURCE;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_wrong_audit_counts() {
+        let mut w = valid_exc();
+        w.audit_subscribed = 2;
+        assert!(!w.evidence_ok());
+        let mut w = valid_exc();
+        w.audit_created = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_receipt_mismatch() {
+        let mut w = valid_exc();
+        w.receipt_unsub2 = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_non_cpl3() {
+        let mut w = valid_exc();
+        w.cs_all = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    fn valid_pending() -> PendingWitness {
+        PendingWitness {
+            delivered: 1,
+            pending: 1,
+            message_id: 1,
+            payload: EXC_PAGE_FAULT_PAYLOAD,
+            task_ready_after: true,
+            audit_raised: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_pending_evidence() {
+        assert!(valid_pending().evidence_ok());
+        assert_eq!(EXC_PAGE_FAULT_PAYLOAD, 0x1_0001);
+    }
+
+    #[test]
+    fn rejects_pending_without_direct_delivery() {
+        let mut w = valid_pending();
+        w.pending = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_pending_wrong_payload() {
+        let mut w = valid_pending();
+        w.payload = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_pending_task_not_ready() {
+        let mut w = valid_pending();
+        w.task_ready_after = false;
         assert!(!w.evidence_ok());
     }
 }
