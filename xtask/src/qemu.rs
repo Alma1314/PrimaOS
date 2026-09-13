@@ -167,7 +167,7 @@ fn locate_qemu() -> Result<PathBuf, String> {
 fn qemu_args(image: &Path) -> Vec<OsString> {
     vec![
         "-machine".into(),
-        "pc-i440fx-10.0".into(),
+        "pc-i440fx-8.2".into(),
         "-accel".into(),
         "tcg,thread=single".into(),
         "-cpu".into(),
@@ -505,10 +505,17 @@ mod tests {
     }
 
     fn success_status() -> ExitStatus {
-        Command::new("cmd")
-            .args(["/C", "exit", "0"])
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit", "0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = Command::new("true");
+        command
             .status()
-            .expect("cmd should provide a successful status for tests")
+            .expect("test harness should provide a successful status")
     }
 
     #[test]
@@ -566,7 +573,7 @@ mod tests {
             actual,
             vec![
                 "-machine",
-                "pc-i440fx-10.0",
+                "pc-i440fx-8.2",
                 "-accel",
                 "tcg,thread=single",
                 "-cpu",
