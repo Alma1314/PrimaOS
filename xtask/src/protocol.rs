@@ -13,6 +13,7 @@ enum EventKind {
     CowReady,
     UserCowReady,
     SyscallReady,
+    SyscallFastReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -54,6 +55,7 @@ const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 const PF_US: u64 = 1 << 2;
 
 /// 切片 H/I：syscall ABI 的镜像常量，与 `kernel/src/syscall.rs` 一致（跨 crate 需人工同步）。
+const SYS_ECHO: u64 = 1;
 const SYS_BAD: u64 = 0xDEAD;
 const ECHO_MASK: u64 = 0xFFFF_0000_FFFF_0000;
 const SYS_ECHO_ARG: u64 = 0x0123_4567_89AB_CDEF;
@@ -64,8 +66,17 @@ const EINVAL: u64 = 0xFFFF_FFFF_FFFF_FFEA;
 const ENOSYS: u64 = 0xFFFF_FFFF_FFFF_FFDA;
 const USER_CS: u64 = 0x33;
 
+/// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
+const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
+const FAST_STAR: u64 = 0x0020_0008_0000_0000;
+const FAST_FMASK: u64 = 0x700;
+
+fn echo_of(arg: u64) -> u64 {
+    arg ^ ECHO_MASK
+}
+
 fn echo_expected() -> u64 {
-    SYS_ECHO_ARG ^ ECHO_MASK
+    echo_of(SYS_ECHO_ARG)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,7 +86,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 15] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 16] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -89,8 +100,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 15] = [
     (11, EventKind::CowReady),
     (12, EventKind::UserCowReady),
     (13, EventKind::SyscallReady),
-    (14, EventKind::ExcResumeReady),
-    (15, EventKind::BootComplete),
+    (14, EventKind::SyscallFastReady),
+    (15, EventKind::ExcResumeReady),
+    (16, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -225,6 +237,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::SyscallReady)
     {
         validate_syscall_data(syscall.data.as_deref())?;
+    }
+
+    if let Some(fast) = events
+        .iter()
+        .find(|event| event.kind == EventKind::SyscallFastReady)
+    {
+        validate_syscall_fast_data(fast.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -468,6 +487,98 @@ fn parse_decimal(value: &str, key: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
         .map_err(|error| format!("invalid {key} count {value}: {error}"))
+}
+
+/// 校验切片 J 的 `syscall`/`sysret` 快路径证据：MSR（EFER.SCE/STAR/LSTAR/FMASK）实测正确，
+/// 且一次真实 `syscall` 指令往返来自 CPL3、返回值被用户写回。
+fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "syscall_fast_ready event is missing its data field".to_owned())?;
+    let mut cs = None;
+    let mut num = None;
+    let mut arg = None;
+    let mut ret = None;
+    let mut receipt = None;
+    let mut efer_sce = None;
+    let mut star = None;
+    let mut fmask = None;
+    let mut lstar_ok = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "cs" => cs = Some(parse_addr(value)?),
+            "num" => num = Some(parse_addr(value)?),
+            "arg" => arg = Some(parse_addr(value)?),
+            "ret" => ret = Some(parse_addr(value)?),
+            "receipt" => receipt = Some(parse_addr(value)?),
+            "efer_sce" => efer_sce = Some(parse_decimal(value, "efer_sce")?),
+            "star" => star = Some(parse_addr(value)?),
+            "fmask" => fmask = Some(parse_addr(value)?),
+            "lstar_ok" => lstar_ok = Some(parse_decimal(value, "lstar_ok")?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let cs = cs.ok_or_else(|| "missing cs in syscall_fast_ready data".to_owned())?;
+    let num = num.ok_or_else(|| "missing num in syscall_fast_ready data".to_owned())?;
+    let arg = arg.ok_or_else(|| "missing arg in syscall_fast_ready data".to_owned())?;
+    let ret = ret.ok_or_else(|| "missing ret in syscall_fast_ready data".to_owned())?;
+    let receipt = receipt.ok_or_else(|| "missing receipt in syscall_fast_ready data".to_owned())?;
+    let efer_sce =
+        efer_sce.ok_or_else(|| "missing efer_sce in syscall_fast_ready data".to_owned())?;
+    let star = star.ok_or_else(|| "missing star in syscall_fast_ready data".to_owned())?;
+    let fmask = fmask.ok_or_else(|| "missing fmask in syscall_fast_ready data".to_owned())?;
+    let lstar_ok =
+        lstar_ok.ok_or_else(|| "missing lstar_ok in syscall_fast_ready data".to_owned())?;
+
+    if cs != USER_CS || cs & 3 != 3 {
+        return Err(format!(
+            "syscall_fast_ready cs (0x{cs:x}) must equal CPL3 user code selector 0x{USER_CS:x} — the fast syscall must originate from CPL3"
+        ));
+    }
+    if num != SYS_ECHO {
+        return Err(format!(
+            "syscall_fast_ready num (0x{num:x}) must be the echo syscall 0x{SYS_ECHO:x}"
+        ));
+    }
+    if arg != FAST_ARG {
+        return Err(format!(
+            "syscall_fast_ready arg (0x{arg:x}) must equal 0x{FAST_ARG:x} — argument not passed through registers"
+        ));
+    }
+    if ret != echo_of(FAST_ARG) {
+        return Err(format!(
+            "syscall_fast_ready ret (0x{ret:x}) must equal 0x{:x} — fast syscall did not complete the kernel round trip",
+            echo_of(FAST_ARG)
+        ));
+    }
+    if receipt != ret {
+        return Err(format!(
+            "syscall_fast_ready receipt (0x{receipt:x}) must equal ret 0x{ret:x} — user did not store the fast syscall result"
+        ));
+    }
+    if efer_sce != 1 {
+        return Err(format!(
+            "syscall_fast_ready efer_sce ({efer_sce}) must be 1 — EFER.SCE must enable syscall/sysret"
+        ));
+    }
+    if star != FAST_STAR {
+        return Err(format!(
+            "syscall_fast_ready star (0x{star:x}) must equal 0x{FAST_STAR:x} — STAR selectors are wrong"
+        ));
+    }
+    if fmask != FAST_FMASK {
+        return Err(format!(
+            "syscall_fast_ready fmask (0x{fmask:x}) must equal 0x{FAST_FMASK:x} — FMASK must clear IF/TF/DF"
+        ));
+    }
+    if lstar_ok != 1 {
+        return Err(format!(
+            "syscall_fast_ready lstar_ok ({lstar_ok}) must be 1 — IA32_LSTAR must point at the fast entry"
+        ));
+    }
+    Ok(())
 }
 
 /// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
@@ -995,6 +1106,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("cow_ready", "ok") => EventKind::CowReady,
         ("user_cow_ready", "ok") => EventKind::UserCowReady,
         ("syscall_ready", "ok") => EventKind::SyscallReady,
+        ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -1019,6 +1131,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CowReady
             | EventKind::UserCowReady
             | EventKind::SyscallReady
+            | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -1036,6 +1149,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CowReady
             | EventKind::UserCowReady
             | EventKind::SyscallReady
+            | EventKind::SyscallFastReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -1071,8 +1185,9 @@ mod tests {
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
         "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=6;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
-        "PRIMA|v=1|seq=14|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=15|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=14|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
+        "PRIMA|v=1|seq=15|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=16|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -1715,6 +1830,60 @@ mod tests {
         let output = VALID.replace(SYSCALL_DATA, &SYSCALL_DATA.replace("calls=6", "calls=5"));
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("calls"), "{error}");
+    }
+
+    /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const FAST_DATA: &str = "cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1";
+
+    #[test]
+    fn rejects_fast_not_from_cpl3() {
+        let output = VALID.replace(FAST_DATA, &FAST_DATA.replace("cs=0x33", "cs=0x8"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fast_missing_sce() {
+        let output = VALID.replace(FAST_DATA, &FAST_DATA.replace("efer_sce=1", "efer_sce=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("EFER.SCE"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fast_wrong_star() {
+        let output = VALID.replace(
+            FAST_DATA,
+            &FAST_DATA.replace("star=0x20000800000000", "star=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("STAR"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fast_lstar_mismatch() {
+        let output = VALID.replace(FAST_DATA, &FAST_DATA.replace("lstar_ok=1", "lstar_ok=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("LSTAR"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fast_wrong_ret() {
+        let output = VALID.replace(
+            FAST_DATA,
+            &FAST_DATA.replace("ret=0xf012cba9789a4321", "ret=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("round trip"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fast_receipt_mismatch() {
+        let output = VALID.replace(
+            FAST_DATA,
+            &FAST_DATA.replace("receipt=0xf012cba9789a4321", "receipt=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipt"), "{error}");
     }
 
     #[test]

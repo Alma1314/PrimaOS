@@ -7,7 +7,8 @@
 //! 3. 连续 6 次 `int 0x80`（syscall ABI v1）：ECHO、SUM4（多寄存器）、COPY_IN 合法指针、
 //!    COPY_IN 坏指针（`EFAULT`）、保留号 `0`（`EINVAL`）、未登记号（`ENOSYS`），依次把
 //!    返回值写入 `Y+8..Y+48`；
-//! 4. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
+//! 4. 一次 `syscall` 指令（x86-64 快路径，SPEC-048）：ECHO，把返回值写入 `Y+56`；
+//! 5. `int3` 从 CPL3 陷入内核，由注册的回调收尾。
 //!
 //! **范围边界：** 单核、非抢占、单任务最小见证；syscall 部分是**递送**而非抽象模型的
 //! capability/订阅授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
@@ -16,7 +17,8 @@ use crate::exc::SretFrame;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::syscall::{
-    BAD_PTR, COPY_LEN, COPY_PTR, SUM_ARGS, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_SUM4,
+    BAD_PTR, COPY_LEN, COPY_PTR, FAST_ARG, SUM_ARGS, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG,
+    SYS_SUM4,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -36,7 +38,7 @@ pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 223;
+pub const USER_CODE_LEN: usize = 259;
 
 /// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
 const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
@@ -129,8 +131,18 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 216, &[0xCD, 0x80]);
     // 218: mov [rcx+48], rax
     put(&mut code, 218, &[0x48, 0x89, 0x41, 0x30]);
-    // 222: int3
-    code[222] = 0xCC;
+    // 222: mov rdi, FAST_ARG
+    put_imm64(&mut code, 222, 0x48, 0xBF, FAST_ARG);
+    // 232: mov rax, SYS_ECHO
+    put_imm64(&mut code, 232, 0x48, 0xB8, SYS_ECHO);
+    // 242: 0F 05  syscall（快路径；破坏 rcx/r11）
+    put(&mut code, 242, &[0x0F, 0x05]);
+    // 244: mov rcx, Y（syscall 破坏了 rcx，需重载回执基址）
+    put_imm64(&mut code, 244, 0x48, 0xB9, USER_Y_VA);
+    // 254: mov [rcx+56], rax
+    put(&mut code, 254, &[0x48, 0x89, 0x41, 0x38]);
+    // 258: int3
+    code[258] = 0xCC;
     code
 }
 
@@ -318,7 +330,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 223);
+        assert_eq!(USER_CODE_LEN, 259);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -374,7 +386,16 @@ mod tests {
         assert_eq!(&code[208..216], &SYS_BAD.to_le_bytes());
         assert_eq!(&code[216..218], &[0xCD, 0x80]);
         assert_eq!(&code[218..222], &[0x48, 0x89, 0x41, 0x30]);
-        assert_eq!(code[222], 0xCC); // int3
+        // 快路径：syscall 指令调用 ECHO，再重载 rcx 写 Y+56。
+        assert_eq!(&code[222..224], &[0x48, 0xBF]);
+        assert_eq!(&code[224..232], &FAST_ARG.to_le_bytes());
+        assert_eq!(&code[232..234], &[0x48, 0xB8]);
+        assert_eq!(&code[234..242], &SYS_ECHO.to_le_bytes());
+        assert_eq!(&code[242..244], &[0x0F, 0x05]); // syscall
+        assert_eq!(&code[244..246], &[0x48, 0xB9]); // mov rcx, imm64
+        assert_eq!(&code[246..254], &USER_Y_VA.to_le_bytes());
+        assert_eq!(&code[254..258], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
+        assert_eq!(code[258], 0xCC); // int3
     }
 
     #[test]

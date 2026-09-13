@@ -240,6 +240,30 @@ pub(crate) fn syscall_ready(witness: &kernel::syscall::SyscallWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
+pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
+    write_prefix("syscall_fast_ready", "ok");
+    serial::write_bytes(b"|data=cs=");
+    write_hex_u64(witness.cs);
+    serial::write_bytes(b";num=");
+    write_hex_u64(witness.num);
+    serial::write_bytes(b";arg=");
+    write_hex_u64(witness.arg);
+    serial::write_bytes(b";ret=");
+    write_hex_u64(witness.ret);
+    serial::write_bytes(b";receipt=");
+    write_hex_u64(witness.receipt);
+    serial::write_bytes(b";efer_sce=");
+    write_u32(witness.efer_sce);
+    serial::write_bytes(b";star=");
+    write_hex_u64(witness.star);
+    serial::write_bytes(b";fmask=");
+    write_hex_u64(witness.fmask);
+    serial::write_bytes(b";lstar_ok=");
+    write_u32(witness.lstar_ok);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 D：经真实 `iretq` 恢复进一帧后，从落点上报的恢复证据。
 ///
 /// `sentinel`/`sentinel2` 是落点实际读回的 `r12`/`r13`；`resumed` 为两个哨兵均

@@ -181,14 +181,7 @@ pub unsafe extern "C" fn handle(frame: *const u64) -> u64 {
     }
     let cs = unsafe { *frame.add(1 + MAX_ARGS) };
 
-    let ret = if num == SYS_COPY_IN {
-        match copy_in(args[0], args[1]) {
-            Ok(value) => value,
-            Err(errno) => encode_errno(errno),
-        }
-    } else {
-        dispatch_plain(num, &args)
-    };
+    let ret = serve(num, &args);
 
     let index = COUNT.fetch_add(1, Ordering::Relaxed) as usize;
     if index < MAX_CALLS {
@@ -199,6 +192,151 @@ pub unsafe extern "C" fn handle(frame: *const u64) -> u64 {
         }
     }
     ret
+}
+
+/// 服务分派（`int 0x80` 与 `syscall` 快路径共用），不含进入记录。
+fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
+    if num == SYS_COPY_IN {
+        match copy_in(args[0], args[1]) {
+            Ok(value) => value,
+            Err(errno) => encode_errno(errno),
+        }
+    } else {
+        dispatch_plain(num, args)
+    }
+}
+
+/// 切片 J：`syscall`/`sysret` 快路径的进入记录（单核 boot 早期，无并发）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FastRecord {
+    num: u64,
+    arg: u64,
+    cs: u64,
+    ret: u64,
+}
+
+static mut FAST: FastRecord = FastRecord {
+    num: 0,
+    arg: 0,
+    cs: 0,
+    ret: 0,
+};
+
+/// 由裸入口 `idt::syscall_fast_entry` 调用的内核侧处理（与 [`handle`] 共用 [`serve`]）。
+///
+/// `frame` 布局与 `int 0x80` 路径相同：`[0]=号`、`[1..7]=参数`、`[7]=CS`（快路径由入口
+/// 填 [`USER_CS`] 常量，因为 `syscall` 不压栈 CS）。
+///
+/// # Safety
+///
+/// 仅由 `syscall_fast_entry` 在 CPL3 `syscall` 现场调用；`frame` 必须指向上述布局的
+/// 有效只读数组。
+pub unsafe extern "C" fn handle_fast(frame: *const u64) -> u64 {
+    let num = unsafe { *frame };
+    let mut args = [0u64; MAX_ARGS];
+    let mut i = 0;
+    while i < MAX_ARGS {
+        args[i] = unsafe { *frame.add(1 + i) };
+        i += 1;
+    }
+    let cs = unsafe { *frame.add(1 + MAX_ARGS) };
+    let ret = serve(num, &args);
+    unsafe {
+        let fast = core::ptr::addr_of_mut!(FAST);
+        (*fast) = FastRecord {
+            num,
+            arg: args[0],
+            cs,
+            ret,
+        };
+    }
+    ret
+}
+
+/// 快路径调用使用的参数（可识别，便于与 `int 0x80` 路径对账）。
+pub const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
+
+/// 配置 x86-64 `syscall`/`sysret` 快路径所需的 MSR。
+///
+/// 置 EFER.SCE、装 STAR（内核/用户选择子）、LSTAR（入口地址）、FMASK（屏蔽 IF/TF/DF）。
+/// 必须在进入 CPL3 前、CPL0 下调用一次。
+///
+/// # Safety
+///
+/// 写 MSR 是特权操作；仅可在单核 boot 早期调用。
+pub fn configure_fast_path() {
+    unsafe {
+        let efer = crate::msr::rdmsr(crate::msr::IA32_EFER);
+        crate::msr::wrmsr(crate::msr::IA32_EFER, crate::msr::efer_with_sce(efer));
+        crate::msr::wrmsr(crate::msr::IA32_STAR, crate::msr::STAR_VALUE);
+        crate::msr::wrmsr(
+            crate::msr::IA32_LSTAR,
+            crate::idt::syscall_fast_entry as *const () as u64,
+        );
+        crate::msr::wrmsr(crate::msr::IA32_FMASK, crate::msr::SYSCALL_FMASK);
+    }
+}
+
+/// 一次 `syscall`/`sysret` 快路径见证的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FastWitness {
+    /// 进入时的 CS（快路径入口填 [`USER_CS`]，应 0x33）。
+    pub cs: u64,
+    /// 调用号（应 [`SYS_ECHO`]）。
+    pub num: u64,
+    /// 参数（应 [`FAST_ARG`]）。
+    pub arg: u64,
+    /// 内核返回并写入 `rax` 的值。
+    pub ret: u64,
+    /// 用户写回 `Y+56` 的值（应等于 [`FastWitness::ret`]）。
+    pub receipt: u64,
+    /// EFER.SCE 是否置位（实测 `rdmsr`）。
+    pub efer_sce: u32,
+    /// 实测 IA32_STAR（应 [`crate::msr::STAR_VALUE`]）。
+    pub star: u64,
+    /// 实测 IA32_FMASK（应 [`crate::msr::SYSCALL_FMASK`]）。
+    pub fmask: u64,
+    /// 实测 IA32_LSTAR 是否等于快路径入口地址。
+    pub lstar_ok: u32,
+}
+
+impl FastWitness {
+    /// 纯判定：一次快路径见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.cs == USER_CS as u64
+            && self.cs & 3 == 3
+            && self.num == SYS_ECHO
+            && self.arg == FAST_ARG
+            && self.ret == echo_expected(FAST_ARG)
+            && self.receipt == self.ret
+            && self.efer_sce == 1
+            && self.star == crate::msr::STAR_VALUE
+            && self.fmask == crate::msr::SYSCALL_FMASK
+            && self.lstar_ok == 1
+    }
+}
+
+/// 收集 `syscall`/`sysret` 快路径见证（在用户 `int3` 收尾回调中调用）。
+pub fn fast_witness() -> FastWitness {
+    let record = unsafe {
+        let fast = core::ptr::addr_of!(FAST);
+        *fast
+    };
+    let efer = unsafe { crate::msr::rdmsr(crate::msr::IA32_EFER) };
+    let star = unsafe { crate::msr::rdmsr(crate::msr::IA32_STAR) };
+    let lstar = unsafe { crate::msr::rdmsr(crate::msr::IA32_LSTAR) };
+    let fmask = unsafe { crate::msr::rdmsr(crate::msr::IA32_FMASK) };
+    FastWitness {
+        cs: record.cs,
+        num: record.num,
+        arg: record.arg,
+        ret: record.ret,
+        receipt: read_qword(USER_Y_VA + 56),
+        efer_sce: (efer & crate::msr::EFER_SCE != 0) as u32,
+        star,
+        fmask,
+        lstar_ok: (lstar == crate::idt::syscall_fast_entry as *const () as u64) as u32,
+    }
 }
 
 /// 一次 syscall ABI 见证的实测证据。
@@ -422,6 +560,60 @@ mod tests {
     fn rejects_receipt_mismatch() {
         let mut w = valid();
         w.receipt3 = 0xdead;
+        assert!(!w.evidence_ok());
+    }
+
+    fn valid_fast() -> FastWitness {
+        FastWitness {
+            cs: USER_CS as u64,
+            num: SYS_ECHO,
+            arg: FAST_ARG,
+            ret: echo_expected(FAST_ARG),
+            receipt: echo_expected(FAST_ARG),
+            efer_sce: 1,
+            star: crate::msr::STAR_VALUE,
+            fmask: crate::msr::SYSCALL_FMASK,
+            lstar_ok: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_fast_path_evidence() {
+        assert!(valid_fast().evidence_ok());
+    }
+
+    #[test]
+    fn rejects_fast_path_non_cpl3() {
+        let mut w = valid_fast();
+        w.cs = 0x8;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_fast_path_wrong_star() {
+        let mut w = valid_fast();
+        w.star = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_fast_path_lstar_mismatch() {
+        let mut w = valid_fast();
+        w.lstar_ok = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_fast_path_missing_sce() {
+        let mut w = valid_fast();
+        w.efer_sce = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_fast_path_receipt_mismatch() {
+        let mut w = valid_fast();
+        w.receipt = 0;
         assert!(!w.evidence_ok());
     }
 }

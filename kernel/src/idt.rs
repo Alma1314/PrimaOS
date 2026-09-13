@@ -480,6 +480,107 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
     )
 }
 
+/// 切片 J：`syscall` 快路径的专用内核栈（大小见 [`SYSCALL_STACK_SIZE`]）。
+const SYSCALL_STACK_SIZE: usize = 16 * 1024;
+
+#[repr(align(16))]
+struct SyscallStack(
+    #[allow(dead_code)] // 只经 `addr_of!` 取地址使用，从不按字段读取。
+    [u8; SYSCALL_STACK_SIZE],
+);
+
+static mut SYSCALL_STACK: SyscallStack = SyscallStack([0; SYSCALL_STACK_SIZE]);
+
+/// `syscall` 进入前的用户 `rsp`（`sysretq` 前恢复）。
+static mut USER_RSP: u64 = 0;
+
+/// 切片 J：x86-64 `syscall` 快路径入口（裸函数，由 IA32_LSTAR 指向）。
+///
+/// 与 `int 0x80` 路径的关键差异：`syscall` **不换栈、不压帧**，只把返回 RIP 写入
+/// `rcx`、RFLAGS 写入 `r11`，并清 FMASK 位。故入口自行：
+/// 1. 把用户 `rsp` 存入 [`USER_RSP`]，切到专用 [`SYSCALL_STACK`]；
+/// 2. 保存 `rcx`（用户返回 RIP）与 `r11`（用户 RFLAGS）到栈上，再保存 15 个 GPR；
+/// 3. 组装与 `int 0x80` 相同的 8-qword ABI 帧 `[num, arg0..arg5, cs]`（`cs` 填
+///    [`crate::gdt::USER_CS`]，因 `syscall` 不压 CS），调用 [`crate::syscall::handle_fast`]；
+/// 4. 返回值写回保存的 `rax` 槽，恢复 GPR、`r11`、`rcx`、用户 `rsp`，`sysretq` 回 CPL3。
+///
+/// # Safety
+///
+/// 只能由 CPU 在 EFER.SCE=1、STAR/LSTAR 已配置后经 `syscall` 指令进入；不可从 Rust
+/// 侧调用。裸汇编硬编码上述栈布局与寄存器约定，违反即为未定义行为。
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn syscall_fast_entry() -> ! {
+    core::arch::naked_asm!(
+        // 1) 记下用户 rsp，切到专用内核栈（单核，无需 swapgs/per-CPU）。
+        "mov qword ptr [rip + {user_rsp}], rsp",
+        "lea rsp, [rip + {stack}]",
+        "add rsp, {size}",
+        // 2) 保存全部 15 个 GPR：rax 最后压、位于最低地址。注意 rcx（用户返回 RIP）与
+        //    r11（用户 RFLAGS）由 syscall 写入，也在其中被保存，sysretq 前据以恢复。
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        // 3) 以 rbp 为保存块基址，组装 8-qword ABI 现场帧。
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "sub rsp, 64",
+        "mov r10, qword ptr [rbp + 0x00]",
+        "mov qword ptr [rsp + 0x00], r10", // 调用号 rax
+        "mov r10, qword ptr [rbp + 0x28]",
+        "mov qword ptr [rsp + 0x08], r10", // arg0 rdi
+        "mov r10, qword ptr [rbp + 0x20]",
+        "mov qword ptr [rsp + 0x10], r10", // arg1 rsi
+        "mov r10, qword ptr [rbp + 0x18]",
+        "mov qword ptr [rsp + 0x18], r10", // arg2 rdx
+        "mov r10, qword ptr [rbp + 0x48]",
+        "mov qword ptr [rsp + 0x20], r10", // arg3 r10
+        "mov r10, qword ptr [rbp + 0x38]",
+        "mov qword ptr [rsp + 0x28], r10", // arg4 r8
+        "mov r10, qword ptr [rbp + 0x40]",
+        "mov qword ptr [rsp + 0x30], r10", // arg5 r9
+        "mov qword ptr [rsp + 0x38], 0x33", // CS = USER_CS（syscall 不压 CS）
+        "mov rdi, rsp",
+        "call {handle}",
+        "mov rsp, rbp",
+        "mov qword ptr [rsp + 0x00], rax",
+        // 4) 恢复 GPR，再恢复用户 RFLAGS/RIP 与 rsp，sysretq 回 CPL3。
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "mov rsp, qword ptr [rip + {user_rsp}]",
+        "sysretq",
+        stack = sym SYSCALL_STACK,
+        size = const SYSCALL_STACK_SIZE,
+        user_rsp = sym USER_RSP,
+        handle = sym crate::syscall::handle_fast,
+    )
+}
+
 /// 读取最近一次 #PF 的 CR2 地址（初始 0）。
 pub fn fault_addr() -> u64 {
     FAULT_ADDR.load(Ordering::Relaxed)
