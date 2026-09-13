@@ -47,6 +47,10 @@ pub const SYS_EXC_UNSUBSCRIBE: u64 = 6;
 pub const SYS_TASK_ID: u64 = 7;
 /// 切片 M：协作式让出，切换到下一个 Ready 任务（不返回给调用者，直到其被重新调度）。
 pub const SYS_YIELD: u64 = 8;
+/// 切片 N：阻塞等待一条异常通知（`args[0]=exc source cap_id`、`args[1]=kind code`）。
+pub const SYS_EXC_WAIT: u64 = 9;
+/// 切片 N：发起一次 syscall trap，内核据此 `raise_exception(syscall_trap_source, SyscallTrap)`。
+pub const SYS_TRAP: u64 = 10;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
 
@@ -112,6 +116,8 @@ pub const EXC_PAGE_FAULT_SOURCE: u64 = bootstrap::PAGE_FAULT_SOURCE_ID as u64;
 pub const EXC_SYSCALL_TRAP_SOURCE: u64 = bootstrap::SYSCALL_TRAP_SOURCE_ID as u64;
 /// 切片 L：平台初始化那次 page_fault 通知的期望 payload。
 pub const EXC_PAGE_FAULT_PAYLOAD: u64 = EXC_PAGE_FAULT_SOURCE | (EXC_KIND_PAGEFAULT << 16);
+/// 切片 N：`syscall_trap_source` 的 `SyscallTrap` 通知期望 payload。
+pub const EXC_SYSCALL_TRAP_PAYLOAD: u64 = EXC_SYSCALL_TRAP_SOURCE | (EXC_KIND_SYSCALLTRAP << 16);
 
 /// errno 编码（Linux 兼容负值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -292,6 +298,16 @@ static mut MT: MtState = MtState {
     task2_cs: 0,
 };
 
+/// 切片 N：SPEC-051 多任务见证在 task 1 恢复后即固定下来，后续切片新增的切换不扰动它。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MtSnapshot {
+    switches: u64,
+    last_from: u64,
+    last_to: u64,
+}
+
+static mut MT_SNAPSHOT: Option<MtSnapshot> = None;
+
 /// 记录一次非阶段一 syscall（task 1 阶段二或 task 2 的调用）。
 fn mt_record(task: u32, num: u64, cs: u64, ret: u64) {
     unsafe {
@@ -304,6 +320,13 @@ fn mt_record(task: u32, num: u64, cs: u64, ret: u64) {
                 } else {
                     (*mt).task1_id_after = ret;
                     (*mt).task1_cs_after = cs;
+                    // SPEC-051 证据在 task 1 恢复后封存。
+                    let snapshot = core::ptr::addr_of_mut!(MT_SNAPSHOT);
+                    *snapshot = Some(MtSnapshot {
+                        switches: (*mt).switches,
+                        last_from: (*mt).last_from,
+                        last_to: (*mt).last_to,
+                    });
                 }
             }
         } else if task == TASK2_ID {
@@ -314,6 +337,9 @@ fn mt_record(task: u32, num: u64, cs: u64, ret: u64) {
                 (*mt).task2_auth = ret;
             } else if num == SYS_EXC_SUBSCRIBE {
                 (*mt).task2_sub = ret;
+            } else if num == SYS_TRAP {
+                let wait = core::ptr::addr_of_mut!(EXC_WAIT);
+                (*wait).cs_trap = cs;
             }
         }
     }
@@ -332,6 +358,96 @@ fn mt_record_yield(from: u32, to: u32) {
 /// 读取多任务记录（单核，无并发）。
 fn mt_state() -> MtState {
     unsafe { *core::ptr::addr_of!(MT) }
+}
+
+/// 切片 N：raise/wait 的实测记录（单核，无并发）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExcWaitState {
+    /// `SYS_EXC_WAIT` 阻塞次数。
+    blocks: u64,
+    /// `SYS_EXC_WAIT` 进入时的 CS。
+    cs_wait: u64,
+    /// 触发 raise 的 `SYS_TRAP` 进入时的 CS。
+    cs_trap: u64,
+    source_id: u64,
+    delivered: u64,
+    pending: u64,
+    woken: u64,
+    payload: u64,
+}
+
+static mut EXC_WAIT: ExcWaitState = ExcWaitState {
+    blocks: 0,
+    cs_wait: 0,
+    cs_trap: 0,
+    source_id: 0,
+    delivered: 0,
+    pending: 0,
+    woken: 0,
+    payload: 0,
+};
+
+/// 记录一次 `SYS_EXC_WAIT` 阻塞（在切走前调用）。
+fn exc_wait_record(cs: u64, source_id: u32) {
+    unsafe {
+        let wait = core::ptr::addr_of_mut!(EXC_WAIT);
+        (*wait).blocks += 1;
+        (*wait).cs_wait = cs;
+        (*wait).source_id = source_id as u64;
+    }
+}
+
+/// 记录一次内核 actor raise 的结果。
+fn exc_trap_record(outcome: &bootstrap::RaiseOutcome) {
+    unsafe {
+        let wait = core::ptr::addr_of_mut!(EXC_WAIT);
+        (*wait).delivered = outcome.delivered as u64;
+        (*wait).pending = outcome.pending as u64;
+        (*wait).woken = outcome.woken.map(|task| task as u64).unwrap_or(0);
+        (*wait).payload = outcome.payload;
+    }
+}
+
+fn exc_wait_state() -> ExcWaitState {
+    unsafe { *core::ptr::addr_of!(EXC_WAIT) }
+}
+
+/// `SYS_TRAP`：内核 actor 在 syscall trap 线性化点 raise `SyscallTrap`（§12.5）。
+///
+/// 若某订阅者正处于 `BlockedRecv`，raise 会把通知写入其 pending 并把 payload 注入其
+/// 保存帧的 `rax`，使其 `SYS_EXC_WAIT` 在恢复时直接返回 payload。
+fn trap_call() -> u64 {
+    match bootstrap::exc_raise(bootstrap::SYSCALL_TRAP_SOURCE_ID, ExcKind::SyscallTrap) {
+        Ok(outcome) => {
+            if let Some(task) = outcome.woken {
+                sched::set_frame_rax(task, outcome.payload);
+            }
+            exc_trap_record(&outcome);
+            outcome.delivered as u64
+        }
+        Err(error) => encode_errno(exc_errno(error)),
+    }
+}
+
+/// `SYS_EXC_WAIT`：已订阅则阻塞等待通知；被 raise 唤醒时 payload 已在保存帧 `rax` 中。
+fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
+    let Some(kind) = kind_of(kind_code) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let cur = sched::current();
+    let source_id = match bootstrap::exc_subscribed(cur, cap_id as u32, kind) {
+        Ok(source_id) => source_id,
+        Err(error) => return encode_errno(exc_errno(error)),
+    };
+    let mut frame = unsafe { frame_from_save_block(save_block()) };
+    frame.rax = 0;
+    sched::set_frame(cur, frame);
+    exc_wait_record(frame.cs, source_id);
+    if bootstrap::block_recv_global(cur).is_err() {
+        return encode_errno(Errno::NoEnt);
+    }
+    let next = sched::pick_next(cur).expect("SYS_EXC_WAIT: no Ready task to switch to");
+    sched::block_to(next)
 }
 
 /// `SYS_YIELD`：保存当前任务完整上下文，切到下一个 Ready 任务（不返回给当前调用者）。
@@ -481,6 +597,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         sched::current() as u64
     } else if num == SYS_YIELD {
         yield_call()
+    } else if num == SYS_EXC_WAIT {
+        wait_call(args[0], args[1])
+    } else if num == SYS_TRAP {
+        trap_call()
     } else {
         dispatch_plain(num, args)
     }
@@ -886,8 +1006,10 @@ impl PendingWitness {
 }
 
 /// 收集 pending 直投见证（在用户 `int3` 收尾回调中调用）。
+///
+/// `audit_raised` 取平台初始化时的快照（`ExcBootRecord::audit_raised`），使后续切片
+/// 新增的 raise 不扰动 SPEC-050 的期望值。
 pub fn pending_witness() -> PendingWitness {
-    let audit = exc_audit_snapshot();
     match bootstrap::exc_boot_record() {
         Some(boot) => PendingWitness {
             delivered: boot.delivered,
@@ -895,7 +1017,7 @@ pub fn pending_witness() -> PendingWitness {
             message_id: boot.message_id,
             payload: boot.payload,
             task_ready_after: boot.task_ready_after,
-            audit_raised: audit.raised,
+            audit_raised: boot.audit_raised,
         },
         None => PendingWitness {
             delivered: 0,
@@ -903,7 +1025,7 @@ pub fn pending_witness() -> PendingWitness {
             message_id: 0,
             payload: 0,
             task_ready_after: false,
-            audit_raised: audit.raised,
+            audit_raised: 0,
         },
     }
 }
@@ -963,10 +1085,17 @@ impl MtWitness {
 /// 收集双任务协作切换见证（在 task 1 的 `int3` 收尾回调中调用）。
 pub fn mt_witness() -> MtWitness {
     let mt = mt_state();
+    // 切片 N：SPEC-051 的切换计数在 task 1 恢复后即封存，后续 raise/wait 的切换不扰动。
+    let (switches, last_from, last_to) = unsafe {
+        match *core::ptr::addr_of!(MT_SNAPSHOT) {
+            Some(snapshot) => (snapshot.switches, snapshot.last_from, snapshot.last_to),
+            None => (mt.switches, mt.last_from, mt.last_to),
+        }
+    };
     MtWitness {
-        switches: mt.switches,
-        last_from: mt.last_from,
-        last_to: mt.last_to,
+        switches,
+        last_from,
+        last_to,
         task1_id_before: mt.task1_id_before,
         task1_id_after: mt.task1_id_after,
         task2_id: mt.task2_id,
@@ -981,6 +1110,57 @@ pub fn mt_witness() -> MtWitness {
         receipt_task2_id: read_qword(USER2_Y_VA),
         receipt_task2_auth: read_qword(USER2_Y_VA + 8),
         receipt_task2_sub: read_qword(USER2_Y_VA + 16),
+    }
+}
+
+/// 切片 N：一次跨任务阻塞 raise/wait 见证的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExcWaitWitness {
+    /// `SYS_EXC_WAIT`（task 1）与 `SYS_TRAP`（task 2）进入时的 CS。
+    pub cs_wait: u64,
+    pub cs_trap: u64,
+    /// raise 投递数 / 直投 pending 数 / 被唤醒的任务 id。
+    pub delivered: u64,
+    pub pending: u64,
+    pub woken: u64,
+    /// 通知 payload（应 [`EXC_SYSCALL_TRAP_PAYLOAD`]）。
+    pub payload: u64,
+    /// `SYS_EXC_WAIT` 阻塞次数（应 1）。
+    pub blocks: u64,
+    /// task 1 恢复后写入 `Y+160` 的返回值（应 payload）。
+    pub wait_receipt: u64,
+    /// task 2 写入 `Y2+24` 的 `SYS_TRAP` 返回值（应 delivered）。
+    pub trap_receipt: u64,
+}
+
+impl ExcWaitWitness {
+    /// 纯判定：跨任务阻塞 raise/wait 见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.cs_wait == USER_CS as u64
+            && self.cs_trap == USER_CS as u64
+            && self.delivered == 1
+            && self.pending == 1
+            && self.woken == INIT_TASK_ID as u64
+            && self.payload == EXC_SYSCALL_TRAP_PAYLOAD
+            && self.blocks == 1
+            && self.wait_receipt == self.payload
+            && self.trap_receipt == self.delivered
+    }
+}
+
+/// 收集跨任务阻塞 raise/wait 见证（在 task 1 的 `int3` 收尾回调中调用）。
+pub fn exc_wait_witness() -> ExcWaitWitness {
+    let wait = exc_wait_state();
+    ExcWaitWitness {
+        cs_wait: wait.cs_wait,
+        cs_trap: wait.cs_trap,
+        delivered: wait.delivered,
+        pending: wait.pending,
+        woken: wait.woken,
+        payload: wait.payload,
+        blocks: wait.blocks,
+        wait_receipt: read_qword(USER_Y_VA + 160),
+        trap_receipt: read_qword(USER2_Y_VA + 24),
     }
 }
 
@@ -1457,6 +1637,61 @@ mod tests {
         assert!(!w.evidence_ok());
         let mut w = valid_mt();
         w.receipt_task1_yield = 9; // yield 应返回 0
+        assert!(!w.evidence_ok());
+    }
+
+    fn valid_exc_wait() -> ExcWaitWitness {
+        ExcWaitWitness {
+            cs_wait: USER_CS as u64,
+            cs_trap: USER_CS as u64,
+            delivered: 1,
+            pending: 1,
+            woken: INIT_TASK_ID as u64,
+            payload: EXC_SYSCALL_TRAP_PAYLOAD,
+            blocks: 1,
+            wait_receipt: EXC_SYSCALL_TRAP_PAYLOAD,
+            trap_receipt: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_exc_wait_evidence() {
+        assert!(valid_exc_wait().evidence_ok());
+        assert_eq!(EXC_SYSCALL_TRAP_PAYLOAD, 0x2_0002);
+    }
+
+    #[test]
+    fn rejects_exc_wait_not_blocked() {
+        let mut w = valid_exc_wait();
+        w.blocks = 0; // 未经阻塞路径
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_wait_wrong_waker() {
+        let mut w = valid_exc_wait();
+        w.woken = TASK2_ID as u64;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_wait_not_direct_delivery() {
+        let mut w = valid_exc_wait();
+        w.pending = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_wait_non_cpl3() {
+        let mut w = valid_exc_wait();
+        w.cs_trap = 0x8;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_exc_wait_receipt_mismatch() {
+        let mut w = valid_exc_wait();
+        w.wait_receipt = 0;
         assert!(!w.evidence_ok());
     }
 }

@@ -659,6 +659,8 @@ pub struct RaiseOutcome {
     pub message_id: u32,
     /// 通知 payload（编码 source_id + kind）。
     pub payload: u64,
+    /// 切片 N：被写入 pending 并唤醒的 BlockedRecv 订阅者（首个；无则 `None`）。
+    pub woken: Option<u32>,
 }
 
 /// 切片 L：平台初始化期间那次 pending 递送的留证。
@@ -670,6 +672,9 @@ pub struct ExcBootRecord {
     pub payload: u64,
     /// 取回 pending 后目标 Task 的状态是否回到 Ready。
     pub task_ready_after: bool,
+    /// 切片 N：平台初始化完成时的 `ExceptionRaised` Audit 计数（供 SPEC-050 见证快照，
+    /// 使后续切片新增的 raise 不扰动其期望值）。
+    pub audit_raised: usize,
 }
 
 /// 切片 L：四类异常相关 Audit 事件的计数（供见证对账）。
@@ -1247,6 +1252,30 @@ impl BootstrapState {
         Ok(source_id)
     }
 
+    /// 切片 N：查询 `caller` 是否已订阅 `cap_id` 所指源的 `kind`；成功返回 source_id。
+    ///
+    /// 纯查询，不修改状态、不追加 Audit（§13.1）。
+    pub fn exc_subscribed(&self, caller: u32, cap_id: u32, kind: ExcKind) -> Result<u32, ExcError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ExcError::NoSuchTask);
+        }
+        let source = self
+            .exc_sources
+            .find_by_cap(cap_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.kind != kind {
+            return Err(ExcError::KindMismatch);
+        }
+        if !source.subscribers[..source.count]
+            .iter()
+            .flatten()
+            .any(|task| *task == caller)
+        {
+            return Err(ExcError::NotSubscribed);
+        }
+        Ok(source.id)
+    }
+
     /// 切片 L：内核侧登记订阅（不经理 Capability 门控），供平台初始化使用。
     fn exc_source_add_subscriber(&mut self, source_id: u32, task: u32) -> Result<(), ExcError> {
         if !self.tasks.is_live(task) {
@@ -1322,6 +1351,7 @@ impl BootstrapState {
         let mut delivered = 0;
         let mut pending = 0;
         let mut first_message_id = 0;
+        let mut woken = None;
         for task in subscribers[..count].iter().flatten().copied() {
             let message_id = self.ipc.allocate_id();
             if first_message_id == 0 {
@@ -1349,6 +1379,9 @@ impl BootstrapState {
                     receiver: task,
                 });
                 pending += 1;
+                if woken.is_none() {
+                    woken = Some(task);
+                }
             } else {
                 self.ipc.send(message).map_err(|_| ExcError::Full)?;
                 self.audit.append(AuditEvent::MessageSent {
@@ -1364,6 +1397,7 @@ impl BootstrapState {
             pending,
             message_id: first_message_id,
             payload,
+            woken,
         })
     }
 
@@ -1389,6 +1423,7 @@ impl BootstrapState {
             message_id: message.map(|message| message.id).unwrap_or(0),
             payload: message.map(|message| message.payload).unwrap_or(0),
             task_ready_after,
+            audit_raised: self.exc_audit_counts().raised,
         });
         Ok(())
     }
@@ -1967,6 +2002,39 @@ pub fn task_status(task_id: u32) -> Option<TaskStatus> {
             .as_ref()
             .and_then(|state| state.tasks.find(task_id))
             .map(|task| task.status)
+    }
+}
+
+/// 切片 N：把 `task_id` 置为 BlockedRecv（`SYS_EXC_WAIT` 阻塞调用者用）。
+pub fn block_recv_global(task_id: u32) -> Result<(), TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.tasks.block_recv(task_id),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+/// 切片 N：内核 actor 触发一次 `raise_exception`（供 `SYS_TRAP` 使用）。
+pub fn exc_raise(source_id: u32, kind: ExcKind) -> Result<RaiseOutcome, ExcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.exc_raise(source_id, kind),
+            None => Err(ExcError::NotInstalled),
+        }
+    }
+}
+
+/// 切片 N：查询 `caller` 是否已订阅 `cap_id` 所指源的 `kind`。
+pub fn exc_subscribed(caller: u32, cap_id: u32, kind: ExcKind) -> Result<u32, ExcError> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        match (*slot).as_ref() {
+            Some(state) => state.exc_subscribed(caller, cap_id, kind),
+            None => Err(ExcError::NotInstalled),
+        }
     }
 }
 

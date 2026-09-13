@@ -117,6 +117,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 M：快路径之后是双任务协作往返（task1→task2→task1）。
     let multitask = kernel::syscall::mt_witness();
     protocol::multitask_ready(&multitask);
+    // 切片 N：最后是跨任务阻塞 raise/wait（task1 阻塞在 WAIT，task2 TRAP 唤醒）。
+    let exc_wait = kernel::syscall::exc_wait_witness();
+    protocol::exc_wait_ready(&exc_wait);
     run_and_exit();
 }
 

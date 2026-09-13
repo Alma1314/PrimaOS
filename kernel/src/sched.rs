@@ -60,6 +60,19 @@ pub fn frame(task_id: u32) -> Option<SretFrame> {
     }
 }
 
+/// 切片 N：把某 Task 保存帧的 `rax` 设为 `value`。
+///
+/// 阻塞在 `SYS_EXC_WAIT` 的任务被 raise 唤醒且写入 pending 时，调用者据此把通知
+/// payload 注入其保存帧；该任务被重新调度时 `iretq` 直接带着 payload 返回用户态。
+pub fn set_frame_rax(task_id: u32, value: u64) {
+    if (task_id as usize) < MAX_TASKS {
+        unsafe {
+            let frames = core::ptr::addr_of_mut!(FRAMES);
+            (*frames)[task_id as usize].rax = value;
+        }
+    }
+}
+
 /// 选择下一个 Ready 任务（最小 id，排除 `cur`）。
 pub fn pick_next(cur: u32) -> Option<u32> {
     (0..MAX_TASKS as u32)
@@ -74,6 +87,17 @@ pub fn switch_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "switch_to must target a different task");
     bootstrap::yield_task_global(cur).expect("current task must be Running to yield");
+    bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    set_current(next);
+    resume(next)
+}
+
+/// 切片 N：当前任务已由调用方置 `BlockedRecv`，调度 `next`（Ready→Running）并切走。
+///
+/// 与 [`switch_to`] 的区别：不把当前任务置回 Ready（它保持阻塞，等待 raise 唤醒）。
+pub fn block_to(next: u32) -> ! {
+    let cur = current();
+    assert_ne!(cur, next, "block_to must target a different task");
     bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
     set_current(next);
     resume(next)

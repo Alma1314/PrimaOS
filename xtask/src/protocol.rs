@@ -18,6 +18,7 @@ enum EventKind {
     ExcPendingReady,
     SyscallFastReady,
     MultitaskReady,
+    ExcWaitReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -88,6 +89,9 @@ const MT_TASK1: u64 = 1;
 const MT_TASK2: u64 = 2;
 const MT_SWITCHES: u64 = 2;
 
+/// 切片 N：`syscall_trap_source`（id=2）的 `SyscallTrap`（kind=2）通知 payload。
+const EXC_SYSCALL_TRAP_PAYLOAD: u64 = 0x2_0002;
+
 /// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
 const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 const FAST_STAR: u64 = 0x0020_0008_0000_0000;
@@ -108,7 +112,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 20] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 21] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -127,8 +131,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 20] = [
     (16, EventKind::ExcPendingReady),
     (17, EventKind::SyscallFastReady),
     (18, EventKind::MultitaskReady),
-    (19, EventKind::ExcResumeReady),
-    (20, EventKind::BootComplete),
+    (19, EventKind::ExcWaitReady),
+    (20, EventKind::ExcResumeReady),
+    (21, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -298,6 +303,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::MultitaskReady)
     {
         validate_multitask_data(multitask.data.as_deref())?;
+    }
+
+    if let Some(exc_wait) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ExcWaitReady)
+    {
+        validate_exc_wait_data(exc_wait.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -1016,6 +1028,87 @@ fn validate_multitask_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 校验切片 N 的跨任务阻塞 raise/wait 证据：wait 与 trap 均来自 CPL3；一次 raise 投递、
+/// 经 pending 直投唤醒 task 1；payload 为 syscall_trap 通知编码；阻塞一次；回执一致。
+fn validate_exc_wait_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "exc_wait_ready event is missing its data field".to_owned())?;
+    let mut cs_wait = None;
+    let mut cs_trap = None;
+    let mut delivered = None;
+    let mut pending = None;
+    let mut woken = None;
+    let mut payload = None;
+    let mut blocks = None;
+    let mut wait_receipt = None;
+    let mut trap_receipt = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "cs_wait" => cs_wait = Some(parse_addr(value)?),
+            "cs_trap" => cs_trap = Some(parse_addr(value)?),
+            "delivered" => delivered = Some(parse_decimal(value, "delivered")?),
+            "pending" => pending = Some(parse_decimal(value, "pending")?),
+            "woken" => woken = Some(parse_decimal(value, "woken")?),
+            "payload" => payload = Some(parse_addr(value)?),
+            "blocks" => blocks = Some(parse_decimal(value, "blocks")?),
+            "wait_receipt" => wait_receipt = Some(parse_addr(value)?),
+            "trap_receipt" => trap_receipt = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let cs_wait = cs_wait.ok_or_else(|| "missing cs_wait in exc_wait_ready data".to_owned())?;
+    let cs_trap = cs_trap.ok_or_else(|| "missing cs_trap in exc_wait_ready data".to_owned())?;
+    let delivered =
+        delivered.ok_or_else(|| "missing delivered in exc_wait_ready data".to_owned())?;
+    let pending = pending.ok_or_else(|| "missing pending in exc_wait_ready data".to_owned())?;
+    let woken = woken.ok_or_else(|| "missing woken in exc_wait_ready data".to_owned())?;
+    let payload = payload.ok_or_else(|| "missing payload in exc_wait_ready data".to_owned())?;
+    let blocks = blocks.ok_or_else(|| "missing blocks in exc_wait_ready data".to_owned())?;
+    let wait_receipt =
+        wait_receipt.ok_or_else(|| "missing wait_receipt in exc_wait_ready data".to_owned())?;
+    let trap_receipt =
+        trap_receipt.ok_or_else(|| "missing trap_receipt in exc_wait_ready data".to_owned())?;
+
+    if cs_wait != USER_CS || cs_trap != USER_CS {
+        return Err(format!(
+            "exc_wait_ready cs_wait/cs_trap (0x{cs_wait:x}/0x{cs_trap:x}) must both be 0x{USER_CS:x} — wait and trap must originate from CPL3"
+        ));
+    }
+    if delivered != 1 {
+        return Err(format!(
+            "exc_wait_ready delivered ({delivered}) must be 1 — exactly one subscriber notified"
+        ));
+    }
+    if pending != 1 {
+        return Err(format!(
+            "exc_wait_ready pending ({pending}) must be 1 — delivery must take the pending_return path"
+        ));
+    }
+    if woken != MT_TASK1 {
+        return Err(format!(
+            "exc_wait_ready woken ({woken}) must be {MT_TASK1} — the blocked waiter must be task 1"
+        ));
+    }
+    if payload != EXC_SYSCALL_TRAP_PAYLOAD {
+        return Err(format!(
+            "exc_wait_ready payload (0x{payload:x}) must equal syscall_trap notification 0x{EXC_SYSCALL_TRAP_PAYLOAD:x}"
+        ));
+    }
+    if blocks != 1 {
+        return Err(format!(
+            "exc_wait_ready blocks ({blocks}) must be 1 — exactly one blocking wait"
+        ));
+    }
+    if wait_receipt != payload || trap_receipt != delivered {
+        return Err(format!(
+            "exc_wait_ready receipts must equal their returns (wait 0x{wait_receipt:x}/0x{payload:x}, trap 0x{trap_receipt:x}/{delivered})"
+        ));
+    }
+    Ok(())
+}
+
 /// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
 fn validate_cow_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "cow_ready event is missing its data field".to_owned())?;
@@ -1546,6 +1639,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("exc_pending_ready", "ok") => EventKind::ExcPendingReady,
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("multitask_ready", "ok") => EventKind::MultitaskReady,
+        ("exc_wait_ready", "ok") => EventKind::ExcWaitReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -1575,6 +1669,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
+            | EventKind::ExcWaitReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -1597,6 +1692,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
+            | EventKind::ExcWaitReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -1637,8 +1733,9 @@ mod tests {
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
         "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
-        "PRIMA|v=1|seq=19|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=20|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
+        "PRIMA|v=1|seq=20|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=21|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -2473,6 +2570,66 @@ mod tests {
         let output = VALID.replace(
             MULTITASK_DATA,
             &MULTITASK_DATA.replace("receipt1_yield=0x0", "receipt1_yield=0x9"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipts"), "{error}");
+    }
+
+    /// 切片 N 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const EXC_WAIT_DATA: &str = "cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1";
+
+    #[test]
+    fn rejects_exc_wait_not_from_cpl3() {
+        let output = VALID.replace(
+            EXC_WAIT_DATA,
+            &EXC_WAIT_DATA.replace("cs_trap=0x33", "cs_trap=0x8"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wait_no_pending() {
+        let output = VALID.replace(
+            EXC_WAIT_DATA,
+            &EXC_WAIT_DATA.replace("pending=1", "pending=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("pending_return"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wait_wrong_waker() {
+        let output = VALID.replace(EXC_WAIT_DATA, &EXC_WAIT_DATA.replace("woken=1", "woken=2"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("blocked waiter"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wait_wrong_payload() {
+        let output = VALID.replace(
+            EXC_WAIT_DATA,
+            &EXC_WAIT_DATA.replace("payload=0x20002", "payload=0x10001"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("payload"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wait_no_block() {
+        let output = VALID.replace(
+            EXC_WAIT_DATA,
+            &EXC_WAIT_DATA.replace("blocks=1", "blocks=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("blocking wait"), "{error}");
+    }
+
+    #[test]
+    fn rejects_exc_wait_receipt_mismatch() {
+        let output = VALID.replace(
+            EXC_WAIT_DATA,
+            &EXC_WAIT_DATA.replace("wait_receipt=0x20002", "wait_receipt=0x0"),
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("receipts"), "{error}");

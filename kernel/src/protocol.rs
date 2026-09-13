@@ -352,6 +352,30 @@ pub(crate) fn multitask_ready(witness: &kernel::syscall::MtWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 N：跨任务阻塞 raise/wait 见证（task 2 trap → 内核 actor raise → task 1 pending 唤醒）。
+pub(crate) fn exc_wait_ready(witness: &kernel::syscall::ExcWaitWitness) {
+    write_prefix("exc_wait_ready", "ok");
+    serial::write_bytes(b"|data=cs_wait=");
+    write_hex_u64(witness.cs_wait);
+    serial::write_bytes(b";cs_trap=");
+    write_hex_u64(witness.cs_trap);
+    serial::write_bytes(b";delivered=");
+    write_u32(witness.delivered as u32);
+    serial::write_bytes(b";pending=");
+    write_u32(witness.pending as u32);
+    serial::write_bytes(b";woken=");
+    write_u32(witness.woken as u32);
+    serial::write_bytes(b";payload=");
+    write_hex_u64(witness.payload);
+    serial::write_bytes(b";blocks=");
+    write_u32(witness.blocks as u32);
+    serial::write_bytes(b";wait_receipt=");
+    write_hex_u64(witness.wait_receipt);
+    serial::write_bytes(b";trap_receipt=");
+    write_hex_u64(witness.trap_receipt);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
 pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_prefix("syscall_fast_ready", "ok");
