@@ -17,6 +17,7 @@ enum EventKind {
     ExcReady,
     ExcPendingReady,
     SyscallFastReady,
+    MultitaskReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -82,6 +83,11 @@ const EXC_SYSCALL_TRAP_SOURCE: u64 = 2;
 /// 平台初始化那次 page_fault 通知 payload = source_id(1) | kind(1)<<16。
 const EXC_PAGE_FAULT_PAYLOAD: u64 = 0x1_0001;
 
+/// 切片 M：双任务协作调度的镜像常量，与 `kernel/src/{sched,user}.rs` 一致。
+const MT_TASK1: u64 = 1;
+const MT_TASK2: u64 = 2;
+const MT_SWITCHES: u64 = 2;
+
 /// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
 const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 const FAST_STAR: u64 = 0x0020_0008_0000_0000;
@@ -102,7 +108,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 19] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 20] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -120,8 +126,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 19] = [
     (15, EventKind::ExcReady),
     (16, EventKind::ExcPendingReady),
     (17, EventKind::SyscallFastReady),
-    (18, EventKind::ExcResumeReady),
-    (19, EventKind::BootComplete),
+    (18, EventKind::MultitaskReady),
+    (19, EventKind::ExcResumeReady),
+    (20, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -284,6 +291,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::SyscallFastReady)
     {
         validate_syscall_fast_data(fast.data.as_deref())?;
+    }
+
+    if let Some(multitask) = events
+        .iter()
+        .find(|event| event.kind == EventKind::MultitaskReady)
+    {
+        validate_multitask_data(multitask.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -898,6 +912,110 @@ fn validate_exc_pending_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 校验切片 M 的双任务协作证据：三次进入均来自 CPL3；task id 与 yield 往返次序正确
+/// （task1→task2→task1）；task 2 的授权/订阅因非持有者被拒；所有回执与返回值一致。
+fn validate_multitask_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "multitask_ready event is missing its data field".to_owned())?;
+    let mut cs1_before = None;
+    let mut cs1_after = None;
+    let mut cs2 = None;
+    let mut task1_before = None;
+    let mut task1_after = None;
+    let mut task2 = None;
+    let mut switches = None;
+    let mut task2_auth = None;
+    let mut task2_sub = None;
+    let mut receipt1_before = None;
+    let mut receipt1_yield = None;
+    let mut receipt1_after = None;
+    let mut receipt2_id = None;
+    let mut receipt2_auth = None;
+    let mut receipt2_sub = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "cs1_before" => cs1_before = Some(parse_addr(value)?),
+            "cs1_after" => cs1_after = Some(parse_addr(value)?),
+            "cs2" => cs2 = Some(parse_addr(value)?),
+            "task1_before" => task1_before = Some(parse_addr(value)?),
+            "task1_after" => task1_after = Some(parse_addr(value)?),
+            "task2" => task2 = Some(parse_addr(value)?),
+            "switches" => switches = Some(parse_addr(value)?),
+            "task2_auth" => task2_auth = Some(parse_addr(value)?),
+            "task2_sub" => task2_sub = Some(parse_addr(value)?),
+            "receipt1_before" => receipt1_before = Some(parse_addr(value)?),
+            "receipt1_yield" => receipt1_yield = Some(parse_addr(value)?),
+            "receipt1_after" => receipt1_after = Some(parse_addr(value)?),
+            "receipt2_id" => receipt2_id = Some(parse_addr(value)?),
+            "receipt2_auth" => receipt2_auth = Some(parse_addr(value)?),
+            "receipt2_sub" => receipt2_sub = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let cs1_before =
+        cs1_before.ok_or_else(|| "missing cs1_before in multitask_ready data".to_owned())?;
+    let cs1_after =
+        cs1_after.ok_or_else(|| "missing cs1_after in multitask_ready data".to_owned())?;
+    let cs2 = cs2.ok_or_else(|| "missing cs2 in multitask_ready data".to_owned())?;
+    let task1_before =
+        task1_before.ok_or_else(|| "missing task1_before in multitask_ready data".to_owned())?;
+    let task1_after =
+        task1_after.ok_or_else(|| "missing task1_after in multitask_ready data".to_owned())?;
+    let task2 = task2.ok_or_else(|| "missing task2 in multitask_ready data".to_owned())?;
+    let switches = switches.ok_or_else(|| "missing switches in multitask_ready data".to_owned())?;
+    let task2_auth =
+        task2_auth.ok_or_else(|| "missing task2_auth in multitask_ready data".to_owned())?;
+    let task2_sub =
+        task2_sub.ok_or_else(|| "missing task2_sub in multitask_ready data".to_owned())?;
+    let receipt1_before = receipt1_before
+        .ok_or_else(|| "missing receipt1_before in multitask_ready data".to_owned())?;
+    let receipt1_yield = receipt1_yield
+        .ok_or_else(|| "missing receipt1_yield in multitask_ready data".to_owned())?;
+    let receipt1_after = receipt1_after
+        .ok_or_else(|| "missing receipt1_after in multitask_ready data".to_owned())?;
+    let receipt2_id =
+        receipt2_id.ok_or_else(|| "missing receipt2_id in multitask_ready data".to_owned())?;
+    let receipt2_auth =
+        receipt2_auth.ok_or_else(|| "missing receipt2_auth in multitask_ready data".to_owned())?;
+    let receipt2_sub =
+        receipt2_sub.ok_or_else(|| "missing receipt2_sub in multitask_ready data".to_owned())?;
+
+    if cs1_before != USER_CS || cs1_after != USER_CS || cs2 != USER_CS {
+        return Err(format!(
+            "multitask_ready cs values (0x{cs1_before:x}/0x{cs1_after:x}/0x{cs2:x}) must all be 0x{USER_CS:x} — every entry must originate from CPL3"
+        ));
+    }
+    if task1_before != MT_TASK1 || task1_after != MT_TASK1 || task2 != MT_TASK2 {
+        return Err(format!(
+            "multitask_ready task ids (task1_before=0x{task1_before:x} task1_after=0x{task1_after:x} task2=0x{task2:x}) must be {MT_TASK1}/{MT_TASK1}/{MT_TASK2}"
+        ));
+    }
+    if switches != MT_SWITCHES {
+        return Err(format!(
+            "multitask_ready switches (0x{switches:x}) must be {MT_SWITCHES} — task1→task2→task1"
+        ));
+    }
+    if task2_auth != EACCES || task2_sub != EACCES {
+        return Err(format!(
+            "multitask_ready task2_auth (0x{task2_auth:x}) / task2_sub (0x{task2_sub:x}) must both be -EACCES 0x{EACCES:x} — task 2 must not hold task 1's capabilities"
+        ));
+    }
+    if receipt1_before != task1_before
+        || receipt1_yield != 0
+        || receipt1_after != task1_after
+        || receipt2_id != task2
+        || receipt2_auth != task2_auth
+        || receipt2_sub != task2_sub
+    {
+        return Err(format!(
+            "multitask_ready receipts must equal their returns (r1_before=0x{receipt1_before:x}/0x{task1_before:x}, r1_yield=0x{receipt1_yield:x}/0x0, r1_after=0x{receipt1_after:x}/0x{task1_after:x}, r2_id=0x{receipt2_id:x}/0x{task2:x}, r2_auth=0x{receipt2_auth:x}/0x{task2_auth:x}, r2_sub=0x{receipt2_sub:x}/0x{task2_sub:x})"
+        ));
+    }
+    Ok(())
+}
+
 /// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
 fn validate_cow_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "cow_ready event is missing its data field".to_owned())?;
@@ -1427,6 +1545,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("exc_ready", "ok") => EventKind::ExcReady,
         ("exc_pending_ready", "ok") => EventKind::ExcPendingReady,
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
+        ("multitask_ready", "ok") => EventKind::MultitaskReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -1455,6 +1574,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcReady
             | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
+            | EventKind::MultitaskReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -1476,6 +1596,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcReady
             | EventKind::ExcPendingReady
             | EventKind::SyscallFastReady
+            | EventKind::MultitaskReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -1515,8 +1636,9 @@ mod tests {
         "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
         "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
-        "PRIMA|v=1|seq=18|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=19|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
+        "PRIMA|v=1|seq=19|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=20|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -2291,6 +2413,69 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("Ready"), "{error}");
+    }
+
+    /// 切片 M 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
+    const MULTITASK_DATA: &str = "cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3";
+
+    #[test]
+    fn rejects_multitask_not_all_cpl3() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("cs2=0x33", "cs2=0x8"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("CPL3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_multitask_task2_granted() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("task2_auth=0xfffffffffffffff3", "task2_auth=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("EACCES"), "{error}");
+    }
+
+    #[test]
+    fn rejects_multitask_wrong_task_id() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("task2=0x2", "task2=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("task ids"), "{error}");
+    }
+
+    #[test]
+    fn rejects_multitask_missing_switch_back() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("task1_after=0x1", "task1_after=0x0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("task ids"), "{error}");
+    }
+
+    #[test]
+    fn rejects_multitask_wrong_switch_count() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("switches=0x2", "switches=0x1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("switches"), "{error}");
+    }
+
+    #[test]
+    fn rejects_multitask_receipt_mismatch() {
+        let output = VALID.replace(
+            MULTITASK_DATA,
+            &MULTITASK_DATA.replace("receipt1_yield=0x0", "receipt1_yield=0x9"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("receipts"), "{error}");
     }
 
     /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。

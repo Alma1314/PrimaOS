@@ -25,7 +25,7 @@ use crate::syscall::{
     AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP,
     EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
     SYS_AUTHORIZE, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE,
-    SYS_EXC_UNSUBSCRIBE, SYS_SUM4, UNSET_CAP,
+    SYS_EXC_UNSUBSCRIBE, SYS_SUM4, SYS_TASK_ID, SYS_YIELD, TASK2_ID, UNSET_CAP,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -41,14 +41,27 @@ pub const USER_X_VA: u64 = USER_BASE_VA + 0x2000;
 /// 回执页 Y（可写、user），用户代码写入以证明 CPL3 执行与重试成功。
 pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 
+/// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
+/// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
+pub const USER2_BASE_VA: u64 = 0x0000_0A80_0000_0000;
+/// 第二任务代码页（只读、可执行、user）。
+pub const USER2_CODE_VA: u64 = USER2_BASE_VA;
+/// 第二任务栈页（可写、user）。
+pub const USER2_STACK_VA: u64 = USER2_BASE_VA + 0x1000;
+/// 第二任务回执页（可写、user）。
+pub const USER2_Y_VA: u64 = USER2_BASE_VA + 0x2000;
+
 /// 用户代码写入的值（亦为回执值）。
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 526;
+pub const USER_CODE_LEN: usize = 583;
+
+/// 第二任务代码字节长度。
+pub const TASK2_CODE_LEN: usize = 109;
 
 /// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
-const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
+const fn put<const N: usize>(code: &mut [u8; N], at: usize, bytes: &[u8]) {
     let mut i = 0;
     while i < bytes.len() {
         code[at + i] = bytes[i];
@@ -57,7 +70,13 @@ const fn put(code: &mut [u8; USER_CODE_LEN], at: usize, bytes: &[u8]) {
 }
 
 /// 写入 `opcode0 opcode1 <imm64>` 形态的指令（`mov r64, imm64`）。
-const fn put_imm64(code: &mut [u8; USER_CODE_LEN], at: usize, opcode0: u8, opcode1: u8, imm: u64) {
+const fn put_imm64<const N: usize>(
+    code: &mut [u8; N],
+    at: usize,
+    opcode0: u8,
+    opcode1: u8,
+    imm: u64,
+) {
     code[at] = opcode0;
     code[at + 1] = opcode1;
     put(code, at + 2, &imm.to_le_bytes());
@@ -229,9 +248,91 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 511, 0x48, 0xB9, USER_Y_VA);
     // 521: mov [rcx+56], rax
     put(&mut code, 521, &[0x48, 0x89, 0x41, 0x38]);
-    // 525: int3
-    code[525] = 0xCC;
+    // 525: mov rax, SYS_TASK_ID
+    put_imm64(&mut code, 525, 0x48, 0xB8, SYS_TASK_ID);
+    // 535: int 0x80 → 返回 1
+    put(&mut code, 535, &[0xCD, 0x80]);
+    // 537: mov [rcx+136], rax（disp32：0x88 作 disp8 会被符号扩展）
+    put(&mut code, 537, &[0x48, 0x89, 0x81, 0x88, 0, 0, 0]);
+    // 544: mov rax, SYS_YIELD
+    put_imm64(&mut code, 544, 0x48, 0xB8, SYS_YIELD);
+    // 554: int 0x80（切走；恢复时从 556 继续，rax=0）
+    put(&mut code, 554, &[0xCD, 0x80]);
+    // 556: mov [rcx+144], rax
+    put(&mut code, 556, &[0x48, 0x89, 0x81, 0x90, 0, 0, 0]);
+    // 563: mov rax, SYS_TASK_ID（恢复后仍应是 task 1）
+    put_imm64(&mut code, 563, 0x48, 0xB8, SYS_TASK_ID);
+    // 573: int 0x80 → 返回 1
+    put(&mut code, 573, &[0xCD, 0x80]);
+    // 575: mov [rcx+152], rax
+    put(&mut code, 575, &[0x48, 0x89, 0x81, 0x98, 0, 0, 0]);
+    // 582: int3
+    code[582] = 0xCC;
     code
+}
+
+/// 组装第二任务机器码：
+/// `mov rcx, Y2; SYS_TASK_ID→[rcx]`（应 2）；
+/// `mov rdi, IMAGE_CAP; mov rsi, SegMapR; SYS_AUTHORIZE→[rcx+8]`（应 `EACCES`，非持有者）；
+/// `mov rdi, EXC_PAGE_FAULT_CAP; mov rsi, PageFault; SYS_EXC_SUBSCRIBE→[rcx+16]`（应 `EACCES`）；
+/// `SYS_YIELD`（被切走后不再返回本任务，无 int3）。
+pub const fn task2_code() -> [u8; TASK2_CODE_LEN] {
+    let mut code = [0u8; TASK2_CODE_LEN];
+    // 0: mov rcx, Y2
+    put_imm64(&mut code, 0, 0x48, 0xB9, USER2_Y_VA);
+    // 10: mov rax, SYS_TASK_ID
+    put_imm64(&mut code, 10, 0x48, 0xB8, SYS_TASK_ID);
+    // 20: int 0x80 → 2
+    put(&mut code, 20, &[0xCD, 0x80]);
+    // 22: mov [rcx], rax
+    put(&mut code, 22, &[0x48, 0x89, 0x01]);
+    // 25: mov rdi, AUTHORIZE_CAP
+    put_imm64(&mut code, 25, 0x48, 0xBF, AUTHORIZE_CAP);
+    // 35: mov rsi, RIGHT_SEGMAPR
+    put_imm64(&mut code, 35, 0x48, 0xBE, RIGHT_SEGMAPR);
+    // 45: mov rax, SYS_AUTHORIZE
+    put_imm64(&mut code, 45, 0x48, 0xB8, SYS_AUTHORIZE);
+    // 55: int 0x80 → EACCES
+    put(&mut code, 55, &[0xCD, 0x80]);
+    // 57: mov [rcx+8], rax
+    put(&mut code, 57, &[0x48, 0x89, 0x41, 0x08]);
+    // 61: mov rdi, EXC_PAGE_FAULT_CAP
+    put_imm64(&mut code, 61, 0x48, 0xBF, EXC_PAGE_FAULT_CAP);
+    // 71: mov rsi, EXC_KIND_PAGEFAULT
+    put_imm64(&mut code, 71, 0x48, 0xBE, EXC_KIND_PAGEFAULT);
+    // 81: mov rax, SYS_EXC_SUBSCRIBE
+    put_imm64(&mut code, 81, 0x48, 0xB8, SYS_EXC_SUBSCRIBE);
+    // 91: int 0x80 → EACCES
+    put(&mut code, 91, &[0xCD, 0x80]);
+    // 93: mov [rcx+16], rax
+    put(&mut code, 93, &[0x48, 0x89, 0x41, 0x10]);
+    // 97: mov rax, SYS_YIELD
+    put_imm64(&mut code, 97, 0x48, 0xB8, SYS_YIELD);
+    // 107: int 0x80（永不返回本任务）
+    put(&mut code, 107, &[0xCD, 0x80]);
+    code
+}
+
+/// task 1 的初始用户上下文（进入 CPL3 的起点）。
+pub fn task1_frame() -> SretFrame {
+    let mut frame = SretFrame::ZERO;
+    frame.rip = USER_CODE_VA;
+    frame.rsp = USER_STACK_VA + FRAME_SIZE;
+    frame.cs = USER_CS as u64;
+    frame.ss = USER_DS as u64;
+    frame.rflags = 0x2; // bit1 固定；IF=0
+    frame
+}
+
+/// task 2 的初始用户上下文。
+pub fn task2_frame() -> SretFrame {
+    let mut frame = SretFrame::ZERO;
+    frame.rip = USER2_CODE_VA;
+    frame.rsp = USER2_STACK_VA + FRAME_SIZE;
+    frame.cs = USER_CS as u64;
+    frame.ss = USER_DS as u64;
+    frame.rflags = 0x2;
+    frame
 }
 
 /// 一次用户态 COW 见证的实测证据。
@@ -365,16 +466,71 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     Ok(())
 }
 
-/// 进入 CPL3 执行用户代码（不返回；用户代码最终以 `int3` 陷入内核）。
+/// 切片 M：构造第二任务（code/stack/Y 三页，无 COW X）。
+///
+/// 与 [`prepare`] 一样必须在 `cow::prepare` 之后，复用同一唯一分配器。
+pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
+        if !vspace::slot_free(root_phys, va, map) {
+            return Err(VspaceError::SlotOccupied);
+        }
+    }
+
+    let code = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    let stack = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    let y = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+
+    let code_bytes = task2_code();
+    for (index, &byte) in code_bytes.iter().enumerate() {
+        unsafe { core::ptr::write_volatile((map(code) + index as u64) as *mut u8, byte) };
+    }
+    for index in 0..(FRAME_SIZE / 8) {
+        write_qword(map(stack) + index * 8, 0);
+        write_qword(map(y) + index * 8, 0);
+    }
+
+    vspace::map_4k(
+        root_phys,
+        USER2_CODE_VA,
+        map,
+        crate::cow::alloc_frame,
+        code,
+        false,
+        true,
+    )?;
+    vspace::map_4k(
+        root_phys,
+        USER2_STACK_VA,
+        map,
+        crate::cow::alloc_frame,
+        stack,
+        true,
+        true,
+    )?;
+    vspace::map_4k(
+        root_phys,
+        USER2_Y_VA,
+        map,
+        crate::cow::alloc_frame,
+        y,
+        true,
+        true,
+    )?;
+    for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
+        unsafe { vspace::invlpg(va) };
+    }
+    Ok(())
+}
+
+/// 进入 CPL3：初始化调度器，装入两个任务的初始上下文，恢复 task 1（不返回）。
+///
+/// task 1 最终以 `int3` 陷入内核收尾；task 2 以 `SYS_YIELD` 结束（不再被调度）。
 pub fn enter() -> ! {
-    let mut frame = SretFrame::ZERO;
-    frame.rip = USER_CODE_VA;
-    frame.rsp = USER_STACK_VA + FRAME_SIZE;
-    frame.cs = USER_CS as u64;
-    frame.ss = USER_DS as u64;
-    frame.rflags = 0x2; // bit1 固定；IF=0
-    // 复用切片 D 验证过的 5 元 iretq 跳板（含特权级切换）。
-    unsafe { crate::exc::resume(&frame) }
+    crate::sched::init();
+    crate::sched::set_frame(crate::bootstrap::INIT_TASK_ID, task1_frame());
+    crate::sched::set_frame(TASK2_ID, task2_frame());
+    crate::sched::resume(crate::bootstrap::INIT_TASK_ID)
 }
 
 /// 收集用户态 COW 见证（在 `int3` 回调中调用）。
@@ -418,7 +574,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 526);
+        assert_eq!(USER_CODE_LEN, 583);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -545,15 +701,68 @@ mod tests {
         assert_eq!(&code[511..513], &[0x48, 0xB9]); // mov rcx, imm64
         assert_eq!(&code[513..521], &USER_Y_VA.to_le_bytes());
         assert_eq!(&code[521..525], &[0x48, 0x89, 0x41, 0x38]); // mov [rcx+56], rax
-        assert_eq!(code[525], 0xCC); // int3
+        // 阶段二：task id → yield → 恢复后再取 task id → int3。
+        assert_eq!(&code[525..527], &[0x48, 0xB8]);
+        assert_eq!(&code[527..535], &SYS_TASK_ID.to_le_bytes());
+        assert_eq!(&code[535..537], &[0xCD, 0x80]);
+        assert_eq!(&code[537..544], &[0x48, 0x89, 0x81, 0x88, 0, 0, 0]); // [rcx+136] disp32
+        assert_eq!(&code[544..546], &[0x48, 0xB8]);
+        assert_eq!(&code[546..554], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[554..556], &[0xCD, 0x80]);
+        assert_eq!(&code[556..563], &[0x48, 0x89, 0x81, 0x90, 0, 0, 0]); // [rcx+144] disp32
+        assert_eq!(&code[563..565], &[0x48, 0xB8]);
+        assert_eq!(&code[565..573], &SYS_TASK_ID.to_le_bytes());
+        assert_eq!(&code[573..575], &[0xCD, 0x80]);
+        assert_eq!(&code[575..582], &[0x48, 0x89, 0x81, 0x98, 0, 0, 0]); // [rcx+152] disp32
+        assert_eq!(code[582], 0xCC); // int3
     }
 
     #[test]
-    fn user_vas_are_distinct_and_in_slot_twenty() {
-        let vas = [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA];
-        for (i, a) in vas.iter().enumerate() {
-            assert_eq!((a >> 39) & 0x1ff, 20, "va {i} must be in PML4 slot 20");
+    fn task2_code_bytes_are_fixed() {
+        let code = task2_code();
+        assert_eq!(TASK2_CODE_LEN, 109);
+        assert_eq!(&code[0..2], &[0x48, 0xB9]); // mov rcx, imm64
+        assert_eq!(&code[2..10], &USER2_Y_VA.to_le_bytes());
+        assert_eq!(&code[10..12], &[0x48, 0xB8]);
+        assert_eq!(&code[12..20], &SYS_TASK_ID.to_le_bytes());
+        assert_eq!(&code[20..22], &[0xCD, 0x80]);
+        assert_eq!(&code[22..25], &[0x48, 0x89, 0x01]); // [rcx]
+        assert_eq!(&code[25..27], &[0x48, 0xBF]);
+        assert_eq!(&code[27..35], &AUTHORIZE_CAP.to_le_bytes());
+        assert_eq!(&code[45..47], &[0x48, 0xB8]);
+        assert_eq!(&code[47..55], &SYS_AUTHORIZE.to_le_bytes());
+        assert_eq!(&code[55..57], &[0xCD, 0x80]);
+        assert_eq!(&code[57..61], &[0x48, 0x89, 0x41, 0x08]); // [rcx+8]
+        assert_eq!(&code[61..63], &[0x48, 0xBF]);
+        assert_eq!(&code[63..71], &EXC_PAGE_FAULT_CAP.to_le_bytes());
+        assert_eq!(&code[81..83], &[0x48, 0xB8]);
+        assert_eq!(&code[83..91], &SYS_EXC_SUBSCRIBE.to_le_bytes());
+        assert_eq!(&code[91..93], &[0xCD, 0x80]);
+        assert_eq!(&code[93..97], &[0x48, 0x89, 0x41, 0x10]); // [rcx+16]
+        assert_eq!(&code[97..99], &[0x48, 0xB8]);
+        assert_eq!(&code[99..107], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[107..109], &[0xCD, 0x80]);
+    }
+
+    #[test]
+    fn user_vas_are_distinct_and_in_expected_slots() {
+        let task1 = [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA];
+        let task2 = [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA];
+        for (i, a) in task1.iter().enumerate() {
+            assert_eq!(
+                (a >> 39) & 0x1ff,
+                20,
+                "task1 va {i} must be in PML4 slot 20"
+            );
         }
+        for (i, a) in task2.iter().enumerate() {
+            assert_eq!(
+                (a >> 39) & 0x1ff,
+                21,
+                "task2 va {i} must be in PML4 slot 21"
+            );
+        }
+        let vas = [task1.as_slice(), task2.as_slice()].concat();
         for i in 0..vas.len() {
             for j in (i + 1)..vas.len() {
                 assert_ne!(vas[i], vas[j]);

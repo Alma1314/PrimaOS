@@ -436,6 +436,8 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         "push rax",
         // 以 rbp 为保存块基址；rsp 对齐后留 64 字节 ABI 现场帧（r10 作暂存，其原值已入栈）。
         "mov rbp, rsp",
+        // 切片 M：把保存块基址存入静态，供 SYS_YIELD 读出当前任务完整用户上下文。
+        "mov qword ptr [rip + {ctx}], rbp",
         "and rsp, -16",
         "sub rsp, 64",
         "mov r10, qword ptr [rbp + 0x00]",
@@ -477,6 +479,7 @@ pub unsafe extern "C" fn syscall_entry() -> ! {
         // rsp 现指向硬件压栈的 rip；iretq 依目标 CS 决定弹 3（CPL0）或 5（CPL3）个 qword。
         "iretq",
         handle = sym crate::syscall::handle,
+        ctx = sym crate::syscall::CONTEXT_BASE,
     )
 }
 

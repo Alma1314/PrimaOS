@@ -12,6 +12,7 @@ pub mod idt;
 pub mod mem;
 pub mod msr;
 pub(crate) mod safety;
+pub mod sched;
 pub mod syscall;
 pub mod user;
 pub mod vspace;

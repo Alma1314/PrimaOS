@@ -1937,6 +1937,39 @@ pub fn exc_boot_record() -> Option<ExcBootRecord> {
     }
 }
 
+/// 切片 M：把 `task_id` 从 Running 让出为 Ready（协作式调度用）。
+pub fn yield_task_global(task_id: u32) -> Result<(), TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.yield_task(task_id),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+/// 切片 M：把 Ready 的 `task_id` 调度为 Running（协作式调度用）。
+pub fn schedule_task_global(task_id: u32) -> Result<(), TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.schedule_task(task_id),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+/// 切片 M：读取任务状态（授权表未安装或任务不存在时返回 `None`）。
+pub fn task_status(task_id: u32) -> Option<TaskStatus> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot)
+            .as_ref()
+            .and_then(|state| state.tasks.find(task_id))
+            .map(|task| task.status)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

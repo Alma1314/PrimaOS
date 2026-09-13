@@ -187,6 +187,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // M：第二 ring3 任务的用户页面（与 task 1 区域不相交）。
+                                    if kernel::user::prepare_task2(pml4_phys, offset).is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();

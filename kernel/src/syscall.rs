@@ -24,9 +24,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::bootstrap::{
     self, AuthError, ExcAuditCounts, ExcError, ExcKind, IMAGE_CAP_ID, INIT_TASK_ID,
 };
+use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
-use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
+use crate::sched;
+use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA, USER2_Y_VA};
 use crate::vspace::{self, PT_PRESENT, PT_USER};
 
 /// 合法 syscall 号：回显（`arg0 ^ ECHO_MASK`）。
@@ -41,8 +43,18 @@ pub const SYS_AUTHORIZE: u64 = 4;
 pub const SYS_EXC_SUBSCRIBE: u64 = 5;
 /// 切片 L：取消异常订阅（`args[0]=exc source cap_id`）。
 pub const SYS_EXC_UNSUBSCRIBE: u64 = 6;
+/// 切片 M：返回当前运行 Task 的 id（真实调度身份）。
+pub const SYS_TASK_ID: u64 = 7;
+/// 切片 M：协作式让出，切换到下一个 Ready 任务（不返回给调用者，直到其被重新调度）。
+pub const SYS_YIELD: u64 = 8;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
+
+/// 切片 M：第二个 ring3 任务的 Task id（由 SPEC-050 `platform_init` 创建）。
+pub const TASK2_ID: u32 = 2;
+
+/// 切片 M：`syscall_entry` 写入的当前保存块基址（`rbp`），供 `SYS_YIELD` 读出完整上下文。
+pub static mut CONTEXT_BASE: u64 = 0;
 
 /// ABI 参数寄存器个数。
 pub const MAX_ARGS: usize = 6;
@@ -75,8 +87,6 @@ pub const COPY_EXPECTED: u64 = USER_STORE_VALUE;
 /// [`SYS_COPY_IN`] 的坏指针：与用户页同 PML4 槽但中间层缺失，应 `EFAULT`。
 pub const BAD_PTR: u64 = USER_BASE_VA + 0x20_0000;
 
-/// 切片 K：授权查询的调用者 Task（当前唯一 ring3 任务，等同 Bootstrap init Task）。
-pub const AUTHORIZE_TASK: u32 = INIT_TASK_ID;
 /// 授权查询使用的 Capability：Bootstrap 初始 image cap（持有者拥有 `SegMapR` 但无 `SegMapW`）。
 pub const AUTHORIZE_CAP: u64 = IMAGE_CAP_ID as u64;
 /// 成功授予时返回的凭据（即被授权的 cap id）。
@@ -159,7 +169,7 @@ fn authorize_call(cap_id: u64, right_code: u64) -> u64 {
     let Some(right) = right_name(right_code) else {
         return encode_errno(Errno::Invalid);
     };
-    match bootstrap::authorize(AUTHORIZE_TASK, cap_id as u32, right) {
+    match bootstrap::authorize(sched::current(), cap_id as u32, right) {
         Ok(granted) => granted as u64,
         Err(error) => encode_errno(auth_errno(error)),
     }
@@ -192,7 +202,7 @@ fn exc_subscribe_call(cap_id: u64, kind_code: u64) -> u64 {
     let Some(kind) = kind_of(kind_code) else {
         return encode_errno(Errno::Invalid);
     };
-    match bootstrap::exc_subscribe(AUTHORIZE_TASK, cap_id as u32, kind) {
+    match bootstrap::exc_subscribe(sched::current(), cap_id as u32, kind) {
         Ok(source_id) => source_id as u64,
         Err(error) => encode_errno(exc_errno(error)),
     }
@@ -200,10 +210,142 @@ fn exc_subscribe_call(cap_id: u64, kind_code: u64) -> u64 {
 
 /// 切片 L：取消订阅服务——经全局授权表移除订阅。
 fn exc_unsubscribe_call(cap_id: u64) -> u64 {
-    match bootstrap::exc_unsubscribe(AUTHORIZE_TASK, cap_id as u32) {
+    match bootstrap::exc_unsubscribe(sched::current(), cap_id as u32) {
         Ok(source_id) => source_id as u64,
         Err(error) => encode_errno(exc_errno(error)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 切片 M：协作式多任务切换
+// ---------------------------------------------------------------------------
+
+/// `syscall_entry` 写入的保存块基址（`rbp`）。
+fn save_block() -> *const u64 {
+    unsafe { *core::ptr::addr_of!(CONTEXT_BASE) as *const u64 }
+}
+
+/// 从 `syscall_entry` 的保存块构造完整用户上下文。
+///
+/// **保存块与 [`SretFrame`] 偏移不同，必须逐槽按名映射，不可按字段序复制**：
+/// `rax..rbp` 在 `0x00..0x30`；`r8..r15` 在 `0x38..0x70`（对应 `SretFrame` 的
+/// `0x40..0x78`）；`rip=0x78`、`cs=0x80`、`rflags=0x88`、`rsp=0x90`、`ss=0x98`
+/// （`SretFrame` 的 `rsp` 在 `0x38`、`rflags/rip/cs/ss` 在 `0x80..0x98`）。
+///
+/// # Safety
+///
+/// `base` 必须指向 [`syscall_entry`] 在当前内核栈上建立的 20-qword 保存块；host 测试
+/// 传入同布局的假块。任何其它指针都是未定义行为。
+unsafe fn frame_from_save_block(base: *const u64) -> SretFrame {
+    let read = |offset: usize| unsafe { core::ptr::read_volatile(base.add(offset / 8)) };
+    SretFrame {
+        rax: read(0x00),
+        rbx: read(0x08),
+        rcx: read(0x10),
+        rdx: read(0x18),
+        rsi: read(0x20),
+        rdi: read(0x28),
+        rbp: read(0x30),
+        r8: read(0x38),
+        r9: read(0x40),
+        r10: read(0x48),
+        r11: read(0x50),
+        r12: read(0x58),
+        r13: read(0x60),
+        r14: read(0x68),
+        r15: read(0x70),
+        rsp: read(0x90),
+        rflags: read(0x88),
+        rip: read(0x78),
+        cs: read(0x80),
+        ss: read(0x98),
+    }
+}
+
+/// 切片 M 的多任务实测记录（单核 boot 早期无并发）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MtState {
+    switches: u64,
+    last_from: u64,
+    last_to: u64,
+    task1_id_before: u64,
+    task1_id_after: u64,
+    task2_id: u64,
+    task2_auth: u64,
+    task2_sub: u64,
+    task1_cs_before: u64,
+    task1_cs_after: u64,
+    task2_cs: u64,
+}
+
+static mut MT: MtState = MtState {
+    switches: 0,
+    last_from: 0,
+    last_to: 0,
+    task1_id_before: 0,
+    task1_id_after: 0,
+    task2_id: 0,
+    task2_auth: 0,
+    task2_sub: 0,
+    task1_cs_before: 0,
+    task1_cs_after: 0,
+    task2_cs: 0,
+};
+
+/// 记录一次非阶段一 syscall（task 1 阶段二或 task 2 的调用）。
+fn mt_record(task: u32, num: u64, cs: u64, ret: u64) {
+    unsafe {
+        let mt = core::ptr::addr_of_mut!(MT);
+        if task == INIT_TASK_ID {
+            if num == SYS_TASK_ID {
+                if (*mt).switches == 0 {
+                    (*mt).task1_id_before = ret;
+                    (*mt).task1_cs_before = cs;
+                } else {
+                    (*mt).task1_id_after = ret;
+                    (*mt).task1_cs_after = cs;
+                }
+            }
+        } else if task == TASK2_ID {
+            (*mt).task2_cs = cs;
+            if num == SYS_TASK_ID {
+                (*mt).task2_id = ret;
+            } else if num == SYS_AUTHORIZE {
+                (*mt).task2_auth = ret;
+            } else if num == SYS_EXC_SUBSCRIBE {
+                (*mt).task2_sub = ret;
+            }
+        }
+    }
+}
+
+/// 记录一次协作切换（在状态迁移与恢复之前调用）。
+fn mt_record_yield(from: u32, to: u32) {
+    unsafe {
+        let mt = core::ptr::addr_of_mut!(MT);
+        (*mt).switches += 1;
+        (*mt).last_from = from as u64;
+        (*mt).last_to = to as u64;
+    }
+}
+
+/// 读取多任务记录（单核，无并发）。
+fn mt_state() -> MtState {
+    unsafe { *core::ptr::addr_of!(MT) }
+}
+
+/// `SYS_YIELD`：保存当前任务完整上下文，切到下一个 Ready 任务（不返回给当前调用者）。
+///
+/// 当前 `syscall_entry` 栈帧被有意放弃——下一次 CPL3→CPL0 时硬件按 `TSS.rsp0` 重置 `rsp`，
+/// 不会泄漏；被让出的任务在其被重新调度时从保存的 `SretFrame` 直接恢复，`yield` 返回 0。
+fn yield_call() -> ! {
+    let cur = sched::current();
+    let mut frame = unsafe { frame_from_save_block(save_block()) };
+    frame.rax = 0;
+    sched::set_frame(cur, frame);
+    let next = sched::pick_next(cur).expect("SYS_YIELD: no Ready task to switch to");
+    mt_record_yield(cur, next);
+    sched::switch_to(next)
 }
 
 /// [`SYS_ECHO`] 的期望返回值（用户与内核共享的纯函数，供两侧对账）。
@@ -297,21 +439,32 @@ pub unsafe extern "C" fn handle(frame: *const u64) -> u64 {
         i += 1;
     }
     let cs = unsafe { *frame.add(1 + MAX_ARGS) };
+    let current = sched::current();
 
     let ret = serve(num, &args);
 
-    let index = COUNT.fetch_add(1, Ordering::Relaxed) as usize;
+    // 切片 M：只把 task 1 阶段一的前 MAX_CALLS 次进入记入 CALLS（既有证据固定下标）；
+    // 其余（task 1 阶段二、task 2）记入 mt，避免扰动 COUNT 与 CALLS[0..15]。
+    let index = if current == INIT_TASK_ID && COUNT.load(Ordering::Relaxed) < MAX_CALLS as u64 {
+        COUNT.fetch_add(1, Ordering::Relaxed) as usize
+    } else {
+        usize::MAX
+    };
     if index < MAX_CALLS {
         // 单核 boot 早期：写入与读取之间无并发，故用裸指针而非原子数组。
         unsafe {
             let calls = core::ptr::addr_of_mut!(CALLS);
             (*calls)[index] = CallRecord { cs, ret };
         }
+    } else {
+        mt_record(current, num, cs, ret);
     }
     ret
 }
 
 /// 服务分派（`int 0x80` 与 `syscall` 快路径共用），不含进入记录。
+///
+/// [`SYS_YIELD`] 会切走当前任务、不返回给调用者，故必须在 `dispatch_plain` 之前分支。
 fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     if num == SYS_COPY_IN {
         match copy_in(args[0], args[1]) {
@@ -324,6 +477,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         exc_subscribe_call(args[0], args[1])
     } else if num == SYS_EXC_UNSUBSCRIBE {
         exc_unsubscribe_call(args[0])
+    } else if num == SYS_TASK_ID {
+        sched::current() as u64
+    } else if num == SYS_YIELD {
+        yield_call()
     } else {
         dispatch_plain(num, args)
     }
@@ -751,6 +908,82 @@ pub fn pending_witness() -> PendingWitness {
     }
 }
 
+/// 切片 M：一次双任务协作切换见证的实测证据。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MtWitness {
+    /// 协作切换次数（应 2：task1→task2、task2→task1）。
+    pub switches: u64,
+    /// 最后一次切换的来源/去向（应 2→1，证明切回 task 1）。
+    pub last_from: u64,
+    pub last_to: u64,
+    /// task 1 让出前 / 恢复后的 `SYS_TASK_ID`（应均为 1）。
+    pub task1_id_before: u64,
+    pub task1_id_after: u64,
+    /// task 2 的 `SYS_TASK_ID`（应 2）。
+    pub task2_id: u64,
+    /// task 2 的授权查询（应 `EACCES`，image cap 属 task 1）。
+    pub task2_auth: u64,
+    /// task 2 的异常订阅（应 `EACCES`，源 cap 属 task 1）。
+    pub task2_sub: u64,
+    pub task1_cs_before: u64,
+    pub task1_cs_after: u64,
+    pub task2_cs: u64,
+    pub receipt_task1_before: u64,
+    pub receipt_task1_yield: u64,
+    pub receipt_task1_after: u64,
+    pub receipt_task2_id: u64,
+    pub receipt_task2_auth: u64,
+    pub receipt_task2_sub: u64,
+}
+
+impl MtWitness {
+    /// 纯判定：双任务协作切换见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        let denied = encode_errno(Errno::Access);
+        self.switches == 2
+            && self.last_from == TASK2_ID as u64
+            && self.last_to == INIT_TASK_ID as u64
+            && self.task1_id_before == INIT_TASK_ID as u64
+            && self.task1_id_after == INIT_TASK_ID as u64
+            && self.task2_id == TASK2_ID as u64
+            && self.task2_auth == denied
+            && self.task2_sub == denied
+            && self.task1_cs_before == USER_CS as u64
+            && self.task1_cs_after == USER_CS as u64
+            && self.task2_cs == USER_CS as u64
+            && self.receipt_task1_before == self.task1_id_before
+            && self.receipt_task1_yield == 0
+            && self.receipt_task1_after == self.task1_id_after
+            && self.receipt_task2_id == self.task2_id
+            && self.receipt_task2_auth == self.task2_auth
+            && self.receipt_task2_sub == self.task2_sub
+    }
+}
+
+/// 收集双任务协作切换见证（在 task 1 的 `int3` 收尾回调中调用）。
+pub fn mt_witness() -> MtWitness {
+    let mt = mt_state();
+    MtWitness {
+        switches: mt.switches,
+        last_from: mt.last_from,
+        last_to: mt.last_to,
+        task1_id_before: mt.task1_id_before,
+        task1_id_after: mt.task1_id_after,
+        task2_id: mt.task2_id,
+        task2_auth: mt.task2_auth,
+        task2_sub: mt.task2_sub,
+        task1_cs_before: mt.task1_cs_before,
+        task1_cs_after: mt.task1_cs_after,
+        task2_cs: mt.task2_cs,
+        receipt_task1_before: read_qword(USER_Y_VA + 136),
+        receipt_task1_yield: read_qword(USER_Y_VA + 144),
+        receipt_task1_after: read_qword(USER_Y_VA + 152),
+        receipt_task2_id: read_qword(USER2_Y_VA),
+        receipt_task2_auth: read_qword(USER2_Y_VA + 8),
+        receipt_task2_sub: read_qword(USER2_Y_VA + 16),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1124,6 +1357,106 @@ mod tests {
     fn rejects_pending_task_not_ready() {
         let mut w = valid_pending();
         w.task_ready_after = false;
+        assert!(!w.evidence_ok());
+    }
+
+    /// 构造可区分的保存块：槽 i 的值为 `base + i`，用于逐槽钉死映射。
+    #[test]
+    fn frame_from_save_block_maps_every_slot_by_name() {
+        let mut block = [0u64; 20];
+        for (index, slot) in block.iter_mut().enumerate() {
+            *slot = 0x1000 + index as u64;
+        }
+        let frame = unsafe { frame_from_save_block(block.as_ptr()) };
+        assert_eq!(frame.rax, 0x1000);
+        assert_eq!(frame.rbx, 0x1001);
+        assert_eq!(frame.rcx, 0x1002);
+        assert_eq!(frame.rdx, 0x1003);
+        assert_eq!(frame.rsi, 0x1004);
+        assert_eq!(frame.rdi, 0x1005);
+        assert_eq!(frame.rbp, 0x1006);
+        assert_eq!(frame.r8, 0x1007);
+        assert_eq!(frame.r9, 0x1008);
+        assert_eq!(frame.r10, 0x1009);
+        assert_eq!(frame.r11, 0x100a);
+        assert_eq!(frame.r12, 0x100b);
+        assert_eq!(frame.r13, 0x100c);
+        assert_eq!(frame.r14, 0x100d);
+        assert_eq!(frame.r15, 0x100e);
+        // 硬件帧槽：rip=0x0f、cs=0x10、rflags=0x11、rsp=0x12、ss=0x13。
+        assert_eq!(frame.rip, 0x100f);
+        assert_eq!(frame.cs, 0x1010);
+        assert_eq!(frame.rflags, 0x1011);
+        assert_eq!(frame.rsp, 0x1012);
+        assert_eq!(frame.ss, 0x1013);
+    }
+
+    fn valid_mt() -> MtWitness {
+        let denied = encode_errno(Errno::Access);
+        MtWitness {
+            switches: 2,
+            last_from: TASK2_ID as u64,
+            last_to: INIT_TASK_ID as u64,
+            task1_id_before: INIT_TASK_ID as u64,
+            task1_id_after: INIT_TASK_ID as u64,
+            task2_id: TASK2_ID as u64,
+            task2_auth: denied,
+            task2_sub: denied,
+            task1_cs_before: USER_CS as u64,
+            task1_cs_after: USER_CS as u64,
+            task2_cs: USER_CS as u64,
+            receipt_task1_before: INIT_TASK_ID as u64,
+            receipt_task1_yield: 0,
+            receipt_task1_after: INIT_TASK_ID as u64,
+            receipt_task2_id: TASK2_ID as u64,
+            receipt_task2_auth: denied,
+            receipt_task2_sub: denied,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_multitask_evidence() {
+        assert!(valid_mt().evidence_ok());
+    }
+
+    #[test]
+    fn rejects_multitask_task2_granted() {
+        let mut w = valid_mt();
+        w.task2_auth = 1; // task 2 不应持有 image cap
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_multitask_wrong_task_id() {
+        let mut w = valid_mt();
+        w.task2_id = 1;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_multitask_no_switch_back() {
+        let mut w = valid_mt();
+        w.switches = 1;
+        assert!(!w.evidence_ok());
+        let mut w = valid_mt();
+        w.last_to = TASK2_ID as u64; // 最后一次切回 task 1 的证据缺失
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_multitask_non_cpl3() {
+        let mut w = valid_mt();
+        w.task2_cs = 0x8;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_multitask_task1_not_resumed() {
+        let mut w = valid_mt();
+        w.task1_id_after = 0;
+        assert!(!w.evidence_ok());
+        let mut w = valid_mt();
+        w.receipt_task1_yield = 9; // yield 应返回 0
         assert!(!w.evidence_ok());
     }
 }

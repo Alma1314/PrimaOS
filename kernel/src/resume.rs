@@ -114,6 +114,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 J：此后还有一次 `syscall` 指令快路径往返。
     let fast = kernel::syscall::fast_witness();
     protocol::syscall_fast_ready(&fast);
+    // 切片 M：快路径之后是双任务协作往返（task1→task2→task1）。
+    let multitask = kernel::syscall::mt_witness();
+    protocol::multitask_ready(&multitask);
     run_and_exit();
 }
 

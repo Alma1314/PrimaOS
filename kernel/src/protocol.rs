@@ -316,6 +316,42 @@ pub(crate) fn exc_pending_ready(witness: &kernel::syscall::PendingWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 M：双 ring3 任务协作切换见证（真实 Task 身份 + 两次 yield 往返）。
+pub(crate) fn multitask_ready(witness: &kernel::syscall::MtWitness) {
+    write_prefix("multitask_ready", "ok");
+    serial::write_bytes(b"|data=cs1_before=");
+    write_hex_u64(witness.task1_cs_before);
+    serial::write_bytes(b";cs1_after=");
+    write_hex_u64(witness.task1_cs_after);
+    serial::write_bytes(b";cs2=");
+    write_hex_u64(witness.task2_cs);
+    serial::write_bytes(b";task1_before=");
+    write_hex_u64(witness.task1_id_before);
+    serial::write_bytes(b";task1_after=");
+    write_hex_u64(witness.task1_id_after);
+    serial::write_bytes(b";task2=");
+    write_hex_u64(witness.task2_id);
+    serial::write_bytes(b";switches=");
+    write_hex_u64(witness.switches);
+    serial::write_bytes(b";task2_auth=");
+    write_hex_u64(witness.task2_auth);
+    serial::write_bytes(b";task2_sub=");
+    write_hex_u64(witness.task2_sub);
+    serial::write_bytes(b";receipt1_before=");
+    write_hex_u64(witness.receipt_task1_before);
+    serial::write_bytes(b";receipt1_yield=");
+    write_hex_u64(witness.receipt_task1_yield);
+    serial::write_bytes(b";receipt1_after=");
+    write_hex_u64(witness.receipt_task1_after);
+    serial::write_bytes(b";receipt2_id=");
+    write_hex_u64(witness.receipt_task2_id);
+    serial::write_bytes(b";receipt2_auth=");
+    write_hex_u64(witness.receipt_task2_auth);
+    serial::write_bytes(b";receipt2_sub=");
+    write_hex_u64(witness.receipt_task2_sub);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
 pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_prefix("syscall_fast_ready", "ok");
