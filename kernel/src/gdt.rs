@@ -218,6 +218,17 @@ pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
     }
 }
 
+/// 更新 `TSS.rsp0`：CPL3→CPL0（trap/中断）时硬件装载的内核栈顶。
+///
+/// 单核、无并发；在任务切换（[`crate::sched::resume`]）时指向目标任务的内核栈，实现
+/// per-task 内核栈。TSS 描述子已在 [`init_kernel_gdt`] 装载，此处只改内存中的字段。
+pub fn set_rsp0(rsp0: u64) {
+    let tss = core::ptr::addr_of_mut!(TSS_ITEM);
+    unsafe {
+        (*tss).rsp0 = rsp0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

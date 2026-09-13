@@ -193,6 +193,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // O：两任务各自的抢占空转页（同 VA、不同帧）。
+                                    if kernel::user::prepare_spin(offset).is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();

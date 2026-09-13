@@ -21,6 +21,12 @@ static CURRENT: AtomicU32 = AtomicU32::new(1);
 /// 每个 Task 的用户上下文；索引即 Task id。
 static mut FRAMES: [SretFrame; MAX_TASKS] = [SretFrame::ZERO; MAX_TASKS];
 
+/// 每个 Task 的 PML4 物理地址（0 = 未设置，例如 boot 早期）。索引即 Task id。
+static mut ROOTS: [u64; MAX_TASKS] = [0; MAX_TASKS];
+
+/// 每个 Task 的内核栈顶虚拟地址（0 = 未设置）。索引即 Task id。
+static mut KSTACK_TOPS: [u64; MAX_TASKS] = [0; MAX_TASKS];
+
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
 static mut SCRATCH: SretFrame = SretFrame::ZERO;
 
@@ -73,6 +79,59 @@ pub fn set_frame_rax(task_id: u32, value: u64) {
     }
 }
 
+/// 记录某 Task 的 PML4 物理地址（切片 O：per-task 地址空间）。
+pub fn set_root(task_id: u32, root_phys: u64) {
+    if (task_id as usize) < MAX_TASKS {
+        unsafe {
+            let roots = core::ptr::addr_of_mut!(ROOTS);
+            (*roots)[task_id as usize] = root_phys;
+        }
+    }
+}
+
+/// 读取某 Task 的 PML4 物理地址（未设置返回 `None`）。
+pub fn root(task_id: u32) -> Option<u64> {
+    if (task_id as usize) < MAX_TASKS {
+        let value = unsafe {
+            let roots = core::ptr::addr_of!(ROOTS);
+            (*roots)[task_id as usize]
+        };
+        if value != 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// 当前任务的 PML4 物理地址（未设置返回 `None`，例如 boot 早期尚未建立任务根）。
+pub fn current_root() -> Option<u64> {
+    root(current())
+}
+
+/// 记录某 Task 的内核栈顶虚拟地址（切片 O：per-task 内核栈）。
+pub fn set_kstack_top(task_id: u32, top: u64) {
+    if (task_id as usize) < MAX_TASKS {
+        unsafe {
+            let tops = core::ptr::addr_of_mut!(KSTACK_TOPS);
+            (*tops)[task_id as usize] = top;
+        }
+    }
+}
+
+/// 读取某 Task 的内核栈顶虚拟地址（未设置返回 `None`）。
+pub fn kstack_top(task_id: u32) -> Option<u64> {
+    if (task_id as usize) < MAX_TASKS {
+        let value = unsafe {
+            let tops = core::ptr::addr_of!(KSTACK_TOPS);
+            (*tops)[task_id as usize]
+        };
+        if value != 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// 选择下一个 Ready 任务（最小 id，排除 `cur`）。
 pub fn pick_next(cur: u32) -> Option<u32> {
     (0..MAX_TASKS as u32)
@@ -104,8 +163,19 @@ pub fn block_to(next: u32) -> ! {
 }
 
 /// 恢复 `task_id` 的用户上下文（不返回）。
+///
+/// 切片 O：恢复前先切换到该任务的地址空间与内核栈——`TSS.rsp0` 指到本任务内核栈顶
+/// （CPL3→CPL0 硬件换栈用），再写 CR3。写 CR3 安全的前提是新根已由
+/// [`crate::vspace::clone_root`] 复制了 bootloader 根的全部 PML4 项，故内核高半区
+/// （本函数所在代码、当前栈、直映射）在新根下仍然可见。
 pub fn resume(task_id: u32) -> ! {
     let frame = frame(task_id).expect("task frame must exist");
+    if let Some(top) = kstack_top(task_id) {
+        crate::gdt::set_rsp0(top);
+    }
+    if let Some(root) = root(task_id) {
+        unsafe { crate::cpu::write_cr3(root) };
+    }
     unsafe {
         let scratch = core::ptr::addr_of_mut!(SCRATCH);
         *scratch = frame;
@@ -126,5 +196,27 @@ mod tests {
         set_frame(2, ctx);
         assert_eq!(frame(2).unwrap().rip, 0x1234);
         assert!(frame(MAX_TASKS as u32).is_none());
+    }
+
+    #[test]
+    fn roots_and_kstacks_round_trip_and_default_to_none() {
+        init();
+        // 未设置：返回 None（不把 0 当作合法根）。
+        assert_eq!(root(1), None);
+        assert_eq!(kstack_top(1), None);
+        assert_eq!(current_root(), None);
+
+        set_root(1, 0x1234_0000);
+        set_kstack_top(1, 0xFFFF_8000_0001_0000);
+        assert_eq!(root(1), Some(0x1234_0000));
+        assert_eq!(kstack_top(1), Some(0xFFFF_8000_0001_0000));
+        // 当前任务为 1，故 current_root 随之可见。
+        assert_eq!(current_root(), Some(0x1234_0000));
+
+        // 越界任务号安全忽略。
+        set_root(MAX_TASKS as u32, 0xDEAD_0000);
+        assert!(root(MAX_TASKS as u32).is_none());
+        set_kstack_top(MAX_TASKS as u32, 0xDEAD);
+        assert!(kstack_top(MAX_TASKS as u32).is_none());
     }
 }

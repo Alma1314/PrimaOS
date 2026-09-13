@@ -198,6 +198,25 @@ pub fn slot_free(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> bool {
     read_raw(map(root_phys) + (idx[0] as u64) * 8) & PT_PRESENT == 0
 }
 
+/// 把 `src_root` 的全部 512 个 PML4 项复制到 `dst_root`。
+///
+/// 复制是共享上级页表（不深拷贝），因此 `dst_root` 继承 `src_root` 的全部映射：内核镜像
+/// 在 i4=256、bootloader 低映射在 i4=0。切换 CR3 后内核代码/数据/直映射仍然可见，这是
+/// 「写 CR3 后取指合法」的前提。`dst_root` 必须是已清零的独立帧。
+pub fn clone_root(src_root: u64, dst_root: u64, map: impl Fn(u64) -> u64) {
+    let src = map(src_root);
+    let dst = map(dst_root);
+    for index in 0..512 {
+        let value = read_raw(src + (index as u64) * 8);
+        write_raw(dst + (index as u64) * 8, value);
+    }
+}
+
+/// 清零 `root` 的第 `slot` 个 PML4 项，用于隔离任务的用户槽（互不可见）。
+pub fn zero_slot(root: u64, slot: usize, map: impl Fn(u64) -> u64) {
+    write_raw(map(root) + (slot as u64) * 8, 0);
+}
+
 /// 一次自建映射见证的实测结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Witness {
@@ -456,5 +475,43 @@ mod tests {
             read_leaf(root, VSPACE_VA, identity),
             Err(VspaceError::BadRoot)
         );
+    }
+
+    #[test]
+    fn clone_root_copies_all_512_entries() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        // src 的高半区（i4=256）与低槽（i4=1）各写一个可识别项，其余为零。
+        write_raw(src + 256 * 8, 0xDEAD_B000 | PT_PRESENT | PT_WRITABLE);
+        write_raw(src + 8, 0xBEEF_0000 | PT_PRESENT);
+        clone_root(src, dst, identity);
+        assert_eq!(
+            read_raw(dst + 256 * 8),
+            0xDEAD_B000 | PT_PRESENT | PT_WRITABLE
+        );
+        assert_eq!(read_raw(dst + 8), 0xBEEF_0000 | PT_PRESENT);
+        // 共享而非深拷贝：其它 510 项逐字节对账。
+        for index in 0..512usize {
+            assert_eq!(
+                read_raw(src + index as u64 * 8),
+                read_raw(dst + index as u64 * 8)
+            );
+        }
+    }
+
+    #[test]
+    fn zero_slot_clears_only_one_pml4_entry() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        write_raw(root + 20 * 8, 0x1234_5000 | PT_PRESENT | PT_USER);
+        write_raw(root + 21 * 8, 0x1234_6000 | PT_PRESENT | PT_USER);
+        zero_slot(root, 20, identity);
+        assert_eq!(read_raw(root + 20 * 8), 0);
+        // 只清目标槽：槽 21 与槽 256 不受影响。
+        assert_eq!(read_raw(root + 21 * 8), 0x1234_6000 | PT_PRESENT | PT_USER);
+        write_raw(root + 256 * 8, 0x9);
+        zero_slot(root, 20, identity);
+        assert_eq!(read_raw(root + 256 * 8), 0x9);
     }
 }

@@ -11,6 +11,7 @@ pub mod gdt;
 pub mod idt;
 pub mod mem;
 pub mod msr;
+pub mod preempt;
 pub(crate) mod safety;
 pub mod sched;
 pub mod syscall;

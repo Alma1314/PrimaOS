@@ -242,7 +242,9 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
         } else if !ctx.user_copied && ctx.user_va != 0 && cr2 == ctx.user_va {
             let shared = ctx.user_shared;
             let va = ctx.user_va;
-            if let Some(private) = cow_region(root_phys, offset, &mut ctx.alloc, va, shared, true) {
+            // 切片 O：用户页换映射必须写到**当前任务**的根（per-task CR3），而非 boot 根。
+            let user_root = crate::sched::current_root().unwrap_or(root_phys);
+            if let Some(private) = cow_region(user_root, offset, &mut ctx.alloc, va, shared, true) {
                 ctx.user_private = private;
                 ctx.user_copied = true;
                 return frame.rip;

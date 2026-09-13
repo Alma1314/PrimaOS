@@ -18,9 +18,13 @@
 //! **范围边界：** 单核、非抢占、单任务最小见证；syscall 部分是**递送**而非抽象模型的
 //! capability/订阅授权语义，不做多页/多任务用户态 COW 协议，不做 Linux trace/`COMPAT-TEST`。
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+use crate::bootstrap::INIT_TASK_ID;
 use crate::exc::SretFrame;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
+use crate::sched;
 use crate::syscall::{
     AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP,
     EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
@@ -51,6 +55,46 @@ pub const USER2_CODE_VA: u64 = USER2_BASE_VA;
 pub const USER2_STACK_VA: u64 = USER2_BASE_VA + 0x1000;
 /// 第二任务回执页（可写、user）。
 pub const USER2_Y_VA: u64 = USER2_BASE_VA + 0x2000;
+
+/// 任务 1 用户区所在的 PML4 槽。
+pub const USER_SLOT: usize = 20;
+/// 任务 2 用户区所在的 PML4 槽。
+pub const USER2_SLOT: usize = 21;
+
+/// 切片 O：抢占空转代码/数据页（两任务**同 VA**，各自根下映射到不同帧，用于实证隔离）。
+///
+/// 取槽 20 内更高的 2 MiB 区（i2=2/3），避开 [`crate::syscall::BAD_PTR`]（`+0x20_0000`，
+/// i2=1）——后者必须始终未映射，否则 COPY_IN 的 `EFAULT` 证据会失效。
+pub const SPIN_CODE_VA: u64 = USER_BASE_VA + 0x40_0000;
+/// 抢占空转写标记的数据页 VA。
+pub const SPIN_DATA_VA: u64 = USER_BASE_VA + 0x41_0000;
+
+/// 抢占空转代码长度（`mov rax, imm64` + `mov [rax], imm32` + `jmp $`）。
+pub const SPIN_CODE_LEN: usize = 19;
+
+/// 每任务内核栈大小（叶子单元页，直接映射在各自 PML4 克隆出的内核高半区）。
+pub const KSTACK_SIZE: usize = 16 * 1024;
+
+/// 内核栈数组（只经地址使用，字段从不按元素读）。
+#[repr(align(16))]
+pub struct KStack(#[allow(dead_code)] [u8; KSTACK_SIZE]);
+
+pub static mut KSTACK_TASK1: KStack = KStack([0; KSTACK_SIZE]);
+pub static mut KSTACK_TASK2: KStack = KStack([0; KSTACK_SIZE]);
+
+/// 内核栈顶（one-past-end，16 对齐）。
+fn kstack_top(stack: *const KStack) -> u64 {
+    stack as u64 + KSTACK_SIZE as u64
+}
+
+/// 任务 2 回执页 Y2 的物理帧（切片 O：task1 根下不可见 Y2 VA，witness 按物理读）。
+static TASK2_Y_PHYS: AtomicU64 = AtomicU64::new(0);
+
+/// 任务 2 回执页的物理帧（未准备时 `None`）。
+pub fn task2_y_phys() -> Option<u64> {
+    let value = TASK2_Y_PHYS.load(Ordering::Relaxed);
+    if value != 0 { Some(value) } else { None }
+}
 
 /// 用户代码写入的值（亦为回执值）。
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
@@ -334,6 +378,25 @@ pub const fn task2_code() -> [u8; TASK2_CODE_LEN] {
     code
 }
 
+/// 组装抢占空转代码：把 `task_id` 写入 [`SPIN_DATA_VA`] 后无限循环。
+///
+/// `48 B8 <imm64>`（mov rax, DATA）、`48 C7 00 <imm32>`（mov qword [rax], id）、`EB FE`（jmp $）。
+pub const fn spin_code(task_id: u64) -> [u8; SPIN_CODE_LEN] {
+    let mut code = [0u8; SPIN_CODE_LEN];
+    put_imm64(&mut code, 0, 0x48, 0xB8, SPIN_DATA_VA);
+    code[10] = 0x48;
+    code[11] = 0xC7;
+    code[12] = 0x00;
+    let imm = (task_id as u32).to_le_bytes();
+    code[13] = imm[0];
+    code[14] = imm[1];
+    code[15] = imm[2];
+    code[16] = imm[3];
+    code[17] = 0xEB;
+    code[18] = 0xFE;
+    code
+}
+
 /// task 1 的初始用户上下文（进入 CPL3 的起点）。
 pub fn task1_frame() -> SretFrame {
     let mut frame = SretFrame::ZERO;
@@ -404,14 +467,30 @@ fn write_qword(va: u64, value: u64) {
     unsafe { core::ptr::write_volatile(va as *mut u64, value) };
 }
 
+/// 切片 O：为一任务构造独立 PML4——克隆 bootloader 根（含全部内核高半区与低映射）后，
+/// 清空两个用户槽，随后由调用方把自己的用户页映射进来。同 VA 在不同任务根下指向不同帧。
+fn build_task_root(boot_root: u64, offset: u64) -> Result<u64, VspaceError> {
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let task_root = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    // clone_root 覆写全部 512 项，故无需先清零。
+    vspace::clone_root(boot_root, task_root, map);
+    vspace::zero_slot(task_root, USER_SLOT, map);
+    vspace::zero_slot(task_root, USER2_SLOT, map);
+    Ok(task_root)
+}
+
 /// 构造用户任务：分配并映射代码/栈/X/Y 四页，填代码与 X 的模式。
 ///
 /// 必须在 [`crate::cow::prepare`] **之后**调用（帧与页表页都取自 COW 上下文的唯一分配器，
 /// 以避免多份 `FreeFrameAllocator` 副本各自推进 `next` 而重复发放同一物理帧）。
+///
+/// 切片 O：用户页映射进**本任务独立根**（克隆 bootloader 根 + 隔离用户槽），并把 root 与
+/// 内核栈登记到调度器，使每次 [`crate::sched::resume`] 写 CR3 与 `TSS.rsp0`。
 pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
+    let task_root = build_task_root(root_phys, offset)?;
     for va in [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA] {
-        if !vspace::slot_free(root_phys, va, map) {
+        if !vspace::slot_free(task_root, va, map) {
             return Err(VspaceError::SlotOccupied);
         }
     }
@@ -435,7 +514,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     }
 
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER_CODE_VA,
         map,
         crate::cow::alloc_frame,
@@ -444,7 +523,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         true,
     )?;
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER_STACK_VA,
         map,
         crate::cow::alloc_frame,
@@ -454,7 +533,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     )?;
     // X 只读+user：写它触发用户态写保护 #PF。
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER_X_VA,
         map,
         crate::cow::alloc_frame,
@@ -463,7 +542,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         true,
     )?;
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER_Y_VA,
         map,
         crate::cow::alloc_frame,
@@ -475,6 +554,8 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         unsafe { vspace::invlpg(va) };
     }
 
+    sched::set_root(INIT_TASK_ID, task_root);
+    sched::set_kstack_top(INIT_TASK_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK1)));
     crate::cow::register_user_region(USER_X_VA, x);
 
     unsafe {
@@ -489,11 +570,14 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
 
 /// 切片 M：构造第二任务（code/stack/Y 三页，无 COW X）。
 ///
-/// 与 [`prepare`] 一样必须在 `cow::prepare` 之后，复用同一唯一分配器。
+/// 与 [`prepare`] 一样必须在 `cow::prepare` 之后，复用同一唯一分配器。切片 O：映射进
+/// **task 2 独立根**，并登记 root/内核栈；task 2 的 Y 页物理帧另行持久化，供 task 1
+/// 根下不可见 Y2 VA 时按物理读回执。
 pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
+    let task_root = build_task_root(root_phys, offset)?;
     for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
-        if !vspace::slot_free(root_phys, va, map) {
+        if !vspace::slot_free(task_root, va, map) {
             return Err(VspaceError::SlotOccupied);
         }
     }
@@ -512,7 +596,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     }
 
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER2_CODE_VA,
         map,
         crate::cow::alloc_frame,
@@ -521,7 +605,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         true,
     )?;
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER2_STACK_VA,
         map,
         crate::cow::alloc_frame,
@@ -530,7 +614,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         true,
     )?;
     vspace::map_4k(
-        root_phys,
+        task_root,
         USER2_Y_VA,
         map,
         crate::cow::alloc_frame,
@@ -541,7 +625,77 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
         unsafe { vspace::invlpg(va) };
     }
+
+    sched::set_root(TASK2_ID, task_root);
+    sched::set_kstack_top(TASK2_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK2)));
+    TASK2_Y_PHYS.store(y, Ordering::Relaxed);
     Ok(())
+}
+
+/// 切片 O：为两任务准备抢占空转页（同 VA、各自根下不同帧）。
+///
+/// 必须在 [`prepare`] 与 [`prepare_task2`] 之后调用（两任务根已建立）。把带任务 id 的空转
+/// 代码与数据页分别映射进对应任务根；相同 VA [`SPIN_CODE_VA`]/[`SPIN_DATA_VA`] 指向不同
+/// 物理帧，是地址空间隔离的可证现场。
+pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let root1 = sched::root(INIT_TASK_ID).ok_or(VspaceError::BadRoot)?;
+    let root2 = sched::root(TASK2_ID).ok_or(VspaceError::BadRoot)?;
+
+    for (task_id, root) in [(INIT_TASK_ID, root1), (TASK2_ID, root2)] {
+        let code = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+        let data = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+
+        let bytes = spin_code(task_id as u64);
+        for (index, &byte) in bytes.iter().enumerate() {
+            unsafe { core::ptr::write_volatile((map(code) + index as u64) as *mut u8, byte) };
+        }
+        for index in 0..(FRAME_SIZE / 8) {
+            write_qword(map(data) + index * 8, 0);
+        }
+
+        vspace::map_4k(
+            root,
+            SPIN_CODE_VA,
+            map,
+            crate::cow::alloc_frame,
+            code,
+            false,
+            true,
+        )?;
+        vspace::map_4k(
+            root,
+            SPIN_DATA_VA,
+            map,
+            crate::cow::alloc_frame,
+            data,
+            true,
+            true,
+        )?;
+        unsafe {
+            vspace::invlpg(SPIN_CODE_VA);
+            vspace::invlpg(SPIN_DATA_VA);
+        }
+    }
+    Ok(())
+}
+
+/// 切片 O：两任务的抢占空转初始帧（同代码 VA，各自用户栈，RFLAGS.IF=1 以接收时钟）。
+pub fn spin_frames() -> (SretFrame, SretFrame) {
+    let mut f1 = SretFrame::ZERO;
+    f1.rip = SPIN_CODE_VA;
+    f1.rsp = USER_STACK_VA + FRAME_SIZE;
+    f1.cs = USER_CS as u64;
+    f1.ss = USER_DS as u64;
+    f1.rflags = 0x2 | (1 << 9); // bit1 固定 + IF=1
+
+    let mut f2 = SretFrame::ZERO;
+    f2.rip = SPIN_CODE_VA;
+    f2.rsp = USER2_STACK_VA + FRAME_SIZE;
+    f2.cs = USER_CS as u64;
+    f2.ss = USER_DS as u64;
+    f2.rflags = 0x2 | (1 << 9);
+    (f1, f2)
 }
 
 /// 进入 CPL3：初始化调度器，装入两个任务的初始上下文，恢复 task 1（不返回）。

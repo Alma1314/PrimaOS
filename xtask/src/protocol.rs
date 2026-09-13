@@ -19,6 +19,7 @@ enum EventKind {
     SyscallFastReady,
     MultitaskReady,
     ExcWaitReady,
+    PreemptReady,
     ExcResumeReady,
     BootComplete,
     Panic,
@@ -92,6 +93,11 @@ const MT_SWITCHES: u64 = 2;
 /// 切片 N：`syscall_trap_source`（id=2）的 `SyscallTrap`（kind=2）通知 payload。
 const EXC_SYSCALL_TRAP_PAYLOAD: u64 = 0x2_0002;
 
+/// 切片 O：per-task 内核栈大小，与 `kernel/src/user.rs::KSTACK_SIZE` 镜像一致。
+const KSTACK_SIZE: u64 = 16 * 1024;
+/// 每个任务需累计的最小被抢占次数（与 `kernel/src/preempt.rs` 的阈值镜像一致）。
+const PREEMPT_THRESHOLD: u64 = 2;
+
 /// 切片 J：`syscall`/`sysret` 快路径的镜像常量，与 `kernel/src/{syscall,msr}.rs` 一致。
 const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 const FAST_STAR: u64 = 0x0020_0008_0000_0000;
@@ -112,7 +118,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 21] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 22] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -132,8 +138,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 21] = [
     (17, EventKind::SyscallFastReady),
     (18, EventKind::MultitaskReady),
     (19, EventKind::ExcWaitReady),
-    (20, EventKind::ExcResumeReady),
-    (21, EventKind::BootComplete),
+    (20, EventKind::PreemptReady),
+    (21, EventKind::ExcResumeReady),
+    (22, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -317,6 +324,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::ExcResumeReady)
     {
         validate_exc_resume_data(resume.data.as_deref())?;
+    }
+
+    if let Some(preempt) = events
+        .iter()
+        .find(|event| event.kind == EventKind::PreemptReady)
+    {
+        validate_preempt_data(preempt.data.as_deref())?;
     }
     Ok(())
 }
@@ -1109,6 +1123,112 @@ fn validate_exc_wait_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 校验切片 O 的时钟抢占见证：两任务被 PIT 反复轮转、各有独立 CR3/内核栈、同 VA 在不同
+/// 根下解析出不同物理帧且各自写入自己的标记。
+fn validate_preempt_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "preempt_ready event is missing its data field".to_owned())?;
+    let mut ticks = None;
+    let mut pre1 = None;
+    let mut pre2 = None;
+    let mut root1 = None;
+    let mut root2 = None;
+    let mut cr31 = None;
+    let mut cr32 = None;
+    let mut rsp1 = None;
+    let mut rsp2 = None;
+    let mut kstack1_top = None;
+    let mut kstack2_top = None;
+    let mut data1 = None;
+    let mut data2 = None;
+    let mut mark1 = None;
+    let mut mark2 = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "ticks" => ticks = Some(parse_decimal(value, "ticks")?),
+            "pre1" => pre1 = Some(parse_decimal(value, "pre1")?),
+            "pre2" => pre2 = Some(parse_decimal(value, "pre2")?),
+            "root1" => root1 = Some(parse_addr(value)?),
+            "root2" => root2 = Some(parse_addr(value)?),
+            "cr31" => cr31 = Some(parse_addr(value)?),
+            "cr32" => cr32 = Some(parse_addr(value)?),
+            "rsp1" => rsp1 = Some(parse_addr(value)?),
+            "rsp2" => rsp2 = Some(parse_addr(value)?),
+            "kstack1_top" => kstack1_top = Some(parse_addr(value)?),
+            "kstack2_top" => kstack2_top = Some(parse_addr(value)?),
+            "data1" => data1 = Some(parse_addr(value)?),
+            "data2" => data2 = Some(parse_addr(value)?),
+            "mark1" => mark1 = Some(parse_addr(value)?),
+            "mark2" => mark2 = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let ticks = ticks.ok_or_else(|| "missing ticks in preempt_ready data".to_owned())?;
+    let pre1 = pre1.ok_or_else(|| "missing pre1 in preempt_ready data".to_owned())?;
+    let pre2 = pre2.ok_or_else(|| "missing pre2 in preempt_ready data".to_owned())?;
+    let root1 = root1.ok_or_else(|| "missing root1 in preempt_ready data".to_owned())?;
+    let root2 = root2.ok_or_else(|| "missing root2 in preempt_ready data".to_owned())?;
+    let cr31 = cr31.ok_or_else(|| "missing cr31 in preempt_ready data".to_owned())?;
+    let cr32 = cr32.ok_or_else(|| "missing cr32 in preempt_ready data".to_owned())?;
+    let rsp1 = rsp1.ok_or_else(|| "missing rsp1 in preempt_ready data".to_owned())?;
+    let rsp2 = rsp2.ok_or_else(|| "missing rsp2 in preempt_ready data".to_owned())?;
+    let kstack1_top =
+        kstack1_top.ok_or_else(|| "missing kstack1_top in preempt_ready data".to_owned())?;
+    let kstack2_top =
+        kstack2_top.ok_or_else(|| "missing kstack2_top in preempt_ready data".to_owned())?;
+    let data1 = data1.ok_or_else(|| "missing data1 in preempt_ready data".to_owned())?;
+    let data2 = data2.ok_or_else(|| "missing data2 in preempt_ready data".to_owned())?;
+    let mark1 = mark1.ok_or_else(|| "missing mark1 in preempt_ready data".to_owned())?;
+    let mark2 = mark2.ok_or_else(|| "missing mark2 in preempt_ready data".to_owned())?;
+
+    if ticks == 0 {
+        return Err("preempt_ready ticks must be > 0 — the PIT clock must have fired".to_owned());
+    }
+    if pre1 < PREEMPT_THRESHOLD || pre2 < PREEMPT_THRESHOLD {
+        return Err(format!(
+            "preempt_ready pre1/pre2 ({pre1}/{pre2}) must both be >= {PREEMPT_THRESHOLD} — the timer must rotate both tasks"
+        ));
+    }
+    if root1 == 0 || root2 == 0 || root1 == root2 {
+        return Err(format!(
+            "preempt_ready roots (0x{root1:x}/0x{root2:x}) must be nonzero and distinct — tasks need per-task address spaces"
+        ));
+    }
+    if cr31 != root1 || cr32 != root2 {
+        return Err(format!(
+            "preempt_ready observed CR3 (0x{cr31:x}/0x{cr32:x}) must equal the task roots (0x{root1:x}/0x{root2:x})"
+        ));
+    }
+    if rsp1 == rsp2 {
+        return Err(format!(
+            "preempt_ready rsp1/rsp2 (0x{rsp1:x}) must differ — tasks need per-task kernel stacks"
+        ));
+    }
+    if rsp1 <= kstack1_top.saturating_sub(KSTACK_SIZE) || rsp1 > kstack1_top {
+        return Err(format!(
+            "preempt_ready rsp1 (0x{rsp1:x}) must lie in task 1 kernel stack (top 0x{kstack1_top:x}, size {KSTACK_SIZE})"
+        ));
+    }
+    if rsp2 <= kstack2_top.saturating_sub(KSTACK_SIZE) || rsp2 > kstack2_top {
+        return Err(format!(
+            "preempt_ready rsp2 (0x{rsp2:x}) must lie in task 2 kernel stack (top 0x{kstack2_top:x}, size {KSTACK_SIZE})"
+        ));
+    }
+    if data1 == 0 || data2 == 0 || data1 == data2 {
+        return Err(format!(
+            "preempt_ready data frames (0x{data1:x}/0x{data2:x}) must be distinct — same VA must map to different frames"
+        ));
+    }
+    if mark1 != MT_TASK1 || mark2 != MT_TASK2 {
+        return Err(format!(
+            "preempt_ready markers ({mark1}/{mark2}) must be {MT_TASK1}/{MT_TASK2} — each task must run in its own address space"
+        ));
+    }
+    Ok(())
+}
+
 /// 校验切片 F 的 COW 见证：写故障分类、帧字节复制完整性、原页未被修改、重试成功。
 fn validate_cow_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "cow_ready event is missing its data field".to_owned())?;
@@ -1640,6 +1760,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("multitask_ready", "ok") => EventKind::MultitaskReady,
         ("exc_wait_ready", "ok") => EventKind::ExcWaitReady,
+        ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
@@ -1670,6 +1791,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
+            | EventKind::PreemptReady
             | EventKind::ExcResumeReady,
             None,
         ) => {
@@ -1693,6 +1815,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
+            | EventKind::PreemptReady
             | EventKind::ExcResumeReady,
             Some(_),
         ) => {}
@@ -1734,8 +1857,9 @@ mod tests {
         "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
-        "PRIMA|v=1|seq=20|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=21|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=20|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=21|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=22|event=boot_complete|status=ok\r\n",
     );
 
     #[test]

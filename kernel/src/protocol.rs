@@ -376,6 +376,42 @@ pub(crate) fn exc_wait_ready(witness: &kernel::syscall::ExcWaitWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
+pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
+    write_prefix("preempt_ready", "ok");
+    serial::write_bytes(b"|data=ticks=");
+    write_u32(witness.ticks as u32);
+    serial::write_bytes(b";pre1=");
+    write_u32(witness.preempt1 as u32);
+    serial::write_bytes(b";pre2=");
+    write_u32(witness.preempt2 as u32);
+    serial::write_bytes(b";root1=");
+    write_hex_u64(witness.root1);
+    serial::write_bytes(b";root2=");
+    write_hex_u64(witness.root2);
+    serial::write_bytes(b";cr31=");
+    write_hex_u64(witness.cr31);
+    serial::write_bytes(b";cr32=");
+    write_hex_u64(witness.cr32);
+    serial::write_bytes(b";rsp1=");
+    write_hex_u64(witness.rsp1);
+    serial::write_bytes(b";rsp2=");
+    write_hex_u64(witness.rsp2);
+    serial::write_bytes(b";kstack1_top=");
+    write_hex_u64(witness.kstack1_top);
+    serial::write_bytes(b";kstack2_top=");
+    write_hex_u64(witness.kstack2_top);
+    serial::write_bytes(b";data1=");
+    write_hex_u64(witness.data1);
+    serial::write_bytes(b";data2=");
+    write_hex_u64(witness.data2);
+    serial::write_bytes(b";mark1=");
+    write_hex_u64(witness.mark1);
+    serial::write_bytes(b";mark2=");
+    write_hex_u64(witness.mark2);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 J：x86-64 `syscall`/`sysret` 快路径见证（MSR 配置 + 一次真实快路径往返）。
 pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_prefix("syscall_fast_ready", "ok");

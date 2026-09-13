@@ -120,7 +120,16 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 N：最后是跨任务阻塞 raise/wait（task1 阻塞在 WAIT，task2 TRAP 唤醒）。
     let exc_wait = kernel::syscall::exc_wait_witness();
     protocol::exc_wait_ready(&exc_wait);
-    run_and_exit();
+    // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
+    kernel::preempt::set_finish_handler(preempt_finish);
+    kernel::preempt::run()
+}
+
+/// 切片 O 完成回调：上报时钟抢占见证，再走既有 `exc_resume` 收尾（不返回）。
+fn preempt_finish() -> ! {
+    let witness = kernel::preempt::witness();
+    protocol::preempt_ready(&witness);
+    run_and_exit()
 }
 
 /// 构造并校验一帧恢复帧，然后真实 `iretq` 进去（不返回）。

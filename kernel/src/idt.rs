@@ -652,6 +652,9 @@ pub fn init_idt() -> Result<(), ()> {
         // syscall 用 DPL3 门 + 裸入口：允许 CPL3 执行 `int 0x80`。
         let syscall_addr = syscall_entry as *const () as u64;
         (*rt_mut).set_handler_addr_dpl3(SYSCALL_VECTOR, syscall_addr);
+        // 切片 O：IRQ0（PIT 时钟）用裸入口；中断门 DPL0，IF 由门自动清除。
+        let timer_addr = crate::preempt::timer_entry as *const () as u64;
+        (*rt_mut).set_handler_addr(crate::preempt::TIMER_VECTOR, timer_addr);
     }
     let rt = core::ptr::addr_of!(IDT_ITEM);
     load_idt(unsafe { &*rt })

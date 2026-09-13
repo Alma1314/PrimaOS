@@ -28,7 +28,7 @@ use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
 use crate::sched;
-use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA, USER2_Y_VA};
+use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
 use crate::vspace::{self, PT_PRESENT, PT_USER};
 
 /// 合法 syscall 号：回显（`arg0 ^ ECHO_MASK`）。
@@ -242,7 +242,7 @@ fn save_block() -> *const u64 {
 ///
 /// `base` 必须指向 [`syscall_entry`] 在当前内核栈上建立的 20-qword 保存块；host 测试
 /// 传入同布局的假块。任何其它指针都是未定义行为。
-unsafe fn frame_from_save_block(base: *const u64) -> SretFrame {
+pub(crate) unsafe fn frame_from_save_block(base: *const u64) -> SretFrame {
     let read = |offset: usize| unsafe { core::ptr::read_volatile(base.add(offset / 8)) };
     SretFrame {
         rax: read(0x00),
@@ -499,9 +499,11 @@ pub const fn copy_in_bounds(ptr: u64, len: u64) -> Result<(), Errno> {
 /// 从用户缓冲读入 `len` 字节并组装为 little-endian u64（内核/QEMU 专用）。
 fn copy_in(ptr: u64, len: u64) -> Result<u64, Errno> {
     copy_in_bounds(ptr, len)?;
-    let Some((root, offset)) = crate::cow::root_and_offset() else {
+    let Some((fallback_root, offset)) = crate::cow::root_and_offset() else {
         return Err(Errno::Fault);
     };
+    // 切片 O：用户缓冲指针必须按**当前任务**的根校验（per-task CR3）。
+    let root = crate::sched::current_root().unwrap_or(fallback_root);
     let map = |phys: u64| phys_to_virt(phys, offset);
     let pte = vspace::read_leaf(root, ptr, map).map_err(|_| Errno::Fault)?;
     if pte & PT_PRESENT == 0 || pte & PT_USER == 0 {
@@ -800,6 +802,20 @@ impl SyscallWitness {
 
 fn read_qword(va: u64) -> u64 {
     unsafe { core::ptr::read_volatile(va as *const u64) }
+}
+
+/// 切片 O：从 task 2 回执页 Y2 的**物理帧**读一个 qword（经直映射）。
+///
+/// per-task CR3 后 task 1 根下不再映射 Y2 的 VA，故按物理读；读不到（未准备/无直映射
+/// 偏移）返回 0，与既有 witness 的缺省 0 语义一致。
+fn read_task2_qword(byte_offset: u64) -> u64 {
+    let Some(phys) = crate::user::task2_y_phys() else {
+        return 0;
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return 0;
+    };
+    read_qword(phys_to_virt(phys, offset) + byte_offset)
 }
 
 /// 读取前 [`MAX_CALLS`] 条进入记录（单核 boot 早期，无并发）。
@@ -1107,9 +1123,9 @@ pub fn mt_witness() -> MtWitness {
         receipt_task1_before: read_qword(USER_Y_VA + 136),
         receipt_task1_yield: read_qword(USER_Y_VA + 144),
         receipt_task1_after: read_qword(USER_Y_VA + 152),
-        receipt_task2_id: read_qword(USER2_Y_VA),
-        receipt_task2_auth: read_qword(USER2_Y_VA + 8),
-        receipt_task2_sub: read_qword(USER2_Y_VA + 16),
+        receipt_task2_id: read_task2_qword(0),
+        receipt_task2_auth: read_task2_qword(8),
+        receipt_task2_sub: read_task2_qword(16),
     }
 }
 
@@ -1160,7 +1176,7 @@ pub fn exc_wait_witness() -> ExcWaitWitness {
         payload: wait.payload,
         blocks: wait.blocks,
         wait_receipt: read_qword(USER_Y_VA + 160),
-        trap_receipt: read_qword(USER2_Y_VA + 24),
+        trap_receipt: read_task2_qword(24),
     }
 }
 

@@ -56,6 +56,24 @@ pub fn cr3() -> PhysAddr {
     PhysAddr(value)
 }
 
+/// 当前 CR3 的页表根物理地址（清掉低 12 位的标志/PCID 位）。
+pub fn cr3_phys() -> u64 {
+    cr3().0 & 0x000f_ffff_ffff_f000
+}
+
+/// 写 CR3，切换到另一张 PML4（per-task 地址空间）。
+///
+/// # Safety
+///
+/// 特权指令，仅 CPL0 可执行。调用瞬间的指令流与栈必须在新根下仍被映射（本项目通过
+/// [`crate::vspace::clone_root`] 复制 bootloader 根的全部 PML4 项来保证），否则写 CR3 后
+/// 立即取指失败。
+pub unsafe fn write_cr3(phys: u64) {
+    unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) phys, options(nostack, preserves_flags));
+    }
+}
+
 /// CR0 的 WP 位掩码（bit 16）。WP=1 ⇒ supervisor 写只读页产生 #PF；0 = 允许通过。
 ///
 /// `read_cr0_wp` 是"本次是否可能造出 supervisor 写保护现场"的总闸门，不依赖页表形态。
