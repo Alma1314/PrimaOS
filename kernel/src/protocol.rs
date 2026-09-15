@@ -36,11 +36,64 @@ pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
     serial::write_bytes(b";free_frames=");
     write_u64(snapshot.free_frames);
     serial::write_bytes(b";image_rights=");
-    serial::write_bytes(snapshot.image_rights.as_bytes());
+    write_rights(snapshot.image_rights);
     serial::write_bytes(b";namespace_rights=");
-    serial::write_bytes(snapshot.namespace_rights.as_bytes());
+    write_rights(snapshot.namespace_rights);
     serial::write_bytes(b";task_rights=");
-    serial::write_bytes(snapshot.task_rights.as_bytes());
+    write_rights(snapshot.task_rights);
+    serial::write_bytes(b"\r\n");
+}
+
+/// 按 §4.1 的规范顺序渲染权限有限集合（缓冲在栈上，无分配）。
+fn write_rights(rights: kernel::rights::Rights) {
+    let mut buffer = [0u8; 256];
+    match rights.render(&mut buffer) {
+        Some(text) => serial::write_bytes(text.as_bytes()),
+        None => serial::write_bytes(b"<rights-buffer-too-small>"),
+    }
+}
+
+/// 切片 P：初始 Authority 见证（`bootstrap`/`activate_init` 之后只读全局记录）。
+pub(crate) fn authority_ready(record: &kernel::bootstrap::BootstrapRecord) {
+    write_prefix("authority_ready", "ok");
+    serial::write_bytes(b"|data=caps=");
+    write_u32(record.caps);
+    serial::write_bytes(b";segments=");
+    write_u32(record.segments);
+    serial::write_bytes(b";namespaces=");
+    write_u32(record.namespaces);
+    serial::write_bytes(b";booted=");
+    write_u32(record.booted as u32);
+    serial::write_bytes(b";initial_status=");
+    serial::write_bytes(if record.initial_status_ready {
+        b"ready"
+    } else {
+        b"other"
+    });
+    serial::write_bytes(b";entry_in_image=");
+    write_u32(record.entry_in_image as u32);
+    serial::write_bytes(b";root_ns=");
+    write_u32(record.root_ns_cap);
+    serial::write_bytes(b";init_running=");
+    write_u32(record.init_running as u32);
+    serial::write_bytes(b"\r\n");
+}
+
+/// 切片 P：帧唯一归属（W6）守恒见证。
+pub(crate) fn frames_ready(witness: &kernel::frames::FrameWitness) {
+    write_prefix("frames_ready", "ok");
+    serial::write_bytes(b"|data=universe=");
+    write_u64(witness.universe);
+    serial::write_bytes(b";free=");
+    write_u64(witness.free);
+    serial::write_bytes(b";segment=");
+    write_u64(witness.segment_frames);
+    serial::write_bytes(b";table=");
+    write_u64(witness.table_frames);
+    serial::write_bytes(b";image=");
+    write_u64(witness.image_frames);
+    serial::write_bytes(b";conserved=");
+    write_u32(witness.conserved as u32);
     serial::write_bytes(b"\r\n");
 }
 

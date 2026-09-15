@@ -13,7 +13,8 @@
 //! 切片 C/E 的探测行为），命中 COW 条件时返回原 `rip` 以**重试**故障指令。
 
 use crate::exc::SretFrame;
-use crate::mem::{FRAME_SIZE, FreeFrameAllocator, phys_to_virt};
+use crate::frames::{self, FrameError, Pool};
+use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::vspace::{self, VspaceError};
 
 /// COW 见证使用的虚拟地址：i4 槽 16。
@@ -74,7 +75,6 @@ impl CowWitness {
 struct CowContext {
     root_phys: u64,
     offset: u64,
-    alloc: FreeFrameAllocator,
     shared: u64,
     private: u64,
     copied: bool,
@@ -87,14 +87,19 @@ struct CowContext {
 
 static mut COW_CTX: Option<CowContext> = None;
 
-/// 从 COW 上下文的**唯一**分配器取一帧。切片 G 的页表页与私有帧都经此分配，避免多份
-/// `FreeFrameAllocator` 副本各自推进 `next` 而重复发放同一物理帧。
-pub fn alloc_frame() -> Option<u64> {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
-        (*ctx_ptr)
-            .as_mut()
-            .and_then(|ctx| ctx.alloc.allocate().ok())
+/// COW 私有/共享帧的取帧入口（经全局帧注册表，归属 [`frames::SEG_COW`]）。
+fn cow_frame() -> Result<u64, VspaceError> {
+    frames::allocate_for_segment(frames::SEG_COW).map_err(vspace_error)
+}
+
+fn vspace_error(error: FrameError) -> VspaceError {
+    match error {
+        FrameError::NoFrame | FrameError::NotInstalled | FrameError::CapacityExceeded => {
+            VspaceError::NoFrame
+        }
+        FrameError::UnknownSegment
+        | FrameError::UniverseMismatch
+        | FrameError::ConservationViolation => VspaceError::NoFrame,
     }
 }
 
@@ -129,21 +134,18 @@ fn write_qword(va: u64, value: u64) {
     unsafe { core::ptr::write_volatile(va as *mut u64, value) };
 }
 
-/// 准备 COW 见证：分配共享帧、写入可识别模式、建立只读映射，并登记后续私有帧分配器。
+/// 准备 COW 见证：分配共享帧、写入可识别模式、建立只读映射，并登记 COW 区域。
 ///
-/// 在触发写故障**之前**调用。`alloc` 被移动进上下文（`FreeFrameAllocator` 为 `Copy`），
-/// 调用后不应再使用同一 allocator 做其它分配，以免两侧状态分叉。
-pub fn prepare(
-    alloc: &mut FreeFrameAllocator,
-    root_phys: u64,
-    offset: u64,
-) -> Result<(), VspaceError> {
+/// 在触发写故障**之前**调用。共享帧与后续私有帧都经全局帧注册表取用（归属
+/// [`frames::SEG_COW`]），不再持有 `FreeFrameAllocator` 副本，故不存在两份状态分叉。
+pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
     if !vspace::slot_free(root_phys, COW_VA, map) {
         return Err(VspaceError::SlotOccupied);
     }
+    frames::open_segment(frames::SEG_COW, Pool::Cpu).map_err(vspace_error)?;
 
-    let shared = alloc.allocate().map_err(|_| VspaceError::NoFrame)?;
+    let shared = cow_frame()?;
     let shared_va = map(shared);
     for index in 0..PATTERN_WORDS {
         write_qword(shared_va + (index as u64) * 8, pattern(index as u64));
@@ -153,7 +155,7 @@ pub fn prepare(
         root_phys,
         COW_VA,
         map,
-        || alloc.allocate().ok(),
+        || frames::allocate_table_frame().ok(),
         shared,
         false,
         false,
@@ -165,7 +167,6 @@ pub fn prepare(
         *ctx = Some(CowContext {
             root_phys,
             offset,
-            alloc: *alloc,
             shared,
             private: 0,
             copied: false,
@@ -181,15 +182,8 @@ pub fn prepare(
 /// 对某个已注册 COW 区域执行一次复制 + 换映射；成功返回 `true`。
 ///
 /// `user` 决定换映射后是否保留 U/S 位（用户页需要）。
-fn cow_region(
-    root_phys: u64,
-    offset: u64,
-    alloc: &mut FreeFrameAllocator,
-    va: u64,
-    shared: u64,
-    user: bool,
-) -> Option<u64> {
-    let private = alloc.allocate().ok()?;
+fn cow_region(root_phys: u64, offset: u64, va: u64, shared: u64, user: bool) -> Option<u64> {
+    let private = cow_frame().ok()?;
 
     // 逐字节（qword）复制共享帧内容到私有帧（POD read/write 形态，不依赖 rep movs）。
     let map = |phys: u64| phys_to_virt(phys, offset);
@@ -232,9 +226,7 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
         let (root_phys, offset) = (ctx.root_phys, ctx.offset);
 
         if !ctx.copied && cr2 == COW_VA {
-            if let Some(private) =
-                cow_region(root_phys, offset, &mut ctx.alloc, COW_VA, ctx.shared, false)
-            {
+            if let Some(private) = cow_region(root_phys, offset, COW_VA, ctx.shared, false) {
                 ctx.private = private;
                 ctx.copied = true;
                 return frame.rip;
@@ -244,7 +236,7 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
             let va = ctx.user_va;
             // 切片 O：用户页换映射必须写到**当前任务**的根（per-task CR3），而非 boot 根。
             let user_root = crate::sched::current_root().unwrap_or(root_phys);
-            if let Some(private) = cow_region(user_root, offset, &mut ctx.alloc, va, shared, true) {
+            if let Some(private) = cow_region(user_root, offset, va, shared, true) {
                 ctx.user_private = private;
                 ctx.user_copied = true;
                 return frame.rip;

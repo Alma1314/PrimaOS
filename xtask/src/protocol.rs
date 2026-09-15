@@ -21,6 +21,8 @@ enum EventKind {
     ExcWaitReady,
     PreemptReady,
     ExcResumeReady,
+    AuthorityReady,
+    FramesReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -118,7 +120,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 22] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 24] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -140,7 +142,9 @@ const EXPECTED_EVENTS: [(u32, EventKind); 22] = [
     (19, EventKind::ExcWaitReady),
     (20, EventKind::PreemptReady),
     (21, EventKind::ExcResumeReady),
-    (22, EventKind::BootComplete),
+    (22, EventKind::AuthorityReady),
+    (23, EventKind::FramesReady),
+    (24, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -331,6 +335,118 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::PreemptReady)
     {
         validate_preempt_data(preempt.data.as_deref())?;
+    }
+
+    if let Some(authority) = events
+        .iter()
+        .find(|event| event.kind == EventKind::AuthorityReady)
+    {
+        validate_authority_data(authority.data.as_deref())?;
+    }
+
+    if let Some(frames) = events
+        .iter()
+        .find(|event| event.kind == EventKind::FramesReady)
+    {
+        validate_frames_data(frames.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 切片 P：校验初始 Authority 见证（§14）。
+fn validate_authority_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "authority_ready event is missing its data field".to_owned())?;
+    let mut caps = None;
+    let mut segments = None;
+    let mut namespaces = None;
+    let mut booted = None;
+    let mut initial_status = None;
+    let mut entry_in_image = None;
+    let mut root_ns = None;
+    let mut init_running = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "caps" => caps = Some(parse_count(value)?),
+            "segments" => segments = Some(parse_count(value)?),
+            "namespaces" => namespaces = Some(parse_count(value)?),
+            "booted" => booted = Some(parse_count(value)?),
+            "initial_status" => initial_status = Some(value),
+            "entry_in_image" => entry_in_image = Some(parse_count(value)?),
+            "root_ns" => root_ns = Some(parse_count(value)?),
+            "init_running" => init_running = Some(parse_count(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    if caps != Some(3) || segments != Some(1) || namespaces != Some(1) {
+        return Err(format!(
+            "authority_ready must report 3 caps / 1 segment / 1 namespace, got {caps:?}/{segments:?}/{namespaces:?}"
+        ));
+    }
+    if booted != Some(1) || entry_in_image != Some(1) || init_running != Some(1) {
+        return Err(format!(
+            "authority_ready must report booted/entry_in_image/init_running = 1, got {booted:?}/{entry_in_image:?}/{init_running:?}"
+        ));
+    }
+    if initial_status != Some("ready") {
+        return Err(format!(
+            "authority_ready initial_status must be ready, got {initial_status:?}"
+        ));
+    }
+    if root_ns != Some(2) {
+        return Err(format!(
+            "authority_ready root_ns must be the namespace cap id 2, got {root_ns:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// 切片 P：校验帧唯一归属（W6）守恒见证。
+fn validate_frames_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "frames_ready event is missing its data field".to_owned())?;
+    let mut universe = None;
+    let mut free = None;
+    let mut segment = None;
+    let mut table = None;
+    let mut image = None;
+    let mut conserved = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "universe" => universe = Some(parse_count(value)?),
+            "free" => free = Some(parse_count(value)?),
+            "segment" => segment = Some(parse_count(value)?),
+            "table" => table = Some(parse_count(value)?),
+            "image" => image = Some(parse_count(value)?),
+            "conserved" => conserved = Some(parse_count(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let (universe, free, segment, table, image) = (
+        universe.ok_or_else(|| "frames_ready is missing universe".to_owned())?,
+        free.ok_or_else(|| "frames_ready is missing free".to_owned())?,
+        segment.ok_or_else(|| "frames_ready is missing segment".to_owned())?,
+        table.ok_or_else(|| "frames_ready is missing table".to_owned())?,
+        image.ok_or_else(|| "frames_ready is missing image".to_owned())?,
+    );
+    if conserved != Some(1) {
+        return Err(format!(
+            "frames_ready conserved must be 1 (W6 conservation holds), got {conserved:?}"
+        ));
+    }
+    if free + segment + table + image != universe {
+        return Err(format!(
+            "frames_ready violates W6: free({free}) + segment({segment}) + table({table}) + image({image}) != universe({universe})"
+        ));
+    }
+    if image == 0 || table == 0 || segment == 0 {
+        return Err(format!(
+            "frames_ready must report non-zero image/table/segment ownership, got image={image}, table={table}, segment={segment}"
+        ));
     }
     Ok(())
 }
@@ -1522,7 +1638,7 @@ fn validate_bootstrap_data(data: Option<&str>) -> Result<(), String> {
         return Err("bootstrap frame ownership must be non-empty".to_owned());
     }
     if image_rights != Some("Derive,SegMapR,SegMapX,SegDestroy")
-        || namespace_rights != Some("all")
+        || namespace_rights != Some("Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy")
         || task_rights != Some("Derive,TaskSend,TaskManageVSpace,TaskDestroy")
     {
         return Err(format!(
@@ -1762,6 +1878,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("exc_wait_ready", "ok") => EventKind::ExcWaitReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
+        ("authority_ready", "ok") => EventKind::AuthorityReady,
+        ("frames_ready", "ok") => EventKind::FramesReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -1792,7 +1910,9 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
             | EventKind::PreemptReady
-            | EventKind::ExcResumeReady,
+            | EventKind::ExcResumeReady
+            | EventKind::AuthorityReady
+            | EventKind::FramesReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -1816,7 +1936,9 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
             | EventKind::PreemptReady
-            | EventKind::ExcResumeReady,
+            | EventKind::ExcResumeReady
+            | EventKind::AuthorityReady
+            | EventKind::FramesReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -1846,7 +1968,7 @@ mod tests {
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
-        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=all;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
+        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
@@ -1859,8 +1981,57 @@ mod tests {
         "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
         "PRIMA|v=1|seq=20|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=21|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=22|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=22|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=2;init_running=1\n",
+        "PRIMA|v=1|seq=23|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1\n",
+        "PRIMA|v=1|seq=24|event=boot_complete|status=ok\r\n",
     );
+
+    #[test]
+    fn rejects_authority_ready_with_wrong_initial_status() {
+        let output = VALID.replace(
+            "initial_status=ready;entry_in_image=1",
+            "initial_status=running;entry_in_image=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("initial_status must be ready"), "{error}");
+    }
+
+    #[test]
+    fn rejects_authority_ready_without_booted_flag() {
+        let output = VALID.replace("namespaces=1;booted=1", "namespaces=1;booted=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("booted/entry_in_image/init_running"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_frames_ready_that_violates_w6_conservation() {
+        let output = VALID.replace(
+            "universe=9;free=4;segment=2;table=1;image=2;conserved=1",
+            "universe=9;free=5;segment=2;table=1;image=2;conserved=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("violates W6"), "{error}");
+    }
+
+    #[test]
+    fn rejects_frames_ready_without_conserved_flag() {
+        let output = VALID.replace("image=2;conserved=1", "image=2;conserved=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("conserved must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_frames_ready_without_page_table_ownership() {
+        let output = VALID.replace(
+            "universe=9;free=4;segment=2;table=1;image=2;conserved=1",
+            "universe=7;free=4;segment=2;table=0;image=1;conserved=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("non-zero image/table/segment"), "{error}");
+    }
 
     #[test]
     fn accepts_expected_sequence_and_ignores_firmware_output() {

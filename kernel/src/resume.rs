@@ -87,6 +87,15 @@ extern "C" fn after_resume() -> ! {
     let flags_ok = rflags & (1 << 6) != 0;
 
     protocol::exc_resume_ready(r12, r13, resumed as u32, rsp_ok as u32, flags_ok as u32);
+    // 切片 P：阶段末见证——初始 Authority 与帧唯一归属守恒（既有 seq 1..21 不变）。
+    match kernel::bootstrap::authority_record() {
+        Ok(record) => protocol::authority_ready(&record),
+        Err(_) => protocol::panic_event(),
+    }
+    match kernel::frames::witness() {
+        Ok(witness) => protocol::frames_ready(&witness),
+        Err(_) => protocol::panic_event(),
+    }
     protocol::boot_complete();
     serial::flush();
     qemu::exit(qemu::SUCCESS)

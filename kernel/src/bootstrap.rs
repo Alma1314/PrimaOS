@@ -1,15 +1,40 @@
 use core::fmt;
 
 use crate::mem::FrameInventory;
+use crate::rights::{ObjectKind, Right, Rights};
 
 pub const INIT_TASK_ID: u32 = 1;
 pub const IMAGE_CAP_ID: u32 = 1;
 pub const NAMESPACE_CAP_ID: u32 = 2;
 pub const TASK_CAP_ID: u32 = 3;
 pub const INITIAL_CAPABILITY_COUNT: u32 = 3;
-pub const IMAGE_RIGHTS: &str = "Derive,SegMapR,SegMapX,SegDestroy";
-pub const NAMESPACE_RIGHTS: &str = "all";
-pub const TASK_RIGHTS: &str = "Derive,TaskSend,TaskManageVSpace,TaskDestroy";
+/// §14 步骤 5：image Segment 根 Capability 的有限权限集。
+pub const IMAGE_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::SegMapR,
+    Right::SegMapX,
+    Right::SegDestroy,
+]);
+/// §14 步骤 5：init Namespace 根 Capability 的**完整且有限**的 Namespace 权限集。
+///
+/// 先前实现用通配符 `"all"`，违反 §4.1 的 `FiniteSet<Right>` 与 `well_typed_rights`；
+/// SPEC-061 改为规范列出的有限集（这会修正 `bootstrap_ready.namespace_rights` 的取值）。
+pub const NAMESPACE_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::NsResolve,
+    Right::NsBind,
+    Right::NsUnbind,
+    Right::NsMount,
+    Right::NsUnmount,
+    Right::NsDestroy,
+]);
+/// §14 步骤 5：init Task 根 Capability 的有限权限集。
+pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::TaskSend,
+    Right::TaskManageVSpace,
+    Right::TaskDestroy,
+]);
 const MAX_DERIVED_CAPABILITIES: usize = 8;
 const MAX_CAPABILITY_POSITIONS: usize =
     INITIAL_CAPABILITY_COUNT as usize + MAX_DERIVED_CAPABILITIES;
@@ -24,8 +49,9 @@ const MAX_EXC_SOURCES: usize = 4;
 const MAX_SUBSCRIBERS: usize = 4;
 /// 切片 L：异常源 Capability ID 起始值（避开初始 1~3 与测试派生 ID）。
 pub const EXC_SOURCE_CAP_BASE: u32 = 64;
-/// 切片 L：异常源根 Capability 的权限串（对齐 §12.6）。
-pub const EXC_SOURCE_RIGHTS: &str = "Derive,ExcSubscribe,ExcSourceDestroy";
+/// 切片 L：异常源根 Capability 的权限集（对齐 §12.6）。
+pub const EXC_SOURCE_RIGHTS: Rights =
+    Rights::from_rights(&[Right::Derive, Right::ExcSubscribe, Right::ExcSourceDestroy]);
 /// 切片 L：预定义 `page_fault_source` 的 ID。
 pub const PAGE_FAULT_SOURCE_ID: u32 = 1;
 /// 切片 L：预定义 `syscall_trap_source` 的 ID。
@@ -83,6 +109,18 @@ pub enum AuditEvent {
         source_id: u32,
         kind: ExcKind,
     },
+    /// 切片 P：Bootstrap 铸造初始 Authority（§14 步骤 9 / §13.1 `Bootstrapped`）。
+    Bootstrapped,
+    /// 切片 P：对象创建（§13.1 要求活动对象有创建事件）。
+    ObjectCreated {
+        object_id: u32,
+        segment: bool,
+    },
+    /// 切片 P：Task 状态迁移（W13 要求每次迁移有事件）。
+    TaskStateChanged {
+        task_id: u32,
+        status: TaskStatus,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +159,8 @@ pub enum TaskStatus {
 pub struct TaskRecord {
     pub id: u32,
     pub status: TaskStatus,
+    /// §5.2/§14 步骤 7：Task 的结构性根 Namespace Capability。
+    pub root_ns_cap: u32,
     pending: Option<IpcMessage>,
 }
 
@@ -149,7 +189,9 @@ impl TaskTable {
             entries: [
                 Some(TaskRecord {
                     id: INIT_TASK_ID,
-                    status: TaskStatus::Running,
+                    // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
+                    status: TaskStatus::Ready,
+                    root_ns_cap: NAMESPACE_CAP_ID,
                     pending: None,
                 }),
                 None,
@@ -188,6 +230,8 @@ impl TaskTable {
         self.entries[self.count] = Some(TaskRecord {
             id: task_id,
             status: TaskStatus::Ready,
+            // 非 init 任务由创建者显式设置结构根；本切片不创建此类任务的结构根。
+            root_ns_cap: 0,
             pending: None,
         });
         self.count += 1;
@@ -375,9 +419,9 @@ pub struct BootstrapSnapshot {
     pub image_len: u64,
     pub image_frames: u64,
     pub free_frames: u64,
-    pub image_rights: &'static str,
-    pub namespace_rights: &'static str,
-    pub task_rights: &'static str,
+    pub image_rights: Rights,
+    pub namespace_rights: Rights,
+    pub task_rights: Rights,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -392,7 +436,7 @@ pub struct InitialCapability {
     pub id: u32,
     pub object: InitialObject,
     pub holder: u32,
-    pub rights: &'static str,
+    pub rights: Rights,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -420,7 +464,7 @@ pub struct DerivedCapability {
     pub id: u32,
     pub parent: u32,
     pub holder: u32,
-    pub rights: &'static str,
+    pub rights: Rights,
     pub active: bool,
 }
 
@@ -453,7 +497,7 @@ impl CapabilityDerivationTable {
         parent: u32,
         child: u32,
         holder: u32,
-        rights: &'static str,
+        rights: Rights,
     ) -> Result<(), DeriveError> {
         let parent_rights = initial
             .iter()
@@ -467,7 +511,7 @@ impl CapabilityDerivationTable {
                     .map(|capability| capability.rights)
             })
             .ok_or(DeriveError::NoSuchParent)?;
-        if !rights_subset(parent_rights, rights) {
+        if !rights.subset_of(parent_rights) {
             return Err(DeriveError::RightsEscalation);
         }
         if initial.iter().any(|capability| capability.id == child)
@@ -522,22 +566,6 @@ impl CapabilityDerivationTable {
         }
         (revoked, revoked_count)
     }
-}
-
-fn rights_subset(parent: &str, child: &str) -> bool {
-    if parent == "all" {
-        return child != "all";
-    }
-    if child == "all" {
-        return false;
-    }
-    child
-        .split(',')
-        .all(|right| parent.split(',').any(|parent_right| parent_right == right))
-}
-
-fn has_right(rights: &str, wanted: &str) -> bool {
-    rights == "all" || rights.split(',').any(|right| right == wanted)
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +633,7 @@ pub struct ExcSource {
     /// 指向本源的根 Capability ID（holder 为创建时的 init Task）。
     pub cap_id: u32,
     pub cap_holder: u32,
-    pub cap_rights: &'static str,
+    pub cap_rights: Rights,
     pub subscribers: [Option<u32>; MAX_SUBSCRIBERS],
     pub count: usize,
 }
@@ -882,6 +910,46 @@ pub struct FrameOwnership {
     pub free_frames: u64,
 }
 
+/// §5.1：image Segment 对象（`frames` 在本实现中以 `(base, count)` 连续区间表达，
+/// 与规范 `Vector<FrameId>` 的对应关系见 `SPEC-061` 的边界说明）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentObject {
+    pub id: u32,
+    pub creator: u32,
+    pub pool: crate::frames::Pool,
+    pub frames_base: u64,
+    pub frame_count: usize,
+    pub allowed_access: Rights,
+}
+
+/// §5.4：Namespace 对象（本切片只物化空 init Namespace）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamespaceObject {
+    pub id: u32,
+    pub creator: u32,
+    pub entries: usize,
+}
+
+/// 切片 P：初始 Authority 的阶段末见证（供 `authority_ready` 事件使用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootstrapRecord {
+    pub caps: u32,
+    pub segments: u32,
+    pub namespaces: u32,
+    pub booted: bool,
+    /// §14 步骤 8：bootstrap 完成时 init 状态为 `Ready`。
+    pub initial_status_ready: bool,
+    /// §14 前置 3：入口落在 image 范围内（已在 `create_state` 校验）。
+    pub entry_in_image: bool,
+    pub root_ns_cap: u32,
+    /// W13：首次调度后 init 已迁到 `Running`。
+    pub init_running: bool,
+}
+
+/// §5.1/§5.4 对象表容量（本切片只需 image Segment + 空 Namespace）。
+pub const MAX_SEGMENT_OBJECTS: usize = 4;
+pub const MAX_NAMESPACE_OBJECTS: usize = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootstrapState {
     pub snapshot: BootstrapSnapshot,
@@ -896,6 +964,16 @@ pub struct BootstrapState {
     pub exc_sources: ExcSourceTable,
     /// 切片 L：平台初始化期间 pending 递送的留证。
     pub exc_boot: Option<ExcBootRecord>,
+    /// 切片 P：§14 步骤 2 物化的 image Segment 等对象。
+    pub segments: [Option<SegmentObject>; MAX_SEGMENT_OBJECTS],
+    pub segment_count: usize,
+    /// 切片 P：§14 步骤 3 物化的 init Namespace。
+    pub namespaces: [Option<NamespaceObject>; MAX_NAMESPACE_OBJECTS],
+    pub namespace_count: usize,
+    /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
+    pub booted: bool,
+    /// 切片 P：初始 Authority 的阶段末见证记录。
+    pub boot_record: Option<BootstrapRecord>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -904,6 +982,10 @@ pub enum BootstrapError {
     ImageRangeOverflow,
     InvalidFrameOwnership,
     InvalidAuthority,
+    /// §14 前置 3：入口必须落在 image 范围内。
+    EntryOutsideImage,
+    /// W14：`booted=true` 后不得再次成功执行 `bootstrap`。
+    AlreadyBooted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -977,12 +1059,61 @@ impl BootstrapState {
                         .map(|capability| capability.rights)
                 })
                 .ok_or(AuthorityError::InvalidParent)?;
-            if !rights_subset(parent_rights, derived.rights) {
+            if !derived.rights.subset_of(parent_rights) {
                 return Err(AuthorityError::RightsEscalation);
             }
             if derived.active && !self.tasks.is_live(derived.holder) {
                 return Err(AuthorityError::InvalidHolder);
             }
+        }
+
+        // SPEC-061：初始 Authority 的权限必须与目标对象类型匹配（§4.1）。
+        for capability in &self.capabilities {
+            let kind = match capability.object {
+                InitialObject::ImageSegment => ObjectKind::Segment,
+                InitialObject::Namespace => ObjectKind::Namespace,
+                InitialObject::InitTask => ObjectKind::Task,
+            };
+            if !capability.rights.well_typed(kind) {
+                return Err(AuthorityError::RightsEscalation);
+            }
+        }
+
+        // SPEC-061：§14 步骤 2/3 的对象必须物化，且 init 的结构性根（W5）成立。
+        if self.segments[..self.segment_count]
+            .iter()
+            .flatten()
+            .all(|segment| segment.id != IMAGE_CAP_ID)
+            || self.namespaces[..self.namespace_count]
+                .iter()
+                .flatten()
+                .all(|namespace| namespace.id != NAMESPACE_CAP_ID)
+        {
+            return Err(AuthorityError::InvalidHolder);
+        }
+        let init = self
+            .tasks
+            .find(INIT_TASK_ID)
+            .ok_or(AuthorityError::InvalidHolder)?;
+        let root_ns_cap = init.root_ns_cap;
+        let root_position = self.positions.entries[..self.positions.count]
+            .iter()
+            .flatten()
+            .find(|entry| entry.cap_id == root_ns_cap)
+            .ok_or(AuthorityError::InvalidHolder)?;
+        if !root_position.active
+            || root_position.location != CapabilityLocation::HeldByTask(INIT_TASK_ID)
+        {
+            return Err(AuthorityError::InvalidHolder);
+        }
+        let root_rights = self
+            .capabilities
+            .iter()
+            .find(|capability| capability.id == root_ns_cap)
+            .map(|capability| capability.rights)
+            .ok_or(AuthorityError::InvalidHolder)?;
+        if !root_rights.contains(Right::NsResolve) {
+            return Err(AuthorityError::RightsEscalation);
         }
 
         for &cap_id in ids.iter().take(id_count) {
@@ -1064,17 +1195,36 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// §14 步骤 8 + W13：首次调度 init——`Ready → Running` 并追加 `TaskStateChanged`。
+    pub fn activate_init(&mut self) -> Result<(), BootstrapError> {
+        let Some(task) = self.tasks.find_mut(INIT_TASK_ID) else {
+            return Err(BootstrapError::InvalidAuthority);
+        };
+        if task.status != TaskStatus::Ready {
+            return Err(BootstrapError::InvalidAuthority);
+        }
+        task.status = TaskStatus::Running;
+        self.audit.append(AuditEvent::TaskStateChanged {
+            task_id: INIT_TASK_ID,
+            status: TaskStatus::Running,
+        });
+        if let Some(record) = self.boot_record.as_mut() {
+            record.init_running = true;
+        }
+        Ok(())
+    }
+
     /// 切片 K：授权查询——`caller` 是否持有 `cap_id` 且该 Capability 具备 `right`。
     ///
     /// 成功返回 `cap_id` 作为授予凭据；失败区分“无此 Capability / 已失效 / 非持有者 /
     /// 缺权限”。逐操作权限与位置语义仍以 [[COSIR 原语规范]] 为准。
-    pub fn authorize(&self, caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError> {
+    pub fn authorize(&self, caller: u32, cap_id: u32, right: Right) -> Result<u32, AuthError> {
         // 切片 L：异常源 Capability 不进入 positions，单独查 holder/rights。
         if let Some(source) = self.exc_sources.find_by_cap(cap_id) {
             if source.cap_holder != caller {
                 return Err(AuthError::NotHolder);
             }
-            if !has_right(source.cap_rights, right) {
+            if !source.cap_rights.contains(right) {
                 return Err(AuthError::MissingRight);
             }
             return Ok(cap_id);
@@ -1103,7 +1253,7 @@ impl BootstrapState {
                     .map(|capability| capability.rights)
             })
             .ok_or(AuthError::NoSuchCapability)?;
-        if !has_right(rights, right) {
+        if !rights.contains(right) {
             return Err(AuthError::MissingRight);
         }
         Ok(cap_id)
@@ -1181,7 +1331,7 @@ impl BootstrapState {
         if source.cap_holder != caller {
             return Err(ExcError::NotHolder);
         }
-        if !has_right(source.cap_rights, "ExcSubscribe") {
+        if !source.cap_rights.contains(Right::ExcSubscribe) {
             return Err(ExcError::MissingRight);
         }
         if source.kind != kind {
@@ -1227,7 +1377,7 @@ impl BootstrapState {
         if source.cap_holder != caller {
             return Err(ExcError::NotHolder);
         }
-        if !has_right(source.cap_rights, "ExcSubscribe") {
+        if !source.cap_rights.contains(Right::ExcSubscribe) {
             return Err(ExcError::MissingRight);
         }
         let source = self
@@ -1453,7 +1603,7 @@ impl BootstrapState {
         parent: u32,
         child: u32,
         holder: u32,
-        rights: &'static str,
+        rights: Rights,
     ) -> Result<(), DeriveError> {
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
@@ -1785,14 +1935,14 @@ impl BootstrapState {
                 self.capabilities
                     .iter()
                     .find(|capability| capability.id == entry.cap_id)
-                    .map(|capability| has_right(capability.rights, "TaskSend"))
+                    .map(|capability| capability.rights.contains(Right::TaskSend))
                     .or_else(|| {
                         self.derivations.entries[..self.derivations.count]
                             .iter()
                             .flatten()
                             .find(|capability| capability.id == entry.cap_id)
                             .map(|capability| {
-                                capability.active && has_right(capability.rights, "TaskSend")
+                                capability.active && capability.rights.contains(Right::TaskSend)
                             })
                     })
                     .unwrap_or(false)
@@ -1807,6 +1957,8 @@ impl fmt::Display for BootstrapError {
             Self::ImageRangeOverflow => formatter.write_str("image range overflow"),
             Self::InvalidFrameOwnership => formatter.write_str("invalid frame ownership"),
             Self::InvalidAuthority => formatter.write_str("invalid authority"),
+            Self::EntryOutsideImage => formatter.write_str("entry outside image range"),
+            Self::AlreadyBooted => formatter.write_str("already booted"),
         }
     }
 }
@@ -1839,17 +1991,29 @@ pub fn create_snapshot(
     })
 }
 
+/// §14 前置 3：入口必须落在 image 范围内。
+pub const fn entry_in_image(entry: u64, image_base: u64, image_len: u64) -> bool {
+    entry >= image_base && entry < image_base.saturating_add(image_len)
+}
+
 pub fn create_state(
     image_base: u64,
     image_len: u64,
+    entry: u64,
     inventory: &FrameInventory,
 ) -> Result<BootstrapState, BootstrapError> {
+    if is_installed() {
+        return Err(BootstrapError::AlreadyBooted);
+    }
     if inventory.kernel_phys_start >= inventory.kernel_phys_end
         || inventory.image_frames == 0
         || inventory.free_frames == 0
         || inventory.free_frames != inventory.usable_frames
     {
         return Err(BootstrapError::InvalidFrameOwnership);
+    }
+    if !entry_in_image(entry, image_base, image_len) {
+        return Err(BootstrapError::EntryOutsideImage);
     }
     let snapshot = create_snapshot(
         image_base,
@@ -1878,7 +2042,26 @@ pub fn create_state(
         },
     ];
     let positions = CapabilityPositionTable::from_capabilities(&capabilities);
-    let state = BootstrapState {
+
+    // §14 步骤 2：以 image_frames 建只允许 {R,X} 的 image Segment（pool=CPU）。
+    let mut segments = [None; MAX_SEGMENT_OBJECTS];
+    segments[0] = Some(SegmentObject {
+        id: IMAGE_CAP_ID,
+        creator: INIT_TASK_ID,
+        pool: crate::frames::Pool::Cpu,
+        frames_base: inventory.kernel_phys_start,
+        frame_count: inventory.image_frames,
+        allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
+    });
+    // §14 步骤 3：建空 init Namespace。
+    let mut namespaces = [None; MAX_NAMESPACE_OBJECTS];
+    namespaces[0] = Some(NamespaceObject {
+        id: NAMESPACE_CAP_ID,
+        creator: INIT_TASK_ID,
+        entries: 0,
+    });
+
+    let mut state = BootstrapState {
         snapshot,
         capabilities,
         positions,
@@ -1894,11 +2077,71 @@ pub fn create_state(
         },
         exc_sources: ExcSourceTable::empty(),
         exc_boot: None,
+        segments,
+        segment_count: 1,
+        namespaces,
+        namespace_count: 1,
+        // §14 步骤 9 / W14：bootstrap 成功即置位。
+        booted: true,
+        boot_record: Some(BootstrapRecord {
+            caps: INITIAL_CAPABILITY_COUNT,
+            segments: 1,
+            namespaces: 1,
+            booted: true,
+            initial_status_ready: true,
+            entry_in_image: true,
+            root_ns_cap: NAMESPACE_CAP_ID,
+            init_running: false,
+        }),
     };
+    // §14 步骤 9 / §13.1：写第一组 Audit 事件。
+    state.audit.append(AuditEvent::Bootstrapped);
+    state.audit.append(AuditEvent::ObjectCreated {
+        object_id: IMAGE_CAP_ID,
+        segment: true,
+    });
+    state.audit.append(AuditEvent::ObjectCreated {
+        object_id: NAMESPACE_CAP_ID,
+        segment: false,
+    });
+    state.audit.append(AuditEvent::TaskStateChanged {
+        task_id: INIT_TASK_ID,
+        status: TaskStatus::Ready,
+    });
     state
         .validate_authority()
         .map_err(|_| BootstrapError::InvalidAuthority)?;
     Ok(state)
+}
+
+/// 是否已安装 Bootstrap 状态（W14 幂等判定）。
+pub fn is_installed() -> bool {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot).is_some()
+    }
+}
+
+/// 切片 P：读取初始 Authority 见证记录（未安装或无记录时报错）。
+pub fn authority_record() -> Result<BootstrapRecord, BootstrapError> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        match (*slot).as_ref().and_then(|state| state.boot_record) {
+            Some(record) => Ok(record),
+            None => Err(BootstrapError::InvalidAuthority),
+        }
+    }
+}
+
+/// §14 步骤 8 + W13：首次调度 init——`Ready → Running` 并追加 `TaskStateChanged`。
+pub fn activate_init() -> Result<(), BootstrapError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.activate_init(),
+            None => Err(BootstrapError::InvalidAuthority),
+        }
+    }
 }
 
 /// 切片 K：全局 Bootstrap 授权表的存储（单核 boot 早期安装一次）。
@@ -1913,7 +2156,7 @@ pub fn install(state: BootstrapState) {
 }
 
 /// 查询全局授权表：`caller` 是否持有 `cap_id` 且具备 `right`。
-pub fn authorize(caller: u32, cap_id: u32, right: &str) -> Result<u32, AuthError> {
+pub fn authorize(caller: u32, cap_id: u32, right: Right) -> Result<u32, AuthError> {
     unsafe {
         let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
         match (*slot).as_ref() {
@@ -2044,10 +2287,80 @@ mod tests {
         AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityPositionError,
         DeriveError, EXC_SOURCE_RIGHTS, ExcError, ExcKind, IMAGE_CAP_ID, IMAGE_RIGHTS,
         INIT_TASK_ID, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR,
-        NAMESPACE_RIGHTS, PAGE_FAULT_SOURCE_ID, SYSCALL_TRAP_SOURCE_ID, TASK_RIGHTS, TaskError,
-        TaskStatus, create_snapshot, create_state,
+        NAMESPACE_CAP_ID, NAMESPACE_RIGHTS, PAGE_FAULT_SOURCE_ID, SYSCALL_TRAP_SOURCE_ID,
+        TASK_RIGHTS, TaskError, TaskStatus, create_snapshot, create_state, entry_in_image,
     };
     use crate::mem::FrameInventory;
+    use crate::rights::{ObjectKind, Right, Rights};
+
+    /// 测试用权限解析（非法串直接 panic，暴露出测试自身的错误）。
+    fn rights(text: &str) -> Rights {
+        Rights::parse(text).expect("test rights text parses")
+    }
+
+    #[test]
+    fn initial_authority_rights_are_well_typed_and_finite() {
+        // SPEC-061：三组初始权限必须与目标对象类型匹配（§4.1），且不含通配符。
+        assert!(IMAGE_RIGHTS.well_typed(ObjectKind::Segment));
+        assert!(NAMESPACE_RIGHTS.well_typed(ObjectKind::Namespace));
+        assert!(TASK_RIGHTS.well_typed(ObjectKind::Task));
+        // 反向：Namespace 权限不得通过 Segment/Task 的类型匹配。
+        assert!(!NAMESPACE_RIGHTS.well_typed(ObjectKind::Segment));
+        assert!(!NAMESPACE_RIGHTS.well_typed(ObjectKind::Task));
+        // 有限集合：Namespace 权限字段数与 §14 列举一致（Derive + 6 个 Ns*）。
+        assert_eq!(NAMESPACE_RIGHTS.count(), 7);
+        assert_eq!(IMAGE_RIGHTS.count(), 4);
+        assert_eq!(TASK_RIGHTS.count(), 4);
+        assert!(Rights::parse("all").is_err());
+    }
+
+    #[test]
+    fn entry_must_lie_inside_the_image_range() {
+        assert!(entry_in_image(0x4000_0000, 0x4000_0000, 0x3000));
+        assert!(entry_in_image(0x4000_2fff, 0x4000_0000, 0x3000));
+        assert!(!entry_in_image(0x4000_3000, 0x4000_0000, 0x3000));
+        assert!(!entry_in_image(0x3fff_ffff, 0x4000_0000, 0x3000));
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        assert_eq!(
+            create_state(0x4000_0000, 0x3000, 0x5000_0000, &inventory),
+            Err(BootstrapError::EntryOutsideImage)
+        );
+    }
+
+    #[test]
+    fn init_starts_ready_and_activation_appends_a_state_change() {
+        let inventory = FrameInventory {
+            usable_frames: 16,
+            image_frames: 3,
+            free_frames: 16,
+            usable_regions: 1,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_3000,
+        };
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).unwrap().status,
+            TaskStatus::Ready
+        );
+        assert!(!state.boot_record.unwrap().init_running);
+        let before = state.audit.count;
+        state.activate_init().unwrap();
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).unwrap().status,
+            TaskStatus::Running
+        );
+        assert_eq!(state.audit.count, before + 1);
+        assert!(state.boot_record.unwrap().init_running);
+        // 二次激活必须失败（Ready 前置已不成立）。
+        assert_eq!(state.activate_init(), Err(BootstrapError::InvalidAuthority));
+    }
 
     #[test]
     fn snapshot_contains_exact_initial_authority() {
@@ -2088,7 +2401,7 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         assert_eq!(state.capabilities[0].object, InitialObject::ImageSegment);
         assert_eq!(state.capabilities[1].object, InitialObject::Namespace);
         assert_eq!(state.capabilities[2].object, InitialObject::InitTask);
@@ -2112,14 +2425,14 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state.positions.entries[0].as_mut().unwrap().active = false;
         assert_eq!(
             state.validate_authority(),
             Err(AuthorityError::PositionMismatch)
         );
 
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state.positions.entries[0].as_mut().unwrap().location =
             super::CapabilityLocation::HeldByTask(99);
         assert_eq!(
@@ -2127,11 +2440,13 @@ mod tests {
             Err(AuthorityError::InvalidHolder)
         );
 
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state
-            .derive_capability(IMAGE_CAP_ID, 4, INIT_TASK_ID, "SegMapR")
+            .derive_capability(IMAGE_CAP_ID, 4, INIT_TASK_ID, rights("SegMapR"))
             .unwrap();
-        state.derivations.entries[0].as_mut().unwrap().rights = "all";
+        // 越权：把子权限改成非父权限子集（SegMapR ⊂ 父，TaskSend 不在父内）。
+        state.derivations.entries[0].as_mut().unwrap().rights =
+            Rights::from_rights(&[Right::SegMapR, Right::TaskSend]);
         assert_eq!(
             state.validate_authority(),
             Err(AuthorityError::RightsEscalation)
@@ -2149,7 +2464,7 @@ mod tests {
             kernel_phys_end: 0x1000_3000,
         };
         assert_eq!(
-            create_state(0x4000_0000, 0x3000, &inventory),
+            create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory),
             Err(BootstrapError::InvalidFrameOwnership)
         );
     }
@@ -2164,7 +2479,7 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state.move_capability(1, INIT_TASK_ID, 2).unwrap();
         assert!(
             state.audit.entries[..state.audit.count]
@@ -2191,20 +2506,20 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         let mut state = state;
         state
-            .derive_capability(1, 4, INIT_TASK_ID, "Derive,SegMapR")
+            .derive_capability(1, 4, INIT_TASK_ID, rights("Derive,SegMapR"))
             .unwrap();
         assert_eq!(state.derivations.entries[0].unwrap().parent, 1);
         assert_eq!(state.positions.count, INITIAL_CAPABILITY_COUNT as usize + 1);
         assert!(state.positions.has_unique_active_locations());
         assert_eq!(
-            state.derive_capability(1, 5, INIT_TASK_ID, "SegMapW"),
+            state.derive_capability(1, 5, INIT_TASK_ID, rights("SegMapW")),
             Err(DeriveError::RightsEscalation)
         );
         assert_eq!(
-            state.derive_capability(1, 4, INIT_TASK_ID, "Derive"),
+            state.derive_capability(1, 4, INIT_TASK_ID, rights("Derive")),
             Err(DeriveError::DuplicateCapability)
         );
         state.positions.move_to_task(4, INIT_TASK_ID, 2).unwrap();
@@ -2213,13 +2528,13 @@ mod tests {
 
         for child in 10..17 {
             state
-                .derive_capability(1, child, INIT_TASK_ID, "Derive")
+                .derive_capability(1, child, INIT_TASK_ID, rights("Derive"))
                 .unwrap();
         }
         assert_eq!(state.derivations.count, 8);
         assert_eq!(state.positions.count, 11);
         assert_eq!(
-            state.derive_capability(1, 17, INIT_TASK_ID, "Derive"),
+            state.derive_capability(1, 17, INIT_TASK_ID, rights("Derive")),
             Err(DeriveError::CapacityExceeded)
         );
     }
@@ -2234,11 +2549,11 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state
-            .derive_capability(1, 4, INIT_TASK_ID, "Derive,SegMapR")
+            .derive_capability(1, 4, INIT_TASK_ID, rights("Derive,SegMapR"))
             .unwrap();
-        state.derive_capability(4, 5, 2, "Derive").unwrap();
+        state.derive_capability(4, 5, 2, rights("Derive")).unwrap();
         assert_eq!(
             state.revoke_capability(1, 2),
             Err(CapabilityPositionError::HolderMismatch)
@@ -2269,9 +2584,11 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
-        state.derive_capability(1, 4, 2, "Derive,SegMapR").unwrap();
-        state.derive_capability(4, 5, 2, "Derive").unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        state
+            .derive_capability(1, 4, 2, rights("Derive,SegMapR"))
+            .unwrap();
+        state.derive_capability(4, 5, 2, rights("Derive")).unwrap();
         assert_eq!(state.revoke_task_capabilities(2), Ok(1));
         assert!(!state.derivations.entries[0].unwrap().active);
         assert!(!state.derivations.entries[1].unwrap().active);
@@ -2293,9 +2610,12 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        state.activate_init().unwrap();
         state.create_task(2).unwrap();
-        state.derive_capability(1, 4, 2, "Derive,SegMapR").unwrap();
+        state
+            .derive_capability(1, 4, 2, rights("Derive,SegMapR"))
+            .unwrap();
         assert_eq!(state.tasks.entries[0].unwrap().status, TaskStatus::Running);
         state.schedule_task(2).unwrap_err();
         state.yield_task(INIT_TASK_ID).unwrap();
@@ -2322,7 +2642,8 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        state.activate_init().unwrap();
         state.create_task(2).unwrap();
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
         assert_eq!(
@@ -2363,7 +2684,8 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        state.activate_init().unwrap();
         state.create_task(2).unwrap();
         assert_eq!(
             state.send_message(2, INIT_TASK_ID, 7),
@@ -2371,7 +2693,7 @@ mod tests {
         );
         assert_eq!(state.ipc.count, 0);
         state
-            .derive_capability(super::TASK_CAP_ID, 4, 2, "TaskSend")
+            .derive_capability(super::TASK_CAP_ID, 4, 2, rights("TaskSend"))
             .unwrap();
         state.send_message(2, INIT_TASK_ID, 9).unwrap();
         assert_eq!(state.receive_message(INIT_TASK_ID).unwrap().payload, 9);
@@ -2387,20 +2709,23 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
+        state.activate_init().unwrap();
         state.create_task(2).unwrap();
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
         state
             .send_message_with_capabilities(INIT_TASK_ID, 2, 55, &[1])
             .unwrap();
         assert_eq!(state.ipc.count, 0);
-        assert_eq!(state.audit.count, 2);
+        // 前 5 条是 SPEC-061 的初始 Authority 审计（Bootstrapped、两个 ObjectCreated、
+        // Ready/Running 两次 TaskStateChanged），此处只验证新增的最后两条。
+        assert_eq!(state.audit.count, 7);
         assert!(matches!(
-            state.audit.entries[0],
+            state.audit.entries[state.audit.count - 2],
             Some(AuditEvent::MessageSent { message_id: 1, .. })
         ));
         assert!(matches!(
-            state.audit.entries[1],
+            state.audit.entries[state.audit.count - 1],
             Some(AuditEvent::MessageReceived { message_id: 1, .. })
         ));
         assert_eq!(
@@ -2424,18 +2749,25 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        create_state(0x4000_0000, 0x3000, &inventory).unwrap()
+        create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap()
     }
 
     #[test]
     fn authorize_grants_held_capability_with_right() {
         let state = authorized_state();
         assert_eq!(
-            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapR"),
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, Right::SegMapR),
             Ok(1)
         );
-        // namespace 的权限为 "all"，任意权限均可。
-        assert_eq!(state.authorize(INIT_TASK_ID, 2, "SegMapW"), Ok(2));
+        // SPEC-061：Namespace cap 改为规范的有限权限集；Segment 权限不再被通配符放行。
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, NAMESPACE_CAP_ID, Right::NsResolve),
+            Ok(2)
+        );
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, NAMESPACE_CAP_ID, Right::SegMapW),
+            Err(AuthError::MissingRight)
+        );
     }
 
     #[test]
@@ -2443,7 +2775,7 @@ mod tests {
         let state = authorized_state();
         // 初始 image cap 只有 SegMapR/MapX/Destroy，没有 SegMapW。
         assert_eq!(
-            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapW"),
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, Right::SegMapW),
             Err(AuthError::MissingRight)
         );
     }
@@ -2452,7 +2784,7 @@ mod tests {
     fn authorize_reports_unknown_capability() {
         let state = authorized_state();
         assert_eq!(
-            state.authorize(INIT_TASK_ID, 999, "SegMapR"),
+            state.authorize(INIT_TASK_ID, 999, Right::SegMapR),
             Err(AuthError::NoSuchCapability)
         );
     }
@@ -2461,7 +2793,7 @@ mod tests {
     fn authorize_rejects_non_holder() {
         let state = authorized_state();
         assert_eq!(
-            state.authorize(2, IMAGE_CAP_ID, "SegMapR"),
+            state.authorize(2, IMAGE_CAP_ID, Right::SegMapR),
             Err(AuthError::NotHolder)
         );
     }
@@ -2474,7 +2806,7 @@ mod tests {
             .drop_from_task(IMAGE_CAP_ID, INIT_TASK_ID)
             .unwrap();
         assert_eq!(
-            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, "SegMapR"),
+            state.authorize(INIT_TASK_ID, IMAGE_CAP_ID, Right::SegMapR),
             Err(AuthError::Inactive)
         );
     }
@@ -2488,7 +2820,7 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state.exc_source_create(ExcKind::PageFault).unwrap();
         state.exc_source_create(ExcKind::SyscallTrap).unwrap();
         state
@@ -2542,7 +2874,8 @@ mod tests {
             Err(ExcError::NoSuchSource)
         );
         // 缺少 ExcSubscribe：把源 cap 权限改窄后触发 MissingRight。
-        state.exc_sources.entries[0].as_mut().unwrap().cap_rights = "Derive";
+        state.exc_sources.entries[0].as_mut().unwrap().cap_rights =
+            Rights::from_rights(&[Right::Derive]);
         assert_eq!(
             state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
             Err(ExcError::MissingRight)
@@ -2647,7 +2980,7 @@ mod tests {
             kernel_phys_start: 0x1000_0000,
             kernel_phys_end: 0x1000_3000,
         };
-        let mut state = create_state(0x4000_0000, 0x3000, &inventory).unwrap();
+        let mut state = create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory).unwrap();
         state.platform_init().unwrap();
         let boot = state.exc_boot.unwrap();
         assert_eq!(boot.delivered, 1);

@@ -27,6 +27,7 @@ use crate::bootstrap::{
 use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
+use crate::rights::Right;
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
 use crate::vspace::{self, PT_PRESENT, PT_USER};
@@ -153,11 +154,11 @@ pub const fn errno_name(errno: Errno) -> &'static str {
     }
 }
 
-/// 权限编码到权限名的映射（纯函数，host 可测）。
-pub const fn right_name(code: u64) -> Option<&'static str> {
+/// 权限编码到 [`Right`] 的映射（纯函数，host 可测）。
+pub const fn right_of(code: u64) -> Option<Right> {
     match code {
-        RIGHT_SEGMAPR => Some("SegMapR"),
-        RIGHT_SEGMAPW => Some("SegMapW"),
+        RIGHT_SEGMAPR => Some(Right::SegMapR),
+        RIGHT_SEGMAPW => Some(Right::SegMapW),
         _ => None,
     }
 }
@@ -172,7 +173,7 @@ pub const fn auth_errno(error: AuthError) -> Errno {
 
 /// 切片 K：授权查询服务——查 Bootstrap 授权表并编码结果。
 fn authorize_call(cap_id: u64, right_code: u64) -> u64 {
-    let Some(right) = right_name(right_code) else {
+    let Some(right) = right_of(right_code) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::authorize(sched::current(), cap_id as u32, right) {
@@ -1368,10 +1369,11 @@ mod tests {
     }
 
     #[test]
-    fn right_name_maps_known_codes() {
-        assert_eq!(right_name(RIGHT_SEGMAPR), Some("SegMapR"));
-        assert_eq!(right_name(RIGHT_SEGMAPW), Some("SegMapW"));
-        assert_eq!(right_name(0), None);
+    fn right_of_maps_known_codes() {
+        assert_eq!(right_of(RIGHT_SEGMAPR), Some(Right::SegMapR));
+        assert_eq!(right_of(RIGHT_SEGMAPW), Some(Right::SegMapW));
+        assert_eq!(right_of(0xDEAD), None);
+        assert_eq!(right_of(0), None);
     }
 
     #[test]

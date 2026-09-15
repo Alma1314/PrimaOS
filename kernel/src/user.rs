@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::INIT_TASK_ID;
 use crate::exc::SretFrame;
+use crate::frames;
 use crate::gdt::{USER_CS, USER_DS};
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::sched;
@@ -471,7 +472,8 @@ fn write_qword(va: u64, value: u64) {
 /// 清空两个用户槽，随后由调用方把自己的用户页映射进来。同 VA 在不同任务根下指向不同帧。
 fn build_task_root(boot_root: u64, offset: u64) -> Result<u64, VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
-    let task_root = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    // S1-X3：任务根页表帧是**保留页表帧**，不是任何 Segment 的数据帧。
+    let task_root = frames::allocate_table_frame().map_err(|_| VspaceError::NoFrame)?;
     // clone_root 覆写全部 512 项，故无需先清零。
     vspace::clone_root(boot_root, task_root, map);
     vspace::zero_slot(task_root, USER_SLOT, map);
@@ -495,10 +497,21 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         }
     }
 
-    let code = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-    let stack = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-    let x = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-    let y = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    // S1-X3：先登记四个 bring-up Segment，再逐个取帧，使每帧都有唯一归属。
+    for id in [
+        frames::SEG_TASK1_CODE,
+        frames::SEG_TASK1_STACK,
+        frames::SEG_TASK1_X,
+        frames::SEG_TASK1_Y,
+    ] {
+        frames::open_segment(id, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
+    }
+    let code =
+        frames::allocate_for_segment(frames::SEG_TASK1_CODE).map_err(|_| VspaceError::NoFrame)?;
+    let stack =
+        frames::allocate_for_segment(frames::SEG_TASK1_STACK).map_err(|_| VspaceError::NoFrame)?;
+    let x = frames::allocate_for_segment(frames::SEG_TASK1_X).map_err(|_| VspaceError::NoFrame)?;
+    let y = frames::allocate_for_segment(frames::SEG_TASK1_Y).map_err(|_| VspaceError::NoFrame)?;
 
     let code_bytes = user_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
@@ -517,7 +530,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER_CODE_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         code,
         false,
         true,
@@ -526,7 +539,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER_STACK_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         stack,
         true,
         true,
@@ -536,7 +549,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER_X_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         x,
         false,
         true,
@@ -545,7 +558,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER_Y_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         y,
         true,
         true,
@@ -582,9 +595,18 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         }
     }
 
-    let code = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-    let stack = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-    let y = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    for id in [
+        frames::SEG_TASK2_CODE,
+        frames::SEG_TASK2_STACK,
+        frames::SEG_TASK2_Y,
+    ] {
+        frames::open_segment(id, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
+    }
+    let code =
+        frames::allocate_for_segment(frames::SEG_TASK2_CODE).map_err(|_| VspaceError::NoFrame)?;
+    let stack =
+        frames::allocate_for_segment(frames::SEG_TASK2_STACK).map_err(|_| VspaceError::NoFrame)?;
+    let y = frames::allocate_for_segment(frames::SEG_TASK2_Y).map_err(|_| VspaceError::NoFrame)?;
 
     let code_bytes = task2_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
@@ -599,7 +621,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER2_CODE_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         code,
         false,
         true,
@@ -608,7 +630,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER2_STACK_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         stack,
         true,
         true,
@@ -617,7 +639,7 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         task_root,
         USER2_Y_VA,
         map,
-        crate::cow::alloc_frame,
+        || frames::allocate_table_frame().ok(),
         y,
         true,
         true,
@@ -642,9 +664,24 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
     let root1 = sched::root(INIT_TASK_ID).ok_or(VspaceError::BadRoot)?;
     let root2 = sched::root(TASK2_ID).ok_or(VspaceError::BadRoot)?;
 
-    for (task_id, root) in [(INIT_TASK_ID, root1), (TASK2_ID, root2)] {
-        let code = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
-        let data = crate::cow::alloc_frame().ok_or(VspaceError::NoFrame)?;
+    for (task_id, root, code_seg, data_seg) in [
+        (
+            INIT_TASK_ID,
+            root1,
+            frames::SEG_SPIN1_CODE,
+            frames::SEG_SPIN1_DATA,
+        ),
+        (
+            TASK2_ID,
+            root2,
+            frames::SEG_SPIN2_CODE,
+            frames::SEG_SPIN2_DATA,
+        ),
+    ] {
+        frames::open_segment(code_seg, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
+        frames::open_segment(data_seg, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
+        let code = frames::allocate_for_segment(code_seg).map_err(|_| VspaceError::NoFrame)?;
+        let data = frames::allocate_for_segment(data_seg).map_err(|_| VspaceError::NoFrame)?;
 
         let bytes = spin_code(task_id as u64);
         for (index, &byte) in bytes.iter().enumerate() {
@@ -658,7 +695,7 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
             root,
             SPIN_CODE_VA,
             map,
-            crate::cow::alloc_frame,
+            || frames::allocate_table_frame().ok(),
             code,
             false,
             true,
@@ -667,7 +704,7 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
             root,
             SPIN_DATA_VA,
             map,
-            crate::cow::alloc_frame,
+            || frames::allocate_table_frame().ok(),
             data,
             true,
             true,

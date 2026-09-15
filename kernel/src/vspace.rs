@@ -241,24 +241,33 @@ pub struct Witness {
 ///
 /// 步骤：分配 A/B 两帧并写入魔数 → 建 `VA→A` 映射并读回 → 改叶 `VA→B` 观察刷新
 /// 前后的读值 → `cpu::translate` 对账 → 改叶为只读并触发真实写保护 #PF。
-pub fn run_witness(
-    root_phys: u64,
-    offset: u64,
-    mut alloc: impl FnMut() -> Option<u64>,
-) -> Result<Witness, VspaceError> {
+pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> {
     let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
     if !slot_free(root_phys, VSPACE_VA, map) {
         return Err(VspaceError::SlotOccupied);
     }
 
-    let frame_a = alloc().ok_or(VspaceError::NoFrame)?;
-    let frame_b = alloc().ok_or(VspaceError::NoFrame)?;
+    // S1-X3：A/B 是数据帧，归入见证 Segment；页表帧走保留类。
+    crate::frames::open_segment(crate::frames::SEG_VSPACE, crate::frames::Pool::Cpu)
+        .map_err(|_| VspaceError::NoFrame)?;
+    let frame_a = crate::frames::allocate_for_segment(crate::frames::SEG_VSPACE)
+        .map_err(|_| VspaceError::NoFrame)?;
+    let frame_b = crate::frames::allocate_for_segment(crate::frames::SEG_VSPACE)
+        .map_err(|_| VspaceError::NoFrame)?;
     zero_table(map(frame_a));
     zero_table(map(frame_b));
     write_raw(map(frame_a), MAGIC_A);
     write_raw(map(frame_b), MAGIC_B);
 
-    map_4k(root_phys, VSPACE_VA, map, &mut alloc, frame_a, true, false)?;
+    map_4k(
+        root_phys,
+        VSPACE_VA,
+        map,
+        || crate::frames::allocate_table_frame().ok(),
+        frame_a,
+        true,
+        false,
+    )?;
     unsafe { invlpg(VSPACE_VA) };
     let read_before = read_raw(VSPACE_VA);
 

@@ -29,7 +29,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let regions: &[bootloader_api::info::MemoryRegion] = &boot_info.memory_regions;
     match mem::build_inventory(regions, boot_info.kernel_addr, boot_info.kernel_len) {
         Ok(inventory) => {
-            let mut allocator = match kernel::mem::FreeFrameAllocator::from_regions(
+            let allocator = match kernel::mem::FreeFrameAllocator::from_regions(
                 regions,
                 inventory.kernel_phys_start,
                 inventory.kernel_phys_end,
@@ -41,6 +41,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     qemu::exit(qemu::PANIC)
                 }
             };
+            // S1-X3：安装全局帧注册表——此后所有取帧都必须带 Segment 或页表帧归属。
+            if kernel::frames::install(&inventory, allocator).is_err() {
+                protocol::panic_event();
+                serial::flush();
+                qemu::exit(qemu::PANIC)
+            }
             protocol::memory_ready(&inventory);
 
             // B1: 启用物理直映射后，读 boot info 的物理内存偏移；若为 None 说明配置未生效。
@@ -124,6 +130,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     match kernel::bootstrap::create_state(
                                         boot_info.kernel_image_offset,
                                         boot_info.kernel_len,
+                                        kernel_main as *const () as u64,
                                         &inventory,
                                     ) {
                                         Ok(state) => {
@@ -148,9 +155,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
                                     // E：在空闲 PML4 槽自建一条映射，见证真实 PTE 翻译、
                                     // 重映射 + invlpg 刷新，以及一次真实写保护 #PF。
-                                    match kernel::vspace::run_witness(pml4_phys, offset, || {
-                                        allocator.allocate().ok()
-                                    }) {
+                                    match kernel::vspace::run_witness(pml4_phys, offset) {
                                         Ok(witness) => protocol::vspace_ready(&witness),
                                         Err(_) => {
                                             protocol::panic_event();
@@ -161,9 +166,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
                                     // F：真实 COW —— 只读映射写故障 → 逐字节复制 →
                                     // 换映射可写 → 重试原故障指令成功。
-                                    if kernel::cow::prepare(&mut allocator, pml4_phys, offset)
-                                        .is_err()
-                                    {
+                                    if kernel::cow::prepare(pml4_phys, offset).is_err() {
                                         protocol::panic_event();
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
@@ -202,6 +205,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();
+                                    // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
+                                    if kernel::bootstrap::activate_init().is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     kernel::user::enter();
                                 }
                                 Err(_) => {
