@@ -1,0 +1,45 @@
+#!/bin/busybox sh
+#
+# 切片 P：参考 Linux guest 的 initramfs init。
+#
+# 挂 tracefs、开启 `exceptions:page_fault_user`、运行 cow_write_fault，
+# 然后把内核 trace buffer dump 到串口，最后 poweroff（QEMU 据此退出 0）。
+#
+# 若 tracepoint 不存在，打印 `LINUX|error=no_page_fault_tracepoint` 并以非零意图退出，
+# 由 xtask 侧归一化判失败（不得降级为“通过”）。
+/bin/busybox --install -s /bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+if ! mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null; then
+    mount -t debugfs debugfs /sys/kernel/debug
+fi
+
+TRACE=/sys/kernel/tracing
+[ -d "$TRACE/events" ] || TRACE=/sys/kernel/debug/tracing
+echo "LINUX|marker=tracefs;path=$TRACE"
+
+if [ ! -e "$TRACE/events/exceptions/page_fault_user/enable" ]; then
+    echo "LINUX|error=no_page_fault_tracepoint"
+    sync
+    poweroff -f
+    sleep 5
+    echo "LINUX|error=poweroff_failed"
+fi
+
+echo 0 > "$TRACE/tracing_on"
+echo > "$TRACE/trace"
+echo 1 > "$TRACE/events/exceptions/page_fault_user/enable"
+echo 1 > "$TRACE/tracing_on"
+
+echo "LINUX|marker=begin"
+/cow_write_fault
+echo "LINUX|marker=end"
+
+echo 0 > "$TRACE/tracing_on"
+cat "$TRACE/trace"
+echo "LINUX|marker=dump_end"
+
+sync
+poweroff -f
+sleep 5
+echo "LINUX|error=poweroff_failed"

@@ -49,14 +49,14 @@ const MAGIC_B: u64 = 0xbbbb_0000_3333_4444;
 const COW_VA: u64 = 0x0000_0800_0000_0000;
 const COW_PATTERN_WORDS: u64 = 512;
 
-fn cow_pattern(index: u64) -> u64 {
+pub(crate) fn cow_pattern(index: u64) -> u64 {
     0xC0FF_EE00_0000_0000 | index
 }
 
 /// 切片 G：ring3 用户任务的镜像常量，与 `kernel/src/user.rs` 一致（跨 crate 需人工同步）。
 const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
 const USER_X_VA: u64 = USER_BASE_VA + 0x2000;
-const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
+pub(crate) const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 /// #PF error code 的 US 位（bit 2）：置位表示故障来自 CPL3。
 const PF_US: u64 = 1 << 2;
 

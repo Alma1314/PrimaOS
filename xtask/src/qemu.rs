@@ -15,10 +15,10 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const QEMU_INSTALL_COMMAND: &str =
     "winget install --id SoftwareFreedomConservancy.QEMU --exact --version 11.0.50";
 
-struct CapturedOutput {
-    status: ExitStatus,
-    stdout: String,
-    stderr: String,
+pub(crate) struct CapturedOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 #[derive(Debug)]
@@ -64,10 +64,31 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
+/// 用固定 BIOS 参数捕获一次运行（切片 A/B 的既有路径）。
 fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
+    run_captured_with(qemu_args(image), TEST_TIMEOUT)
+}
+
+/// 切片 P：跑一次 BIOS 镜像并返回已通过退出码与事件序列校验的串口输出，
+/// 供差分比较器提取 `user_cow_ready` 观测。校验语义与 `run_bios_test` 完全一致。
+pub(crate) fn run_bios_capture(image: &Path) -> Result<String, String> {
+    let output = run_captured(image)?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    Ok(output.stdout)
+}
+
+/// 通用 QEMU 捕获运行器：给定完整参数与超时，返回退出状态与双流输出。
+///
+/// 切片 P 的参考 Linux guest 复用此入口（`-kernel`/`-initrd` 参数、独立 180s 超时）。
+pub(crate) fn run_captured_with(
+    args: Vec<OsString>,
+    timeout: Duration,
+) -> Result<CapturedOutput, String> {
     let qemu = locate_qemu()?;
     let mut child = Command::new(&qemu)
-        .args(qemu_args(image))
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -88,7 +109,7 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < TEST_TIMEOUT => {
+            Ok(None) if started.elapsed() < timeout => {
                 thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
@@ -98,13 +119,13 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
                         let streams = join_readers(stdout_reader, stderr_reader);
                         Err(format!(
                             "QEMU timed out after {}s; {cleanup}\n{}",
-                            TEST_TIMEOUT.as_secs(),
+                            timeout.as_secs(),
                             streams.diagnostics()
                         ))
                     }
                     Err(cleanup) => Err(format!(
                         "QEMU timed out after {}s; {cleanup}; reader threads were not joined because QEMU may still be running",
-                        TEST_TIMEOUT.as_secs()
+                        timeout.as_secs()
                     )),
                 };
             }
@@ -135,7 +156,7 @@ fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
         })
 }
 
-fn locate_qemu() -> Result<PathBuf, String> {
+pub(crate) fn locate_qemu() -> Result<PathBuf, String> {
     let executable = if cfg!(windows) {
         "qemu-system-x86_64.exe"
     } else {

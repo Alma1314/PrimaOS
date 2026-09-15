@@ -1,0 +1,8 @@
+# 参考 Linux trace 来源声明（切片 P）
+kernel_package = "linux-image-6.8.0-31-generic"
+kernel_deb = "linux-image-6.8.0-31-generic_6.8.0-31.31_amd64.deb"
+kernel_deb_sha512 = "aac8e72ff30d9b077bb3cf1f9bda5a1afc72c75bdd93e1eb2554c2c8fbcdad61747ad13d01870e24ca995d72a164bd8748edea09e5bb350360cab05595029097"
+qemu = "QEMU emulator version 8.2.2 (Debian 1:8.2.2+ds-0ubuntu1.18)"
+accel = "kvm"
+guest_append = "console=ttyS0 rdinit=/init quiet"
+generated = "2026-09-15"
