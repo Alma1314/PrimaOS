@@ -155,6 +155,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 serial::flush();
                                                 qemu::exit(qemu::PANIC)
                                             }
+                                            // S：播种用户 IPC 见证的两条 cap（task 1 的发送权、
+                                            // task 2 的自管理权）。
+                                            if kernel::bootstrap::prepare_user_ipc_caps().is_err() {
+                                                protocol::panic_event();
+                                                serial::flush();
+                                                qemu::exit(qemu::PANIC)
+                                            }
                                         }
                                         Err(_) => {
                                             protocol::panic_event();

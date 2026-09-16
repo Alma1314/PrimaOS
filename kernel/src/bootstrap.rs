@@ -372,7 +372,7 @@ impl TaskTable {
 }
 
 const MAX_MESSAGES: usize = 8;
-const MAX_MESSAGE_CAPABILITIES: usize = 2;
+pub const MAX_MESSAGE_CAPABILITIES: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IpcMessage {
@@ -1131,6 +1131,23 @@ pub const PLATFORM_TASK_RIGHTS: Rights =
     Rights::from_rights(&[Right::Derive, Right::TaskManageVSpace]);
 /// 用户创建 Segment 的槽位起点（平台区间之后）。
 pub const USER_SEGMENT_ID_FIRST: u32 = PLATFORM_SEGMENT_ID_LAST + 1;
+
+/// 切片 S：用户 IPC 见证所需 Capability 的槽位基址（47 = task 1 的发送权，48 = task 2 的自管理权）。
+///
+/// 避开 1..5（初始根/异常源）、6/7/8（ring3 见证程序内嵌句柄）、32..46（平台 cap）与
+/// `UNSET_CAP`(60)。这两条是**新增铸造**，不动内核持有的平台 cap。
+pub const USER_IPC_CAP_SLOT_BASE: u32 =
+    PLATFORM_TASK_CAP_SLOT_BASE + PLATFORM_TASK_CAP_COUNT as u32;
+/// task 1 持有、目标 `Task(2)`、含 `TaskSend`：**发给 task 2 的授权凭证**。
+pub const TASK2_SEND_CAP_HANDLE: Handle =
+    cap_handle(USER_IPC_CAP_SLOT_BASE, INITIAL_CAP_GENERATION);
+/// task 2 持有、目标 `Task(2)`、含 `TaskManageVSpace`：把自己收到的共享段映射进自己的根。
+pub const TASK2_SELF_CAP_HANDLE: Handle =
+    cap_handle(USER_IPC_CAP_SLOT_BASE + 1, INITIAL_CAP_GENERATION);
+/// 发送权：只给 `TaskSend`（不含 `Derive`，不可自我复制）。
+pub const TASK2_SEND_RIGHTS: Rights = Rights::from_rights(&[Right::TaskSend]);
+/// 自管理权：只给 `TaskManageVSpace`。
+pub const TASK2_SELF_RIGHTS: Rights = Rights::from_rights(&[Right::TaskManageVSpace]);
 
 /// 平台 Segment id → 根 Capability 槽位。
 pub const fn platform_segment_cap_slot(id: u32) -> u32 {
@@ -2315,26 +2332,35 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// §8.2：发送一条不带 Capability 的消息。
+    ///
+    /// `send_cap` 必须是**指向 `receiver`** 且含 `TaskSend` 的 Task Capability——授权绑定接收者，
+    /// 不接受「持有任一 `TaskSend` cap 即可发给任意任务」的宽松判定。
     pub fn send_message(
         &mut self,
         sender: u32,
         receiver: u32,
+        send_cap: Handle,
         payload: u64,
     ) -> Result<(), IpcError> {
-        self.send_message_with_capabilities(sender, receiver, payload, &[])
+        self.send_message_with_capabilities(sender, receiver, send_cap, payload, &[])
     }
 
+    /// §8.2：发送一条（可携带 Capability 的）消息。授权与失败语义同上。
     pub fn send_message_with_capabilities(
         &mut self,
         sender: u32,
         receiver: u32,
+        send_cap: Handle,
         payload: u64,
         capability_ids: &[Handle],
     ) -> Result<(), IpcError> {
         if !self.tasks.is_live(sender) || !self.tasks.is_live(receiver) {
             return Err(IpcError::NoSuchTask);
         }
-        if !self.has_task_send_authority(sender) {
+        if self.authorize(sender, send_cap, Right::TaskSend).is_err()
+            || self.target_of(send_cap) != Some(ObjectRef::Task(receiver))
+        {
             return Err(IpcError::NotAuthorized);
         }
         if capability_ids.len() > MAX_MESSAGE_CAPABILITIES {
@@ -2439,16 +2465,12 @@ impl BootstrapState {
         }
     }
 
-    fn has_task_send_authority(&self, task_id: u32) -> bool {
-        self.positions
-            .entries
-            .iter()
-            .flatten()
-            .filter(|position| position.location == CapabilityLocation::HeldByTask(task_id))
-            .any(|position| {
-                self.rights_of(position.handle)
-                    .is_some_and(|rights| rights.contains(Right::TaskSend))
-            })
+    /// 一句柄是否指向某个 Task（`send_call`/`memseg_*` 的 root 派生用）。
+    pub fn task_of_cap(&self, cap: Handle) -> Option<u32> {
+        match self.target_of(cap) {
+            Some(ObjectRef::Task(task_id)) => Some(task_id),
+            _ => None,
+        }
     }
 }
 
@@ -2701,6 +2723,29 @@ impl BootstrapState {
             )
             .map_err(|_| MemsegError::CapacityExceeded)?;
         }
+        Ok(())
+    }
+
+    /// 切片 S：播种用户 IPC 见证所需的两条 Capability。
+    ///
+    /// 均**新增铸造**（不动内核持有的平台 cap，故 `platform_segments_record().task_caps` 仍为 2）：
+    /// task 1 得 `Task(2)`+`TaskSend`（发给 task 2 的授权凭证），task 2 得 `Task(2)`+`TaskManageVSpace`
+    /// （把自己收到的共享段映射进自己的根）。**不给任何任务对他方地址空间或消息通道的权限。**
+    pub fn prepare_user_ipc_caps(&mut self) -> Result<(), MemsegError> {
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            USER_IPC_CAP_SLOT_BASE,
+            TASK2_SEND_RIGHTS,
+            ObjectRef::Task(2),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(2),
+            USER_IPC_CAP_SLOT_BASE + 1,
+            TASK2_SELF_RIGHTS,
+            ObjectRef::Task(2),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
         Ok(())
     }
 
@@ -3414,6 +3459,84 @@ pub fn platform_prepare_task_caps() -> Result<(), MemsegError> {
     }
 }
 
+/// 切片 S：播种用户 IPC 见证所需的两条 Capability（须在 `platform_prepare_task_caps` 之后）。
+pub fn prepare_user_ipc_caps() -> Result<(), MemsegError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.prepare_user_ipc_caps(),
+            None => Err(MemsegError::NotInstalled),
+        }
+    }
+}
+
+/// 切片 S：句柄是否指向某个 Task（供 syscall 层派生目标根）。
+pub fn task_of_cap(cap: Handle) -> Option<u32> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        match (*slot).as_ref() {
+            Some(state) => state.task_of_cap(cap),
+            None => None,
+        }
+    }
+}
+
+/// 切片 S：接收者是否处于 `BlockedRecv`（供 `SYS_SEND` 判定投递路径）。
+pub fn is_blocked_recv_global(task_id: u32) -> bool {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        match (*slot).as_ref() {
+            Some(state) => state.tasks.is_blocked_recv(task_id),
+            None => false,
+        }
+    }
+}
+
+/// 切片 S：取走某个 Task 的 pending 消息（直投后由 `SYS_SEND` 消费，避免被后续 `SYS_RECV` 重复投递）。
+pub fn take_pending_global(task_id: u32) -> Option<IpcMessage> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.tasks.take_pending(task_id),
+            None => None,
+        }
+    }
+}
+
+/// 切片 S：全局发送（接收者绑定的授权在 `BootstrapState` 内完成）。
+pub fn send_message_with_capabilities(
+    sender: u32,
+    receiver: u32,
+    send_cap: Handle,
+    payload: u64,
+    capability_ids: &[Handle],
+) -> Result<(), IpcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.send_message_with_capabilities(
+                sender,
+                receiver,
+                send_cap,
+                payload,
+                capability_ids,
+            ),
+            None => Err(IpcError::NoSuchTask),
+        }
+    }
+}
+
+/// 切片 S：全局接收（空队列时会把接收者置为 `BlockedRecv`）。
+pub fn receive_message(receiver: u32) -> Result<IpcMessage, IpcError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.receive_message(receiver),
+            None => Err(IpcError::NoSuchTask),
+        }
+    }
+}
+
 /// 切片 R：读取平台段对象化见证记录（供 `platform_segments_ready` 事件）。
 pub fn platform_segments_record() -> Result<PlatformSegmentsRecord, BootstrapError> {
     unsafe {
@@ -3542,7 +3665,8 @@ mod tests {
         PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
         PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, SEGMENT_ROOT_RIGHTS,
         SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
-        TaskError, TaskStatus, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
+        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TaskError, TaskStatus,
+        USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
         entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
         platform_segment_is_direct,
     };
@@ -3940,22 +4064,111 @@ mod tests {
     }
 
     #[test]
+    fn ipc_send_authorization_is_bound_to_the_receiver() {
+        let mut state = fresh_state();
+        state.activate_init().unwrap();
+        state.create_task(2).unwrap();
+        state.prepare_user_ipc_caps().unwrap();
+        // 非持有者：task 2 不持有 init 的 Task(1) cap。
+        assert_eq!(
+            state.send_message(2, INIT_TASK_ID, TASK_CAP_HANDLE, 1),
+            Err(IpcError::NotAuthorized)
+        );
+        // 持有且含 TaskSend，但目标 `Task(2)` ≠ receiver(1)。
+        assert_eq!(
+            state.send_message(INIT_TASK_ID, INIT_TASK_ID, TASK2_SEND_CAP_HANDLE, 1),
+            Err(IpcError::NotAuthorized)
+        );
+        // 持有且目标匹配，但缺 `TaskSend`（自管理 cap 只含 `TaskManageVSpace`）。
+        assert_eq!(
+            state.send_message(2, 2, TASK2_SELF_CAP_HANDLE, 1),
+            Err(IpcError::NotAuthorized)
+        );
+        assert_eq!(state.ipc.count, 0);
+        // 唯一合法组合：持有、目标匹配、权限齐备。
+        state
+            .send_message(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 5)
+            .unwrap();
+        assert_eq!(state.receive_message(2).unwrap().payload, 5);
+    }
+
+    #[test]
+    fn user_ipc_caps_do_not_touch_platform_task_caps() {
+        let mut state = fresh_state();
+        state.activate_init().unwrap();
+        state.create_task(2).unwrap();
+        assert_eq!(state.platform_segments_record().task_caps, 0);
+        state.prepare_user_ipc_caps().unwrap();
+        // 新增铸造落在 47/48，平台记录的 task_caps（槽 45/46）不受影响。
+        assert_eq!(state.platform_segments_record().task_caps, 0);
+        assert_eq!(TASK2_SEND_CAP_HANDLE.index(), USER_IPC_CAP_SLOT_BASE);
+        assert_eq!(TASK2_SELF_CAP_HANDLE.index(), USER_IPC_CAP_SLOT_BASE + 1);
+        assert_eq!(state.holder_of(TASK2_SEND_CAP_HANDLE), Some(INIT_TASK_ID));
+        assert_eq!(state.holder_of(TASK2_SELF_CAP_HANDLE), Some(2));
+        for (handle, right) in [
+            (TASK2_SEND_CAP_HANDLE, Right::TaskSend),
+            (TASK2_SELF_CAP_HANDLE, Right::TaskManageVSpace),
+        ] {
+            assert_eq!(state.target_of(handle), Some(ObjectRef::Task(2)));
+            assert!(state.rights_of(handle).unwrap().contains(right));
+        }
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn queued_capability_position_keeps_authority_valid() {
+        let mut state = fresh_state();
+        state.activate_init().unwrap();
+        state.create_task(2).unwrap();
+        state.prepare_user_ipc_caps().unwrap();
+        // 接收者未阻塞 → 排队路径：cap 位置变成 `InMessage`。
+        state
+            .send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                7,
+                &[IMAGE_CAP_HANDLE],
+            )
+            .unwrap();
+        assert!(matches!(
+            state.positions.find(IMAGE_CAP_HANDLE).unwrap().location,
+            CapabilityLocation::InMessage(_)
+        ));
+        assert_eq!(state.validate_authority(), Ok(()));
+        // 承载消息消失而位置仍为 `InMessage` → 位置校验必须拒绝（此前该分支无测试）。
+        state.ipc.entries[0] = None;
+        state.ipc.count = 0;
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::PositionMismatch)
+        );
+    }
+
+    #[test]
     fn ipc_fifo_blocks_empty_receiver_wakes_and_cleans_on_destroy() {
         let mut state = fresh_state();
         state.activate_init().unwrap();
         state.create_task(2).unwrap();
+        state.prepare_user_ipc_caps().unwrap();
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
         assert_eq!(
             state.tasks.entries[1].unwrap().status,
             TaskStatus::BlockedRecv
         );
-        state.send_message(INIT_TASK_ID, 2, 11).unwrap();
+        state
+            .send_message(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 11)
+            .unwrap();
         assert_eq!(state.tasks.entries[1].unwrap().status, TaskStatus::Ready);
-        state.send_message(INIT_TASK_ID, 2, 22).unwrap();
+        state
+            .send_message(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 22)
+            .unwrap();
         assert_eq!(state.receive_message(2).unwrap().payload, 11);
         assert_eq!(state.receive_message(2).unwrap().payload, 22);
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
-        state.send_message(INIT_TASK_ID, 2, 33).unwrap();
+        state
+            .send_message(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 33)
+            .unwrap();
         state.yield_task(INIT_TASK_ID).unwrap();
         state.destroy_task(2).unwrap();
         assert_eq!(state.ipc.count, 0);
@@ -3978,8 +4191,9 @@ mod tests {
         let mut state = fresh_state();
         state.activate_init().unwrap();
         state.create_task(2).unwrap();
+        // 非持有者：task 2 不持有 init 的 Task cap。
         assert_eq!(
-            state.send_message(2, INIT_TASK_ID, 7),
+            state.send_message(2, INIT_TASK_ID, TASK_CAP_HANDLE, 7),
             Err(IpcError::NotAuthorized)
         );
         assert_eq!(state.ipc.count, 0);
@@ -3987,7 +4201,13 @@ mod tests {
             .derive_capability(INIT_TASK_ID, TASK_CAP_HANDLE, rights("TaskSend"))
             .unwrap();
         state.move_capability(send_cap, INIT_TASK_ID, 2).unwrap();
-        state.send_message(2, INIT_TASK_ID, 9).unwrap();
+        // 授权绑定接收者：该 cap 指向 `Task(1)`，发给 Task(2) 必须被拒。
+        assert_eq!(
+            state.send_message(2, 2, send_cap, 8),
+            Err(IpcError::NotAuthorized)
+        );
+        assert_eq!(state.ipc.count, 0);
+        state.send_message(2, INIT_TASK_ID, send_cap, 9).unwrap();
         assert_eq!(state.receive_message(INIT_TASK_ID).unwrap().payload, 9);
     }
 
@@ -3996,9 +4216,16 @@ mod tests {
         let mut state = fresh_state();
         state.activate_init().unwrap();
         state.create_task(2).unwrap();
+        state.prepare_user_ipc_caps().unwrap();
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
         state
-            .send_message_with_capabilities(INIT_TASK_ID, 2, 55, &[IMAGE_CAP_HANDLE])
+            .send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                55,
+                &[IMAGE_CAP_HANDLE],
+            )
             .unwrap();
         assert_eq!(state.ipc.count, 0);
         // 前 5 条是 SPEC-061 的初始 Authority 审计，此处只验证新增的最后两条。
@@ -4017,7 +4244,13 @@ mod tests {
         );
         assert_eq!(state.receive_message(2).unwrap().payload, 55);
         assert_eq!(
-            state.send_message_with_capabilities(INIT_TASK_ID, 2, 66, &[IMAGE_CAP_HANDLE]),
+            state.send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                66,
+                &[IMAGE_CAP_HANDLE]
+            ),
             Err(IpcError::CapabilityHolderMismatch)
         );
         assert_eq!(state.ipc.count, 0);

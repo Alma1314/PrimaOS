@@ -141,6 +141,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D3：Segment 原语（create/map/unmap/destroy + 清零 + stale）。
     let memseg = kernel::syscall::memseg_witness();
     protocol::memseg_ready(&memseg);
+    // 切片 S：IPC 用户化 + 两任务共享 Segment（S2-D5/S2-X2 主见证）。
+    let ipc = kernel::syscall::ipc_witness();
+    protocol::ipc_ready(&ipc);
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()

@@ -26,11 +26,12 @@ use crate::bootstrap::{
 };
 use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
+use crate::handle::Handle;
 use crate::mem::phys_to_virt;
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
-use crate::vspace::{self, PT_PRESENT, PT_USER};
+use crate::vspace::{self, PT_PRESENT, PT_USER, PT_WRITABLE};
 
 /// 合法 syscall 号：回显（`arg0 ^ ECHO_MASK`）。
 pub const SYS_ECHO: u64 = 1;
@@ -64,6 +65,13 @@ pub const SYS_MEMSEG_MAP: u64 = 14;
 pub const SYS_MEMSEG_UNMAP: u64 = 15;
 /// S2-D3：`memseg_destroy`（`args[0]=seg_cap`）。
 pub const SYS_MEMSEG_DESTROY: u64 = 16;
+/// 切片 S：`send`（`args[0]=receiver`、`args[1]=send cap`、`args[2]=payload`、
+/// `args[3]=cap_count`、`args[4]=cap0`、`args[5]=cap1`）。
+pub const SYS_SEND: u64 = 17;
+/// 切片 S：`recv`（`args[0]=out_ptr`，指向 3 个 qword：`cap0/cap1/cap_count`）。
+///
+/// 返回 payload；队列为空时阻塞并切走，被发送方直投唤醒后从保存帧 `rax` 取得 payload。
+pub const SYS_RECV: u64 = 18;
 
 /// S2-D3：用户创建 Segment 的映射 VA（PML4 槽 20 内、与既有区域不相交）。
 pub const USER_SEG_VA: u64 = USER_BASE_VA + 0x5000;
@@ -94,6 +102,43 @@ pub const MEMSEG_RECEIPT_UNMAP2: u64 = 320;
 pub const MEMSEG_RECEIPT_DESTROY2: u64 = 328;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
+
+/// 切片 S：task 1 里共享 Segment 的映射 VA（PML4 槽 20，与既有区两两不交）。
+pub const USER_SEG_SHARED_VA: u64 = USER_BASE_VA + 0x6000;
+/// 切片 S：task 2 里同一共享 Segment 的映射 VA（PML4 槽 21，task 2 只占 base..+0x2000）。
+pub const USER2_SHARED_VA: u64 = crate::user::USER2_BASE_VA + 0x3000;
+/// 切片 S：task 2 的接收缓冲（在已映射的可写 Y2 页内，24 字节：cap0/cap1/cap_count）。
+pub const USER2_RECV_BUF: u64 = crate::user::USER2_Y_VA + 0x100;
+/// 切片 S：task 2 第二次接收的缓冲（阻塞路径，被直投唤醒）。
+pub const USER2_RECV_BUF2: u64 = crate::user::USER2_Y_VA + 0x140;
+/// `SYS_RECV` 的 out 缓冲长度（cap0 + cap1 + cap_count）。
+pub const RECV_BUF_LEN: u64 = 24;
+/// 切片 S：task 1 写进共享段、task 2 读回的魔数（证明是**同一物理帧**）。
+pub const IPC_SHARED_MAGIC: u64 = 0x51A5_0000_0000_0001;
+/// 切片 S：直投（阻塞唤醒）路径的 payload。
+pub const IPC_DIRECT_PAYLOAD: u64 = 0xD1EC_7000_0000_0002;
+/// 切片 S：task 1 首个 `SYS_MEMSEG_CREATE` 的句柄（槽 8 gen1：槽 6/7 已被既有块占用且
+/// `memseg_destroy` 不释放 cap 槽，故下一空闲槽为 8）。
+pub const SHARED_SEG_CAP_HANDLE: u64 = 0x0000_0001_0000_0008;
+/// 切片 S：task 1 的发送凭证（目标 `Task(2)` + `TaskSend`，槽 47）。
+pub const TASK2_SEND_CAP: u64 = bootstrap::TASK2_SEND_CAP_HANDLE.encode();
+/// 切片 S：task 2 的自管理凭证（目标 `Task(2)` + `TaskManageVSpace`，槽 48）。
+pub const TASK2_SELF_CAP: u64 = bootstrap::TASK2_SELF_CAP_HANDLE.encode();
+
+/// 切片 S：task 1 新块的 Y 回执偏移。
+pub const IPC_RECEIPT_CREATE: u64 = 336;
+pub const IPC_RECEIPT_MAP1: u64 = 344;
+pub const IPC_RECEIPT_SEND1: u64 = 352;
+pub const IPC_RECEIPT_SEND2: u64 = 360;
+/// 切片 S：task 2 的 Y2 回执偏移。
+pub const IPC2_RECEIPT_SEND_DENIED: u64 = 32;
+pub const IPC2_RECEIPT_RECV1: u64 = 40;
+pub const IPC2_RECEIPT_CAP0: u64 = 48;
+pub const IPC2_RECEIPT_MAGIC: u64 = 56;
+pub const IPC2_RECEIPT_MAP2: u64 = 64;
+pub const IPC2_RECEIPT_CROSS: u64 = 72;
+pub const IPC2_RECEIPT_RECV2: u64 = 80;
+pub const IPC2_RECEIPT_CAPCOUNT: u64 = 88;
 
 /// 切片 M：第二个 ring3 任务的 Task id（由 SPEC-050 `platform_init` 创建）。
 pub const TASK2_ID: u32 = 2;
@@ -299,6 +344,17 @@ pub const fn memseg_errno(error: crate::bootstrap::MemsegError) -> Errno {
         | E::StillMapped => Errno::Access,
         E::OutOfBounds => Errno::Fault,
         E::NoMemory | E::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// 切片 S：IPC 错误到 errno 的映射（纯函数，host 可测）。
+pub const fn ipc_errno(error: bootstrap::IpcError) -> Errno {
+    use bootstrap::IpcError as E;
+    match error {
+        E::NoSuchTask | E::InvalidCapability | E::QueueEmpty => Errno::NoEnt,
+        E::NotAuthorized | E::CapabilityHolderMismatch => Errno::Access,
+        E::TooManyCapabilities => Errno::Invalid,
+        E::AuditFull | E::QueueFull => Errno::NoSpace,
     }
 }
 
@@ -691,7 +747,11 @@ fn memseg_create_call(page_count: u64, access_bits: u64) -> u64 {
     }
 }
 
-/// S2-D3：`memseg_map` 服务（目标为当前任务，故映射进当前根）。
+/// S2-D3：`memseg_map` 服务。
+///
+/// 切片 S：目标根由 **task cap 的目标**派生（`sched::root(task_id)`），不再假定等于当前根——
+/// 否则「逻辑视图记在 Task X 名下、页表却改当前任务」的错配无任何检查拦截。今天所有用户
+/// 可达的 `TaskManageVSpace` cap 都指向持有者自身，故行为不变。
 fn memseg_map_call(
     raw_seg: u64,
     raw_task: u64,
@@ -706,9 +766,14 @@ fn memseg_map_call(
     ) else {
         return encode_errno(Errno::Invalid);
     };
-    let (Some(root), Some((_, offset))) = (sched::current_root(), crate::cow::root_and_offset())
-    else {
-        return encode_errno(Errno::Fault);
+    let (Some(task_id), Some((_, offset))) = (
+        bootstrap::task_of_cap(task_cap),
+        crate::cow::root_and_offset(),
+    ) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    let Some(root) = sched::root(task_id) else {
+        return encode_errno(Errno::NoEnt);
     };
     let access = Rights::from_bits(access_bits as u32);
     match bootstrap::memseg_map(
@@ -727,14 +792,19 @@ fn memseg_map_call(
     }
 }
 
-/// S2-D3：`memseg_unmap` 服务。
+/// S2-D3：`memseg_unmap` 服务（切片 S：根同样由 task cap 目标派生）。
 fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
     let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
         return encode_errno(Errno::Invalid);
     };
-    let (Some(root), Some((_, offset))) = (sched::current_root(), crate::cow::root_and_offset())
-    else {
-        return encode_errno(Errno::Fault);
+    let (Some(task_id), Some((_, offset))) = (
+        bootstrap::task_of_cap(task_cap),
+        crate::cow::root_and_offset(),
+    ) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    let Some(root) = sched::root(task_id) else {
+        return encode_errno(Errno::NoEnt);
     };
     match bootstrap::memseg_unmap(
         sched::current(),
@@ -757,6 +827,236 @@ fn memseg_destroy_call(raw_seg: u64) -> u64 {
     match bootstrap::memseg_destroy(sched::current(), seg_cap) {
         Ok(()) => 0,
         Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 切片 S：IPC 用户化（S2-D5）与两任务共享 Segment
+// ---------------------------------------------------------------------------
+
+/// 切片 S：一次运行内的投递路径计数（证明排队与直投两条路径都被真实走到）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct IpcPathState {
+    queued: u64,
+    direct: u64,
+    blocks: u64,
+}
+
+static mut IPC_PATHS: IpcPathState = IpcPathState {
+    queued: 0,
+    direct: 0,
+    blocks: 0,
+};
+
+fn ipc_paths() -> IpcPathState {
+    unsafe { *core::ptr::addr_of!(IPC_PATHS) }
+}
+
+fn ipc_path_record(direct: bool) {
+    unsafe {
+        let paths = core::ptr::addr_of_mut!(IPC_PATHS);
+        if direct {
+            (*paths).direct += 1;
+        } else {
+            (*paths).queued += 1;
+        }
+    }
+}
+
+/// `SYS_SEND`：经授权把一条（可携带 Capability 的）消息投递给 `receiver`。
+///
+/// **授权绑定接收者**：`send_cap` 必须是指向 `receiver` 且含 `TaskSend` 的 Task Capability。
+/// 携带 Capability 的消息只走排队路径——接收者正 `BlockedRecv` 时拒绝：把 cap 静默挂到一个
+/// 未被告知句柄的接收者名下，只会制造它无法寻址、却仍然生效的 Authority。
+fn send_call(
+    raw_receiver: u64,
+    raw_send_cap: u64,
+    payload: u64,
+    cap_count: u64,
+    raw_cap0: u64,
+    raw_cap1: u64,
+) -> u64 {
+    let sender = sched::current();
+    let receiver = raw_receiver as u32;
+    let Ok(send_cap) = bootstrap::decode_handle(raw_send_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    if cap_count > bootstrap::MAX_MESSAGE_CAPABILITIES as u64 {
+        return encode_errno(Errno::Invalid);
+    }
+    // 授权先行：未授权者不应从错误码差异推断接收者当前状态。
+    if bootstrap::authorize(sender, send_cap, Right::TaskSend).is_err()
+        || bootstrap::task_of_cap(send_cap) != Some(receiver)
+    {
+        return encode_errno(Errno::Access);
+    }
+    let was_blocked = bootstrap::is_blocked_recv_global(receiver);
+    if was_blocked && cap_count > 0 {
+        return encode_errno(Errno::Invalid);
+    }
+    let mut caps = [Handle::ZERO; bootstrap::MAX_MESSAGE_CAPABILITIES];
+    for (index, raw) in [raw_cap0, raw_cap1]
+        .into_iter()
+        .take(cap_count as usize)
+        .enumerate()
+    {
+        let Ok(cap) = bootstrap::decode_handle(raw) else {
+            return encode_errno(Errno::Invalid);
+        };
+        caps[index] = cap;
+    }
+    match bootstrap::send_message_with_capabilities(
+        sender,
+        receiver,
+        send_cap,
+        payload,
+        &caps[..cap_count as usize],
+    ) {
+        Ok(()) => {
+            if was_blocked {
+                // 直投：吃掉 pending（否则后续 `SYS_RECV` 会重复投递同一消息），并把 payload
+                // 注入被唤醒任务的保存帧 `rax`，使其阻塞中的 `SYS_RECV` 直接返回 payload。
+                let _ = bootstrap::take_pending_global(receiver);
+                sched::set_frame_rax(receiver, payload);
+            }
+            ipc_path_record(was_blocked);
+            0
+        }
+        Err(error) => encode_errno(ipc_errno(error)),
+    }
+}
+
+/// `SYS_RECV` 的 out 缓冲边界：24 字节、8 对齐、不得跨页（纯函数，host 可测）。
+pub const fn recv_out_bounds(ptr: u64) -> Result<(), Errno> {
+    if !ptr.is_multiple_of(8) || (ptr & 0xfff) + RECV_BUF_LEN > 0x1000 {
+        return Err(Errno::Fault);
+    }
+    Ok(())
+}
+
+/// out 缓冲必须是当前任务根下 present|user|writable 的页。
+fn recv_out_ok(ptr: u64) -> Result<(), Errno> {
+    recv_out_bounds(ptr)?;
+    let Some((fallback_root, offset)) = crate::cow::root_and_offset() else {
+        return Err(Errno::Fault);
+    };
+    let root = crate::sched::current_root().unwrap_or(fallback_root);
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let pte = vspace::read_leaf(root, ptr, map).map_err(|_| Errno::Fault)?;
+    if pte & PT_PRESENT == 0 || pte & PT_USER == 0 || pte & PT_WRITABLE == 0 {
+        return Err(Errno::Fault);
+    }
+    Ok(())
+}
+
+/// 把接收到的 Capability 句柄与条数写入用户 out 缓冲。
+fn write_recv_out(ptr: u64, caps: &[Handle], count: u64) {
+    let mut values = [0u64; 3];
+    for (index, cap) in caps.iter().enumerate().take(2) {
+        values[index] = cap.encode();
+    }
+    values[2] = count;
+    for (index, value) in values.iter().enumerate() {
+        unsafe { core::ptr::write_volatile((ptr + index as u64 * 8) as *mut u64, *value) };
+    }
+}
+
+/// `SYS_RECV`：取一条发给自己的消息；队列为空则置 `BlockedRecv` 并切走。
+fn recv_call(out_ptr: u64) -> u64 {
+    let cur = sched::current();
+    // 坏指针必须在**消费消息之前**被拒，否则一条消息会被无声吃掉。
+    if let Err(errno) = recv_out_ok(out_ptr) {
+        return encode_errno(errno);
+    }
+    match bootstrap::receive_message(cur) {
+        Ok(message) => {
+            write_recv_out(
+                out_ptr,
+                &message.capabilities[..message.capability_count],
+                message.capability_count as u64,
+            );
+            message.payload
+        }
+        Err(bootstrap::IpcError::QueueEmpty) => {
+            // `receive_message` 已把本任务置为 `BlockedRecv`；保存帧、置零 out 缓冲后切走。
+            write_recv_out(out_ptr, &[], 0);
+            let mut frame = unsafe { frame_from_save_block(save_block()) };
+            frame.rax = 0;
+            sched::set_frame(cur, frame);
+            unsafe {
+                let paths = core::ptr::addr_of_mut!(IPC_PATHS);
+                (*paths).blocks += 1;
+            }
+            let next = sched::pick_next(cur).expect("SYS_RECV: no Ready task to switch to");
+            sched::block_to(next)
+        }
+        Err(error) => encode_errno(ipc_errno(error)),
+    }
+}
+
+/// 切片 S：IPC 用户化的用户态回执（task 1 读 Y，task 2 读 Y2）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IpcWitness {
+    pub create: u64,
+    pub map1: u64,
+    pub send1: u64,
+    pub send2: u64,
+    pub recv1: u64,
+    pub cap0: u64,
+    pub magic: u64,
+    pub map2: u64,
+    pub cross: u64,
+    pub send_denied: u64,
+    pub recv2: u64,
+    pub cap_count: u64,
+    pub queued: u64,
+    pub direct: u64,
+    pub blocks: u64,
+}
+
+impl IpcWitness {
+    /// 判定：排队路径转交 cap → task 2 映射进自己根并读回同一魔数 → 跨任务映射与未授权发送
+    /// 均被 `EACCES` 拒绝 → 直投路径唤醒阻塞的接收者。
+    pub fn evidence_ok(&self) -> bool {
+        let denied = encode_errno(Errno::Access);
+        self.create == SHARED_SEG_CAP_HANDLE
+            && self.map1 == 0
+            && self.send1 == 0
+            && self.send2 == 0
+            && self.recv1 == IPC_SHARED_MAGIC
+            && self.cap0 == SHARED_SEG_CAP_HANDLE
+            && self.magic == IPC_SHARED_MAGIC
+            && self.map2 == 0
+            && self.cross == denied
+            && self.send_denied == denied
+            && self.recv2 == IPC_DIRECT_PAYLOAD
+            && self.cap_count == 1
+            && self.queued == 1
+            && self.direct == 1
+            && self.blocks == 1
+    }
+}
+
+/// 读取 IPC 见证（task 1 的回执在 Y 页；task 2 的在 Y2 页，需按物理读）。
+pub fn ipc_witness() -> IpcWitness {
+    let base = USER_Y_VA;
+    let paths = ipc_paths();
+    IpcWitness {
+        create: read_qword(base + IPC_RECEIPT_CREATE),
+        map1: read_qword(base + IPC_RECEIPT_MAP1),
+        send1: read_qword(base + IPC_RECEIPT_SEND1),
+        send2: read_qword(base + IPC_RECEIPT_SEND2),
+        recv1: read_task2_qword(IPC2_RECEIPT_RECV1),
+        cap0: read_task2_qword(IPC2_RECEIPT_CAP0),
+        magic: read_task2_qword(IPC2_RECEIPT_MAGIC),
+        map2: read_task2_qword(IPC2_RECEIPT_MAP2),
+        cross: read_task2_qword(IPC2_RECEIPT_CROSS),
+        send_denied: read_task2_qword(IPC2_RECEIPT_SEND_DENIED),
+        recv2: read_task2_qword(IPC2_RECEIPT_RECV2),
+        cap_count: read_task2_qword(IPC2_RECEIPT_CAPCOUNT),
+        queued: paths.queued,
+        direct: paths.direct,
+        blocks: paths.blocks,
     }
 }
 
@@ -963,6 +1263,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         memseg_unmap_call(args[0], args[1], args[2])
     } else if num == SYS_MEMSEG_DESTROY {
         memseg_destroy_call(args[0])
+    } else if num == SYS_SEND {
+        send_call(args[0], args[1], args[2], args[3], args[4], args[5])
+    } else if num == SYS_RECV {
+        recv_call(args[0])
     } else {
         dispatch_plain(num, args)
     }
@@ -1820,6 +2124,104 @@ mod tests {
         let mut w = valid_auth();
         w.receipt_denied = 0;
         assert!(!w.evidence_ok());
+    }
+
+    fn valid_ipc() -> IpcWitness {
+        IpcWitness {
+            create: SHARED_SEG_CAP_HANDLE,
+            map1: 0,
+            send1: 0,
+            send2: 0,
+            recv1: IPC_SHARED_MAGIC,
+            cap0: SHARED_SEG_CAP_HANDLE,
+            magic: IPC_SHARED_MAGIC,
+            map2: 0,
+            cross: encode_errno(Errno::Access),
+            send_denied: encode_errno(Errno::Access),
+            recv2: IPC_DIRECT_PAYLOAD,
+            cap_count: 1,
+            queued: 1,
+            direct: 1,
+            blocks: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_ipc_evidence() {
+        assert!(valid_ipc().evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_cross_task_map_granted() {
+        let mut w = valid_ipc();
+        w.cross = 0; // 未持目标 Task 的 ManageVSpace 却映射成功
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_unauthorized_send_granted() {
+        let mut w = valid_ipc();
+        w.send_denied = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_without_capability_transfer() {
+        let mut w = valid_ipc();
+        w.cap_count = 0;
+        assert!(!w.evidence_ok());
+        let mut w = valid_ipc();
+        w.cap0 = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_when_task2_reads_a_different_frame() {
+        let mut w = valid_ipc();
+        w.magic = IPC_SHARED_MAGIC + 1;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_without_both_delivery_paths() {
+        let mut w = valid_ipc();
+        w.queued = 0;
+        assert!(!w.evidence_ok());
+        let mut w = valid_ipc();
+        w.direct = 0;
+        assert!(!w.evidence_ok());
+        let mut w = valid_ipc();
+        w.blocks = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn rejects_ipc_direct_payload_not_delivered_on_wake() {
+        let mut w = valid_ipc();
+        w.recv2 = 0;
+        assert!(!w.evidence_ok());
+    }
+
+    #[test]
+    fn ipc_errno_maps_every_variant() {
+        use crate::bootstrap::IpcError as E;
+        assert_eq!(ipc_errno(E::NoSuchTask), Errno::NoEnt);
+        assert_eq!(ipc_errno(E::InvalidCapability), Errno::NoEnt);
+        assert_eq!(ipc_errno(E::QueueEmpty), Errno::NoEnt);
+        assert_eq!(ipc_errno(E::NotAuthorized), Errno::Access);
+        assert_eq!(ipc_errno(E::CapabilityHolderMismatch), Errno::Access);
+        assert_eq!(ipc_errno(E::TooManyCapabilities), Errno::Invalid);
+        assert_eq!(ipc_errno(E::AuditFull), Errno::NoSpace);
+        assert_eq!(ipc_errno(E::QueueFull), Errno::NoSpace);
+    }
+
+    #[test]
+    fn recv_out_bounds_rejects_misaligned_and_cross_page() {
+        assert_eq!(recv_out_bounds(0x1000), Ok(()));
+        assert_eq!(recv_out_bounds(0x1004), Err(Errno::Fault)); // 未 8 对齐
+        // 24 字节跨页：0xff8 + 24 > 0x1000。
+        assert_eq!(recv_out_bounds(0xff8), Err(Errno::Fault));
+        assert_eq!(recv_out_bounds(0xfe8), Ok(())); // 恰好不跨页
     }
 
     #[test]

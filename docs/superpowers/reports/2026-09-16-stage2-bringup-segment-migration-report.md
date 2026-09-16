@@ -116,6 +116,9 @@ seq=23 preempt_ready root1=0xc000;root2=0x15000;data1=0x1e000;data2=0x22000
   这样 init 的初始 Authority 严格保持 3 条（S1-X2 证据不变），且 task2 的段不被其他 Task
   持有（不与 S2-X2 相左）。**但"用户可达"尚未成立**——把平台段 cap 移交给用户 Task 属于
   S2-D4/D5；本切片不宣称用户可见性已达成。
+  > 后续：切片 S（SPEC-064，2026-09-16）已首次把 Capability 铸给用户 Task 并**实际使用**
+  > （task 1 的 `Task(2)`+`TaskSend` 槽 47、task 2 的自管理 `TaskManageVSpace` 槽 48），
+  > 用户可达路径因此成立。但**槽 32..44 的平台段 cap 本身仍未移交**，仍由内核 actor 持有。
 - **VSPACE/COW 的直映射边界（登记）**：二者的 `allowed_access` 为空、`TaskVspaceTable`
   视图为空，故 `memseg_destroy` 的 `StillMapped` 看不到它们，W7 的「逻辑视图 vs 真实 PTE」
   不交性在这两个区域上未建模。它们需要 `set_leaf` 换叶与 fault-time 换映射，超出

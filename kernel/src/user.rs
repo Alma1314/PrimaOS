@@ -34,11 +34,13 @@ use crate::sched;
 use crate::syscall::{
     AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR,
     EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG,
-    MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN, MEMSEG_RW_BITS, RIGHT_DERIVE,
-    RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS, RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE,
-    SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE,
-    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
-    SYS_MEMSEG_UNMAP, SYS_SUM4, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK2_ID, UNSET_CAP, USER_SEG_VA,
+    IPC_DIRECT_PAYLOAD, IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN,
+    MEMSEG_RW_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
+    RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE, SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP,
+    SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT,
+    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_RECV, SYS_SEND,
+    SYS_SUM4, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP,
+    UNSET_CAP, USER_SEG_SHARED_VA, USER_SEG_VA, USER2_RECV_BUF, USER2_RECV_BUF2, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -108,10 +110,10 @@ pub fn task2_y_phys() -> Option<u64> {
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 1478;
+pub const USER_CODE_LEN: usize = 1795;
 
 /// 第二任务代码字节长度。
-pub const TASK2_CODE_LEN: usize = 137;
+pub const TASK2_CODE_LEN: usize = 472;
 
 /// 把 `bytes` 写入 `code[at..]`（const 友好，避免 const 上下文里的迭代器）。
 const fn put<const N: usize>(code: &mut [u8; N], at: usize, bytes: &[u8]) {
@@ -146,7 +148,9 @@ const fn put_imm64<const N: usize>(
 /// `mov rax, SYS_BAD; int 0x80; mov [rcx+48], rax;`（回执 6）
 /// 6 次异常订阅（SPEC-050）：订阅 page_fault 成功、重复（`EACCES`）、kind 不符（`EINVAL`）、
 /// 订阅 syscall_trap 成功、取消成功、再次取消（`EACCES`），写 `Y+88..Y+128`；
-/// `mov rdi, FAST_ARG; mov rax, SYS_ECHO; syscall; mov rcx, Y; mov [rcx+56], rax; int3`。
+/// `mov rdi, FAST_ARG; mov rax, SYS_ECHO; syscall; mov rcx, Y; mov [rcx+56], rax`；
+/// 切片 S：建共享 Segment → 映射进自己的根 → 写魔数 → 经**排队路径**把段 cap 送给 task 2 →
+/// 让出 → 再经**直投路径**送一条无 cap 消息唤醒阻塞的 task 2 → 让出 → `int3`。
 pub const fn user_code() -> [u8; USER_CODE_LEN] {
     let mut code = [0u8; USER_CODE_LEN];
     // 0: mov rdx, X
@@ -460,8 +464,56 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 1458, 0x48, 0xB8, SYS_MEMSEG_DESTROY);
     put(&mut code, 1468, &[0xCD, 0x80]);
     put(&mut code, 1470, &[0x48, 0x89, 0x81, 72, 1, 0, 0]);
-    // 1477: int3
-    code[1477] = 0xCC;
+    // 1477: 切片 S —— 共享 Segment：建段 → 映射进自己的根 → 写魔数 → 经授权消息把段 cap
+    //       交给 task 2（此时 task 2 是 Ready，走**排队路径**）→ 让出 → 之后直投唤醒。
+    put_imm64(&mut code, 1477, 0x48, 0xBF, 1); // rdi = page_count
+    put_imm64(&mut code, 1487, 0x48, 0xBE, MEMSEG_RW_BITS); // rsi = allowed_access
+    put_imm64(&mut code, 1497, 0x48, 0xB8, SYS_MEMSEG_CREATE);
+    put(&mut code, 1507, &[0xCD, 0x80]);
+    put(&mut code, 1509, &[0x48, 0x89, 0x81, 0x50, 0x01, 0, 0]);
+    // map(seg, task1_self_cap, 0, SHARED_VA, 1, R|W)
+    put(&mut code, 1516, &[0x48, 0x8B, 0xB9, 0x50, 0x01, 0, 0]); // rdi = [Y+336]（新段 cap）
+    put_imm64(&mut code, 1523, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 1533, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 1543, 0x49, 0xBA, USER_SEG_SHARED_VA);
+    put_imm64(&mut code, 1553, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 1563, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 1573, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 1583, &[0xCD, 0x80]);
+    put(&mut code, 1585, &[0x48, 0x89, 0x81, 0x58, 0x01, 0, 0]);
+    // 写魔数（task 2 会在自己的根下读回同一物理帧）。
+    put_imm64(&mut code, 1592, 0x48, 0xBA, USER_SEG_SHARED_VA);
+    put_imm64(&mut code, 1602, 0x48, 0xB8, IPC_SHARED_MAGIC);
+    put(&mut code, 1612, &[0x48, 0x89, 0x02]);
+    // send(2, TASK2_SEND_CAP, MAGIC, cap_count=1, cap0=[Y+336])
+    put_imm64(&mut code, 1615, 0x48, 0xBF, 2);
+    put_imm64(&mut code, 1625, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_imm64(&mut code, 1635, 0x48, 0xBA, IPC_SHARED_MAGIC);
+    put_imm64(&mut code, 1645, 0x49, 0xBA, 1);
+    put(&mut code, 1655, &[0x4C, 0x8B, 0x81, 0x50, 0x01, 0, 0]); // r8 = [Y+336]
+    put_imm64(&mut code, 1662, 0x49, 0xB9, 0);
+    put_imm64(&mut code, 1672, 0x48, 0xB8, SYS_SEND);
+    put(&mut code, 1682, &[0xCD, 0x80]);
+    put(&mut code, 1684, &[0x48, 0x89, 0x81, 0x60, 0x01, 0, 0]);
+    // 让出给 task 2（它读走队列里的消息）。
+    put_imm64(&mut code, 1691, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 1701, &[0xCD, 0x80]);
+    // send(2, TASK2_SEND_CAP, DIRECT_PAYLOAD, cap_count=0) —— 此时 task 2 阻塞在 RECV，
+    // 走**直投路径**并唤醒它。
+    put_imm64(&mut code, 1703, 0x48, 0xBF, 2);
+    put_imm64(&mut code, 1713, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_imm64(&mut code, 1723, 0x48, 0xBA, IPC_DIRECT_PAYLOAD);
+    put_imm64(&mut code, 1733, 0x49, 0xBA, 0);
+    put_imm64(&mut code, 1743, 0x49, 0xB8, 0);
+    put_imm64(&mut code, 1753, 0x49, 0xB9, 0);
+    put_imm64(&mut code, 1763, 0x48, 0xB8, SYS_SEND);
+    put(&mut code, 1773, &[0xCD, 0x80]);
+    put(&mut code, 1775, &[0x48, 0x89, 0x81, 0x68, 0x01, 0, 0]);
+    // 让出，等 task 2 记录直投回执后交回。
+    put_imm64(&mut code, 1782, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 1792, &[0xCD, 0x80]);
+    // 1794: int3
+    code[1794] = 0xCC;
     code
 }
 
@@ -469,7 +521,10 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
 /// `mov rcx, Y2; SYS_TASK_ID→[rcx]`（应 2）；
 /// `mov rdi, IMAGE_CAP; mov rsi, SegMapR; SYS_AUTHORIZE→[rcx+8]`（应 `EACCES`，非持有者）；
 /// `mov rdi, EXC_PAGE_FAULT_CAP; mov rsi, PageFault; SYS_EXC_SUBSCRIBE→[rcx+16]`（应 `EACCES`）；
-/// `SYS_YIELD`（被切走后不再返回本任务，无 int3）。
+/// `SYS_YIELD` → `SYS_TRAP`（唤醒阻塞的 task 1）→ `[rcx+24]` → `SYS_YIELD`；
+/// 切片 S：`SYS_RECV`（排队消息 + 段 cap）→ 用**自己**的 `Task(2)` 管理权映射进自己的根 →
+/// 读回魔数 → 两个负例（跨任务映射、未授权发送，均应 `EACCES`）→ `SYS_RECV` 阻塞 →
+/// 被直投唤醒 → `SYS_YIELD`。
 pub const fn task2_code() -> [u8; TASK2_CODE_LEN] {
     let mut code = [0u8; TASK2_CODE_LEN];
     // 0: mov rcx, Y2
@@ -514,6 +569,58 @@ pub const fn task2_code() -> [u8; TASK2_CODE_LEN] {
     put_imm64(&mut code, 125, 0x48, 0xB8, SYS_YIELD);
     // 135: int 0x80
     put(&mut code, 135, &[0xCD, 0x80]);
+    // 137: 切片 S —— 接收 task 1 经授权消息送来的共享段 cap，映射进**自己的**根并读回魔数；
+    //       随后是两个负例（跨任务映射、未授权发送），最后阻塞接收被直投唤醒。
+    put_imm64(&mut code, 137, 0x48, 0xB9, USER2_Y_VA);
+    put_imm64(&mut code, 147, 0x48, 0xBF, USER2_RECV_BUF);
+    put_imm64(&mut code, 157, 0x48, 0xB8, SYS_RECV);
+    put(&mut code, 167, &[0xCD, 0x80]);
+    put(&mut code, 169, &[0x48, 0x89, 0x41, 40]); // [rcx+40] = payload
+    put(&mut code, 173, &[0x48, 0x8B, 0x81, 0, 1, 0, 0]); // rax = [rcx+0x100] = cap0
+    put(&mut code, 180, &[0x48, 0x89, 0x41, 48]);
+    put(&mut code, 184, &[0x48, 0x8B, 0x81, 16, 1, 0, 0]); // rax = [rcx+0x110] = cap_count
+    put(&mut code, 191, &[0x48, 0x89, 0x41, 88]);
+    // map(cap0, TASK2_SELF_CAP, 0, USER2_SHARED_VA, 1, R|W)（caller == target == 2）
+    put(&mut code, 195, &[0x48, 0x8B, 0xB9, 0, 1, 0, 0]); // rdi = [rcx+0x100]
+    put_imm64(&mut code, 202, 0x48, 0xBE, TASK2_SELF_CAP);
+    put_imm64(&mut code, 212, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 222, 0x49, 0xBA, USER2_SHARED_VA);
+    put_imm64(&mut code, 232, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 242, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 252, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 262, &[0xCD, 0x80]);
+    put(&mut code, 264, &[0x48, 0x89, 0x41, 64]);
+    put_imm64(&mut code, 268, 0x48, 0xBA, USER2_SHARED_VA);
+    put(&mut code, 278, &[0x48, 0x8B, 0x02]); // rax = [rdx]
+    put(&mut code, 281, &[0x48, 0x89, 0x41, 56]); // [rcx+56] = 读回的魔数
+    // 负例 1：用**不属于自己**的 Task(1) cap 做跨任务映射 → 必须 EACCES。
+    put(&mut code, 285, &[0x48, 0x8B, 0xB9, 0, 1, 0, 0]);
+    put_imm64(&mut code, 292, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 302, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 312, 0x49, 0xBA, USER2_SHARED_VA + 0x1000);
+    put_imm64(&mut code, 322, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 332, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 342, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 352, &[0xCD, 0x80]);
+    put(&mut code, 354, &[0x48, 0x89, 0x41, 72]);
+    // 负例 2：用不属于自己的 cap 给 task 1 发消息 → 必须 EACCES。
+    put_imm64(&mut code, 358, 0x48, 0xBF, 1);
+    put_imm64(&mut code, 368, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 378, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 388, 0x49, 0xBA, 0);
+    put_imm64(&mut code, 398, 0x49, 0xB8, 0);
+    put_imm64(&mut code, 408, 0x49, 0xB9, 0);
+    put_imm64(&mut code, 418, 0x48, 0xB8, SYS_SEND);
+    put(&mut code, 428, &[0xCD, 0x80]);
+    put(&mut code, 430, &[0x48, 0x89, 0x41, 32]);
+    // 阻塞接收：空队列 → 置 BlockedRecv 并切走；被 task 1 直投唤醒后 rax = payload。
+    put_imm64(&mut code, 434, 0x48, 0xBF, USER2_RECV_BUF2);
+    put_imm64(&mut code, 444, 0x48, 0xB8, SYS_RECV);
+    put(&mut code, 454, &[0xCD, 0x80]);
+    put(&mut code, 456, &[0x48, 0x89, 0x41, 80]);
+    // 交回 task 1（它已 Ready），让它执行 int3 收尾。
+    put_imm64(&mut code, 460, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 470, &[0xCD, 0x80]);
     code
 }
 
@@ -917,7 +1024,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 1478);
+        assert_eq!(USER_CODE_LEN, 1795);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -1145,13 +1252,42 @@ mod tests {
         assert_eq!(&code[1458..1460], &[0x48, 0xB8]);
         assert_eq!(&code[1460..1468], &SYS_MEMSEG_DESTROY.to_le_bytes());
         assert_eq!(&code[1470..1477], &[0x48, 0x89, 0x81, 72, 1, 0, 0]); // [rcx+328] disp32
-        assert_eq!(code[1477], 0xCC); // int3
+        // 切片 S：共享 Segment —— create → map → 写魔数 → 排队路径送 cap → yield →
+        //           直投路径送无 cap 消息 → yield → int3。
+        assert_eq!(&code[1477..1479], &[0x48, 0xBF]);
+        assert_eq!(&code[1479..1487], &1u64.to_le_bytes()); // page_count
+        assert_eq!(&code[1497..1499], &[0x48, 0xB8]);
+        assert_eq!(&code[1499..1507], &SYS_MEMSEG_CREATE.to_le_bytes());
+        assert_eq!(&code[1507..1509], &[0xCD, 0x80]);
+        assert_eq!(&code[1509..1516], &[0x48, 0x89, 0x81, 0x50, 0x01, 0, 0]); // [Y+336]
+        assert_eq!(&code[1516..1523], &[0x48, 0x8B, 0xB9, 0x50, 0x01, 0, 0]); // rdi = [Y+336]
+        assert_eq!(&code[1525..1533], &TASK_CAP_HANDLE.encode().to_le_bytes());
+        assert_eq!(&code[1545..1553], &USER_SEG_SHARED_VA.to_le_bytes());
+        assert_eq!(&code[1583..1585], &[0xCD, 0x80]);
+        assert_eq!(&code[1585..1592], &[0x48, 0x89, 0x81, 0x58, 0x01, 0, 0]); // [Y+344]
+        assert_eq!(&code[1594..1602], &USER_SEG_SHARED_VA.to_le_bytes());
+        assert_eq!(&code[1604..1612], &IPC_SHARED_MAGIC.to_le_bytes());
+        assert_eq!(&code[1612..1615], &[0x48, 0x89, 0x02]); // mov [rdx], rax
+        assert_eq!(&code[1617..1625], &2u64.to_le_bytes()); // receiver
+        assert_eq!(&code[1627..1635], &TASK2_SEND_CAP.to_le_bytes());
+        assert_eq!(&code[1637..1645], &IPC_SHARED_MAGIC.to_le_bytes()); // payload
+        assert_eq!(&code[1655..1662], &[0x4C, 0x8B, 0x81, 0x50, 0x01, 0, 0]); // r8 = [Y+336]
+        assert_eq!(&code[1674..1682], &SYS_SEND.to_le_bytes());
+        assert_eq!(&code[1684..1691], &[0x48, 0x89, 0x81, 0x60, 0x01, 0, 0]); // [Y+352]
+        assert_eq!(&code[1693..1701], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[1701..1703], &[0xCD, 0x80]);
+        assert_eq!(&code[1725..1733], &IPC_DIRECT_PAYLOAD.to_le_bytes());
+        assert_eq!(&code[1765..1773], &SYS_SEND.to_le_bytes());
+        assert_eq!(&code[1775..1782], &[0x48, 0x89, 0x81, 0x68, 0x01, 0, 0]); // [Y+360]
+        assert_eq!(&code[1784..1792], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[1792..1794], &[0xCD, 0x80]);
+        assert_eq!(code[1794], 0xCC); // int3
     }
 
     #[test]
     fn task2_code_bytes_are_fixed() {
         let code = task2_code();
-        assert_eq!(TASK2_CODE_LEN, 137);
+        assert_eq!(TASK2_CODE_LEN, 472);
         assert_eq!(&code[0..2], &[0x48, 0xB9]); // mov rcx, imm64
         assert_eq!(&code[2..10], &USER2_Y_VA.to_le_bytes());
         assert_eq!(&code[10..12], &[0x48, 0xB8]);
@@ -1180,6 +1316,41 @@ mod tests {
         assert_eq!(&code[125..127], &[0x48, 0xB8]);
         assert_eq!(&code[127..135], &SYS_YIELD.to_le_bytes());
         assert_eq!(&code[135..137], &[0xCD, 0x80]);
+        // 切片 S：收消息 → 自映射共享段 → 读魔数 → 两个负例 → 阻塞接收 → 交回。
+        assert_eq!(&code[137..139], &[0x48, 0xB9]);
+        assert_eq!(&code[139..147], &USER2_Y_VA.to_le_bytes());
+        assert_eq!(&code[149..157], &USER2_RECV_BUF.to_le_bytes());
+        assert_eq!(&code[159..167], &SYS_RECV.to_le_bytes());
+        assert_eq!(&code[167..169], &[0xCD, 0x80]);
+        assert_eq!(&code[169..173], &[0x48, 0x89, 0x41, 40]); // [rcx+40] = payload
+        assert_eq!(&code[173..180], &[0x48, 0x8B, 0x81, 0x00, 0x01, 0, 0]); // rax = cap0
+        assert_eq!(&code[180..184], &[0x48, 0x89, 0x41, 48]);
+        assert_eq!(&code[184..191], &[0x48, 0x8B, 0x81, 0x10, 0x01, 0, 0]); // rax = cap_count
+        assert_eq!(&code[191..195], &[0x48, 0x89, 0x41, 88]);
+        assert_eq!(&code[195..202], &[0x48, 0x8B, 0xB9, 0x00, 0x01, 0, 0]); // rdi = cap0
+        assert_eq!(&code[204..212], &TASK2_SELF_CAP.to_le_bytes());
+        assert_eq!(&code[224..232], &USER2_SHARED_VA.to_le_bytes());
+        assert_eq!(&code[254..262], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[262..264], &[0xCD, 0x80]);
+        assert_eq!(&code[264..268], &[0x48, 0x89, 0x41, 64]);
+        assert_eq!(&code[270..278], &USER2_SHARED_VA.to_le_bytes());
+        assert_eq!(&code[278..281], &[0x48, 0x8B, 0x02]); // rax = [rdx]
+        assert_eq!(&code[281..285], &[0x48, 0x89, 0x41, 56]); // [rcx+56] = 魔数
+        assert_eq!(&code[294..302], &TASK_CAP_HANDLE.encode().to_le_bytes());
+        assert_eq!(&code[314..322], &(USER2_SHARED_VA + 0x1000).to_le_bytes());
+        assert_eq!(&code[344..352], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[352..354], &[0xCD, 0x80]);
+        assert_eq!(&code[354..358], &[0x48, 0x89, 0x41, 72]);
+        assert_eq!(&code[360..368], &1u64.to_le_bytes()); // receiver = 1
+        assert_eq!(&code[370..378], &TASK_CAP_HANDLE.encode().to_le_bytes());
+        assert_eq!(&code[420..428], &SYS_SEND.to_le_bytes());
+        assert_eq!(&code[430..434], &[0x48, 0x89, 0x41, 32]);
+        assert_eq!(&code[436..444], &USER2_RECV_BUF2.to_le_bytes());
+        assert_eq!(&code[446..454], &SYS_RECV.to_le_bytes());
+        assert_eq!(&code[454..456], &[0xCD, 0x80]);
+        assert_eq!(&code[456..460], &[0x48, 0x89, 0x41, 80]);
+        assert_eq!(&code[462..470], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[470..472], &[0xCD, 0x80]);
     }
 
     #[test]

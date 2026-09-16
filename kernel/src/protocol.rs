@@ -563,6 +563,46 @@ pub(crate) fn platform_segments_ready(record: &kernel::bootstrap::PlatformSegmen
     serial::write_bytes(b"\r\n");
 }
 
+/// 切片 S：IPC 用户化与两任务共享 Segment 见证。
+///
+/// 断言两个不可信 Task 的交互只能走「授权消息」与「共享 Segment」：段 cap 经**授权消息**
+/// 转交（排队路径，位置经历 `InMessage`），task 2 把它映射进**自己的**根并读回 task 1 写的
+/// 魔数；跨任务映射与未授权发送都被 `EACCES` 拒绝；直投路径唤醒阻塞的接收者。
+pub(crate) fn ipc_ready(witness: &kernel::syscall::IpcWitness) {
+    write_prefix("ipc_ready", "ok");
+    serial::write_bytes(b"|data=create=");
+    write_hex_u64(witness.create);
+    serial::write_bytes(b";map1=");
+    write_hex_u64(witness.map1);
+    serial::write_bytes(b";send1=");
+    write_hex_u64(witness.send1);
+    serial::write_bytes(b";send2=");
+    write_hex_u64(witness.send2);
+    serial::write_bytes(b";recv1=");
+    write_hex_u64(witness.recv1);
+    serial::write_bytes(b";cap0=");
+    write_hex_u64(witness.cap0);
+    serial::write_bytes(b";magic=");
+    write_hex_u64(witness.magic);
+    serial::write_bytes(b";map2=");
+    write_hex_u64(witness.map2);
+    serial::write_bytes(b";cross=");
+    write_hex_u64(witness.cross);
+    serial::write_bytes(b";send_denied=");
+    write_hex_u64(witness.send_denied);
+    serial::write_bytes(b";recv2=");
+    write_hex_u64(witness.recv2);
+    serial::write_bytes(b";cap_count=");
+    write_u32(witness.cap_count as u32);
+    serial::write_bytes(b";queued=");
+    write_u32(witness.queued as u32);
+    serial::write_bytes(b";direct=");
+    write_u32(witness.direct as u32);
+    serial::write_bytes(b";blocks=");
+    write_u32(witness.blocks as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

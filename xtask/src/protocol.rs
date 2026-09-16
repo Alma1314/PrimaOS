@@ -22,6 +22,7 @@ enum EventKind {
     HandleReady,
     CapLifecycleReady,
     MemsegReady,
+    IpcReady,
     PreemptReady,
     ExcResumeReady,
     PlatformSegmentsReady,
@@ -110,6 +111,14 @@ const PLATFORM_TASK2_CAP_HANDLE: u64 = 0x0000_0001_0000_002e;
 const PLATFORM_ACTOR: u64 = 0;
 const PLATFORM_MAPPED: u64 = 11;
 const PLATFORM_DIRECT: u64 = 2;
+/// 切片 S：IPC 用户化与共享 Segment 的镜像常量，与 `kernel/src/{syscall,user}.rs` 一致。
+/// task 1 首个 `SYS_MEMSEG_CREATE` 的句柄：槽 8 gen1（槽 6/7 已被既有块占用且不释放）。
+const IPC_SHARED_SEG_CAP: u64 = 0x0000_0001_0000_0008;
+/// task 1 写进共享段、task 2 读回的魔数（证明是同一物理帧）。
+const IPC_SHARED_MAGIC: u64 = 0x51A5_0000_0000_0001;
+/// 直投（阻塞唤醒）路径的 payload。
+const IPC_DIRECT_PAYLOAD: u64 = 0xD1EC_7000_0000_0002;
+
 /// 每个平台区域的帧数（VSPACE 2、COW 共享+2 私有、其余各 1；和为 16 = `frames_ready.segment`）。
 const PLATFORM_FRAME_COUNTS: [u64; PLATFORM_SEGMENT_COUNT] =
     [2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
@@ -155,7 +164,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 28] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 29] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -178,12 +187,13 @@ const EXPECTED_EVENTS: [(u32, EventKind); 28] = [
     (20, EventKind::HandleReady),
     (21, EventKind::CapLifecycleReady),
     (22, EventKind::MemsegReady),
-    (23, EventKind::PreemptReady),
-    (24, EventKind::ExcResumeReady),
-    (25, EventKind::PlatformSegmentsReady),
-    (26, EventKind::AuthorityReady),
-    (27, EventKind::FramesReady),
-    (28, EventKind::BootComplete),
+    (23, EventKind::IpcReady),
+    (24, EventKind::PreemptReady),
+    (25, EventKind::ExcResumeReady),
+    (26, EventKind::PlatformSegmentsReady),
+    (27, EventKind::AuthorityReady),
+    (28, EventKind::FramesReady),
+    (29, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -381,6 +391,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::MemsegReady)
     {
         validate_memseg_data(memseg.data.as_deref())?;
+    }
+
+    if let Some(ipc) = events
+        .iter()
+        .find(|event| event.kind == EventKind::IpcReady)
+    {
+        validate_ipc_data(ipc.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -1595,6 +1612,112 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// 切片 S：校验 IPC 用户化与两任务共享 Segment 见证（S2-D5/S2-X2）。
+fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "ipc_ready event is missing its data field".to_owned())?;
+    let mut create = None;
+    let mut map1 = None;
+    let mut send1 = None;
+    let mut send2 = None;
+    let mut recv1 = None;
+    let mut cap0 = None;
+    let mut magic = None;
+    let mut map2 = None;
+    let mut cross = None;
+    let mut send_denied = None;
+    let mut recv2 = None;
+    let mut cap_count = None;
+    let mut queued = None;
+    let mut direct = None;
+    let mut blocks = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "create" => create = Some(parse_addr(value)?),
+            "map1" => map1 = Some(parse_addr(value)?),
+            "send1" => send1 = Some(parse_addr(value)?),
+            "send2" => send2 = Some(parse_addr(value)?),
+            "recv1" => recv1 = Some(parse_addr(value)?),
+            "cap0" => cap0 = Some(parse_addr(value)?),
+            "magic" => magic = Some(parse_addr(value)?),
+            "map2" => map2 = Some(parse_addr(value)?),
+            "cross" => cross = Some(parse_addr(value)?),
+            "send_denied" => send_denied = Some(parse_addr(value)?),
+            "recv2" => recv2 = Some(parse_addr(value)?),
+            "cap_count" => cap_count = Some(parse_decimal(value, "cap_count")?),
+            "queued" => queued = Some(parse_decimal(value, "queued")?),
+            "direct" => direct = Some(parse_decimal(value, "direct")?),
+            "blocks" => blocks = Some(parse_decimal(value, "blocks")?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in ipc_ready data");
+    let create = create.ok_or_else(|| missing("create"))?;
+    let map1 = map1.ok_or_else(|| missing("map1"))?;
+    let send1 = send1.ok_or_else(|| missing("send1"))?;
+    let send2 = send2.ok_or_else(|| missing("send2"))?;
+    let recv1 = recv1.ok_or_else(|| missing("recv1"))?;
+    let cap0 = cap0.ok_or_else(|| missing("cap0"))?;
+    let magic = magic.ok_or_else(|| missing("magic"))?;
+    let map2 = map2.ok_or_else(|| missing("map2"))?;
+    let cross = cross.ok_or_else(|| missing("cross"))?;
+    let send_denied = send_denied.ok_or_else(|| missing("send_denied"))?;
+    let recv2 = recv2.ok_or_else(|| missing("recv2"))?;
+    let cap_count = cap_count.ok_or_else(|| missing("cap_count"))?;
+    let queued = queued.ok_or_else(|| missing("queued"))?;
+    let direct = direct.ok_or_else(|| missing("direct"))?;
+    let blocks = blocks.ok_or_else(|| missing("blocks"))?;
+
+    if create != IPC_SHARED_SEG_CAP {
+        return Err(format!(
+            "ipc_ready create (0x{create:x}) must be the shared segment cap 0x{IPC_SHARED_SEG_CAP:x}"
+        ));
+    }
+    if map1 != 0 || send1 != 0 || send2 != 0 || map2 != 0 {
+        return Err(format!(
+            "ipc_ready map/send must all succeed (0), got map1=0x{map1:x}, send1=0x{send1:x}, send2=0x{send2:x}, map2=0x{map2:x}"
+        ));
+    }
+    if recv1 != IPC_SHARED_MAGIC || magic != IPC_SHARED_MAGIC {
+        return Err(format!(
+            "ipc_ready recv1/magic (0x{recv1:x}/0x{magic:x}) must both equal the shared magic 0x{IPC_SHARED_MAGIC:x} — task 2 must read back the same physical frame"
+        ));
+    }
+    if cap0 != IPC_SHARED_SEG_CAP {
+        return Err(format!(
+            "ipc_ready cap0 (0x{cap0:x}) must be the segment cap 0x{IPC_SHARED_SEG_CAP:x} received through the message"
+        ));
+    }
+    if cap_count != 1 {
+        return Err(format!(
+            "ipc_ready cap_count is {cap_count}, expected 1 (the shared segment cap travelled with the message)"
+        ));
+    }
+    if cross != EACCES {
+        return Err(format!(
+            "ipc_ready cross (0x{cross:x}) must be EACCES — mapping into another task's vspace without holding its TaskManageVSpace cap must be denied"
+        ));
+    }
+    if send_denied != EACCES {
+        return Err(format!(
+            "ipc_ready send_denied (0x{send_denied:x}) must be EACCES — sending without an authorized cap on the receiver must be denied"
+        ));
+    }
+    if recv2 != IPC_DIRECT_PAYLOAD {
+        return Err(format!(
+            "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
+        ));
+    }
+    if queued != 1 || direct != 1 || blocks != 1 {
+        return Err(format!(
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 1/1/1 — both the queued (cap-carrying) and the direct (wake) paths must be exercised exactly once"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_decimal_list(value: &str, key: &str) -> Result<Vec<u64>, String> {
     value
         .split(',')
@@ -2330,6 +2453,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("handle_ready", "ok") => EventKind::HandleReady,
         ("cap_lifecycle_ready", "ok") => EventKind::CapLifecycleReady,
         ("memseg_ready", "ok") => EventKind::MemsegReady,
+        ("ipc_ready", "ok") => EventKind::IpcReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
@@ -2367,6 +2491,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::HandleReady
             | EventKind::CapLifecycleReady
             | EventKind::MemsegReady
+            | EventKind::IpcReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -2397,6 +2522,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::HandleReady
             | EventKind::CapLifecycleReady
             | EventKind::MemsegReady
+            | EventKind::IpcReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -2445,12 +2571,13 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=24|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=25|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=26|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=27|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=28|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=1;direct=1;blocks=1\n",
+        "PRIMA|v=1|seq=24|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=25|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=26|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=27|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=28|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=29|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -2510,6 +2637,42 @@ mod tests {
         let output = VALID.replace("direct_ids=2,3", "direct_ids=2,4");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("direct_ids"), "{error}");
+    }
+
+    #[test]
+    fn rejects_ipc_ready_with_cross_task_map_granted() {
+        // 未持目标 Task 的 ManageVSpace cap 却映射成功 → 必须被拒。
+        let output = VALID.replace("cross=0xfffffffffffffff3", "cross=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be EACCES"), "{error}");
+    }
+
+    #[test]
+    fn rejects_ipc_ready_with_unauthorized_send_granted() {
+        let output = VALID.replace("send_denied=0xfffffffffffffff3", "send_denied=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be EACCES"), "{error}");
+    }
+
+    #[test]
+    fn rejects_ipc_ready_without_capability_transfer() {
+        let output = VALID.replace(";cap_count=1;", ";cap_count=0;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("expected 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_ipc_ready_without_the_direct_wake_path() {
+        let output = VALID.replace(";direct=1;", ";direct=0;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("expected 1/1/1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_ipc_ready_when_task2_reads_a_different_frame() {
+        let output = VALID.replace("magic=0x51a5000000000001", "magic=0x51a5000000000002");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("same physical frame"), "{error}");
     }
 
     #[test]

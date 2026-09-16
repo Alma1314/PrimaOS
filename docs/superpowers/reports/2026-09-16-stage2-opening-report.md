@@ -118,6 +118,9 @@ PRIMA|v=1|seq=26|event=frames_ready|status=ok|data=universe=31501;free=30779;seg
   `memseg_create` 路径闭合。
 - `SegMapX` 只记录权限与逻辑视图，未做 NX 强制（未配置 `EFER.NXE`）。
 - `memseg_map/unmap` 只在调用者自身 Task 上实证；跨 Task `TaskManageVSpace` 未覆盖。
+  > 后续：切片 S（SPEC-064，2026-09-16）以**拒绝路径**部分覆盖——未持目标 Task 的
+  > `TaskManageVSpace` 时跨任务映射被 `EACCES` 拒绝（QEMU `ipc_ready.cross`）；
+  > 跨任务**成功**映射仍无见证，且按阶段 2 的决策不给任何任务对他方地址空间的管理权。
 - `dev_vspace` 与 W16.4 跨表互斥未建模。
 - **`memseg_create` 的失败回滚路径未逐条实测**：`create` 的容量/授权分支由 host 逻辑与 QEMU
   主路径覆盖；QEMU 主路径早先暴露的 `NoMemory`（帧标签冲突）已修复并登记为过程证据。
