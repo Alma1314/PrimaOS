@@ -145,6 +145,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 serial::flush();
                                                 qemu::exit(qemu::PANIC)
                                             }
+                                            // R：为 task 1/2 铸平台 Task Capability（供平台区域
+                                            // 经 memseg_map 授权中介映射）。须在 platform_init
+                                            // 建出 task 2 之后。
+                                            if kernel::bootstrap::platform_prepare_task_caps()
+                                                .is_err()
+                                            {
+                                                protocol::panic_event();
+                                                serial::flush();
+                                                qemu::exit(qemu::PANIC)
+                                            }
                                         }
                                         Err(_) => {
                                             protocol::panic_event();

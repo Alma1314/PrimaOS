@@ -15,32 +15,50 @@
 
 use crate::mem::{FrameInventory, FreeFrameAllocator};
 
-/// 平台 bring-up 的活动 Segment ID（S1-X3 的归属标签；stage 2 的 `memseg_create` 接管后
-/// 这些标签会被真实 Segment 对象取代）。ID 0 保留给 bootstrap 的 image Segment（其帧由
-/// `image_frames` 类单独计数，不经 `allocate_for_segment`）。
-pub const SEG_VSPACE: u32 = 1;
-pub const SEG_COW: u32 = 2;
-pub const SEG_TASK1_CODE: u32 = 3;
-pub const SEG_TASK1_STACK: u32 = 4;
-pub const SEG_TASK1_X: u32 = 5;
-pub const SEG_TASK1_Y: u32 = 6;
-pub const SEG_TASK2_CODE: u32 = 7;
-pub const SEG_TASK2_STACK: u32 = 8;
-pub const SEG_TASK2_Y: u32 = 9;
-pub const SEG_SPIN1_CODE: u32 = 10;
-pub const SEG_SPIN1_DATA: u32 = 11;
-pub const SEG_SPIN2_CODE: u32 = 12;
-pub const SEG_SPIN2_DATA: u32 = 13;
+/// 平台 bring-up 的活动 Segment ID（S1-X3 的归属标签；切片 R 起这些标签**就是** Segment 槽位 id：
+/// `frame_label` 的独立命名空间已取消，归属标签与 `bootstrap::SegmentObject::id` 恒等）。
+///
+/// id 1 是 bootstrap 的 image Segment（其帧由 `image_frames` 类单独计数，从不经
+/// `allocate_for_segment`，故不在此列）；id 2..14 是平台 bring-up 的 13 个区域；
+/// 用户经 `memseg_create` 创建的 Segment 从 `bootstrap::USER_SEGMENT_ID_FIRST`(=15) 起分配。
+pub const SEG_VSPACE: u32 = 2;
+pub const SEG_COW: u32 = 3;
+pub const SEG_TASK1_CODE: u32 = 4;
+pub const SEG_TASK1_STACK: u32 = 5;
+pub const SEG_TASK1_X: u32 = 6;
+pub const SEG_TASK1_Y: u32 = 7;
+pub const SEG_TASK2_CODE: u32 = 8;
+pub const SEG_TASK2_STACK: u32 = 9;
+pub const SEG_TASK2_Y: u32 = 10;
+pub const SEG_SPIN1_CODE: u32 = 11;
+pub const SEG_SPIN1_DATA: u32 = 12;
+pub const SEG_SPIN2_CODE: u32 = 13;
+pub const SEG_SPIN2_DATA: u32 = 14;
 
 /// 保留页表帧的容量上限（自建页表规模远小于此）。
-pub const MAX_TABLE_FRAMES: usize = 64;
-/// 活动 Segment 的容量上限（image + 平台 bring-up 各区域）。
-pub const MAX_SEGMENTS: usize = 16;
+pub const MAX_TABLE_FRAMES: usize = 128;
+/// 活动 Segment 的容量上限（image + 平台 bring-up 各区域 + 用户创建 Segment）。
+pub const MAX_SEGMENTS: usize = 32;
+/// 非 image 数据帧的逐帧归属条目上限（S2-D3 的 frame → owner 查询）。
+pub const MAX_FRAME_OWNERS: usize = 192;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pool {
     Cpu,
     Gpu,
+}
+
+/// 一帧的归属类别（W6 的三类划分 + image 类）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameOwner {
+    /// image 区间内的帧（由 image Segment 持有）。
+    Image,
+    /// 某个活动 Segment 的数据帧（值为归属标签）。
+    Segment(u32),
+    /// 保留页表帧（未映射进任何活动 Segment）。
+    Table,
+    /// 空闲帧。
+    Free,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +69,10 @@ pub enum FrameError {
     CapacityExceeded,
     UniverseMismatch,
     ConservationViolation,
+    /// 帧不在该归属名下（释放失败，状态不变）。
+    NotOwned,
+    /// W6 不交性被破坏（同一帧被计入两类归属）。
+    Overlap,
 }
 
 /// W6 守恒见证（供协议事件与 host 单测使用）。
@@ -62,6 +84,8 @@ pub struct FrameWitness {
     pub table_frames: u64,
     pub image_frames: u64,
     pub conserved: bool,
+    /// W6 逐帧不交性（`check_disjoint`）。
+    pub disjoint: bool,
 }
 
 /// 帧归属注册表（纯逻辑，无 asm；全局安装见 [`install`]）。
@@ -69,10 +93,15 @@ pub struct FrameWitness {
 pub struct FrameRegistry {
     alloc: FreeFrameAllocator,
     universe: usize,
+    image_start: u64,
+    image_end: u64,
     image_frames: usize,
     segment_frames: usize,
     table_frames: [u64; MAX_TABLE_FRAMES],
     table_count: usize,
+    /// 非 image 数据帧的 `(frame, segment_label)` 归属表（逐帧 owner 查询与不交性判定）。
+    owners: [Option<(u64, u32)>; MAX_FRAME_OWNERS],
+    owner_count: usize,
     segments: [Option<(u32, Pool)>; MAX_SEGMENTS],
     segment_count: usize,
 }
@@ -90,10 +119,14 @@ impl FrameRegistry {
         Ok(Self {
             alloc,
             universe: inventory.usable_frames + inventory.image_frames,
+            image_start: inventory.kernel_phys_start,
+            image_end: inventory.kernel_phys_end,
             image_frames: inventory.image_frames,
             segment_frames: 0,
             table_frames: [0; MAX_TABLE_FRAMES],
             table_count: 0,
+            owners: [None; MAX_FRAME_OWNERS],
+            owner_count: 0,
             segments: [None; MAX_SEGMENTS],
             segment_count: 0,
         })
@@ -119,7 +152,30 @@ impl FrameRegistry {
         Ok(())
     }
 
-    /// 为一个活动 Segment 取一帧并归入其名下。
+    /// 关闭一个活动 Segment 的归属标签（其帧必须已全部归还），使该标签可被复用。
+    pub fn close_segment(&mut self, id: u32) -> Result<(), FrameError> {
+        let Some(index) = self.segments[..self.segment_count]
+            .iter()
+            .position(|entry| entry.is_some_and(|(existing, _)| existing == id))
+        else {
+            return Err(FrameError::UnknownSegment);
+        };
+        if self.owners[..self.owner_count]
+            .iter()
+            .flatten()
+            .any(|(_, owner)| *owner == id)
+        {
+            return Err(FrameError::NotOwned);
+        }
+        for shift in index..self.segment_count - 1 {
+            self.segments[shift] = self.segments[shift + 1];
+        }
+        self.segments[self.segment_count - 1] = None;
+        self.segment_count -= 1;
+        Ok(())
+    }
+
+    /// 为一个活动 Segment 取一帧并归入其名下（同时登记逐帧 owner）。
     pub fn allocate_for_segment(&mut self, id: u32) -> Result<u64, FrameError> {
         if !self.segments[..self.segment_count]
             .iter()
@@ -128,7 +184,12 @@ impl FrameRegistry {
         {
             return Err(FrameError::UnknownSegment);
         }
+        if self.owner_count == MAX_FRAME_OWNERS {
+            return Err(FrameError::CapacityExceeded);
+        }
         let frame = self.alloc.allocate().map_err(|_| FrameError::NoFrame)?;
+        self.owners[self.owner_count] = Some((frame, id));
+        self.owner_count += 1;
         self.segment_frames += 1;
         Ok(frame)
     }
@@ -142,6 +203,95 @@ impl FrameRegistry {
         self.table_frames[self.table_count] = frame;
         self.table_count += 1;
         Ok(frame)
+    }
+
+    /// `Segment` 销毁时归还一帧：撤销 owner 登记并放回空闲池（W6 守恒仍成立）。
+    pub fn release_frame(&mut self, id: u32, frame: u64) -> Result<(), FrameError> {
+        let Some(index) = self.owners[..self.owner_count]
+            .iter()
+            .position(|entry| *entry == Some((frame, id)))
+        else {
+            return Err(FrameError::NotOwned);
+        };
+        for shift in index..self.owner_count - 1 {
+            self.owners[shift] = self.owners[shift + 1];
+        }
+        self.owners[self.owner_count - 1] = None;
+        self.owner_count -= 1;
+        self.segment_frames -= 1;
+        self.alloc
+            .release(frame)
+            .map_err(|_| FrameError::NotOwned)?;
+        Ok(())
+    }
+
+    /// `memseg_unmap` 回收变空的页表结点时归还一帧。
+    pub fn release_table_frame(&mut self, frame: u64) -> Result<(), FrameError> {
+        let Some(index) = self.table_frames[..self.table_count]
+            .iter()
+            .position(|owned| *owned == frame)
+        else {
+            return Err(FrameError::NotOwned);
+        };
+        for shift in index..self.table_count - 1 {
+            self.table_frames[shift] = self.table_frames[shift + 1];
+        }
+        self.table_count -= 1;
+        self.alloc
+            .release(frame)
+            .map_err(|_| FrameError::NotOwned)?;
+        Ok(())
+    }
+
+    /// 逐帧归属查询（W6 三类划分 + image 类；空闲帧返回 [`FrameOwner::Free`]）。
+    pub fn owner_of(&self, frame: u64) -> FrameOwner {
+        if frame >= self.image_start && frame < self.image_end {
+            return FrameOwner::Image;
+        }
+        if let Some((_, id)) = self.owners[..self.owner_count]
+            .iter()
+            .flatten()
+            .find(|(owned, _)| *owned == frame)
+        {
+            return FrameOwner::Segment(*id);
+        }
+        if self.table_frames[..self.table_count].contains(&frame) {
+            return FrameOwner::Table;
+        }
+        FrameOwner::Free
+    }
+
+    /// W6 不交性判定：逐帧归属两两不交（可检测「同一帧计入两类归属」的构造外错误）。
+    pub fn check_disjoint(&self) -> Result<(), FrameError> {
+        let mut index = 0;
+        while index < self.owner_count {
+            let frame = self.owners[index].map(|(frame, _)| frame).unwrap_or(0);
+            if frame >= self.image_start && frame < self.image_end {
+                return Err(FrameError::Overlap);
+            }
+            if self.table_frames[..self.table_count].contains(&frame) {
+                return Err(FrameError::Overlap);
+            }
+            if self.owners[..index]
+                .iter()
+                .flatten()
+                .any(|(previous, _)| *previous == frame)
+            {
+                return Err(FrameError::Overlap);
+            }
+            index += 1;
+        }
+        index = 0;
+        while index < self.table_count {
+            let frame = self.table_frames[index];
+            if frame >= self.image_start && frame < self.image_end
+                || self.table_frames[..index].contains(&frame)
+            {
+                return Err(FrameError::Overlap);
+            }
+            index += 1;
+        }
+        Ok(())
     }
 
     /// W6 守恒：`free + segment + table + image == universe`。
@@ -167,6 +317,7 @@ impl FrameRegistry {
             table_frames: self.table_count as u64,
             image_frames: self.image_frames as u64,
             conserved: self.check_conservation().is_ok(),
+            disjoint: self.check_disjoint().is_ok(),
         }
     }
 
@@ -212,6 +363,39 @@ pub fn allocate_for_segment(id: u32) -> Result<u64, FrameError> {
 /// 分配一帧保留页表帧（唯一的页表帧取帧入口）。
 pub fn allocate_table_frame() -> Result<u64, FrameError> {
     unsafe { (*global()?).allocate_table_frame() }
+}
+
+/// 关闭某 Segment 的归属标签（帧须已全部归还）。
+pub fn close_segment(id: u32) -> Result<(), FrameError> {
+    unsafe { (*global()?).close_segment(id) }
+}
+
+/// 归还某 Segment 的一帧（销毁或回收路径）。
+pub fn release_frame(id: u32, frame: u64) -> Result<(), FrameError> {
+    unsafe { (*global()?).release_frame(id, frame) }
+}
+
+/// 归还一帧保留页表帧（空表结点回收路径）。
+pub fn release_table_frame(frame: u64) -> Result<(), FrameError> {
+    unsafe { (*global()?).release_table_frame(frame) }
+}
+
+/// 当前空闲帧数（`memseg_create` 的容量前置校验）。
+pub fn free_frames() -> Result<usize, FrameError> {
+    let registry = global()?;
+    unsafe { Ok((*registry).free_frames()) }
+}
+
+/// 逐帧归属查询。
+pub fn owner_of(frame: u64) -> Result<FrameOwner, FrameError> {
+    let registry = global()?;
+    unsafe { Ok((*registry).owner_of(frame)) }
+}
+
+/// W6 不交性判定（owner 列表两两不交、且不与 image 区间相交）。
+pub fn check_disjoint() -> Result<(), FrameError> {
+    let registry = global()?;
+    unsafe { (*registry).check_disjoint() }
 }
 
 /// 观察全局注册表的守恒状态（见证事件用）。
@@ -361,6 +545,53 @@ mod tests {
             registry.allocate_for_segment(1).unwrap();
         }
         assert_eq!(registry.allocate_for_segment(1), Err(FrameError::NoFrame));
+        assert!(registry.check_conservation().is_ok());
+    }
+
+    #[test]
+    fn owner_query_release_and_disjointness_hold() {
+        let mut registry = registry();
+        registry.open_segment(1, Pool::Cpu).unwrap();
+        registry.open_segment(2, Pool::Cpu).unwrap();
+        let a = registry.allocate_for_segment(1).unwrap();
+        let b = registry.allocate_for_segment(2).unwrap();
+        let table = registry.allocate_table_frame().unwrap();
+        assert_eq!(registry.owner_of(a), FrameOwner::Segment(1));
+        assert_eq!(registry.owner_of(b), FrameOwner::Segment(2));
+        assert_eq!(registry.owner_of(table), FrameOwner::Table);
+        assert_eq!(registry.owner_of(0x40_0000), FrameOwner::Image);
+        assert!(registry.check_disjoint().is_ok());
+
+        // 归还后重算守恒与归属；同一帧不会被计两次。
+        registry.release_frame(1, a).unwrap();
+        assert_eq!(registry.owner_of(a), FrameOwner::Free);
+        registry.release_table_frame(table).unwrap();
+        assert_eq!(registry.owner_of(table), FrameOwner::Free);
+        assert!(registry.check_disjoint().is_ok());
+        assert!(registry.check_conservation().is_ok());
+        assert!(registry.witness().disjoint);
+
+        // 构造外错误：同一帧被两个 Segment 认领 → 不交性判定可检出。
+        let index = registry.owner_count;
+        registry.owners[index] = Some((b, 1));
+        registry.owner_count += 1;
+        assert_eq!(registry.check_disjoint(), Err(FrameError::Overlap));
+        assert!(!registry.witness().disjoint);
+    }
+
+    #[test]
+    fn releasing_a_frame_that_is_not_owned_is_rejected() {
+        let mut registry = registry();
+        registry.open_segment(1, Pool::Cpu).unwrap();
+        let frame = registry.allocate_for_segment(1).unwrap();
+        assert_eq!(
+            registry.release_frame(1, frame + 0x1000),
+            Err(FrameError::NotOwned)
+        );
+        assert_eq!(
+            registry.release_table_frame(frame),
+            Err(FrameError::NotOwned)
+        );
         assert!(registry.check_conservation().is_ok());
     }
 

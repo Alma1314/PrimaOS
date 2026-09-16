@@ -87,6 +87,11 @@ extern "C" fn after_resume() -> ! {
     let flags_ok = rflags & (1 << 6) != 0;
 
     protocol::exc_resume_ready(r12, r13, resumed as u32, rsp_ok as u32, flags_ok as u32);
+    // 切片 R：平台 bring-up 区域对象化见证（真实 Segment 对象 + 内核持有的可授权根 Capability）。
+    match kernel::bootstrap::platform_segments_record() {
+        Ok(record) => protocol::platform_segments_ready(&record),
+        Err(_) => protocol::panic_event(),
+    }
     // 切片 P：阶段末见证——初始 Authority 与帧唯一归属守恒（既有 seq 1..21 不变）。
     match kernel::bootstrap::authority_record() {
         Ok(record) => protocol::authority_ready(&record),
@@ -129,6 +134,13 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 N：最后是跨任务阻塞 raise/wait（task1 阻塞在 WAIT，task2 TRAP 唤醒）。
     let exc_wait = kernel::syscall::exc_wait_witness();
     protocol::exc_wait_ready(&exc_wait);
+    // S2-D1/D2：句柄编码与能力生命周期（用户态在唤醒后追加执行，回执读自 Y 页）。
+    protocol::handle_ready();
+    let caps = kernel::syscall::cap_witness();
+    protocol::cap_lifecycle_ready(&caps);
+    // S2-D3：Segment 原语（create/map/unmap/destroy + 清零 + stale）。
+    let memseg = kernel::syscall::memseg_witness();
+    protocol::memseg_ready(&memseg);
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()

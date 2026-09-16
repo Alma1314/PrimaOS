@@ -19,8 +19,12 @@ enum EventKind {
     SyscallFastReady,
     MultitaskReady,
     ExcWaitReady,
+    HandleReady,
+    CapLifecycleReady,
+    MemsegReady,
     PreemptReady,
     ExcResumeReady,
+    PlatformSegmentsReady,
     AuthorityReady,
     FramesReady,
     BootComplete,
@@ -75,11 +79,42 @@ const ENOSYS: u64 = 0xFFFF_FFFF_FFFF_FFDA;
 const USER_CS: u64 = 0x33;
 
 /// 切片 K：能力授权查询的镜像常量，与 `kernel/src/{syscall,bootstrap}.rs` 一致。
-const IMAGE_CAP_ID: u64 = 1;
-const AUTH_GRANTED: u64 = IMAGE_CAP_ID;
+/// S2-D1：句柄 = ((generation << 32) | index)；初始根 cap 为槽 1/2/3 的 generation 1。
+const IMAGE_CAP_HANDLE: u64 = 0x0000_0001_0000_0001;
+const NAMESPACE_CAP_HANDLE: u64 = 0x0000_0001_0000_0002;
+const TASK_CAP_HANDLE: u64 = 0x0000_0001_0000_0003;
+const AUTH_GRANTED: u64 = IMAGE_CAP_HANDLE;
+const EXC_PAGE_FAULT_HANDLE: u64 = 0x0000_0001_0000_0004;
+const EXC_SYSCALL_TRAP_HANDLE: u64 = 0x0000_0001_0000_0005;
+
+/// S2-D2：能力生命周期见证的镜像常量（槽 6 的 gen1 / gen2 句柄）。
+const CAP_CHILD1_HANDLE: u64 = 0x0000_0001_0000_0006;
+const CAP_CHILD2_HANDLE: u64 = 0x0000_0002_0000_0006;
+
+/// S2-D3：Segment 原语见证的镜像常量。
+const USER_SEG_VA: u64 = 0x0000_0A00_0000_5000;
+const MEMSEG_CAP1_HANDLE: u64 = 0x0000_0003_0000_0006;
+const MEMSEG_CAP2_HANDLE: u64 = 0x0000_0001_0000_0007;
+const MEMSEG_PATTERN: u64 = 0xDEC0_DE00_1234_5678;
 /// 负 errno 二补码（ENOENT=-2、EACCES=-13）。
 const ENOENT: u64 = 0xFFFF_FFFF_FFFF_FFFE;
 const EACCES: u64 = 0xFFFF_FFFF_FFFF_FFF3;
+
+/// 切片 R：平台 bring-up 区域对象化的镜像常量，与 `kernel/src/{bootstrap,frames}.rs` 一致。
+const PLATFORM_SEGMENT_COUNT: usize = 13;
+const PLATFORM_SEGMENT_FIRST_ID: u64 = 2;
+const PLATFORM_SEGMENT_LAST_ID: u64 = 14;
+const PLATFORM_SEGMENT_CAP_SLOT_BASE: u64 = 32;
+const PLATFORM_TASK1_CAP_HANDLE: u64 = 0x0000_0001_0000_002d;
+const PLATFORM_TASK2_CAP_HANDLE: u64 = 0x0000_0001_0000_002e;
+const PLATFORM_ACTOR: u64 = 0;
+const PLATFORM_MAPPED: u64 = 11;
+const PLATFORM_DIRECT: u64 = 2;
+/// 每个平台区域的帧数（VSPACE 2、COW 共享+2 私有、其余各 1；和为 16 = `frames_ready.segment`）。
+const PLATFORM_FRAME_COUNTS: [u64; PLATFORM_SEGMENT_COUNT] =
+    [2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+/// `TaskVspaceTable` 中平台区域的逻辑映射条目数（ring3 已把自己两个段完全 unmap）。
+const PLATFORM_VSPACE_ENTRIES: u64 = 11;
 
 /// 切片 L：异常订阅的镜像常量，与 `kernel/src/{syscall,bootstrap}.rs` 一致。
 const EXC_PAGE_FAULT_SOURCE: u64 = 1;
@@ -120,7 +155,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 24] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 28] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -140,11 +175,15 @@ const EXPECTED_EVENTS: [(u32, EventKind); 24] = [
     (17, EventKind::SyscallFastReady),
     (18, EventKind::MultitaskReady),
     (19, EventKind::ExcWaitReady),
-    (20, EventKind::PreemptReady),
-    (21, EventKind::ExcResumeReady),
-    (22, EventKind::AuthorityReady),
-    (23, EventKind::FramesReady),
-    (24, EventKind::BootComplete),
+    (20, EventKind::HandleReady),
+    (21, EventKind::CapLifecycleReady),
+    (22, EventKind::MemsegReady),
+    (23, EventKind::PreemptReady),
+    (24, EventKind::ExcResumeReady),
+    (25, EventKind::PlatformSegmentsReady),
+    (26, EventKind::AuthorityReady),
+    (27, EventKind::FramesReady),
+    (28, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -323,6 +362,27 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_exc_wait_data(exc_wait.data.as_deref())?;
     }
 
+    if let Some(handle) = events
+        .iter()
+        .find(|event| event.kind == EventKind::HandleReady)
+    {
+        validate_handle_data(handle.data.as_deref())?;
+    }
+
+    if let Some(caps) = events
+        .iter()
+        .find(|event| event.kind == EventKind::CapLifecycleReady)
+    {
+        validate_cap_lifecycle_data(caps.data.as_deref())?;
+    }
+
+    if let Some(memseg) = events
+        .iter()
+        .find(|event| event.kind == EventKind::MemsegReady)
+    {
+        validate_memseg_data(memseg.data.as_deref())?;
+    }
+
     if let Some(resume) = events
         .iter()
         .find(|event| event.kind == EventKind::ExcResumeReady)
@@ -335,6 +395,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::PreemptReady)
     {
         validate_preempt_data(preempt.data.as_deref())?;
+    }
+
+    if let Some(platform) = events
+        .iter()
+        .find(|event| event.kind == EventKind::PlatformSegmentsReady)
+    {
+        validate_platform_segments_data(platform.data.as_deref())?;
     }
 
     if let Some(authority) = events
@@ -375,7 +442,7 @@ fn validate_authority_data(data: Option<&str>) -> Result<(), String> {
             "booted" => booted = Some(parse_count(value)?),
             "initial_status" => initial_status = Some(value),
             "entry_in_image" => entry_in_image = Some(parse_count(value)?),
-            "root_ns" => root_ns = Some(parse_count(value)?),
+            "root_ns" => root_ns = Some(parse_addr(value)?),
             "init_running" => init_running = Some(parse_count(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
@@ -395,9 +462,9 @@ fn validate_authority_data(data: Option<&str>) -> Result<(), String> {
             "authority_ready initial_status must be ready, got {initial_status:?}"
         ));
     }
-    if root_ns != Some(2) {
+    if root_ns != Some(NAMESPACE_CAP_HANDLE) {
         return Err(format!(
-            "authority_ready root_ns must be the namespace cap id 2, got {root_ns:?}"
+            "authority_ready root_ns must be the namespace cap handle 0x{NAMESPACE_CAP_HANDLE:x}, got {root_ns:?}"
         ));
     }
     Ok(())
@@ -412,6 +479,7 @@ fn validate_frames_data(data: Option<&str>) -> Result<(), String> {
     let mut table = None;
     let mut image = None;
     let mut conserved = None;
+    let mut disjoint = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -423,6 +491,7 @@ fn validate_frames_data(data: Option<&str>) -> Result<(), String> {
             "table" => table = Some(parse_count(value)?),
             "image" => image = Some(parse_count(value)?),
             "conserved" => conserved = Some(parse_count(value)?),
+            "disjoint" => disjoint = Some(parse_count(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -446,6 +515,11 @@ fn validate_frames_data(data: Option<&str>) -> Result<(), String> {
     if image == 0 || table == 0 || segment == 0 {
         return Err(format!(
             "frames_ready must report non-zero image/table/segment ownership, got image={image}, table={table}, segment={segment}"
+        ));
+    }
+    if disjoint != Some(1) {
+        return Err(format!(
+            "frames_ready disjoint must be 1 (W6 per-frame disjointness holds), got {disjoint:?}"
         ));
     }
     Ok(())
@@ -1160,6 +1234,383 @@ fn validate_multitask_data(data: Option<&str>) -> Result<(), String> {
 
 /// 校验切片 N 的跨任务阻塞 raise/wait 证据：wait 与 trap 均来自 CPL3；一次 raise 投递、
 /// 经 pending 直投唤醒 task 1；payload 为 syscall_trap 通知编码；阻塞一次；回执一致。
+fn validate_handle_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "handle_ready event is missing its data field".to_owned())?;
+    let mut index_bits = None;
+    let mut generation_bits = None;
+    let mut image = None;
+    let mut namespace = None;
+    let mut task = None;
+    let mut page_fault = None;
+    let mut syscall_trap = None;
+    let mut malformed_rejected = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "index_bits" => index_bits = Some(parse_decimal(value, "index_bits")?),
+            "generation_bits" => generation_bits = Some(parse_decimal(value, "generation_bits")?),
+            "image" => image = Some(parse_addr(value)?),
+            "namespace" => namespace = Some(parse_addr(value)?),
+            "task" => task = Some(parse_addr(value)?),
+            "page_fault" => page_fault = Some(parse_addr(value)?),
+            "syscall_trap" => syscall_trap = Some(parse_addr(value)?),
+            "malformed_rejected" => {
+                malformed_rejected = Some(parse_decimal(value, "malformed_rejected")?)
+            }
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let index_bits =
+        index_bits.ok_or_else(|| "missing index_bits in handle_ready data".to_owned())?;
+    let generation_bits =
+        generation_bits.ok_or_else(|| "missing generation_bits in handle_ready data".to_owned())?;
+    let image = image.ok_or_else(|| "missing image in handle_ready data".to_owned())?;
+    let namespace = namespace.ok_or_else(|| "missing namespace in handle_ready data".to_owned())?;
+    let task = task.ok_or_else(|| "missing task in handle_ready data".to_owned())?;
+    let page_fault =
+        page_fault.ok_or_else(|| "missing page_fault in handle_ready data".to_owned())?;
+    let syscall_trap =
+        syscall_trap.ok_or_else(|| "missing syscall_trap in handle_ready data".to_owned())?;
+    let malformed_rejected = malformed_rejected
+        .ok_or_else(|| "missing malformed_rejected in handle_ready data".to_owned())?;
+
+    if index_bits != 32 || generation_bits != 32 {
+        return Err(format!(
+            "handle_ready must use 32-bit index + 32-bit generation, got {index_bits}/{generation_bits}"
+        ));
+    }
+    if image != IMAGE_CAP_HANDLE
+        || namespace != NAMESPACE_CAP_HANDLE
+        || task != TASK_CAP_HANDLE
+        || page_fault != EXC_PAGE_FAULT_HANDLE
+        || syscall_trap != EXC_SYSCALL_TRAP_HANDLE
+    {
+        return Err(format!(
+            "handle_ready initial handles mismatch: image=0x{image:x}, namespace=0x{namespace:x}, task=0x{task:x}, page_fault=0x{page_fault:x}, syscall_trap=0x{syscall_trap:x}"
+        ));
+    }
+    if malformed_rejected != 1 {
+        return Err(
+            "handle_ready malformed_rejected must be 1 — raw integers (generation 0) must not decode"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_cap_lifecycle_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "cap_lifecycle_ready event is missing its data field".to_owned())?;
+    let mut derive = None;
+    let mut escalate = None;
+    let mut drop = None;
+    let mut drop_again = None;
+    let mut reuse = None;
+    let mut stale = None;
+    let mut grant = None;
+    let mut drop_new = None;
+    let mut structural = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "derive" => derive = Some(parse_addr(value)?),
+            "escalate" => escalate = Some(parse_addr(value)?),
+            "drop" => drop = Some(parse_addr(value)?),
+            "drop_again" => drop_again = Some(parse_addr(value)?),
+            "reuse" => reuse = Some(parse_addr(value)?),
+            "stale" => stale = Some(parse_addr(value)?),
+            "grant" => grant = Some(parse_addr(value)?),
+            "drop_new" => drop_new = Some(parse_addr(value)?),
+            "structural" => structural = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let derive = derive.ok_or_else(|| "missing derive in cap_lifecycle_ready data".to_owned())?;
+    let escalate =
+        escalate.ok_or_else(|| "missing escalate in cap_lifecycle_ready data".to_owned())?;
+    let drop = drop.ok_or_else(|| "missing drop in cap_lifecycle_ready data".to_owned())?;
+    let drop_again =
+        drop_again.ok_or_else(|| "missing drop_again in cap_lifecycle_ready data".to_owned())?;
+    let reuse = reuse.ok_or_else(|| "missing reuse in cap_lifecycle_ready data".to_owned())?;
+    let stale = stale.ok_or_else(|| "missing stale in cap_lifecycle_ready data".to_owned())?;
+    let grant = grant.ok_or_else(|| "missing grant in cap_lifecycle_ready data".to_owned())?;
+    let drop_new =
+        drop_new.ok_or_else(|| "missing drop_new in cap_lifecycle_ready data".to_owned())?;
+    let structural =
+        structural.ok_or_else(|| "missing structural in cap_lifecycle_ready data".to_owned())?;
+
+    if derive != CAP_CHILD1_HANDLE {
+        return Err(format!(
+            "cap_lifecycle_ready derive (0x{derive:x}) must be the first derived handle 0x{CAP_CHILD1_HANDLE:x}"
+        ));
+    }
+    if escalate != EACCES {
+        return Err(format!(
+            "cap_lifecycle_ready escalate (0x{escalate:x}) must be EACCES — rights escalation must be denied"
+        ));
+    }
+    if drop != 0 {
+        return Err(format!(
+            "cap_lifecycle_ready drop (0x{drop:x}) must be 0 — dropping a held capability succeeds"
+        ));
+    }
+    if drop_again != ENOENT {
+        return Err(format!(
+            "cap_lifecycle_ready drop_again (0x{drop_again:x}) must be ENOENT — a dropped handle is gone"
+        ));
+    }
+    if reuse != CAP_CHILD2_HANDLE || reuse == derive {
+        return Err(format!(
+            "cap_lifecycle_ready reuse (0x{reuse:x}) must be 0x{CAP_CHILD2_HANDLE:x} (same slot, next generation)"
+        ));
+    }
+    if stale != ENOENT {
+        return Err(format!(
+            "cap_lifecycle_ready stale (0x{stale:x}) must be ENOENT — S2-X4: slot reuse must not re-grant the old handle"
+        ));
+    }
+    if grant != CAP_CHILD2_HANDLE {
+        return Err(format!(
+            "cap_lifecycle_ready grant (0x{grant:x}) must be the live handle 0x{CAP_CHILD2_HANDLE:x}"
+        ));
+    }
+    if drop_new != 0 {
+        return Err(format!(
+            "cap_lifecycle_ready drop_new (0x{drop_new:x}) must be 0 — cleanup drop succeeds"
+        ));
+    }
+    if structural != EACCES {
+        return Err(format!(
+            "cap_lifecycle_ready structural (0x{structural:x}) must be EACCES — the structural root namespace cap is protected"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_memseg_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "memseg_ready event is missing its data field".to_owned())?;
+    let mut create = None;
+    let mut map = None;
+    let mut zero = None;
+    let mut write = None;
+    let mut unmap = None;
+    let mut destroy = None;
+    let mut stale = None;
+    let mut create2 = None;
+    let mut map2 = None;
+    let mut zero2 = None;
+    let mut unmap2 = None;
+    let mut destroy2 = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "create" => create = Some(parse_addr(value)?),
+            "map" => map = Some(parse_addr(value)?),
+            "zero" => zero = Some(parse_addr(value)?),
+            "write" => write = Some(parse_addr(value)?),
+            "unmap" => unmap = Some(parse_addr(value)?),
+            "destroy" => destroy = Some(parse_addr(value)?),
+            "stale" => stale = Some(parse_addr(value)?),
+            "create2" => create2 = Some(parse_addr(value)?),
+            "map2" => map2 = Some(parse_addr(value)?),
+            "zero2" => zero2 = Some(parse_addr(value)?),
+            "unmap2" => unmap2 = Some(parse_addr(value)?),
+            "destroy2" => destroy2 = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let create = create.ok_or_else(|| "missing create in memseg_ready data".to_owned())?;
+    let map = map.ok_or_else(|| "missing map in memseg_ready data".to_owned())?;
+    let zero = zero.ok_or_else(|| "missing zero in memseg_ready data".to_owned())?;
+    let write = write.ok_or_else(|| "missing write in memseg_ready data".to_owned())?;
+    let unmap = unmap.ok_or_else(|| "missing unmap in memseg_ready data".to_owned())?;
+    let destroy = destroy.ok_or_else(|| "missing destroy in memseg_ready data".to_owned())?;
+    let stale = stale.ok_or_else(|| "missing stale in memseg_ready data".to_owned())?;
+    let create2 = create2.ok_or_else(|| "missing create2 in memseg_ready data".to_owned())?;
+    let map2 = map2.ok_or_else(|| "missing map2 in memseg_ready data".to_owned())?;
+    let zero2 = zero2.ok_or_else(|| "missing zero2 in memseg_ready data".to_owned())?;
+    let unmap2 = unmap2.ok_or_else(|| "missing unmap2 in memseg_ready data".to_owned())?;
+    let destroy2 = destroy2.ok_or_else(|| "missing destroy2 in memseg_ready data".to_owned())?;
+
+    if create != MEMSEG_CAP1_HANDLE {
+        return Err(format!(
+            "memseg_ready create (0x{create:x}) must be the first segment cap 0x{MEMSEG_CAP1_HANDLE:x}"
+        ));
+    }
+    if map != 0 || unmap != 0 || destroy != 0 || map2 != 0 || unmap2 != 0 || destroy2 != 0 {
+        return Err(format!(
+            "memseg_ready map/unmap/destroy must all succeed (0), got map=0x{map:x}, unmap=0x{unmap:x}, destroy=0x{destroy:x}, map2=0x{map2:x}, unmap2=0x{unmap2:x}, destroy2=0x{destroy2:x}"
+        ));
+    }
+    if zero != 0 {
+        return Err(format!(
+            "memseg_ready zero (0x{zero:x}) must be 0 — S2-X3: frames must be zeroed before first visibility"
+        ));
+    }
+    if write != MEMSEG_PATTERN {
+        return Err(format!(
+            "memseg_ready write (0x{write:x}) must read back 0x{MEMSEG_PATTERN:x} — the mapping must be a real writable PTE at 0x{USER_SEG_VA:x}"
+        ));
+    }
+    if stale != EACCES {
+        return Err(format!(
+            "memseg_ready stale (0x{stale:x}) must be EACCES — mapping after memseg_destroy must be denied"
+        ));
+    }
+    if create2 != MEMSEG_CAP2_HANDLE {
+        return Err(format!(
+            "memseg_ready create2 (0x{create2:x}) must be a fresh segment cap 0x{MEMSEG_CAP2_HANDLE:x}"
+        ));
+    }
+    if zero2 != 0 {
+        return Err(format!(
+            "memseg_ready zero2 (0x{zero2:x}) must be 0 — S2-X3: a recycled frame must be zeroed before reuse"
+        ));
+    }
+    Ok(())
+}
+
+/// 切片 R：校验平台 bring-up 13 区域对象化见证（真实 Segment 对象 + 内核持有的根 Capability）。
+fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "platform_segments_ready event is missing its data field".to_owned())?;
+    let mut segments = None;
+    let mut first_id = None;
+    let mut last_id = None;
+    let mut roots = None;
+    let mut task_caps = None;
+    let mut mapped = None;
+    let mut direct = None;
+    let mut direct_ids: Option<Vec<u64>> = None;
+    let mut vspace = None;
+    let mut holder = None;
+    let mut slot_base = None;
+    let mut task1_cap = None;
+    let mut task2_cap = None;
+    let mut caps: Option<Vec<u64>> = None;
+    let mut frames: Option<Vec<u64>> = None;
+    let mut unified = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "segments" => segments = Some(parse_decimal(value, "segments")?),
+            "first_id" => first_id = Some(parse_decimal(value, "first_id")?),
+            "last_id" => last_id = Some(parse_decimal(value, "last_id")?),
+            "roots" => roots = Some(parse_decimal(value, "roots")?),
+            "task_caps" => task_caps = Some(parse_decimal(value, "task_caps")?),
+            "mapped" => mapped = Some(parse_decimal(value, "mapped")?),
+            "direct" => direct = Some(parse_decimal(value, "direct")?),
+            "direct_ids" => direct_ids = Some(parse_decimal_list(value, "direct_ids")?),
+            "vspace" => vspace = Some(parse_decimal(value, "vspace")?),
+            "holder" => holder = Some(parse_decimal(value, "holder")?),
+            "slot_base" => slot_base = Some(parse_decimal(value, "slot_base")?),
+            "task1_cap" => task1_cap = Some(parse_addr(value)?),
+            "task2_cap" => task2_cap = Some(parse_addr(value)?),
+            "caps" => caps = Some(parse_addr_list(value, "caps")?),
+            "frames" => frames = Some(parse_decimal_list(value, "frames")?),
+            "unified" => unified = Some(parse_decimal(value, "unified")?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in platform_segments_ready data");
+    let segments = segments.ok_or_else(|| missing("segments"))?;
+    let first_id = first_id.ok_or_else(|| missing("first_id"))?;
+    let last_id = last_id.ok_or_else(|| missing("last_id"))?;
+    let roots = roots.ok_or_else(|| missing("roots"))?;
+    let task_caps = task_caps.ok_or_else(|| missing("task_caps"))?;
+    let mapped = mapped.ok_or_else(|| missing("mapped"))?;
+    let direct = direct.ok_or_else(|| missing("direct"))?;
+    let direct_ids = direct_ids.ok_or_else(|| missing("direct_ids"))?;
+    let vspace = vspace.ok_or_else(|| missing("vspace"))?;
+    let holder = holder.ok_or_else(|| missing("holder"))?;
+    let slot_base = slot_base.ok_or_else(|| missing("slot_base"))?;
+    let task1_cap = task1_cap.ok_or_else(|| missing("task1_cap"))?;
+    let task2_cap = task2_cap.ok_or_else(|| missing("task2_cap"))?;
+    let caps = caps.ok_or_else(|| missing("caps"))?;
+    let frames = frames.ok_or_else(|| missing("frames"))?;
+    let unified = unified.ok_or_else(|| missing("unified"))?;
+
+    for (key, actual, expected) in [
+        ("segments", segments, PLATFORM_SEGMENT_COUNT as u64),
+        ("first_id", first_id, PLATFORM_SEGMENT_FIRST_ID),
+        ("last_id", last_id, PLATFORM_SEGMENT_LAST_ID),
+        ("roots", roots, PLATFORM_SEGMENT_COUNT as u64),
+        ("task_caps", task_caps, 2),
+        ("mapped", mapped, PLATFORM_MAPPED),
+        ("direct", direct, PLATFORM_DIRECT),
+        ("vspace", vspace, PLATFORM_VSPACE_ENTRIES),
+        ("holder", holder, PLATFORM_ACTOR),
+        ("slot_base", slot_base, PLATFORM_SEGMENT_CAP_SLOT_BASE),
+    ] {
+        if actual != expected {
+            return Err(format!(
+                "platform_segments_ready {key} is {actual}, expected {expected}"
+            ));
+        }
+    }
+    if unified != 1 {
+        return Err(
+            "platform_segments_ready unified must be 1 — frame labels must equal segment ids"
+                .to_owned(),
+        );
+    }
+    if direct_ids.as_slice() != [2, 3] {
+        return Err(format!(
+            "platform_segments_ready direct_ids is {direct_ids:?}, expected [2, 3] (VSPACE, COW)"
+        ));
+    }
+    if task1_cap != PLATFORM_TASK1_CAP_HANDLE || task2_cap != PLATFORM_TASK2_CAP_HANDLE {
+        return Err(format!(
+            "platform_segments_ready task caps are 0x{task1_cap:x}/0x{task2_cap:x}, expected 0x{PLATFORM_TASK1_CAP_HANDLE:x}/0x{PLATFORM_TASK2_CAP_HANDLE:x}"
+        ));
+    }
+    if caps.len() != PLATFORM_SEGMENT_COUNT {
+        return Err(format!(
+            "platform_segments_ready caps has {} entries, expected {PLATFORM_SEGMENT_COUNT}",
+            caps.len()
+        ));
+    }
+    for (index, cap) in caps.iter().enumerate() {
+        let expected = (1u64 << 32) | (PLATFORM_SEGMENT_CAP_SLOT_BASE + index as u64);
+        if *cap != expected {
+            return Err(format!(
+                "platform_segments_ready caps[{index}] is 0x{cap:x}, expected 0x{expected:x} (slot {})",
+                PLATFORM_SEGMENT_CAP_SLOT_BASE + index as u64
+            ));
+        }
+    }
+    if frames.as_slice() != PLATFORM_FRAME_COUNTS {
+        return Err(format!(
+            "platform_segments_ready frames is {frames:?}, expected {PLATFORM_FRAME_COUNTS:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_decimal_list(value: &str, key: &str) -> Result<Vec<u64>, String> {
+    value
+        .split(',')
+        .map(|item| parse_decimal(item, key))
+        .collect()
+}
+
+fn parse_addr_list(value: &str, key: &str) -> Result<Vec<u64>, String> {
+    value
+        .split(',')
+        .map(|item| {
+            parse_addr(item).map_err(|error| format!("invalid {key} entry {item}: {error}"))
+        })
+        .collect()
+}
+
 fn validate_exc_wait_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "exc_wait_ready event is missing its data field".to_owned())?;
     let mut cs_wait = None;
@@ -1607,9 +2058,9 @@ fn validate_bootstrap_data(data: Option<&str>) -> Result<(), String> {
         match key {
             "task" => task = Some(parse_count(value)?),
             "caps" => caps = Some(parse_count(value)?),
-            "image_cap" => image_cap = Some(parse_count(value)?),
-            "namespace_cap" => namespace_cap = Some(parse_count(value)?),
-            "task_cap" => task_cap = Some(parse_count(value)?),
+            "image_cap" => image_cap = Some(parse_addr(value)?),
+            "namespace_cap" => namespace_cap = Some(parse_addr(value)?),
+            "task_cap" => task_cap = Some(parse_addr(value)?),
             "image_base" => image_base = Some(parse_addr(value)?),
             "image_len" => image_len = Some(parse_count(value)?),
             "image_frames" => image_frames = Some(parse_count(value)?),
@@ -1622,9 +2073,9 @@ fn validate_bootstrap_data(data: Option<&str>) -> Result<(), String> {
     }
     if task != Some(1)
         || caps != Some(3)
-        || image_cap != Some(1)
-        || namespace_cap != Some(2)
-        || task_cap != Some(3)
+        || image_cap != Some(IMAGE_CAP_HANDLE)
+        || namespace_cap != Some(NAMESPACE_CAP_HANDLE)
+        || task_cap != Some(TASK_CAP_HANDLE)
     {
         return Err(format!(
             "bootstrap authority mismatch: task={task:?}, caps={caps:?}, image_cap={image_cap:?}, namespace_cap={namespace_cap:?}, task_cap={task_cap:?}"
@@ -1876,8 +2327,12 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("syscall_fast_ready", "ok") => EventKind::SyscallFastReady,
         ("multitask_ready", "ok") => EventKind::MultitaskReady,
         ("exc_wait_ready", "ok") => EventKind::ExcWaitReady,
+        ("handle_ready", "ok") => EventKind::HandleReady,
+        ("cap_lifecycle_ready", "ok") => EventKind::CapLifecycleReady,
+        ("memseg_ready", "ok") => EventKind::MemsegReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
+        ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
         ("authority_ready", "ok") => EventKind::AuthorityReady,
         ("frames_ready", "ok") => EventKind::FramesReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
@@ -1909,8 +2364,12 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
+            | EventKind::HandleReady
+            | EventKind::CapLifecycleReady
+            | EventKind::MemsegReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
+            | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
             | EventKind::FramesReady,
             None,
@@ -1935,8 +2394,12 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SyscallFastReady
             | EventKind::MultitaskReady
             | EventKind::ExcWaitReady
+            | EventKind::HandleReady
+            | EventKind::CapLifecycleReady
+            | EventKind::MemsegReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
+            | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
             | EventKind::FramesReady,
             Some(_),
@@ -1968,23 +2431,86 @@ mod tests {
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
-        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=1;namespace_cap=2;task_cap=3;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
+        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
         "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
         "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
-        "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x1;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x1;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
+        "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
         "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
         "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
-        "PRIMA|v=1|seq=20|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=21|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=22|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=2;init_running=1\n",
-        "PRIMA|v=1|seq=23|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1\n",
-        "PRIMA|v=1|seq=24|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
+        "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
+        "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
+        "PRIMA|v=1|seq=23|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=24|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=25|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=26|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=27|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=28|event=boot_complete|status=ok\r\n",
     );
+
+    #[test]
+    fn rejects_handle_ready_with_bare_index_encoding() {
+        let output = VALID.replace("image=0x100000001", "image=0x1");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("initial handles mismatch"), "{error}");
+    }
+
+    #[test]
+    fn rejects_cap_lifecycle_without_generation_bump() {
+        // S2-X4：复用后旧句柄未失效（新句柄等于旧句柄）必须被拒。
+        let output = VALID.replace("reuse=0x200000006", "reuse=0x100000006");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("same slot, next generation"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memseg_ready_with_dirty_recycled_frame() {
+        // S2-X3：复用帧未清零（读回非 0）必须被拒。
+        let output = VALID.replace("zero2=0x0", "zero2=0x1");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("recycled frame must be zeroed"), "{error}");
+    }
+
+    #[test]
+    fn rejects_memseg_ready_with_stale_mapping_granted() {
+        let output = VALID.replace("stale=0xfffffffffffffff3", "stale=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("mapping after memseg_destroy"), "{error}");
+    }
+
+    #[test]
+    fn rejects_platform_segments_with_non_unified_frame_labels() {
+        // 帧归属标签未与 Segment id 统一（仍是独立的 100+id 命名空间）必须被拒。
+        let output = VALID.replace(";unified=1", ";unified=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("unified must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_platform_segments_with_shifted_root_cap_slots() {
+        let output = VALID.replace("caps=0x100000020,", "caps=0x100000021,");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("caps[0]"), "{error}");
+    }
+
+    #[test]
+    fn rejects_platform_segments_with_wrong_frame_counts() {
+        let output = VALID.replace(";frames=2,3,", ";frames=1,3,");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("expected"), "{error}");
+    }
+
+    #[test]
+    fn rejects_platform_segments_without_direct_boundary() {
+        let output = VALID.replace("direct_ids=2,3", "direct_ids=2,4");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("direct_ids"), "{error}");
+    }
 
     #[test]
     fn rejects_authority_ready_with_wrong_initial_status() {
@@ -2021,6 +2547,13 @@ mod tests {
         let output = VALID.replace("image=2;conserved=1", "image=2;conserved=0");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("conserved must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_frames_ready_without_disjointness() {
+        let output = VALID.replace("conserved=1;disjoint=1", "conserved=1;disjoint=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("disjoint must be 1"), "{error}");
     }
 
     #[test]
@@ -2676,7 +3209,7 @@ mod tests {
     }
 
     /// 切片 K 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const AUTH_DATA: &str = "cs_all=1;granted_ret=0x1;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x1;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe";
+    const AUTH_DATA: &str = "cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe";
 
     #[test]
     fn rejects_auth_not_all_cpl3() {

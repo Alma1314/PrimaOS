@@ -9,6 +9,7 @@ pub mod exc;
 pub mod fault;
 pub mod frames;
 pub mod gdt;
+pub mod handle;
 pub mod idt;
 pub mod mem;
 pub mod msr;

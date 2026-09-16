@@ -9,6 +9,18 @@ pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
     phys_map_offset + phys
 }
 
+/// S2-X3：把一帧清零（§7.1 要求帧在**对新 Segment 可见之前**清零）。
+///
+/// 归还帧仍在空闲池中保留上次归属的字节，故每次 `memseg_create` 取帧后必须调用本函数。
+pub fn zero_frame(phys: u64, phys_map_offset: u64) {
+    let base = phys_to_virt(phys, phys_map_offset);
+    let mut index = 0;
+    while index < FRAME_SIZE / 8 {
+        unsafe { core::ptr::write_volatile((base + index * 8) as *mut u64, 0) };
+        index += 1;
+    }
+}
+
 /// 读取一个物理地址处的字节（经直映射），返回 (虚拟地址, 读到字节)。
 ///
 /// 纯逻辑部分（换算 va）在本模块，真正的 `unsafe` 读取收敛到细化模块

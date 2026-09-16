@@ -22,12 +22,12 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
-    self, AuthError, ExcAuditCounts, ExcError, ExcKind, IMAGE_CAP_ID, INIT_TASK_ID,
+    self, AuthError, DropError, ExcAuditCounts, ExcError, ExcKind, IMAGE_CAP_HANDLE, INIT_TASK_ID,
 };
 use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
 use crate::mem::phys_to_virt;
-use crate::rights::Right;
+use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
 use crate::vspace::{self, PT_PRESENT, PT_USER};
@@ -52,6 +52,46 @@ pub const SYS_YIELD: u64 = 8;
 pub const SYS_EXC_WAIT: u64 = 9;
 /// 切片 N：发起一次 syscall trap，内核据此 `raise_exception(syscall_trap_source, SyscallTrap)`。
 pub const SYS_TRAP: u64 = 10;
+/// S2-D2：`cap_derive`（`args[0]=parent handle`、`args[1]=rights bitset`）。
+pub const SYS_CAP_DERIVE: u64 = 11;
+/// S2-D2：`cap_drop`（`args[0]=handle`）。
+pub const SYS_CAP_DROP: u64 = 12;
+/// S2-D3：`memseg_create`（`args[0]=page_count`、`args[1]=allowed_access bits`）。
+pub const SYS_MEMSEG_CREATE: u64 = 13;
+/// S2-D3：`memseg_map`（`args[0..5] = seg_cap, task_cap, seg_offset, target_base, page_count, access`）。
+pub const SYS_MEMSEG_MAP: u64 = 14;
+/// S2-D3：`memseg_unmap`（`args[0..2] = task_cap, target_base, page_count`）。
+pub const SYS_MEMSEG_UNMAP: u64 = 15;
+/// S2-D3：`memseg_destroy`（`args[0]=seg_cap`）。
+pub const SYS_MEMSEG_DESTROY: u64 = 16;
+
+/// S2-D3：用户创建 Segment 的映射 VA（PML4 槽 20 内、与既有区域不相交）。
+pub const USER_SEG_VA: u64 = USER_BASE_VA + 0x5000;
+/// 访问位集：`R` / `W`（供 `memseg_create`/`map` 的 `access` 参数）。
+pub const ACCESS_R_BITS: u64 = 1 << (Right::SegMapR as u32);
+pub const ACCESS_W_BITS: u64 = 1 << (Right::SegMapW as u32);
+/// `R|W` 段权限。
+pub const MEMSEG_RW_BITS: u64 = ACCESS_R_BITS | ACCESS_W_BITS;
+/// 用户代码写入新映射页的模式值（证明真实 PTE 可写）。
+pub const MEMSEG_PATTERN: u64 = 0xDEC0_DE00_1234_5678;
+/// 第一次 `memseg_create` 铸出的根 Capability（槽 6 的第 3 代——能力生命周期已释放两次）。
+pub const MEMSEG_CAP1_HANDLE: u64 = 0x0000_0003_0000_0006;
+/// 第二次 `memseg_create` 铸出的根 Capability（槽 7 的第 1 代）。
+pub const MEMSEG_CAP2_HANDLE: u64 = 0x0000_0001_0000_0007;
+
+/// S2-D3：Y 回执页中 memseg 各步的字节偏移。
+pub const MEMSEG_RECEIPT_CREATE: u64 = 240;
+pub const MEMSEG_RECEIPT_MAP: u64 = 248;
+pub const MEMSEG_RECEIPT_ZERO: u64 = 256;
+pub const MEMSEG_RECEIPT_WRITE: u64 = 264;
+pub const MEMSEG_RECEIPT_UNMAP: u64 = 272;
+pub const MEMSEG_RECEIPT_DESTROY: u64 = 280;
+pub const MEMSEG_RECEIPT_STALE: u64 = 288;
+pub const MEMSEG_RECEIPT_CREATE2: u64 = 296;
+pub const MEMSEG_RECEIPT_MAP2: u64 = 304;
+pub const MEMSEG_RECEIPT_ZERO2: u64 = 312;
+pub const MEMSEG_RECEIPT_UNMAP2: u64 = 320;
+pub const MEMSEG_RECEIPT_DESTROY2: u64 = 328;
 /// 未登记号：必须得到确定性 `ENOSYS`。
 pub const SYS_BAD: u64 = 0xDEAD;
 
@@ -93,20 +133,22 @@ pub const COPY_EXPECTED: u64 = USER_STORE_VALUE;
 pub const BAD_PTR: u64 = USER_BASE_VA + 0x20_0000;
 
 /// 授权查询使用的 Capability：Bootstrap 初始 image cap（持有者拥有 `SegMapR` 但无 `SegMapW`）。
-pub const AUTHORIZE_CAP: u64 = IMAGE_CAP_ID as u64;
-/// 成功授予时返回的凭据（即被授权的 cap id）。
-pub const AUTHORIZE_GRANTED: u64 = IMAGE_CAP_ID as u64;
+pub const AUTHORIZE_CAP: u64 = IMAGE_CAP_HANDLE.encode();
+/// 成功授予时返回的凭据（即被授权的 cap 句柄）。
+pub const AUTHORIZE_GRANTED: u64 = IMAGE_CAP_HANDLE.encode();
 /// 权限编码：`SegMapR`（init image cap 具备）。
 pub const RIGHT_SEGMAPR: u64 = 1;
 /// 权限编码：`SegMapW`（init image cap 不具备，用于见证拒绝）。
 pub const RIGHT_SEGMAPW: u64 = 2;
-/// 授权查询用的不存在 Capability ID（见证 `ENOENT`）。
-pub const UNSET_CAP: u64 = 999;
+/// 授权查询用的**格式合法但从未分配**的句柄（槽 60、generation 1）→ 见证 `ENOENT`。
+///
+/// S2-D1 后裸整数 `999` 不再是合法句柄（其 generation 为 0 → `EINVAL`），故改用未分配槽位。
+pub const UNSET_CAP: u64 = (1u64 << 32) | 60;
 
-/// 切片 L：初始化创建的 `page_fault_source` Capability ID（镜像常量，见 bootstrap.rs）。
-pub const EXC_PAGE_FAULT_CAP: u64 = bootstrap::EXC_SOURCE_CAP_BASE as u64;
-/// 切片 L：初始化创建的 `syscall_trap_source` Capability ID。
-pub const EXC_SYSCALL_TRAP_CAP: u64 = bootstrap::EXC_SOURCE_CAP_BASE as u64 + 1;
+/// 切片 L：初始化创建的 `page_fault_source` Capability 句柄（镜像常量，见 bootstrap.rs）。
+pub const EXC_PAGE_FAULT_CAP: u64 = bootstrap::EXC_PAGE_FAULT_HANDLE.encode();
+/// 切片 L：初始化创建的 `syscall_trap_source` Capability 句柄。
+pub const EXC_SYSCALL_TRAP_CAP: u64 = bootstrap::EXC_SYSCALL_TRAP_HANDLE.encode();
 /// 切片 L：异常种类编码（镜像 `bootstrap::kind_code`）。
 pub const EXC_KIND_PAGEFAULT: u64 = 1;
 /// 切片 L：异常种类编码（镜像 `bootstrap::kind_code`）。
@@ -154,30 +196,138 @@ pub const fn errno_name(errno: Errno) -> &'static str {
     }
 }
 
+/// S2-D2：权限编码 `Derive`（`SYS_AUTHORIZE` 的 right code）。
+pub const RIGHT_DERIVE: u64 = 0;
+/// S2-D2：`cap_derive` 请求权限位集——仅 `Derive`（`Right::Derive` 是第 0 位）。
+pub const RIGHTS_DERIVE_BITS: u64 = 1;
+/// S2-D2：`cap_derive` 越权请求位集——`SegMapW`（不在 image cap 权限内）。
+pub const RIGHTS_SEGMAPW_BITS: u64 = 1 << (Right::SegMapW as u32);
+
+/// S2-D2：第一次派生得到的子句柄（槽 6、generation 1；槽 1..5 已被初始根与异常源占用）。
+pub const CAP_CHILD1_HANDLE: u64 = 0x0000_0001_0000_0006;
+/// S2-D2：槽 6 释放后复用得到的子句柄（generation 2）。
+pub const CAP_CHILD2_HANDLE: u64 = 0x0000_0002_0000_0006;
+
+/// S2-D2：Y 回执页中能力生命周期各步的字节偏移。
+pub const CAP_RECEIPT_CHILD1: u64 = 168;
+pub const CAP_RECEIPT_ESCALATE: u64 = 176;
+pub const CAP_RECEIPT_DROP: u64 = 184;
+pub const CAP_RECEIPT_DROP_AGAIN: u64 = 192;
+pub const CAP_RECEIPT_CHILD2: u64 = 200;
+pub const CAP_RECEIPT_STALE: u64 = 208;
+pub const CAP_RECEIPT_GRANT: u64 = 216;
+pub const CAP_RECEIPT_DROP2: u64 = 224;
+pub const CAP_RECEIPT_STRUCTURAL: u64 = 232;
+
 /// 权限编码到 [`Right`] 的映射（纯函数，host 可测）。
 pub const fn right_of(code: u64) -> Option<Right> {
     match code {
+        RIGHT_DERIVE => Some(Right::Derive),
         RIGHT_SEGMAPR => Some(Right::SegMapR),
         RIGHT_SEGMAPW => Some(Right::SegMapW),
         _ => None,
     }
 }
 
+/// S2-D2：能力生命周期的用户态回执（从 Y 回执页读回；单核 boot 早期无并发）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapWitness {
+    pub child1: u64,
+    pub escalate: u64,
+    pub drop: u64,
+    pub drop_again: u64,
+    pub child2: u64,
+    pub stale: u64,
+    pub grant: u64,
+    pub drop2: u64,
+    pub structural: u64,
+}
+
+impl CapWitness {
+    /// 纯判定：派生 → 越权拒绝 → drop → 重复 drop → 槽位复用 → stale 拒绝 → 授权 → 结构性根保护。
+    pub fn evidence_ok(&self) -> bool {
+        self.child1 == CAP_CHILD1_HANDLE
+            && self.escalate == encode_errno(Errno::Access)
+            && self.drop == 0
+            && self.drop_again == encode_errno(Errno::NoEnt)
+            && self.child2 == CAP_CHILD2_HANDLE
+            && self.child2 != self.child1
+            && self.stale == encode_errno(Errno::NoEnt)
+            && self.grant == CAP_CHILD2_HANDLE
+            && self.drop2 == 0
+            && self.structural == encode_errno(Errno::Access)
+    }
+}
+
+fn read_user_qword(va: u64) -> u64 {
+    unsafe { core::ptr::read_volatile(va as *const u64) }
+}
+
+/// 读取能力生命周期回执（`user_trap_exit` 中在 task 1 的根下调用）。
+pub fn cap_witness() -> CapWitness {
+    let base = USER_Y_VA;
+    CapWitness {
+        child1: read_user_qword(base + CAP_RECEIPT_CHILD1),
+        escalate: read_user_qword(base + CAP_RECEIPT_ESCALATE),
+        drop: read_user_qword(base + CAP_RECEIPT_DROP),
+        drop_again: read_user_qword(base + CAP_RECEIPT_DROP_AGAIN),
+        child2: read_user_qword(base + CAP_RECEIPT_CHILD2),
+        stale: read_user_qword(base + CAP_RECEIPT_STALE),
+        grant: read_user_qword(base + CAP_RECEIPT_GRANT),
+        drop2: read_user_qword(base + CAP_RECEIPT_DROP2),
+        structural: read_user_qword(base + CAP_RECEIPT_STRUCTURAL),
+    }
+}
+
+/// S2-D3：`memseg_*` 错误到 errno 的映射（纯函数，host 可测）。
+pub const fn memseg_errno(error: crate::bootstrap::MemsegError) -> Errno {
+    use crate::bootstrap::MemsegError as E;
+    match error {
+        E::ZeroSize | E::InvalidAccess | E::MalformedHandle | E::WrongRightType => Errno::Invalid,
+        E::NoSuchCapability
+        | E::StaleHandle
+        | E::NotInstalled
+        | E::CapacityExceeded
+        | E::NotMapped => Errno::NoEnt,
+        E::NotHolder
+        | E::MissingRight
+        | E::MissingMapRight
+        | E::RightsExceeded
+        | E::TargetDead
+        | E::Overlap
+        | E::EntryMapping
+        | E::StillMapped => Errno::Access,
+        E::OutOfBounds => Errno::Fault,
+        E::NoMemory | E::AuditFull => Errno::NoSpace,
+    }
+}
+
 /// 授权失败原因到 errno 的映射（纯函数，host 可测）。
+///
+/// S2-D1：句柄编码非法 → `EINVAL`；槽位从未分配 / 已释放 / generation 落后（stale）→
+/// `ENOENT`（对用户不可区分，避免泄露槽位复用信息）；非持有者 / 缺权限 / 目标已销毁 →
+/// `EACCES`（目标已销毁即 stale token，不可授权）。
 pub const fn auth_errno(error: AuthError) -> Errno {
     match error {
-        AuthError::NoSuchCapability | AuthError::NotInstalled => Errno::NoEnt,
-        AuthError::Inactive | AuthError::NotHolder | AuthError::MissingRight => Errno::Access,
+        AuthError::MalformedHandle => Errno::Invalid,
+        AuthError::NoSuchCapability | AuthError::StaleHandle | AuthError::NotInstalled => {
+            Errno::NoEnt
+        }
+        AuthError::NotHolder | AuthError::MissingRight | AuthError::TargetDead => Errno::Access,
     }
 }
 
 /// 切片 K：授权查询服务——查 Bootstrap 授权表并编码结果。
-fn authorize_call(cap_id: u64, right_code: u64) -> u64 {
+fn authorize_call(raw_cap: u64, right_code: u64) -> u64 {
     let Some(right) = right_of(right_code) else {
         return encode_errno(Errno::Invalid);
     };
-    match bootstrap::authorize(sched::current(), cap_id as u32, right) {
-        Ok(granted) => granted as u64,
+    let cap = match bootstrap::decode_handle(raw_cap) {
+        Ok(cap) => cap,
+        Err(error) => return encode_errno(auth_errno(error)),
+    };
+    match bootstrap::authorize(sched::current(), cap, right) {
+        Ok(granted) => granted.encode(),
         Err(error) => encode_errno(auth_errno(error)),
     }
 }
@@ -205,21 +355,81 @@ pub const fn exc_errno(error: ExcError) -> Errno {
 }
 
 /// 切片 L：订阅服务——经全局授权表登记订阅。
-fn exc_subscribe_call(cap_id: u64, kind_code: u64) -> u64 {
+fn exc_subscribe_call(raw_cap: u64, kind_code: u64) -> u64 {
     let Some(kind) = kind_of(kind_code) else {
         return encode_errno(Errno::Invalid);
     };
-    match bootstrap::exc_subscribe(sched::current(), cap_id as u32, kind) {
+    let cap = match bootstrap::decode_handle(raw_cap) {
+        Ok(cap) => cap,
+        Err(_) => return encode_errno(Errno::Invalid),
+    };
+    match bootstrap::exc_subscribe(sched::current(), cap, kind) {
         Ok(source_id) => source_id as u64,
         Err(error) => encode_errno(exc_errno(error)),
     }
 }
 
 /// 切片 L：取消订阅服务——经全局授权表移除订阅。
-fn exc_unsubscribe_call(cap_id: u64) -> u64 {
-    match bootstrap::exc_unsubscribe(sched::current(), cap_id as u32) {
+fn exc_unsubscribe_call(raw_cap: u64) -> u64 {
+    let cap = match bootstrap::decode_handle(raw_cap) {
+        Ok(cap) => cap,
+        Err(_) => return encode_errno(Errno::Invalid),
+    };
+    match bootstrap::exc_unsubscribe(sched::current(), cap) {
         Ok(source_id) => source_id as u64,
         Err(error) => encode_errno(exc_errno(error)),
+    }
+}
+
+/// S2-D2：`cap_derive` 的 errno 映射。
+pub const fn derive_errno(error: bootstrap::DeriveError) -> Errno {
+    match error {
+        bootstrap::DeriveError::MalformedHandle | bootstrap::DeriveError::WrongRightType => {
+            Errno::Invalid
+        }
+        bootstrap::DeriveError::NoSuchParent
+        | bootstrap::DeriveError::StaleHandle
+        | bootstrap::DeriveError::CapacityExceeded => Errno::NoEnt,
+        bootstrap::DeriveError::ParentNotHeld
+        | bootstrap::DeriveError::TargetDead
+        | bootstrap::DeriveError::MissingDerive
+        | bootstrap::DeriveError::RightsEscalation => Errno::Access,
+        bootstrap::DeriveError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// S2-D2：`cap_drop` 的 errno 映射。
+pub const fn drop_errno(error: DropError) -> Errno {
+    match error {
+        DropError::MalformedHandle => Errno::Invalid,
+        DropError::NoSuchCapability | DropError::StaleHandle | DropError::NotInstalled => {
+            Errno::NoEnt
+        }
+        DropError::NotHolder | DropError::StructuralCap => Errno::Access,
+        DropError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// S2-D2：`cap_derive` 服务——`args[0]=parent handle`、`args[1]=rights bitset`。
+fn cap_derive_call(raw_parent: u64, rights_bits: u64) -> u64 {
+    let Ok(parent) = bootstrap::decode_handle(raw_parent) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let rights = Rights::from_bits(rights_bits as u32);
+    match bootstrap::derive_capability(sched::current(), parent, rights) {
+        Ok(child) => child.encode(),
+        Err(error) => encode_errno(derive_errno(error)),
+    }
+}
+
+/// S2-D2：`cap_drop` 服务——`args[0]=handle`。
+fn cap_drop_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::drop_capability(sched::current(), cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(drop_errno(error)),
     }
 }
 
@@ -436,7 +646,11 @@ fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     };
     let cur = sched::current();
-    let source_id = match bootstrap::exc_subscribed(cur, cap_id as u32, kind) {
+    let cap = match bootstrap::decode_handle(cap_id) {
+        Ok(cap) => cap,
+        Err(_) => return encode_errno(Errno::Invalid),
+    };
+    let source_id = match bootstrap::exc_subscribed(cur, cap, kind) {
         Ok(source_id) => source_id,
         Err(error) => return encode_errno(exc_errno(error)),
     };
@@ -465,6 +679,139 @@ fn yield_call() -> ! {
     sched::switch_to(next)
 }
 
+/// S2-D3：`memseg_create` 服务。
+fn memseg_create_call(page_count: u64, access_bits: u64) -> u64 {
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    let access = Rights::from_bits(access_bits as u32);
+    match bootstrap::memseg_create(sched::current(), page_count as usize, access, offset) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
+/// S2-D3：`memseg_map` 服务（目标为当前任务，故映射进当前根）。
+fn memseg_map_call(
+    raw_seg: u64,
+    raw_task: u64,
+    seg_offset: u64,
+    target_base: u64,
+    page_count: u64,
+    access_bits: u64,
+) -> u64 {
+    let (Ok(seg_cap), Ok(task_cap)) = (
+        bootstrap::decode_handle(raw_seg),
+        bootstrap::decode_handle(raw_task),
+    ) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let (Some(root), Some((_, offset))) = (sched::current_root(), crate::cow::root_and_offset())
+    else {
+        return encode_errno(Errno::Fault);
+    };
+    let access = Rights::from_bits(access_bits as u32);
+    match bootstrap::memseg_map(
+        sched::current(),
+        seg_cap,
+        task_cap,
+        seg_offset,
+        target_base,
+        page_count as usize,
+        access,
+        root,
+        offset,
+    ) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
+/// S2-D3：`memseg_unmap` 服务。
+fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
+    let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let (Some(root), Some((_, offset))) = (sched::current_root(), crate::cow::root_and_offset())
+    else {
+        return encode_errno(Errno::Fault);
+    };
+    match bootstrap::memseg_unmap(
+        sched::current(),
+        task_cap,
+        target_base,
+        page_count as usize,
+        root,
+        offset,
+    ) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
+/// S2-D3：`memseg_destroy` 服务。
+fn memseg_destroy_call(raw_seg: u64) -> u64 {
+    let Ok(seg_cap) = bootstrap::decode_handle(raw_seg) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::memseg_destroy(sched::current(), seg_cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
+/// S2-D3：Segment 原语的用户态回执。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemsegWitness {
+    pub create: u64,
+    pub map: u64,
+    pub zero: u64,
+    pub write: u64,
+    pub unmap: u64,
+    pub destroy: u64,
+    pub stale: u64,
+    pub create2: u64,
+    pub map2: u64,
+    pub zero2: u64,
+    pub unmap2: u64,
+    pub destroy2: u64,
+}
+
+impl MemsegWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.create == MEMSEG_CAP1_HANDLE
+            && self.map == 0
+            && self.zero == 0
+            && self.write == MEMSEG_PATTERN
+            && self.unmap == 0
+            && self.destroy == 0
+            && self.stale == encode_errno(Errno::Access)
+            && self.create2 == MEMSEG_CAP2_HANDLE
+            && self.map2 == 0
+            && self.zero2 == 0
+            && self.unmap2 == 0
+            && self.destroy2 == 0
+    }
+}
+
+/// 读取 Segment 原语回执。
+pub fn memseg_witness() -> MemsegWitness {
+    let base = USER_Y_VA;
+    MemsegWitness {
+        create: read_user_qword(base + MEMSEG_RECEIPT_CREATE),
+        map: read_user_qword(base + MEMSEG_RECEIPT_MAP),
+        zero: read_user_qword(base + MEMSEG_RECEIPT_ZERO),
+        write: read_user_qword(base + MEMSEG_RECEIPT_WRITE),
+        unmap: read_user_qword(base + MEMSEG_RECEIPT_UNMAP),
+        destroy: read_user_qword(base + MEMSEG_RECEIPT_DESTROY),
+        stale: read_user_qword(base + MEMSEG_RECEIPT_STALE),
+        create2: read_user_qword(base + MEMSEG_RECEIPT_CREATE2),
+        map2: read_user_qword(base + MEMSEG_RECEIPT_MAP2),
+        zero2: read_user_qword(base + MEMSEG_RECEIPT_ZERO2),
+        unmap2: read_user_qword(base + MEMSEG_RECEIPT_UNMAP2),
+        destroy2: read_user_qword(base + MEMSEG_RECEIPT_DESTROY2),
+    }
+}
 /// [`SYS_ECHO`] 的期望返回值（用户与内核共享的纯函数，供两侧对账）。
 pub const fn echo_expected(arg: u64) -> u64 {
     arg ^ ECHO_MASK
@@ -604,6 +951,18 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         wait_call(args[0], args[1])
     } else if num == SYS_TRAP {
         trap_call()
+    } else if num == SYS_CAP_DERIVE {
+        cap_derive_call(args[0], args[1])
+    } else if num == SYS_CAP_DROP {
+        cap_drop_call(args[0])
+    } else if num == SYS_MEMSEG_CREATE {
+        memseg_create_call(args[0], args[1])
+    } else if num == SYS_MEMSEG_MAP {
+        memseg_map_call(args[0], args[1], args[2], args[3], args[4], args[5])
+    } else if num == SYS_MEMSEG_UNMAP {
+        memseg_unmap_call(args[0], args[1], args[2])
+    } else if num == SYS_MEMSEG_DESTROY {
+        memseg_destroy_call(args[0])
     } else {
         dispatch_plain(num, args)
     }
@@ -1370,10 +1729,39 @@ mod tests {
 
     #[test]
     fn right_of_maps_known_codes() {
+        assert_eq!(right_of(RIGHT_DERIVE), Some(Right::Derive));
         assert_eq!(right_of(RIGHT_SEGMAPR), Some(Right::SegMapR));
         assert_eq!(right_of(RIGHT_SEGMAPW), Some(Right::SegMapW));
         assert_eq!(right_of(0xDEAD), None);
-        assert_eq!(right_of(0), None);
+        assert_eq!(right_of(3), None);
+    }
+
+    #[test]
+    fn cap_witness_accepts_the_canonical_lifecycle() {
+        let witness = CapWitness {
+            child1: CAP_CHILD1_HANDLE,
+            escalate: encode_errno(Errno::Access),
+            drop: 0,
+            drop_again: encode_errno(Errno::NoEnt),
+            child2: CAP_CHILD2_HANDLE,
+            stale: encode_errno(Errno::NoEnt),
+            grant: CAP_CHILD2_HANDLE,
+            drop2: 0,
+            structural: encode_errno(Errno::Access),
+        };
+        assert!(witness.evidence_ok());
+        // 反例：复用后 generation 未递增（旧、新句柄相同）必须被拒。
+        let mut reused = witness;
+        reused.child2 = CAP_CHILD1_HANDLE;
+        assert!(!reused.evidence_ok());
+        // 反例：stale 句柄被误授予。
+        let mut granted = witness;
+        granted.stale = CAP_CHILD1_HANDLE;
+        assert!(!granted.evidence_ok());
+        // 反例：结构性根未被保护。
+        let mut unprotected = witness;
+        unprotected.structural = 0;
+        assert!(!unprotected.evidence_ok());
     }
 
     #[test]
@@ -1382,7 +1770,9 @@ mod tests {
         assert_eq!(auth_errno(AuthError::NotInstalled), Errno::NoEnt);
         assert_eq!(auth_errno(AuthError::MissingRight), Errno::Access);
         assert_eq!(auth_errno(AuthError::NotHolder), Errno::Access);
-        assert_eq!(auth_errno(AuthError::Inactive), Errno::Access);
+        assert_eq!(auth_errno(AuthError::StaleHandle), Errno::NoEnt);
+        assert_eq!(auth_errno(AuthError::TargetDead), Errno::Access);
+        assert_eq!(auth_errno(AuthError::MalformedHandle), Errno::Invalid);
         assert_eq!(encode_errno(Errno::Access), 0xFFFF_FFFF_FFFF_FFF3); // -13
         assert_eq!(encode_errno(Errno::NoEnt), 0xFFFF_FFFF_FFFF_FFFE); // -2
     }

@@ -157,6 +157,12 @@ impl Rights {
         self.0
     }
 
+    /// 由原始位集还原（syscall ABI 的 `cap_derive` 请求权限），未定义位被保留原样，
+    /// 由后续 `well_typed` / `subset_of` 判定拒绝。
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
     pub const fn contains(self, right: Right) -> bool {
         self.0 & right.bit() != 0
     }
@@ -179,9 +185,14 @@ impl Rights {
         other.superset_of(self)
     }
 
-    /// 交集非空的权限名（用于错误信息与测试）。
-    pub fn intersection(self, other: Self) -> Self {
+    /// 交集（用于错误信息与测试）。
+    pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
+    }
+
+    /// 并集（铸造根 Capability 时合成权限）。
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     /// 类型匹配：非 `Derive` 权限必须落在该对象类型的合法集合内（`Derive` 可用于任何类型）。

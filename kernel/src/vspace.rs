@@ -37,6 +37,8 @@ pub enum VspaceError {
     BadRoot,
     /// 演示用的 PML4 槽已被占用（拒绝覆盖 bootloader 已有映射）。
     SlotOccupied,
+    /// `unmap_4k` 目标页当前无映射。
+    NotMapped,
 }
 
 /// 从虚拟地址取出 4 级索引 `[i4, i3, i2, i1]`。
@@ -135,6 +137,49 @@ pub fn map_4k(
         map(table) + (idx[3] as u64) * 8,
         frame_phys | pte_flags(writable, user),
     );
+    Ok(())
+}
+
+/// 清除 `va` 的叶映射（present=0），并自底向上回收**变空的、由本内核分配的**页表结点。
+///
+/// 只回收登记在帧注册表里的页表帧（`release` 回调对 bootloader 页表帧返回 `Err`，此处忽略），
+/// 故不会误放共享的上级表。返回是否确实清除了一个存在的叶映射。
+pub fn unmap_4k(
+    root_phys: u64,
+    va: u64,
+    map: impl Fn(u64) -> u64,
+    mut release: impl FnMut(u64) -> Result<(), VspaceError>,
+) -> Result<(), VspaceError> {
+    let idx = indices(va);
+    let mut tables = [0u64; 4];
+    tables[0] = root_phys;
+    let mut table = root_phys;
+    for level in 0..3 {
+        let entry = read_raw(map(table) + (idx[level] as u64) * 8);
+        if entry & PT_PRESENT == 0 {
+            return Err(VspaceError::BadRoot);
+        }
+        table = entry & PT_ADDR_MASK;
+        tables[level + 1] = table;
+    }
+    let leaf_addr = map(table) + (idx[3] as u64) * 8;
+    if read_raw(leaf_addr) & PT_PRESENT == 0 {
+        return Err(VspaceError::NotMapped);
+    }
+    write_raw(leaf_addr, 0);
+    // 自底向上：某一级表已无 present 项则清父项并归还该表帧。
+    let mut level = 3;
+    while level > 0 {
+        let child = tables[level];
+        let empty = (0..512).all(|slot| read_raw(map(child) + (slot as u64) * 8) & PT_PRESENT == 0);
+        if !empty {
+            break;
+        }
+        let parent = tables[level - 1];
+        write_raw(map(parent) + (idx[level - 1] as u64) * 8, 0);
+        let _ = release(child);
+        level -= 1;
+    }
     Ok(())
 }
 
@@ -247,13 +292,20 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
         return Err(VspaceError::SlotOccupied);
     }
 
-    // S1-X3：A/B 是数据帧，归入见证 Segment；页表帧走保留类。
-    crate::frames::open_segment(crate::frames::SEG_VSPACE, crate::frames::Pool::Cpu)
-        .map_err(|_| VspaceError::NoFrame)?;
-    let frame_a = crate::frames::allocate_for_segment(crate::frames::SEG_VSPACE)
-        .map_err(|_| VspaceError::NoFrame)?;
-    let frame_b = crate::frames::allocate_for_segment(crate::frames::SEG_VSPACE)
-        .map_err(|_| VspaceError::NoFrame)?;
+    // S1-X3 / 切片 R：A/B 是数据帧，归入见证 Segment（真实 `SegmentObject` + 内核持有的
+    // 可授权根 Capability）；页表帧走保留类。
+    //
+    // 本区域保留**内核直映射**（见 `bootstrap::platform_segment_is_direct`）：见证需要
+    // `set_leaf` 换叶重映射，超出 `memseg_map` 的语义。
+    let (_, frames) = crate::bootstrap::platform_create_segment(
+        crate::frames::SEG_VSPACE,
+        2,
+        crate::rights::Rights::EMPTY,
+        offset,
+    )
+    .map_err(|_| VspaceError::NoFrame)?;
+    let frame_a = frames.frame_at(0).ok_or(VspaceError::NoFrame)?;
+    let frame_b = frames.frame_at(1).ok_or(VspaceError::NoFrame)?;
     zero_table(map(frame_a));
     zero_table(map(frame_b));
     write_raw(map(frame_a), MAGIC_A);

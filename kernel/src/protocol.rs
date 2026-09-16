@@ -22,11 +22,11 @@ pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
     serial::write_bytes(b"|data=task=");
     write_u32(snapshot.task_id);
     serial::write_bytes(b";caps=3;image_cap=");
-    write_u32(snapshot.image_cap_id);
+    write_handle(snapshot.image_cap);
     serial::write_bytes(b";namespace_cap=");
-    write_u32(snapshot.namespace_cap_id);
+    write_handle(snapshot.namespace_cap);
     serial::write_bytes(b";task_cap=");
-    write_u32(snapshot.task_cap_id);
+    write_handle(snapshot.task_cap);
     serial::write_bytes(b";image_base=");
     write_hex_u64(snapshot.image_base);
     serial::write_bytes(b";image_len=");
@@ -42,6 +42,11 @@ pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
     serial::write_bytes(b";task_rights=");
     write_rights(snapshot.task_rights);
     serial::write_bytes(b"\r\n");
+}
+
+/// S2-D1：按 `(generation << 32) | index` 渲染句柄（hex，与 xtask 侧镜像一致）。
+fn write_handle(handle: kernel::handle::Handle) {
+    write_hex_u64(handle.encode());
 }
 
 /// 按 §4.1 的规范顺序渲染权限有限集合（缓冲在栈上，无分配）。
@@ -73,7 +78,7 @@ pub(crate) fn authority_ready(record: &kernel::bootstrap::BootstrapRecord) {
     serial::write_bytes(b";entry_in_image=");
     write_u32(record.entry_in_image as u32);
     serial::write_bytes(b";root_ns=");
-    write_u32(record.root_ns_cap);
+    write_handle(record.root_ns_cap);
     serial::write_bytes(b";init_running=");
     write_u32(record.init_running as u32);
     serial::write_bytes(b"\r\n");
@@ -94,6 +99,8 @@ pub(crate) fn frames_ready(witness: &kernel::frames::FrameWitness) {
     write_u64(witness.image_frames);
     serial::write_bytes(b";conserved=");
     write_u32(witness.conserved as u32);
+    serial::write_bytes(b";disjoint=");
+    write_u32(witness.disjoint as u32);
     serial::write_bytes(b"\r\n");
 }
 
@@ -426,6 +433,133 @@ pub(crate) fn exc_wait_ready(witness: &kernel::syscall::ExcWaitWitness) {
     write_hex_u64(witness.wait_receipt);
     serial::write_bytes(b";trap_receipt=");
     write_hex_u64(witness.trap_receipt);
+    serial::write_bytes(b"\r\n");
+}
+
+/// S2-D1：句柄编码见证（严格 `(generation << 32) | index` + 初始/异常源句柄）。
+pub(crate) fn handle_ready() {
+    let malformed_rejected = kernel::handle::Handle::decode(999).is_err();
+    write_prefix("handle_ready", "ok");
+    serial::write_bytes(b"|data=index_bits=32;generation_bits=32;image=");
+    write_hex_u64(kernel::bootstrap::IMAGE_CAP_HANDLE.encode());
+    serial::write_bytes(b";namespace=");
+    write_hex_u64(kernel::bootstrap::NAMESPACE_CAP_HANDLE.encode());
+    serial::write_bytes(b";task=");
+    write_hex_u64(kernel::bootstrap::TASK_CAP_HANDLE.encode());
+    serial::write_bytes(b";page_fault=");
+    write_hex_u64(kernel::bootstrap::EXC_PAGE_FAULT_HANDLE.encode());
+    serial::write_bytes(b";syscall_trap=");
+    write_hex_u64(kernel::bootstrap::EXC_SYSCALL_TRAP_HANDLE.encode());
+    serial::write_bytes(b";malformed_rejected=");
+    write_u32(malformed_rejected as u32);
+    serial::write_bytes(b"\r\n");
+}
+
+/// S2-D2：Capability 生命周期用户化见证（派生/drop/stale/结构性根保护）。
+pub(crate) fn cap_lifecycle_ready(witness: &kernel::syscall::CapWitness) {
+    write_prefix("cap_lifecycle_ready", "ok");
+    serial::write_bytes(b"|data=derive=");
+    write_hex_u64(witness.child1);
+    serial::write_bytes(b";escalate=");
+    write_hex_u64(witness.escalate);
+    serial::write_bytes(b";drop=");
+    write_hex_u64(witness.drop);
+    serial::write_bytes(b";drop_again=");
+    write_hex_u64(witness.drop_again);
+    serial::write_bytes(b";reuse=");
+    write_hex_u64(witness.child2);
+    serial::write_bytes(b";stale=");
+    write_hex_u64(witness.stale);
+    serial::write_bytes(b";grant=");
+    write_hex_u64(witness.grant);
+    serial::write_bytes(b";drop_new=");
+    write_hex_u64(witness.drop2);
+    serial::write_bytes(b";structural=");
+    write_hex_u64(witness.structural);
+    serial::write_bytes(b"\r\n");
+}
+
+/// S2-D3：MemorySegment 原语见证（create/map/清零/写回/unmap/destroy/stale/复用帧清零）。
+pub(crate) fn memseg_ready(witness: &kernel::syscall::MemsegWitness) {
+    write_prefix("memseg_ready", "ok");
+    serial::write_bytes(b"|data=create=");
+    write_hex_u64(witness.create);
+    serial::write_bytes(b";map=");
+    write_hex_u64(witness.map);
+    serial::write_bytes(b";zero=");
+    write_hex_u64(witness.zero);
+    serial::write_bytes(b";write=");
+    write_hex_u64(witness.write);
+    serial::write_bytes(b";unmap=");
+    write_hex_u64(witness.unmap);
+    serial::write_bytes(b";destroy=");
+    write_hex_u64(witness.destroy);
+    serial::write_bytes(b";stale=");
+    write_hex_u64(witness.stale);
+    serial::write_bytes(b";create2=");
+    write_hex_u64(witness.create2);
+    serial::write_bytes(b";map2=");
+    write_hex_u64(witness.map2);
+    serial::write_bytes(b";zero2=");
+    write_hex_u64(witness.zero2);
+    serial::write_bytes(b";unmap2=");
+    write_hex_u64(witness.unmap2);
+    serial::write_bytes(b";destroy2=");
+    write_hex_u64(witness.destroy2);
+    serial::write_bytes(b"\r\n");
+}
+
+/// 切片 R：平台 bring-up 13 区域对象化见证。
+///
+/// 断言的是"这些区域不再是裸归属标签"：每个区域都有真实 `SegmentObject`（`segments`）、
+/// 一条内核持有的可授权根 Capability（`roots`）、`TaskVspaceTable` 中的逻辑映射（`vspace`），
+/// 且逐帧归属标签与 Segment id **恒等**（`unified`，即 `100+id` 命名空间已消除）。
+pub(crate) fn platform_segments_ready(record: &kernel::bootstrap::PlatformSegmentsRecord) {
+    write_prefix("platform_segments_ready", "ok");
+    serial::write_bytes(b"|data=segments=");
+    write_u32(record.segments);
+    serial::write_bytes(b";first_id=");
+    write_u32(record.first_id);
+    serial::write_bytes(b";last_id=");
+    write_u32(record.last_id);
+    serial::write_bytes(b";roots=");
+    write_u32(record.roots);
+    serial::write_bytes(b";task_caps=");
+    write_u32(record.task_caps);
+    serial::write_bytes(b";mapped=");
+    write_u32(record.mapped);
+    serial::write_bytes(b";direct=");
+    write_u32(record.direct);
+    serial::write_bytes(b";direct_ids=");
+    write_u32(record.direct_ids[0]);
+    serial::write_bytes(b",");
+    write_u32(record.direct_ids[1]);
+    serial::write_bytes(b";vspace=");
+    write_u32(record.vspace);
+    serial::write_bytes(b";holder=");
+    write_u32(kernel::bootstrap::KERNEL_ACTOR);
+    serial::write_bytes(b";slot_base=");
+    write_u32(kernel::bootstrap::PLATFORM_SEGMENT_CAP_SLOT_BASE);
+    serial::write_bytes(b";task1_cap=");
+    write_hex_u64(record.task_cap_handles[0].encode());
+    serial::write_bytes(b";task2_cap=");
+    write_hex_u64(record.task_cap_handles[1].encode());
+    serial::write_bytes(b";caps=");
+    for (index, handle) in record.cap_handles.iter().enumerate() {
+        if index != 0 {
+            serial::write_bytes(b",");
+        }
+        write_hex_u64(handle.encode());
+    }
+    serial::write_bytes(b";frames=");
+    for (index, count) in record.frame_counts.iter().enumerate() {
+        if index != 0 {
+            serial::write_bytes(b",");
+        }
+        write_u32(*count);
+    }
+    serial::write_bytes(b";unified=");
+    write_u32(record.unified as u32);
     serial::write_bytes(b"\r\n");
 }
 

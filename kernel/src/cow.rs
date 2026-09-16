@@ -13,7 +13,7 @@
 //! 切片 C/E 的探测行为），命中 COW 条件时返回原 `rip` 以**重试**故障指令。
 
 use crate::exc::SretFrame;
-use crate::frames::{self, FrameError, Pool};
+use crate::frames;
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::vspace::{self, VspaceError};
 
@@ -87,20 +87,12 @@ struct CowContext {
 
 static mut COW_CTX: Option<CowContext> = None;
 
-/// COW 私有/共享帧的取帧入口（经全局帧注册表，归属 [`frames::SEG_COW`]）。
+/// COW 私有帧的取帧入口（切片 R：追加进 COW `SegmentObject` 的真实帧向量）。
+///
+/// 帧仍经唯一取帧入口 `frames::allocate_for_segment(SEG_COW)` 取得（W6 归属与守恒不变），
+/// 同时登记进 COW 段的对象视图，使该区域不再只有归属标签。
 fn cow_frame() -> Result<u64, VspaceError> {
-    frames::allocate_for_segment(frames::SEG_COW).map_err(vspace_error)
-}
-
-fn vspace_error(error: FrameError) -> VspaceError {
-    match error {
-        FrameError::NoFrame | FrameError::NotInstalled | FrameError::CapacityExceeded => {
-            VspaceError::NoFrame
-        }
-        FrameError::UnknownSegment
-        | FrameError::UniverseMismatch
-        | FrameError::ConservationViolation => VspaceError::NoFrame,
-    }
+    crate::bootstrap::platform_append_frame(frames::SEG_COW).map_err(|_| VspaceError::NoFrame)
 }
 
 /// 返回 COW 上下文的 `(根页表物理地址, 物理直映射偏移)`（尚未 `prepare` 时为 `None`）。
@@ -143,9 +135,17 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
     if !vspace::slot_free(root_phys, COW_VA, map) {
         return Err(VspaceError::SlotOccupied);
     }
-    frames::open_segment(frames::SEG_COW, Pool::Cpu).map_err(vspace_error)?;
-
-    let shared = cow_frame()?;
+    // 切片 R：COW 区域建为真实 `SegmentObject`（内核持有可授权根 Capability），共享帧取自
+    // 其帧向量。本区域保留**内核直映射**：页是内核私有的（`allowed_access` 为空），且
+    // fault-time 换映射超出 `memseg_map` 语义。
+    let (_, fields) = crate::bootstrap::platform_create_segment(
+        frames::SEG_COW,
+        1,
+        crate::rights::Rights::EMPTY,
+        offset,
+    )
+    .map_err(|_| VspaceError::NoFrame)?;
+    let shared = fields.frame_at(0).ok_or(VspaceError::NoFrame)?;
     let shared_va = map(shared);
     for index in 0..PATTERN_WORDS {
         write_qword(shared_va + (index as u64) * 8, pattern(index as u64));

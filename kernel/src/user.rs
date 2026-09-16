@@ -20,18 +20,25 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::bootstrap::INIT_TASK_ID;
+use crate::bootstrap::{
+    INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE,
+    SegmentFrames, TASK_CAP_HANDLE,
+};
 use crate::exc::SretFrame;
 use crate::frames;
 use crate::gdt::{USER_CS, USER_DS};
+use crate::handle::Handle;
 use crate::mem::{FRAME_SIZE, phys_to_virt};
+use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::syscall::{
-    AUTHORIZE_CAP, BAD_PTR, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP,
-    EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, RIGHT_SEGMAPR, RIGHT_SEGMAPW, SUM_ARGS,
-    SYS_AUTHORIZE, SYS_BAD, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE,
-    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_SUM4, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK2_ID,
-    UNSET_CAP,
+    AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR,
+    EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG,
+    MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN, MEMSEG_RW_BITS, RIGHT_DERIVE,
+    RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS, RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE,
+    SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE,
+    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
+    SYS_MEMSEG_UNMAP, SYS_SUM4, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK2_ID, UNSET_CAP, USER_SEG_VA,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -101,7 +108,7 @@ pub fn task2_y_phys() -> Option<u64> {
 pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 
 /// 用户代码字节长度。
-pub const USER_CODE_LEN: usize = 622;
+pub const USER_CODE_LEN: usize = 1478;
 
 /// 第二任务代码字节长度。
 pub const TASK2_CODE_LEN: usize = 137;
@@ -322,8 +329,139 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 612, &[0xCD, 0x80]);
     // 614: mov [rcx+160], rax（disp32）
     put(&mut code, 614, &[0x48, 0x89, 0x81, 0xa0, 0, 0, 0]);
-    // 621: int3
-    code[621] = 0xCC;
+    // 621: S2-D2 能力生命周期：派生 → 越权拒绝 → drop → 重复 drop → 槽位复用 →
+    //      stale 拒绝 → 授权 → 结构性根保护。回执写 Y+168..Y+232（disp32，≥128 不可用 disp8）。
+    put_imm64(&mut code, 621, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_imm64(&mut code, 631, 0x48, 0xBE, RIGHTS_DERIVE_BITS);
+    put_imm64(&mut code, 641, 0x48, 0xB8, SYS_CAP_DERIVE);
+    put(&mut code, 651, &[0xCD, 0x80]);
+    put(&mut code, 653, &[0x48, 0x89, 0x81, 168, 0, 0, 0]);
+    // 越权：请求 image cap 不拥有的 SegMapW。
+    put_imm64(&mut code, 660, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_imm64(&mut code, 670, 0x48, 0xBE, RIGHTS_SEGMAPW_BITS);
+    put_imm64(&mut code, 680, 0x48, 0xB8, SYS_CAP_DERIVE);
+    put(&mut code, 690, &[0xCD, 0x80]);
+    put(&mut code, 692, &[0x48, 0x89, 0x81, 176, 0, 0, 0]);
+    // drop 子句柄（成功）→ 重复 drop（ENOENT）。
+    put_imm64(&mut code, 699, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_imm64(&mut code, 709, 0x48, 0xB8, SYS_CAP_DROP);
+    put(&mut code, 719, &[0xCD, 0x80]);
+    put(&mut code, 721, &[0x48, 0x89, 0x81, 184, 0, 0, 0]);
+    put_imm64(&mut code, 728, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_imm64(&mut code, 738, 0x48, 0xB8, SYS_CAP_DROP);
+    put(&mut code, 748, &[0xCD, 0x80]);
+    put(&mut code, 750, &[0x48, 0x89, 0x81, 192, 0, 0, 0]);
+    // 槽位复用：再派生应拿到同槽更高 generation 的新句柄。
+    put_imm64(&mut code, 757, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_imm64(&mut code, 767, 0x48, 0xBE, RIGHTS_DERIVE_BITS);
+    put_imm64(&mut code, 777, 0x48, 0xB8, SYS_CAP_DERIVE);
+    put(&mut code, 787, &[0xCD, 0x80]);
+    put(&mut code, 789, &[0x48, 0x89, 0x81, 200, 0, 0, 0]);
+    // 旧句柄授权应被拒绝（stale），新句柄应被授予。
+    put_imm64(&mut code, 796, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_imm64(&mut code, 806, 0x48, 0xBE, RIGHT_DERIVE);
+    put_imm64(&mut code, 816, 0x48, 0xB8, SYS_AUTHORIZE);
+    put(&mut code, 826, &[0xCD, 0x80]);
+    put(&mut code, 828, &[0x48, 0x89, 0x81, 208, 0, 0, 0]);
+    put_imm64(&mut code, 835, 0x48, 0xBF, CAP_CHILD2_HANDLE);
+    put_imm64(&mut code, 845, 0x48, 0xBE, RIGHT_DERIVE);
+    put_imm64(&mut code, 855, 0x48, 0xB8, SYS_AUTHORIZE);
+    put(&mut code, 865, &[0xCD, 0x80]);
+    put(&mut code, 867, &[0x48, 0x89, 0x81, 216, 0, 0, 0]);
+    // drop 新句柄（清理）。
+    put_imm64(&mut code, 874, 0x48, 0xBF, CAP_CHILD2_HANDLE);
+    put_imm64(&mut code, 884, 0x48, 0xB8, SYS_CAP_DROP);
+    put(&mut code, 894, &[0xCD, 0x80]);
+    put(&mut code, 896, &[0x48, 0x89, 0x81, 224, 0, 0, 0]);
+    // 结构性根 Namespace cap 不可丢弃（§4.5 StructuralCap → EACCES）。
+    put_imm64(&mut code, 903, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_imm64(&mut code, 913, 0x48, 0xB8, SYS_CAP_DROP);
+    put(&mut code, 923, &[0xCD, 0x80]);
+    put(&mut code, 925, &[0x48, 0x89, 0x81, 232, 0, 0, 0]);
+    // 932: NOP（cap 生命周期块末字节落在 931，此处补 1 字节使下一块按计划从 933 开始；
+    //        不留零字节，否则会被当作 `add [rax], al` 执行并触发 #PF 错位）。
+    code[932] = 0x90;
+    // 933: S2-D3 Segment 原语：create → map → 读零 → 写回 → unmap → destroy →
+    //      销毁后 map 被拒（stale）→ 再次 create（复用回收帧）→ map → 读零（S2-X3）→ 清理。
+    put_imm64(&mut code, 933, 0x48, 0xBF, 1); // rdi = page_count
+    put_imm64(&mut code, 943, 0x48, 0xBE, MEMSEG_RW_BITS); // rsi = allowed_access
+    put_imm64(&mut code, 953, 0x48, 0xB8, SYS_MEMSEG_CREATE);
+    put(&mut code, 963, &[0xCD, 0x80]);
+    put(&mut code, 965, &[0x48, 0x89, 0x81, 240, 0, 0, 0]);
+    // map(seg, task, 0, SEG_VA, 1, R|W)
+    put_imm64(&mut code, 972, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_imm64(&mut code, 982, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 992, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 1002, 0x49, 0xBA, USER_SEG_VA);
+    put_imm64(&mut code, 1012, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 1022, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 1032, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 1042, &[0xCD, 0x80]);
+    put(&mut code, 1044, &[0x48, 0x89, 0x81, 248, 0, 0, 0]);
+    // 读新页首 qword：必须为 0（S2-X3 清零后才可见）。
+    put_imm64(&mut code, 1051, 0x48, 0xBA, USER_SEG_VA);
+    put(&mut code, 1061, &[0x48, 0x8B, 0x02]);
+    put(&mut code, 1064, &[0x48, 0x89, 0x81, 0, 1, 0, 0]);
+    // 写入模式并读回（证明真实可写 PTE）。
+    put_imm64(&mut code, 1071, 0x48, 0xBA, USER_SEG_VA);
+    put_imm64(&mut code, 1081, 0x48, 0xB8, MEMSEG_PATTERN);
+    put(&mut code, 1091, &[0x48, 0x89, 0x02]);
+    put(&mut code, 1094, &[0x48, 0x8B, 0x02]);
+    put(&mut code, 1097, &[0x48, 0x89, 0x81, 8, 1, 0, 0]);
+    // unmap(task, SEG_VA, 1)
+    put_imm64(&mut code, 1104, 0x48, 0xBF, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 1114, 0x48, 0xBE, USER_SEG_VA);
+    put_imm64(&mut code, 1124, 0x48, 0xBA, 1);
+    put_imm64(&mut code, 1134, 0x48, 0xB8, SYS_MEMSEG_UNMAP);
+    put(&mut code, 1144, &[0xCD, 0x80]);
+    put(&mut code, 1146, &[0x48, 0x89, 0x81, 16, 1, 0, 0]);
+    // destroy(seg)
+    put_imm64(&mut code, 1153, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_imm64(&mut code, 1163, 0x48, 0xB8, SYS_MEMSEG_DESTROY);
+    put(&mut code, 1173, &[0xCD, 0x80]);
+    put(&mut code, 1175, &[0x48, 0x89, 0x81, 24, 1, 0, 0]);
+    // 销毁后再 map：stale token 不可授权（EACCES）。
+    put_imm64(&mut code, 1182, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_imm64(&mut code, 1192, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 1202, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 1212, 0x49, 0xBA, USER_SEG_VA);
+    put_imm64(&mut code, 1222, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 1232, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 1242, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 1252, &[0xCD, 0x80]);
+    put(&mut code, 1254, &[0x48, 0x89, 0x81, 32, 1, 0, 0]);
+    // 再次 create：应复用刚归还的帧（回收栈）。
+    put_imm64(&mut code, 1261, 0x48, 0xBF, 1);
+    put_imm64(&mut code, 1271, 0x48, 0xBE, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 1281, 0x48, 0xB8, SYS_MEMSEG_CREATE);
+    put(&mut code, 1291, &[0xCD, 0x80]);
+    put(&mut code, 1293, &[0x48, 0x89, 0x81, 40, 1, 0, 0]);
+    // map2 + 读零（复用帧必须先清零才对用户可见 → S2-X3）。
+    put_imm64(&mut code, 1300, 0x48, 0xBF, MEMSEG_CAP2_HANDLE);
+    put_imm64(&mut code, 1310, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 1320, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 1330, 0x49, 0xBA, USER_SEG_VA);
+    put_imm64(&mut code, 1340, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 1350, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 1360, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 1370, &[0xCD, 0x80]);
+    put(&mut code, 1372, &[0x48, 0x89, 0x81, 48, 1, 0, 0]);
+    put_imm64(&mut code, 1379, 0x48, 0xBA, USER_SEG_VA);
+    put(&mut code, 1389, &[0x48, 0x8B, 0x02]);
+    put(&mut code, 1392, &[0x48, 0x89, 0x81, 56, 1, 0, 0]);
+    // unmap2 + destroy2（清理）。
+    put_imm64(&mut code, 1399, 0x48, 0xBF, TASK_CAP_HANDLE.encode());
+    put_imm64(&mut code, 1409, 0x48, 0xBE, USER_SEG_VA);
+    put_imm64(&mut code, 1419, 0x48, 0xBA, 1);
+    put_imm64(&mut code, 1429, 0x48, 0xB8, SYS_MEMSEG_UNMAP);
+    put(&mut code, 1439, &[0xCD, 0x80]);
+    put(&mut code, 1441, &[0x48, 0x89, 0x81, 64, 1, 0, 0]);
+    put_imm64(&mut code, 1448, 0x48, 0xBF, MEMSEG_CAP2_HANDLE);
+    put_imm64(&mut code, 1458, 0x48, 0xB8, SYS_MEMSEG_DESTROY);
+    put(&mut code, 1468, &[0xCD, 0x80]);
+    put(&mut code, 1470, &[0x48, 0x89, 0x81, 72, 1, 0, 0]);
+    // 1477: int3
+    code[1477] = 0xCC;
     code
 }
 
@@ -468,6 +606,47 @@ fn write_qword(va: u64, value: u64) {
     unsafe { core::ptr::write_volatile(va as *mut u64, value) };
 }
 
+/// 切片 R：把一个平台区域建为真实 Segment 对象，返回其根 Capability 与帧向量。
+///
+/// 只创建、不映射：映射必须等**全部**数据帧取完、内容写好之后再做，否则页表帧会插进数据帧
+/// 之间，改变与切片 Q 实测一致的物理帧序列。
+fn create_region(
+    id: u32,
+    access: Rights,
+    offset: u64,
+) -> Result<(Handle, SegmentFrames), VspaceError> {
+    crate::bootstrap::platform_create_segment(id, 1, access, offset)
+        .map_err(|_| VspaceError::NoFrame)
+}
+
+/// 切片 R：经 `memseg_map` 把平台区域的单页映射进目标任务根（授权中介；调用者为内核 actor）。
+fn map_region(
+    seg_cap: Handle,
+    task_cap: Handle,
+    target_base: u64,
+    access: Rights,
+    root_phys: u64,
+    offset: u64,
+) -> Result<(), VspaceError> {
+    crate::bootstrap::memseg_map(
+        crate::bootstrap::KERNEL_ACTOR,
+        seg_cap,
+        task_cap,
+        0,
+        target_base,
+        1,
+        access,
+        root_phys,
+        offset,
+    )
+    .map_err(|_| VspaceError::NoFrame)
+}
+
+/// 平台区域首帧的物理地址。
+fn region_frame(frames: &SegmentFrames) -> Result<u64, VspaceError> {
+    frames.frame_at(0).ok_or(VspaceError::NoFrame)
+}
+
 /// 切片 O：为一任务构造独立 PML4——克隆 bootloader 根（含全部内核高半区与低映射）后，
 /// 清空两个用户槽，随后由调用方把自己的用户页映射进来。同 VA 在不同任务根下指向不同帧。
 fn build_task_root(boot_root: u64, offset: u64) -> Result<u64, VspaceError> {
@@ -497,21 +676,21 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         }
     }
 
-    // S1-X3：先登记四个 bring-up Segment，再逐个取帧，使每帧都有唯一归属。
-    for id in [
-        frames::SEG_TASK1_CODE,
-        frames::SEG_TASK1_STACK,
-        frames::SEG_TASK1_X,
-        frames::SEG_TASK1_Y,
-    ] {
-        frames::open_segment(id, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
-    }
-    let code =
-        frames::allocate_for_segment(frames::SEG_TASK1_CODE).map_err(|_| VspaceError::NoFrame)?;
-    let stack =
-        frames::allocate_for_segment(frames::SEG_TASK1_STACK).map_err(|_| VspaceError::NoFrame)?;
-    let x = frames::allocate_for_segment(frames::SEG_TASK1_X).map_err(|_| VspaceError::NoFrame)?;
-    let y = frames::allocate_for_segment(frames::SEG_TASK1_Y).map_err(|_| VspaceError::NoFrame)?;
+    // S1-X3 / 切片 R：四个区域各自建为真实 Segment 对象（creator = 内核平台 actor，根
+    // Capability 铸在预留槽位）。取帧顺序与数量与切片 Q **逐字节一致**：四个数据帧全部取完、
+    // 内容写好之后，才由 `memseg_map` 取页表帧。
+    let code_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapX]);
+    let stack_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+    let x_access = Rights::from_rights(&[Right::SegMapR]);
+    let y_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+    let (code_cap, code_frames) = create_region(frames::SEG_TASK1_CODE, code_access, offset)?;
+    let (stack_cap, stack_frames) = create_region(frames::SEG_TASK1_STACK, stack_access, offset)?;
+    let (x_cap, x_frames) = create_region(frames::SEG_TASK1_X, x_access, offset)?;
+    let (y_cap, y_frames) = create_region(frames::SEG_TASK1_Y, y_access, offset)?;
+    let code = region_frame(&code_frames)?;
+    let stack = region_frame(&stack_frames)?;
+    let x = region_frame(&x_frames)?;
+    let y = region_frame(&y_frames)?;
 
     let code_bytes = user_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
@@ -526,46 +705,27 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         write_qword(map(y) + index * 8, 0);
     }
 
-    vspace::map_4k(
-        task_root,
+    // 经授权中介映射进 task 1 根；`memseg_map` 逐页 `invlpg`，故不再显式刷新 TLB。
+    // X 的访问集上不含 `SegMapW`，装入的就是只读页——用户态写保护 #PF 由此产生。
+    let task_cap = PLATFORM_TASK1_CAP_HANDLE;
+    map_region(
+        code_cap,
+        task_cap,
         USER_CODE_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        code,
-        false,
-        true,
-    )?;
-    vspace::map_4k(
+        code_access,
         task_root,
+        offset,
+    )?;
+    map_region(
+        stack_cap,
+        task_cap,
         USER_STACK_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        stack,
-        true,
-        true,
-    )?;
-    // X 只读+user：写它触发用户态写保护 #PF。
-    vspace::map_4k(
+        stack_access,
         task_root,
-        USER_X_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        x,
-        false,
-        true,
+        offset,
     )?;
-    vspace::map_4k(
-        task_root,
-        USER_Y_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        y,
-        true,
-        true,
-    )?;
-    for va in [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA] {
-        unsafe { vspace::invlpg(va) };
-    }
+    map_region(x_cap, task_cap, USER_X_VA, x_access, task_root, offset)?;
+    map_region(y_cap, task_cap, USER_Y_VA, y_access, task_root, offset)?;
 
     sched::set_root(INIT_TASK_ID, task_root);
     sched::set_kstack_top(INIT_TASK_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK1)));
@@ -595,18 +755,17 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         }
     }
 
-    for id in [
-        frames::SEG_TASK2_CODE,
-        frames::SEG_TASK2_STACK,
-        frames::SEG_TASK2_Y,
-    ] {
-        frames::open_segment(id, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
-    }
-    let code =
-        frames::allocate_for_segment(frames::SEG_TASK2_CODE).map_err(|_| VspaceError::NoFrame)?;
-    let stack =
-        frames::allocate_for_segment(frames::SEG_TASK2_STACK).map_err(|_| VspaceError::NoFrame)?;
-    let y = frames::allocate_for_segment(frames::SEG_TASK2_Y).map_err(|_| VspaceError::NoFrame)?;
+    // 切片 R：三个区域建为真实 Segment 对象，经 `memseg_map` 授权中介映射进 task 2 根
+    // （task cap 指向 Task(2)，由内核平台 actor 持有）。帧顺序与切片 Q 一致。
+    let code_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapX]);
+    let stack_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+    let y_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+    let (code_cap, code_frames) = create_region(frames::SEG_TASK2_CODE, code_access, offset)?;
+    let (stack_cap, stack_frames) = create_region(frames::SEG_TASK2_STACK, stack_access, offset)?;
+    let (y_cap, y_frames) = create_region(frames::SEG_TASK2_Y, y_access, offset)?;
+    let code = region_frame(&code_frames)?;
+    let stack = region_frame(&stack_frames)?;
+    let y = region_frame(&y_frames)?;
 
     let code_bytes = task2_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
@@ -617,36 +776,24 @@ pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         write_qword(map(y) + index * 8, 0);
     }
 
-    vspace::map_4k(
-        task_root,
+    let task_cap = PLATFORM_TASK2_CAP_HANDLE;
+    map_region(
+        code_cap,
+        task_cap,
         USER2_CODE_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        code,
-        false,
-        true,
-    )?;
-    vspace::map_4k(
+        code_access,
         task_root,
+        offset,
+    )?;
+    map_region(
+        stack_cap,
+        task_cap,
         USER2_STACK_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        stack,
-        true,
-        true,
-    )?;
-    vspace::map_4k(
+        stack_access,
         task_root,
-        USER2_Y_VA,
-        map,
-        || frames::allocate_table_frame().ok(),
-        y,
-        true,
-        true,
+        offset,
     )?;
-    for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
-        unsafe { vspace::invlpg(va) };
-    }
+    map_region(y_cap, task_cap, USER2_Y_VA, y_access, task_root, offset)?;
 
     sched::set_root(TASK2_ID, task_root);
     sched::set_kstack_top(TASK2_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK2)));
@@ -664,24 +811,28 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
     let root1 = sched::root(INIT_TASK_ID).ok_or(VspaceError::BadRoot)?;
     let root2 = sched::root(TASK2_ID).ok_or(VspaceError::BadRoot)?;
 
-    for (task_id, root, code_seg, data_seg) in [
+    let code_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapX]);
+    let data_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+    for (task_id, root, code_seg, data_seg, task_cap) in [
         (
             INIT_TASK_ID,
             root1,
             frames::SEG_SPIN1_CODE,
             frames::SEG_SPIN1_DATA,
+            PLATFORM_TASK1_CAP_HANDLE,
         ),
         (
             TASK2_ID,
             root2,
             frames::SEG_SPIN2_CODE,
             frames::SEG_SPIN2_DATA,
+            PLATFORM_TASK2_CAP_HANDLE,
         ),
     ] {
-        frames::open_segment(code_seg, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
-        frames::open_segment(data_seg, frames::Pool::Cpu).map_err(|_| VspaceError::NoFrame)?;
-        let code = frames::allocate_for_segment(code_seg).map_err(|_| VspaceError::NoFrame)?;
-        let data = frames::allocate_for_segment(data_seg).map_err(|_| VspaceError::NoFrame)?;
+        let (code_cap, code_frames) = create_region(code_seg, code_access, offset)?;
+        let (data_cap, data_frames) = create_region(data_seg, data_access, offset)?;
+        let code = region_frame(&code_frames)?;
+        let data = region_frame(&data_frames)?;
 
         let bytes = spin_code(task_id as u64);
         for (index, &byte) in bytes.iter().enumerate() {
@@ -691,28 +842,8 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
             write_qword(map(data) + index * 8, 0);
         }
 
-        vspace::map_4k(
-            root,
-            SPIN_CODE_VA,
-            map,
-            || frames::allocate_table_frame().ok(),
-            code,
-            false,
-            true,
-        )?;
-        vspace::map_4k(
-            root,
-            SPIN_DATA_VA,
-            map,
-            || frames::allocate_table_frame().ok(),
-            data,
-            true,
-            true,
-        )?;
-        unsafe {
-            vspace::invlpg(SPIN_CODE_VA);
-            vspace::invlpg(SPIN_DATA_VA);
-        }
+        map_region(code_cap, task_cap, SPIN_CODE_VA, code_access, root, offset)?;
+        map_region(data_cap, task_cap, SPIN_DATA_VA, data_access, root, offset)?;
     }
     Ok(())
 }
@@ -786,7 +917,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 622);
+        assert_eq!(USER_CODE_LEN, 1478);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -935,7 +1066,86 @@ mod tests {
         assert_eq!(&code[604..612], &SYS_EXC_WAIT.to_le_bytes());
         assert_eq!(&code[612..614], &[0xCD, 0x80]);
         assert_eq!(&code[614..621], &[0x48, 0x89, 0x81, 0xa0, 0, 0, 0]); // [rcx+160] disp32
-        assert_eq!(code[621], 0xCC); // int3
+        // S2-D2 能力生命周期（回执 Y+168..Y+232，全部 disp32）。
+        assert_eq!(&code[621..623], &[0x48, 0xBF]);
+        assert_eq!(&code[623..631], &AUTHORIZE_CAP.to_le_bytes());
+        assert_eq!(&code[631..633], &[0x48, 0xBE]);
+        assert_eq!(&code[633..641], &RIGHTS_DERIVE_BITS.to_le_bytes());
+        assert_eq!(&code[641..643], &[0x48, 0xB8]);
+        assert_eq!(&code[643..651], &SYS_CAP_DERIVE.to_le_bytes());
+        assert_eq!(&code[651..653], &[0xCD, 0x80]);
+        assert_eq!(&code[653..660], &[0x48, 0x89, 0x81, 168, 0, 0, 0]);
+        assert_eq!(&code[670..672], &[0x48, 0xBE]);
+        assert_eq!(&code[672..680], &RIGHTS_SEGMAPW_BITS.to_le_bytes());
+        assert_eq!(&code[692..699], &[0x48, 0x89, 0x81, 176, 0, 0, 0]);
+        assert_eq!(&code[699..701], &[0x48, 0xBF]);
+        assert_eq!(&code[701..709], &CAP_CHILD1_HANDLE.to_le_bytes());
+        assert_eq!(&code[709..711], &[0x48, 0xB8]);
+        assert_eq!(&code[711..719], &SYS_CAP_DROP.to_le_bytes());
+        assert_eq!(&code[721..728], &[0x48, 0x89, 0x81, 184, 0, 0, 0]);
+        assert_eq!(&code[738..740], &[0x48, 0xB8]);
+        assert_eq!(&code[740..748], &SYS_CAP_DROP.to_le_bytes());
+        assert_eq!(&code[750..757], &[0x48, 0x89, 0x81, 192, 0, 0, 0]);
+        assert_eq!(&code[777..779], &[0x48, 0xB8]);
+        assert_eq!(&code[779..787], &SYS_CAP_DERIVE.to_le_bytes());
+        assert_eq!(&code[789..796], &[0x48, 0x89, 0x81, 200, 0, 0, 0]);
+        assert_eq!(&code[796..798], &[0x48, 0xBF]);
+        assert_eq!(&code[798..806], &CAP_CHILD1_HANDLE.to_le_bytes());
+        assert_eq!(&code[806..808], &[0x48, 0xBE]);
+        assert_eq!(&code[808..816], &RIGHT_DERIVE.to_le_bytes());
+        assert_eq!(&code[816..818], &[0x48, 0xB8]);
+        assert_eq!(&code[818..826], &SYS_AUTHORIZE.to_le_bytes());
+        assert_eq!(&code[828..835], &[0x48, 0x89, 0x81, 208, 0, 0, 0]);
+        assert_eq!(&code[835..837], &[0x48, 0xBF]);
+        assert_eq!(&code[837..845], &CAP_CHILD2_HANDLE.to_le_bytes());
+        assert_eq!(&code[867..874], &[0x48, 0x89, 0x81, 216, 0, 0, 0]);
+        assert_eq!(&code[874..876], &[0x48, 0xBF]);
+        assert_eq!(&code[876..884], &CAP_CHILD2_HANDLE.to_le_bytes());
+        assert_eq!(&code[884..886], &[0x48, 0xB8]);
+        assert_eq!(&code[886..894], &SYS_CAP_DROP.to_le_bytes());
+        assert_eq!(&code[896..903], &[0x48, 0x89, 0x81, 224, 0, 0, 0]);
+        assert_eq!(&code[903..905], &[0x48, 0xBF]);
+        assert_eq!(
+            &code[905..913],
+            &NAMESPACE_CAP_HANDLE.encode().to_le_bytes()
+        );
+        assert_eq!(&code[913..915], &[0x48, 0xB8]);
+        assert_eq!(&code[915..923], &SYS_CAP_DROP.to_le_bytes());
+        assert_eq!(&code[925..932], &[0x48, 0x89, 0x81, 232, 0, 0, 0]);
+        assert_eq!(code[932], 0x90); // NOP 对齐
+        // S2-D3 Segment 原语（回执 Y+240..Y+328，全部 disp32）。
+        assert_eq!(&code[933..943], &[0x48, 0xBF, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&code[953..955], &[0x48, 0xB8]);
+        assert_eq!(&code[955..963], &SYS_MEMSEG_CREATE.to_le_bytes());
+        assert_eq!(&code[963..965], &[0xCD, 0x80]);
+        assert_eq!(&code[965..972], &[0x48, 0x89, 0x81, 240, 0, 0, 0]);
+        assert_eq!(&code[972..974], &[0x48, 0xBF]);
+        assert_eq!(&code[974..982], &MEMSEG_CAP1_HANDLE.to_le_bytes());
+        assert_eq!(&code[1032..1034], &[0x48, 0xB8]);
+        assert_eq!(&code[1034..1042], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[1051..1053], &[0x48, 0xBA]);
+        assert_eq!(&code[1053..1061], &USER_SEG_VA.to_le_bytes());
+        assert_eq!(&code[1061..1064], &[0x48, 0x8B, 0x02]); // mov rax, [rdx]
+        assert_eq!(&code[1064..1071], &[0x48, 0x89, 0x81, 0, 1, 0, 0]); // [rcx+256] disp32
+        assert_eq!(&code[1091..1094], &[0x48, 0x89, 0x02]); // mov [rdx], rax
+        assert_eq!(&code[1134..1136], &[0x48, 0xB8]);
+        assert_eq!(&code[1136..1144], &SYS_MEMSEG_UNMAP.to_le_bytes());
+        assert_eq!(&code[1163..1165], &[0x48, 0xB8]);
+        assert_eq!(&code[1165..1173], &SYS_MEMSEG_DESTROY.to_le_bytes());
+        assert_eq!(&code[1242..1244], &[0x48, 0xB8]);
+        assert_eq!(&code[1244..1252], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[1254..1261], &[0x48, 0x89, 0x81, 32, 1, 0, 0]); // [rcx+288] disp32
+        assert_eq!(&code[1281..1283], &[0x48, 0xB8]);
+        assert_eq!(&code[1283..1291], &SYS_MEMSEG_CREATE.to_le_bytes());
+        assert_eq!(&code[1293..1300], &[0x48, 0x89, 0x81, 40, 1, 0, 0]); // [rcx+296] disp32
+        assert_eq!(&code[1300..1302], &[0x48, 0xBF]);
+        assert_eq!(&code[1302..1310], &MEMSEG_CAP2_HANDLE.to_le_bytes());
+        assert_eq!(&code[1372..1379], &[0x48, 0x89, 0x81, 48, 1, 0, 0]); // [rcx+304] disp32
+        assert_eq!(&code[1392..1399], &[0x48, 0x89, 0x81, 56, 1, 0, 0]); // [rcx+312] disp32
+        assert_eq!(&code[1458..1460], &[0x48, 0xB8]);
+        assert_eq!(&code[1460..1468], &SYS_MEMSEG_DESTROY.to_le_bytes());
+        assert_eq!(&code[1470..1477], &[0x48, 0x89, 0x81, 72, 1, 0, 0]); // [rcx+328] disp32
+        assert_eq!(code[1477], 0xCC); // int3
     }
 
     #[test]
