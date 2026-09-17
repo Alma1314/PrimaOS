@@ -305,6 +305,21 @@ pub fn witness() -> PreemptWitness {
     }
 }
 
+/// 屏蔽 8259 的全部中断（进入 CPL3 前调用）。
+///
+/// **必须**：8259 上电默认把 IRQ0 映射到 vector `0x08`——那正是 IDT 的 `#DF` 门。进入 CPL3 的
+/// 用户帧 `RFLAGS.IF=1`，若用户阶段长于 PIT 默认周期（约 55 ms），未屏蔽的 IRQ0 会以 vector 8
+/// 交付，而 `#DF` 门按「带错误码」出栈、硬件中断却不压错误码，栈即刻错位 → 三重故障。
+/// 该缺陷在 S2-D4 之前不可见（用户阶段短于 55 ms），由本切片更长的用户序列暴露。
+///
+/// `init_timer` 自己用 OCW1 只放行 IRQ0（`0xFE`），故时钟抢占阶段不受影响。
+pub fn mask_all_irqs() {
+    unsafe {
+        outb(PIC1_DATA, 0xff);
+        outb(PIC2_DATA, 0xff);
+    }
+}
+
 /// 进入时钟抢占阶段：装入两任务空转帧、启动 PIT/PIC，然后恢复 task 1（不返回）。
 ///
 /// 由 `user_trap_exit` 在所有既有 witness 之后调用；此时 task 1 为 Running、task 2 为 Ready。

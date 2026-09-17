@@ -23,6 +23,7 @@ enum EventKind {
     CapLifecycleReady,
     MemsegReady,
     IpcReady,
+    TaskReady,
     PreemptReady,
     ExcResumeReady,
     PlatformSegmentsReady,
@@ -101,6 +102,17 @@ const MEMSEG_PATTERN: u64 = 0xDEC0_DE00_1234_5678;
 const ENOENT: u64 = 0xFFFF_FFFF_FFFF_FFFE;
 const EACCES: u64 = 0xFFFF_FFFF_FFFF_FFF3;
 
+/// S2-D4：`task_create` 选定的新 Task id（init 与 task 2 之后的最小空闲 id）。
+const TASK_CREATE_CHILD_ID: usize = 3;
+/// S2-D4：`task_create` 返回的 manager cap 句柄（槽 10 gen1），与 `kernel/src/syscall.rs` 一致。
+const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
+/// S2-D4：`task_ready` 时刻的活动 cap 槽位数。
+///
+/// 24 = 初始 3 + 异常源 2 + 平台段 13 + 平台 task 2 + 切片 S 2 + 本切片 bring-up 2；
+/// 再加 ring3 存活段 cap 3（槽 6/7/8）与调用者的 manager cap 1（槽 10）。
+/// 被销毁子任务的 self cap 与 root_ns cap 已撤销，故不计入。
+const TASK_READY_LIVE_CAPS: usize = 28;
+
 /// 切片 R：平台 bring-up 区域对象化的镜像常量，与 `kernel/src/{bootstrap,frames}.rs` 一致。
 const PLATFORM_SEGMENT_COUNT: usize = 13;
 const PLATFORM_SEGMENT_FIRST_ID: u64 = 2;
@@ -164,7 +176,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 29] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 30] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -188,12 +200,13 @@ const EXPECTED_EVENTS: [(u32, EventKind); 29] = [
     (21, EventKind::CapLifecycleReady),
     (22, EventKind::MemsegReady),
     (23, EventKind::IpcReady),
-    (24, EventKind::PreemptReady),
-    (25, EventKind::ExcResumeReady),
-    (26, EventKind::PlatformSegmentsReady),
-    (27, EventKind::AuthorityReady),
-    (28, EventKind::FramesReady),
-    (29, EventKind::BootComplete),
+    (24, EventKind::TaskReady),
+    (25, EventKind::PreemptReady),
+    (26, EventKind::ExcResumeReady),
+    (27, EventKind::PlatformSegmentsReady),
+    (28, EventKind::AuthorityReady),
+    (29, EventKind::FramesReady),
+    (30, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -398,6 +411,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::IpcReady)
     {
         validate_ipc_data(ipc.data.as_deref())?;
+    }
+
+    if let Some(task) = events
+        .iter()
+        .find(|event| event.kind == EventKind::TaskReady)
+    {
+        validate_task_data(task.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -1710,9 +1730,143 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 1 || direct != 1 || blocks != 1 {
+    if queued != 2 || direct != 2 || blocks != 2 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 1/1/1 — both the queued (cap-carrying) and the direct (wake) paths must be exercised exactly once"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 2/2/2 — the queued (cap-carrying) and direct (wake) paths are each exercised twice: slice S's pair plus S2-D4's new-task message and the end-of-run wake of task 2"
+        ));
+    }
+    Ok(())
+}
+
+/// S2-D4：校验 `task_ready` —— `task_create`（完整 §8.1）/`task_destroy`（§8.2）三个用户原语
+/// 的成功与失败路径。
+///
+/// 钉住的是**事实**而非推断：`create` 必须是 `task_create` 返回的 manager cap 句柄；
+/// `recv` 必须等于内核选定的子任务 id（子任务经 `SYS_TASK_ID` 自报后回发）；`destroy` 成功而
+/// `again`/`map_dead`/`deny` 均被拒；`root_cleared`/`tasks`/`caps` 由内核在事件发射时读取，
+/// 证明目标已从任务表与调度登记移除、manager cap 已不再可授权。
+fn validate_task_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "task_ready event is missing its data field".to_owned())?;
+    let mut stack_seg = None;
+    let mut create = None;
+    let mut bad_entry = None;
+    let mut no_x = None;
+    let mut stack_map = None;
+    let mut recv = None;
+    let mut deny = None;
+    let mut destroy = None;
+    let mut again = None;
+    let mut map_dead = None;
+    let mut child = None;
+    let mut tasks = None;
+    let mut caps = None;
+    let mut root_cleared = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "stack_seg" => stack_seg = Some(parse_addr(value)?),
+            "create" => create = Some(parse_addr(value)?),
+            "bad_entry" => bad_entry = Some(parse_addr(value)?),
+            "no_x" => no_x = Some(parse_addr(value)?),
+            "stack_map" => stack_map = Some(parse_addr(value)?),
+            "recv" => recv = Some(parse_addr(value)?),
+            "deny" => deny = Some(parse_addr(value)?),
+            "destroy" => destroy = Some(parse_addr(value)?),
+            "again" => again = Some(parse_addr(value)?),
+            "map_dead" => map_dead = Some(parse_addr(value)?),
+            "child" => child = Some(parse_count(value)?),
+            "tasks" => tasks = Some(parse_count(value)?),
+            "caps" => caps = Some(parse_count(value)?),
+            "root_cleared" => root_cleared = Some(parse_count(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in task_ready data");
+    let stack_seg = stack_seg.ok_or_else(|| missing("stack_seg"))?;
+    let create = create.ok_or_else(|| missing("create"))?;
+    let bad_entry = bad_entry.ok_or_else(|| missing("bad_entry"))?;
+    let no_x = no_x.ok_or_else(|| missing("no_x"))?;
+    let stack_map = stack_map.ok_or_else(|| missing("stack_map"))?;
+    let recv = recv.ok_or_else(|| missing("recv"))?;
+    let deny = deny.ok_or_else(|| missing("deny"))?;
+    let destroy = destroy.ok_or_else(|| missing("destroy"))?;
+    let again = again.ok_or_else(|| missing("again"))?;
+    let map_dead = map_dead.ok_or_else(|| missing("map_dead"))?;
+    let child = child.ok_or_else(|| missing("child"))?;
+    let tasks = tasks.ok_or_else(|| missing("tasks"))?;
+    let caps = caps.ok_or_else(|| missing("caps"))?;
+    let root_cleared = root_cleared.ok_or_else(|| missing("root_cleared"))?;
+
+    if child != TASK_CREATE_CHILD_ID {
+        return Err(format!(
+            "task_ready child is {child}, expected {TASK_CREATE_CHILD_ID} — task_create must pick the smallest free id after init and task 2"
+        ));
+    }
+    if stack_seg == 0 || stack_seg == create {
+        return Err(format!(
+            "task_ready stack_seg (0x{stack_seg:x}) must be a distinct live handle minted by the new task segment"
+        ));
+    }
+    if create != TASK_MANAGER_CAP {
+        return Err(format!(
+            "task_ready create (0x{create:x}) must be the manager cap 0x{TASK_MANAGER_CAP:x} returned by §8.1 step 3"
+        ));
+    }
+    if bad_entry != EINVAL {
+        return Err(format!(
+            "task_ready bad_entry (0x{bad_entry:x}) must be EINVAL (-22) — an entry outside [load_base, load_base + code_pages*4KiB) must be rejected before any state change"
+        ));
+    }
+    if no_x != EACCES {
+        return Err(format!(
+            "task_ready no_x (0x{no_x:x}) must be EACCES (-13) — a code cap without SegMapX must be rejected"
+        ));
+    }
+    if stack_map != 0 {
+        return Err(format!(
+            "task_ready stack_map (0x{stack_map:x}) must be 0 — the caller must map the new task's stack through the manager cap after create"
+        ));
+    }
+    if recv != child as u64 {
+        return Err(format!(
+            "task_ready recv ({recv}) must equal child ({child}) — the child reports its own SYS_TASK_ID back through an authorized message"
+        ));
+    }
+    if deny != EACCES {
+        return Err(format!(
+            "task_ready deny (0x{deny:x}) must be EACCES — destroying a task without a TaskDestroy cap must be denied"
+        ));
+    }
+    if destroy != 0 {
+        return Err(format!(
+            "task_ready destroy (0x{destroy:x}) must be 0 — §8.2 task_destroy on the created child must succeed"
+        ));
+    }
+    if again != EACCES {
+        return Err(format!(
+            "task_ready again (0x{again:x}) must be EACCES — the manager cap's target is destroyed, so a second destroy must be denied (stale token, not silently successful)"
+        ));
+    }
+    if map_dead != ENOENT {
+        return Err(format!(
+            "task_ready map_dead (0x{map_dead:x}) must be ENOENT — mapping into a destroyed task's address space must be denied"
+        ));
+    }
+    if tasks != 2 {
+        return Err(format!(
+            "task_ready tasks is {tasks}, expected 2 (init + task 2) — the created child must be gone from the task table"
+        ));
+    }
+    if root_cleared != 1 {
+        return Err(format!(
+            "task_ready root_cleared is {root_cleared}, expected 1 — task_destroy must clear the destroyed task's scheduler root registration"
+        ));
+    }
+    if caps != TASK_READY_LIVE_CAPS {
+        return Err(format!(
+            "task_ready caps is {caps}, expected {TASK_READY_LIVE_CAPS} — the destroyed child's self/root-ns caps must be revoked while the caller's manager cap stays live"
         ));
     }
     Ok(())
@@ -2454,6 +2608,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("cap_lifecycle_ready", "ok") => EventKind::CapLifecycleReady,
         ("memseg_ready", "ok") => EventKind::MemsegReady,
         ("ipc_ready", "ok") => EventKind::IpcReady,
+        ("task_ready", "ok") => EventKind::TaskReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
@@ -2492,6 +2647,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CapLifecycleReady
             | EventKind::MemsegReady
             | EventKind::IpcReady
+            | EventKind::TaskReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -2523,6 +2679,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::CapLifecycleReady
             | EventKind::MemsegReady
             | EventKind::IpcReady
+            | EventKind::TaskReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -2571,14 +2728,94 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=1;direct=1;blocks=1\n",
-        "PRIMA|v=1|seq=24|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=25|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=26|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=27|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=28|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=29|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=2;direct=2;blocks=2\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;child=3;tasks=2;caps=28;root_cleared=1\n",
+        "PRIMA|v=1|seq=25|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=26|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=28|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=30|event=boot_complete|status=ok\r\n",
     );
+
+    #[test]
+    fn rejects_task_ready_when_create_is_an_errno() {
+        let output = VALID.replace("create=0x10000000a", "create=0xfffffffffffffff3");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be the manager cap"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_with_bad_entry_accepted() {
+        let output = VALID.replace("bad_entry=0xffffffffffffffea", "bad_entry=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be EINVAL"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_without_missing_segmapx_denial() {
+        let output = VALID.replace("no_x=0xfffffffffffffff3", "no_x=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be EACCES"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_when_the_child_reports_a_foreign_id() {
+        let output = VALID.replace("recv=0x3", "recv=0x2");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal child"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_when_destroy_is_denied() {
+        let output = VALID.replace("destroy=0x0;again=", "destroy=0xfffffffffffffff3;again=");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be 0"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_when_a_stale_manager_cap_destroys_again() {
+        let output = VALID.replace("again=0xfffffffffffffff3", "again=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("second destroy must be denied"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_when_the_destroyed_task_is_still_mappable() {
+        let output = VALID.replace("map_dead=0xfffffffffffffffe", "map_dead=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("destroyed task's address space"), "{error}");
+    }
+
+    #[test]
+    fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
+        let output = VALID.replace(";tasks=2;", ";tasks=3;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("must be gone from the task table"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_task_ready_without_root_cleanup() {
+        let output = VALID.replace("root_cleared=1", "root_cleared=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("clear the destroyed task's scheduler root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_task_ready_when_child_caps_stay_live() {
+        let output = VALID.replace(";caps=28", ";caps=30");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("self/root-ns caps must be revoked"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn rejects_handle_ready_with_bare_index_encoding() {
@@ -2663,9 +2900,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=1;", ";direct=0;");
+        let output = VALID.replace(";direct=2;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 1/1/1"), "{error}");
+        assert!(error.contains("expected 2/2/2"), "{error}");
     }
 
     #[test]

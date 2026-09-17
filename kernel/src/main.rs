@@ -95,6 +95,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // B4: 装载 IDT，触发 int3，验证 trap → handler → iretq 闭环。
                                     match kernel::idt::init_idt() {
                                         Ok(()) => {
+                                            // S2-D4：进入 CPL3 前屏蔽 8259 全部中断。上电默认
+                                            // IRQ0→vector 8（=#DF 门），用户帧 IF=1 且用户阶段
+                                            // 长于 PIT 默认周期时会被当成 #DF 交付并三重故障。
+                                            kernel::preempt::mask_all_irqs();
                                             kernel::idt::trigger_int3();
                                             let seen = kernel::idt::trap_seen();
                                             protocol::trap_ready(seen);
@@ -215,6 +219,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     }
                                     // O：两任务各自的抢占空转页（同 VA、不同帧）。
                                     if kernel::user::prepare_spin(offset).is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
+                                    // S2-D4：建新 Task 的代码段（用户区第一个 id）并铸两条 bring-up
+                                    // Capability。必须放在既有取帧序列之后，避免平移 E/F/G/O 的
+                                    // 物理帧序列。
+                                    if kernel::user::prepare_task_create(offset).is_err() {
                                         protocol::panic_event();
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)

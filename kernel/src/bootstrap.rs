@@ -167,6 +167,10 @@ pub enum AuditEvent {
         task_id: u32,
         status: TaskStatus,
     },
+    /// S2-D4：`task_create` 成功（§8.1 步骤 8）。
+    TaskCreated {
+        task_id: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,7 +226,75 @@ pub enum TaskError {
     NotReady,
     CannotDestroyInit,
     CannotDestroyRunning,
+    /// S2-D4：自我销毁未实现（`ISSUE-TASK-002`），确定性拒绝。
+    CannotDestroySelf,
     AuditFull,
+}
+
+/// S2-D4：`task_create` 的失败原因（§8.1 的错误名）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskCreateError {
+    /// cap 槽位从未分配 / 目标对象已销毁。
+    NoSuchCapability,
+    /// cap 不在调用者手中。
+    NotHolder,
+    /// `code_pages = 0` 或 `code_offset + code_pages` 超出 Segment 帧数（`InvalidCodeRange`）。
+    InvalidCodeRange,
+    /// 入口不在 `[load_base, load_base + code_pages*4 KiB)`（`InvalidEntry`）。
+    InvalidEntry,
+    /// `parent_ns_cap` 不是 Namespace 或已失效（`InvalidNamespace`）。
+    InvalidNamespace,
+    /// 缺 `SegMapR`/`SegMapX`/`NsResolve`/`Derive` 等前置权限（`MissingRight`）。
+    MissingRight,
+    /// `root_rights ⊄ parent_ns_cap.rights`（`RightsExceeded`）或 `root_rights` 缺 `NsResolve`。
+    RightsExceeded,
+    /// `initial_caps` 有一条不可用（`InvalidInitialCap`）。
+    InvalidInitialCap,
+    /// `initial_caps` 有重复（`DuplicateCap`）。
+    DuplicateCap,
+    /// `initial_caps` 含活动 Task 的结构性根 Namespace Capability。
+    StructuralCap,
+    /// 任务表 / cap 槽位已满。
+    CapacityExceeded,
+    /// 页帧不足。
+    NoMemory,
+    AuditFull,
+}
+
+/// S2-D4：`task_create` 的请求块（用户内存布局见 `syscall.rs`；细化层字段 `stack_top` 在内）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskCreateRequest {
+    pub code_seg_cap: Handle,
+    pub code_offset: u64,
+    pub code_pages: u64,
+    pub load_base: u64,
+    pub entry: u64,
+    /// 细化层字段：新 Task 的初始 `rsp`（抽象模型 §5.2 的 Task 无 SP）。
+    pub stack_top: u64,
+    pub parent_ns_cap: Handle,
+    pub root_rights: Rights,
+    pub initial_caps: [Handle; MAX_TASK_INITIAL_CAPS],
+}
+
+/// §8.1 的 `initial_caps` 在本细化层固定为至多 2 条（与消息携带 cap 同容量）。
+pub const MAX_TASK_INITIAL_CAPS: usize = 2;
+
+/// §8.1 步骤 3：新 Task 的根管理 Capability 权限，恰为 `{Derive, TaskSend, TaskManageVSpace, TaskDestroy}`。
+pub const MANAGER_TASK_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::TaskSend,
+    Right::TaskManageVSpace,
+    Right::TaskDestroy,
+]);
+
+/// S2-D4：`task_create` 成功后的产物（`root_phys` 供 syscall 层登记调度器）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskCreateOutcome {
+    pub manager_cap: Handle,
+    pub self_cap: Handle,
+    pub root_ns_cap: Handle,
+    pub task_id: u32,
+    pub root_phys: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,6 +342,11 @@ impl TaskTable {
     }
 
     pub fn create(&mut self, task_id: u32) -> Result<(), TaskError> {
+        self.create_with_entry(task_id, 0)
+    }
+
+    /// S2-D4：按 §8.1 步骤 1 建 Task 记录并写入入口 VA（`memseg_unmap` 的入口页保护依据）。
+    pub fn create_with_entry(&mut self, task_id: u32, entry: u64) -> Result<(), TaskError> {
         if self.find(task_id).is_some() {
             return Err(TaskError::DuplicateTask);
         }
@@ -281,11 +358,53 @@ impl TaskTable {
             status: TaskStatus::Ready,
             // 非 init 任务由创建者显式设置结构根；本切片不创建此类任务的结构根。
             root_ns_cap: Handle::ZERO,
-            entry: 0,
+            entry,
             pending: None,
         });
         self.count += 1;
         Ok(())
+    }
+
+    /// S2-D4：`task_create` 选定的新 id——最小空闲的 id（`≥ 2`，init 与已有任务之外）。
+    pub fn next_free_id(&self) -> Option<u32> {
+        let mut task_id = INIT_TASK_ID + 1;
+        while (task_id as usize) < MAX_TASKS {
+            if self.find(task_id).is_none() {
+                return Some(task_id);
+            }
+            task_id += 1;
+        }
+        None
+    }
+
+    /// S2-D4：移除 Task 记录（仅供 `task_create` 的回滚路径；正常销毁走 `finish_destroy` 保留
+    /// `Dead` 记录，使 id 不复用）。
+    pub fn remove(&mut self, task_id: u32) -> bool {
+        let Some(index) = self.entries[..self.count]
+            .iter()
+            .position(|entry| entry.is_some_and(|task| task.id == task_id))
+        else {
+            return false;
+        };
+        for shift in index..self.count - 1 {
+            self.entries[shift] = self.entries[shift + 1];
+        }
+        self.entries[self.count - 1] = None;
+        self.count -= 1;
+        true
+    }
+
+    /// S2-D4：写入结构根 Capability（§8.1 步骤 6）。
+    pub fn set_root_ns_cap(&mut self, task_id: u32, cap: Handle) -> Result<(), TaskError> {
+        self.find_mut(task_id)
+            .ok_or(TaskError::NoSuchTask)
+            .map(|task| task.root_ns_cap = cap)
+    }
+
+    /// 目标 Task 是否存活（非 `Dead`）。S2-D4：授权与目标存活的判定入口。
+    pub fn is_live(&self, task_id: u32) -> bool {
+        self.find(task_id)
+            .is_some_and(|task| task.status != TaskStatus::Dead)
     }
 
     pub fn schedule(&mut self, task_id: u32) -> Result<(), TaskError> {
@@ -328,11 +447,6 @@ impl TaskTable {
         let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
         task.status = TaskStatus::Dead;
         Ok(())
-    }
-
-    fn is_live(&self, task_id: u32) -> bool {
-        self.find(task_id)
-            .is_some_and(|task| task.status != TaskStatus::Dead)
     }
 
     fn block_recv(&mut self, task_id: u32) -> Result<(), TaskError> {
@@ -907,6 +1021,30 @@ impl ExcSourceTable {
             .flatten()
             .find(|source| source.id == source_id)
     }
+
+    /// S2-D4 / §8.2 步骤 7：从所有源的订阅集合移除 `task`。
+    ///
+    /// 返回被移除的订阅条数。销毁是被授权动作的原子清理，故**不追加** `ExcUnsubscribed`
+    /// （§8.2 步骤 9 只要求追加 Task 销毁、消息丢弃、Capability 丢弃与 Timer 事件）。
+    pub fn remove_subscriber(&mut self, task: u32) -> usize {
+        let mut removed = 0usize;
+        for source in self.entries[..self.count].iter_mut().flatten() {
+            let mut index = 0usize;
+            while index < source.count {
+                if source.subscribers[index] == Some(task) {
+                    for shift in index..source.count - 1 {
+                        source.subscribers[shift] = source.subscribers[shift + 1];
+                    }
+                    source.count -= 1;
+                    source.subscribers[source.count] = None;
+                    removed += 1;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+        removed
+    }
 }
 
 /// 切片 L：一次 `raise_exception` 的实测结果。
@@ -1148,6 +1286,32 @@ pub const TASK2_SELF_CAP_HANDLE: Handle =
 pub const TASK2_SEND_RIGHTS: Rights = Rights::from_rights(&[Right::TaskSend]);
 /// 自管理权：只给 `TaskManageVSpace`。
 pub const TASK2_SELF_RIGHTS: Rights = Rights::from_rights(&[Right::TaskManageVSpace]);
+
+/// S2-D4：`task_create` 见证所需 Capability 的槽位（49 = 新 Task 的代码段，50 = task 1 的
+/// `Task(1)`+`TaskSend`，作为 `initial_caps` 移入新 Task）。
+///
+/// 避开 1..5、6/7/8、32..48（切片 R/S）与 `UNSET_CAP`(60)。两条均为 `mint_root_capability_at`
+/// 的**新增铸造**，不动内核持有的平台 cap。
+pub const TASK_CREATE_CODE_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 2;
+/// task 1 自持的 `Task(1)`+`TaskSend`：`initial_caps` 把它移入新 Task，使子任务能向 task 1 发送。
+pub const TASK_CREATE_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 3;
+/// 新 Task 代码段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapX, SegDestroy}`）。
+pub const TASK_CREATE_CODE_CAP_HANDLE: Handle =
+    cap_handle(TASK_CREATE_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// 作为 `initial_cap0` 移入新 Task 的句柄（句柄在移动中不变，子任务代码内嵌此常量）。
+pub const TASK_CREATE_SEND_CAP_HANDLE: Handle =
+    cap_handle(TASK_CREATE_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
+pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::SegMapR,
+    Right::SegMapX,
+    Right::SegDestroy,
+]);
+/// 新 Task 的结构性根 Namespace 权限（`root_rights`）：只含 `NsResolve`。
+pub const TASK_CREATE_ROOT_NS_RIGHTS: Rights = Rights::from_rights(&[Right::NsResolve]);
+/// 新 Task 代码段的访问集（§8.1 步骤 2：初始代码映射权限恰为 `{R, X}`）。
+pub const TASK_CREATE_CODE_ACCESS: Rights = Rights::from_rights(&[Right::SegMapR, Right::SegMapX]);
 
 /// 平台 Segment id → 根 Capability 槽位。
 pub const fn platform_segment_cap_slot(id: u32) -> u32 {
@@ -2176,6 +2340,57 @@ impl BootstrapState {
         Ok(handle)
     }
 
+    /// S2-D4：§8.1 步骤 6 的派生变体——子 Capability **落在指定 Task 手中**（而非调用者）。
+    ///
+    /// 除位置与 `holder` 外与 [`Self::derive_capability`] 同：父必须在调用者手中、目标存活、
+    /// 子权限 ⊆ 父权限且类型匹配。用于 `task_create` 从 `parent_ns_cap` 派生新 Task 的
+    /// 结构性根 Namespace Capability。
+    pub fn derive_capability_to_holder(
+        &mut self,
+        caller: u32,
+        parent: Handle,
+        rights: Rights,
+        holder: u32,
+    ) -> Result<Handle, DeriveError> {
+        match self.slots.check(parent) {
+            SlotState::Free => return Err(DeriveError::NoSuchParent),
+            SlotState::Stale => return Err(DeriveError::StaleHandle),
+            SlotState::Live => {}
+        }
+        if self.holder_of(parent) != Some(caller) {
+            return Err(DeriveError::ParentNotHeld);
+        }
+        let target = self.target_of(parent).ok_or(DeriveError::NoSuchParent)?;
+        if !self.target_live(target) {
+            return Err(DeriveError::TargetDead);
+        }
+        let parent_rights = self.rights_of(parent).ok_or(DeriveError::NoSuchParent)?;
+        if !parent_rights.contains(Right::Derive) {
+            return Err(DeriveError::MissingDerive);
+        }
+        if !rights.subset_of(parent_rights) {
+            return Err(DeriveError::RightsEscalation);
+        }
+        if !rights.well_typed(target.kind()) {
+            return Err(DeriveError::WrongRightType);
+        }
+        if !self.audit.can_append(1) {
+            return Err(DeriveError::AuditFull);
+        }
+        let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
+        self.records
+            .insert(handle, Some(parent), holder, rights, target)?;
+        self.positions
+            .register(handle, holder)
+            .map_err(|_| DeriveError::CapacityExceeded)?;
+        self.audit.append(AuditEvent::CapabilityDerived {
+            cap: handle,
+            parent,
+            holder,
+        });
+        Ok(handle)
+    }
+
     /// 撤销以 `cap` 为根的派生子树（内部模型能力；§4.7 第一版不提供用户可调 `cap_revoke`）。
     pub fn revoke_capability(
         &mut self,
@@ -2274,7 +2489,339 @@ impl BootstrapState {
         self.tasks.yield_task(task_id)
     }
 
+    /// S2-D4：§8.1 `task_create` 的完整成功动作。
+    ///
+    /// 失败保持在**任何状态修改之前**：全部前置（§8.1 1–8）与容量/审计预检先做；提交阶段
+    /// （建记录 → 铸 manager/self → 派生 root_ns → 移动 initial_caps → 审计）在预检保证下逐条
+    /// 不可能失败，任一失败仍按已提交量回滚。
+    ///
+    /// `boot_root` 是新 Task 地址空间的克隆源（bootloader 根，含内核高半区）；`phys_offset` 是
+    /// 物理直映射偏移。新根清空三个用户 PML4 槽，代码页按 §8.1 步骤 2 装成 `{R, X}` 用户映射并
+    /// 记入 `TaskVspaceTable`。返回的 [`TaskCreateOutcome`] 由 syscall 层登记到调度器（`sched`
+    /// 不属于本模型层）。
+    pub fn task_create(
+        &mut self,
+        caller: u32,
+        req: &TaskCreateRequest,
+        boot_root: u64,
+        phys_offset: u64,
+    ) -> Result<TaskCreateOutcome, TaskCreateError> {
+        // ---- 前置 1：代码 Segment Capability ----
+        if self.slots.check(req.code_seg_cap) != SlotState::Live {
+            return Err(TaskCreateError::NoSuchCapability);
+        }
+        if self.holder_of(req.code_seg_cap) != Some(caller) {
+            return Err(TaskCreateError::NotHolder);
+        }
+        let code_seg_id = match self.target_of(req.code_seg_cap) {
+            Some(ObjectRef::Segment(id)) if self.target_live(ObjectRef::Segment(id)) => id,
+            _ => return Err(TaskCreateError::NoSuchCapability),
+        };
+        let code_rights = self
+            .rights_of(req.code_seg_cap)
+            .ok_or(TaskCreateError::NoSuchCapability)?;
+        if !code_rights.contains(Right::SegMapR) || !code_rights.contains(Right::SegMapX) {
+            return Err(TaskCreateError::MissingRight);
+        }
+        // ---- 前置 2：代码范围 ----
+        let frame_count = self
+            .segment(code_seg_id)
+            .map(|segment| segment.frame_count() as u64)
+            .unwrap_or(0);
+        let code_end_offset = req
+            .code_offset
+            .checked_add(req.code_pages)
+            .ok_or(TaskCreateError::InvalidCodeRange)?;
+        if req.code_pages == 0 || code_end_offset > frame_count {
+            return Err(TaskCreateError::InvalidCodeRange);
+        }
+        // ---- 前置 3：入口落在代码范围内 ----
+        if !req.load_base.is_multiple_of(crate::mem::FRAME_SIZE) {
+            return Err(TaskCreateError::InvalidEntry);
+        }
+        let code_end = req
+            .code_pages
+            .checked_mul(crate::mem::FRAME_SIZE)
+            .and_then(|span| req.load_base.checked_add(span))
+            .ok_or(TaskCreateError::InvalidEntry)?;
+        if req.entry < req.load_base || req.entry >= code_end {
+            return Err(TaskCreateError::InvalidEntry);
+        }
+        // ---- 前置 4/5：父 Namespace Capability 与 root_rights ----
+        if self.slots.check(req.parent_ns_cap) != SlotState::Live {
+            return Err(TaskCreateError::InvalidNamespace);
+        }
+        if self.holder_of(req.parent_ns_cap) != Some(caller) {
+            return Err(TaskCreateError::NotHolder);
+        }
+        let parent_is_live_ns = matches!(
+            self.target_of(req.parent_ns_cap),
+            Some(ObjectRef::Namespace(id)) if self.target_live(ObjectRef::Namespace(id))
+        );
+        if !parent_is_live_ns {
+            return Err(TaskCreateError::InvalidNamespace);
+        }
+        let parent_rights = self
+            .rights_of(req.parent_ns_cap)
+            .ok_or(TaskCreateError::InvalidNamespace)?;
+        if !parent_rights.contains(Right::NsResolve) || !parent_rights.contains(Right::Derive) {
+            return Err(TaskCreateError::MissingRight);
+        }
+        if !req.root_rights.contains(Right::NsResolve)
+            || !req.root_rights.subset_of(parent_rights)
+            || !req.root_rights.well_typed(ObjectKind::Namespace)
+        {
+            return Err(TaskCreateError::RightsExceeded);
+        }
+        // ---- 前置 6：initial_caps ----
+        let mut initial_count = 0usize;
+        for (index, cap) in req.initial_caps.iter().copied().enumerate() {
+            if cap.is_zero() {
+                continue;
+            }
+            if req.initial_caps[..index].contains(&cap) {
+                return Err(TaskCreateError::DuplicateCap);
+            }
+            if cap == req.code_seg_cap || cap == req.parent_ns_cap {
+                return Err(TaskCreateError::InvalidInitialCap);
+            }
+            if self
+                .tasks
+                .entries
+                .iter()
+                .flatten()
+                .any(|task| task.root_ns_cap == cap)
+            {
+                return Err(TaskCreateError::StructuralCap);
+            }
+            if self.slots.check(cap) != SlotState::Live || self.holder_of(cap) != Some(caller) {
+                return Err(TaskCreateError::InvalidInitialCap);
+            }
+            if self
+                .target_of(cap)
+                .is_none_or(|target| !self.target_live(target))
+                || self.rights_of(cap).is_none()
+            {
+                return Err(TaskCreateError::InvalidInitialCap);
+            }
+            initial_count += 1;
+        }
+        // ---- 前置 7：任务表 / cap 槽位 / 审计容量 ----
+        let new_id = self
+            .tasks
+            .next_free_id()
+            .ok_or(TaskCreateError::CapacityExceeded)?;
+        if self.slots.live_count() + 3 + initial_count > MAX_CAPABILITY_SLOTS {
+            return Err(TaskCreateError::CapacityExceeded);
+        }
+        if !self.audit.can_append(2 + initial_count) {
+            return Err(TaskCreateError::AuditFull);
+        }
+        let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+        // ---- 成功动作 2：新地址空间 + 代码页 ----
+        let root = crate::frames::allocate_table_frame().map_err(|_| TaskCreateError::NoMemory)?;
+        let mut fresh_tables = [0u64; 4];
+        let mut fresh_count = 0usize;
+        let rollback = |fresh_tables: &[u64; 4], fresh_count: usize| {
+            for frame in fresh_tables[..fresh_count].iter().copied() {
+                let _ = crate::frames::release_table_frame(frame);
+            }
+            let _ = crate::frames::release_table_frame(root);
+        };
+        crate::vspace::clone_root(boot_root, root, map);
+        for slot in [
+            crate::user::USER_SLOT,
+            crate::user::USER2_SLOT,
+            crate::user::USER3_SLOT,
+        ] {
+            crate::vspace::zero_slot(root, slot, map);
+        }
+        for index in 0..req.code_pages {
+            let va = req.load_base + index * crate::mem::FRAME_SIZE;
+            let Some(frame) =
+                self.segment_frame(code_seg_id, req.code_offset as usize + index as usize)
+            else {
+                rollback(&fresh_tables, fresh_count);
+                return Err(TaskCreateError::NoSuchCapability);
+            };
+            let mut alloc_count = fresh_count;
+            let mapped = crate::vspace::map_4k(
+                root,
+                va,
+                map,
+                || match crate::frames::allocate_table_frame() {
+                    Ok(table) => {
+                        if alloc_count < fresh_tables.len() {
+                            fresh_tables[alloc_count] = table;
+                            alloc_count += 1;
+                        }
+                        Some(table)
+                    }
+                    Err(_) => None,
+                },
+                frame,
+                false,
+                true,
+            );
+            fresh_count = alloc_count;
+            if mapped.is_err() {
+                rollback(&fresh_tables, fresh_count);
+                return Err(TaskCreateError::NoMemory);
+            }
+        }
+        // ---- 成功动作 1：Task 记录 ----
+        if self.tasks.create_with_entry(new_id, req.entry).is_err() {
+            rollback(&fresh_tables, fresh_count);
+            return Err(TaskCreateError::CapacityExceeded);
+        }
+        let mut vspace_count = 0u64;
+        for index in 0..req.code_pages {
+            let va = req.load_base + index * crate::mem::FRAME_SIZE;
+            let inserted = self.vspace.insert(VspaceEntry {
+                task_id: new_id,
+                va,
+                seg_id: code_seg_id,
+                seg_offset: req.code_offset + index,
+                access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
+            });
+            if inserted.is_err() {
+                while vspace_count > 0 {
+                    vspace_count -= 1;
+                    let va = req.load_base + vspace_count * crate::mem::FRAME_SIZE;
+                    let _ = self.vspace.remove(new_id, va);
+                }
+                self.tasks.remove(new_id);
+                rollback(&fresh_tables, fresh_count);
+                return Err(TaskCreateError::CapacityExceeded);
+            }
+            vspace_count += 1;
+        }
+        // ---- 成功动作 3/4：manager cap（调用者）与 self cap（新 Task） ----
+        let Ok(manager_cap) =
+            self.mint_root_capability(caller, MANAGER_TASK_RIGHTS, ObjectRef::Task(new_id))
+        else {
+            self.tasks.remove(new_id);
+            rollback(&fresh_tables, fresh_count);
+            return Err(TaskCreateError::CapacityExceeded);
+        };
+        let Ok(self_cap) =
+            self.mint_root_capability(new_id, MANAGER_TASK_RIGHTS, ObjectRef::Task(new_id))
+        else {
+            self.retire_capability(manager_cap);
+            self.tasks.remove(new_id);
+            rollback(&fresh_tables, fresh_count);
+            return Err(TaskCreateError::CapacityExceeded);
+        };
+        // ---- 成功动作 6：从 parent_ns_cap 派生新 Task 的结构性根 ----
+        let Ok(root_ns_cap) =
+            self.derive_capability_to_holder(caller, req.parent_ns_cap, req.root_rights, new_id)
+        else {
+            self.retire_capability(self_cap);
+            self.retire_capability(manager_cap);
+            self.tasks.remove(new_id);
+            rollback(&fresh_tables, fresh_count);
+            return Err(TaskCreateError::CapacityExceeded);
+        };
+        if self.tasks.set_root_ns_cap(new_id, root_ns_cap).is_err() {
+            self.retire_capability(root_ns_cap);
+            self.retire_capability(self_cap);
+            self.retire_capability(manager_cap);
+            self.tasks.remove(new_id);
+            rollback(&fresh_tables, fresh_count);
+            return Err(TaskCreateError::CapacityExceeded);
+        }
+        // ---- 成功动作 7：initial_caps 从调用者移入新 Task ----
+        for cap in req.initial_caps.iter().copied() {
+            if cap.is_zero() {
+                continue;
+            }
+            if self.move_capability(cap, caller, new_id).is_err() {
+                // 预检保证不可达；仍回滚本次创建，不留半成品。
+                self.retire_capability(root_ns_cap);
+                self.retire_capability(self_cap);
+                self.retire_capability(manager_cap);
+                self.tasks.remove(new_id);
+                rollback(&fresh_tables, fresh_count);
+                return Err(TaskCreateError::CapacityExceeded);
+            }
+        }
+        // ---- 成功动作 8：TaskCreated ----
+        self.audit
+            .append(AuditEvent::TaskCreated { task_id: new_id });
+        Ok(TaskCreateOutcome {
+            manager_cap,
+            self_cap,
+            root_ns_cap,
+            task_id: new_id,
+            root_phys: root,
+        })
+    }
+
+    /// S2-D4：§8.2 `task_destroy` 的完整路径。`root_phys = Some` 时先执行步骤 1（删除目标全部
+    /// 页映射、归还空表帧与目标根帧）；`None` 供不经地址空间的模型层调用。
+    ///
+    /// `caller` 为目标自身时拒绝（`CannotDestroySelf`，`ISSUE-TASK-002`）：自毁要在正被使用的
+    /// CR3 与内核栈上回收自身根帧，本切片不做。
+    pub fn task_destroy(
+        &mut self,
+        caller: u32,
+        task_id: u32,
+        root_phys: Option<u64>,
+        phys_offset: u64,
+    ) -> Result<(), TaskError> {
+        self.tasks.prepare_destroy(task_id)?;
+        if task_id == caller {
+            return Err(TaskError::CannotDestroySelf);
+        }
+        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
+            return Err(TaskError::AuditFull);
+        }
+        if let Some(root) = root_phys {
+            let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+            let mut entries = [0u64; MAX_VSPACE_ENTRIES];
+            let mut count = 0usize;
+            for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
+                if entry.task_id == task_id && count < MAX_VSPACE_ENTRIES {
+                    entries[count] = entry.va;
+                    count += 1;
+                }
+            }
+            for entry_va in entries[..count].iter().copied() {
+                crate::vspace::unmap_4k(root, entry_va, map, |frame| {
+                    crate::frames::release_table_frame(frame)
+                        .map_err(|_| crate::vspace::VspaceError::NoFrame)
+                })
+                .map_err(|_| TaskError::NoSuchTask)?;
+                let _ = self.vspace.remove(task_id, entry_va);
+            }
+            let _ = crate::frames::release_table_frame(root);
+        }
+        // §8.2 步骤 7：从所有异常源的订阅集合移除目标。
+        self.exc_sources.remove_subscriber(task_id);
+        self.destroy_task_model(task_id)
+    }
+
+    /// §8.2 步骤 2/3/4/8/9 所需的审计条数（丢弃消息 + pending + `TaskDestroyed`）。
+    fn destroy_audit_events(&self, task_id: u32) -> usize {
+        let pending = self
+            .tasks
+            .find(task_id)
+            .is_some_and(|task| task.pending.is_some());
+        let mut dropped = 0usize;
+        for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
+            if message.sender == task_id || message.receiver == task_id {
+                dropped += 1;
+            }
+        }
+        dropped + usize::from(pending) + 1
+    }
+
+    /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
     pub fn destroy_task(&mut self, task_id: u32) -> Result<(), TaskError> {
+        self.task_destroy(u32::MAX, task_id, None, 0)
+    }
+
+    fn destroy_task_model(&mut self, task_id: u32) -> Result<(), TaskError> {
         self.tasks.prepare_destroy(task_id)?;
         let pending_message = self.tasks.find(task_id).and_then(|task| task.pending);
         let mut dropped_message_ids = [0u32; MAX_MESSAGES];
@@ -2475,6 +3022,12 @@ impl BootstrapState {
 }
 
 impl BootstrapState {
+    /// S2-D4：Segment 的第 `index` 帧（`task_create` 装代码页时用）。
+    fn segment_frame(&self, id: u32, index: usize) -> Option<u64> {
+        self.segment(id)
+            .and_then(|segment| segment.frames.frame_at(index))
+    }
+
     fn segment(&self, id: u32) -> Option<&SegmentObject> {
         self.segments
             .iter()
@@ -2515,7 +3068,7 @@ impl BootstrapState {
         page_count: usize,
         allowed_access: Rights,
         phys_offset: u64,
-        cap_slot: Option<u32>,
+        cap_at: Option<(CapabilityLocation, u32)>,
     ) -> Result<(Handle, SegmentFrames), MemsegError> {
         if !self.segment_slot_free(id) || self.segment_count == MAX_SEGMENT_OBJECTS {
             return Err(MemsegError::CapacityExceeded);
@@ -2550,13 +3103,10 @@ impl BootstrapState {
         let root_rights = SEGMENT_ROOT_RIGHTS
             .intersection(allowed_access)
             .union(Rights::from_rights(&[Right::Derive, Right::SegDestroy]));
-        let minted = match cap_slot {
-            Some(slot) => self.mint_root_capability_at(
-                CapabilityLocation::HeldByKernel,
-                slot,
-                root_rights,
-                ObjectRef::Segment(id),
-            ),
+        let minted = match cap_at {
+            Some((location, slot)) => {
+                self.mint_root_capability_at(location, slot, root_rights, ObjectRef::Segment(id))
+            }
             None => self.mint_root_capability(creator, root_rights, ObjectRef::Segment(id)),
         };
         let handle = match minted {
@@ -2660,7 +3210,10 @@ impl BootstrapState {
             page_count,
             allowed_access,
             phys_offset,
-            Some(platform_segment_cap_slot(id)),
+            Some((
+                CapabilityLocation::HeldByKernel,
+                platform_segment_cap_slot(id),
+            )),
         )
     }
 
@@ -2747,6 +3300,35 @@ impl BootstrapState {
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
         Ok(())
+    }
+
+    /// S2-D4：建新 Task 的代码 Segment（用户区第一个 id）并铸两条 bring-up Capability。
+    ///
+    /// 返回代码段首帧物理地址，供内核写入 `task3_code()`。代码段用**用户区 id**而非平台区间，
+    /// 故 `PLATFORM_SEGMENT_ID_LAST`/`PLATFORM_SEGMENT_COUNT` 与平台 cap 槽 32..44 不变。
+    ///
+    /// 必须在 `platform_prepare_task_caps` 之后调用（两条 cap 的目标 Task(1) 已存活），且在
+    /// 既有 bring-up 取帧序列**之后**调用（避免平移切片 E/F/G/O 的物理帧序列）。
+    pub fn prepare_task_create_caps(&mut self, phys_offset: u64) -> Result<u64, MemsegError> {
+        let (_, frames) = self.create_segment_object(
+            USER_SEGMENT_ID_FIRST,
+            KERNEL_ACTOR,
+            1,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                TASK_CREATE_CODE_CAP_SLOT,
+            )),
+        )?;
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            TASK_CREATE_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
+        frames.frame_at(0).ok_or(MemsegError::NoMemory)
     }
 
     /// 一条平台根 Capability 是否满足全部结构性条件。
@@ -3284,6 +3866,79 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
             Some(state) => state.decode_handle(raw),
             None => Err(AuthError::NotInstalled),
         }
+    }
+}
+
+/// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段首帧物理地址。
+pub fn prepare_task_create_caps(phys_offset: u64) -> Result<u64, MemsegError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.prepare_task_create_caps(phys_offset),
+            None => Err(MemsegError::TargetDead),
+        }
+    }
+}
+
+/// S2-D4：全局 `task_create`（§8.1）。
+pub fn task_create(
+    caller: u32,
+    req: &TaskCreateRequest,
+    boot_root: u64,
+    phys_offset: u64,
+) -> Result<TaskCreateOutcome, TaskCreateError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.task_create(caller, req, boot_root, phys_offset),
+            None => Err(TaskCreateError::NoSuchCapability),
+        }
+    }
+}
+
+/// S2-D4：全局 `task_destroy`（§8.2）。
+pub fn task_destroy(
+    caller: u32,
+    task_id: u32,
+    root_phys: Option<u64>,
+    phys_offset: u64,
+) -> Result<(), TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.task_destroy(caller, task_id, root_phys, phys_offset),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+/// S2-D4：见证用——活动（非 `Dead`）Task 数。
+pub fn live_task_count() -> usize {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot)
+            .as_ref()
+            .map(|state| {
+                state
+                    .tasks
+                    .entries
+                    .iter()
+                    .flatten()
+                    .filter(|task| task.status != TaskStatus::Dead)
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+}
+
+/// S2-D4：见证用——活动 Capability 槽位数。
+pub fn live_cap_count() -> usize {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot)
+            .as_ref()
+            .map(|state| state.slots.live_count())
+            .unwrap_or(0)
     }
 }
 
@@ -4711,6 +5366,295 @@ mod tests {
             ),
             Err(MemsegError::NoMemory)
         );
+    }
+
+    /// S2-D4：造一个含 task 2、一个活动 Segment 对象与其根 Capability 的授权表。
+    ///
+    /// 只登记对象元数据、**不取真实帧**——本组测试只覆盖「任何状态修改之前」的前置拒绝，
+    /// 以及帧分配失败时的原子性；真实地址空间构造由 QEMU 见证（`task_ready`）。
+    fn task_state() -> (super::BootstrapState, Handle, Handle) {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        state.segments[0] = Some(SegmentObject {
+            id: crate::frames::SEG_TASK1_CODE,
+            generation: INITIAL_CAP_GENERATION,
+            creator: KERNEL_ACTOR,
+            pool: crate::frames::Pool::Cpu,
+            frames: SegmentFrames::Vector {
+                frames: [0x1000; MAX_SEGMENT_FRAMES],
+                count: 2,
+            },
+            allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
+            active: true,
+        });
+        state.segment_count = 1;
+        let segment = ObjectRef::Segment(crate::frames::SEG_TASK1_CODE);
+        let code_cap = state
+            .mint_root_capability(INIT_TASK_ID, code_rights(), segment)
+            .unwrap();
+        // 同一授权表里的「缺 SegMapX」cap：用于权限不足的拒绝分支。
+        let weak_cap = state
+            .mint_root_capability(
+                INIT_TASK_ID,
+                Rights::from_rights(&[Right::Derive, Right::SegMapR, Right::SegDestroy]),
+                segment,
+            )
+            .unwrap();
+        (state, code_cap, weak_cap)
+    }
+
+    fn code_rights() -> Rights {
+        Rights::from_rights(&[
+            Right::Derive,
+            Right::SegMapR,
+            Right::SegMapX,
+            Right::SegDestroy,
+        ])
+    }
+
+    fn create_request(code_cap: Handle) -> super::TaskCreateRequest {
+        super::TaskCreateRequest {
+            code_seg_cap: code_cap,
+            code_offset: 0,
+            code_pages: 1,
+            load_base: crate::user::USER3_CODE_VA,
+            entry: crate::user::USER3_CODE_VA,
+            stack_top: crate::user::USER3_STACK_VA + crate::mem::FRAME_SIZE,
+            parent_ns_cap: NAMESPACE_CAP_HANDLE,
+            root_rights: Rights::from_rights(&[Right::NsResolve]),
+            initial_caps: [Handle::ZERO; super::MAX_TASK_INITIAL_CAPS],
+        }
+    }
+
+    /// S2-D4：`task_create` 的九类前置拒绝必须**在任何状态修改之前**发生。
+    #[test]
+    fn task_create_rejects_every_precondition_without_state_change() {
+        let (state, code_cap, weak_cap) = task_state();
+        let before = state;
+        let boot_root = 0x2000;
+        let cases: [(super::TaskCreateRequest, super::TaskCreateError); 8] = [
+            // 1. 代码 cap 缺 SegMapX。
+            (
+                super::TaskCreateRequest {
+                    code_seg_cap: weak_cap,
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::MissingRight,
+            ),
+            // 2. 入口越出代码范围。
+            (
+                super::TaskCreateRequest {
+                    entry: crate::user::USER3_BASE_VA + 0x9000,
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::InvalidEntry,
+            ),
+            // 3. 代码页数为 0。
+            (
+                super::TaskCreateRequest {
+                    code_pages: 0,
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::InvalidCodeRange,
+            ),
+            // 4. code_offset + code_pages 超出该 Segment 的帧数（2）。
+            (
+                super::TaskCreateRequest {
+                    code_offset: 2,
+                    code_pages: 1,
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::InvalidCodeRange,
+            ),
+            // 5. 父 Namespace cap 不是 Namespace（用 image Segment cap）。
+            (
+                super::TaskCreateRequest {
+                    parent_ns_cap: IMAGE_CAP_HANDLE,
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::InvalidNamespace,
+            ),
+            // 6. root_rights 缺 NsResolve。
+            (
+                super::TaskCreateRequest {
+                    root_rights: Rights::from_rights(&[Right::NsBind]),
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::RightsExceeded,
+            ),
+            // 7. root_rights ⊄ parent_ns_cap.rights（root 的 Namespace 权限不含 NsResolve？含；
+            //    故用 NsDestroy 之外的自造位集：NsResolve ∪ {NsDestroy} 仍在父内，改用
+            //    父 cap 之外的权限——这里以「类型不符」的 Segment 权限触发 RightsExceeded）。
+            (
+                super::TaskCreateRequest {
+                    root_rights: Rights::from_rights(&[Right::NsResolve, Right::SegMapR]),
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::RightsExceeded,
+            ),
+            // 8. initial_caps 重复。
+            (
+                super::TaskCreateRequest {
+                    initial_caps: [TASK_CAP_HANDLE, TASK_CAP_HANDLE],
+                    ..create_request(code_cap)
+                },
+                super::TaskCreateError::DuplicateCap,
+            ),
+        ];
+        for (index, (request, expected)) in cases.into_iter().enumerate() {
+            let mut state = state;
+            assert_eq!(
+                state.task_create(INIT_TASK_ID, &request, boot_root, 0),
+                Err(expected),
+                "case {index} must be rejected"
+            );
+            assert_eq!(state, before, "case {index} must not modify state");
+        }
+    }
+
+    /// S2-D4：`initial_caps` 含活动 Task 的结构性根 Capability 必须被拒（§8.1 前置 8）。
+    #[test]
+    fn task_create_rejects_structural_root_in_initial_caps() {
+        let (mut state, code_cap, _) = task_state();
+        // 把 task 2 的结构性根设成一条普通 Task cap（Namespace 根与 parent_ns_cap 同一条，
+        // 无法在 initial_caps 里与前置 5 区分，故用可区分的替身钉住该分支）。
+        state.tasks.set_root_ns_cap(2, TASK_CAP_HANDLE).unwrap();
+        let before = state;
+        let request = super::TaskCreateRequest {
+            initial_caps: [TASK_CAP_HANDLE, Handle::ZERO],
+            ..create_request(code_cap)
+        };
+        assert_eq!(
+            state.task_create(INIT_TASK_ID, &request, 0x2000, 0),
+            Err(super::TaskCreateError::StructuralCap)
+        );
+        assert_eq!(state, before);
+    }
+
+    /// S2-D4：非持有者 / 未知句柄 / 帧分配失败的原子性。
+    #[test]
+    fn task_create_rejects_foreign_handles_and_rolls_back_on_no_memory() {
+        let (mut state, code_cap, _) = task_state();
+        let before = state;
+        // 代码 cap 不在调用者手中（调用者用 task 2）。
+        assert_eq!(
+            state.task_create(2, &create_request(code_cap), 0x2000, 0),
+            Err(super::TaskCreateError::NotHolder)
+        );
+        assert_eq!(state, before);
+        // 合法请求但 host 未安装帧注册表 → 取根表帧失败，且不留半成品。
+        assert_eq!(
+            state.task_create(INIT_TASK_ID, &create_request(code_cap), 0x2000, 0),
+            Err(super::TaskCreateError::NoMemory)
+        );
+        assert_eq!(state, before);
+        // 未分配槽位的「格式合法」句柄 → NoSuchCapability。
+        let unset = Handle::new(60, 1).unwrap();
+        assert_eq!(
+            state.task_create(INIT_TASK_ID, &create_request(unset), 0x2000, 0),
+            Err(super::TaskCreateError::NoSuchCapability)
+        );
+    }
+
+    /// S2-D4：自我销毁确定性拒绝（`ISSUE-TASK-002`），且不改状态。
+    #[test]
+    fn task_destroy_rejects_self_without_state_change() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let before = state;
+        assert_eq!(
+            state.task_destroy(2, 2, None, 0),
+            Err(TaskError::CannotDestroySelf)
+        );
+        assert_eq!(state, before);
+        // init 仍受既有的结构保护（先于自毁判定）。
+        assert_eq!(
+            state.task_destroy(INIT_TASK_ID, INIT_TASK_ID, None, 0),
+            Err(TaskError::CannotDestroyInit)
+        );
+    }
+
+    /// S2-D4 / §8.2 步骤 7：销毁把目标从所有异常源的订阅集合移除。
+    #[test]
+    fn task_destroy_removes_exception_subscribers() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        let source = PAGE_FAULT_SOURCE_ID;
+        state.exc_source_add_subscriber(source, 2).unwrap();
+        assert!(
+            state
+                .exc_sources
+                .find(source)
+                .unwrap()
+                .subscribers
+                .iter()
+                .flatten()
+                .any(|task| *task == 2)
+        );
+        state.task_destroy(INIT_TASK_ID, 2, None, 0).unwrap();
+        assert!(
+            !state
+                .exc_sources
+                .find(source)
+                .unwrap()
+                .subscribers
+                .iter()
+                .flatten()
+                .any(|task| *task == 2)
+        );
+    }
+
+    /// S2-D4：`remove_subscriber` 对多个源、多个订阅者都精确移除。
+    #[test]
+    fn remove_subscriber_covers_every_source() {
+        let mut table = super::ExcSourceTable::empty();
+        for (index, id) in [1u32, 2].into_iter().enumerate() {
+            table.entries[index] = Some(super::ExcSource {
+                id,
+                kind: ExcKind::PageFault,
+                cap: Handle::ZERO,
+                subscribers: [Some(2), Some(3), None, None],
+                count: 2,
+            });
+        }
+        table.count = 2;
+        assert_eq!(table.remove_subscriber(2), 2);
+        for entry in table.entries[..table.count].iter().flatten() {
+            assert_eq!(entry.count, 1);
+            assert_eq!(entry.subscribers[0], Some(3));
+            assert_eq!(entry.subscribers[1], None);
+        }
+        assert_eq!(table.remove_subscriber(9), 0);
+    }
+
+    /// S2-D4：`task_create` 成功时追加 `TaskCreated`；`destroy_audit_events` 覆盖消息与 pending。
+    #[test]
+    fn task_created_event_exists_and_destroy_audit_is_counted() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        state.audit.append(AuditEvent::TaskCreated { task_id: 2 });
+        assert!(
+            state.audit.entries[..state.audit.count]
+                .iter()
+                .flatten()
+                .any(|event| matches!(event, AuditEvent::TaskCreated { task_id: 2 }))
+        );
+        // 无消息、无 pending：恰好 1 条 TaskDestroyed。
+        assert_eq!(state.destroy_audit_events(2), 1);
+    }
+
+    /// S2-D4：`next_free_id` 跳过已占用 id；`remove` 供回滚且不复活已用 id。
+    #[test]
+    fn next_free_id_and_rollback_remove() {
+        let mut table = super::TaskTable::with_init();
+        assert_eq!(table.next_free_id(), Some(2));
+        table.create(2).unwrap();
+        assert_eq!(table.next_free_id(), Some(3));
+        table.create(4).unwrap();
+        assert_eq!(table.next_free_id(), Some(3));
+        assert!(table.remove(2));
+        assert_eq!(table.next_free_id(), Some(2));
+        assert!(!table.remove(9));
     }
 
     #[test]

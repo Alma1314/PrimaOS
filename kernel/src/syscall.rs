@@ -72,6 +72,31 @@ pub const SYS_SEND: u64 = 17;
 ///
 /// 返回 payload；队列为空时阻塞并切走，被发送方直投唤醒后从保存帧 `rax` 取得 payload。
 pub const SYS_RECV: u64 = 18;
+/// S2-D4：`task_create`（`args[0]=req_ptr`，指向 10 个 qword 的请求块；返回 manager cap）。
+pub const SYS_TASK_CREATE: u64 = 19;
+/// S2-D4：`task_destroy`（`args[0]=task_cap`，须含 `TaskDestroy`）。
+pub const SYS_TASK_DESTROY: u64 = 20;
+
+/// S2-D4：`task_create` 请求块的 qword 个数与字节长度。
+pub const TASK_CREATE_REQ_QWORDS: usize = 10;
+/// S2-D4：`task_create` 请求块的字节长度。
+pub const TASK_CREATE_REQ_LEN: u64 = (TASK_CREATE_REQ_QWORDS * 8) as u64;
+/// S2-D4：请求块在 task 1 用户栈页内的 VA（可写、user）。
+pub const TASK_REQ_VA: u64 = crate::user::USER_STACK_VA + 0x800;
+/// S2-D4：接收子任务消息的 out 缓冲（Y 页内，24 字节）。
+pub const TASK_RECV_BUF: u64 = USER_Y_VA + 0x300;
+
+/// S2-D4：task 1 新块各步在 Y 回执页内的偏移。
+pub const TASK_RECEIPT_STACK_SEG: u64 = 368;
+pub const TASK_RECEIPT_CREATE: u64 = 376;
+pub const TASK_RECEIPT_BAD_ENTRY: u64 = 384;
+pub const TASK_RECEIPT_NO_X: u64 = 392;
+pub const TASK_RECEIPT_STACK_MAP: u64 = 400;
+pub const TASK_RECEIPT_RECV: u64 = 408;
+pub const TASK_RECEIPT_DENY: u64 = 416;
+pub const TASK_RECEIPT_DESTROY: u64 = 424;
+pub const TASK_RECEIPT_AGAIN: u64 = 432;
+pub const TASK_RECEIPT_MAP_DEAD: u64 = 440;
 
 /// S2-D3：用户创建 Segment 的映射 VA（PML4 槽 20 内、与既有区域不相交）。
 pub const USER_SEG_VA: u64 = USER_BASE_VA + 0x5000;
@@ -111,6 +136,10 @@ pub const USER2_SHARED_VA: u64 = crate::user::USER2_BASE_VA + 0x3000;
 pub const USER2_RECV_BUF: u64 = crate::user::USER2_Y_VA + 0x100;
 /// 切片 S：task 2 第二次接收的缓冲（阻塞路径，被直投唤醒）。
 pub const USER2_RECV_BUF2: u64 = crate::user::USER2_Y_VA + 0x140;
+/// S2-D4：task 2 代码尾部的阻塞接收缓冲（S2-D4 块需要 task 2 处于 `BlockedRecv`）。
+pub const USER2_RECV_BUF3: u64 = crate::user::USER2_Y_VA + 0x180;
+/// S2-D4：任务块结束时唤醒 task 2 的 payload（收尾阶段需要它有 Ready 任务可轮转）。
+pub const TASK2_WAKE_PAYLOAD: u64 = 0x5A3C_0000_0000_0002;
 /// `SYS_RECV` 的 out 缓冲长度（cap0 + cap1 + cap_count）。
 pub const RECV_BUF_LEN: u64 = 24;
 /// 切片 S：task 1 写进共享段、task 2 读回的魔数（证明是**同一物理帧**）。
@@ -124,6 +153,15 @@ pub const SHARED_SEG_CAP_HANDLE: u64 = 0x0000_0001_0000_0008;
 pub const TASK2_SEND_CAP: u64 = bootstrap::TASK2_SEND_CAP_HANDLE.encode();
 /// 切片 S：task 2 的自管理凭证（目标 `Task(2)` + `TaskManageVSpace`，槽 48）。
 pub const TASK2_SELF_CAP: u64 = bootstrap::TASK2_SELF_CAP_HANDLE.encode();
+/// S2-D4：`task_create` 返回的 manager cap 句柄（槽 10 gen1：槽 9 已被新块首个
+/// `SYS_MEMSEG_CREATE` 的栈段 cap 占用）。
+pub const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
+/// S2-D4：`task_create` 选定的新 Task id（init 与 task 2 之后的最小空闲 id）。
+pub const TASK_CREATE_CHILD_ID: u32 = 3;
+/// S2-D4：新 Task 代码段 Capability 的句柄（bring-up 铸在预留槽 49）。
+pub const TASK_CODE_CAP: u64 = bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode();
+/// S2-D4：作为 `initial_cap0` 移入新 Task 的发送凭证（预留槽 50）。
+pub const TASK_SEND_CAP: u64 = bootstrap::TASK_CREATE_SEND_CAP_HANDLE.encode();
 
 /// 切片 S：task 1 新块的 Y 回执偏移。
 pub const IPC_RECEIPT_CREATE: u64 = 336;
@@ -687,6 +725,10 @@ fn trap_call() -> u64 {
     match bootstrap::exc_raise(bootstrap::SYSCALL_TRAP_SOURCE_ID, ExcKind::SyscallTrap) {
         Ok(outcome) => {
             if let Some(task) = outcome.woken {
+                // 直投的等价物：payload 已注入被唤醒任务的保存帧 `rax`，`pending` 里那条
+                // 消息必须同 `send_call` 的直投路径一样**吃掉**——否则它会滞留，被该任务
+                // 之后任意一次 `SYS_RECV` 当作新消息返回（`receive_message` 先取 pending）。
+                let _ = bootstrap::take_pending_global(task);
                 sched::set_frame_rax(task, outcome.payload);
             }
             exc_trap_record(&outcome);
@@ -1060,6 +1102,248 @@ pub fn ipc_witness() -> IpcWitness {
     }
 }
 
+// ---------------------------------------------------------------------------
+// S2-D4：Task create/yield/destroy 用户原语（单核调度）
+// ---------------------------------------------------------------------------
+
+/// S2-D4：`task_create` 的请求块边界——8 对齐且不跨页（纯函数，host 可测）。
+pub const fn task_req_bounds(ptr: u64) -> Result<(), Errno> {
+    if !ptr.is_multiple_of(8) || (ptr & 0xfff) + TASK_CREATE_REQ_LEN > 0x1000 {
+        return Err(Errno::Fault);
+    }
+    Ok(())
+}
+
+/// 请求块必须是当前任务根下 present|user 的页。
+fn task_req_ok(ptr: u64) -> Result<(), Errno> {
+    task_req_bounds(ptr)?;
+    let Some((fallback_root, offset)) = crate::cow::root_and_offset() else {
+        return Err(Errno::Fault);
+    };
+    let root = crate::sched::current_root().unwrap_or(fallback_root);
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let pte = vspace::read_leaf(root, ptr, map).map_err(|_| Errno::Fault)?;
+    if pte & PT_PRESENT == 0 || pte & PT_USER == 0 {
+        return Err(Errno::Fault);
+    }
+    Ok(())
+}
+
+/// 句柄字段解码：`0` 表示「未提供」（`initial_caps` 的缺省），其余必须是合法句柄。
+fn decode_optional_handle(raw: u64) -> Result<Handle, Errno> {
+    if raw == 0 {
+        return Ok(Handle::ZERO);
+    }
+    bootstrap::decode_handle(raw).map_err(|_| Errno::Invalid)
+}
+
+/// 读取并解码 `task_create` 请求块。
+fn read_task_req(ptr: u64) -> Result<bootstrap::TaskCreateRequest, Errno> {
+    task_req_ok(ptr)?;
+    let mut words = [0u64; TASK_CREATE_REQ_QWORDS];
+    for (index, word) in words.iter_mut().enumerate() {
+        *word = unsafe { core::ptr::read_volatile((ptr + index as u64 * 8) as *const u64) };
+    }
+    Ok(bootstrap::TaskCreateRequest {
+        code_seg_cap: decode_optional_handle(words[0])?,
+        code_offset: words[1],
+        code_pages: words[2],
+        load_base: words[3],
+        entry: words[4],
+        stack_top: words[5],
+        parent_ns_cap: decode_optional_handle(words[6])?,
+        root_rights: Rights::from_bits(words[7] as u32),
+        initial_caps: [
+            decode_optional_handle(words[8])?,
+            decode_optional_handle(words[9])?,
+        ],
+    })
+}
+
+/// §8.1 错误名 → errno。
+pub const fn task_create_errno(error: bootstrap::TaskCreateError) -> Errno {
+    use bootstrap::TaskCreateError as E;
+    match error {
+        E::NoSuchCapability => Errno::NoEnt,
+        E::NotHolder => Errno::Access,
+        E::InvalidCodeRange => Errno::Invalid,
+        E::InvalidEntry => Errno::Invalid,
+        E::InvalidNamespace => Errno::Access,
+        E::MissingRight => Errno::Access,
+        E::RightsExceeded => Errno::Access,
+        E::InvalidInitialCap => Errno::Access,
+        E::DuplicateCap => Errno::Invalid,
+        E::StructuralCap => Errno::Access,
+        E::CapacityExceeded => Errno::NoSpace,
+        E::NoMemory => Errno::NoSpace,
+        E::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// §8.2 错误名 → errno。
+pub const fn task_destroy_errno(error: bootstrap::TaskError) -> Errno {
+    use bootstrap::TaskError as E;
+    match error {
+        E::NoSuchTask => Errno::NoEnt,
+        E::CannotDestroyInit | E::CannotDestroyRunning | E::CannotDestroySelf => Errno::Access,
+        E::DuplicateTask
+        | E::AlreadyRunning
+        | E::NotRunning
+        | E::NotReady
+        | E::CapacityExceeded => Errno::Invalid,
+        E::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// S2-D4：内核侧记录的新 Task 事实（供见证读取）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TaskState {
+    child: u32,
+    stack_top: u64,
+}
+
+static mut TASK_STATE: TaskState = TaskState {
+    child: 0,
+    stack_top: 0,
+};
+
+fn task_state() -> TaskState {
+    unsafe { *core::ptr::addr_of!(TASK_STATE) }
+}
+
+/// `SYS_TASK_CREATE`：§8.1 完整成功动作 + 调度登记。
+fn task_create_call(req_ptr: u64) -> u64 {
+    let caller = sched::current();
+    let req = match read_task_req(req_ptr) {
+        Ok(req) => req,
+        Err(errno) => return encode_errno(errno),
+    };
+    let Some((boot_root, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    match bootstrap::task_create(caller, &req, boot_root, offset) {
+        Ok(outcome) => {
+            // 该分支在结构上不可达：`next_free_id` 只返回 `2..MAX_TASKS(=8)`，而内核栈数组覆盖
+            // id 3..8。保留为防御分支，不静默吞掉（若将来放宽 MAX_TASKS 而未同步数组，这里报错
+            // 而不是让新任务带着空内核栈被调度）。
+            if crate::user::register_created_task(
+                outcome.task_id,
+                outcome.root_phys,
+                req.entry,
+                req.stack_top,
+            )
+            .is_err()
+            {
+                return encode_errno(Errno::NoSpace);
+            }
+            unsafe {
+                let state = core::ptr::addr_of_mut!(TASK_STATE);
+                (*state).child = outcome.task_id;
+                (*state).stack_top = req.stack_top;
+            }
+            outcome.manager_cap.encode()
+        }
+        Err(error) => encode_errno(task_create_errno(error)),
+    }
+}
+
+/// `SYS_TASK_DESTROY`：§8.2 完整清理（含地址空间拆除），成功后清调度登记。
+fn task_destroy_call(raw_cap: u64) -> u64 {
+    let caller = sched::current();
+    let Ok(task_cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let task_id = match bootstrap::authorize(caller, task_cap, Right::TaskDestroy) {
+        Ok(_) => match bootstrap::task_of_cap(task_cap) {
+            Some(task_id) => task_id,
+            None => return encode_errno(Errno::NoEnt),
+        },
+        Err(_) => return encode_errno(Errno::Access),
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    let root = crate::sched::root(task_id);
+    match bootstrap::task_destroy(caller, task_id, root, offset) {
+        Ok(()) => {
+            crate::sched::clear_task(task_id);
+            0
+        }
+        Err(error) => encode_errno(task_destroy_errno(error)),
+    }
+}
+
+/// S2-D4：S2-D4 的用户态回执 + 内核侧事实。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskWitness {
+    pub stack_seg: u64,
+    pub create: u64,
+    pub bad_entry: u64,
+    pub no_x: u64,
+    pub stack_map: u64,
+    pub recv: u64,
+    pub deny: u64,
+    pub destroy: u64,
+    pub again: u64,
+    pub map_dead: u64,
+    /// 内核侧：`task_create` 实际选定的子任务 id。
+    pub child: u32,
+    /// 内核侧：事件发射时的活动任务数（应为 init + task 2）。
+    pub tasks: u64,
+    /// 内核侧：事件发射时的活动 cap 槽位数。
+    pub caps: u64,
+    /// 内核侧：子任务被销毁后其调度登记（root）确已清除。
+    pub root_cleared: u64,
+}
+
+impl TaskWitness {
+    /// 判定：完整 create（manager cap + 栈映射进子任务根）→ 子任务自报 id 并回发消息 →
+    /// 两个创建负例与一个销毁负例被拒 → 销毁成功 → 重复销毁与向已销毁任务映射均被拒 →
+    /// 内核侧确认目标已从任务表与调度登记移除。
+    pub fn evidence_ok(&self) -> bool {
+        self.create == TASK_MANAGER_CAP
+            && self.bad_entry == encode_errno(Errno::Invalid)
+            && self.no_x == encode_errno(Errno::Access)
+            && self.stack_map == 0
+            && self.recv == self.child as u64
+            && self.deny == encode_errno(Errno::Access)
+            && self.destroy == 0
+            && self.again != 0
+            && self.map_dead != 0
+            && self.child == TASK_CREATE_CHILD_ID
+            && self.tasks == 2
+            && self.root_cleared == 1
+            && self.stack_seg != 0
+    }
+}
+
+/// S2-D4：读取 Task 原语见证（回执读自 Y 页；内核侧事实读自内核状态）。
+pub fn task_witness() -> TaskWitness {
+    let base = USER_Y_VA;
+    let state = task_state();
+    let child = state.child;
+    TaskWitness {
+        stack_seg: read_qword(base + TASK_RECEIPT_STACK_SEG),
+        create: read_qword(base + TASK_RECEIPT_CREATE),
+        bad_entry: read_qword(base + TASK_RECEIPT_BAD_ENTRY),
+        no_x: read_qword(base + TASK_RECEIPT_NO_X),
+        stack_map: read_qword(base + TASK_RECEIPT_STACK_MAP),
+        recv: read_qword(base + TASK_RECEIPT_RECV),
+        deny: read_qword(base + TASK_RECEIPT_DENY),
+        destroy: read_qword(base + TASK_RECEIPT_DESTROY),
+        again: read_qword(base + TASK_RECEIPT_AGAIN),
+        map_dead: read_qword(base + TASK_RECEIPT_MAP_DEAD),
+        child,
+        tasks: bootstrap::live_task_count() as u64,
+        caps: bootstrap::live_cap_count() as u64,
+        root_cleared: if child != 0 && crate::sched::root(child).is_none() {
+            1
+        } else {
+            0
+        },
+    }
+}
+
 /// S2-D3：Segment 原语的用户态回执。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemsegWitness {
@@ -1267,6 +1551,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         send_call(args[0], args[1], args[2], args[3], args[4], args[5])
     } else if num == SYS_RECV {
         recv_call(args[0])
+    } else if num == SYS_TASK_CREATE {
+        task_create_call(args[0])
+    } else if num == SYS_TASK_DESTROY {
+        task_destroy_call(args[0])
     } else {
         dispatch_plain(num, args)
     }
@@ -2213,6 +2501,139 @@ mod tests {
         assert_eq!(ipc_errno(E::TooManyCapabilities), Errno::Invalid);
         assert_eq!(ipc_errno(E::AuditFull), Errno::NoSpace);
         assert_eq!(ipc_errno(E::QueueFull), Errno::NoSpace);
+    }
+
+    #[test]
+    fn task_req_bounds_rejects_misaligned_and_cross_page() {
+        assert_eq!(task_req_bounds(TASK_REQ_VA), Ok(()));
+        assert_eq!(task_req_bounds(0x1000), Ok(()));
+        assert_eq!(task_req_bounds(0x1004), Err(Errno::Fault)); // 未 8 对齐
+        // 80 字节跨页：0xfc0 + 80 > 0x1000。
+        assert_eq!(task_req_bounds(0xfc0), Err(Errno::Fault));
+        assert_eq!(task_req_bounds(0xfb0), Ok(())); // 恰好不跨页
+    }
+
+    #[test]
+    fn task_create_errno_maps_every_variant() {
+        use crate::bootstrap::TaskCreateError as E;
+        assert_eq!(task_create_errno(E::NoSuchCapability), Errno::NoEnt);
+        assert_eq!(task_create_errno(E::NotHolder), Errno::Access);
+        assert_eq!(task_create_errno(E::InvalidCodeRange), Errno::Invalid);
+        assert_eq!(task_create_errno(E::InvalidEntry), Errno::Invalid);
+        assert_eq!(task_create_errno(E::InvalidNamespace), Errno::Access);
+        assert_eq!(task_create_errno(E::MissingRight), Errno::Access);
+        assert_eq!(task_create_errno(E::RightsExceeded), Errno::Access);
+        assert_eq!(task_create_errno(E::InvalidInitialCap), Errno::Access);
+        assert_eq!(task_create_errno(E::DuplicateCap), Errno::Invalid);
+        assert_eq!(task_create_errno(E::StructuralCap), Errno::Access);
+        assert_eq!(task_create_errno(E::CapacityExceeded), Errno::NoSpace);
+        assert_eq!(task_create_errno(E::NoMemory), Errno::NoSpace);
+        assert_eq!(task_create_errno(E::AuditFull), Errno::NoSpace);
+    }
+
+    #[test]
+    fn task_destroy_errno_maps_every_variant() {
+        use crate::bootstrap::TaskError as E;
+        assert_eq!(task_destroy_errno(E::NoSuchTask), Errno::NoEnt);
+        assert_eq!(task_destroy_errno(E::CannotDestroyInit), Errno::Access);
+        assert_eq!(task_destroy_errno(E::CannotDestroyRunning), Errno::Access);
+        // S2-D4 自毁拒绝（ISSUE-TASK-002）：确定性 EACCES。
+        assert_eq!(task_destroy_errno(E::CannotDestroySelf), Errno::Access);
+        assert_eq!(task_destroy_errno(E::NotRunning), Errno::Invalid);
+        assert_eq!(task_destroy_errno(E::NotReady), Errno::Invalid);
+        assert_eq!(task_destroy_errno(E::AlreadyRunning), Errno::Invalid);
+        assert_eq!(task_destroy_errno(E::DuplicateTask), Errno::Invalid);
+        assert_eq!(task_destroy_errno(E::CapacityExceeded), Errno::Invalid);
+        assert_eq!(task_destroy_errno(E::AuditFull), Errno::NoSpace);
+    }
+
+    #[test]
+    fn decode_optional_handle_treats_zero_as_absent() {
+        // `initial_caps` 的缺省值是 0：不报错，直接映射为 `Handle::ZERO`（不做 `decode_handle`，
+        // 否则会与「裸整数不是合法句柄」的拒绝混淆）。
+        assert_eq!(decode_optional_handle(0), Ok(Handle::ZERO));
+        // 未安装授权表时非零句柄一律拒绝（host 测试不装全局状态，故这里只钉住拒绝性）。
+        assert_eq!(decode_optional_handle(7), Err(Errno::Invalid));
+    }
+
+    fn valid_task() -> TaskWitness {
+        TaskWitness {
+            stack_seg: 0x0000_0001_0000_0009,
+            create: TASK_MANAGER_CAP,
+            bad_entry: encode_errno(Errno::Invalid),
+            no_x: encode_errno(Errno::Access),
+            stack_map: 0,
+            recv: TASK_CREATE_CHILD_ID as u64,
+            deny: encode_errno(Errno::Access),
+            destroy: 0,
+            again: encode_errno(Errno::Access),
+            map_dead: encode_errno(Errno::NoEnt),
+            child: TASK_CREATE_CHILD_ID,
+            tasks: 2,
+            caps: 28,
+            root_cleared: 1,
+        }
+    }
+
+    #[test]
+    fn accepts_complete_task_evidence() {
+        assert!(valid_task().evidence_ok());
+    }
+
+    #[test]
+    fn task_evidence_requires_all_six_denials_and_successes() {
+        // manager cap 不是 create 返回值（例如 create 本身失败）。
+        let mut w = valid_task();
+        w.create = encode_errno(Errno::Access);
+        assert!(!w.evidence_ok());
+
+        // 入口越界被接受。
+        let mut w = valid_task();
+        w.bad_entry = 0;
+        assert!(!w.evidence_ok());
+
+        // 缺 SegMapX 被接受。
+        let mut w = valid_task();
+        w.no_x = 0;
+        assert!(!w.evidence_ok());
+
+        // 栈没有映射进子任务根。
+        let mut w = valid_task();
+        w.stack_map = 1;
+        assert!(!w.evidence_ok());
+
+        // 子任务自报的 id 不是它自己的。
+        let mut w = valid_task();
+        w.recv = 2;
+        assert!(!w.evidence_ok());
+
+        // 缺 TaskDestroy 的销毁被放行。
+        let mut w = valid_task();
+        w.deny = 0;
+        assert!(!w.evidence_ok());
+
+        // 销毁失败。
+        let mut w = valid_task();
+        w.destroy = encode_errno(Errno::Access);
+        assert!(!w.evidence_ok());
+
+        // 重复销毁被放行（stale token 仍可授权）。
+        let mut w = valid_task();
+        w.again = 0;
+        assert!(!w.evidence_ok());
+
+        // 向已销毁任务映射被放行。
+        let mut w = valid_task();
+        w.map_dead = 0;
+        assert!(!w.evidence_ok());
+
+        // 子任务仍在任务表中 / 调度登记未清。
+        let mut w = valid_task();
+        w.tasks = 3;
+        assert!(!w.evidence_ok());
+        let mut w = valid_task();
+        w.root_cleared = 0;
+        assert!(!w.evidence_ok());
     }
 
     #[test]

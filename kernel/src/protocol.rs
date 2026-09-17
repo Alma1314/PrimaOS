@@ -603,6 +603,40 @@ pub(crate) fn ipc_ready(witness: &kernel::syscall::IpcWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// S2-D4：Task create/yield/destroy 用户原语（单核调度）见证。
+pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
+    write_prefix("task_ready", "ok");
+    serial::write_bytes(b"|data=stack_seg=");
+    write_hex_u64(witness.stack_seg);
+    serial::write_bytes(b";create=");
+    write_hex_u64(witness.create);
+    serial::write_bytes(b";bad_entry=");
+    write_hex_u64(witness.bad_entry);
+    serial::write_bytes(b";no_x=");
+    write_hex_u64(witness.no_x);
+    serial::write_bytes(b";stack_map=");
+    write_hex_u64(witness.stack_map);
+    serial::write_bytes(b";recv=");
+    write_hex_u64(witness.recv);
+    serial::write_bytes(b";deny=");
+    write_hex_u64(witness.deny);
+    serial::write_bytes(b";destroy=");
+    write_hex_u64(witness.destroy);
+    serial::write_bytes(b";again=");
+    write_hex_u64(witness.again);
+    serial::write_bytes(b";map_dead=");
+    write_hex_u64(witness.map_dead);
+    serial::write_bytes(b";child=");
+    write_u32(witness.child);
+    serial::write_bytes(b";tasks=");
+    write_u32(witness.tasks as u32);
+    serial::write_bytes(b";caps=");
+    write_u32(witness.caps as u32);
+    serial::write_bytes(b";root_cleared=");
+    write_u32(witness.root_cleared as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

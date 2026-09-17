@@ -144,6 +144,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // 切片 S：IPC 用户化 + 两任务共享 Segment（S2-D5/S2-X2 主见证）。
     let ipc = kernel::syscall::ipc_witness();
     protocol::ipc_ready(&ipc);
+    // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
+    let task = kernel::syscall::task_witness();
+    protocol::task_ready(&task);
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()

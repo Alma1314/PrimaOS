@@ -132,6 +132,22 @@ pub fn kstack_top(task_id: u32) -> Option<u64> {
     None
 }
 
+/// S2-D4：`task_destroy` 拆除目标后清除其调度登记，使该 id 不再可被恢复。
+///
+/// 只清 root/kstack/frame 三个槽；调用者 id 不得被清除（自毁未实现，`task_destroy` 已拒绝）。
+pub fn clear_task(task_id: u32) {
+    if (task_id as usize) < MAX_TASKS {
+        unsafe {
+            let roots = core::ptr::addr_of_mut!(ROOTS);
+            (*roots)[task_id as usize] = 0;
+            let tops = core::ptr::addr_of_mut!(KSTACK_TOPS);
+            (*tops)[task_id as usize] = 0;
+            let frames = core::ptr::addr_of_mut!(FRAMES);
+            (*frames)[task_id as usize] = SretFrame::ZERO;
+        }
+    }
+}
+
 /// 选择下一个 Ready 任务（最小 id，排除 `cur`）。
 pub fn pick_next(cur: u32) -> Option<u32> {
     (0..MAX_TASKS as u32)
@@ -196,6 +212,27 @@ mod tests {
         set_frame(2, ctx);
         assert_eq!(frame(2).unwrap().rip, 0x1234);
         assert!(frame(MAX_TASKS as u32).is_none());
+    }
+
+    /// S2-D4：`task_destroy` 拆除后清除调度登记，使该 id 不可再被恢复。
+    #[test]
+    fn clear_task_resets_root_kstack_and_frame() {
+        init();
+        let mut ctx = SretFrame::ZERO;
+        ctx.rip = 0xABCD;
+        set_root(3, 0x3000);
+        set_kstack_top(3, 0xFFFF_8000_0003_0000);
+        set_frame(3, ctx);
+        assert_eq!(root(3), Some(0x3000));
+        assert_eq!(frame(3).unwrap().rip, 0xABCD);
+
+        clear_task(3);
+        assert_eq!(root(3), None);
+        assert_eq!(kstack_top(3), None);
+        assert_eq!(frame(3).unwrap().rip, 0);
+
+        // 越界 id 安全忽略。
+        clear_task(MAX_TASKS as u32);
     }
 
     #[test]
