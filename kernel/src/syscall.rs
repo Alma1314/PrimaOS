@@ -466,6 +466,8 @@ pub const fn exc_errno(error: ExcError) -> Errno {
         | ExcError::NotSubscribed => Errno::Access,
         ExcError::InvalidKind | ExcError::KindMismatch => Errno::Invalid,
         ExcError::Full | ExcError::AuditFull => Errno::NoSpace,
+        // §12.5 前置 4：调用者不是 Running——对于用户 syscall 而言等价于"当前任务状态不允许"。
+        ExcError::NotRunning => Errno::Again,
     }
 }
 

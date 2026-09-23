@@ -30,6 +30,7 @@ enum EventKind {
     AuthorityReady,
     FramesReady,
     SelfRootReady,
+    FaultReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -207,7 +208,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 31] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 32] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -238,7 +239,8 @@ const EXPECTED_EVENTS: [(u32, EventKind); 31] = [
     (28, EventKind::AuthorityReady),
     (29, EventKind::FramesReady),
     (30, EventKind::SelfRootReady),
-    (31, EventKind::BootComplete),
+    (31, EventKind::FaultReady),
+    (32, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -486,6 +488,12 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     {
         validate_frames_data(frames.data.as_deref())?;
     }
+    if let Some(fault) = events
+        .iter()
+        .find(|event| event.kind == EventKind::FaultReady)
+    {
+        validate_fault_data(fault.data.as_deref())?;
+    }
     if let Some(self_root) = events
         .iter()
         .find(|event| event.kind == EventKind::SelfRootReady)
@@ -500,6 +508,55 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
             })
             .map(|value| value.to_owned());
         validate_self_root_data(self_root.data.as_deref(), translated.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 切片 Y（ISSUE-TASK-001）：校验 `Faulted` 状态机见证。
+///
+/// §12.5：`faulting_task` 必须是 `Running`（前置 4），成功动作 3 置 `Faulted` 并写唯一
+/// `pending_exc`；W9：`status == Faulted ⇔ pending_exc != None`；调度器不得隐式恢复。
+fn validate_fault_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "fault_ready event is missing its data field".to_owned())?;
+    let mut fields = std::collections::BTreeMap::new();
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed fault_ready field: {field}"))?;
+        fields.insert(key, value);
+    }
+    let get = |key: &str| -> Result<usize, String> {
+        fields
+            .get(key)
+            .ok_or_else(|| format!("fault_ready is missing {key}"))
+            .and_then(|value| parse_count(value))
+    };
+    // §12.5 前置 4 通过：见证 Task 被调度为 Running（1）。
+    if get("before")? != 1 {
+        return Err(
+            "fault_ready before must be Running (1) — the faulting task must satisfy §12.5 前置 4"
+                .to_owned(),
+        );
+    }
+    // 成功动作 3：置 Faulted（3）。
+    if get("after")? != 3 {
+        return Err("fault_ready after must be Faulted (3)".to_owned());
+    }
+    if get("raised")? != 1 {
+        return Err("fault_ready raised must be 1".to_owned());
+    }
+    // `pending_exc` 必须写入且指向 page_fault 源与 PageFault 种类。
+    if get("pending_source")? != 1 || get("pending_kind")? != 1 {
+        return Err(
+            "fault_ready must report pending_exc = {source=1(page_fault), kind=1(PageFault)}"
+                .to_owned(),
+        );
+    }
+    // 三条反例/前提：前置 4 拒绝 + W9 双向不变量 + 调度器不隐式恢复。
+    for key in ["precond_rejected", "invariant_ok", "unschedulable"] {
+        if get(key)? != 1 {
+            return Err(format!("fault_ready {key} must be 1"));
+        }
     }
     Ok(())
 }
@@ -2049,9 +2106,11 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready map_other (0x{map_other:x}) must be EACCES — mapping a segment owned by another task must be denied"
         ));
     }
-    if tasks != 2 {
+    // SPEC-070：存活 Task = init + task 2 + **保留槽位的 Faulted 见证 Task**（`fault_ready` 见证）。
+    // 见证 Task 处于 Faulted，仍是"存活"（非 Dead）的常规状态，故计入。
+    if tasks != 3 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 2 (init + task 2) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 3 (init + task 2 + the reserved Faulted witness task) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2085,9 +2144,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 2 {
+    if tasks_after != 3 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 2 — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 3 (init + task 2 + the reserved Faulted witness task) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -2851,6 +2910,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("authority_ready", "ok") => EventKind::AuthorityReady,
         ("frames_ready", "ok") => EventKind::FramesReady,
         ("self_root_ready", "ok") => EventKind::SelfRootReady,
+        ("fault_ready", "ok") => EventKind::FaultReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -2890,7 +2950,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
             | EventKind::FramesReady
-            | EventKind::SelfRootReady,
+            | EventKind::SelfRootReady
+            | EventKind::FaultReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -2923,7 +2984,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
             | EventKind::FramesReady
-            | EventKind::SelfRootReady,
+            | EventKind::SelfRootReady
+            | EventKind::FaultReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -2968,14 +3030,15 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=3;direct=3;blocks=3\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=2;caps=29;root_cleared=1;grandchild=4;tasks_after=2;caps_after=29;root4_cleared=1\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=29;root_cleared=1;grandchild=4;tasks_after=3;caps_after=29;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=26|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
         "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
         "PRIMA|v=1|seq=28|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
         "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
         "PRIMA|v=1|seq=30|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=31|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=31|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=32|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3029,7 +3092,8 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
-        let output = VALID.replace(";tasks=2;", ";tasks=3;");
+        // SPEC-070：合法值为 3（init + task 2 + 保留槽位的 Faulted 见证 Task）；4 表示子任务未清除。
+        let output = VALID.replace(";tasks=3;", ";tasks=4;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -3169,6 +3233,50 @@ mod tests {
         assert!(
             error.contains("booted/entry_in_image/init_running"),
             "{error}"
+        );
+    }
+
+    /// 切片 Y：§12.5 前置 4 未满足（`before` 不是 Running）即拒绝。
+    #[test]
+    fn rejects_fault_witness_starting_from_a_non_running_task() {
+        let output = VALID.replace("task=7;before=1;after=3", "task=7;before=0;after=3");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("before must be Running"), "{error}");
+    }
+
+    /// 切片 Y：成功动作 3 未把 Task 置为 Faulted 即拒绝。
+    #[test]
+    fn rejects_fault_witness_without_the_faulted_transition() {
+        let output = VALID.replace("before=1;after=3", "before=1;after=1");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("after must be Faulted"), "{error}");
+    }
+
+    /// 切片 Y：`pending_exc` 必须指向 page_fault 源与 PageFault 种类。
+    #[test]
+    fn rejects_fault_witness_with_wrong_pending_exc() {
+        let output = VALID.replace(
+            "pending_source=1;pending_kind=1",
+            "pending_source=2;pending_kind=2",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("pending_exc"), "{error}");
+    }
+
+    /// 切片 Y：W9 双向不变量与"调度器不隐式恢复"必须为真。
+    #[test]
+    fn rejects_fault_witness_without_invariant_and_unschedulable_flags() {
+        let invariant = VALID.replace("invariant_ok=1", "invariant_ok=0");
+        assert!(
+            validate_output(&invariant)
+                .unwrap_err()
+                .contains("invariant_ok must be 1")
+        );
+        let unschedulable = VALID.replace("unschedulable=1", "unschedulable=0");
+        assert!(
+            validate_output(&unschedulable)
+                .unwrap_err()
+                .contains("unschedulable must be 1")
         );
     }
 

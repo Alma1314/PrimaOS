@@ -106,6 +106,11 @@ extern "C" fn after_resume() -> ! {
         Some(witness) => protocol::self_root_ready(&witness),
         None => protocol::panic_event(),
     }
+    // SPEC-070：Faulted 状态机见证（boot 期采集，此刻上报）。
+    match kernel::bootstrap::fault_witness_record() {
+        Some(witness) => protocol::fault_ready(&witness),
+        None => protocol::panic_event(),
+    }
     protocol::boot_complete();
     serial::flush();
     qemu::exit(qemu::SUCCESS)

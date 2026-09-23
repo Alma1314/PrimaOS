@@ -122,6 +122,42 @@ pub(crate) fn self_root_ready(witness: &kernel::user::SelfRootWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-070：`Faulted` 状态机见证（独立事件，落在 `self_root_ready` 之后）。
+pub(crate) fn fault_ready(witness: &kernel::bootstrap::FaultWitness) {
+    write_prefix("fault_ready", "ok");
+    serial::write_bytes(b"|data=task=");
+    write_u32(witness.task_id);
+    serial::write_bytes(b";before=");
+    write_u32(status_code(witness.before));
+    serial::write_bytes(b";after=");
+    write_u32(status_code(witness.after));
+    serial::write_bytes(b";raised=");
+    write_u32(witness.raised);
+    serial::write_bytes(b";pending_source=");
+    write_u32(witness.pending_source);
+    serial::write_bytes(b";pending_kind=");
+    write_u32(witness.pending_kind);
+    serial::write_bytes(b";precond_rejected=");
+    write_u32(witness.precond_rejected);
+    serial::write_bytes(b";invariant_ok=");
+    write_u32(witness.invariant_ok);
+    serial::write_bytes(b";unschedulable=");
+    write_u32(witness.unschedulable);
+    serial::write_bytes(b"\r\n");
+}
+
+/// SPEC-070：Task 状态的稳定编码（协议/镜像常量共用）。
+fn status_code(status: kernel::bootstrap::TaskStatus) -> u32 {
+    use kernel::bootstrap::TaskStatus;
+    match status {
+        TaskStatus::Ready => 0,
+        TaskStatus::Running => 1,
+        TaskStatus::BlockedRecv => 2,
+        TaskStatus::Faulted => 3,
+        TaskStatus::Dead => 4,
+    }
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

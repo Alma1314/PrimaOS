@@ -30,6 +30,41 @@ static mut KSTACK_TOPS: [u64; MAX_TASKS] = [0; MAX_TASKS];
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
 static mut SCRATCH: SretFrame = SretFrame::ZERO;
 
+/// SPEC-070 / §5.2：每个 Task 的 `kernel_resume_frame`（**细化层持有**的 `Option<Bytes>`）。
+///
+/// 放细化层而非 `BootstrapState`：`Option<SretFrame>` 是 168 B，×8 任务 ≈ 1344 B，单独即超出
+/// 该结构体 16 KiB 守卫的余量（按项目纪律不得放宽守卫）。§5.2 本就写明该字段由细化层持有。
+///
+/// 仅由**成功的 `exc_resume`** 写入（该原语的用户化属后续切片）；本切片实现存储与两条清空路径
+/// ——§8.4 步骤 3 `schedule` 进 `Running` 时消费清空、§8.2 步骤 6 `task_destroy` 时清空。
+static mut KERNEL_RESUME_FRAMES: [Option<SretFrame>; MAX_TASKS] = [None; MAX_TASKS];
+
+/// §5.2：写入 `task_id` 的 `kernel_resume_frame`（仅成功 `exc_resume` 调用）。
+pub fn set_kernel_resume_frame(task_id: u32, frame: SretFrame) {
+    unsafe {
+        let frames = core::ptr::addr_of_mut!(KERNEL_RESUME_FRAMES);
+        if let Some(slot) = (*frames).get_mut(task_id as usize) {
+            *slot = Some(frame);
+        }
+    }
+}
+
+/// §5.2：读取 `task_id` 的 `kernel_resume_frame`。
+pub fn kernel_resume_frame(task_id: u32) -> Option<SretFrame> {
+    let frames = core::ptr::addr_of!(KERNEL_RESUME_FRAMES);
+    unsafe { (*frames).get(task_id as usize).copied().flatten() }
+}
+
+/// §5.2/§8.2 步骤 6/§8.4 步骤 3：清空 `task_id` 的 `kernel_resume_frame`。
+pub fn clear_kernel_resume_frame(task_id: u32) {
+    unsafe {
+        let frames = core::ptr::addr_of_mut!(KERNEL_RESUME_FRAMES);
+        if let Some(slot) = (*frames).get_mut(task_id as usize) {
+            *slot = None;
+        }
+    }
+}
+
 /// 切片 V：自毁任务待归还的页表帧队列容量。
 ///
 /// 自毁者正运行在自己的 CR3 上，其根帧与中间层页表帧必须等 `write_cr3` 切走之后才能归还。
@@ -263,6 +298,24 @@ pub fn resume(task_id: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-070：§5.2 的 `kernel_resume_frame` 由**细化层**持有——存储契约（设置/读取/清空，
+    /// 越界 id 为无操作）。两条清空路径（§8.4 步骤 3 `schedule`、§8.2 步骤 6 `task_destroy`）
+    /// 的接线由 `bootstrap` 侧的单测驱动（本模块的全局静态在两个 crate 测试间共享，故此处只钉
+    /// 本层契约）。
+    #[test]
+    fn kernel_resume_frame_storage_contract() {
+        init();
+        assert_eq!(kernel_resume_frame(2), None);
+        set_kernel_resume_frame(2, SretFrame::ZERO);
+        assert_eq!(kernel_resume_frame(2), Some(SretFrame::ZERO));
+        clear_kernel_resume_frame(2);
+        assert_eq!(kernel_resume_frame(2), None);
+        // 越界 id 不得 panic（容量外的任务 id 是调用方的错误，但不该越界写）。
+        set_kernel_resume_frame(u32::MAX, SretFrame::ZERO);
+        clear_kernel_resume_frame(u32::MAX);
+        assert_eq!(kernel_resume_frame(u32::MAX), None);
+    }
 
     #[test]
     fn frames_round_trip_by_task_id() {

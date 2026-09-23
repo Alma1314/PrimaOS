@@ -274,6 +274,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();
+                                    // SPEC-070：在 `activate_init` **之前**采集 Faulted 见证——此刻尚无任何
+                                    // Task 处于 Running，故「建见证 Task → 调度为 Running → §12.5 置
+                                    // Faulted」是一条合法路径。见证 Task 用保留槽位，不占用普通 id、
+                                    // 不铸 Capability、不取帧，既有的 id/帧/cap 序列不受扰动。
+                                    if kernel::bootstrap::record_fault_witness().is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
                                     if kernel::bootstrap::activate_init().is_err() {
                                         protocol::panic_event();

@@ -92,6 +92,12 @@ pub const EXC_SOURCE_RIGHTS: Rights =
     Rights::from_rights(&[Right::Derive, Right::ExcSubscribe, Right::ExcSourceDestroy]);
 /// 切片 L：预定义 `page_fault_source` 的 ID。
 pub const PAGE_FAULT_SOURCE_ID: u32 = 1;
+
+/// SPEC-070：`Faulted` 见证 Task 的**保留槽位** id（`MAX_TASKS = 8`，普通 id 从 2 起分配）。
+///
+/// 用保留槽位而非 `next_free_id`，使该 Task 不占用普通 id——既有 `child=3`/`grandchild=4`
+/// 等 id 证据不发生顺移。
+pub const FAULT_WITNESS_TASK_ID: u32 = 7;
 /// 切片 L：预定义 `syscall_trap_source` 的 ID。
 pub const SYSCALL_TRAP_SOURCE_ID: u32 = 2;
 
@@ -202,7 +208,16 @@ pub enum TaskStatus {
     Ready,
     Running,
     BlockedRecv,
+    /// §5.2/§12.5：硬件执行异常使 Task 进入的常规状态。不可由调度隐式恢复。
+    Faulted,
     Dead,
+}
+
+/// §5.2：Faulted Task 关联的未决异常（`status == Faulted ⇔ pending_exc != None`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingExc {
+    pub source_id: u32,
+    pub kind: ExcKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +228,8 @@ pub struct TaskRecord {
     pub root_ns_cap: Handle,
     /// §5.2：Task 入口虚拟地址（`memseg_unmap` 的 `entry` 页保护）。
     pub entry: u64,
+    /// §5.2/W9：仅 `status == Faulted` 时非空（双向不变量由 `check_faulted_invariant` 钉住）。
+    pub pending_exc: Option<PendingExc>,
     pending: Option<IpcMessage>,
 }
 
@@ -311,6 +328,7 @@ impl TaskTable {
                     status: TaskStatus::Ready,
                     root_ns_cap: NAMESPACE_CAP_HANDLE,
                     entry: 0,
+                    pending_exc: None,
                     pending: None,
                 }),
                 None,
@@ -357,6 +375,7 @@ impl TaskTable {
             // 非 init 任务由创建者显式设置结构根；本切片不创建此类任务的结构根。
             root_ns_cap: Handle::ZERO,
             entry,
+            pending_exc: None,
             pending: None,
         });
         self.count += 1;
@@ -418,6 +437,8 @@ impl TaskTable {
             return Err(TaskError::NotReady);
         }
         task.status = TaskStatus::Running;
+        // §8.4 步骤 3：`schedule` 进 Running 时消费并清空 `kernel_resume_frame`（细化层持有）。
+        crate::sched::clear_kernel_resume_frame(task_id);
         Ok(())
     }
 
@@ -427,6 +448,29 @@ impl TaskTable {
             return Err(TaskError::NotRunning);
         }
         task.status = TaskStatus::Ready;
+        Ok(())
+    }
+
+    /// §12.5 成功动作 3：把**正在运行**的 `task_id` 置为 `Faulted` 并写入唯一 `pending_exc`。
+    ///
+    /// 前置 4：`faulting_task` 必须是 Running（否则返回 [`TaskError::NotRunning`]，状态不变）。
+    pub fn fault(&mut self, task_id: u32, source_id: u32, kind: ExcKind) -> Result<(), TaskError> {
+        let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
+        if task.status != TaskStatus::Running {
+            return Err(TaskError::NotRunning);
+        }
+        task.status = TaskStatus::Faulted;
+        task.pending_exc = Some(PendingExc { source_id, kind });
+        Ok(())
+    }
+
+    /// §5.2/W9：`status == Faulted ⇔ pending_exc != None`（双向），且非 Faulted 者必为 `None`。
+    pub fn check_faulted_invariant(&self) -> Result<(), TaskError> {
+        for task in self.entries[..self.count].iter().flatten() {
+            if (task.status == TaskStatus::Faulted) != task.pending_exc.is_some() {
+                return Err(TaskError::NotRunning);
+            }
+        }
         Ok(())
     }
 
@@ -444,6 +488,9 @@ impl TaskTable {
     fn finish_destroy(&mut self, task_id: u32) -> Result<(), TaskError> {
         let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
         task.status = TaskStatus::Dead;
+        // §8.2 步骤 6：清空目标的 `pending_exc` 与 `kernel_resume_frame`（覆盖 Faulted 与已恢复者）。
+        task.pending_exc = None;
+        crate::sched::clear_kernel_resume_frame(task_id);
         Ok(())
     }
 
@@ -926,8 +973,34 @@ impl CapabilityRecordTable {
 pub enum ExcKind {
     /// 页故障（对应 `page_fault_source`）。
     PageFault,
-    /// syscall trap（对应 `syscall_trap_source`）。
+    /// 一般保护故障（§12.10 可恢复）。
+    GeneralProtectionFault,
+    /// 除零（§12.10 可恢复）。
+    DivideError,
+    /// 非法指令（§12.10 可恢复）。
+    InvalidOpcode,
+    /// 双重故障（§12.10 **不可恢复**：Task 永久保持 `Faulted`）。
+    DoubleFault,
+    /// syscall trap（对应 `syscall_trap_source`；**非**硬件执行异常）。
     SyscallTrap,
+}
+
+impl ExcKind {
+    /// §12.5 前置 4：是否为**硬件执行异常**（只有它会把 `faulting_task` 置 Faulted）。
+    pub const fn is_hardware(self) -> bool {
+        !matches!(self, ExcKind::SyscallTrap)
+    }
+
+    /// §12.10 前置 6：`exc_resume` 是否可恢复该种类（`DoubleFault` 等为不可恢复）。
+    pub const fn is_recoverable(self) -> bool {
+        matches!(
+            self,
+            ExcKind::PageFault
+                | ExcKind::GeneralProtectionFault
+                | ExcKind::DivideError
+                | ExcKind::InvalidOpcode
+        )
+    }
 }
 
 /// 异常种类的稳定编码（协议/镜像常量与 syscall 共用）。
@@ -935,6 +1008,10 @@ pub const fn kind_code(kind: ExcKind) -> u32 {
     match kind {
         ExcKind::PageFault => 1,
         ExcKind::SyscallTrap => 2,
+        ExcKind::GeneralProtectionFault => 3,
+        ExcKind::DivideError => 4,
+        ExcKind::InvalidOpcode => 5,
+        ExcKind::DoubleFault => 6,
     }
 }
 
@@ -943,6 +1020,10 @@ pub const fn kind_name(kind: ExcKind) -> &'static str {
     match kind {
         ExcKind::PageFault => "page_fault",
         ExcKind::SyscallTrap => "syscall_trap",
+        ExcKind::GeneralProtectionFault => "general_protection_fault",
+        ExcKind::DivideError => "divide_error",
+        ExcKind::InvalidOpcode => "invalid_opcode",
+        ExcKind::DoubleFault => "double_fault",
     }
 }
 
@@ -971,6 +1052,8 @@ pub enum ExcError {
     AuditFull,
     /// 目标 Task 不存在或已死。
     NoSuchTask,
+    /// §12.5 前置 4 不成立：`faulting_task` 不是 `Running`（状态不变）。
+    NotRunning,
 }
 
 /// 切片 L：一个异常源。capability 元数据内联在源记录里，**不进入 positions 表**
@@ -1043,6 +1126,28 @@ impl ExcSourceTable {
         }
         removed
     }
+}
+
+/// SPEC-070：`Faulted` 状态机的 QEMU 见证。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaultWitness {
+    pub task_id: u32,
+    /// §12.5 前置 4 通过时的状态（应为 `Running`）。
+    pub before: TaskStatus,
+    /// 成功动作 3 之后的状态（应为 `Faulted`）。
+    pub after: TaskStatus,
+    /// `raise_exception` 是否成功（1 = 成功）。
+    pub raised: u32,
+    /// `pending_exc.source_id`（应为 `PAGE_FAULT_SOURCE_ID`）。
+    pub pending_source: u32,
+    /// `pending_exc.kind` 的稳定编码（应为 `PageFault` = 1）。
+    pub pending_kind: u32,
+    /// §12.5 前置 4 反例：对 Ready 的 init raise 硬件异常被拒且状态不变（1 = 成立）。
+    pub precond_rejected: u32,
+    /// W9 双向不变量 `Faulted ⇔ pending_exc != None`（1 = 成立）。
+    pub invariant_ok: u32,
+    /// 调度器不会隐式恢复：`schedule(Faulted)` 被拒且状态不变（1 = 成立）。
+    pub unschedulable: u32,
 }
 
 /// 切片 L：一次 `raise_exception` 的实测结果。
@@ -1855,6 +1960,74 @@ impl BootstrapState {
         }
     }
 
+    /// SPEC-070：`Faulted` 状态机的 boot 期见证。
+    ///
+    /// **采集时机必须在 `activate_init` 之前**：§8.4 的 `schedule` 只允许至多一个 Running，
+    /// 此刻尚无任何 Task 处于 Running，故"建见证 Task → 调度为 Running → §12.5 置 Faulted"
+    /// 是一条**合法**路径。见证 Task 用**保留槽位** [`FAULT_WITNESS_TASK_ID`]，不占用普通 id、
+    /// 不铸 Capability、不取帧，故既有 id/帧/cap 序列不受扰动。
+    ///
+    /// 同时钉住三条反例/前提：对 **Ready** 任务 raise 硬件异常必须被拒（前置 4）、
+    /// `status == Faulted ⇔ pending_exc != None`（W9 双向）、Faulted 任务不可被 `schedule`
+    /// 选中（它不在 Ready 集合内，调度器不会隐式恢复它）。
+    pub fn fault_witness(&mut self) -> Result<FaultWitness, TaskError> {
+        let task_id = FAULT_WITNESS_TASK_ID;
+        self.tasks.create_with_entry(task_id, 0)?;
+        // 前置 4 反例：init 此刻仍是 Ready，对它 raise 硬件异常必须被拒且不留痕。
+        let precond_rejected =
+            self.tasks
+                .fault(INIT_TASK_ID, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+                .is_err()
+                && self.tasks.find(INIT_TASK_ID).is_some_and(|task| {
+                    task.status == TaskStatus::Ready && task.pending_exc.is_none()
+                });
+        // 合法路径：Ready → Running → Faulted。
+        self.tasks.schedule(task_id)?;
+        let before = self.task_status_of(task_id).unwrap_or(TaskStatus::Dead);
+        // 只走 §12.5 前置 4 + 成功动作 3 + `TaskStateChanged` 审计（状态机本体），**不经**
+        // `raise_exception` 的通知递送：boot 期 `page_fault_source` 已有内核侧订阅者，
+        // 递送会往其邮箱塞一条通知，扰动既有 IPC 证据（实测）。完整形态见 `exc_raise_on`，
+        // 其递送语义由 host 单测钉住。
+        let raised = self
+            .tasks
+            .fault(task_id, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+            .is_ok();
+        if raised {
+            self.audit.append(AuditEvent::TaskStateChanged {
+                task_id,
+                status: TaskStatus::Faulted,
+            });
+        }
+        let pending = self.task_pending_exc(task_id);
+        let after = self.task_status_of(task_id).unwrap_or(TaskStatus::Dead);
+        let invariant_ok = self.tasks.check_faulted_invariant().is_ok();
+        // 调度器不会选中 Faulted 任务：它既不是 Ready，`schedule` 也要求 Ready。
+        let unschedulable = self.tasks.schedule(task_id).is_err()
+            && self
+                .tasks
+                .find(task_id)
+                .is_some_and(|task| task.status == TaskStatus::Faulted);
+        Ok(FaultWitness {
+            task_id,
+            before,
+            after,
+            raised: u32::from(raised),
+            pending_source: pending.map(|exc| exc.source_id).unwrap_or(0),
+            pending_kind: pending.map(|exc| kind_code(exc.kind)).unwrap_or(0),
+            precond_rejected: u32::from(precond_rejected),
+            invariant_ok: u32::from(invariant_ok),
+            unschedulable: u32::from(unschedulable),
+        })
+    }
+
+    fn task_status_of(&self, task_id: u32) -> Option<TaskStatus> {
+        self.tasks.find(task_id).map(|task| task.status)
+    }
+
+    fn task_pending_exc(&self, task_id: u32) -> Option<PendingExc> {
+        self.tasks.find(task_id).and_then(|task| task.pending_exc)
+    }
+
     /// §14 步骤 8 + W13：首次调度 init——`Ready → Running` 并追加 `TaskStateChanged`。
     pub fn activate_init(&mut self) -> Result<(), BootstrapError> {
         let Some(task) = self.tasks.find_mut(INIT_TASK_ID) else {
@@ -2193,6 +2366,43 @@ impl BootstrapState {
     /// BlockedRecv 的订阅者走直投：`set_pending` 写入 pending 并置 Ready，追加
     /// `MessageSent`+`MessageReceived`；其余订阅者入 IPC 队列，追加 `MessageSent`。
     /// 容量在修改任何状态前预检，保证原子性。
+    /// §12.5：`raise_exception` 的**完整形态**——带 `faulting_task`。
+    ///
+    /// **硬件执行异常**：前置 4 要求 `faulting_task` 必须是 `Running`（否则 `NotRunning`，
+    /// 且状态原子不变）；成功动作 3 把它置 `Faulted`、写入唯一 `pending_exc`、并追加
+    /// `TaskStateChanged(→ Faulted)`。随后仍按订阅表递送通知——§12.9 规定**未订阅**也照样
+    /// 进入 `Faulted`（只是不产生通知），故状态迁移与递送是两件事。
+    /// 非硬件异常（`SyscallTrap`）不触碰 Task 状态，与 [`Self::exc_raise`] 等价。
+    pub fn exc_raise_on(
+        &mut self,
+        source_id: u32,
+        kind: ExcKind,
+        faulting_task: u32,
+    ) -> Result<RaiseOutcome, ExcError> {
+        if !kind.is_hardware() {
+            return self.exc_raise(source_id, kind);
+        }
+        let source = self
+            .exc_sources
+            .find(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.kind != kind {
+            return Err(ExcError::KindMismatch);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        // 前置 4 由 `fault` 内部校验；失败时此处无任何写入（原子）。
+        self.tasks
+            .fault(faulting_task, source_id, kind)
+            .map_err(|_| ExcError::NotRunning)?;
+        self.audit.append(AuditEvent::TaskStateChanged {
+            task_id: faulting_task,
+            status: TaskStatus::Faulted,
+        });
+        self.exc_raise(source_id, kind)
+    }
+
     pub fn exc_raise(&mut self, source_id: u32, kind: ExcKind) -> Result<RaiseOutcome, ExcError> {
         let source = self
             .exc_sources
@@ -3977,6 +4187,34 @@ pub fn activate_init() -> Result<(), BootstrapError> {
     }
 }
 
+/// SPEC-070：采集 `Faulted` 见证（必须在 `activate_init` **之前**调用）。
+pub fn collect_fault_witness() -> Result<FaultWitness, TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.fault_witness(),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+/// SPEC-070：已采集的 `Faulted` 见证（供收尾事件上报）。
+static mut FAULT_WITNESS: Option<FaultWitness> = None;
+
+/// 采集并登记 `Faulted` 见证。
+pub fn record_fault_witness() -> Result<(), TaskError> {
+    let witness = collect_fault_witness()?;
+    unsafe {
+        *core::ptr::addr_of_mut!(FAULT_WITNESS) = Some(witness);
+    }
+    Ok(())
+}
+
+/// 取已登记的 `Faulted` 见证（未采集时为 `None`）。
+pub fn fault_witness_record() -> Option<FaultWitness> {
+    unsafe { *core::ptr::addr_of!(FAULT_WITNESS) }
+}
+
 /// 切片 K：全局 Bootstrap 授权表的存储（单核 boot 早期安装一次）。
 static mut BOOTSTRAP_STATE: Option<BootstrapState> = None;
 
@@ -4474,7 +4712,7 @@ mod tests {
         MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, ObjectRef,
         PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
         PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
-        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, SEGMENT_ROOT_RIGHTS,
+        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, PendingExc, SEGMENT_ROOT_RIGHTS,
         SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
         TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TaskError, TaskStatus,
         USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
@@ -5813,6 +6051,136 @@ mod tests {
 
     /// 切片 V：§8.2「删除自身是合法的」——自毁路径必须先于 `CannotDestroyRunning` 判定生效；
     /// init 仍受结构保护。
+    /// SPEC-070：§12.5 硬件执行异常把 **Running** 任务置 `Faulted` 并写唯一 `pending_exc`。
+    #[test]
+    fn faulting_a_running_task_sets_pending_exc_and_faulted_status() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        assert!(
+            state
+                .tasks
+                .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+                .is_ok()
+        );
+        let task = state.tasks.find(2).copied().unwrap();
+        assert_eq!(task.status, TaskStatus::Faulted);
+        assert_eq!(
+            task.pending_exc,
+            Some(PendingExc {
+                source_id: PAGE_FAULT_SOURCE_ID,
+                kind: ExcKind::PageFault,
+            })
+        );
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+    }
+
+    /// SPEC-070：§12.5 前置 4——`faulting_task` 非 Running 时拒绝且**状态原子不变**。
+    #[test]
+    fn faulting_a_non_running_task_is_rejected_without_state_change() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        // init 此刻是 Ready（尚未 activate_init）。
+        let before = state.tasks.find(INIT_TASK_ID).copied().unwrap();
+        assert_eq!(
+            state
+                .tasks
+                .fault(INIT_TASK_ID, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault),
+            Err(TaskError::NotRunning)
+        );
+        let after = state.tasks.find(INIT_TASK_ID).copied().unwrap();
+        assert_eq!(before, after, "被拒的 fault 不得改动任何字段");
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+    }
+
+    /// SPEC-070：W9 双向不变量在**全部**状态迁移后仍成立；`task_destroy` 清空 `pending_exc`。
+    #[test]
+    fn faulted_invariant_holds_across_transitions_and_destroy() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        state
+            .tasks
+            .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+            .unwrap();
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+        // §8.2 步骤 6：销毁清空 pending_exc 与 kernel_resume_frame（Faulted 不是 Running，故可销毁）。
+        crate::sched::set_kernel_resume_frame(2, crate::exc::SretFrame::ZERO);
+        assert!(state.tasks.prepare_destroy(2).is_ok());
+        state.tasks.finish_destroy(2).unwrap();
+        assert_eq!(crate::sched::kernel_resume_frame(2), None);
+        let task = state.tasks.find(2).copied().unwrap();
+        assert_eq!(task.status, TaskStatus::Dead);
+        assert!(task.pending_exc.is_none());
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+    }
+
+    /// SPEC-070：§12.10 的可恢复性矩阵与 §12.5 的"硬件执行异常"判定。
+    #[test]
+    fn exception_kind_classification_matrix() {
+        assert!(!ExcKind::SyscallTrap.is_hardware());
+        for kind in [
+            ExcKind::PageFault,
+            ExcKind::GeneralProtectionFault,
+            ExcKind::DivideError,
+            ExcKind::InvalidOpcode,
+            ExcKind::DoubleFault,
+        ] {
+            assert!(kind.is_hardware(), "{kind:?} 是硬件执行异常");
+        }
+        assert!(ExcKind::PageFault.is_recoverable());
+        assert!(ExcKind::GeneralProtectionFault.is_recoverable());
+        assert!(ExcKind::DivideError.is_recoverable());
+        assert!(ExcKind::InvalidOpcode.is_recoverable());
+        assert!(
+            !ExcKind::DoubleFault.is_recoverable(),
+            "DoubleFault 不可恢复"
+        );
+    }
+
+    /// SPEC-070：`exc_raise_on` 对**非硬件**异常不改 Task 状态（`SYS_TRAP` 语义不变）。
+    #[test]
+    fn exc_raise_on_keeps_status_for_non_hardware_kinds() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        let before = state.tasks.find(2).copied().unwrap();
+        assert!(
+            state
+                .exc_raise_on(SYSCALL_TRAP_SOURCE_ID, ExcKind::SyscallTrap, 2)
+                .is_ok()
+        );
+        assert_eq!(state.tasks.find(2).copied().unwrap(), before);
+    }
+
+    /// SPEC-070：`exc_raise_on` 完整形态——硬件异常置 Faulted，且**无订阅者时不产生消息**。
+    #[test]
+    fn exc_raise_on_faults_a_running_task_and_delivers_to_nobody() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        let outcome = state
+            .exc_raise_on(PAGE_FAULT_SOURCE_ID, ExcKind::PageFault, 2)
+            .unwrap();
+        assert_eq!(outcome.delivered, 0, "无订阅者时不得产生通知");
+        let task = state.tasks.find(2).copied().unwrap();
+        assert_eq!(task.status, TaskStatus::Faulted);
+        assert!(task.pending_exc.is_some());
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+    }
+
+    /// SPEC-070：`exc_raise_on` 的前置 4 失败即原子不变（不写 `pending_exc`、不改状态、不产通知）。
+    #[test]
+    fn exc_raise_on_rejects_a_non_running_faulting_task() {
+        let mut state = exc_state();
+        let before = state.tasks.find(INIT_TASK_ID).copied().unwrap();
+        assert_eq!(
+            state.exc_raise_on(PAGE_FAULT_SOURCE_ID, ExcKind::PageFault, INIT_TASK_ID),
+            Err(ExcError::NotRunning)
+        );
+        assert_eq!(state.tasks.find(INIT_TASK_ID).copied().unwrap(), before);
+    }
+
     #[test]
     fn task_destroy_allows_self_and_keeps_init_protected() {
         let mut state = exc_state();
