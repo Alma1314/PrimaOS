@@ -524,8 +524,27 @@ pub(crate) fn platform_segments_ready(record: &kernel::bootstrap::PlatformSegmen
     write_u32(record.last_id);
     serial::write_bytes(b";roots=");
     write_u32(record.roots);
+    serial::write_bytes(b";user_roots=");
+    write_u32(record.user_roots);
+    serial::write_bytes(b";kernel_roots=");
+    write_u32(record.kernel_roots);
+    // SPEC-066：逐槽属主（按 id 2..14 顺序；内核持有记 0 = `KERNEL_ACTOR`）。
+    serial::write_bytes(b";holders=");
+    for (index, holder) in record.holders.iter().enumerate() {
+        if index != 0 {
+            serial::write_bytes(b",");
+        }
+        write_u32(*holder);
+    }
     serial::write_bytes(b";task_caps=");
     write_u32(record.task_caps);
+    serial::write_bytes(b";task_holders=");
+    for (index, holder) in record.task_holders.iter().enumerate() {
+        if index != 0 {
+            serial::write_bytes(b",");
+        }
+        write_u32(*holder);
+    }
     serial::write_bytes(b";mapped=");
     write_u32(record.mapped);
     serial::write_bytes(b";direct=");
@@ -536,8 +555,6 @@ pub(crate) fn platform_segments_ready(record: &kernel::bootstrap::PlatformSegmen
     write_u32(record.direct_ids[1]);
     serial::write_bytes(b";vspace=");
     write_u32(record.vspace);
-    serial::write_bytes(b";holder=");
-    write_u32(kernel::bootstrap::KERNEL_ACTOR);
     serial::write_bytes(b";slot_base=");
     write_u32(kernel::bootstrap::PLATFORM_SEGMENT_CAP_SLOT_BASE);
     serial::write_bytes(b";task1_cap=");
@@ -626,6 +643,22 @@ pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
     write_hex_u64(witness.again);
     serial::write_bytes(b";map_dead=");
     write_hex_u64(witness.map_dead);
+    // SPEC-066：自持平台段 cap 的映射见证（正例 + 读回值 + 非属主负例）。
+    serial::write_bytes(b";map_own=");
+    write_hex_u64(witness.map_own);
+    serial::write_bytes(b";map_value=");
+    write_hex_u64(witness.map_value);
+    serial::write_bytes(b";map_other=");
+    write_hex_u64(witness.map_other);
+    // SPEC-067：task4 承载自毁见证（栈映射、自报 id、自毁后不可映射）。
+    serial::write_bytes(b";task4_cap=");
+    write_hex_u64(witness.task4_cap);
+    serial::write_bytes(b";task4_stack=");
+    write_hex_u64(witness.task4_stack);
+    serial::write_bytes(b";task4_recv=");
+    write_hex_u64(witness.task4_recv);
+    serial::write_bytes(b";task4_map_dead=");
+    write_hex_u64(witness.task4_map_dead);
     serial::write_bytes(b";child=");
     write_u32(witness.child);
     serial::write_bytes(b";tasks=");
@@ -634,6 +667,15 @@ pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
     write_u32(witness.caps as u32);
     serial::write_bytes(b";root_cleared=");
     write_u32(witness.root_cleared as u32);
+    // SPEC-067：task4 自毁的内核侧事实。
+    serial::write_bytes(b";grandchild=");
+    write_u32(witness.grandchild);
+    serial::write_bytes(b";tasks_after=");
+    write_u32(witness.tasks_after as u32);
+    serial::write_bytes(b";caps_after=");
+    write_u32(witness.caps_after as u32);
+    serial::write_bytes(b";root4_cleared=");
+    write_u32(witness.root4_cleared as u32);
     serial::write_bytes(b"\r\n");
 }
 

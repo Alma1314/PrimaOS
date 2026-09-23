@@ -32,17 +32,17 @@ use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::syscall::{
-    AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR,
-    EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG,
-    IPC_DIRECT_PAYLOAD, IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN,
-    MEMSEG_RW_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
+    ACCESS_R_BITS, AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN,
+    COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP,
+    FAST_ARG, IPC_DIRECT_PAYLOAD, IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE,
+    MEMSEG_PATTERN, MEMSEG_RW_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
     RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE, SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP,
     SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT,
     SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_RECV, SYS_SEND,
     SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK_RECV_BUF,
     TASK_REQ_VA, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP, TASK2_WAKE_PAYLOAD, UNSET_CAP,
-    USER_SEG_SHARED_VA, USER_SEG_VA, USER2_RECV_BUF, USER2_RECV_BUF2, USER2_RECV_BUF3,
-    USER2_SHARED_VA,
+    USER_MAP_WITNESS_VA, USER_MAP_WITNESS_VA2, USER_SEG_SHARED_VA, USER_SEG_VA, USER2_RECV_BUF,
+    USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
 
@@ -146,10 +146,23 @@ pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 /// 用户代码字节长度。
 /// S2-D4：`task_create` 创建的任务的代码长度（`task3_code()`）。
 pub const TASK3_CODE_LEN: usize = 134;
+/// 切片 V：`task4_code()` 在**同一代码页内**的偏移。
+///
+/// 复用切片 T 的代码段（1 页 4 KiB，`task3_code()` 仅占 134 字节），故不新增代码段帧——
+/// `frames_ready.segment` 不变。第二次 `SYS_TASK_CREATE` 的 `entry` 指向
+/// `USER3_CODE_VA + TASK4_CODE_OFFSET`（§8.1 只要求 `entry ∈ [load_base, load_base + pages*4KiB)`）。
+pub const TASK4_CODE_OFFSET: u64 = 256;
+/// 切片 V：task 4 的代码长度（自报 id → 让出 → 自毁 → 不该到达）。
+///
+/// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一
+/// 时间片内发送后立即自毁，刚排队的 id 会被自己的销毁清理掉（实测确认），父任务将取不到。
+pub const TASK4_CODE_LEN: usize = 109;
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
-pub const USER_CODE_LEN: usize = 2459;
+/// 用户代码长度。SPEC-066 追加「自持平台 cap 映射」块（2458..2636），
+/// SPEC-067 追加「task 4 自毁见证」块（2636..2907）。
+pub const USER_CODE_LEN: usize = 2980;
 
 /// 第二任务代码字节长度。
 pub const TASK2_CODE_LEN: usize = 496;
@@ -694,8 +707,128 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 2436, 0x49, 0xB9, 0);
     put_imm64(&mut code, 2446, 0x48, 0xB8, SYS_SEND);
     put(&mut code, 2456, &[0xCD, 0x80]);
-    // 2458: int3（收尾）
-    code[2458] = 0xCC;
+    // SPEC-066：用**自持**的平台段 cap（切片 U 已按属主移交）经 `SYS_MEMSEG_MAP` 建立新映射。
+    // 正例：X 段 cap（槽 36）+ Task(1) 管理 cap（槽 45）→ 应在**用户侧**通过 `authorize`。
+    put_imm64(
+        &mut code,
+        2458,
+        0x48,
+        0xBF,
+        crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK1_X).encode(),
+    );
+    put_imm64(
+        &mut code,
+        2468,
+        0x48,
+        0xBE,
+        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+    );
+    put_imm64(&mut code, 2478, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 2488, 0x49, 0xBA, USER_MAP_WITNESS_VA);
+    put_imm64(&mut code, 2498, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 2508, 0x49, 0xB9, ACCESS_R_BITS);
+    put_imm64(&mut code, 2518, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 2528, &[0xCD, 0x80]);
+    put(&mut code, 2530, &[0x48, 0x89, 0x81, 0xC0, 0x01, 0, 0]);
+    // 读回该映射：应等于 X 段首帧的 COW 模式值——证明 PTE 真的指向该 Segment 的帧，
+    // 而不是「映射调用返回 0」而已。
+    put_imm64(&mut code, 2537, 0x48, 0xBA, USER_MAP_WITNESS_VA);
+    put(&mut code, 2547, &[0x48, 0x8B, 0x02]);
+    put(&mut code, 2550, &[0x48, 0x89, 0x81, 0xC8, 0x01, 0, 0]);
+    // 负例：用 **task 2 所属**的段 cap（槽 38）以 task 1 为 caller 再映射 → `EACCES`
+    // （`authorize` 第 3 步的 `holder_of(cap) == caller` 对非属主成立拒绝）。
+    put_imm64(
+        &mut code,
+        2557,
+        0x48,
+        0xBF,
+        crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK2_CODE).encode(),
+    );
+    put_imm64(
+        &mut code,
+        2567,
+        0x48,
+        0xBE,
+        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+    );
+    put_imm64(&mut code, 2577, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 2587, 0x49, 0xBA, USER_MAP_WITNESS_VA2);
+    put_imm64(&mut code, 2597, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 2607, 0x49, 0xB9, ACCESS_R_BITS);
+    put_imm64(&mut code, 2617, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 2627, &[0xCD, 0x80]);
+    put(&mut code, 2629, &[0x48, 0x89, 0x81, 0xD0, 0x01, 0, 0]);
+    // SPEC-067（切片 V）：task 4 承载自毁见证。
+    // rdx 在 SPEC-066 块里被用作映射目标 VA，这里重设为请求块基址。
+    put_imm64(&mut code, 2636, 0x48, 0xBA, TASK_REQ_VA);
+    // 改写请求块：entry = 代码段首 + TASK4_CODE_OFFSET（同页内偏移），initial_cap0 = task4 的发送凭据。
+    put_imm64(
+        &mut code,
+        2646,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + TASK4_CODE_OFFSET,
+    );
+    put(&mut code, 2656, &[0x48, 0x89, 0x42, 0x20]);
+    put_imm64(
+        &mut code,
+        2660,
+        0x48,
+        0xB8,
+        crate::bootstrap::TASK4_SEND_CAP_HANDLE.encode(),
+    );
+    put(&mut code, 2670, &[0x48, 0x89, 0x42, 0x40]);
+    // create task 4
+    put(&mut code, 2674, &[0x48, 0x89, 0xD7]);
+    put_imm64(&mut code, 2677, 0x48, 0xB8, SYS_TASK_CREATE);
+    put(&mut code, 2687, &[0xCD, 0x80]);
+    put(&mut code, 2689, &[0x48, 0x89, 0x81, 0xD8, 0x01, 0, 0]);
+    // 复用 task 3 的栈段 cap（段对象不随 task 3 销毁），把栈映射进 **task 4** 的根。
+    put(&mut code, 2696, &[0x48, 0x8B, 0xB9, 0x70, 0x01, 0, 0]);
+    put(&mut code, 2703, &[0x48, 0x8B, 0xB1, 0xD8, 0x01, 0, 0]);
+    put_imm64(&mut code, 2710, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 2720, 0x49, 0xBA, USER3_STACK_VA);
+    put_imm64(&mut code, 2730, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 2740, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 2750, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 2760, &[0xCD, 0x80]);
+    put(&mut code, 2762, &[0x48, 0x89, 0x81, 0xE0, 0x01, 0, 0]);
+    // 让出两次：第一次排空刚被唤醒的 task 2（它执行尾部阻塞接收后变 BlockedRecv），
+    // 第二次才轮到 task 4（id 4）。
+    put_imm64(&mut code, 2769, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 2779, &[0xCD, 0x80]);
+    put_imm64(&mut code, 2781, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 2791, &[0xCD, 0x80]);
+    // task 4 自报 id 后自毁并切回本任务；取消息拿它的 id。
+    put_imm64(&mut code, 2793, 0x48, 0xBF, TASK_RECV_BUF);
+    put_imm64(&mut code, 2803, 0x48, 0xB8, SYS_RECV);
+    put(&mut code, 2813, &[0xCD, 0x80]);
+    put(&mut code, 2815, &[0x48, 0x89, 0x81, 0xE8, 0x01, 0, 0]);
+    // task 4 已把 id 排队；让出一次让它完成自毁，再回来验证。
+    put_imm64(&mut code, 2822, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 2832, &[0xCD, 0x80]);
+    // 向已自毁的 task 4 映射 → 应 ENOENT（其调度登记已清、地址空间已拆）。
+    put(&mut code, 2834, &[0x48, 0x8B, 0xB9, 0x70, 0x01, 0, 0]);
+    put(&mut code, 2841, &[0x48, 0x8B, 0xB1, 0xD8, 0x01, 0, 0]);
+    put_imm64(&mut code, 2848, 0x48, 0xBA, 0);
+    put_imm64(&mut code, 2858, 0x49, 0xBA, USER3_STACK_VA);
+    put_imm64(&mut code, 2868, 0x49, 0xB8, 1);
+    put_imm64(&mut code, 2878, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, 2888, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    put(&mut code, 2898, &[0xCD, 0x80]);
+    put(&mut code, 2900, &[0x48, 0x89, 0x81, 0xF0, 0x01, 0, 0]);
+    // 收尾的抢占阶段需要 Ready 任务可轮转：切片 V 的第一次让出已把 task 2 排空成
+    // `BlockedRecv`，故这里再直投唤醒它一次（同切片 T 末尾的做法，位置后移）。
+    put_imm64(&mut code, 2907, 0x48, 0xBF, 2);
+    put_imm64(&mut code, 2917, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_imm64(&mut code, 2927, 0x48, 0xBA, TASK2_WAKE_PAYLOAD);
+    put_imm64(&mut code, 2937, 0x49, 0xBA, 0);
+    put_imm64(&mut code, 2947, 0x49, 0xB8, 0);
+    put_imm64(&mut code, 2957, 0x49, 0xB9, 0);
+    put_imm64(&mut code, 2967, 0x48, 0xB8, SYS_SEND);
+    put(&mut code, 2977, &[0xCD, 0x80]);
+    // 2979: int3（收尾）
+    code[2979] = 0xCC;
     code
 }
 
@@ -869,6 +1002,55 @@ pub const fn task3_code() -> [u8; TASK3_CODE_LEN] {
     put(&mut code, 130, &[0xCD, 0x80]);
     // 132: jmp $
     put(&mut code, 132, &[0xEB, 0xFE]);
+    code
+}
+
+/// 切片 V：task 4 的机器码（自毁见证载体）。
+///
+/// `mov rbx, rdi`（初始帧 `rdi` 携带的 self Capability 句柄）→ `SYS_TASK_ID` →
+/// `SYS_SEND(1, TASK4_SEND_CAP, id, 0, 0, 0)` 自报 id → `SYS_TASK_DESTROY(rbx)` **自毁**
+/// → `jmp $`（自毁成功则永不执行）。
+pub const fn task4_code() -> [u8; TASK4_CODE_LEN] {
+    let mut code = [0u8; TASK4_CODE_LEN];
+    // 0: mov rbx, rdi（self cap）
+    put(&mut code, 0, &[0x48, 0x89, 0xFB]);
+    // 3: mov rax, SYS_TASK_ID
+    put_imm64(&mut code, 3, 0x48, 0xB8, SYS_TASK_ID);
+    // 13: int 0x80
+    put(&mut code, 13, &[0xCD, 0x80]);
+    // 15: mov rdx, rax（payload = 自己的 task id）
+    put(&mut code, 15, &[0x48, 0x89, 0xC2]);
+    // 18: mov rdi, 1（接收者 = task 1）
+    put_imm64(&mut code, 18, 0x48, 0xBF, 1);
+    // 28: mov rsi, TASK4_SEND_CAP_HANDLE（第二次 create 的 initial_cap0 移入）
+    put_imm64(
+        &mut code,
+        28,
+        0x48,
+        0xBE,
+        crate::bootstrap::TASK4_SEND_CAP_HANDLE.encode(),
+    );
+    // 38: mov r10, 0（cap_count）
+    put_imm64(&mut code, 38, 0x49, 0xBA, 0);
+    // 48: mov r8, 0
+    put_imm64(&mut code, 48, 0x49, 0xB8, 0);
+    // 58: mov r9, 0
+    put_imm64(&mut code, 58, 0x49, 0xB9, 0);
+    // 68: mov rax, SYS_SEND
+    put_imm64(&mut code, 68, 0x48, 0xB8, SYS_SEND);
+    // 78: int 0x80
+    put(&mut code, 78, &[0xCD, 0x80]);
+    // 80: 让出，等父任务取走刚排队的 id——否则自毁会把这条消息一起丢弃（§8.2）。
+    put_imm64(&mut code, 80, 0x48, 0xB8, SYS_YIELD);
+    put(&mut code, 90, &[0xCD, 0x80]);
+    // 92: mov rdi, rbx（self cap）
+    put(&mut code, 92, &[0x48, 0x89, 0xDF]);
+    // 95: mov rax, SYS_TASK_DESTROY
+    put_imm64(&mut code, 95, 0x48, 0xB8, SYS_TASK_DESTROY);
+    // 105: int 0x80 —— 自毁成功则不再返回本任务
+    put(&mut code, 105, &[0xCD, 0x80]);
+    // 107: jmp $（自毁失败时停在此处，而非继续跑）
+    put(&mut code, 107, &[0xEB, 0xFE]);
     code
 }
 
@@ -1210,16 +1392,23 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     let frame =
         crate::bootstrap::prepare_task_create_caps(offset).map_err(|_| VspaceError::NoFrame)?;
-    let code = task3_code();
+    // task 3 的代码在帧首。
+    write_code(frame, offset, 0, &task3_code());
+    // 切片 V：task 4 的代码复用**同一页**、写在页内偏移处（不新增代码段帧）。
+    write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
+    Ok(())
+}
+
+/// 把 `code` 写到代码段首帧的页内偏移 `at` 处。
+fn write_code(frame: u64, offset: u64, at: u64, code: &[u8]) {
     for (index, &byte) in code.iter().enumerate() {
         unsafe {
             core::ptr::write_volatile(
-                (phys_to_virt(frame, offset) + index as u64) as *mut u8,
+                (phys_to_virt(frame, offset) + at + index as u64) as *mut u8,
                 byte,
             )
         };
     }
-    Ok(())
 }
 
 /// S2-D4：把 `task_create` 的新 Task 登记到调度器（root / 内核栈 / 初始用户上下文）。
@@ -1231,11 +1420,16 @@ pub fn register_created_task(
     root_phys: u64,
     entry: u64,
     stack_top: u64,
+    self_cap: u64,
 ) -> Result<(), VspaceError> {
     let kstack = task_kstack_top(task_id).ok_or(VspaceError::BadRoot)?;
     let mut frame = SretFrame::ZERO;
     frame.rip = entry;
     frame.rsp = stack_top;
+    // 切片 V：self Capability 的句柄值写入初始帧 `rdi`——子任务据此才能调用
+    // `SYS_TASK_DESTROY` 自毁。这是细化层自由度（抽象模型不规定寄存器传参），
+    // 不新增槽位、不改句柄分配。
+    frame.rdi = self_cap;
     frame.cs = USER_CS as u64;
     frame.ss = USER_DS as u64;
     frame.rflags = 0x2 | (1 << 9); // bit1 固定 + IF=1
@@ -1316,7 +1510,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 2459);
+        assert_eq!(USER_CODE_LEN, 2980);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -1652,7 +1846,99 @@ mod tests {
         assert_eq!(&code[2408..2416], &TASK2_WAKE_PAYLOAD.to_le_bytes());
         assert_eq!(&code[2448..2456], &SYS_SEND.to_le_bytes());
         assert_eq!(&code[2456..2458], &[0xCD, 0x80]);
-        assert_eq!(code[2458], 0xCC); // int3
+        // SPEC-066：自持平台 cap 映射块。
+        // 正例：rdi = X 段 cap（槽 36），rsi = Task(1) 管理 cap（槽 45）。
+        assert_eq!(
+            &code[2460..2468],
+            &crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK1_X)
+                .encode()
+                .to_le_bytes()
+        );
+        assert_eq!(
+            &code[2470..2478],
+            &crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE
+                .encode()
+                .to_le_bytes()
+        );
+        assert_eq!(&code[2490..2498], &USER_MAP_WITNESS_VA.to_le_bytes());
+        assert_eq!(&code[2520..2528], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[2528..2530], &[0xCD, 0x80]);
+        assert_eq!(&code[2530..2537], &[0x48, 0x89, 0x81, 0xC0, 0x01, 0, 0]);
+        assert_eq!(&code[2539..2547], &USER_MAP_WITNESS_VA.to_le_bytes());
+        assert_eq!(&code[2547..2550], &[0x48, 0x8B, 0x02]); // mov rax, [rdx]
+        assert_eq!(&code[2550..2557], &[0x48, 0x89, 0x81, 0xC8, 0x01, 0, 0]);
+        // 负例：rdi = task 2 所属的 TASK2_CODE 段 cap（槽 38）。
+        assert_eq!(
+            &code[2559..2567],
+            &crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK2_CODE)
+                .encode()
+                .to_le_bytes()
+        );
+        assert_eq!(&code[2589..2597], &USER_MAP_WITNESS_VA2.to_le_bytes());
+        assert_eq!(&code[2619..2627], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[2629..2636], &[0x48, 0x89, 0x81, 0xD0, 0x01, 0, 0]);
+        // SPEC-067：task4 自毁见证块（rdx 重设为请求块，改写 entry 与 initial_cap0）。
+        assert_eq!(&code[2638..2646], &TASK_REQ_VA.to_le_bytes());
+        assert_eq!(
+            &code[2648..2656],
+            &(USER3_CODE_VA + TASK4_CODE_OFFSET).to_le_bytes()
+        );
+        assert_eq!(&code[2656..2660], &[0x48, 0x89, 0x42, 0x20]);
+        assert_eq!(
+            &code[2662..2670],
+            &crate::bootstrap::TASK4_SEND_CAP_HANDLE
+                .encode()
+                .to_le_bytes()
+        );
+        assert_eq!(&code[2670..2674], &[0x48, 0x89, 0x42, 0x40]);
+        assert_eq!(&code[2679..2687], &SYS_TASK_CREATE.to_le_bytes());
+        assert_eq!(&code[2689..2696], &[0x48, 0x89, 0x81, 0xD8, 0x01, 0, 0]);
+        assert_eq!(&code[2722..2730], &USER3_STACK_VA.to_le_bytes());
+        assert_eq!(&code[2752..2760], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[2762..2769], &[0x48, 0x89, 0x81, 0xE0, 0x01, 0, 0]);
+        assert_eq!(&code[2771..2779], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[2783..2791], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[2795..2803], &TASK_RECV_BUF.to_le_bytes());
+        assert_eq!(&code[2805..2813], &SYS_RECV.to_le_bytes());
+        assert_eq!(&code[2815..2822], &[0x48, 0x89, 0x81, 0xE8, 0x01, 0, 0]);
+        // 让出一次，等 task 4 完成自毁。
+        assert_eq!(&code[2824..2832], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[2832..2834], &[0xCD, 0x80]);
+        assert_eq!(&code[2860..2868], &USER3_STACK_VA.to_le_bytes());
+        assert_eq!(&code[2890..2898], &SYS_MEMSEG_MAP.to_le_bytes());
+        assert_eq!(&code[2900..2907], &[0x48, 0x89, 0x81, 0xF0, 0x01, 0, 0]);
+        // 抢占阶段前再唤醒一次 task 2（第一次让出已把它排空）。
+        assert_eq!(&code[2909..2917], &2u64.to_le_bytes());
+        assert_eq!(&code[2979], &0xCC); // int3
+    }
+
+    #[test]
+    fn task4_code_bytes_are_fixed() {
+        let code = task4_code();
+        assert_eq!(TASK4_CODE_LEN, 109);
+        // mov rbx, rdi（初始帧携带的 self Capability 句柄）。
+        assert_eq!(&code[0..3], &[0x48, 0x89, 0xFB]);
+        // SYS_TASK_ID → rdx（payload = 自己的 id）。
+        assert_eq!(&code[5..13], &SYS_TASK_ID.to_le_bytes());
+        assert_eq!(&code[13..15], &[0xCD, 0x80]);
+        assert_eq!(&code[15..18], &[0x48, 0x89, 0xC2]);
+        // 接收者 = task 1；发送凭据 = 第二次 create 移入的 TASK4_SEND_CAP。
+        assert_eq!(&code[20..28], &1u64.to_le_bytes());
+        assert_eq!(
+            &code[30..38],
+            &crate::bootstrap::TASK4_SEND_CAP_HANDLE
+                .encode()
+                .to_le_bytes()
+        );
+        assert_eq!(&code[70..78], &SYS_SEND.to_le_bytes());
+        // 让出一次：等父任务取走消息，否则自毁会丢弃它（§8.2）。
+        assert_eq!(&code[82..90], &SYS_YIELD.to_le_bytes());
+        assert_eq!(&code[90..92], &[0xCD, 0x80]);
+        // mov rdi, rbx（self cap）→ SYS_TASK_DESTROY（自毁）。
+        assert_eq!(&code[92..95], &[0x48, 0x89, 0xDF]);
+        assert_eq!(&code[97..105], &SYS_TASK_DESTROY.to_le_bytes());
+        assert_eq!(&code[105..107], &[0xCD, 0x80]);
+        assert_eq!(&code[107..109], &[0xEB, 0xFE]); // jmp $
     }
 
     #[test]

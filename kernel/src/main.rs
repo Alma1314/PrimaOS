@@ -231,6 +231,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // SPEC-066：把 11 条用户可见平台段 cap 与 2 条平台 Task cap 按
+                                    // 属主移交给 task 1 / task 2，使用户可自持经 memseg_map 使用。
+                                    // 必须在既有 bring-up 映射（均以 KERNEL_ACTOR 为 caller）之后。
+                                    if kernel::bootstrap::handover_platform_caps().is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();

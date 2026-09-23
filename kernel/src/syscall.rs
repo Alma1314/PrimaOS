@@ -98,6 +98,24 @@ pub const TASK_RECEIPT_DESTROY: u64 = 424;
 pub const TASK_RECEIPT_AGAIN: u64 = 432;
 pub const TASK_RECEIPT_MAP_DEAD: u64 = 440;
 
+/// SPEC-066：task 1 用**自持**平台 cap 经 `SYS_MEMSEG_MAP` 建立的新映射 VA。
+///
+/// 与既有映射不相交，且与 `USER_SEG_VA`(+0x5000) 同处一个 2 MiB 区域——复用已存在的 PT 页，
+/// 故不新增页表帧。
+pub const USER_MAP_WITNESS_VA: u64 = USER_BASE_VA + 0x4000;
+/// SPEC-066：非属主负例请求的目标 VA（被 `authorize` 拒绝，不会真的映射）。
+pub const USER_MAP_WITNESS_VA2: u64 = USER_BASE_VA + 0x6000;
+/// SPEC-066：自持 cap 映射见证的三条回执（Y 页 448/456/464，紧接 S2-D4 的 368..447）。
+pub const TASK_RECEIPT_MAP_OWN: u64 = 448;
+pub const TASK_RECEIPT_MAP_VALUE: u64 = 456;
+pub const TASK_RECEIPT_MAP_OTHER: u64 = 464;
+
+/// SPEC-067：task 4 自毁见证的四条回执（Y 页 472/480/488/496）。
+pub const TASK_RECEIPT_TASK4_CAP: u64 = 472;
+pub const TASK_RECEIPT_TASK4_STACK: u64 = 480;
+pub const TASK_RECEIPT_TASK4_RECV: u64 = 488;
+pub const TASK_RECEIPT_TASK4_MAP_DEAD: u64 = 496;
+
 /// S2-D3：用户创建 Segment 的映射 VA（PML4 槽 20 内、与既有区域不相交）。
 pub const USER_SEG_VA: u64 = USER_BASE_VA + 0x5000;
 /// 访问位集：`R` / `W`（供 `memseg_create`/`map` 的 `access` 参数）。
@@ -250,6 +268,8 @@ pub const EXC_SYSCALL_TRAP_PAYLOAD: u64 = EXC_SYSCALL_TRAP_SOURCE | (EXC_KIND_SY
 pub enum Errno {
     /// 找不到对象（不存在的 Capability）。
     NoEnt = 2,
+    /// 切片 V：暂时不可用——自毁要求存在其他 Ready 任务，当前没有。
+    Again = 11,
     /// 权限不足（缺权限 / 非持有者 / 已失效）。
     Access = 13,
     /// 用户指针不可读（未映射或非 user 页）。
@@ -271,6 +291,7 @@ pub const fn encode_errno(errno: Errno) -> u64 {
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
         Errno::NoEnt => "ENOENT",
+        Errno::Again => "EAGAIN",
         Errno::Access => "EACCES",
         Errno::Fault => "EFAULT",
         Errno::Invalid => "EINVAL",
@@ -1185,7 +1206,7 @@ pub const fn task_destroy_errno(error: bootstrap::TaskError) -> Errno {
     use bootstrap::TaskError as E;
     match error {
         E::NoSuchTask => Errno::NoEnt,
-        E::CannotDestroyInit | E::CannotDestroyRunning | E::CannotDestroySelf => Errno::Access,
+        E::CannotDestroyInit | E::CannotDestroyRunning => Errno::Access,
         E::DuplicateTask
         | E::AlreadyRunning
         | E::NotRunning
@@ -1198,13 +1219,20 @@ pub const fn task_destroy_errno(error: bootstrap::TaskError) -> Errno {
 /// S2-D4：内核侧记录的新 Task 事实（供见证读取）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TaskState {
+    /// 首次 `SYS_TASK_CREATE` 选定的 task id（切片 T 的子任务）。
     child: u32,
     stack_top: u64,
+    /// 切片 V：第二次 `SYS_TASK_CREATE` 选定的 task id（自毁见证载体）。
+    grandchild: u32,
+    /// 本任务发起过的 `SYS_TASK_CREATE` 次数（区分 child / grandchild）。
+    create_count: u32,
 }
 
 static mut TASK_STATE: TaskState = TaskState {
     child: 0,
     stack_top: 0,
+    grandchild: 0,
+    create_count: 0,
 };
 
 fn task_state() -> TaskState {
@@ -1231,6 +1259,7 @@ fn task_create_call(req_ptr: u64) -> u64 {
                 outcome.root_phys,
                 req.entry,
                 req.stack_top,
+                outcome.self_cap.encode(),
             )
             .is_err()
             {
@@ -1238,7 +1267,12 @@ fn task_create_call(req_ptr: u64) -> u64 {
             }
             unsafe {
                 let state = core::ptr::addr_of_mut!(TASK_STATE);
-                (*state).child = outcome.task_id;
+                if (*state).create_count == 0 {
+                    (*state).child = outcome.task_id;
+                } else {
+                    (*state).grandchild = outcome.task_id;
+                }
+                (*state).create_count += 1;
                 (*state).stack_top = req.stack_top;
             }
             outcome.manager_cap.encode()
@@ -1248,6 +1282,11 @@ fn task_create_call(req_ptr: u64) -> u64 {
 }
 
 /// `SYS_TASK_DESTROY`：§8.2 完整清理（含地址空间拆除），成功后清调度登记。
+///
+/// 切片 V：目标为调用者自身时走自毁——**先确认存在 Ready 后继**（细化层限制：自毁要求系统
+/// 在自毁者之外至少有一个可运行任务），否则确定性 `EAGAIN` 且不改状态；随后清理、清调度登记，
+/// 最后 `exit_to` 切走（`-> !`）。自毁者的页表帧由 `sched::flush_deferred_frames` 在
+/// `write_cr3` 之后归还。
 fn task_destroy_call(raw_cap: u64) -> u64 {
     let caller = sched::current();
     let Ok(task_cap) = bootstrap::decode_handle(raw_cap) else {
@@ -1263,8 +1302,20 @@ fn task_destroy_call(raw_cap: u64) -> u64 {
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
+    let self_destroy = task_id == caller;
+    let mut next = 0;
+    if self_destroy {
+        match crate::sched::pick_next(caller) {
+            Some(successor) => next = successor,
+            None => return encode_errno(Errno::Again),
+        }
+    }
     let root = crate::sched::root(task_id);
     match bootstrap::task_destroy(caller, task_id, root, offset) {
+        Ok(()) if self_destroy => {
+            crate::sched::clear_task(caller);
+            crate::sched::exit_to(next)
+        }
         Ok(()) => {
             crate::sched::clear_task(task_id);
             0
@@ -1286,6 +1337,20 @@ pub struct TaskWitness {
     pub destroy: u64,
     pub again: u64,
     pub map_dead: u64,
+    /// SPEC-066：自持平台段 cap 经 `SYS_MEMSEG_MAP` 建立新映射的返回值（应为 0）。
+    pub map_own: u64,
+    /// SPEC-066：该映射首 qword 的读回值（应为 X 段共享帧的 COW 模式值）。
+    pub map_value: u64,
+    /// SPEC-066：用非属主（task 2 所属）段 cap 映射的返回值（应为 `EACCES`）。
+    pub map_other: u64,
+    /// SPEC-067：第二次 `task_create` 返回的 task4 manager cap。
+    pub task4_cap: u64,
+    /// SPEC-067：task4 的栈映射回执（应为 0）。
+    pub task4_stack: u64,
+    /// SPEC-067：task4 自报的 id（应为 4——id 不复用已销毁的 task 3）。
+    pub task4_recv: u64,
+    /// SPEC-067：向已自毁的 task4 映射的返回值（应为 `ENOENT`）。
+    pub task4_map_dead: u64,
     /// 内核侧：`task_create` 实际选定的子任务 id。
     pub child: u32,
     /// 内核侧：事件发射时的活动任务数（应为 init + task 2）。
@@ -1294,11 +1359,20 @@ pub struct TaskWitness {
     pub caps: u64,
     /// 内核侧：子任务被销毁后其调度登记（root）确已清除。
     pub root_cleared: u64,
+    /// 内核侧：自毁的 task4 被 `task_create` 选定的 id（应为 4）。
+    pub grandchild: u32,
+    /// 内核侧：task4 自毁后的活动任务数（应为 init + task 2 = 2）。
+    pub tasks_after: u64,
+    /// 内核侧：task4 自毁后的活动 cap 槽位数。
+    pub caps_after: u64,
+    /// 内核侧：task4 自毁后其调度登记确已清除。
+    pub root4_cleared: u64,
 }
 
 impl TaskWitness {
     /// 判定：完整 create（manager cap + 栈映射进子任务根）→ 子任务自报 id 并回发消息 →
     /// 两个创建负例与一个销毁负例被拒 → 销毁成功 → 重复销毁与向已销毁任务映射均被拒 →
+    /// SPEC-066：自持平台段 cap 的映射成功且读回该段帧内容，非属主同请求被 `EACCES` 拒绝 →
     /// 内核侧确认目标已从任务表与调度登记移除。
     pub fn evidence_ok(&self) -> bool {
         self.create == TASK_MANAGER_CAP
@@ -1310,10 +1384,21 @@ impl TaskWitness {
             && self.destroy == 0
             && self.again != 0
             && self.map_dead != 0
+            && self.map_own == 0
+            && self.map_value == crate::cow::pattern(0)
+            && self.map_other == encode_errno(Errno::Access)
             && self.child == TASK_CREATE_CHILD_ID
             && self.tasks == 2
             && self.root_cleared == 1
             && self.stack_seg != 0
+            // SPEC-067：task4 承载自毁——栈映射成功、自报 id（id 不复用）、自毁后不可映射。
+            && self.task4_cap != 0
+            && self.task4_stack == 0
+            && self.task4_recv == self.grandchild as u64
+            && self.task4_map_dead == encode_errno(Errno::NoEnt)
+            && self.grandchild == TASK_CREATE_CHILD_ID + 1
+            && self.tasks_after == 2
+            && self.root4_cleared == 1
     }
 }
 
@@ -1333,10 +1418,25 @@ pub fn task_witness() -> TaskWitness {
         destroy: read_qword(base + TASK_RECEIPT_DESTROY),
         again: read_qword(base + TASK_RECEIPT_AGAIN),
         map_dead: read_qword(base + TASK_RECEIPT_MAP_DEAD),
+        map_own: read_qword(base + TASK_RECEIPT_MAP_OWN),
+        map_value: read_qword(base + TASK_RECEIPT_MAP_VALUE),
+        map_other: read_qword(base + TASK_RECEIPT_MAP_OTHER),
+        task4_cap: read_qword(base + TASK_RECEIPT_TASK4_CAP),
+        task4_stack: read_qword(base + TASK_RECEIPT_TASK4_STACK),
+        task4_recv: read_qword(base + TASK_RECEIPT_TASK4_RECV),
+        task4_map_dead: read_qword(base + TASK_RECEIPT_TASK4_MAP_DEAD),
         child,
         tasks: bootstrap::live_task_count() as u64,
         caps: bootstrap::live_cap_count() as u64,
         root_cleared: if child != 0 && crate::sched::root(child).is_none() {
+            1
+        } else {
+            0
+        },
+        grandchild: state.grandchild,
+        tasks_after: bootstrap::live_task_count() as u64,
+        caps_after: bootstrap::live_cap_count() as u64,
+        root4_cleared: if state.grandchild != 0 && crate::sched::root(state.grandchild).is_none() {
             1
         } else {
             0
@@ -2537,8 +2637,6 @@ mod tests {
         assert_eq!(task_destroy_errno(E::NoSuchTask), Errno::NoEnt);
         assert_eq!(task_destroy_errno(E::CannotDestroyInit), Errno::Access);
         assert_eq!(task_destroy_errno(E::CannotDestroyRunning), Errno::Access);
-        // S2-D4 自毁拒绝（ISSUE-TASK-002）：确定性 EACCES。
-        assert_eq!(task_destroy_errno(E::CannotDestroySelf), Errno::Access);
         assert_eq!(task_destroy_errno(E::NotRunning), Errno::Invalid);
         assert_eq!(task_destroy_errno(E::NotReady), Errno::Invalid);
         assert_eq!(task_destroy_errno(E::AlreadyRunning), Errno::Invalid);
@@ -2568,6 +2666,17 @@ mod tests {
             destroy: 0,
             again: encode_errno(Errno::Access),
             map_dead: encode_errno(Errno::NoEnt),
+            map_own: 0,
+            map_value: crate::cow::pattern(0),
+            map_other: encode_errno(Errno::Access),
+            task4_cap: 0x0000_0001_0000_000B,
+            task4_stack: 0,
+            task4_recv: (TASK_CREATE_CHILD_ID + 1) as u64,
+            task4_map_dead: encode_errno(Errno::NoEnt),
+            grandchild: TASK_CREATE_CHILD_ID + 1,
+            tasks_after: 2,
+            caps_after: 30,
+            root4_cleared: 1,
             child: TASK_CREATE_CHILD_ID,
             tasks: 2,
             caps: 28,

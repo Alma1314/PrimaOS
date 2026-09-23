@@ -30,6 +30,16 @@ static mut KSTACK_TOPS: [u64; MAX_TASKS] = [0; MAX_TASKS];
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
 static mut SCRATCH: SretFrame = SretFrame::ZERO;
 
+/// 切片 V：自毁任务待归还的页表帧队列容量。
+///
+/// 自毁者正运行在自己的 CR3 上，其根帧与中间层页表帧必须等 `write_cr3` 切走之后才能归还。
+/// 上界 = 根帧 1 + 用户映射拆除回收的空表帧（≤ `MAX_VSPACE_ENTRIES`）。
+const MAX_DEFERRED_FRAMES: usize = 40;
+
+/// 待归还的页表帧（自毁路径入队，[`flush_deferred_frames`] 清空）。
+static mut DEFERRED_FRAMES: [u64; MAX_DEFERRED_FRAMES] = [0; MAX_DEFERRED_FRAMES];
+static mut DEFERRED_COUNT: usize = 0;
+
 /// 当前运行的 Task id。
 pub fn current() -> u32 {
     CURRENT.load(Ordering::Relaxed)
@@ -178,6 +188,55 @@ pub fn block_to(next: u32) -> ! {
     resume(next)
 }
 
+/// 切片 V：把一个**已从任务表删除**的当前任务切走。
+///
+/// 与 [`block_to`]/[`switch_to`] 的区别：不触碰 `cur` 的 TaskTable 记录——自毁者已 Dead，
+/// `yield_task_global` 会拒绝。调用方（syscall 层）必须先确认存在 Ready 后继。
+pub fn exit_to(next: u32) -> ! {
+    let cur = current();
+    assert_ne!(cur, next, "exit_to must target a different task");
+    bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    set_current(next);
+    resume(next)
+}
+
+/// 切片 V：延迟帧队列已满。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeferredQueueFull;
+
+/// 切片 V：登记一个待归还页表帧（自毁路径）。队列满返回 `Err`，不静默丢弃。
+pub fn defer_table_frame(frame: u64) -> Result<(), DeferredQueueFull> {
+    unsafe {
+        let count = core::ptr::addr_of_mut!(DEFERRED_COUNT);
+        if *count >= MAX_DEFERRED_FRAMES {
+            return Err(DeferredQueueFull);
+        }
+        let frames = core::ptr::addr_of_mut!(DEFERRED_FRAMES);
+        (*frames)[*count] = frame;
+        *count += 1;
+    }
+    Ok(())
+}
+
+/// 待归还帧数（供 host 单测断言「切换前不释放」）。
+pub fn deferred_frame_count() -> usize {
+    unsafe { *core::ptr::addr_of!(DEFERRED_COUNT) }
+}
+
+/// 归还全部待释放页表帧。
+///
+/// **只允许在 `write_cr3` 已切到别的根之后调用**——见 [`resume`] 中的释放点。
+pub fn flush_deferred_frames() {
+    unsafe {
+        let count = core::ptr::addr_of_mut!(DEFERRED_COUNT);
+        let frames = core::ptr::addr_of!(DEFERRED_FRAMES);
+        for index in 0..*count {
+            let _ = crate::frames::release_table_frame((*frames)[index]);
+        }
+        *count = 0;
+    }
+}
+
 /// 恢复 `task_id` 的用户上下文（不返回）。
 ///
 /// 切片 O：恢复前先切换到该任务的地址空间与内核栈——`TSS.rsp0` 指到本任务内核栈顶
@@ -192,6 +251,8 @@ pub fn resume(task_id: u32) -> ! {
     if let Some(root) = root(task_id) {
         unsafe { crate::cpu::write_cr3(root) };
     }
+    // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
+    flush_deferred_frames();
     unsafe {
         let scratch = core::ptr::addr_of_mut!(SCRATCH);
         *scratch = frame;
@@ -233,6 +294,37 @@ mod tests {
 
         // 越界 id 安全忽略。
         clear_task(MAX_TASKS as u32);
+    }
+
+    /// 切片 V：页表帧的归还被推迟到 `flush_deferred_frames`——入队期间 `count > 0`
+    /// 即「尚未归还」的直接证据。
+    #[test]
+    fn deferred_frames_stay_pending_until_flush() {
+        flush_deferred_frames();
+        assert_eq!(deferred_frame_count(), 0);
+        defer_table_frame(0x1000).unwrap();
+        defer_table_frame(0x2000).unwrap();
+        assert_eq!(deferred_frame_count(), 2, "入队后仍未归还");
+        flush_deferred_frames();
+        assert_eq!(deferred_frame_count(), 0, "flush 后才归还");
+        // 幂等：再次 flush 不改变任何东西。
+        flush_deferred_frames();
+        assert_eq!(deferred_frame_count(), 0);
+    }
+
+    /// 切片 V：队列满时确定性失败，不静默丢弃已入队的帧。
+    #[test]
+    fn deferred_queue_rejects_overflow() {
+        flush_deferred_frames();
+        for index in 0..MAX_DEFERRED_FRAMES {
+            assert!(defer_table_frame(0x1000 + index as u64 * 0x1000).is_ok());
+        }
+        assert!(
+            defer_table_frame(0xDEAD_0000).is_err(),
+            "满队列必须确定性失败"
+        );
+        assert_eq!(deferred_frame_count(), MAX_DEFERRED_FRAMES);
+        flush_deferred_frames();
     }
 
     #[test]

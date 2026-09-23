@@ -111,7 +111,12 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// 24 = 初始 3 + 异常源 2 + 平台段 13 + 平台 task 2 + 切片 S 2 + 本切片 bring-up 2；
 /// 再加 ring3 存活段 cap 3（槽 6/7/8）与调用者的 manager cap 1（槽 10）。
 /// 被销毁子任务的 self cap 与 root_ns cap 已撤销，故不计入。
-const TASK_READY_LIVE_CAPS: usize = 28;
+/// **切片 V**：另有 task 4 的 manager cap 1（目标已 Dead，仍是 live 槽位）→ 29。
+const TASK_READY_LIVE_CAPS: usize = 29;
+/// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
+const TASK_SELF_DESTROY_ID: usize = 4;
+/// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
+const TASK_MAP_VALUE: u64 = 0xC0FF_EE00_0000_0000;
 
 /// 切片 R：平台 bring-up 区域对象化的镜像常量，与 `kernel/src/{bootstrap,frames}.rs` 一致。
 const PLATFORM_SEGMENT_COUNT: usize = 13;
@@ -123,6 +128,28 @@ const PLATFORM_TASK2_CAP_HANDLE: u64 = 0x0000_0001_0000_002e;
 const PLATFORM_ACTOR: u64 = 0;
 const PLATFORM_MAPPED: u64 = 11;
 const PLATFORM_DIRECT: u64 = 2;
+/// SPEC-066：平台段根 cap 按属主移交后，由用户 Task 持有的段根数。
+const PLATFORM_USER_ROOTS: u64 = 11;
+/// SPEC-066：仍由内核持有的段根数（VSPACE、COW）。
+const PLATFORM_KERNEL_ROOTS: u64 = 2;
+/// SPEC-066：逐槽属主（按 Segment id 2..14 顺序；0 = `KERNEL_ACTOR`）。
+const PLATFORM_SEGMENT_HOLDERS: [u64; PLATFORM_SEGMENT_COUNT] = [
+    PLATFORM_ACTOR,
+    PLATFORM_ACTOR,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    1,
+    1,
+    2,
+    2,
+];
+/// SPEC-066：平台 Task Capability 的逐槽属主（槽 45 → task 1，槽 46 → task 2）。
+const PLATFORM_TASK_HOLDERS: [u64; 2] = [1, 2];
 /// 切片 S：IPC 用户化与共享 Segment 的镜像常量，与 `kernel/src/{syscall,user}.rs` 一致。
 /// task 1 首个 `SYS_MEMSEG_CREATE` 的句柄：槽 8 gen1（槽 6/7 已被既有块占用且不释放）。
 const IPC_SHARED_SEG_CAP: u64 = 0x0000_0001_0000_0008;
@@ -134,8 +161,11 @@ const IPC_DIRECT_PAYLOAD: u64 = 0xD1EC_7000_0000_0002;
 /// 每个平台区域的帧数（VSPACE 2、COW 共享+2 私有、其余各 1；和为 16 = `frames_ready.segment`）。
 const PLATFORM_FRAME_COUNTS: [u64; PLATFORM_SEGMENT_COUNT] =
     [2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-/// `TaskVspaceTable` 中平台区域的逻辑映射条目数（ring3 已把自己两个段完全 unmap）。
-const PLATFORM_VSPACE_ENTRIES: u64 = 11;
+/// `TaskVspaceTable` 中平台区域的逻辑映射条目数。
+///
+/// SPEC-066：切片 U 的 ring3 块用**自持**的 X 段 cap 追加了一条映射（`USER_MAP_WITNESS_VA`），
+/// 故由 11 增至 12。
+const PLATFORM_VSPACE_ENTRIES: u64 = 12;
 
 /// 切片 L：异常订阅的镜像常量，与 `kernel/src/{syscall,bootstrap}.rs` 一致。
 const EXC_PAGE_FAULT_SOURCE: u64 = 1;
@@ -1521,12 +1551,15 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
     let mut first_id = None;
     let mut last_id = None;
     let mut roots = None;
+    let mut user_roots = None;
+    let mut kernel_roots = None;
+    let mut holders: Option<Vec<u64>> = None;
     let mut task_caps = None;
+    let mut task_holders: Option<Vec<u64>> = None;
     let mut mapped = None;
     let mut direct = None;
     let mut direct_ids: Option<Vec<u64>> = None;
     let mut vspace = None;
-    let mut holder = None;
     let mut slot_base = None;
     let mut task1_cap = None;
     let mut task2_cap = None;
@@ -1542,12 +1575,15 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
             "first_id" => first_id = Some(parse_decimal(value, "first_id")?),
             "last_id" => last_id = Some(parse_decimal(value, "last_id")?),
             "roots" => roots = Some(parse_decimal(value, "roots")?),
+            "user_roots" => user_roots = Some(parse_decimal(value, "user_roots")?),
+            "kernel_roots" => kernel_roots = Some(parse_decimal(value, "kernel_roots")?),
+            "holders" => holders = Some(parse_decimal_list(value, "holders")?),
             "task_caps" => task_caps = Some(parse_decimal(value, "task_caps")?),
+            "task_holders" => task_holders = Some(parse_decimal_list(value, "task_holders")?),
             "mapped" => mapped = Some(parse_decimal(value, "mapped")?),
             "direct" => direct = Some(parse_decimal(value, "direct")?),
             "direct_ids" => direct_ids = Some(parse_decimal_list(value, "direct_ids")?),
             "vspace" => vspace = Some(parse_decimal(value, "vspace")?),
-            "holder" => holder = Some(parse_decimal(value, "holder")?),
             "slot_base" => slot_base = Some(parse_decimal(value, "slot_base")?),
             "task1_cap" => task1_cap = Some(parse_addr(value)?),
             "task2_cap" => task2_cap = Some(parse_addr(value)?),
@@ -1562,12 +1598,15 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
     let first_id = first_id.ok_or_else(|| missing("first_id"))?;
     let last_id = last_id.ok_or_else(|| missing("last_id"))?;
     let roots = roots.ok_or_else(|| missing("roots"))?;
+    let user_roots = user_roots.ok_or_else(|| missing("user_roots"))?;
+    let kernel_roots = kernel_roots.ok_or_else(|| missing("kernel_roots"))?;
+    let holders = holders.ok_or_else(|| missing("holders"))?;
     let task_caps = task_caps.ok_or_else(|| missing("task_caps"))?;
+    let task_holders = task_holders.ok_or_else(|| missing("task_holders"))?;
     let mapped = mapped.ok_or_else(|| missing("mapped"))?;
     let direct = direct.ok_or_else(|| missing("direct"))?;
     let direct_ids = direct_ids.ok_or_else(|| missing("direct_ids"))?;
     let vspace = vspace.ok_or_else(|| missing("vspace"))?;
-    let holder = holder.ok_or_else(|| missing("holder"))?;
     let slot_base = slot_base.ok_or_else(|| missing("slot_base"))?;
     let task1_cap = task1_cap.ok_or_else(|| missing("task1_cap"))?;
     let task2_cap = task2_cap.ok_or_else(|| missing("task2_cap"))?;
@@ -1580,11 +1619,12 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
         ("first_id", first_id, PLATFORM_SEGMENT_FIRST_ID),
         ("last_id", last_id, PLATFORM_SEGMENT_LAST_ID),
         ("roots", roots, PLATFORM_SEGMENT_COUNT as u64),
+        ("user_roots", user_roots, PLATFORM_USER_ROOTS),
+        ("kernel_roots", kernel_roots, PLATFORM_KERNEL_ROOTS),
         ("task_caps", task_caps, 2),
         ("mapped", mapped, PLATFORM_MAPPED),
         ("direct", direct, PLATFORM_DIRECT),
         ("vspace", vspace, PLATFORM_VSPACE_ENTRIES),
-        ("holder", holder, PLATFORM_ACTOR),
         ("slot_base", slot_base, PLATFORM_SEGMENT_CAP_SLOT_BASE),
     ] {
         if actual != expected {
@@ -1602,6 +1642,17 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
     if direct_ids.as_slice() != [2, 3] {
         return Err(format!(
             "platform_segments_ready direct_ids is {direct_ids:?}, expected [2, 3] (VSPACE, COW)"
+        ));
+    }
+    // SPEC-066：逐槽属主——11 条用户可见区域按属主移交，VSPACE/COW 仍归内核（0）。
+    if holders.as_slice() != PLATFORM_SEGMENT_HOLDERS {
+        return Err(format!(
+            "platform_segments_ready holders is {holders:?}, expected {PLATFORM_SEGMENT_HOLDERS:?}"
+        ));
+    }
+    if task_holders.as_slice() != PLATFORM_TASK_HOLDERS {
+        return Err(format!(
+            "platform_segments_ready task_holders is {task_holders:?}, expected {PLATFORM_TASK_HOLDERS:?}"
         ));
     }
     if task1_cap != PLATFORM_TASK1_CAP_HANDLE || task2_cap != PLATFORM_TASK2_CAP_HANDLE {
@@ -1730,9 +1781,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 2 || direct != 2 || blocks != 2 {
+    if queued != 3 || direct != 3 || blocks != 3 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 2/2/2 — the queued (cap-carrying) and direct (wake) paths are each exercised twice: slice S's pair plus S2-D4's new-task message and the end-of-run wake of task 2"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 3/3/3 — the queued (cap-carrying) and direct (wake) paths are each exercised three times: slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, and slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase"
         ));
     }
     Ok(())
@@ -1757,10 +1808,21 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     let mut destroy = None;
     let mut again = None;
     let mut map_dead = None;
+    let mut map_own = None;
+    let mut map_value = None;
+    let mut map_other = None;
+    let mut task4_cap = None;
+    let mut task4_stack = None;
+    let mut task4_recv = None;
+    let mut task4_map_dead = None;
     let mut child = None;
     let mut tasks = None;
     let mut caps = None;
     let mut root_cleared = None;
+    let mut grandchild = None;
+    let mut tasks_after = None;
+    let mut caps_after = None;
+    let mut root4_cleared = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -1776,10 +1838,21 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "destroy" => destroy = Some(parse_addr(value)?),
             "again" => again = Some(parse_addr(value)?),
             "map_dead" => map_dead = Some(parse_addr(value)?),
+            "map_own" => map_own = Some(parse_addr(value)?),
+            "map_value" => map_value = Some(parse_addr(value)?),
+            "map_other" => map_other = Some(parse_addr(value)?),
+            "task4_cap" => task4_cap = Some(parse_addr(value)?),
+            "task4_stack" => task4_stack = Some(parse_addr(value)?),
+            "task4_recv" => task4_recv = Some(parse_addr(value)?),
+            "task4_map_dead" => task4_map_dead = Some(parse_addr(value)?),
             "child" => child = Some(parse_count(value)?),
             "tasks" => tasks = Some(parse_count(value)?),
             "caps" => caps = Some(parse_count(value)?),
             "root_cleared" => root_cleared = Some(parse_count(value)?),
+            "grandchild" => grandchild = Some(parse_count(value)?),
+            "tasks_after" => tasks_after = Some(parse_count(value)?),
+            "caps_after" => caps_after = Some(parse_count(value)?),
+            "root4_cleared" => root4_cleared = Some(parse_count(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -1794,10 +1867,21 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     let destroy = destroy.ok_or_else(|| missing("destroy"))?;
     let again = again.ok_or_else(|| missing("again"))?;
     let map_dead = map_dead.ok_or_else(|| missing("map_dead"))?;
+    let map_own = map_own.ok_or_else(|| missing("map_own"))?;
+    let map_value = map_value.ok_or_else(|| missing("map_value"))?;
+    let map_other = map_other.ok_or_else(|| missing("map_other"))?;
+    let task4_cap = task4_cap.ok_or_else(|| missing("task4_cap"))?;
+    let task4_stack = task4_stack.ok_or_else(|| missing("task4_stack"))?;
+    let task4_recv = task4_recv.ok_or_else(|| missing("task4_recv"))?;
+    let task4_map_dead = task4_map_dead.ok_or_else(|| missing("task4_map_dead"))?;
     let child = child.ok_or_else(|| missing("child"))?;
     let tasks = tasks.ok_or_else(|| missing("tasks"))?;
     let caps = caps.ok_or_else(|| missing("caps"))?;
     let root_cleared = root_cleared.ok_or_else(|| missing("root_cleared"))?;
+    let grandchild = grandchild.ok_or_else(|| missing("grandchild"))?;
+    let tasks_after = tasks_after.ok_or_else(|| missing("tasks_after"))?;
+    let caps_after = caps_after.ok_or_else(|| missing("caps_after"))?;
+    let root4_cleared = root4_cleared.ok_or_else(|| missing("root4_cleared"))?;
 
     if child != TASK_CREATE_CHILD_ID {
         return Err(format!(
@@ -1854,6 +1938,22 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready map_dead (0x{map_dead:x}) must be ENOENT — mapping into a destroyed task's address space must be denied"
         ));
     }
+    // SPEC-066：自持平台段 cap 的映射——用户可达的判决性证据。
+    if map_own != 0 {
+        return Err(format!(
+            "task_ready map_own (0x{map_own:x}) must be 0 — a task holding its own platform segment cap must pass memseg_map's holder_of(cap) == caller check"
+        ));
+    }
+    if map_value != TASK_MAP_VALUE {
+        return Err(format!(
+            "task_ready map_value (0x{map_value:x}) must be 0x{TASK_MAP_VALUE:x} — the fresh mapping must read back the segment frame's COW pattern"
+        ));
+    }
+    if map_other != EACCES {
+        return Err(format!(
+            "task_ready map_other (0x{map_other:x}) must be EACCES — mapping a segment owned by another task must be denied"
+        ));
+    }
     if tasks != 2 {
         return Err(format!(
             "task_ready tasks is {tasks}, expected 2 (init + task 2) — the created child must be gone from the task table"
@@ -1862,6 +1962,47 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     if root_cleared != 1 {
         return Err(format!(
             "task_ready root_cleared is {root_cleared}, expected 1 — task_destroy must clear the destroyed task's scheduler root registration"
+        ));
+    }
+    // SPEC-067：task 4 承载自毁——自报 id（id 不复用）、自毁后不可映射、调度登记已清。
+    if task4_cap == 0 || task4_cap == create {
+        return Err(format!(
+            "task_ready task4_cap (0x{task4_cap:x}) must be a distinct live handle returned by the second task_create"
+        ));
+    }
+    if task4_stack != 0 {
+        return Err(format!(
+            "task_ready task4_stack (0x{task4_stack:x}) must be 0 — the caller must map the stack into task 4's root"
+        ));
+    }
+    if grandchild != TASK_SELF_DESTROY_ID {
+        return Err(format!(
+            "task_ready grandchild is {grandchild}, expected {TASK_SELF_DESTROY_ID} — ids are not reused after destroy"
+        ));
+    }
+    if task4_recv != TASK_SELF_DESTROY_ID as u64 {
+        return Err(format!(
+            "task_ready task4_recv ({task4_recv}) must equal grandchild ({TASK_SELF_DESTROY_ID}) — task 4 reports its own SYS_TASK_ID before destroying itself"
+        ));
+    }
+    if task4_map_dead != ENOENT {
+        return Err(format!(
+            "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
+        ));
+    }
+    if tasks_after != 2 {
+        return Err(format!(
+            "task_ready tasks_after is {tasks_after}, expected 2 — the self-destroyed task must be gone from the task table"
+        ));
+    }
+    if root4_cleared != 1 {
+        return Err(format!(
+            "task_ready root4_cleared is {root4_cleared}, expected 1 — the self-destroyed task's scheduler root registration must be cleared"
+        ));
+    }
+    if caps_after != TASK_READY_LIVE_CAPS {
+        return Err(format!(
+            "task_ready caps_after is {caps_after}, expected {TASK_READY_LIVE_CAPS}"
         ));
     }
     if caps != TASK_READY_LIVE_CAPS {
@@ -2728,11 +2869,11 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=2;direct=2;blocks=2\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;child=3;tasks=2;caps=28;root_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=3;direct=3;blocks=3\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=2;caps=29;root_cleared=1;grandchild=4;tasks_after=2;caps_after=29;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=26|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;task_caps=2;mapped=11;direct=2;direct_ids=2,3;vspace=11;holder=0;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
         "PRIMA|v=1|seq=28|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
         "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
         "PRIMA|v=1|seq=30|event=boot_complete|status=ok\r\n",
@@ -2809,7 +2950,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=28", ";caps=30");
+        let output = VALID.replace(";caps=29;root_cleared", ";caps=30;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -2900,9 +3041,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=2;", ";direct=0;");
+        let output = VALID.replace(";direct=3;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 2/2/2"), "{error}");
+        assert!(error.contains("expected 3/3/3"), "{error}");
     }
 
     #[test]

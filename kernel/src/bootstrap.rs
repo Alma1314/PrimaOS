@@ -226,8 +226,6 @@ pub enum TaskError {
     NotReady,
     CannotDestroyInit,
     CannotDestroyRunning,
-    /// S2-D4：自我销毁未实现（`ISSUE-TASK-002`），确定性拒绝。
-    CannotDestroySelf,
     AuditFull,
 }
 
@@ -1270,6 +1268,25 @@ pub const PLATFORM_TASK_RIGHTS: Rights =
 /// 用户创建 Segment 的槽位起点（平台区间之后）。
 pub const USER_SEGMENT_ID_FIRST: u32 = PLATFORM_SEGMENT_ID_LAST + 1;
 
+/// SPEC-066：11 条用户可见平台段 id → 属主 Task id（按 id 升序）。
+///
+/// `SEG_VSPACE`/`SEG_COW` **不在表内**：它们 `allowed_access` 为空（`memseg_map` 对其必然
+/// `RightsExceeded`），且根 cap 带 `SegDestroy`——交给不可信用户等于授权销毁内核自建映射与
+/// COW 私有帧区，故保留内核持有。
+pub const PLATFORM_SEGMENT_OWNERS: [(u32, u32); 11] = [
+    (crate::frames::SEG_TASK1_CODE, INIT_TASK_ID),
+    (crate::frames::SEG_TASK1_STACK, INIT_TASK_ID),
+    (crate::frames::SEG_TASK1_X, INIT_TASK_ID),
+    (crate::frames::SEG_TASK1_Y, INIT_TASK_ID),
+    (crate::frames::SEG_TASK2_CODE, 2),
+    (crate::frames::SEG_TASK2_STACK, 2),
+    (crate::frames::SEG_TASK2_Y, 2),
+    (crate::frames::SEG_SPIN1_CODE, INIT_TASK_ID),
+    (crate::frames::SEG_SPIN1_DATA, INIT_TASK_ID),
+    (crate::frames::SEG_SPIN2_CODE, 2),
+    (crate::frames::SEG_SPIN2_DATA, 2),
+];
+
 /// 切片 S：用户 IPC 见证所需 Capability 的槽位基址（47 = task 1 的发送权，48 = task 2 的自管理权）。
 ///
 /// 避开 1..5（初始根/异常源）、6/7/8（ring3 见证程序内嵌句柄）、32..46（平台 cap）与
@@ -1301,6 +1318,10 @@ pub const TASK_CREATE_CODE_CAP_HANDLE: Handle =
 /// 作为 `initial_cap0` 移入新 Task 的句柄（句柄在移动中不变，子任务代码内嵌此常量）。
 pub const TASK_CREATE_SEND_CAP_HANDLE: Handle =
     cap_handle(TASK_CREATE_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// 切片 V：task 4 的回发凭据槽（task 3 的那条已随其销毁被撤销，不能复用同一槽）。
+pub const TASK4_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 4;
+/// task 4 持有、授权 `SYS_SEND` 给 task 1 的凭据（经第二次 create 的 `initial_cap0` 移入）。
+pub const TASK4_SEND_CAP_HANDLE: Handle = cap_handle(TASK4_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -1340,11 +1361,19 @@ pub struct PlatformSegmentsRecord {
     pub segments: u32,
     pub first_id: u32,
     pub last_id: u32,
-    /// 通过全部校验的平台根 Capability 数（槽 live、目标 `Segment(id)`、位置 `HeldByKernel`、
-    /// 权限非空且类型正确）。
+    /// 通过全部校验的平台根 Capability 数（槽 live、目标 `Segment(id)`、位置为内核或存活
+    /// Task 持有、权限非空且类型正确）。
     pub roots: u32,
+    /// SPEC-066：按位置分类——由存活用户 Task 持有的平台段根数。
+    pub user_roots: u32,
+    /// SPEC-066：按位置分类——仍由内核持有的平台段根数（`SEG_VSPACE`/`SEG_COW`）。
+    pub kernel_roots: u32,
+    /// SPEC-066：逐槽属主 Task id（内核持有记 [`KERNEL_ACTOR`]），与 `cap_handles` 同序。
+    pub holders: [u32; PLATFORM_SEGMENT_COUNT],
     /// 通过校验的平台 Task Capability 数。
     pub task_caps: u32,
+    /// SPEC-066：平台 Task Capability 的逐槽属主 Task id。
+    pub task_holders: [u32; PLATFORM_TASK_CAP_COUNT],
     /// 经 `memseg_map` 授权中介映射的平台区域数。
     pub mapped: u32,
     /// 保留内核直映射的平台区域数。
@@ -2757,11 +2786,12 @@ impl BootstrapState {
         })
     }
 
-    /// S2-D4：§8.2 `task_destroy` 的完整路径。`root_phys = Some` 时先执行步骤 1（删除目标全部
-    /// 页映射、归还空表帧与目标根帧）；`None` 供不经地址空间的模型层调用。
+    /// §8.2 `task_destroy` 的完整路径。`root_phys = Some` 时先执行步骤 1（删除目标全部页映射、
+    /// 归还空表帧与目标根帧）；`None` 供不经地址空间的模型层调用。
     ///
-    /// `caller` 为目标自身时拒绝（`CannotDestroySelf`，`ISSUE-TASK-002`）：自毁要在正被使用的
-    /// CR3 与内核栈上回收自身根帧，本切片不做。
+    /// **切片 V**：`caller` 为目标自身时走 [`Self::task_destroy_self`]（§8.2「删除自身是合法
+    /// 的」）。该判断必须先于 `prepare_destroy`——调用者此刻是 `Running`，否则会先撞
+    /// `CannotDestroyRunning` 而永远走不到自毁。
     pub fn task_destroy(
         &mut self,
         caller: u32,
@@ -2769,10 +2799,10 @@ impl BootstrapState {
         root_phys: Option<u64>,
         phys_offset: u64,
     ) -> Result<(), TaskError> {
-        self.tasks.prepare_destroy(task_id)?;
         if task_id == caller {
-            return Err(TaskError::CannotDestroySelf);
+            return self.task_destroy_self(caller, root_phys, phys_offset);
         }
+        self.tasks.prepare_destroy(task_id)?;
         if !self.audit.can_append(self.destroy_audit_events(task_id)) {
             return Err(TaskError::AuditFull);
         }
@@ -2801,6 +2831,50 @@ impl BootstrapState {
         self.destroy_task_model(task_id)
     }
 
+    /// 切片 V：§8.2 的自毁路径。
+    ///
+    /// 模型清理与 [`Self::task_destroy`] 一致，唯一区别是**页表帧（含根帧）只入延迟队列**：
+    /// 自毁者此刻正运行在自己的 CR3 上，必须等 `sched::resume` 完成 `write_cr3` 之后
+    /// （`sched::flush_deferred_frames`）才能归还。
+    ///
+    /// 不触碰调度器：后继任务的存在性与切换由 syscall 层（`pick_next` + `exit_to`）负责。
+    fn task_destroy_self(
+        &mut self,
+        caller: u32,
+        root_phys: Option<u64>,
+        phys_offset: u64,
+    ) -> Result<(), TaskError> {
+        if caller == INIT_TASK_ID {
+            return Err(TaskError::CannotDestroyInit);
+        }
+        // 自身作为销毁目标是合法的（§8.2），故不做 `CannotDestroyRunning` 检查。
+        if !self.audit.can_append(self.destroy_audit_events(caller)) {
+            return Err(TaskError::AuditFull);
+        }
+        if let Some(root) = root_phys {
+            let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+            let mut entries = [0u64; MAX_VSPACE_ENTRIES];
+            let mut count = 0usize;
+            for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
+                if entry.task_id == caller && count < MAX_VSPACE_ENTRIES {
+                    entries[count] = entry.va;
+                    count += 1;
+                }
+            }
+            for entry_va in entries[..count].iter().copied() {
+                crate::vspace::unmap_4k(root, entry_va, map, |frame| {
+                    crate::sched::defer_table_frame(frame)
+                        .map_err(|_| crate::vspace::VspaceError::NoFrame)
+                })
+                .map_err(|_| TaskError::NoSuchTask)?;
+                let _ = self.vspace.remove(caller, entry_va);
+            }
+            crate::sched::defer_table_frame(root).map_err(|_| TaskError::NoSuchTask)?;
+        }
+        self.exc_sources.remove_subscriber(caller);
+        self.destroy_task_body(caller)
+    }
+
     /// §8.2 步骤 2/3/4/8/9 所需的审计条数（丢弃消息 + pending + `TaskDestroyed`）。
     fn destroy_audit_events(&self, task_id: u32) -> usize {
         let pending = self
@@ -2823,6 +2897,14 @@ impl BootstrapState {
 
     fn destroy_task_model(&mut self, task_id: u32) -> Result<(), TaskError> {
         self.tasks.prepare_destroy(task_id)?;
+        self.destroy_task_body(task_id)
+    }
+
+    /// 销毁的公共清理体（§8.2 步骤 2/3/4/8/9），**不含** `prepare_destroy` 前置。
+    ///
+    /// 自毁路径（[`Self::task_destroy_self`]）复用它——调用者此刻是 `Running`，不能过
+    /// `prepare_destroy` 的 Running 检查。
+    fn destroy_task_body(&mut self, task_id: u32) -> Result<(), TaskError> {
         let pending_message = self.tasks.find(task_id).and_then(|task| task.pending);
         let mut dropped_message_ids = [0u32; MAX_MESSAGES];
         let mut dropped_count = 0;
@@ -3279,6 +3361,32 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// SPEC-066：把 11 条用户可见平台段根 Capability 与 2 条平台 Task Capability 按属主
+    /// 移交给 task 1 / task 2，使用户可自持使用（`authorize` 要求 `holder_of(cap) == caller`）。
+    ///
+    /// 迁移复用既有 [`Self::move_capability`]（同槽同 generation，句柄不变），审计记
+    /// `from = HeldByKernel`。`SEG_VSPACE`/`SEG_COW` 保留内核持有，理由见
+    /// [`PLATFORM_SEGMENT_OWNERS`]。
+    ///
+    /// 必须在 bring-up 的全部 `map_region` 之后调用——那些映射以 `KERNEL_ACTOR` 为 caller，
+    /// 移交后内核不再持有这些 cap，无法再代用户映射。
+    pub fn handover_platform_caps(&mut self) -> Result<(), CapabilityPositionError> {
+        for (id, owner) in PLATFORM_SEGMENT_OWNERS {
+            self.move_capability(platform_segment_cap_handle(id), KERNEL_ACTOR, owner)?;
+        }
+        for (slot, owner) in [
+            (PLATFORM_TASK_CAP_SLOT_BASE, INIT_TASK_ID),
+            (PLATFORM_TASK_CAP_SLOT_BASE + 1, 2),
+        ] {
+            self.move_capability(
+                cap_handle(slot, INITIAL_CAP_GENERATION),
+                KERNEL_ACTOR,
+                owner,
+            )?;
+        }
+        Ok(())
+    }
+
     /// 切片 S：播种用户 IPC 见证所需的两条 Capability。
     ///
     /// 均**新增铸造**（不动内核持有的平台 cap，故 `platform_segments_record().task_caps` 仍为 2）：
@@ -3328,24 +3436,42 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
+        // 切片 V：task 4 的回发凭据（task 3 的那条已随其销毁撤销，不能复用同一槽）。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            TASK4_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
         frames.frame_at(0).ok_or(MemsegError::NoMemory)
     }
 
-    /// 一条平台根 Capability 是否满足全部结构性条件。
-    fn platform_cap_ok(&self, handle: Handle, target: ObjectRef) -> bool {
+    /// 一条平台根 Capability 的属主：满足全部结构性条件时返回其 holder id。
+    ///
+    /// SPEC-066：位置可以是内核持有，也可以是**存活**用户 Task 持有——平台段 cap 已按属主
+    /// 移交，`HeldByKernel` 不再是唯一合法位置。
+    fn platform_cap_holder(&self, handle: Handle, target: ObjectRef) -> Option<u32> {
         if self.slots.check(handle) != SlotState::Live || self.target_of(handle) != Some(target) {
-            return false;
+            return None;
         }
-        if !matches!(
-            self.positions
-                .find(handle)
-                .map(|position| position.location),
-            Some(CapabilityLocation::HeldByKernel)
-        ) {
-            return false;
-        }
-        self.rights_of(handle)
+        if !self
+            .rights_of(handle)
             .is_some_and(|rights| !rights.is_empty() && rights.well_typed(target.kind()))
+        {
+            return None;
+        }
+        match self
+            .positions
+            .find(handle)
+            .map(|position| position.location)
+        {
+            Some(CapabilityLocation::HeldByKernel) => Some(KERNEL_ACTOR),
+            Some(CapabilityLocation::HeldByTask(task_id)) if self.tasks.is_live(task_id) => {
+                Some(task_id)
+            }
+            _ => None,
+        }
     }
 
     /// 切片 R：组装平台段对象化的阶段末见证（按需计算）。
@@ -3356,7 +3482,11 @@ impl BootstrapState {
             first_id: PLATFORM_SEGMENT_ID_FIRST,
             last_id: PLATFORM_SEGMENT_ID_LAST,
             roots: 0,
+            user_roots: 0,
+            kernel_roots: 0,
+            holders: [KERNEL_ACTOR; PLATFORM_SEGMENT_COUNT],
             task_caps: 0,
+            task_holders: [KERNEL_ACTOR; PLATFORM_TASK_CAP_COUNT],
             mapped: 0,
             direct: 0,
             vspace: 0,
@@ -3370,8 +3500,15 @@ impl BootstrapState {
             let index = (id - PLATFORM_SEGMENT_ID_FIRST) as usize;
             let handle = platform_segment_cap_handle(id);
             record.cap_handles[index] = handle;
-            if self.platform_cap_ok(handle, ObjectRef::Segment(id)) {
+            // `holders` 只在通过校验的槽上有效；`roots == PLATFORM_SEGMENT_COUNT` 即全部有效。
+            if let Some(holder) = self.platform_cap_holder(handle, ObjectRef::Segment(id)) {
                 record.roots += 1;
+                record.holders[index] = holder;
+                if holder == KERNEL_ACTOR {
+                    record.kernel_roots += 1;
+                } else {
+                    record.user_roots += 1;
+                }
             }
             let Some(segment) = self.segment(id) else {
                 continue;
@@ -3412,8 +3549,9 @@ impl BootstrapState {
         for (offset, task_id) in [(0u32, INIT_TASK_ID), (1, 2)] {
             let handle = cap_handle(PLATFORM_TASK_CAP_SLOT_BASE + offset, INITIAL_CAP_GENERATION);
             record.task_cap_handles[offset as usize] = handle;
-            if self.platform_cap_ok(handle, ObjectRef::Task(task_id)) {
+            if let Some(holder) = self.platform_cap_holder(handle, ObjectRef::Task(task_id)) {
                 record.task_caps += 1;
+                record.task_holders[offset as usize] = holder;
             }
         }
         record
@@ -4110,6 +4248,21 @@ pub fn platform_prepare_task_caps() -> Result<(), MemsegError> {
         match (*slot).as_mut() {
             Some(state) => state.platform_prepare_task_caps(),
             None => Err(MemsegError::NotInstalled),
+        }
+    }
+}
+
+/// SPEC-066：按属主移交平台段 / Task Capability。
+///
+/// 必须在 bring-up 全部 `map_region` 之后、进入用户态之前调用（见
+/// [`BootstrapState::handover_platform_caps`]）。未安装状态归为 `NoSuchCapability`
+/// ——与「槽/对象不存在」同一失败语义。
+pub fn handover_platform_caps() -> Result<(), CapabilityPositionError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.handover_platform_caps(),
+            None => Err(CapabilityPositionError::NoSuchCapability),
         }
     }
 }
@@ -5296,6 +5449,13 @@ mod tests {
         let record = state.platform_segments_record();
         assert_eq!(record.segments, 2);
         assert_eq!(record.roots, 2);
+        // SPEC-066：未移交时全部由内核持有（`holders` 只在通过校验的槽上有效）。
+        assert_eq!(record.user_roots, 0);
+        assert_eq!(record.kernel_roots, 2);
+        assert_eq!(record.holders[0], KERNEL_ACTOR); // VSPACE
+        assert_eq!(record.holders[1], KERNEL_ACTOR); // COW 未物化
+        assert_eq!(record.holders[2], KERNEL_ACTOR); // TASK1_CODE
+        assert_eq!(record.task_holders, [KERNEL_ACTOR, KERNEL_ACTOR]);
         assert_eq!(record.first_id, PLATFORM_SEGMENT_ID_FIRST);
         assert_eq!(record.last_id, PLATFORM_SEGMENT_ID_LAST);
         assert_eq!(record.mapped, 1);
@@ -5312,6 +5472,98 @@ mod tests {
         // 帧注册表在 host 上未安装，`unified` 无法为真——该字段的权威证据是 QEMU 的
         // `platform_segments_ready.unified=1`（见 xtask 校验器）。
         assert!(!record.unified);
+    }
+
+    /// SPEC-066：11 条用户可见平台段 cap 与 2 条平台 Task cap 按属主移交，VSPACE/COW 保留内核。
+    #[test]
+    fn handover_platform_caps_assigns_owners_and_keeps_kernel_privates() {
+        let mut state = fresh_state();
+        // task 2 必须存活：属主为它的 cap 会经 `HeldByTask(2)` 的存活校验。
+        state.create_task(2).unwrap();
+        for id in PLATFORM_SEGMENT_ID_FIRST..=PLATFORM_SEGMENT_ID_LAST {
+            let mut frames = [0u64; MAX_SEGMENT_FRAMES];
+            frames[0] = 0x30_0000 + id as u64 * 0x1000;
+            state.segments[state.segment_count] = Some(SegmentObject {
+                id,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector { frames, count: 1 },
+                allowed_access: SEGMENT_ROOT_RIGHTS,
+                active: true,
+            });
+            state.segment_count += 1;
+            state
+                .mint_root_capability_at(
+                    CapabilityLocation::HeldByKernel,
+                    platform_segment_cap_slot(id),
+                    SEGMENT_ROOT_RIGHTS,
+                    ObjectRef::Segment(id),
+                )
+                .unwrap();
+        }
+        state.platform_prepare_task_caps().unwrap();
+
+        let before = state.platform_segments_record();
+        assert_eq!(
+            (before.roots, before.user_roots, before.kernel_roots),
+            (13, 0, 13)
+        );
+
+        state.handover_platform_caps().unwrap();
+
+        let record = state.platform_segments_record();
+        assert_eq!(record.roots, 13);
+        assert_eq!(record.user_roots, 11);
+        assert_eq!(record.kernel_roots, 2);
+        assert_eq!(record.task_caps, 2);
+        // 按 id 2..14 顺序：VSPACE/COW 内核持有，TASK1_*/SPIN1_* 归 1，TASK2_*/SPIN2_* 归 2。
+        assert_eq!(
+            record.holders,
+            [KERNEL_ACTOR, KERNEL_ACTOR, 1, 1, 1, 1, 2, 2, 2, 1, 1, 2, 2]
+        );
+        assert_eq!(record.task_holders, [INIT_TASK_ID, 2]);
+
+        // 属主可授权、非属主被拒；内核私有两段对任何 Task 都拒绝。
+        let x_cap = platform_segment_cap_handle(crate::frames::SEG_TASK1_X);
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, x_cap, Right::SegMapR),
+            Ok(x_cap)
+        );
+        assert!(state.authorize(2, x_cap, Right::SegMapR).is_err());
+        let task2_code = platform_segment_cap_handle(crate::frames::SEG_TASK2_CODE);
+        assert_eq!(
+            state.authorize(2, task2_code, Right::SegMapR),
+            Ok(task2_code)
+        );
+        assert!(
+            state
+                .authorize(INIT_TASK_ID, task2_code, Right::SegMapR)
+                .is_err()
+        );
+        for id in [crate::frames::SEG_VSPACE, crate::frames::SEG_COW] {
+            let cap = platform_segment_cap_handle(id);
+            assert_eq!(state.holder_of(cap), Some(KERNEL_ACTOR));
+            assert!(state.authorize(INIT_TASK_ID, cap, Right::SegMapR).is_err());
+            assert!(state.authorize(2, cap, Right::SegMapR).is_err());
+        }
+
+        // 13 条位置迁移审计（11 段 + 2 task cap），源位置为内核持有。
+        let moved = state.audit.entries[..state.audit.count]
+            .iter()
+            .flatten()
+            .filter(|event| {
+                matches!(
+                    event,
+                    AuditEvent::CapabilityMoved {
+                        from: CapabilityLocation::HeldByKernel,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(moved, 13);
+        assert_eq!(state.validate_authority(), Ok(()));
     }
 
     #[test]
@@ -5556,21 +5808,33 @@ mod tests {
         );
     }
 
-    /// S2-D4：自我销毁确定性拒绝（`ISSUE-TASK-002`），且不改状态。
+    /// 切片 V：§8.2「删除自身是合法的」——自毁路径必须先于 `CannotDestroyRunning` 判定生效；
+    /// init 仍受结构保护。
     #[test]
-    fn task_destroy_rejects_self_without_state_change() {
-        let mut state = fresh_state();
+    fn task_destroy_allows_self_and_keeps_init_protected() {
+        let mut state = exc_state();
         state.create_task(2).unwrap();
-        let before = state;
-        assert_eq!(
-            state.task_destroy(2, 2, None, 0),
-            Err(TaskError::CannotDestroySelf)
-        );
-        assert_eq!(state, before);
-        // init 仍受既有的结构保护（先于自毁判定）。
+        // 让调用者处于 Running，模拟「正在运行的任务销毁自己」。
+        state.schedule_task(2).unwrap();
+        assert!(state.tasks.is_live(2));
+        assert_eq!(state.task_destroy(2, 2, None, 0), Ok(()));
+        assert!(!state.tasks.is_live(2), "自毁后目标不再是活动任务");
+        // init 仍受保护。
         assert_eq!(
             state.task_destroy(INIT_TASK_ID, INIT_TASK_ID, None, 0),
             Err(TaskError::CannotDestroyInit)
+        );
+    }
+
+    /// 切片 V：非自毁目标仍在 Running 时，`prepare_destroy` 的既有拒绝语义不变。
+    #[test]
+    fn task_destroy_still_rejects_running_others() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        assert_eq!(
+            state.task_destroy(INIT_TASK_ID, 2, None, 0),
+            Err(TaskError::CannotDestroyRunning)
         );
     }
 
