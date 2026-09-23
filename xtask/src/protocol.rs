@@ -29,6 +29,7 @@ enum EventKind {
     PlatformSegmentsReady,
     AuthorityReady,
     FramesReady,
+    SelfRootReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -206,7 +207,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 30] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 31] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -236,7 +237,8 @@ const EXPECTED_EVENTS: [(u32, EventKind); 30] = [
     (27, EventKind::PlatformSegmentsReady),
     (28, EventKind::AuthorityReady),
     (29, EventKind::FramesReady),
-    (30, EventKind::BootComplete),
+    (30, EventKind::SelfRootReady),
+    (31, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -483,6 +485,99 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::FramesReady)
     {
         validate_frames_data(frames.data.as_deref())?;
+    }
+    if let Some(self_root) = events
+        .iter()
+        .find(|event| event.kind == EventKind::SelfRootReady)
+    {
+        let translated = events
+            .iter()
+            .find(|event| event.kind == EventKind::PageTableReady)
+            .and_then(|event| event.data.as_deref())
+            .and_then(|data| {
+                data.split(';')
+                    .find_map(|field| field.strip_prefix("translated="))
+            })
+            .map(|value| value.to_owned());
+        validate_self_root_data(self_root.data.as_deref(), translated.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 切片 X（ISSUE-AUTH-001）：校验自建 CR3 见证。
+///
+/// 判决性条件：**运行中的地址空间**解析 `kernel_image_offset` 得到的物理地址必须等于
+/// `page_table_ready.translated`（= 内核镜像物理基址），且其 PML4[2] 指向的表帧在帧注册表
+/// 中的归属是「保留页表帧」——即内核镜像是经**本内核自有**的页表映射的，不再是 bootloader 页表。
+fn validate_self_root_data(
+    data: Option<&str>,
+    page_table_translated: Option<&str>,
+) -> Result<(), String> {
+    let data = data.ok_or_else(|| "self_root_ready event is missing its data field".to_owned())?;
+    let mut root = None;
+    let mut kernel_root = None;
+    let mut image_table = None;
+    let mut owned = None;
+    let mut pages = None;
+    let mut translated = None;
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed self_root_ready field: {field}"))?;
+        match key {
+            "root" => root = Some(parse_addr(value)?),
+            "kernel_root" => kernel_root = Some(parse_addr(value)?),
+            "image_table" => image_table = Some(parse_addr(value)?),
+            "owned" => owned = Some(parse_count(value)?),
+            "pages" => pages = Some(parse_count(value)?),
+            "translated" => translated = Some(parse_addr(value)?),
+            other => return Err(format!("unexpected self_root_ready field: {other}")),
+        }
+    }
+    let root = root.ok_or_else(|| "self_root_ready is missing root".to_owned())?;
+    let kernel_root =
+        kernel_root.ok_or_else(|| "self_root_ready is missing kernel_root".to_owned())?;
+    let image_table =
+        image_table.ok_or_else(|| "self_root_ready is missing image_table".to_owned())?;
+    let owned = owned.ok_or_else(|| "self_root_ready is missing owned".to_owned())?;
+    let pages = pages.ok_or_else(|| "self_root_ready is missing pages".to_owned())?;
+    let translated =
+        translated.ok_or_else(|| "self_root_ready is missing translated".to_owned())?;
+    for (name, value) in [
+        ("root", root),
+        ("kernel_root", kernel_root),
+        ("image_table", image_table),
+    ] {
+        if value == 0 || value % 0x1000 != 0 {
+            return Err(format!(
+                "self_root_ready {name} (0x{value:x}) must be a non-zero 4KiB-aligned physical frame"
+            ));
+        }
+    }
+    if owned != 1 {
+        return Err(format!(
+            "self_root_ready owned must be 1 (the image chain's table frame must be a registered reserved page-table frame), got {owned}"
+        ));
+    }
+    if pages == 0 {
+        return Err(
+            "self_root_ready must report a non-zero materialized image page count".to_owned(),
+        );
+    }
+    match page_table_translated {
+        Some(expected) => {
+            let expected = parse_addr(expected)?;
+            if translated != expected {
+                return Err(format!(
+                    "self_root_ready translated (0x{translated:x}) must equal page_table_ready.translated (0x{expected:x}) — the running address space must resolve kernel_image_offset to the kernel image physical base"
+                ));
+            }
+        }
+        None => {
+            return Err(
+                "self_root_ready requires page_table_ready.translated for cross-check".to_owned(),
+            );
+        }
     }
     Ok(())
 }
@@ -2755,6 +2850,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
         ("authority_ready", "ok") => EventKind::AuthorityReady,
         ("frames_ready", "ok") => EventKind::FramesReady,
+        ("self_root_ready", "ok") => EventKind::SelfRootReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -2793,7 +2889,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
-            | EventKind::FramesReady,
+            | EventKind::FramesReady
+            | EventKind::SelfRootReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -2825,7 +2922,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
-            | EventKind::FramesReady,
+            | EventKind::FramesReady
+            | EventKind::SelfRootReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -2876,7 +2974,8 @@ mod tests {
         "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
         "PRIMA|v=1|seq=28|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
         "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=30|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=30|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=31|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3071,6 +3170,48 @@ mod tests {
             error.contains("booted/entry_in_image/init_running"),
             "{error}"
         );
+    }
+
+    /// 切片 X：自建根的镜像链表帧必须仍是**本内核的保留页表帧**；归属丢失即拒绝。
+    #[test]
+    fn rejects_self_root_losing_page_table_ownership() {
+        let output = VALID.replace("image_table=0xb000;owned=1", "image_table=0xb000;owned=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("owned must be 1"), "{error}");
+    }
+
+    /// 切片 X：运行中的地址空间必须把 `kernel_image_offset` 解析回内核镜像物理基址
+    /// （与 `page_table_ready.translated` 的跨事件不变式）。
+    #[test]
+    fn rejects_self_root_translating_to_a_different_physical_base() {
+        let output = VALID.replace(
+            "pages=165;translated=0x200000",
+            "pages=165;translated=0x300000",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("must equal page_table_ready.translated"),
+            "{error}"
+        );
+    }
+
+    /// 切片 X：必须报告非零的已物化镜像页数（全零等于什么都没映射）。
+    #[test]
+    fn rejects_self_root_with_no_materialized_image_pages() {
+        let output = VALID.replace("owned=1;pages=165", "owned=1;pages=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("non-zero materialized image page count"),
+            "{error}"
+        );
+    }
+
+    /// 切片 X：自建根帧必须是 4 KiB 对齐的非零物理帧。
+    #[test]
+    fn rejects_self_root_with_misaligned_root_frame() {
+        let output = VALID.replace("root=0x5b000;", "root=0x5b008;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("4KiB-aligned"), "{error}");
     }
 
     #[test]
