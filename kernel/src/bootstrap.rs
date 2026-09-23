@@ -1400,16 +1400,19 @@ pub const SEGMENT_ROOT_RIGHTS: Rights = SEGMENT_ACCESS_RIGHTS;
 
 /// §5.1：Segment 的帧集合。
 ///
-/// `Contiguous` 用于 bootloader 载入的 image（帧连续、数量随内核镜像变化）；
-/// `Vector` 是 `memseg_create` 新建 Segment 的**真实帧向量**（ISSUE-FRAME-001）。
+/// `Vector` 是用户/平台 bring-up Segment 的**内联真实帧向量**（容量 [`MAX_SEGMENT_FRAMES`]）。
+/// `Image` 是 bootloader 载入的 image Segment 的**真实逐帧向量**（SPEC-068）；其帧数随内核
+/// 镜像变化（实测 663–778），无法内联进本结构（`BootstrapState` 已贴近 16 KiB 守卫，见
+/// [`MAX_SEGMENT_OBJECTS`] 注释），故向量物化在帧注册表 `frames::image_frame_*` 中，
+/// 此处持有其长度。`frame_at` 对 `Image` 逐帧委托注册表——与 `Vector` 同为 §5.1 的
+/// `Vector<FrameId>`，不再是 `(base, count)` 区间表达（ISSUE-FRAME-001）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentFrames {
-    Contiguous {
-        base: u64,
-        count: usize,
-    },
     Vector {
         frames: [u64; MAX_SEGMENT_FRAMES],
+        count: usize,
+    },
+    Image {
         count: usize,
     },
 }
@@ -1417,23 +1420,23 @@ pub enum SegmentFrames {
 impl SegmentFrames {
     pub fn frame_count(&self) -> usize {
         match self {
-            SegmentFrames::Contiguous { count, .. } => *count,
             SegmentFrames::Vector { count, .. } => *count,
+            SegmentFrames::Image { count } => *count,
         }
     }
 
     pub fn frame_at(&self, index: usize) -> Option<u64> {
         match self {
-            SegmentFrames::Contiguous { base, count } => {
+            SegmentFrames::Vector { frames, count } => {
                 if index < *count {
-                    Some(base + (index as u64) * crate::mem::FRAME_SIZE)
+                    Some(frames[index])
                 } else {
                     None
                 }
             }
-            SegmentFrames::Vector { frames, count } => {
+            SegmentFrames::Image { count } => {
                 if index < *count {
-                    Some(frames[index])
+                    crate::frames::image_frame_at(index).ok()
                 } else {
                     None
                 }
@@ -3319,7 +3322,7 @@ impl BootstrapState {
             return Err(MemsegError::TargetDead);
         };
         if self.segments[index].is_some_and(|segment| {
-            matches!(segment.frames, SegmentFrames::Contiguous { .. })
+            !matches!(segment.frames, SegmentFrames::Vector { .. })
                 || segment.frame_count() >= MAX_SEGMENT_FRAMES
         }) {
             return Err(MemsegError::CapacityExceeded);
@@ -3334,7 +3337,7 @@ impl BootstrapState {
                 frames[*count] = frame;
                 *count += 1;
             }
-            SegmentFrames::Contiguous { .. } => {
+            SegmentFrames::Image { .. } => {
                 let _ = crate::frames::release_frame(id, frame);
                 return Err(MemsegError::CapacityExceeded);
             }
@@ -3860,14 +3863,14 @@ pub fn create_state(
     let positions = CapabilityPositionTable::from_capabilities(&capabilities);
 
     // §14 步骤 2：以 image_frames 建只允许 {R,X} 的 image Segment（pool=CPU）。
+    // SPEC-068：帧集合是真实逐帧向量（物化在帧注册表），此处记其长度。
     let mut segments = [None; MAX_SEGMENT_OBJECTS];
     segments[0] = Some(SegmentObject {
         id: IMAGE_SEGMENT_ID,
         generation: INITIAL_CAP_GENERATION,
         creator: INIT_TASK_ID,
         pool: crate::frames::Pool::Cpu,
-        frames: SegmentFrames::Contiguous {
-            base: inventory.kernel_phys_start,
+        frames: SegmentFrames::Image {
             count: inventory.image_frames,
         },
         allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),

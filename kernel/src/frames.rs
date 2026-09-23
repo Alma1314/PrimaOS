@@ -12,6 +12,11 @@
 //!
 //! 先前实现有两处违反：`cow.rs` 把 `FreeFrameAllocator` 的**副本**存入上下文（两侧 `next`
 //! 可各自推进），以及页表帧取走后完全无归属记账。本模块同时修掉这两点。
+//!
+//! SPEC-068（ISSUE-FRAME-001 收尾）：image 帧集合原以 `(start, end)` **区间**表达，
+//! 本模块改为**真实逐帧向量** [`FrameRegistry::image_frame_ids`]（§5.1 `frames: Vector<FrameId>`）。
+//! 向量随注册表一起落在 `BootstrapState` **之外**（后者已贴近 16 KiB 结构体守卫），
+//! 逐帧归属查询与不交性判定都覆盖它，不再有「区间判断」这条旁路。
 
 use crate::mem::{FrameInventory, FreeFrameAllocator};
 
@@ -41,6 +46,13 @@ pub const MAX_TABLE_FRAMES: usize = 128;
 pub const MAX_SEGMENTS: usize = 32;
 /// 非 image 数据帧的逐帧归属条目上限（S2-D3 的 frame → owner 查询）。
 pub const MAX_FRAME_OWNERS: usize = 192;
+/// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
+///
+/// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`
+/// 的定长数组所能承受的规模，故该向量物化在**注册表内部的独立数组**（注册表本身是
+/// boot 早期安装的静态，不占结构体守卫额度）。超出即 `CapacityExceeded`——内核镜像
+/// 超过 8 MiB 时启动失败，显式报错而非静默截断。
+pub const MAX_IMAGE_FRAMES: usize = 2048;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pool {
@@ -93,9 +105,13 @@ pub struct FrameWitness {
 pub struct FrameRegistry {
     alloc: FreeFrameAllocator,
     universe: usize,
-    image_start: u64,
-    image_end: u64,
-    image_frames: usize,
+    /// SPEC-068：image Segment 的**真实逐帧向量**（§5.1 `Vector<FrameId>`）。
+    ///
+    /// 第 `i` 项即 image 的第 `i` 帧物理地址，`image_count` 是其长度。该向量是 image
+    /// 帧归属的**唯一真值源**（逐帧查询与不交性判定都读它），物化在注册表内部而非
+    /// `BootstrapState`，不占后者的结构体守卫额度。
+    image_frame_ids: [u64; MAX_IMAGE_FRAMES],
+    image_count: usize,
     segment_frames: usize,
     table_frames: [u64; MAX_TABLE_FRAMES],
     table_count: usize,
@@ -107,21 +123,17 @@ pub struct FrameRegistry {
 }
 
 impl FrameRegistry {
-    /// 按 §14 步骤 1 建立注册表：`free_frames = frame_universe \ image_frames`。
-    pub fn new(inventory: &FrameInventory, alloc: FreeFrameAllocator) -> Result<Self, FrameError> {
-        if inventory.kernel_phys_start >= inventory.kernel_phys_end
-            || inventory.image_frames == 0
-            || inventory.free_frames != inventory.usable_frames
-            || alloc.remaining() != inventory.free_frames
-        {
-            return Err(FrameError::UniverseMismatch);
-        }
-        Ok(Self {
-            alloc,
-            universe: inventory.usable_frames + inventory.image_frames,
-            image_start: inventory.kernel_phys_start,
-            image_end: inventory.kernel_phys_end,
-            image_frames: inventory.image_frames,
+    /// 空注册表（`const`；供 [`install`] 在静态上**就地**构造）。
+    ///
+    /// SPEC-068：image 向量使注册表达 ~27 KiB。`FrameRegistry` 若是"构造后按值返回"，
+    /// boot 早期会在 256 KiB 启动栈上叠出多份副本，实测直接三重故障；故内核路径改为
+    /// [`Self::init_at`] 就地写入，`empty()` 只作 `const` 初值、不产生运行时临时量。
+    pub const fn empty() -> Self {
+        Self {
+            alloc: FreeFrameAllocator::empty(),
+            universe: 0,
+            image_frame_ids: [0; MAX_IMAGE_FRAMES],
+            image_count: 0,
             segment_frames: 0,
             table_frames: [0; MAX_TABLE_FRAMES],
             table_count: 0,
@@ -129,7 +141,51 @@ impl FrameRegistry {
             owner_count: 0,
             segments: [None; MAX_SEGMENTS],
             segment_count: 0,
-        })
+        }
+    }
+
+    /// 按 §14 步骤 1 就地建立注册表：`free_frames = frame_universe \ image_frames`。
+    ///
+    /// 全部前置校验先于任何字段写入，故失败时 `self` 保持调用前状态。
+    pub fn init_at(
+        &mut self,
+        inventory: &FrameInventory,
+        alloc: FreeFrameAllocator,
+    ) -> Result<(), FrameError> {
+        if inventory.kernel_phys_start >= inventory.kernel_phys_end
+            || inventory.image_frames == 0
+            || inventory.free_frames != inventory.usable_frames
+            || alloc.remaining() != inventory.free_frames
+        {
+            return Err(FrameError::UniverseMismatch);
+        }
+        if inventory.image_frames > MAX_IMAGE_FRAMES {
+            return Err(FrameError::CapacityExceeded);
+        }
+        self.alloc = alloc;
+        self.universe = inventory.usable_frames + inventory.image_frames;
+        self.image_count = inventory.image_frames;
+        // 物化真实帧向量：第 i 项即 image 的第 i 帧物理地址。
+        // `mem::build_inventory` 由**帧对齐**的 `[kernel_phys_start, kernel_phys_end)` 导出
+        // `image_frames`，故逐帧物化与旧的区间判断是同一帧集合（host 单测钉住这一点）。
+        for (index, slot) in self.image_frame_ids[..self.image_count]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = inventory.kernel_phys_start + (index as u64) * crate::mem::FRAME_SIZE;
+        }
+        self.segment_frames = 0;
+        self.table_count = 0;
+        self.owner_count = 0;
+        self.segment_count = 0;
+        Ok(())
+    }
+
+    /// 按值构造注册表（host 测试与 `new` 语义保留；内核 boot 路径用就地 [`install`]）。
+    pub fn new(inventory: &FrameInventory, alloc: FreeFrameAllocator) -> Result<Self, FrameError> {
+        let mut registry = Self::empty();
+        registry.init_at(inventory, alloc)?;
+        Ok(registry)
     }
 
     /// 登记一个活动 Segment。其帧由后续 [`allocate_for_segment`] 逐个归入。
@@ -244,8 +300,10 @@ impl FrameRegistry {
     }
 
     /// 逐帧归属查询（W6 三类划分 + image 类；空闲帧返回 [`FrameOwner::Free`]）。
+    ///
+    /// SPEC-068：image 归属经**物化向量**逐帧判定，不再用 `(start, end)` 区间。
     pub fn owner_of(&self, frame: u64) -> FrameOwner {
-        if frame >= self.image_start && frame < self.image_end {
+        if self.image_frame_ids[..self.image_count].contains(&frame) {
             return FrameOwner::Image;
         }
         if let Some((_, id)) = self.owners[..self.owner_count]
@@ -262,11 +320,22 @@ impl FrameRegistry {
     }
 
     /// W6 不交性判定：逐帧归属两两不交（可检测「同一帧计入两类归属」的构造外错误）。
+    ///
+    /// SPEC-068：image 类自身（向量内无重复）也纳入判定——区间表达下"向量自身有重复"
+    /// 根本不可表达，逐帧向量则必须自证无重复。
     pub fn check_disjoint(&self) -> Result<(), FrameError> {
         let mut index = 0;
+        while index < self.image_count {
+            let frame = self.image_frame_ids[index];
+            if self.image_frame_ids[..index].contains(&frame) {
+                return Err(FrameError::Overlap);
+            }
+            index += 1;
+        }
+        index = 0;
         while index < self.owner_count {
             let frame = self.owners[index].map(|(frame, _)| frame).unwrap_or(0);
-            if frame >= self.image_start && frame < self.image_end {
+            if self.image_frame_ids[..self.image_count].contains(&frame) {
                 return Err(FrameError::Overlap);
             }
             if self.table_frames[..self.table_count].contains(&frame) {
@@ -284,7 +353,7 @@ impl FrameRegistry {
         index = 0;
         while index < self.table_count {
             let frame = self.table_frames[index];
-            if frame >= self.image_start && frame < self.image_end
+            if self.image_frame_ids[..self.image_count].contains(&frame)
                 || self.table_frames[..index].contains(&frame)
             {
                 return Err(FrameError::Overlap);
@@ -301,7 +370,7 @@ impl FrameRegistry {
     /// 与 `FreeFrameAllocator::from_regions` 中已校验不相交。
     pub fn check_conservation(&self) -> Result<(), FrameError> {
         let accounted =
-            self.alloc.remaining() + self.segment_frames + self.table_count + self.image_frames;
+            self.alloc.remaining() + self.segment_frames + self.table_count + self.image_count;
         if accounted == self.universe {
             Ok(())
         } else {
@@ -315,7 +384,7 @@ impl FrameRegistry {
             free: self.alloc.remaining() as u64,
             segment_frames: self.segment_frames as u64,
             table_frames: self.table_count as u64,
-            image_frames: self.image_frames as u64,
+            image_frames: self.image_count as u64,
             conserved: self.check_conservation().is_ok(),
             disjoint: self.check_disjoint().is_ok(),
         }
@@ -324,17 +393,38 @@ impl FrameRegistry {
     pub fn free_frames(&self) -> usize {
         self.alloc.remaining()
     }
+
+    /// SPEC-068：image 帧向量长度（§5.1 image Segment 的 `frames.length`）。
+    pub fn image_frame_count(&self) -> usize {
+        self.image_count
+    }
+
+    /// SPEC-068：image 帧向量的第 `index` 项（越界返回 `None`）。
+    pub fn image_frame_at(&self, index: usize) -> Option<u64> {
+        if index < self.image_count {
+            Some(self.image_frame_ids[index])
+        } else {
+            None
+        }
+    }
 }
 
-static mut REGISTRY: Option<FrameRegistry> = None;
+/// SPEC-068：全局注册表**就地**构造（`const` 初值 + [`FrameRegistry::init_at`]）。
+///
+/// 不用 `Option<FrameRegistry>` 的"构造后按值放入"形态：那会在 boot 栈上产生数份
+/// ~27 KiB 的临时量，实测溢出 256 KiB 启动栈并三重故障。`INSTALLED` 单独表达安装状态。
+static mut REGISTRY: FrameRegistry = FrameRegistry::empty();
+static mut INSTALLED: bool = false;
 
 /// 安装全局帧注册表（boot 早期一次；进入任何取帧路径之前）。
+///
+/// 校验失败时不写入 `INSTALLED`，故注册表保持"未安装"，调用方可按 panic 处理。
 pub fn install(inventory: &FrameInventory, alloc: FreeFrameAllocator) -> Result<(), FrameError> {
-    let registry = FrameRegistry::new(inventory, alloc)?;
-    registry.check_conservation()?;
     unsafe {
-        let slot = core::ptr::addr_of_mut!(REGISTRY);
-        *slot = Some(registry);
+        let registry = &mut *core::ptr::addr_of_mut!(REGISTRY);
+        registry.init_at(inventory, alloc)?;
+        registry.check_conservation()?;
+        *core::ptr::addr_of_mut!(INSTALLED) = true;
     }
     Ok(())
 }
@@ -342,11 +432,10 @@ pub fn install(inventory: &FrameInventory, alloc: FreeFrameAllocator) -> Result<
 /// 在已安装的全局注册表上执行操作；未安装时返回 [`FrameError::NotInstalled`]。
 fn global() -> Result<*mut FrameRegistry, FrameError> {
     unsafe {
-        let slot = core::ptr::addr_of_mut!(REGISTRY);
-        match (*slot).as_mut() {
-            Some(registry) => Ok(registry as *mut FrameRegistry),
-            None => Err(FrameError::NotInstalled),
+        if !*core::ptr::addr_of!(INSTALLED) {
+            return Err(FrameError::NotInstalled);
         }
+        Ok(core::ptr::addr_of_mut!(REGISTRY))
     }
 }
 
@@ -392,10 +481,22 @@ pub fn owner_of(frame: u64) -> Result<FrameOwner, FrameError> {
     unsafe { Ok((*registry).owner_of(frame)) }
 }
 
-/// W6 不交性判定（owner 列表两两不交、且不与 image 区间相交）。
+/// W6 不交性判定（owner 列表与页表帧两两不交，且均不与 image 向量相交）。
 pub fn check_disjoint() -> Result<(), FrameError> {
     let registry = global()?;
     unsafe { (*registry).check_disjoint() }
+}
+
+/// SPEC-068：image 帧向量长度。
+pub fn image_frame_count() -> Result<usize, FrameError> {
+    let registry = global()?;
+    unsafe { Ok((*registry).image_frame_count()) }
+}
+
+/// SPEC-068：image 帧向量的第 `index` 项（`bootstrap::SegmentFrames::Image` 的逐帧委托）。
+pub fn image_frame_at(index: usize) -> Result<u64, FrameError> {
+    let registry = global()?;
+    unsafe { (*registry).image_frame_at(index).ok_or(FrameError::NoFrame) }
 }
 
 /// 观察全局注册表的守恒状态（见证事件用）。
@@ -610,6 +711,93 @@ mod tests {
         assert_eq!(
             FrameRegistry::new(&inventory, alloc),
             Err(FrameError::UniverseMismatch)
+        );
+    }
+
+    /// SPEC-068：image 帧是**真实逐帧向量**，逐帧归属查询与不交性判定都覆盖它。
+    #[test]
+    fn image_frames_are_materialized_as_a_real_vector() {
+        let registry = registry();
+        // 向量逐项等于 `[kernel_phys_start, kernel_phys_end)` 的逐帧枚举。
+        assert_eq!(registry.image_frame_count(), 2);
+        assert_eq!(registry.image_frame_at(0), Some(0x40_0000));
+        assert_eq!(registry.image_frame_at(1), Some(0x40_1000));
+        // 越界即 `None`（区间表达下无法区分"越界"与"区间外"）。
+        assert_eq!(registry.image_frame_at(2), None);
+        for index in 0..registry.image_frame_count() {
+            let frame = registry.image_frame_at(index).unwrap();
+            assert_eq!(registry.owner_of(frame), FrameOwner::Image);
+        }
+        // 区间端点（`kernel_phys_end`）不属于 image——逐帧向量与区间语义一致的边界证据。
+        assert_eq!(registry.owner_of(0x40_2000), FrameOwner::Free);
+        assert!(registry.check_disjoint().is_ok());
+        assert!(registry.check_conservation().is_ok());
+    }
+
+    /// SPEC-068：向量自身重复必须被不交性判定检出（区间表达下这一反例不可表达）。
+    #[test]
+    fn image_vector_self_overlap_is_detected() {
+        let mut registry = registry();
+        assert!(registry.check_disjoint().is_ok());
+        // 构造外错误：把第 1 项改写成第 0 项 → 同一帧在 image 向量内出现两次。
+        registry.image_frame_ids[1] = registry.image_frame_ids[0];
+        assert_eq!(registry.check_disjoint(), Err(FrameError::Overlap));
+        assert!(!registry.witness().disjoint);
+        // 守恒只看计数，故不受影响——不交性与守恒是两条独立判据。
+        assert!(registry.check_conservation().is_ok());
+    }
+
+    /// SPEC-068：image 向量容量上限先于任何取帧触发，且失败不改动注册表。
+    #[test]
+    fn image_vector_capacity_is_enforced() {
+        let regions = regions();
+        let alloc = FreeFrameAllocator::from_regions(&regions, 0x40_0000, 0x40_2000).unwrap();
+        let inventory = FrameInventory {
+            usable_frames: 7,
+            image_frames: MAX_IMAGE_FRAMES + 1,
+            free_frames: 7,
+            usable_regions: 3,
+            kernel_phys_start: 0x40_0000,
+            kernel_phys_end: 0x40_0000 + (MAX_IMAGE_FRAMES as u64 + 1) * crate::mem::FRAME_SIZE,
+        };
+        assert_eq!(
+            FrameRegistry::new(&inventory, alloc),
+            Err(FrameError::CapacityExceeded)
+        );
+    }
+
+    /// SPEC-068：`init_at` 的失败前置须在**任何字段写入之前**——否则 `install` 会留下
+    /// 半个注册表（`INSTALLED` 未置位但内容已被改写）。
+    #[test]
+    fn init_at_failure_leaves_the_registry_untouched() {
+        let mut registry = registry();
+        let before = registry.witness();
+        let regions = regions();
+        let alloc = FreeFrameAllocator::from_regions(&regions, 0x40_0000, 0x40_2000).unwrap();
+        let bad = FrameInventory {
+            usable_frames: 7,
+            image_frames: 0,
+            free_frames: 7,
+            usable_regions: 3,
+            kernel_phys_start: 0x40_0000,
+            kernel_phys_end: 0x40_2000,
+        };
+        assert_eq!(
+            registry.init_at(&bad, alloc),
+            Err(FrameError::UniverseMismatch)
+        );
+        assert_eq!(registry.witness(), before);
+    }
+
+    /// SPEC-068：注册表按值大小上界。image 向量把注册表推到 ~27 KiB；再增长就必须
+    /// 先评估 boot 早期栈帧（`install` 已改就地构造，但 `FrameRegistry::new` 仍按值返回，
+    /// host 单测与未来调用点都受此约束）。
+    #[test]
+    fn registry_stays_within_the_value_size_budget() {
+        assert!(
+            core::mem::size_of::<FrameRegistry>() <= 32 * 1024,
+            "FrameRegistry 按值大小 {} B 超出 32 KiB 预算",
+            core::mem::size_of::<FrameRegistry>()
         );
     }
 }

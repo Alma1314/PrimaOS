@@ -89,6 +89,17 @@ pub enum AllocatorError {
 }
 
 impl FreeFrameAllocator {
+    /// 无任何空闲区间的空分配器（`const`；供 `FrameRegistry` 的静态就地构造使用）。
+    pub const fn empty() -> Self {
+        Self {
+            ranges: [None; MAX_FREE_RANGES],
+            range_count: 0,
+            remaining: 0,
+            recycled: [0; MAX_RECYCLED_FRAMES],
+            recycled_count: 0,
+        }
+    }
+
     pub fn from_regions(
         regions: &[MemoryRegion],
         image_start: u64,
@@ -100,13 +111,7 @@ impl FreeFrameAllocator {
         {
             return Err(AllocatorError::InvalidRange);
         }
-        let mut allocator = Self {
-            ranges: [None; MAX_FREE_RANGES],
-            range_count: 0,
-            remaining: 0,
-            recycled: [0; MAX_RECYCLED_FRAMES],
-            recycled_count: 0,
-        };
+        let mut allocator = Self::empty();
         let mut previous_end = 0;
         for region in regions {
             if region.start < previous_end {
