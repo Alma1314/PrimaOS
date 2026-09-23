@@ -1184,14 +1184,130 @@ fn region_frame(frames: &SegmentFrames) -> Result<u64, VspaceError> {
     frames.frame_at(0).ok_or(VspaceError::NoFrame)
 }
 
-/// 切片 O：为一任务构造独立 PML4——克隆 bootloader 根（含全部内核高半区与低映射）后，
-/// 清空两个用户槽，随后由调用方把自己的用户页映射进来。同 VA 在不同任务根下指向不同帧。
-fn build_task_root(boot_root: u64, offset: u64) -> Result<u64, VspaceError> {
+/// 切片 X：自建内核根（boot 早期构造一次）。
+///
+/// 任务根由它克隆而来，故内核高半区（镜像、直映射、启动栈）在本内核下**全部是自有页表**，
+/// 不再是 bootloader 页表的共享上级。
+static mut KERNEL_ROOT: Option<u64> = None;
+
+/// 镜像所在的 PML4 槽（`kernel_image_offset = 0x10000000000`）——自建根的镜像链入口。
+pub const IMAGE_SLOT: usize = 2;
+
+/// SPEC-069：自建内核根对应的镜像 VA 基址与页数（见证用）。
+static mut KERNEL_IMAGE: Option<(u64, usize)> = None;
+
+/// SPEC-069：自建 CR3 的判决性见证（必须在内核已运行于自建根**之后**采集）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfRootWitness {
+    /// 当前 CR3（运行中的地址空间根）。
+    pub root: u64,
+    /// 登记的自建内核根帧。
+    pub kernel_root: u64,
+    /// 当前根 PML4[2] 指向的中间表帧（镜像链的第一级）。
+    pub image_table: u64,
+    /// 该表帧在帧注册表中的归属是否为「保留页表帧」（W6 第 3 类）。
+    pub owned: bool,
+    /// 当前根下已映射的镜像 VA 页数。
+    pub pages: u64,
+    /// 当前根解析 `kernel_image_offset` 得到的物理地址（应等于内核镜像物理基址）。
+    pub translated: u64,
+}
+
+/// 采集自建 CR3 见证；自建根或 COW 上下文尚未建立时返回 `None`。
+pub fn self_root_witness() -> Option<SelfRootWitness> {
+    let kernel_root = kernel_root()?;
+    let (image_va, image_pages) = unsafe { (*core::ptr::addr_of!(KERNEL_IMAGE))? };
+    let (_, offset) = crate::cow::root_and_offset()?;
     let map = |phys: u64| phys_to_virt(phys, offset);
+    let root = crate::sched::current_root().unwrap_or(kernel_root);
+    let image_table =
+        unsafe { core::ptr::read_volatile((map(root) + IMAGE_SLOT as u64 * 8) as *const u64) };
+    let image_table = image_table & 0x000f_ffff_ffff_f000;
+    let owned = matches!(
+        crate::frames::owner_of(image_table),
+        Ok(crate::frames::FrameOwner::Table)
+    );
+    let mut pages = 0u64;
+    for index in 0..image_pages {
+        if vspace::leaf_phys_or_none(root, image_va + (index as u64) * FRAME_SIZE, map).is_some() {
+            pages += 1;
+        }
+    }
+    let translated = crate::cpu::translate(map(root), image_va, map).unwrap_or(0);
+    Some(SelfRootWitness {
+        root,
+        kernel_root,
+        image_table,
+        owned,
+        pages,
+        translated,
+    })
+}
+
+/// 已构造的自建内核根（未构造时为 `None`）。
+pub fn kernel_root() -> Option<u64> {
+    unsafe { *core::ptr::addr_of!(KERNEL_ROOT) }
+}
+
+/// 切片 X：构造自建内核根并登记，供随后所有任务根克隆。
+///
+/// 复刻三段：内核镜像（`image_va`/`image_phys`/`image_pages`）、物理直映射
+/// （`offset` → `[0, max_phys)`）、启动栈（`stack_va`/`stack_pages`）。启动栈的**物理地址
+/// 逐页从 bootloader 根解析**——它自己的映射不在直映射区内，且可能是大页，故不能用
+/// [`crate::cpu::translate`]（只认 4 KiB 叶）。
+///
+/// 用户槽不在本根中建立：任务根克隆后再各自加载自己的用户页（同 VA 不同帧的隔离不变）。
+pub fn build_kernel_root(
+    boot_root: u64,
+    offset: u64,
+    image_va: u64,
+    image_pages: usize,
+    max_phys: u64,
+    stack_va: u64,
+    stack_pages: usize,
+) -> Result<u64, VspaceError> {
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let stack_phys = |index: usize| {
+        vspace::leaf_phys_or_none(boot_root, stack_va + (index as u64) * FRAME_SIZE, map)
+    };
+    let direct_pages = max_phys.div_ceil(FRAME_SIZE) as usize;
+    let image_phys = |index: usize| {
+        vspace::leaf_phys_or_none(boot_root, image_va + (index as u64) * FRAME_SIZE, map)
+    };
+    let root = vspace::build_self_root(
+        map,
+        || frames::allocate_table_frame().ok(),
+        vspace::SelfRootSpec {
+            direct: vspace::SelfMap {
+                va: offset,
+                phys: 0,
+                pages: direct_pages,
+                writable: true,
+            },
+            image_va,
+            image_pages,
+            stack_va,
+            stack_pages,
+        },
+        image_phys,
+        stack_phys,
+    )?;
+    unsafe {
+        *core::ptr::addr_of_mut!(KERNEL_ROOT) = Some(root);
+        *core::ptr::addr_of_mut!(KERNEL_IMAGE) = Some((image_va, image_pages));
+    }
+    Ok(root)
+}
+
+/// 切片 O / X：为一任务构造独立 PML4——克隆**自建内核根**（本内核自有的内核高半区）后，
+/// 清空两个用户槽，随后由调用方把自己的用户页映射进来。同 VA 在不同任务根下指向不同帧。
+fn build_task_root(offset: u64) -> Result<u64, VspaceError> {
+    let map = |phys: u64| phys_to_virt(phys, offset);
+    let source = kernel_root().ok_or(VspaceError::BadRoot)?;
     // S1-X3：任务根页表帧是**保留页表帧**，不是任何 Segment 的数据帧。
     let task_root = frames::allocate_table_frame().map_err(|_| VspaceError::NoFrame)?;
     // clone_root 覆写全部 512 项，故无需先清零。
-    vspace::clone_root(boot_root, task_root, map);
+    vspace::clone_root(source, task_root, map);
     vspace::zero_slot(task_root, USER_SLOT, map);
     vspace::zero_slot(task_root, USER2_SLOT, map);
     Ok(task_root)
@@ -1204,9 +1320,9 @@ fn build_task_root(boot_root: u64, offset: u64) -> Result<u64, VspaceError> {
 ///
 /// 切片 O：用户页映射进**本任务独立根**（克隆 bootloader 根 + 隔离用户槽），并把 root 与
 /// 内核栈登记到调度器，使每次 [`crate::sched::resume`] 写 CR3 与 `TSS.rsp0`。
-pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
+pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
-    let task_root = build_task_root(root_phys, offset)?;
+    let task_root = build_task_root(offset)?;
     for va in [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA] {
         if !vspace::slot_free(task_root, va, map) {
             return Err(VspaceError::SlotOccupied);
@@ -1283,9 +1399,9 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
 /// 与 [`prepare`] 一样必须在 `cow::prepare` 之后，复用同一唯一分配器。切片 O：映射进
 /// **task 2 独立根**，并登记 root/内核栈；task 2 的 Y 页物理帧另行持久化，供 task 1
 /// 根下不可见 Y2 VA 时按物理读回执。
-pub fn prepare_task2(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
+pub fn prepare_task2(offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
-    let task_root = build_task_root(root_phys, offset)?;
+    let task_root = build_task_root(offset)?;
     for va in [USER2_CODE_VA, USER2_STACK_VA, USER2_Y_VA] {
         if !vspace::slot_free(task_root, va, map) {
             return Err(VspaceError::SlotOccupied);

@@ -206,13 +206,45 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // 用户代码以 int3 陷入内核 → user_trap_exit 收尾（随后
                                     // 继续 D 的帧恢复见证并 boot_complete）。
                                     kernel::idt::set_user_trap_handler(resume::user_trap_exit);
-                                    if kernel::user::prepare(pml4_phys, offset).is_err() {
+                                    // X（ISSUE-AUTH-001）：构造**自建内核根**——自有 PML4 与全部
+                                    // 中间页表，显式复刻内核镜像 / 物理直映射 / 启动栈三段，不再共享
+                                    // bootloader 页表。此后所有任务根由它克隆，故内核高半区是自有的。
+                                    // 必须在既有 E/F 见证（绑定 bootloader 根）之后，以免平移其帧序。
+                                    let max_phys = regions
+                                        .iter()
+                                        .filter(|region| {
+                                            region.kind
+                                                == bootloader_api::info::MemoryRegionKind::Usable
+                                        })
+                                        .map(|region| region.end)
+                                        .max()
+                                        .unwrap_or(0);
+                                    let self_root = match kernel::user::build_kernel_root(
+                                        pml4_phys,
+                                        offset,
+                                        boot_info.kernel_image_offset,
+                                        inventory.image_frames,
+                                        max_phys,
+                                        boot_info.kernel_stack_bottom,
+                                        (boot_info.kernel_stack_len / kernel::mem::FRAME_SIZE)
+                                            as usize,
+                                    ) {
+                                        Ok(root) => root,
+                                        Err(_) => {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                    };
+                                    // 让后续 `SYS_TASK_CREATE` 也从自建根克隆地址空间。
+                                    kernel::cow::rebase_root(self_root);
+                                    if kernel::user::prepare(offset).is_err() {
                                         protocol::panic_event();
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
                                     // M：第二 ring3 任务的用户页面（与 task 1 区域不相交）。
-                                    if kernel::user::prepare_task2(pml4_phys, offset).is_err() {
+                                    if kernel::user::prepare_task2(offset).is_err() {
                                         protocol::panic_event();
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)

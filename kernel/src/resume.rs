@@ -101,6 +101,11 @@ extern "C" fn after_resume() -> ! {
         Ok(witness) => protocol::frames_ready(&witness),
         Err(_) => protocol::panic_event(),
     }
+    // SPEC-069：自建 CR3 见证——此刻内核正运行在**自建根**（或其克隆）上。
+    match kernel::user::self_root_witness() {
+        Some(witness) => protocol::self_root_ready(&witness),
+        None => protocol::panic_event(),
+    }
     protocol::boot_complete();
     serial::flush();
     qemu::exit(qemu::SUCCESS)

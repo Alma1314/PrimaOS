@@ -105,6 +105,20 @@ pub fn root_and_offset() -> Option<(u64, u64)> {
     }
 }
 
+/// 切片 X：把 COW 上下文的 `root_phys` 改指**自建内核根**。
+///
+/// 该字段是 [`root_and_offset`] 的来源，而后者被 `SYS_TASK_CREATE` 用作新地址空间的克隆源——
+/// 内核侧 COW 见证（`cow_region`）在首次切 CR3 **之前**执行、必须仍指 bootloader 根，故本函数
+/// 只能在它之后调用。
+pub fn rebase_root(root_phys: u64) {
+    unsafe {
+        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
+        if let Some(ctx) = (*ctx_ptr).as_mut() {
+            ctx.root_phys = root_phys;
+        }
+    }
+}
+
 /// 注册第二个 COW 区域（用户页）：写它时同样执行复制 + 换映射 + 重试。
 pub fn register_user_region(va: u64, shared: u64) {
     unsafe {

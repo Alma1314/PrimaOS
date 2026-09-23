@@ -104,6 +104,24 @@ pub(crate) fn frames_ready(witness: &kernel::frames::FrameWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-069：自建 CR3 见证（独立事件，落在 `frames_ready` 之后，只顺移 `boot_complete` 的 seq）。
+pub(crate) fn self_root_ready(witness: &kernel::user::SelfRootWitness) {
+    write_prefix("self_root_ready", "ok");
+    serial::write_bytes(b"|data=root=");
+    write_hex_u64(witness.root);
+    serial::write_bytes(b";kernel_root=");
+    write_hex_u64(witness.kernel_root);
+    serial::write_bytes(b";image_table=");
+    write_hex_u64(witness.image_table);
+    serial::write_bytes(b";owned=");
+    write_u32(witness.owned as u32);
+    serial::write_bytes(b";pages=");
+    write_u64(witness.pages);
+    serial::write_bytes(b";translated=");
+    write_hex_u64(witness.translated);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

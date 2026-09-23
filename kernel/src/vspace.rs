@@ -77,14 +77,18 @@ fn zero_table(mapped_va: u64) {
 }
 
 /// `va` 路径上缺失的页表页数（叶子所在 PT 计入）。
+///
+/// 切片 X 修正：原实现返回 `4 - k`，比实际多 1——`k` 级缺失时需新建的正是
+/// PDPT/PD/PT 中自 `k` 起的那 `3 - k` 张表（叶 PT 已含在内），而非"3 个中间层 + 1 个叶 PT"。
+/// 多出的那帧被分配后从不使用、也从不归还，**每个新建路径泄漏一帧**：小规模映射时不可见，
+/// 逐 4 KiB 覆盖 128 MiB 直映射（64 张 PT）时泄漏 60+ 帧并撑爆 `MAX_TABLE_FRAMES`。
 fn count_missing(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> usize {
     let idx = indices(va);
     let mut table = root_phys;
     for (k, &slot) in idx[..3].iter().enumerate() {
         let entry = read_raw(map(table) + (slot as u64) * 8);
         if entry & PT_PRESENT == 0 {
-            // k 级缺失 ⇒ 需新建 (3-k) 个中间层 + 1 个叶 PT。
-            return 4 - k;
+            return 3 - k;
         }
         table = entry & PT_ADDR_MASK;
     }
@@ -237,6 +241,43 @@ pub unsafe fn invlpg(va: u64) {
     }
 }
 
+/// 解析 `va` 的**叶物理地址**，支持 2 MiB / 1 GiB 大页。
+///
+/// [`crate::cpu::translate`] 只支持 4 KiB 叶（遇 `PS` 位直接 `PageNotMapped`），而
+/// bootloader 根对物理直映射与启动栈用的是大页。自建根必须把 bootloader 根里已有的
+/// 映射逐页复刻成 4 KiB，故需要一个能读大页的解析器。
+///
+/// 返回 `None` 表示路径缺失或叶项 present=0。
+pub fn leaf_phys_or_none(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> Option<u64> {
+    const PS: u64 = 1 << 7;
+    let idx = indices(va);
+    let mut table = root_phys;
+    let mut level = 0;
+    while level < 3 {
+        let entry = read_raw(map(table) + (idx[level] as u64) * 8);
+        if entry & PT_PRESENT == 0 {
+            return None;
+        }
+        if entry & PS != 0 {
+            // 大页：1 GiB（level 1，PDPT）或 2 MiB（level 2，PD）。页内偏移直接取自 VA 低位。
+            let page_size = match level {
+                1 => 1u64 << 30,
+                2 => 1u64 << 21,
+                _ => return None,
+            };
+            return Some((entry & PT_ADDR_MASK) + (va & (page_size - 1)));
+        }
+        table = entry & PT_ADDR_MASK;
+        level += 1;
+    }
+    let entry = read_raw(map(table) + (idx[3] as u64) * 8);
+    if entry & PT_PRESENT == 0 {
+        None
+    } else {
+        Some(entry & PT_ADDR_MASK)
+    }
+}
+
 /// 检查 `va` 所在的 PML4 槽是否空闲（未被 bootloader 占用）。
 pub fn slot_free(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> bool {
     let idx = indices(va);
@@ -260,6 +301,126 @@ pub fn clone_root(src_root: u64, dst_root: u64, map: impl Fn(u64) -> u64) {
 /// 清零 `root` 的第 `slot` 个 PML4 项，用于隔离任务的用户槽（互不可见）。
 pub fn zero_slot(root: u64, slot: usize, map: impl Fn(u64) -> u64) {
     write_raw(map(root) + (slot as u64) * 8, 0);
+}
+
+/// 切片 X：自建根需要复刻的一段**连续** `VA → 物理` 映射（逐 4 KiB 页）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfMap {
+    pub va: u64,
+    pub phys: u64,
+    pub pages: usize,
+    /// supervisor 可写（内核代码/数据、直映射、启动栈一律如此；W^X 未做，见设计 §5）。
+    pub writable: bool,
+}
+
+/// 自建根流程中登记的表帧上限（回滚用；实测约 74 帧，留足余量）。
+pub const MAX_SELF_ROOT_TABLES: usize = 256;
+
+/// 切片 X：自建根的映射面（标量部分；两个逐页物理帧解析器另行传入）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfRootSpec {
+    /// 物理直映射（恒等区间 `offset + 0 → [offset, offset + max_phys)`）。
+    pub direct: SelfMap,
+    pub image_va: u64,
+    pub image_pages: usize,
+    pub stack_va: u64,
+    pub stack_pages: usize,
+}
+
+/// 切片 X：构造**自建内核根**——自有 PML4 与全部中间页表，**不复用 bootloader 页表的任何一级**。
+///
+/// 逐页复刻：内核镜像（`spec.image_va`/`image_pages`，物理帧由 `image_phys(index)` 给出）、
+/// 物理直映射（恒等区间）、启动栈（物理帧由 `stack_phys(index)` 给出）。页表帧一律经 `alloc`
+/// 取得（内核路径为 `frames::allocate_table_frame`），故每个中间表帧都有**保留页表帧归属**、
+/// 可被 W6 守恒与帧注册表审计——这正是 COSIR §20.5 登记「不证明子页表物理所有权」所缺的那一环。
+///
+/// **镜像必须逐页给出物理帧**：内核 ELF 是 PIE，bootloader 按程序头逐段装载，各段
+/// `vaddr = file_offset + k*4096`（偏移量逐段不同），故"整段镜像 VA→phys 单一常量偏移"不成立，
+/// 统一偏移会在段边界之后读到错误物理页（实测该校验可捕获）。源根没有该镜像页映射时**跳过**，
+/// 与源根保持同一有效 VA 集合；启动栈页缺失则确定性失败（不留半张根）。
+///
+/// 任一步失败即归还**本次**已分配的全部表帧并返回错误，不泄漏归属。
+///
+/// 调用方须保证 `map`（物理→虚拟）在本函数执行期间可用——即仍在旧根下运行，故本函数必须
+/// **在切换 CR3 之前**调用。
+pub fn build_self_root(
+    map: impl Fn(u64) -> u64,
+    mut alloc: impl FnMut() -> Option<u64>,
+    spec: SelfRootSpec,
+    mut image_phys: impl FnMut(usize) -> Option<u64>,
+    mut stack_phys: impl FnMut(usize) -> Option<u64>,
+) -> Result<u64, VspaceError> {
+    let mut owned = [0u64; MAX_SELF_ROOT_TABLES];
+    let mut owned_count = 0usize;
+
+    let outcome = {
+        let mut take =
+            |owned: &mut [u64; MAX_SELF_ROOT_TABLES], owned_count: &mut usize| -> Option<u64> {
+                let frame = alloc()?;
+                if *owned_count == MAX_SELF_ROOT_TABLES {
+                    // 容量不足：归还刚取到的这一帧，交由调用方按 NoFrame 失败。
+                    let _ = crate::frames::release_table_frame(frame);
+                    return None;
+                }
+                owned[*owned_count] = frame;
+                *owned_count += 1;
+                Some(frame)
+            };
+
+        (|| -> Result<u64, VspaceError> {
+            let root = take(&mut owned, &mut owned_count).ok_or(VspaceError::NoFrame)?;
+            zero_table(map(root));
+            for index in 0..spec.image_pages {
+                let Some(phys) = image_phys(index) else {
+                    continue;
+                };
+                map_4k(
+                    root,
+                    spec.image_va + (index as u64) * crate::mem::FRAME_SIZE,
+                    &map,
+                    || take(&mut owned, &mut owned_count),
+                    phys,
+                    true,
+                    false,
+                )?;
+            }
+            for index in 0..spec.direct.pages {
+                let delta = (index as u64) * crate::mem::FRAME_SIZE;
+                map_4k(
+                    root,
+                    spec.direct.va + delta,
+                    &map,
+                    || take(&mut owned, &mut owned_count),
+                    spec.direct.phys + delta,
+                    spec.direct.writable,
+                    false,
+                )?;
+            }
+            for index in 0..spec.stack_pages {
+                let phys = stack_phys(index).ok_or(VspaceError::BadRoot)?;
+                map_4k(
+                    root,
+                    spec.stack_va + (index as u64) * crate::mem::FRAME_SIZE,
+                    &map,
+                    || take(&mut owned, &mut owned_count),
+                    phys,
+                    true,
+                    false,
+                )?;
+            }
+            Ok(root)
+        })()
+    };
+
+    match outcome {
+        Ok(root) => Ok(root),
+        Err(error) => {
+            for frame in owned[..owned_count].iter().copied() {
+                let _ = crate::frames::release_table_frame(frame);
+            }
+            Err(error)
+        }
+    }
 }
 
 /// 一次自建映射见证的实测结果。
@@ -536,6 +697,170 @@ mod tests {
             read_leaf(root, VSPACE_VA, identity),
             Err(VspaceError::BadRoot)
         );
+    }
+
+    /// 切片 X：自建根逐页复刻镜像（VA 与 phys 由调用方给出，**不假设统一偏移**）。
+    ///
+    /// 反例：镜像若按"单一常量偏移"复刻，段边界之后会读到错误物理页——该反例在真实内核上
+    /// 实测过（ELF 各段 `vaddr = file_offset + k*4096`，偏移量逐段不同），见 SPEC-069 报告。
+    #[test]
+    fn build_self_root_maps_each_page_to_its_own_physical_frame() {
+        let mut pool = PagePool::new();
+        // 镜像两页：故意让 VA 与 phys 偏移在第二页发生变化（模拟 ELF 段边界）。
+        let image = [0x50_0000u64, 0x60_1000u64];
+        let stack = [0x70_0000u64];
+
+        let root = build_self_root(
+            identity,
+            || pool.alloc(),
+            SelfRootSpec {
+                direct: SelfMap {
+                    va: 0x8000_0000u64,
+                    phys: 0,
+                    pages: 2,
+                    writable: true,
+                },
+                image_va: 0x4000_0000u64,
+                image_pages: 2,
+                stack_va: 0x90_0000_0000u64,
+                stack_pages: 1,
+            },
+            |index| Some(image[index]),
+            |index| Some(stack[index]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            leaf_phys_or_none(root, 0x4000_0000, identity),
+            Some(0x50_0000)
+        );
+        assert_eq!(
+            leaf_phys_or_none(root, 0x4000_1000, identity),
+            Some(0x60_1000),
+            "第二页必须用它自己的物理帧，而不是首帧 + 页偏移"
+        );
+        assert_eq!(
+            leaf_phys_or_none(root, 0x90_0000_0000, identity),
+            Some(0x70_0000)
+        );
+        // 直映射是恒等区间。
+        assert_eq!(leaf_phys_or_none(root, 0x8000_0000, identity), Some(0));
+        assert_eq!(leaf_phys_or_none(root, 0x8000_1000, identity), Some(0x1000));
+    }
+
+    /// 切片 X：源根没有该镜像页时**跳过**（不建映射），与源根保持同一有效 VA 集合。
+    #[test]
+    fn build_self_root_skips_image_pages_absent_from_the_source() {
+        let mut pool = PagePool::new();
+        let root = build_self_root(
+            identity,
+            || pool.alloc(),
+            SelfRootSpec {
+                direct: SelfMap {
+                    va: 0x8000_0000u64,
+                    phys: 0,
+                    pages: 1,
+                    writable: true,
+                },
+                image_va: 0x4000_0000u64,
+                image_pages: 3,
+                stack_va: 0x90_0000_0000u64,
+                stack_pages: 0,
+            },
+            |index| if index == 1 { None } else { Some(0x50_0000) },
+            |_| None,
+        )
+        .unwrap();
+        assert!(leaf_phys_or_none(root, 0x4000_0000, identity).is_some());
+        assert_eq!(leaf_phys_or_none(root, 0x4000_1000, identity), None);
+        assert!(leaf_phys_or_none(root, 0x4000_2000, identity).is_some());
+    }
+
+    /// 切片 X：源根的启动栈页可能缺失时必须确定性失败（不能建出半张根）。
+    #[test]
+    fn build_self_root_requires_every_stack_page() {
+        let mut pool = PagePool::new();
+        assert_eq!(
+            build_self_root(
+                identity,
+                || pool.alloc(),
+                SelfRootSpec {
+                    direct: SelfMap {
+                        va: 0x8000_0000u64,
+                        phys: 0,
+                        pages: 1,
+                        writable: true,
+                    },
+                    image_va: 0x4000_0000u64,
+                    image_pages: 0,
+                    stack_va: 0x90_0000_0000u64,
+                    stack_pages: 2,
+                },
+                |_| None,
+                |index| if index == 1 { None } else { Some(0x70_0000) },
+            ),
+            Err(VspaceError::BadRoot)
+        );
+    }
+
+    /// 切片 X：`leaf_phys_or_none` 必须能解析 2 MiB 大页（`cpu::translate` 只认 4 KiB 叶，
+    /// 而 bootloader 根对直映射/启动栈用的是大页）。
+    #[test]
+    fn leaf_phys_or_none_resolves_two_mib_huge_pages() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let pdpt = pool.alloc().unwrap();
+        let pd = pool.alloc().unwrap();
+        let va = 0x4000_0000u64;
+        let idx = indices(va);
+        // PML4[i4] → PDPT，PDPT[i3] → PD，PD[i2] = 2 MiB 大页（PS=1）。
+        write_raw(root + idx[0] as u64 * 8, pdpt | PT_PRESENT | PT_WRITABLE);
+        write_raw(pdpt + idx[1] as u64 * 8, pd | PT_PRESENT | PT_WRITABLE);
+        write_raw(
+            pd + idx[2] as u64 * 8,
+            0x20_0000 | PT_PRESENT | PT_WRITABLE | (1 << 7),
+        );
+        assert_eq!(leaf_phys_or_none(root, va, identity), Some(0x20_0000));
+        assert_eq!(
+            leaf_phys_or_none(root, va + 0x3_0000, identity),
+            Some(0x23_0000),
+            "大页内偏移必须取自 VA 低位"
+        );
+    }
+
+    /// SPEC-069 修正：新建路径只应分配**恰好** `3 - k` 张表。原实现多分配一张且从不归还，
+    /// 逐 4 KiB 覆盖 128 MiB 直映射时泄漏 60+ 帧并撑爆 `MAX_TABLE_FRAMES`。
+    #[test]
+    fn map_4k_fresh_path_allocates_exactly_the_tables_it_uses() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let frame = pool.alloc().unwrap();
+        let before = pool.pages.len();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            frame,
+            true,
+            false,
+        )
+        .unwrap();
+        // 全新路径：PDPT + PD + PT，共 3 张。
+        assert_eq!(pool.pages.len() - before, 3);
+        // 同路径第二条映射不新增表。
+        let mid = pool.pages.len();
+        map_4k(
+            root,
+            VSPACE_VA + 0x1000,
+            identity,
+            || pool.alloc(),
+            frame,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(pool.pages.len(), mid);
     }
 
     #[test]
