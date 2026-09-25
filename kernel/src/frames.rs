@@ -19,6 +19,7 @@
 //! 逐帧归属查询与不交性判定都覆盖它，不再有「区间判断」这条旁路。
 
 use crate::mem::{FrameInventory, FreeFrameAllocator};
+use prima_ostd::sync::StaticCell;
 
 /// 平台 bring-up 的活动 Segment ID（S1-X3 的归属标签；切片 R 起这些标签**就是** Segment 槽位 id：
 /// `frame_label` 的独立命名空间已取消，归属标签与 `bootstrap::SegmentObject::id` 恒等）。
@@ -413,96 +414,90 @@ impl FrameRegistry {
 ///
 /// 不用 `Option<FrameRegistry>` 的"构造后按值放入"形态：那会在 boot 栈上产生数份
 /// ~27 KiB 的临时量，实测溢出 256 KiB 启动栈并三重故障。`INSTALLED` 单独表达安装状态。
-static mut REGISTRY: FrameRegistry = FrameRegistry::empty();
-static mut INSTALLED: bool = false;
+static REGISTRY: StaticCell<FrameRegistry> = StaticCell::new(FrameRegistry::empty());
+static INSTALLED: StaticCell<bool> = StaticCell::new(false);
 
 /// 安装全局帧注册表（boot 早期一次；进入任何取帧路径之前）。
 ///
 /// 校验失败时不写入 `INSTALLED`，故注册表保持"未安装"，调用方可按 panic 处理。
 pub fn install(inventory: &FrameInventory, alloc: FreeFrameAllocator) -> Result<(), FrameError> {
-    unsafe {
-        let registry = &mut *core::ptr::addr_of_mut!(REGISTRY);
+    REGISTRY.with_mut(|registry| -> Result<(), FrameError> {
         registry.init_at(inventory, alloc)?;
         registry.check_conservation()?;
-        *core::ptr::addr_of_mut!(INSTALLED) = true;
-    }
+        Ok(())
+    })?;
+    INSTALLED.with_mut(|installed| *installed = true);
     Ok(())
 }
 
-/// 在已安装的全局注册表上执行操作；未安装时返回 [`FrameError::NotInstalled`]。
-fn global() -> Result<*mut FrameRegistry, FrameError> {
-    unsafe {
-        if !*core::ptr::addr_of!(INSTALLED) {
-            return Err(FrameError::NotInstalled);
-        }
-        Ok(core::ptr::addr_of_mut!(REGISTRY))
+/// 在已安装的全局注册表上以可变引用执行 `f`；未安装时返回 [`FrameError::NotInstalled`]。
+fn with_registry<T>(
+    f: impl FnOnce(&mut FrameRegistry) -> Result<T, FrameError>,
+) -> Result<T, FrameError> {
+    if !INSTALLED.with(|installed| *installed) {
+        return Err(FrameError::NotInstalled);
     }
+    REGISTRY.with_mut(f)
 }
 
 /// 登记一个活动 Segment（其帧随后经 [`allocate_for_segment`] 归入）。
 pub fn open_segment(id: u32, pool: Pool) -> Result<(), FrameError> {
-    unsafe { (*global()?).open_segment(id, pool) }
+    with_registry(|registry| registry.open_segment(id, pool))
 }
 
 /// 为一个活动 Segment 分配帧（唯一的数据帧取帧入口）。
 pub fn allocate_for_segment(id: u32) -> Result<u64, FrameError> {
-    unsafe { (*global()?).allocate_for_segment(id) }
+    with_registry(|registry| registry.allocate_for_segment(id))
 }
 
 /// 分配一帧保留页表帧（唯一的页表帧取帧入口）。
 pub fn allocate_table_frame() -> Result<u64, FrameError> {
-    unsafe { (*global()?).allocate_table_frame() }
+    with_registry(|registry| registry.allocate_table_frame())
 }
 
 /// 关闭某 Segment 的归属标签（帧须已全部归还）。
 pub fn close_segment(id: u32) -> Result<(), FrameError> {
-    unsafe { (*global()?).close_segment(id) }
+    with_registry(|registry| registry.close_segment(id))
 }
 
 /// 归还某 Segment 的一帧（销毁或回收路径）。
 pub fn release_frame(id: u32, frame: u64) -> Result<(), FrameError> {
-    unsafe { (*global()?).release_frame(id, frame) }
+    with_registry(|registry| registry.release_frame(id, frame))
 }
 
 /// 归还一帧保留页表帧（空表结点回收路径）。
 pub fn release_table_frame(frame: u64) -> Result<(), FrameError> {
-    unsafe { (*global()?).release_table_frame(frame) }
+    with_registry(|registry| registry.release_table_frame(frame))
 }
 
 /// 当前空闲帧数（`memseg_create` 的容量前置校验）。
 pub fn free_frames() -> Result<usize, FrameError> {
-    let registry = global()?;
-    unsafe { Ok((*registry).free_frames()) }
+    with_registry(|registry| Ok(registry.free_frames()))
 }
 
 /// 逐帧归属查询。
 pub fn owner_of(frame: u64) -> Result<FrameOwner, FrameError> {
-    let registry = global()?;
-    unsafe { Ok((*registry).owner_of(frame)) }
+    with_registry(|registry| Ok(registry.owner_of(frame)))
 }
 
 /// W6 不交性判定（owner 列表与页表帧两两不交，且均不与 image 向量相交）。
 pub fn check_disjoint() -> Result<(), FrameError> {
-    let registry = global()?;
-    unsafe { (*registry).check_disjoint() }
+    with_registry(|registry| registry.check_disjoint())
 }
 
 /// SPEC-068：image 帧向量长度。
 pub fn image_frame_count() -> Result<usize, FrameError> {
-    let registry = global()?;
-    unsafe { Ok((*registry).image_frame_count()) }
+    with_registry(|registry| Ok(registry.image_frame_count()))
 }
 
 /// SPEC-068：image 帧向量的第 `index` 项（`bootstrap::SegmentFrames::Image` 的逐帧委托）。
 pub fn image_frame_at(index: usize) -> Result<u64, FrameError> {
-    let registry = global()?;
-    unsafe { (*registry).image_frame_at(index).ok_or(FrameError::NoFrame) }
+    with_registry(|registry| registry.image_frame_at(index).ok_or(FrameError::NoFrame))
 }
 
 /// 观察全局注册表的守恒状态（见证事件用）。
 pub fn witness() -> Result<FrameWitness, FrameError> {
-    let registry = global()?;
-    unsafe { Ok((*registry).witness()) }
+    with_registry(|registry| Ok(registry.witness()))
 }
 
 #[cfg(test)]

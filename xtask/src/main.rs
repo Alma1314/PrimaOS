@@ -1,5 +1,6 @@
 mod compat;
 mod image;
+mod lint;
 mod linux;
 mod protocol;
 mod qemu;
@@ -35,6 +36,8 @@ fn run() -> Result<(), String> {
         }
         "compat" => compat_command(&rest),
         "linux-trace" => linux_trace_command(&rest),
+        "lint" => lint::lint_command(&rest),
+        "tcb" => lint::tcb_command(&rest),
         _ => Err(usage()),
     }
 }
@@ -137,7 +140,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|compat|linux-trace>\n\
+    "usage: cargo xtask <build|run|test|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"
         .to_owned()

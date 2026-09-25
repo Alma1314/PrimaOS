@@ -6,7 +6,7 @@
 //! `index * 8` 对齐的字节表：槽 0=null、槽 1=内核 code、槽 2=内核 data、槽 3=TSS
 //! （占偏移 24..39）。`lgdt` 时 limit 覆盖到 TSS 描述符末尾。
 
-use core::arch::asm;
+use prima_ostd::sync::StaticCell;
 
 /// 16 字节段/系统描述符（x86-64）。
 #[repr(C, packed(2))]
@@ -127,36 +127,23 @@ fn build_gdt_bytes(gdt: &mut Gdt, tss: &Tss) {
 
 /// 装载 GDT 的槽 0/1/2（null/code/data），并把 TSS 描述符装进槽 3、`ltr`。
 ///
-/// # Safety
-///
-/// 仅可在单核 boot 早期、内核尚未允许并发时调用一次。`gdt`/`tss` 必须存活到内核结束。
+/// 特权指令（`lgdt`/`ltr`/`mov ds,es`）的 `asm!` 已下沉 [`prima_ostd::arch`]；本函数只做
+/// 字节表装配与调用。**契约（信任调用方，由调用点保证）**：仅可在单核 boot 早期、内核尚未
+/// 允许并发时调用一次；`gdt`/`tss` 必须存活到内核结束。
 #[allow(clippy::result_unit_err)]
-pub unsafe fn init(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
+fn init(gdt: &mut Gdt, tss: &Tss) -> Result<(), ()> {
     build_gdt_bytes(gdt, tss);
 
     // lgdt：limit 覆盖到最后一个用户描述符槽末尾（含 TSS 与其后的用户段）。
-    let len = GDT_LIMIT;
-    let base = gdt.bytes.as_ptr() as u64;
-    let mut gdtr = [0u8; 10];
-    gdtr[0..2].copy_from_slice(&len.to_le_bytes());
-    gdtr[2..10].copy_from_slice(&base.to_le_bytes());
-    unsafe { asm!("lgdt [{}]", in(reg) gdtr.as_ptr(), options(nostack, preserves_flags)) };
+    prima_ostd::arch::lgdt(gdt.bytes.as_ptr() as u64, GDT_LIMIT);
 
     // ltr: 装载 TSS 段选择子（index 3, RPL 0）为忙态。
-    let selector: u16 = 3 * 8;
-    unsafe { asm!("ltr cx", in("cx") selector, options(nostack, preserves_flags)) };
+    prima_ostd::arch::ltr(3 * 8);
 
     // reload 数据段选择子（内核数据段 index 2）。
     // 注意：不复位 `ss`——保留 bootloader 已装载的 ss（其 shadow 描述符仍有效），
     // 避免在 QEMU 上 `mov ss` 触发 #GP/三故障。仅 reload ds/es。
-    unsafe {
-        asm!(
-            "mov ds, cx",
-            "mov es, cx",
-            in("cx") DATA_OFF as u16,
-            options(nostack, preserves_flags)
-        );
-    }
+    prima_ostd::arch::reload_data_segments(DATA_OFF as u16);
     Ok(())
 }
 
@@ -202,20 +189,20 @@ impl Gdt {
     }
 }
 
-// 静态持有：单核 boot 早期，仅一次 init 时用 unsafe 写一次。
-static mut GDT_ITEM: Gdt = Gdt::new();
-static mut TSS_ITEM: Tss = Tss::new(0);
+// 静态持有：单核 boot 早期，仅一次 init 时写入。
+static GDT_ITEM: StaticCell<Gdt> = StaticCell::new(Gdt::new());
+static TSS_ITEM: StaticCell<Tss> = StaticCell::new(Tss::new(0));
 
 /// 供 `main.rs` 调用的公开入口：装载 GDT/TSS。
 #[allow(clippy::result_unit_err)]
 pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
-    unsafe {
-        GDT_ITEM = Gdt::new();
-        TSS_ITEM = Tss::new(rsp0);
-        let gdt = core::ptr::addr_of_mut!(GDT_ITEM);
-        let tss = core::ptr::addr_of!(TSS_ITEM);
-        init(&mut *gdt, &*tss)
-    }
+    GDT_ITEM.with_mut(|gdt| {
+        *gdt = Gdt::new();
+        TSS_ITEM.with_mut(|tss| {
+            *tss = Tss::new(rsp0);
+            init(gdt, tss)
+        })
+    })
 }
 
 /// 更新 `TSS.rsp0`：CPL3→CPL0（trap/中断）时硬件装载的内核栈顶。
@@ -223,10 +210,7 @@ pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
 /// 单核、无并发；在任务切换（[`crate::sched::resume`]）时指向目标任务的内核栈，实现
 /// per-task 内核栈。TSS 描述子已在 [`init_kernel_gdt`] 装载，此处只改内存中的字段。
 pub fn set_rsp0(rsp0: u64) {
-    let tss = core::ptr::addr_of_mut!(TSS_ITEM);
-    unsafe {
-        (*tss).rsp0 = rsp0;
-    }
+    TSS_ITEM.with_mut(|tss| tss.rsp0 = rsp0);
 }
 
 #[cfg(test)]
@@ -270,8 +254,7 @@ mod tests {
     fn tss_rsp0_offset_is_4() {
         // rsp0 字段在 offset 4（TSS 标准布局）。
         let t = Tss::new(0x1234_5678);
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&t as *const Tss as *const u8, size_of::<Tss>()) };
+        let bytes = prima_ostd::mm::bytes_of(&t);
         assert_eq!(&bytes[4..12], &0x1234_5678u64.to_le_bytes());
     }
 

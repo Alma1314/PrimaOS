@@ -1,11 +1,9 @@
 //! 自建 4 级页表映射的细化（refine）模块：在 bootloader CR3 之上新增一条隔离的
-//! 低半区映射，并承载 `invlpg` 的 `asm!`。映射构建的**纯逻辑**（级别遍历、PTE
-//! 装载、缺页表页的预分配）可 host 单测；真实 `invlpg` 仅内核/QEMU 内执行。
+//! 低半区映射。映射构建的**纯逻辑**（级别遍历、PTE 装载、缺页表页的预分配）可 host
+//! 单测；真实 `invlpg` 由 [`prima_ostd::arch::invlpg`] 承载，仅内核/QEMU 内执行。
 //!
 //! **范围边界：** 本模块不替换 CR3、不重建整棵页表，只在空闲 PML4 槽（见
 //! [`VSPACE_VA`]）下装一条 4KiB 映射，用于见证真实 PTE 翻译与 TLB 刷新。
-
-use core::arch::asm;
 
 /// PTE present 位（bit 0）。
 pub const PT_PRESENT: u64 = 1;
@@ -62,11 +60,11 @@ pub const fn table_flags() -> u64 {
 }
 
 fn read_raw(addr: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(addr as *const u64) }
+    prima_ostd::mm::read_u64(addr)
 }
 
 fn write_raw(addr: u64, value: u64) {
-    unsafe { core::ptr::write_volatile(addr as *mut u64, value) };
+    prima_ostd::mm::write_u64(addr, value);
 }
 
 /// 把一页（512 项）清零。
@@ -228,17 +226,6 @@ fn walk_to_leaf_table(
         table = entry & PT_ADDR_MASK;
     }
     Ok(table)
-}
-
-/// 使 `va` 的 TLB 项失效。
-///
-/// # Safety
-///
-/// `invlpg` 是特权指令，仅可在 CPL0 内核内执行；host 用户态单测不得调用。
-pub unsafe fn invlpg(va: u64) {
-    unsafe {
-        asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
-    }
 }
 
 /// 解析 `va` 的**叶物理地址**，支持 2 MiB / 1 GiB 大页。
@@ -481,19 +468,19 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
         true,
         false,
     )?;
-    unsafe { invlpg(VSPACE_VA) };
+    prima_ostd::arch::invlpg(VSPACE_VA);
     let read_before = read_raw(VSPACE_VA);
 
     set_leaf(root_phys, VSPACE_VA, map, frame_b, true, false)?;
     let stale_read = read_raw(VSPACE_VA); // 信息：刷新前
-    unsafe { invlpg(VSPACE_VA) };
+    prima_ostd::arch::invlpg(VSPACE_VA);
     let read_after = read_raw(VSPACE_VA);
 
     let translated = crate::cpu::translate(map(root_phys), VSPACE_VA, map).unwrap_or(0);
 
     // 只读叶 + 写 → 真实 `present∧write` #PF（classify → WriteProtection）。
     set_leaf(root_phys, VSPACE_VA, map, frame_a, false, false)?;
-    unsafe { invlpg(VSPACE_VA) };
+    prima_ostd::arch::invlpg(VSPACE_VA);
     crate::idt::trigger_page_fault_write(VSPACE_VA);
     let wp_err = crate::idt::last_fault_err();
     let wp_addr = crate::idt::fault_addr();
@@ -514,35 +501,7 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{Layout, alloc_zeroed, dealloc};
-
-    struct PagePool {
-        pages: Vec<*mut u64>,
-    }
-
-    impl PagePool {
-        fn new() -> Self {
-            PagePool { pages: Vec::new() }
-        }
-        fn alloc(&mut self) -> Option<u64> {
-            let layout = Layout::from_size_align(4096, 4096).expect("4K layout");
-            let ptr = unsafe { alloc_zeroed(layout) as *mut u64 };
-            if ptr.is_null() {
-                return None;
-            }
-            self.pages.push(ptr);
-            Some(ptr as u64)
-        }
-    }
-
-    impl Drop for PagePool {
-        fn drop(&mut self) {
-            let layout = Layout::from_size_align(4096, 4096).expect("4K layout");
-            for &ptr in &self.pages {
-                unsafe { dealloc(ptr as *mut u8, layout) };
-            }
-        }
-    }
+    use crate::test_support::PagePool;
 
     fn identity(phys: u64) -> u64 {
         phys
@@ -614,7 +573,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let pages_after_first = pool.pages.len();
+        let pages_after_first = pool.len();
         // 同一路径的第二条映射只改叶，不新建页表页。
         map_4k(
             root,
@@ -626,7 +585,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(pool.pages.len(), pages_after_first);
+        assert_eq!(pool.len(), pages_after_first);
 
         assert_eq!(
             read_leaf(root, VSPACE_VA, identity).unwrap(),
@@ -835,7 +794,7 @@ mod tests {
         let mut pool = PagePool::new();
         let root = pool.alloc().unwrap();
         let frame = pool.alloc().unwrap();
-        let before = pool.pages.len();
+        let before = pool.len();
         map_4k(
             root,
             VSPACE_VA,
@@ -847,9 +806,9 @@ mod tests {
         )
         .unwrap();
         // 全新路径：PDPT + PD + PT，共 3 张。
-        assert_eq!(pool.pages.len() - before, 3);
+        assert_eq!(pool.len() - before, 3);
         // 同路径第二条映射不新增表。
-        let mid = pool.pages.len();
+        let mid = pool.len();
         map_4k(
             root,
             VSPACE_VA + 0x1000,
@@ -860,7 +819,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(pool.pages.len(), mid);
+        assert_eq!(pool.len(), mid);
     }
 
     #[test]

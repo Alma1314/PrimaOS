@@ -49,11 +49,7 @@ impl Default for PageTableEntry {
 ///
 /// 读 cr3 无副作用，但需在内核已由 bootloader 装载 CR3 后调用。
 pub fn cr3() -> PhysAddr {
-    let mut value: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr3", out(reg) value, options(nomem, nostack, preserves_flags));
-    }
-    PhysAddr(value)
+    PhysAddr(prima_ostd::arch::read_cr3())
 }
 
 /// 当前 CR3 的页表根物理地址（清掉低 12 位的标志/PCID 位）。
@@ -63,15 +59,11 @@ pub fn cr3_phys() -> u64 {
 
 /// 写 CR3，切换到另一张 PML4（per-task 地址空间）。
 ///
-/// # Safety
-///
-/// 特权指令，仅 CPL0 可执行。调用瞬间的指令流与栈必须在新根下仍被映射（本项目通过
-/// [`crate::vspace::clone_root`] 复制 bootloader 根的全部 PML4 项来保证），否则写 CR3 后
-/// 立即取指失败。
-pub unsafe fn write_cr3(phys: u64) {
-    unsafe {
-        core::arch::asm!("mov cr3, {}", in(reg) phys, options(nostack, preserves_flags));
-    }
+/// 契约随 [`prima_ostd::arch::write_cr3`]：特权指令，仅 CPL0 可执行。调用瞬间的指令流与栈
+/// 必须在新根下仍被映射（本项目通过 [`crate::vspace::clone_root`] 复制 bootloader 根的全部
+/// PML4 项来保证），否则写 CR3 后立即取指失败。
+pub fn write_cr3(phys: u64) {
+    prima_ostd::arch::write_cr3(phys);
 }
 
 /// CR0 的 WP 位掩码（bit 16）。WP=1 ⇒ supervisor 写只读页产生 #PF；0 = 允许通过。
@@ -90,18 +82,13 @@ pub fn wp_of(cr0: u64) -> bool {
 /// 读 cr0 无副作用，但属特权操作，仅在内核已运行于 CPL0（由 bootloader 进入）时可读，
 /// 切不可在 host 用户态单测直接调用。
 pub fn read_cr0_wp() -> bool {
-    let mut cr0: u64;
-    unsafe {
-        core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, preserves_flags));
-    }
-    wp_of(cr0)
+    wp_of(prima_ostd::arch::read_cr0())
 }
 
 /// 读一个 `PageTableEntry` 数组的第 `index` 项。
 /// `table_mapped_va` 是页表页已映射到虚拟地址空间中的地址（调用方负责转换）。
 fn read_entry(table_mapped_va: u64, index: usize) -> Result<PageTableEntry, TranslateError> {
-    let raw =
-        unsafe { core::ptr::read_volatile((table_mapped_va + (index as u64) * 8) as *const u64) };
+    let raw = prima_ostd::mm::read_u64_at(table_mapped_va, index as u64);
     let e = PageTableEntry { flags: raw };
     if e.is_present() {
         Ok(e)
@@ -171,8 +158,7 @@ pub fn audit_reachable_page_tables(
 
         let table_va = map(table_phys);
         for index in 0..512 {
-            let raw =
-                unsafe { core::ptr::read_volatile((table_va + (index as u64) * 8) as *const u64) };
+            let raw = prima_ostd::mm::read_u64_at(table_va, index as u64);
             let entry = PageTableEntry { flags: raw };
             if !entry.is_present() {
                 continue;
@@ -203,42 +189,27 @@ fn identity_map(phys: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::PagePool;
     use core::mem::size_of;
-    use std::alloc::{Layout, alloc_zeroed, dealloc};
-    use std::ptr;
+    use prima_ostd::mm::write_u64_at;
 
-    /// 分配一个 4096 对齐、4096 字节的页表页（与真实页表页一致），返回裸指针。
-    ///
-    /// 必须 4K 对齐：`translate` 经 `next_phys()` 会清除地址低 12 位，若分配不按页对齐，
-    /// 页表项里存的指针被掩码后会指向错误位置，导致误判 PageNotMapped。
-    unsafe fn alloc_page() -> *mut u64 {
-        let layout = Layout::from_size_align(4096, 4096).expect("4K page layout");
-        unsafe { alloc_zeroed(layout) as *mut u64 }
-    }
-
-    /// 释放一个由 `alloc_page` 分配的页。
-    unsafe fn free_page(ptr: *mut u64) {
-        let layout = Layout::from_size_align(4096, 4096).expect("4K page layout");
-        unsafe {
-            dealloc(ptr as *mut u8, layout);
-        }
-    }
-
+    /// 页表页由 [`PagePool`] 在堆上按 4 KiB 对齐分配、全零且地址稳定；读写走 `mm` 安全访问器。
+    /// `translate` 经 `next_phys()` 会清除地址低 12 位，故分配必须按页对齐（否则页表项里存的
+    /// 指针被掩码后会指向错误位置，误判 `PageNotMapped`）。
     #[test]
     fn audit_reachable_page_tables_visits_all_levels() {
-        let pml4 = unsafe { alloc_page() };
-        let pdpt = unsafe { alloc_page() };
-        let pd = unsafe { alloc_page() };
-        let pt = unsafe { alloc_page() };
-        unsafe {
-            *pml4.add(0) = pdpt as u64 | 1;
-            *pdpt.add(0) = pd as u64 | 1;
-            *pd.add(0) = pt as u64 | 1;
-            *pt.add(0) = 0x2000 | 1;
-        }
+        let mut pool = PagePool::new();
+        let pml4 = pool.alloc().unwrap();
+        let pdpt = pool.alloc().unwrap();
+        let pd = pool.alloc().unwrap();
+        let pt = pool.alloc().unwrap();
+        write_u64_at(pml4, 0, pdpt | 1);
+        write_u64_at(pdpt, 0, pd | 1);
+        write_u64_at(pd, 0, pt | 1);
+        write_u64_at(pt, 0, 0x2000 | 1);
         let mut visited = Vec::new();
         let count = audit_reachable_page_tables(
-            pml4 as u64,
+            pml4,
             |phys| phys,
             |phys| {
                 visited.push(phys);
@@ -248,12 +219,6 @@ mod tests {
         .unwrap();
         assert_eq!(count, 4);
         assert_eq!(visited.len(), 4);
-        unsafe {
-            free_page(pml4);
-            free_page(pdpt);
-            free_page(pd);
-            free_page(pt);
-        }
     }
 
     #[test]
@@ -293,79 +258,47 @@ mod tests {
         assert_eq!(p.0, 0x1000);
     }
 
+    /// 装配 PML4→PDPT→PD→PT 四级链，叶项指向 `frame`；返回根页地址。
+    fn build_four_levels(pool: &mut PagePool, frame_phys: u64) -> u64 {
+        let pt = pool.alloc().unwrap();
+        write_u64_at(pt, 0, frame_phys | 0b1);
+        let pd = pool.alloc().unwrap();
+        write_u64_at(pd, 0, pt | 0b1);
+        let pdpt = pool.alloc().unwrap();
+        write_u64_at(pdpt, 0, pd | 0b1);
+        let pml4 = pool.alloc().unwrap();
+        write_u64_at(pml4, 0, pdpt | 0b1);
+        pml4
+    }
+
     #[test]
     fn translate_single_page_4k() {
-        unsafe {
-            let pt = alloc_page();
-            ptr::write(pt.add(0), 0xf000_0000 | 0b1); // PT[0] -> 帧 0xf0000000, present
-            let pt_ptr = pt as u64;
-
-            let pd = alloc_page();
-            ptr::write(pd.add(0), pt_ptr | 0b1); // PD[0] -> PT 表
-            let pd_ptr = pd as u64;
-
-            let pdpt = alloc_page();
-            ptr::write(pdpt.add(0), pd_ptr | 0b1);
-            let pdpt_ptr = pdpt as u64;
-
-            let pml4 = alloc_page();
-            ptr::write(pml4.add(0), pdpt_ptr | 0b1);
-            let pml4_ptr = pml4 as u64;
-
-            // vaddr 落在 i4=i3=i2=i1=0, offset=0x123
-            let vaddr = 0x123;
-            let phys = translate(pml4_ptr, vaddr, identity_map).unwrap();
-            assert_eq!(phys, 0xf000_0000 | 0x123);
-
-            free_page(pt);
-            free_page(pd);
-            free_page(pdpt);
-            free_page(pml4);
-        }
+        let mut pool = PagePool::new();
+        let pml4 = build_four_levels(&mut pool, 0xf000_0000);
+        // vaddr 落在 i4=i3=i2=i1=0, offset=0x123
+        let vaddr = 0x123;
+        let phys = translate(pml4, vaddr, identity_map).unwrap();
+        assert_eq!(phys, 0xf000_0000 | 0x123);
     }
 
     #[test]
     fn translate_not_mapped_returns_error() {
-        unsafe {
-            let pml4 = alloc_page();
-            let pml4_ptr = pml4 as u64;
-            let vaddr = 0x1_0000_0000; // i4=0, i3=0, i2=0, i1 非零
-            assert_eq!(
-                translate(pml4_ptr, vaddr, identity_map),
-                Err(TranslateError::PageNotMapped)
-            );
-            free_page(pml4);
-        }
+        let mut pool = PagePool::new();
+        let pml4 = pool.alloc().unwrap();
+        let vaddr = 0x1_0000_0000; // i4=0, i3=0, i2=0, i1 非零
+        assert_eq!(
+            translate(pml4, vaddr, identity_map),
+            Err(TranslateError::PageNotMapped)
+        );
     }
 
     #[test]
     fn translate_offsets_into_last_level() {
-        unsafe {
-            let pt = alloc_page();
-            ptr::write(pt.add(0), 0x1000_0000 | 0b1);
-            let pt_ptr = pt as u64;
-
-            let pd = alloc_page();
-            ptr::write(pd.add(0), pt_ptr | 0b1);
-            let pd_ptr = pd as u64;
-
-            let pdpt = alloc_page();
-            ptr::write(pdpt.add(0), pd_ptr | 0b1);
-            let pdpt_ptr = pdpt as u64;
-
-            let pml4 = alloc_page();
-            ptr::write(pml4.add(0), pdpt_ptr | 0b1);
-            let pml4_ptr = pml4 as u64;
-
-            let vaddr = 0x123;
-            let phys = translate(pml4_ptr, vaddr, identity_map).unwrap();
-            assert_eq!(phys, 0x1000_0000 | 0x123);
-
-            free_page(pt);
-            free_page(pd);
-            free_page(pdpt);
-            free_page(pml4);
-        }
+        let mut pool = PagePool::new();
+        let pml4 = build_four_levels(&mut pool, 0x1000_0000);
+        let vaddr = 0x123;
+        let phys = translate(pml4, vaddr, identity_map).unwrap();
+        assert_eq!(phys, 0x1000_0000 | 0x123);
     }
 
     #[test]

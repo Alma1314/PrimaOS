@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::bootstrap;
 use crate::exc::SretFrame;
+use prima_ostd::sync::StaticCell;
 
 /// 调度器支持的任务数上限（与 `bootstrap::MAX_TASKS` 一致）。
 const MAX_TASKS: usize = 8;
@@ -19,16 +20,16 @@ const MAX_TASKS: usize = 8;
 static CURRENT: AtomicU32 = AtomicU32::new(1);
 
 /// 每个 Task 的用户上下文；索引即 Task id。
-static mut FRAMES: [SretFrame; MAX_TASKS] = [SretFrame::ZERO; MAX_TASKS];
+static FRAMES: StaticCell<[SretFrame; MAX_TASKS]> = StaticCell::new([SretFrame::ZERO; MAX_TASKS]);
 
 /// 每个 Task 的 PML4 物理地址（0 = 未设置，例如 boot 早期）。索引即 Task id。
-static mut ROOTS: [u64; MAX_TASKS] = [0; MAX_TASKS];
+static ROOTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
 /// 每个 Task 的内核栈顶虚拟地址（0 = 未设置）。索引即 Task id。
-static mut KSTACK_TOPS: [u64; MAX_TASKS] = [0; MAX_TASKS];
+static KSTACK_TOPS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
-static mut SCRATCH: SretFrame = SretFrame::ZERO;
+static SCRATCH: StaticCell<SretFrame> = StaticCell::new(SretFrame::ZERO);
 
 /// SPEC-070 / §5.2：每个 Task 的 `kernel_resume_frame`（**细化层持有**的 `Option<Bytes>`）。
 ///
@@ -37,32 +38,30 @@ static mut SCRATCH: SretFrame = SretFrame::ZERO;
 ///
 /// 仅由**成功的 `exc_resume`** 写入（该原语的用户化属后续切片）；本切片实现存储与两条清空路径
 /// ——§8.4 步骤 3 `schedule` 进 `Running` 时消费清空、§8.2 步骤 6 `task_destroy` 时清空。
-static mut KERNEL_RESUME_FRAMES: [Option<SretFrame>; MAX_TASKS] = [None; MAX_TASKS];
+static KERNEL_RESUME_FRAMES: StaticCell<[Option<SretFrame>; MAX_TASKS]> =
+    StaticCell::new([None; MAX_TASKS]);
 
 /// §5.2：写入 `task_id` 的 `kernel_resume_frame`（仅成功 `exc_resume` 调用）。
 pub fn set_kernel_resume_frame(task_id: u32, frame: SretFrame) {
-    unsafe {
-        let frames = core::ptr::addr_of_mut!(KERNEL_RESUME_FRAMES);
-        if let Some(slot) = (*frames).get_mut(task_id as usize) {
+    KERNEL_RESUME_FRAMES.with_mut(|frames| {
+        if let Some(slot) = frames.get_mut(task_id as usize) {
             *slot = Some(frame);
         }
-    }
+    });
 }
 
 /// §5.2：读取 `task_id` 的 `kernel_resume_frame`。
 pub fn kernel_resume_frame(task_id: u32) -> Option<SretFrame> {
-    let frames = core::ptr::addr_of!(KERNEL_RESUME_FRAMES);
-    unsafe { (*frames).get(task_id as usize).copied().flatten() }
+    KERNEL_RESUME_FRAMES.with(|frames| frames.get(task_id as usize).copied().flatten())
 }
 
 /// §5.2/§8.2 步骤 6/§8.4 步骤 3：清空 `task_id` 的 `kernel_resume_frame`。
 pub fn clear_kernel_resume_frame(task_id: u32) {
-    unsafe {
-        let frames = core::ptr::addr_of_mut!(KERNEL_RESUME_FRAMES);
-        if let Some(slot) = (*frames).get_mut(task_id as usize) {
+    KERNEL_RESUME_FRAMES.with_mut(|frames| {
+        if let Some(slot) = frames.get_mut(task_id as usize) {
             *slot = None;
         }
-    }
+    });
 }
 
 /// 切片 V：自毁任务待归还的页表帧队列容量。
@@ -72,8 +71,9 @@ pub fn clear_kernel_resume_frame(task_id: u32) {
 const MAX_DEFERRED_FRAMES: usize = 40;
 
 /// 待归还的页表帧（自毁路径入队，[`flush_deferred_frames`] 清空）。
-static mut DEFERRED_FRAMES: [u64; MAX_DEFERRED_FRAMES] = [0; MAX_DEFERRED_FRAMES];
-static mut DEFERRED_COUNT: usize = 0;
+static DEFERRED_FRAMES: StaticCell<[u64; MAX_DEFERRED_FRAMES]> =
+    StaticCell::new([0; MAX_DEFERRED_FRAMES]);
+static DEFERRED_COUNT: StaticCell<usize> = StaticCell::new(0);
 
 /// 当前运行的 Task id。
 pub fn current() -> u32 {
@@ -92,20 +92,14 @@ fn set_current(task_id: u32) {
 /// 记录某 Task 的用户上下文（初始进入或让出时保存）。
 pub fn set_frame(task_id: u32, frame: SretFrame) {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let frames = core::ptr::addr_of_mut!(FRAMES);
-            (*frames)[task_id as usize] = frame;
-        }
+        FRAMES.with_mut(|frames| frames[task_id as usize] = frame);
     }
 }
 
 /// 读取某 Task 的用户上下文。
 pub fn frame(task_id: u32) -> Option<SretFrame> {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let frames = core::ptr::addr_of!(FRAMES);
-            Some((*frames)[task_id as usize])
-        }
+        Some(FRAMES.with(|frames| frames[task_id as usize]))
     } else {
         None
     }
@@ -117,30 +111,21 @@ pub fn frame(task_id: u32) -> Option<SretFrame> {
 /// payload 注入其保存帧；该任务被重新调度时 `iretq` 直接带着 payload 返回用户态。
 pub fn set_frame_rax(task_id: u32, value: u64) {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let frames = core::ptr::addr_of_mut!(FRAMES);
-            (*frames)[task_id as usize].rax = value;
-        }
+        FRAMES.with_mut(|frames| frames[task_id as usize].rax = value);
     }
 }
 
 /// 记录某 Task 的 PML4 物理地址（切片 O：per-task 地址空间）。
 pub fn set_root(task_id: u32, root_phys: u64) {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let roots = core::ptr::addr_of_mut!(ROOTS);
-            (*roots)[task_id as usize] = root_phys;
-        }
+        ROOTS.with_mut(|roots| roots[task_id as usize] = root_phys);
     }
 }
 
 /// 读取某 Task 的 PML4 物理地址（未设置返回 `None`）。
 pub fn root(task_id: u32) -> Option<u64> {
     if (task_id as usize) < MAX_TASKS {
-        let value = unsafe {
-            let roots = core::ptr::addr_of!(ROOTS);
-            (*roots)[task_id as usize]
-        };
+        let value = ROOTS.with(|roots| roots[task_id as usize]);
         if value != 0 {
             return Some(value);
         }
@@ -156,20 +141,14 @@ pub fn current_root() -> Option<u64> {
 /// 记录某 Task 的内核栈顶虚拟地址（切片 O：per-task 内核栈）。
 pub fn set_kstack_top(task_id: u32, top: u64) {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let tops = core::ptr::addr_of_mut!(KSTACK_TOPS);
-            (*tops)[task_id as usize] = top;
-        }
+        KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = top);
     }
 }
 
 /// 读取某 Task 的内核栈顶虚拟地址（未设置返回 `None`）。
 pub fn kstack_top(task_id: u32) -> Option<u64> {
     if (task_id as usize) < MAX_TASKS {
-        let value = unsafe {
-            let tops = core::ptr::addr_of!(KSTACK_TOPS);
-            (*tops)[task_id as usize]
-        };
+        let value = KSTACK_TOPS.with(|tops| tops[task_id as usize]);
         if value != 0 {
             return Some(value);
         }
@@ -182,14 +161,9 @@ pub fn kstack_top(task_id: u32) -> Option<u64> {
 /// 只清 root/kstack/frame 三个槽；调用者 id 不得被清除（自毁未实现，`task_destroy` 已拒绝）。
 pub fn clear_task(task_id: u32) {
     if (task_id as usize) < MAX_TASKS {
-        unsafe {
-            let roots = core::ptr::addr_of_mut!(ROOTS);
-            (*roots)[task_id as usize] = 0;
-            let tops = core::ptr::addr_of_mut!(KSTACK_TOPS);
-            (*tops)[task_id as usize] = 0;
-            let frames = core::ptr::addr_of_mut!(FRAMES);
-            (*frames)[task_id as usize] = SretFrame::ZERO;
-        }
+        ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
+        KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
+        FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
     }
 }
 
@@ -241,35 +215,32 @@ pub struct DeferredQueueFull;
 
 /// 切片 V：登记一个待归还页表帧（自毁路径）。队列满返回 `Err`，不静默丢弃。
 pub fn defer_table_frame(frame: u64) -> Result<(), DeferredQueueFull> {
-    unsafe {
-        let count = core::ptr::addr_of_mut!(DEFERRED_COUNT);
+    DEFERRED_COUNT.with_mut(|count| {
         if *count >= MAX_DEFERRED_FRAMES {
             return Err(DeferredQueueFull);
         }
-        let frames = core::ptr::addr_of_mut!(DEFERRED_FRAMES);
-        (*frames)[*count] = frame;
+        DEFERRED_FRAMES.with_mut(|frames| frames[*count] = frame);
         *count += 1;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// 待归还帧数（供 host 单测断言「切换前不释放」）。
 pub fn deferred_frame_count() -> usize {
-    unsafe { *core::ptr::addr_of!(DEFERRED_COUNT) }
+    DEFERRED_COUNT.with(|count| *count)
 }
 
 /// 归还全部待释放页表帧。
 ///
 /// **只允许在 `write_cr3` 已切到别的根之后调用**——见 [`resume`] 中的释放点。
 pub fn flush_deferred_frames() {
-    unsafe {
-        let count = core::ptr::addr_of_mut!(DEFERRED_COUNT);
-        let frames = core::ptr::addr_of!(DEFERRED_FRAMES);
+    DEFERRED_COUNT.with_mut(|count| {
         for index in 0..*count {
-            let _ = crate::frames::release_table_frame((*frames)[index]);
+            let frame = DEFERRED_FRAMES.with(|frames| frames[index]);
+            let _ = crate::frames::release_table_frame(frame);
         }
         *count = 0;
-    }
+    });
 }
 
 /// 恢复 `task_id` 的用户上下文（不返回）。
@@ -284,15 +255,14 @@ pub fn resume(task_id: u32) -> ! {
         crate::gdt::set_rsp0(top);
     }
     if let Some(root) = root(task_id) {
-        unsafe { crate::cpu::write_cr3(root) };
+        crate::cpu::write_cr3(root);
     }
     // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
     flush_deferred_frames();
-    unsafe {
-        let scratch = core::ptr::addr_of_mut!(SCRATCH);
+    SCRATCH.with_mut(|scratch| {
         *scratch = frame;
-        crate::exc::resume(&*core::ptr::addr_of!(SCRATCH))
-    }
+        crate::exc::resume(scratch)
+    })
 }
 
 #[cfg(test)]

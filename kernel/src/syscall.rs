@@ -32,6 +32,8 @@ use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
 use crate::vspace::{self, PT_PRESENT, PT_USER, PT_WRITABLE};
+use prima_ostd::entry::AbiFrame;
+use prima_ostd::sync::StaticCell;
 
 /// 合法 syscall 号：回显（`arg0 ^ ECHO_MASK`）。
 pub const SYS_ECHO: u64 = 1;
@@ -199,9 +201,6 @@ pub const IPC2_RECEIPT_CAPCOUNT: u64 = 88;
 /// 切片 M：第二个 ring3 任务的 Task id（由 SPEC-050 `platform_init` 创建）。
 pub const TASK2_ID: u32 = 2;
 
-/// 切片 M：`syscall_entry` 写入的当前保存块基址（`rbp`），供 `SYS_YIELD` 读出完整上下文。
-pub static mut CONTEXT_BASE: u64 = 0;
-
 /// ABI 参数寄存器个数。
 pub const MAX_ARGS: usize = 6;
 
@@ -364,7 +363,7 @@ impl CapWitness {
 }
 
 fn read_user_qword(va: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(va as *const u64) }
+    prima_ostd::mm::read_u64(va)
 }
 
 /// 读取能力生命周期回执（`user_trap_exit` 中在 task 1 的根下调用）。
@@ -554,46 +553,17 @@ fn cap_drop_call(raw_cap: u64) -> u64 {
 // 切片 M：协作式多任务切换
 // ---------------------------------------------------------------------------
 
-/// `syscall_entry` 写入的保存块基址（`rbp`）。
-fn save_block() -> *const u64 {
-    unsafe { *core::ptr::addr_of!(CONTEXT_BASE) as *const u64 }
-}
-
-/// 从 `syscall_entry` 的保存块构造完整用户上下文。
+/// 当前 `int 0x80` 现场的完整用户上下文。
 ///
-/// **保存块与 [`SretFrame`] 偏移不同，必须逐槽按名映射，不可按字段序复制**：
-/// `rax..rbp` 在 `0x00..0x30`；`r8..r15` 在 `0x38..0x70`（对应 `SretFrame` 的
-/// `0x40..0x78`）；`rip=0x78`、`cs=0x80`、`rflags=0x88`、`rsp=0x90`、`ss=0x98`
-/// （`SretFrame` 的 `rsp` 在 `0x38`、`rflags/rip/cs/ss` 在 `0x80..0x98`）。
+/// 裸入口把保存块基址写入 [`prima_ostd::entry`] 的 `CONTEXT_BASE`；本函数把它展开为
+/// [`SretFrame`]。**保存块与 `SretFrame` 的槽位不同**，逐槽映射由
+/// [`prima_ostd::entry::SaveBlock::to_sret_frame`] 负责（切片 AH 下沉）。
 ///
-/// # Safety
-///
-/// `base` 必须指向 [`syscall_entry`] 在当前内核栈上建立的 20-qword 保存块；host 测试
-/// 传入同布局的假块。任何其它指针都是未定义行为。
-pub(crate) unsafe fn frame_from_save_block(base: *const u64) -> SretFrame {
-    let read = |offset: usize| unsafe { core::ptr::read_volatile(base.add(offset / 8)) };
-    SretFrame {
-        rax: read(0x00),
-        rbx: read(0x08),
-        rcx: read(0x10),
-        rdx: read(0x18),
-        rsi: read(0x20),
-        rdi: read(0x28),
-        rbp: read(0x30),
-        r8: read(0x38),
-        r9: read(0x40),
-        r10: read(0x48),
-        r11: read(0x50),
-        r12: read(0x58),
-        r13: read(0x60),
-        r14: read(0x68),
-        r15: read(0x70),
-        rsp: read(0x90),
-        rflags: read(0x88),
-        rip: read(0x78),
-        cs: read(0x80),
-        ss: read(0x98),
-    }
+/// 契约：只可在 `syscall_entry` 递送的处理函数内部调用（此时保存块必已写入）。
+fn current_context() -> SretFrame {
+    prima_ostd::entry::context_base()
+        .expect("syscall handler runs inside an int 0x80 frame")
+        .to_sret_frame()
 }
 
 /// 切片 M 的多任务实测记录（单核 boot 早期无并发）。
@@ -612,7 +582,7 @@ struct MtState {
     task2_cs: u64,
 }
 
-static mut MT: MtState = MtState {
+static MT: StaticCell<MtState> = StaticCell::new(MtState {
     switches: 0,
     last_from: 0,
     last_to: 0,
@@ -624,7 +594,7 @@ static mut MT: MtState = MtState {
     task1_cs_before: 0,
     task1_cs_after: 0,
     task2_cs: 0,
-};
+});
 
 /// 切片 N：SPEC-051 多任务见证在 task 1 恢复后即固定下来，后续切片新增的切换不扰动它。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -634,58 +604,56 @@ struct MtSnapshot {
     last_to: u64,
 }
 
-static mut MT_SNAPSHOT: Option<MtSnapshot> = None;
+static MT_SNAPSHOT: StaticCell<Option<MtSnapshot>> = StaticCell::new(None);
 
 /// 记录一次非阶段一 syscall（task 1 阶段二或 task 2 的调用）。
 fn mt_record(task: u32, num: u64, cs: u64, ret: u64) {
-    unsafe {
-        let mt = core::ptr::addr_of_mut!(MT);
+    MT.with_mut(|mt| {
         if task == INIT_TASK_ID {
             if num == SYS_TASK_ID {
-                if (*mt).switches == 0 {
-                    (*mt).task1_id_before = ret;
-                    (*mt).task1_cs_before = cs;
+                if mt.switches == 0 {
+                    mt.task1_id_before = ret;
+                    mt.task1_cs_before = cs;
                 } else {
-                    (*mt).task1_id_after = ret;
-                    (*mt).task1_cs_after = cs;
+                    mt.task1_id_after = ret;
+                    mt.task1_cs_after = cs;
                     // SPEC-051 证据在 task 1 恢复后封存。
-                    let snapshot = core::ptr::addr_of_mut!(MT_SNAPSHOT);
-                    *snapshot = Some(MtSnapshot {
-                        switches: (*mt).switches,
-                        last_from: (*mt).last_from,
-                        last_to: (*mt).last_to,
+                    MT_SNAPSHOT.with_mut(|snapshot| {
+                        *snapshot = Some(MtSnapshot {
+                            switches: mt.switches,
+                            last_from: mt.last_from,
+                            last_to: mt.last_to,
+                        });
                     });
                 }
             }
         } else if task == TASK2_ID {
-            (*mt).task2_cs = cs;
+            mt.task2_cs = cs;
             if num == SYS_TASK_ID {
-                (*mt).task2_id = ret;
+                mt.task2_id = ret;
             } else if num == SYS_AUTHORIZE {
-                (*mt).task2_auth = ret;
+                mt.task2_auth = ret;
             } else if num == SYS_EXC_SUBSCRIBE {
-                (*mt).task2_sub = ret;
+                mt.task2_sub = ret;
             } else if num == SYS_TRAP {
-                let wait = core::ptr::addr_of_mut!(EXC_WAIT);
-                (*wait).cs_trap = cs;
+                EXC_WAIT.with_mut(|wait| wait.cs_trap = cs);
             }
         }
-    }
+    });
 }
 
 /// 记录一次协作切换（在状态迁移与恢复之前调用）。
 fn mt_record_yield(from: u32, to: u32) {
-    unsafe {
-        let mt = core::ptr::addr_of_mut!(MT);
-        (*mt).switches += 1;
-        (*mt).last_from = from as u64;
-        (*mt).last_to = to as u64;
-    }
+    MT.with_mut(|mt| {
+        mt.switches += 1;
+        mt.last_from = from as u64;
+        mt.last_to = to as u64;
+    });
 }
 
 /// 读取多任务记录（单核，无并发）。
 fn mt_state() -> MtState {
-    unsafe { *core::ptr::addr_of!(MT) }
+    MT.with(|mt| *mt)
 }
 
 /// 切片 N：raise/wait 的实测记录（单核，无并发）。
@@ -704,7 +672,7 @@ struct ExcWaitState {
     payload: u64,
 }
 
-static mut EXC_WAIT: ExcWaitState = ExcWaitState {
+static EXC_WAIT: StaticCell<ExcWaitState> = StaticCell::new(ExcWaitState {
     blocks: 0,
     cs_wait: 0,
     cs_trap: 0,
@@ -713,31 +681,29 @@ static mut EXC_WAIT: ExcWaitState = ExcWaitState {
     pending: 0,
     woken: 0,
     payload: 0,
-};
+});
 
 /// 记录一次 `SYS_EXC_WAIT` 阻塞（在切走前调用）。
 fn exc_wait_record(cs: u64, source_id: u32) {
-    unsafe {
-        let wait = core::ptr::addr_of_mut!(EXC_WAIT);
-        (*wait).blocks += 1;
-        (*wait).cs_wait = cs;
-        (*wait).source_id = source_id as u64;
-    }
+    EXC_WAIT.with_mut(|wait| {
+        wait.blocks += 1;
+        wait.cs_wait = cs;
+        wait.source_id = source_id as u64;
+    });
 }
 
 /// 记录一次内核 actor raise 的结果。
 fn exc_trap_record(outcome: &bootstrap::RaiseOutcome) {
-    unsafe {
-        let wait = core::ptr::addr_of_mut!(EXC_WAIT);
-        (*wait).delivered = outcome.delivered as u64;
-        (*wait).pending = outcome.pending as u64;
-        (*wait).woken = outcome.woken.map(|task| task as u64).unwrap_or(0);
-        (*wait).payload = outcome.payload;
-    }
+    EXC_WAIT.with_mut(|wait| {
+        wait.delivered = outcome.delivered as u64;
+        wait.pending = outcome.pending as u64;
+        wait.woken = outcome.woken.map(|task| task as u64).unwrap_or(0);
+        wait.payload = outcome.payload;
+    });
 }
 
 fn exc_wait_state() -> ExcWaitState {
-    unsafe { *core::ptr::addr_of!(EXC_WAIT) }
+    EXC_WAIT.with(|wait| *wait)
 }
 
 /// `SYS_TRAP`：内核 actor 在 syscall trap 线性化点 raise `SyscallTrap`（§12.5）。
@@ -775,7 +741,7 @@ fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
         Ok(source_id) => source_id,
         Err(error) => return encode_errno(exc_errno(error)),
     };
-    let mut frame = unsafe { frame_from_save_block(save_block()) };
+    let mut frame = current_context();
     frame.rax = 0;
     sched::set_frame(cur, frame);
     exc_wait_record(frame.cs, source_id);
@@ -792,7 +758,7 @@ fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
 /// 不会泄漏；被让出的任务在其被重新调度时从保存的 `SretFrame` 直接恢复，`yield` 返回 0。
 fn yield_call() -> ! {
     let cur = sched::current();
-    let mut frame = unsafe { frame_from_save_block(save_block()) };
+    let mut frame = current_context();
     frame.rax = 0;
     sched::set_frame(cur, frame);
     let next = sched::pick_next(cur).expect("SYS_YIELD: no Ready task to switch to");
@@ -907,25 +873,24 @@ struct IpcPathState {
     blocks: u64,
 }
 
-static mut IPC_PATHS: IpcPathState = IpcPathState {
+static IPC_PATHS: StaticCell<IpcPathState> = StaticCell::new(IpcPathState {
     queued: 0,
     direct: 0,
     blocks: 0,
-};
+});
 
 fn ipc_paths() -> IpcPathState {
-    unsafe { *core::ptr::addr_of!(IPC_PATHS) }
+    IPC_PATHS.with(|paths| *paths)
 }
 
 fn ipc_path_record(direct: bool) {
-    unsafe {
-        let paths = core::ptr::addr_of_mut!(IPC_PATHS);
+    IPC_PATHS.with_mut(|paths| {
         if direct {
-            (*paths).direct += 1;
+            paths.direct += 1;
         } else {
-            (*paths).queued += 1;
+            paths.queued += 1;
         }
-    }
+    });
 }
 
 /// `SYS_SEND`：经授权把一条（可携带 Capability 的）消息投递给 `receiver`。
@@ -1022,7 +987,7 @@ fn write_recv_out(ptr: u64, caps: &[Handle], count: u64) {
     }
     values[2] = count;
     for (index, value) in values.iter().enumerate() {
-        unsafe { core::ptr::write_volatile((ptr + index as u64 * 8) as *mut u64, *value) };
+        prima_ostd::mm::write_u64_at(ptr, index as u64, *value);
     }
 }
 
@@ -1045,13 +1010,10 @@ fn recv_call(out_ptr: u64) -> u64 {
         Err(bootstrap::IpcError::QueueEmpty) => {
             // `receive_message` 已把本任务置为 `BlockedRecv`；保存帧、置零 out 缓冲后切走。
             write_recv_out(out_ptr, &[], 0);
-            let mut frame = unsafe { frame_from_save_block(save_block()) };
+            let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
-            unsafe {
-                let paths = core::ptr::addr_of_mut!(IPC_PATHS);
-                (*paths).blocks += 1;
-            }
+            IPC_PATHS.with_mut(|paths| paths.blocks += 1);
             let next = sched::pick_next(cur).expect("SYS_RECV: no Ready task to switch to");
             sched::block_to(next)
         }
@@ -1165,7 +1127,7 @@ fn read_task_req(ptr: u64) -> Result<bootstrap::TaskCreateRequest, Errno> {
     task_req_ok(ptr)?;
     let mut words = [0u64; TASK_CREATE_REQ_QWORDS];
     for (index, word) in words.iter_mut().enumerate() {
-        *word = unsafe { core::ptr::read_volatile((ptr + index as u64 * 8) as *const u64) };
+        *word = prima_ostd::mm::read_u64_at(ptr, index as u64);
     }
     Ok(bootstrap::TaskCreateRequest {
         code_seg_cap: decode_optional_handle(words[0])?,
@@ -1232,15 +1194,15 @@ struct TaskState {
     create_count: u32,
 }
 
-static mut TASK_STATE: TaskState = TaskState {
+static TASK_STATE: StaticCell<TaskState> = StaticCell::new(TaskState {
     child: 0,
     stack_top: 0,
     grandchild: 0,
     create_count: 0,
-};
+});
 
 fn task_state() -> TaskState {
-    unsafe { *core::ptr::addr_of!(TASK_STATE) }
+    TASK_STATE.with(|state| *state)
 }
 
 /// `SYS_TASK_CREATE`：§8.1 完整成功动作 + 调度登记。
@@ -1269,16 +1231,15 @@ fn task_create_call(req_ptr: u64) -> u64 {
             {
                 return encode_errno(Errno::NoSpace);
             }
-            unsafe {
-                let state = core::ptr::addr_of_mut!(TASK_STATE);
-                if (*state).create_count == 0 {
-                    (*state).child = outcome.task_id;
+            TASK_STATE.with_mut(|state| {
+                if state.create_count == 0 {
+                    state.child = outcome.task_id;
                 } else {
-                    (*state).grandchild = outcome.task_id;
+                    state.grandchild = outcome.task_id;
                 }
-                (*state).create_count += 1;
-                (*state).stack_top = req.stack_top;
-            }
+                state.create_count += 1;
+                state.stack_top = req.stack_top;
+            });
             outcome.manager_cap.encode()
         }
         Err(error) => encode_errno(task_create_errno(error)),
@@ -1549,7 +1510,7 @@ fn copy_in(ptr: u64, len: u64) -> Result<u64, Errno> {
     let mut i = 0;
     while i < len {
         // 单核 boot 早期；指针已由上面的页表检查证明可达。
-        let byte = unsafe { core::ptr::read_volatile((ptr + i) as *const u8) };
+        let byte = prima_ostd::mm::read_u8(ptr + i);
         value |= (byte as u64) << (8 * i);
         i += 1;
     }
@@ -1570,29 +1531,26 @@ struct CallRecord {
 /// 顺序：ABI 电池 6 次 + 授权查询 3 次 + 订阅/取消订阅 6 次（快路径单独记录，不占此处）。
 const MAX_CALLS: usize = 15;
 
-static mut CALLS: [CallRecord; MAX_CALLS] = [CallRecord { cs: 0, ret: 0 }; MAX_CALLS];
+static CALLS: StaticCell<[CallRecord; MAX_CALLS]> =
+    StaticCell::new([CallRecord { cs: 0, ret: 0 }; MAX_CALLS]);
 
 /// 已进入的 syscall 次数。
 static COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// 由裸入口 `idt::syscall_entry` 调用的内核侧处理。
+/// 由框架裸入口 `syscall_entry` 调用的内核侧处理。
 ///
-/// `frame` 指向栈上 8 个 qword 的现场帧：`[0]=调用号(rax)`、`[1..7]=参数(rdi,rsi,rdx,
-/// r10,r8,r9)`、`[7]=进入时 CS`。
-///
-/// # Safety
-///
-/// 仅由 `syscall_entry` 在 CPL3→CPL0 的 `int 0x80` 现场调用；`frame` 必须指向上述
-/// 布局的有效只读数组。从 Rust 侧传入其它指针属未定义行为。
-pub unsafe extern "C" fn handle(frame: *const u64) -> u64 {
-    let num = unsafe { *frame };
+/// `frame` 是栈上 8 个 qword 的 ABI 现场帧的**类型化视图**：`[0]=调用号(rax)`、
+/// `[1..7]=参数(rdi,rsi,rdx,r10,r8,r9)`、`[7]=进入时 CS`。解引用由框架的
+/// [`AbiFrame`] 访问器完成，本函数因此是 safe `extern "C" fn`（ABI 不变）。
+pub extern "C" fn handle(frame: AbiFrame) -> u64 {
+    let num = frame.num();
     let mut args = [0u64; MAX_ARGS];
     let mut i = 0;
     while i < MAX_ARGS {
-        args[i] = unsafe { *frame.add(1 + i) };
+        args[i] = frame.arg(i);
         i += 1;
     }
-    let cs = unsafe { *frame.add(1 + MAX_ARGS) };
+    let cs = frame.cs();
     let current = sched::current();
 
     let ret = serve(num, &args);
@@ -1605,11 +1563,8 @@ pub unsafe extern "C" fn handle(frame: *const u64) -> u64 {
         usize::MAX
     };
     if index < MAX_CALLS {
-        // 单核 boot 早期：写入与读取之间无并发，故用裸指针而非原子数组。
-        unsafe {
-            let calls = core::ptr::addr_of_mut!(CALLS);
-            (*calls)[index] = CallRecord { cs, ret };
-        }
+        // 单核 boot 早期：写入与读取之间无并发。
+        CALLS.with_mut(|calls| calls[index] = CallRecord { cs, ret });
     } else {
         mt_record(current, num, cs, ret);
     }
@@ -1673,41 +1628,35 @@ struct FastRecord {
     ret: u64,
 }
 
-static mut FAST: FastRecord = FastRecord {
+static FAST: StaticCell<FastRecord> = StaticCell::new(FastRecord {
     num: 0,
     arg: 0,
     cs: 0,
     ret: 0,
-};
+});
 
-/// 由裸入口 `idt::syscall_fast_entry` 调用的内核侧处理（与 [`handle`] 共用 [`serve`]）。
+/// 由框架裸入口 `syscall_fast_entry` 调用的内核侧处理（与 [`handle`] 共用 [`serve`]）。
 ///
 /// `frame` 布局与 `int 0x80` 路径相同：`[0]=号`、`[1..7]=参数`、`[7]=CS`（快路径由入口
-/// 填 [`USER_CS`] 常量，因为 `syscall` 不压栈 CS）。
-///
-/// # Safety
-///
-/// 仅由 `syscall_fast_entry` 在 CPL3 `syscall` 现场调用；`frame` 必须指向上述布局的
-/// 有效只读数组。
-pub unsafe extern "C" fn handle_fast(frame: *const u64) -> u64 {
-    let num = unsafe { *frame };
+/// 填 [`prima_ostd::entry::set_fast_syscall_cs`] 设定的用户 `CS`，因为 `syscall` 不压栈 CS）。
+pub extern "C" fn handle_fast(frame: AbiFrame) -> u64 {
+    let num = frame.num();
     let mut args = [0u64; MAX_ARGS];
     let mut i = 0;
     while i < MAX_ARGS {
-        args[i] = unsafe { *frame.add(1 + i) };
+        args[i] = frame.arg(i);
         i += 1;
     }
-    let cs = unsafe { *frame.add(1 + MAX_ARGS) };
+    let cs = frame.cs();
     let ret = serve(num, &args);
-    unsafe {
-        let fast = core::ptr::addr_of_mut!(FAST);
-        (*fast) = FastRecord {
+    FAST.with_mut(|fast| {
+        *fast = FastRecord {
             num,
             arg: args[0],
             cs,
             ret,
         };
-    }
+    });
     ret
 }
 
@@ -1723,16 +1672,16 @@ pub const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 ///
 /// 写 MSR 是特权操作；仅可在单核 boot 早期调用。
 pub fn configure_fast_path() {
-    unsafe {
-        let efer = crate::msr::rdmsr(crate::msr::IA32_EFER);
-        crate::msr::wrmsr(crate::msr::IA32_EFER, crate::msr::efer_with_sce(efer));
-        crate::msr::wrmsr(crate::msr::IA32_STAR, crate::msr::STAR_VALUE);
-        crate::msr::wrmsr(
-            crate::msr::IA32_LSTAR,
-            crate::idt::syscall_fast_entry as *const () as u64,
-        );
-        crate::msr::wrmsr(crate::msr::IA32_FMASK, crate::msr::SYSCALL_FMASK);
-    }
+    let efer = crate::msr::rdmsr(crate::msr::IA32_EFER);
+    crate::msr::wrmsr(crate::msr::IA32_EFER, crate::msr::efer_with_sce(efer));
+    crate::msr::wrmsr(crate::msr::IA32_STAR, crate::msr::STAR_VALUE);
+    // 快路径入口不压 CS，故先把用户 CS 告知框架（写入 ABI 帧的 CS 槽）。
+    prima_ostd::entry::set_fast_syscall_cs(USER_CS as u64);
+    crate::msr::wrmsr(
+        crate::msr::IA32_LSTAR,
+        prima_ostd::entry::syscall_fast_entry_addr(),
+    );
+    crate::msr::wrmsr(crate::msr::IA32_FMASK, crate::msr::SYSCALL_FMASK);
 }
 
 /// 一次 `syscall`/`sysret` 快路径见证的实测证据。
@@ -1776,14 +1725,11 @@ impl FastWitness {
 
 /// 收集 `syscall`/`sysret` 快路径见证（在用户 `int3` 收尾回调中调用）。
 pub fn fast_witness() -> FastWitness {
-    let record = unsafe {
-        let fast = core::ptr::addr_of!(FAST);
-        *fast
-    };
-    let efer = unsafe { crate::msr::rdmsr(crate::msr::IA32_EFER) };
-    let star = unsafe { crate::msr::rdmsr(crate::msr::IA32_STAR) };
-    let lstar = unsafe { crate::msr::rdmsr(crate::msr::IA32_LSTAR) };
-    let fmask = unsafe { crate::msr::rdmsr(crate::msr::IA32_FMASK) };
+    let record = FAST.with(|fast| *fast);
+    let efer = crate::msr::rdmsr(crate::msr::IA32_EFER);
+    let star = crate::msr::rdmsr(crate::msr::IA32_STAR);
+    let lstar = crate::msr::rdmsr(crate::msr::IA32_LSTAR);
+    let fmask = crate::msr::rdmsr(crate::msr::IA32_FMASK);
     FastWitness {
         cs: record.cs,
         num: record.num,
@@ -1793,7 +1739,7 @@ pub fn fast_witness() -> FastWitness {
         efer_sce: (efer & crate::msr::EFER_SCE != 0) as u32,
         star,
         fmask,
-        lstar_ok: (lstar == crate::idt::syscall_fast_entry as *const () as u64) as u32,
+        lstar_ok: (lstar == prima_ostd::entry::syscall_fast_entry_addr()) as u32,
     }
 }
 
@@ -1857,7 +1803,7 @@ impl SyscallWitness {
 }
 
 fn read_qword(va: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(va as *const u64) }
+    prima_ostd::mm::read_u64(va)
 }
 
 /// 切片 O：从 task 2 回执页 Y2 的**物理帧**读一个 qword（经直映射）。
@@ -1876,10 +1822,7 @@ fn read_task2_qword(byte_offset: u64) -> u64 {
 
 /// 读取前 [`MAX_CALLS`] 条进入记录（单核 boot 早期，无并发）。
 fn call_records() -> [CallRecord; MAX_CALLS] {
-    unsafe {
-        let ptr = core::ptr::addr_of!(CALLS);
-        *ptr
-    }
+    CALLS.with(|calls| *calls)
 }
 
 /// 全部进入记录是否都来自 CPL3。
@@ -2158,12 +2101,10 @@ impl MtWitness {
 pub fn mt_witness() -> MtWitness {
     let mt = mt_state();
     // 切片 N：SPEC-051 的切换计数在 task 1 恢复后即封存，后续 raise/wait 的切换不扰动。
-    let (switches, last_from, last_to) = unsafe {
-        match *core::ptr::addr_of!(MT_SNAPSHOT) {
-            Some(snapshot) => (snapshot.switches, snapshot.last_from, snapshot.last_to),
-            None => (mt.switches, mt.last_from, mt.last_to),
-        }
-    };
+    let (switches, last_from, last_to) = MT_SNAPSHOT.with(|snapshot| match *snapshot {
+        Some(snapshot) => (snapshot.switches, snapshot.last_from, snapshot.last_to),
+        None => (mt.switches, mt.last_from, mt.last_to),
+    });
     MtWitness {
         switches,
         last_from,
@@ -2885,13 +2826,16 @@ mod tests {
     }
 
     /// 构造可区分的保存块：槽 i 的值为 `base + i`，用于逐槽钉死映射。
+    ///
+    /// 映射实现已下沉 [`prima_ostd::entry::SaveBlock::to_sret_frame`]（切片 AH），此处仍以
+    /// 内核调用方视角对同一契约回归。
     #[test]
-    fn frame_from_save_block_maps_every_slot_by_name() {
+    fn save_block_maps_every_slot_by_name() {
         let mut block = [0u64; 20];
         for (index, slot) in block.iter_mut().enumerate() {
             *slot = 0x1000 + index as u64;
         }
-        let frame = unsafe { frame_from_save_block(block.as_ptr()) };
+        let frame = prima_ostd::entry::SaveBlock::new(block.as_ptr()).to_sret_frame();
         assert_eq!(frame.rax, 0x1000);
         assert_eq!(frame.rbx, 0x1001);
         assert_eq!(frame.rcx, 0x1002);

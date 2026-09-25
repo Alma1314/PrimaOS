@@ -6,8 +6,6 @@
 //! **范围边界：** 单核、非抢占；不做 `swapgs`/per-CPU 区、不做 PCID/STAR 之外的
 //! 兼容性配置；FMASK 仅屏蔽 IF/TF/DF。
 
-use core::arch::asm;
-
 /// IA32_EFER：扩展功能使能寄存器。
 pub const IA32_EFER: u32 = 0xC000_0080;
 /// IA32_STAR：`syscall`/`sysret` 的段选择子。
@@ -25,28 +23,17 @@ pub const SYSCALL_FMASK: u64 = 0x700;
 
 /// 读 MSR（特权指令，仅 CPL0）。
 ///
-/// # Safety
-///
-/// 只能在 CPL0 执行；host 用户态单测不得调用。
-pub unsafe fn rdmsr(msr: u32) -> u64 {
-    let (low, high): (u32, u32);
-    unsafe {
-        asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nostack, preserves_flags));
-    }
-    ((high as u64) << 32) | low as u64
+/// 契约随 [`prima_ostd::arch::rdmsr`]：只能在 CPL0 调用；host 用户态单测不得调用。
+pub fn rdmsr(msr: u32) -> u64 {
+    prima_ostd::arch::rdmsr(msr)
 }
 
 /// 写 MSR（特权指令，仅 CPL0）。
 ///
-/// # Safety
-///
-/// 只能在 CPL0 执行；写入错误值会使后续 `syscall`/`sysret` 行为未定义。
-pub unsafe fn wrmsr(msr: u32, value: u64) {
-    let low = value as u32;
-    let high = (value >> 32) as u32;
-    unsafe {
-        asm!("wrmsr", in("ecx") msr, in("eax") low, in("edx") high, options(nostack, preserves_flags));
-    }
+/// 契约随 [`prima_ostd::arch::wrmsr`]：只能在 CPL0 调用；写入错误值会使后续
+/// `syscall`/`sysret` 行为未定义。
+pub fn wrmsr(msr: u32, value: u64) {
+    prima_ostd::arch::wrmsr(msr, value);
 }
 
 /// 在 EFER 值上置位 SCE（纯函数，供 host 单测）。

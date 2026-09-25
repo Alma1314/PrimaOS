@@ -3,6 +3,7 @@ use core::fmt;
 use crate::handle::Handle;
 use crate::mem::FrameInventory;
 use crate::rights::{ObjectKind, Right, Rights};
+use prima_ostd::sync::StaticCell;
 
 pub const INIT_TASK_ID: u32 = 1;
 /// 初始根 Capability 的**物理槽索引**（S2-D1：句柄 = 槽索引 + generation）。
@@ -240,8 +241,8 @@ impl Eq for AuditLog {}
 /// 且容量/段数都不再占结构体空间——后续切片可自由扩容。
 ///
 /// 段由 `AUDIT_CURSOR` 原子分配，故 host 单测并行构造的多个 state **各有独立区段**，互不干扰。
-static mut AUDIT_ARENA: [Option<AuditEvent>; MAX_AUDIT_EVENTS * AUDIT_REGIONS] =
-    [None; MAX_AUDIT_EVENTS * AUDIT_REGIONS];
+static AUDIT_ARENA: StaticCell<[Option<AuditEvent>; MAX_AUDIT_EVENTS * AUDIT_REGIONS]> =
+    StaticCell::new([None; MAX_AUDIT_EVENTS * AUDIT_REGIONS]);
 static AUDIT_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 impl AuditLog {
@@ -264,12 +265,7 @@ impl AuditLog {
 
     fn append(&mut self, event: AuditEvent) {
         let index = self.base + self.count;
-        let slot = unsafe {
-            core::ptr::addr_of_mut!(AUDIT_ARENA)
-                .cast::<Option<AuditEvent>>()
-                .add(index)
-        };
-        unsafe { core::ptr::write(slot, Some(event)) };
+        AUDIT_ARENA.with_mut(|arena| arena[index] = Some(event));
         self.count += 1;
     }
 
@@ -278,12 +274,7 @@ impl AuditLog {
         if index >= self.count {
             return None;
         }
-        let slot = unsafe {
-            core::ptr::addr_of!(AUDIT_ARENA)
-                .cast::<Option<AuditEvent>>()
-                .add(self.base + index)
-        };
-        unsafe { core::ptr::read(slot) }
+        AUDIT_ARENA.with(|arena| arena[self.base + index])
     }
 
     #[cfg(test)]
@@ -1292,17 +1283,17 @@ pub enum ExcResumeError {
 /// §12.10 成功动作 1「清零 Segment 中 `[frame_offset, frame_offset + 0xA0)` 的已消费 frame
 /// bytes」在此等价为清零该缓冲的对应字节。
 pub const RESUME_FRAME_BUFFER_LEN: usize = 0x200;
-static mut RESUME_FRAME_BUFFER: [u8; RESUME_FRAME_BUFFER_LEN] = [0; RESUME_FRAME_BUFFER_LEN];
+static RESUME_FRAME_BUFFER: StaticCell<[u8; RESUME_FRAME_BUFFER_LEN]> =
+    StaticCell::new([0; RESUME_FRAME_BUFFER_LEN]);
 
 /// SPEC-073：把一帧的编码写进内核持有的恢复帧缓冲（见证/代调方在调用前使用）。
 pub fn install_resume_frame(frame_offset: usize, bytes: &[u8]) -> Result<(), ExcResumeError> {
     if frame_offset + bytes.len() > RESUME_FRAME_BUFFER_LEN {
         return Err(ExcResumeError::OutOfBounds);
     }
-    let base = core::ptr::addr_of!(RESUME_FRAME_BUFFER).cast::<u8>();
-    // SAFETY：`frame_offset + bytes.len()` 已在上面校验过不超过缓冲长度。
-    let target =
-        unsafe { core::slice::from_raw_parts_mut(base.add(frame_offset).cast_mut(), bytes.len()) };
+    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
+    // `frame_offset + bytes.len()` 已在上面校验过不超过缓冲长度。
+    let target = prima_ostd::mm::bytes_at_mut(base, bytes.len());
     target.copy_from_slice(bytes);
     Ok(())
 }
@@ -1312,10 +1303,9 @@ pub fn resume_frame_bytes(frame_offset: usize) -> Option<[u8; crate::exc::SRET_F
     if frame_offset + crate::exc::SRET_FRAME_LEN > RESUME_FRAME_BUFFER_LEN {
         return None;
     }
-    let base = core::ptr::addr_of!(RESUME_FRAME_BUFFER).cast::<u8>();
-    // SAFETY：上面的边界检查保证该区间落在缓冲内。
-    let source =
-        unsafe { core::slice::from_raw_parts(base.add(frame_offset), crate::exc::SRET_FRAME_LEN) };
+    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
+    // 上面的边界检查保证该区间落在缓冲内。
+    let source = prima_ostd::mm::bytes_at(base, crate::exc::SRET_FRAME_LEN);
     let mut bytes = [0u8; crate::exc::SRET_FRAME_LEN];
     bytes.copy_from_slice(source);
     Some(bytes)
@@ -4350,7 +4340,7 @@ impl BootstrapState {
             {
                 return Err(MemsegError::NoMemory);
             }
-            unsafe { crate::vspace::invlpg(va) };
+            prima_ostd::arch::invlpg(va);
             self.vspace.insert(VspaceEntry {
                 task_id,
                 va,
@@ -4402,7 +4392,7 @@ impl BootstrapState {
                     .map_err(|_| crate::vspace::VspaceError::NoFrame)
             })
             .map_err(|_| MemsegError::NotMapped)?;
-            unsafe { crate::vspace::invlpg(va) };
+            prima_ostd::arch::invlpg(va);
             let _ = self.vspace.remove(task_id, va);
         }
         Ok(())
@@ -4642,62 +4632,47 @@ pub fn create_state(
 
 /// 是否已安装 Bootstrap 状态（W14 幂等判定）。
 pub fn is_installed() -> bool {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot).is_some()
-    }
+    BOOTSTRAP_STATE.with(|slot| slot.is_some())
 }
 
 /// 切片 P：读取初始 Authority 见证记录（未安装或无记录时报错）。
 pub fn authority_record() -> Result<BootstrapRecord, BootstrapError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref().and_then(|state| state.boot_record) {
+    BOOTSTRAP_STATE.with(
+        |slot| match slot.as_ref().and_then(|state| state.boot_record) {
             Some(record) => Ok(record),
             None => Err(BootstrapError::InvalidAuthority),
-        }
-    }
+        },
+    )
 }
 
 /// §14 步骤 8 + W13：首次调度 init——`Ready → Running` 并追加 `TaskStateChanged`。
 pub fn activate_init() -> Result<(), BootstrapError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.activate_init(),
-            None => Err(BootstrapError::InvalidAuthority),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.activate_init(),
+        None => Err(BootstrapError::InvalidAuthority),
+    })
 }
 
 /// SPEC-071：取 Task 状态迁移审计汇总（授权表未安装时 `None`）。
 pub fn task_state_audit() -> Option<TaskStateAudit> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot).as_ref().map(|state| state.task_state_audit())
-    }
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.task_state_audit()))
 }
 
 /// SPEC-070：采集 `Faulted` 见证（必须在 `activate_init` **之前**调用）。
 pub fn collect_fault_witness() -> Result<FaultWitness, TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.fault_witness(),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.fault_witness(),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
 /// SPEC-070：已采集的 `Faulted` 见证（供收尾事件上报）。
-static mut FAULT_WITNESS: Option<FaultWitness> = None;
+static FAULT_WITNESS: StaticCell<Option<FaultWitness>> = StaticCell::new(None);
 
 /// 采集并登记 `Faulted` 见证。
 pub fn record_fault_witness() -> Result<(), TaskError> {
     let witness = collect_fault_witness()?;
-    unsafe {
-        *core::ptr::addr_of_mut!(FAULT_WITNESS) = Some(witness);
-    }
+    FAULT_WITNESS.with_mut(|slot| *slot = Some(witness));
     Ok(())
 }
 
@@ -4720,19 +4695,14 @@ pub fn kernel_exc_resume(
     if crate::exc::validate_for_kernel_resume(&frame, landing, stack_bottom, stack_top).is_err() {
         return Err(ExcResumeError::InvalidFrame);
     }
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.exc_resume_faulted(task_id, frame)?,
-            None => return Err(ExcResumeError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.exc_resume_faulted(task_id, frame),
+        None => Err(ExcResumeError::NoSuchTask),
+    })?;
     // 成功动作 1：清零该段已消费的帧字节（此刻已无失败点）。
-    let base = core::ptr::addr_of_mut!(RESUME_FRAME_BUFFER).cast::<u8>();
-    // SAFETY：`resume_frame_bytes` 已对同一区间做过边界校验。
-    let consumed = unsafe {
-        core::slice::from_raw_parts_mut(base.add(frame_offset), crate::exc::SRET_FRAME_LEN)
-    };
+    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
+    // `resume_frame_bytes` 已对同一区间做过边界校验。
+    let consumed = prima_ostd::mm::bytes_at_mut(base, crate::exc::SRET_FRAME_LEN);
     for byte in consumed.iter_mut() {
         *byte = 0;
     }
@@ -4775,13 +4745,11 @@ pub fn record_resume_witness(
         Some(TaskStatus::Faulted) => 3,
         _ => 4,
     };
-    let pending_cleared = unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot)
-            .as_ref()
+    let pending_cleared = BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
             .and_then(|state| state.tasks.find(task_id))
             .is_some_and(|task| task.pending_exc.is_none())
-    };
+    });
     let frame_saved = crate::sched::kernel_resume_frame(task_id).is_some();
     let frame_bytes_zeroed = resume_frame_bytes(0) == Some([0u8; crate::exc::SRET_FRAME_LEN]);
 
@@ -4792,26 +4760,22 @@ pub fn record_resume_witness(
     // 前置 6 反例：不可恢复种类再次代调必须被拒且保持 Faulted。
     install_resume_frame(0, &frame.encode())?;
     let unrecoverable_rejected = {
-        let faulted = unsafe {
-            let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-            match (*slot).as_mut() {
-                Some(state) => state
-                    .tasks
-                    .fault(task_id, PAGE_FAULT_SOURCE_ID, ExcKind::DoubleFault)
-                    .is_ok(),
-                None => false,
-            }
-        };
+        let faulted = BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+            Some(state) => state
+                .tasks
+                .fault(task_id, PAGE_FAULT_SOURCE_ID, ExcKind::DoubleFault)
+                .is_ok(),
+            None => false,
+        });
         if faulted {
-            unsafe {
-                let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-                if let Some(state) = (*slot).as_mut() {
+            BOOTSTRAP_STATE.with_mut(|slot| {
+                if let Some(state) = slot.as_mut() {
                     state.audit.append(AuditEvent::TaskStateChanged {
                         task_id,
                         status: TaskStatus::Faulted,
                     });
                 }
-            }
+            });
         }
         matches!(
             kernel_exc_resume(task_id, 0, landing, stack_bottom, stack_top),
@@ -4822,12 +4786,10 @@ pub fn record_resume_witness(
     // 收尾：不可恢复终态 → §8.2 内核回收。
     let reclaimed_after =
         kernel_reclaim_task(task_id).is_ok() && task_status(task_id) != Some(TaskStatus::Faulted);
-    let invariant_ok = unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot)
-            .as_ref()
+    let invariant_ok = BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
             .is_some_and(|state| state.tasks.check_faulted_invariant().is_ok())
-    };
+    });
 
     let witness = ResumeWitness {
         task_id,
@@ -4841,99 +4803,79 @@ pub fn record_resume_witness(
         reclaimed_after: u32::from(reclaimed_after),
         invariant_ok: u32::from(invariant_ok),
     };
-    unsafe {
-        *core::ptr::addr_of_mut!(RESUME_WITNESS) = Some(witness);
-    }
+    RESUME_WITNESS.with_mut(|slot| *slot = Some(witness));
     Ok(())
 }
 
 /// SPEC-073：把 §8.2 内核回收路径包装成布尔（见证用）。
 fn kernel_reclaim_task(task_id: u32) -> Result<(), TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.kernel_reclaim_task(task_id, None, 0),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.kernel_reclaim_task(task_id, None, 0),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
-static mut RESUME_WITNESS: Option<ResumeWitness> = None;
+static RESUME_WITNESS: StaticCell<Option<ResumeWitness>> = StaticCell::new(None);
 
 /// SPEC-073：已登记的 `exc_resume` 见证（未采集时为 `None`）。
 pub fn resume_witness_record() -> Option<ResumeWitness> {
-    unsafe { *core::ptr::addr_of!(RESUME_WITNESS) }
+    RESUME_WITNESS.with(|slot| *slot)
 }
 
 /// SPEC-072：采集并登记内核回收见证（必须在 `activate_init` 之前调用）。
 pub fn record_reclaim_witness() -> Result<(), TaskError> {
-    let witness = unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.reclaim_witness()?,
-            None => return Err(TaskError::NoSuchTask),
-        }
-    };
-    unsafe {
-        *core::ptr::addr_of_mut!(RECLAIM_WITNESS) = Some(witness);
-    }
+    let witness = BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.reclaim_witness(),
+        None => Err(TaskError::NoSuchTask),
+    })?;
+    RECLAIM_WITNESS.with_mut(|slot| *slot = Some(witness));
     Ok(())
 }
 
 /// SPEC-072：已登记的内核回收见证（未采集时为 `None`）。
 pub fn reclaim_witness_record() -> Option<ReclaimWitness> {
-    unsafe { *core::ptr::addr_of!(RECLAIM_WITNESS) }
+    RECLAIM_WITNESS.with(|slot| *slot)
 }
 
-static mut RECLAIM_WITNESS: Option<ReclaimWitness> = None;
+static RECLAIM_WITNESS: StaticCell<Option<ReclaimWitness>> = StaticCell::new(None);
 
 /// 取已登记的 `Faulted` 见证（未采集时为 `None`）。
 pub fn fault_witness_record() -> Option<FaultWitness> {
-    unsafe { *core::ptr::addr_of!(FAULT_WITNESS) }
+    FAULT_WITNESS.with(|slot| *slot)
 }
 
 /// 切片 K：全局 Bootstrap 授权表的存储（单核 boot 早期安装一次）。
-static mut BOOTSTRAP_STATE: Option<BootstrapState> = None;
+static BOOTSTRAP_STATE: StaticCell<Option<BootstrapState>> = StaticCell::new(None);
 
 /// 安装 Bootstrap 授权表，供 syscall 授权查询使用（在进入 CPL3 前调用一次）。
 pub fn install(state: BootstrapState) {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+    BOOTSTRAP_STATE.with_mut(|slot| {
         *slot = Some(state);
-    }
+    })
 }
 
 /// 查询全局授权表：`caller` 是否持有 `cap` 且具备 `right`。
 pub fn authorize(caller: u32, cap: Handle, right: Right) -> Result<Handle, AuthError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.authorize(caller, cap, right),
-            None => Err(AuthError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.authorize(caller, cap, right),
+        None => Err(AuthError::NotInstalled),
+    })
 }
 
 /// 解码 syscall 传入的裸句柄（未安装时也报 `NotInstalled`）。
 pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.decode_handle(raw),
-            None => Err(AuthError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.decode_handle(raw),
+        None => Err(AuthError::NotInstalled),
+    })
 }
 
 /// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段首帧物理地址。
 pub fn prepare_task_create_caps(phys_offset: u64) -> Result<u64, MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.prepare_task_create_caps(phys_offset),
-            None => Err(MemsegError::TargetDead),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.prepare_task_create_caps(phys_offset),
+        None => Err(MemsegError::TargetDead),
+    })
 }
 
 /// S2-D4：全局 `task_create`（§8.1）。
@@ -4943,13 +4885,10 @@ pub fn task_create(
     boot_root: u64,
     phys_offset: u64,
 ) -> Result<TaskCreateOutcome, TaskCreateError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.task_create(caller, req, boot_root, phys_offset),
-            None => Err(TaskCreateError::NoSuchCapability),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.task_create(caller, req, boot_root, phys_offset),
+        None => Err(TaskCreateError::NoSuchCapability),
+    })
 }
 
 /// S2-D4：全局 `task_destroy`（§8.2）。
@@ -4959,21 +4898,16 @@ pub fn task_destroy(
     root_phys: Option<u64>,
     phys_offset: u64,
 ) -> Result<(), TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.task_destroy(caller, task_id, root_phys, phys_offset),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.task_destroy(caller, task_id, root_phys, phys_offset),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
 /// S2-D4：见证用——活动（非 `Dead`）Task 数。
 pub fn live_task_count() -> usize {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot)
-            .as_ref()
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
             .map(|state| {
                 state
                     .tasks
@@ -4984,18 +4918,16 @@ pub fn live_task_count() -> usize {
                     .count()
             })
             .unwrap_or(0)
-    }
+    })
 }
 
 /// S2-D4：见证用——活动 Capability 槽位数。
 pub fn live_cap_count() -> usize {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot)
-            .as_ref()
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
             .map(|state| state.slots.live_count())
             .unwrap_or(0)
-    }
+    })
 }
 
 /// S2-D2：全局 `cap_derive`（§4.4）。
@@ -5004,13 +4936,10 @@ pub fn derive_capability(
     parent: Handle,
     rights: Rights,
 ) -> Result<Handle, DeriveError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.derive_capability(caller, parent, rights),
-            None => Err(DeriveError::CapacityExceeded),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.derive_capability(caller, parent, rights),
+        None => Err(DeriveError::CapacityExceeded),
+    })
 }
 
 /// S2-D3：全局 `memseg_create`（§7.1）。
@@ -5020,13 +4949,10 @@ pub fn memseg_create(
     allowed_access: Rights,
     phys_offset: u64,
 ) -> Result<Handle, MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.memseg_create(caller, page_count, allowed_access, phys_offset),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.memseg_create(caller, page_count, allowed_access, phys_offset),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// S2-D3：全局 `memseg_map`（§7.2）。
@@ -5042,23 +4968,20 @@ pub fn memseg_map(
     root_phys: u64,
     phys_offset: u64,
 ) -> Result<(), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.memseg_map(
-                caller,
-                seg_cap,
-                task_cap,
-                seg_offset,
-                target_base,
-                page_count,
-                access,
-                root_phys,
-                phys_offset,
-            ),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.memseg_map(
+            caller,
+            seg_cap,
+            task_cap,
+            seg_offset,
+            target_base,
+            page_count,
+            access,
+            root_phys,
+            phys_offset,
+        ),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// S2-D3：全局 `memseg_unmap`（§7.3）。
@@ -5070,53 +4993,41 @@ pub fn memseg_unmap(
     root_phys: u64,
     phys_offset: u64,
 ) -> Result<(), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.memseg_unmap(
-                caller,
-                task_cap,
-                target_base,
-                page_count,
-                root_phys,
-                phys_offset,
-            ),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.memseg_unmap(
+            caller,
+            task_cap,
+            target_base,
+            page_count,
+            root_phys,
+            phys_offset,
+        ),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// S2-D3：全局 `memseg_destroy`（§7.4）。
 pub fn memseg_destroy(caller: u32, seg_cap: Handle) -> Result<(), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.memseg_destroy(caller, seg_cap),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.memseg_destroy(caller, seg_cap),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// S2-D2：全局 `cap_drop`（§4.5）。
 pub fn drop_capability(caller: u32, cap: Handle) -> Result<(), DropError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.drop_capability(caller, cap),
-            None => Err(DropError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.drop_capability(caller, cap),
+        None => Err(DropError::NotInstalled),
+    })
 }
 
 /// 切片 L：平台初始化——创建预定义异常源并实证一次 pending 直投（进入 CPL3 前调用）。
 pub fn platform_init_exception_sources() -> Result<(), ExcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.platform_init(),
-            None => Err(ExcError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.platform_init(),
+        None => Err(ExcError::NotInstalled),
+    })
 }
 
 /// 切片 R：全局平台 Segment 创建（真实 Segment 对象 + 内核持有的可授权根 Capability）。
@@ -5126,48 +5037,34 @@ pub fn platform_create_segment(
     allowed_access: Rights,
     phys_offset: u64,
 ) -> Result<(Handle, SegmentFrames), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => {
-                state.platform_create_segment(id, page_count, allowed_access, phys_offset)
-            }
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.platform_create_segment(id, page_count, allowed_access, phys_offset),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// 切片 R：平台 Segment 的第 `index` 帧。
 pub fn platform_segment_frame(id: u32, index: usize) -> Result<u64, MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.platform_segment_frame(id, index),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.platform_segment_frame(id, index),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// 切片 R：为内核私有平台 Segment 追加一帧（COW 段 fault-time 私有页）。
 pub fn platform_append_frame(id: u32) -> Result<u64, MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.platform_append_frame(id),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.platform_append_frame(id),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// 切片 R：铸 task 1 / task 2 的平台 Task Capability（须在 `platform_init` 之后）。
 pub fn platform_prepare_task_caps() -> Result<(), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.platform_prepare_task_caps(),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.platform_prepare_task_caps(),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// SPEC-066：按属主移交平台段 / Task Capability。
@@ -5176,57 +5073,42 @@ pub fn platform_prepare_task_caps() -> Result<(), MemsegError> {
 /// [`BootstrapState::handover_platform_caps`]）。未安装状态归为 `NoSuchCapability`
 /// ——与「槽/对象不存在」同一失败语义。
 pub fn handover_platform_caps() -> Result<(), CapabilityPositionError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.handover_platform_caps(),
-            None => Err(CapabilityPositionError::NoSuchCapability),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.handover_platform_caps(),
+        None => Err(CapabilityPositionError::NoSuchCapability),
+    })
 }
 
 /// 切片 S：播种用户 IPC 见证所需的两条 Capability（须在 `platform_prepare_task_caps` 之后）。
 pub fn prepare_user_ipc_caps() -> Result<(), MemsegError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.prepare_user_ipc_caps(),
-            None => Err(MemsegError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.prepare_user_ipc_caps(),
+        None => Err(MemsegError::NotInstalled),
+    })
 }
 
 /// 切片 S：句柄是否指向某个 Task（供 syscall 层派生目标根）。
 pub fn task_of_cap(cap: Handle) -> Option<u32> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.task_of_cap(cap),
-            None => None,
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.task_of_cap(cap),
+        None => None,
+    })
 }
 
 /// 切片 S：接收者是否处于 `BlockedRecv`（供 `SYS_SEND` 判定投递路径）。
 pub fn is_blocked_recv_global(task_id: u32) -> bool {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.tasks.is_blocked_recv(task_id),
-            None => false,
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.tasks.is_blocked_recv(task_id),
+        None => false,
+    })
 }
 
 /// 切片 S：取走某个 Task 的 pending 消息（直投后由 `SYS_SEND` 消费，避免被后续 `SYS_RECV` 重复投递）。
 pub fn take_pending_global(task_id: u32) -> Option<IpcMessage> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.tasks.take_pending(task_id),
-            None => None,
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.tasks.take_pending(task_id),
+        None => None,
+    })
 }
 
 /// 切片 S：全局发送（接收者绑定的授权在 `BootstrapState` 内完成）。
@@ -5237,145 +5119,107 @@ pub fn send_message_with_capabilities(
     payload: u64,
     capability_ids: &[Handle],
 ) -> Result<(), IpcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.send_message_with_capabilities(
-                sender,
-                receiver,
-                send_cap,
-                payload,
-                capability_ids,
-            ),
-            None => Err(IpcError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.send_message_with_capabilities(
+            sender,
+            receiver,
+            send_cap,
+            payload,
+            capability_ids,
+        ),
+        None => Err(IpcError::NoSuchTask),
+    })
 }
 
 /// 切片 S：全局接收（空队列时会把接收者置为 `BlockedRecv`）。
 pub fn receive_message(receiver: u32) -> Result<IpcMessage, IpcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.receive_message(receiver),
-            None => Err(IpcError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.receive_message(receiver),
+        None => Err(IpcError::NoSuchTask),
+    })
 }
 
 /// 切片 R：读取平台段对象化见证记录（供 `platform_segments_ready` 事件）。
 pub fn platform_segments_record() -> Result<PlatformSegmentsRecord, BootstrapError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => Ok(state.platform_segments_record()),
-            None => Err(BootstrapError::InvalidAuthority),
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => Ok(state.platform_segments_record()),
+        None => Err(BootstrapError::InvalidAuthority),
+    })
 }
 
 /// 切片 L：全局订阅查询（供 syscall 层使用）。
 pub fn exc_subscribe(caller: u32, cap: Handle, kind: ExcKind) -> Result<u32, ExcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.exc_subscribe(caller, cap, kind),
-            None => Err(ExcError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.exc_subscribe(caller, cap, kind),
+        None => Err(ExcError::NotInstalled),
+    })
 }
 
 /// 切片 L：全局取消订阅（供 syscall 层使用）。
 pub fn exc_unsubscribe(caller: u32, cap: Handle) -> Result<u32, ExcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.exc_unsubscribe(caller, cap),
-            None => Err(ExcError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.exc_unsubscribe(caller, cap),
+        None => Err(ExcError::NotInstalled),
+    })
 }
 
 /// 切片 L：读取异常相关 Audit 计数（授权表未安装时返回 `None`）。
 pub fn exc_audit_counts() -> Option<ExcAuditCounts> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot).as_ref().map(|state| state.exc_audit_counts())
-    }
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.exc_audit_counts()))
 }
 
 /// 切片 L：读取平台初始化期间的 pending 递送留证。
 pub fn exc_boot_record() -> Option<ExcBootRecord> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot).as_ref().and_then(|state| state.exc_boot)
-    }
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().and_then(|state| state.exc_boot))
 }
 
 /// 切片 M：把 `task_id` 从 Running 让出为 Ready（协作式调度用）。
 pub fn yield_task_global(task_id: u32) -> Result<(), TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.yield_task(task_id),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.yield_task(task_id),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
 /// 切片 M：把 Ready 的 `task_id` 调度为 Running（协作式调度用）。
 pub fn schedule_task_global(task_id: u32) -> Result<(), TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.schedule_task(task_id),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.schedule_task(task_id),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
 /// 切片 M：读取任务状态（授权表未安装或任务不存在时返回 `None`）。
 pub fn task_status(task_id: u32) -> Option<TaskStatus> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        (*slot)
-            .as_ref()
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
             .and_then(|state| state.tasks.find(task_id))
             .map(|task| task.status)
-    }
+    })
 }
 
 /// 切片 N：把 `task_id` 置为 BlockedRecv（`SYS_EXC_WAIT` 阻塞调用者用）。
 pub fn block_recv_global(task_id: u32) -> Result<(), TaskError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.block_recv_task(task_id),
-            None => Err(TaskError::NoSuchTask),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.block_recv_task(task_id),
+        None => Err(TaskError::NoSuchTask),
+    })
 }
 
 /// 切片 N：内核 actor 触发一次 `raise_exception`（供 `SYS_TRAP` 使用）。
 pub fn exc_raise(source_id: u32, kind: ExcKind) -> Result<RaiseOutcome, ExcError> {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
-        match (*slot).as_mut() {
-            Some(state) => state.exc_raise(source_id, kind),
-            None => Err(ExcError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.exc_raise(source_id, kind),
+        None => Err(ExcError::NotInstalled),
+    })
 }
 
 /// 切片 N：查询 `caller` 是否已订阅 `cap` 所指源的 `kind`。
 pub fn exc_subscribed(caller: u32, cap: Handle, kind: ExcKind) -> Result<u32, ExcError> {
-    unsafe {
-        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
-        match (*slot).as_ref() {
-            Some(state) => state.exc_subscribed(caller, cap, kind),
-            None => Err(ExcError::NotInstalled),
-        }
-    }
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.exc_subscribed(caller, cap, kind),
+        None => Err(ExcError::NotInstalled),
+    })
 }
 
 #[cfg(test)]

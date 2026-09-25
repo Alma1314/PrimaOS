@@ -16,6 +16,7 @@ use crate::exc::SretFrame;
 use crate::frames;
 use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::vspace::{self, VspaceError};
+use prima_ostd::sync::StaticCell;
 
 /// COW 见证使用的虚拟地址：i4 槽 16。
 ///
@@ -85,7 +86,7 @@ struct CowContext {
     user_copied: bool,
 }
 
-static mut COW_CTX: Option<CowContext> = None;
+static COW_CTX: StaticCell<Option<CowContext>> = StaticCell::new(None);
 
 /// COW 私有帧的取帧入口（切片 R：追加进 COW `SegmentObject` 的真实帧向量）。
 ///
@@ -99,10 +100,7 @@ fn cow_frame() -> Result<u64, VspaceError> {
 ///
 /// 供 syscall 层在同一用户地址空间（bootloader CR3）上校验用户缓冲指针。
 pub fn root_and_offset() -> Option<(u64, u64)> {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of!(COW_CTX);
-        (*ctx_ptr).as_ref().map(|ctx| (ctx.root_phys, ctx.offset))
-    }
+    COW_CTX.with(|slot| slot.as_ref().map(|ctx| (ctx.root_phys, ctx.offset)))
 }
 
 /// 切片 X：把 COW 上下文的 `root_phys` 改指**自建内核根**。
@@ -111,33 +109,31 @@ pub fn root_and_offset() -> Option<(u64, u64)> {
 /// 内核侧 COW 见证（`cow_region`）在首次切 CR3 **之前**执行、必须仍指 bootloader 根，故本函数
 /// 只能在它之后调用。
 pub fn rebase_root(root_phys: u64) {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
-        if let Some(ctx) = (*ctx_ptr).as_mut() {
+    COW_CTX.with_mut(|slot| {
+        if let Some(ctx) = slot.as_mut() {
             ctx.root_phys = root_phys;
         }
-    }
+    });
 }
 
 /// 注册第二个 COW 区域（用户页）：写它时同样执行复制 + 换映射 + 重试。
 pub fn register_user_region(va: u64, shared: u64) {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
-        if let Some(ctx) = (*ctx_ptr).as_mut() {
+    COW_CTX.with_mut(|slot| {
+        if let Some(ctx) = slot.as_mut() {
             ctx.user_va = va;
             ctx.user_shared = shared;
             ctx.user_private = 0;
             ctx.user_copied = false;
         }
-    }
+    });
 }
 
 fn read_qword(va: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(va as *const u64) }
+    prima_ostd::mm::read_u64(va)
 }
 
 fn write_qword(va: u64, value: u64) {
-    unsafe { core::ptr::write_volatile(va as *mut u64, value) };
+    prima_ostd::mm::write_u64(va, value);
 }
 
 /// 准备 COW 见证：分配共享帧、写入可识别模式、建立只读映射，并登记 COW 区域。
@@ -174,11 +170,10 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         false,
         false,
     )?;
-    unsafe { vspace::invlpg(COW_VA) };
+    prima_ostd::arch::invlpg(COW_VA);
 
-    unsafe {
-        let ctx = core::ptr::addr_of_mut!(COW_CTX);
-        *ctx = Some(CowContext {
+    COW_CTX.with_mut(|slot| {
+        *slot = Some(CowContext {
             root_phys,
             offset,
             shared,
@@ -189,7 +184,7 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
             user_private: 0,
             user_copied: false,
         });
-    }
+    });
     Ok(())
 }
 
@@ -212,7 +207,7 @@ fn cow_region(root_phys: u64, offset: u64, va: u64, shared: u64, user: bool) -> 
 
     // 换映射为可写并刷新，使重试的原故障指令成功。
     vspace::set_leaf(root_phys, va, map, private, true, user).ok()?;
-    unsafe { vspace::invlpg(va) };
+    prima_ostd::arch::invlpg(va);
     Some(private)
 }
 
@@ -226,9 +221,8 @@ fn cow_region(root_phys: u64, offset: u64, va: u64, shared: u64, user: bool) -> 
 ///
 /// 只能由裸 #PF 入口在捕获现场后调用；`frame` 必须指向有效的现场帧。
 pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of_mut!(COW_CTX);
-        let Some(ctx) = (*ctx_ptr).as_mut() else {
+    COW_CTX.with_mut(|slot| {
+        let Some(ctx) = slot.as_mut() else {
             return frame.rip + crate::idt::FAULT_SKIP_LEN;
         };
         let cr2 = crate::idt::fault_addr();
@@ -257,28 +251,25 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
             }
         }
         frame.rip + crate::idt::FAULT_SKIP_LEN
-    }
+    })
 }
 
 /// 触发一次 COW 见证并收集证据（内核/QEMU 专用）。
 pub fn run() -> Result<CowWitness, &'static str> {
-    unsafe {
-        let ctx_ptr = core::ptr::addr_of!(COW_CTX);
-        if (*ctx_ptr).is_none() {
-            return Err("cow context not prepared");
-        }
+    if COW_CTX.with(|slot| slot.is_none()) {
+        return Err("cow context not prepared");
     }
 
     // 真实写只读页 → #PF → 分派器执行 COW 并重试。
     crate::idt::trigger_page_fault_write(COW_VA);
     let err = crate::idt::last_fault_err();
 
-    let (offset, shared, private, copied) = unsafe {
-        let ctx_ptr = core::ptr::addr_of!(COW_CTX);
-        match (*ctx_ptr).as_ref() {
-            Some(ctx) => (ctx.offset, ctx.shared, ctx.private, ctx.copied),
-            None => return Err("cow context vanished"),
-        }
+    let (offset, shared, private, copied) = match COW_CTX.with(|slot| {
+        slot.as_ref()
+            .map(|ctx| (ctx.offset, ctx.shared, ctx.private, ctx.copied))
+    }) {
+        Some(values) => values,
+        None => return Err("cow context vanished"),
     };
     if !copied || private == 0 {
         return Err("cow dispatch did not complete");

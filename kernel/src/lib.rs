@@ -1,6 +1,8 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
-#![feature(abi_x86_interrupt)]
+// framekernel 边界（SPEC-076/079）：本 crate 为上层机制，**零 unsafe**（含测试代码），全部
+// 硬件触面收敛进唯一信任面 `prima-ostd`。本 crate 内不存在任何 `#[allow(unsafe_code)]`。
+#![deny(unsafe_code)]
 
 pub mod bootstrap;
 pub mod cow;
@@ -15,8 +17,9 @@ pub mod mem;
 pub mod msr;
 pub mod preempt;
 pub mod rights;
-pub(crate) mod safety;
 pub mod sched;
 pub mod syscall;
+#[cfg(test)]
+pub mod test_support;
 pub mod user;
 pub mod vspace;

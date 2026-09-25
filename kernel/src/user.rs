@@ -45,6 +45,7 @@ use crate::syscall::{
     USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
+use prima_ostd::sync::StaticCell;
 
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
 pub const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
@@ -103,8 +104,8 @@ pub const KSTACK_SIZE: usize = 16 * 1024;
 #[repr(align(16))]
 pub struct KStack(#[allow(dead_code)] [u8; KSTACK_SIZE]);
 
-pub static mut KSTACK_TASK1: KStack = KStack([0; KSTACK_SIZE]);
-pub static mut KSTACK_TASK2: KStack = KStack([0; KSTACK_SIZE]);
+pub static KSTACK_TASK1: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_SIZE]));
+pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_SIZE]));
 
 /// S2-D4：`task_create` 创建的 Task 的每任务内核栈（索引 = task id）。
 ///
@@ -113,8 +114,8 @@ pub static mut KSTACK_TASK2: KStack = KStack([0; KSTACK_SIZE]);
 /// 的相对位置不变。
 pub const USER_TASK_KSTACK_COUNT: usize = 6;
 
-pub static mut KSTACK_TASKS: [KStack; USER_TASK_KSTACK_COUNT] =
-    [const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT];
+pub static KSTACK_TASKS: StaticCell<[KStack; USER_TASK_KSTACK_COUNT]> =
+    StaticCell::new([const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT]);
 
 /// S2-D4：task id（≥3）的内核栈顶；越界或未分配返回 `None`。
 pub fn task_kstack_top(task_id: u32) -> Option<u64> {
@@ -122,7 +123,7 @@ pub fn task_kstack_top(task_id: u32) -> Option<u64> {
     if index >= USER_TASK_KSTACK_COUNT {
         return None;
     }
-    let stack = unsafe { core::ptr::addr_of!(KSTACK_TASKS[index]) };
+    let stack = KSTACK_TASKS.with(|stacks| &stacks[index] as *const KStack);
     Some(kstack_top(stack))
 }
 
@@ -1133,14 +1134,14 @@ struct UserCtx {
     orig_x_phys: u64,
 }
 
-static mut USER_CTX: Option<UserCtx> = None;
+static USER_CTX: StaticCell<Option<UserCtx>> = StaticCell::new(None);
 
 fn read_qword(va: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(va as *const u64) }
+    prima_ostd::mm::read_u64(va)
 }
 
 fn write_qword(va: u64, value: u64) {
-    unsafe { core::ptr::write_volatile(va as *mut u64, value) };
+    prima_ostd::mm::write_u64(va, value);
 }
 
 /// 切片 R：把一个平台区域建为真实 Segment 对象，返回其根 Capability 与帧向量。
@@ -1188,13 +1189,13 @@ fn region_frame(frames: &SegmentFrames) -> Result<u64, VspaceError> {
 ///
 /// 任务根由它克隆而来，故内核高半区（镜像、直映射、启动栈）在本内核下**全部是自有页表**，
 /// 不再是 bootloader 页表的共享上级。
-static mut KERNEL_ROOT: Option<u64> = None;
+static KERNEL_ROOT: StaticCell<Option<u64>> = StaticCell::new(None);
 
 /// 镜像所在的 PML4 槽（`kernel_image_offset = 0x10000000000`）——自建根的镜像链入口。
 pub const IMAGE_SLOT: usize = 2;
 
 /// SPEC-069：自建内核根对应的镜像 VA 基址与页数（见证用）。
-static mut KERNEL_IMAGE: Option<(u64, usize)> = None;
+static KERNEL_IMAGE: StaticCell<Option<(u64, usize)>> = StaticCell::new(None);
 
 /// SPEC-069：自建 CR3 的判决性见证（必须在内核已运行于自建根**之后**采集）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1216,12 +1217,11 @@ pub struct SelfRootWitness {
 /// 采集自建 CR3 见证；自建根或 COW 上下文尚未建立时返回 `None`。
 pub fn self_root_witness() -> Option<SelfRootWitness> {
     let kernel_root = kernel_root()?;
-    let (image_va, image_pages) = unsafe { (*core::ptr::addr_of!(KERNEL_IMAGE))? };
+    let (image_va, image_pages) = KERNEL_IMAGE.with(|slot| *slot)?;
     let (_, offset) = crate::cow::root_and_offset()?;
     let map = |phys: u64| phys_to_virt(phys, offset);
     let root = crate::sched::current_root().unwrap_or(kernel_root);
-    let image_table =
-        unsafe { core::ptr::read_volatile((map(root) + IMAGE_SLOT as u64 * 8) as *const u64) };
+    let image_table = prima_ostd::mm::read_u64_at(map(root), IMAGE_SLOT as u64);
     let image_table = image_table & 0x000f_ffff_ffff_f000;
     let owned = matches!(
         crate::frames::owner_of(image_table),
@@ -1246,7 +1246,7 @@ pub fn self_root_witness() -> Option<SelfRootWitness> {
 
 /// 已构造的自建内核根（未构造时为 `None`）。
 pub fn kernel_root() -> Option<u64> {
-    unsafe { *core::ptr::addr_of!(KERNEL_ROOT) }
+    KERNEL_ROOT.with(|slot| *slot)
 }
 
 /// 切片 X：构造自建内核根并登记，供随后所有任务根克隆。
@@ -1292,10 +1292,8 @@ pub fn build_kernel_root(
         image_phys,
         stack_phys,
     )?;
-    unsafe {
-        *core::ptr::addr_of_mut!(KERNEL_ROOT) = Some(root);
-        *core::ptr::addr_of_mut!(KERNEL_IMAGE) = Some((image_va, image_pages));
-    }
+    KERNEL_ROOT.with_mut(|slot| *slot = Some(root));
+    KERNEL_IMAGE.with_mut(|slot| *slot = Some((image_va, image_pages)));
     Ok(root)
 }
 
@@ -1347,7 +1345,7 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
 
     let code_bytes = user_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
-        unsafe { core::ptr::write_volatile((map(code) + index as u64) as *mut u8, byte) };
+        prima_ostd::mm::write_u8_at(map(code), index as u64, byte);
     }
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(x) + index * 8, crate::cow::pattern(index));
@@ -1381,16 +1379,15 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     map_region(y_cap, task_cap, USER_Y_VA, y_access, task_root, offset)?;
 
     sched::set_root(INIT_TASK_ID, task_root);
-    sched::set_kstack_top(INIT_TASK_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK1)));
+    sched::set_kstack_top(INIT_TASK_ID, kstack_top(KSTACK_TASK1.as_ptr()));
     crate::cow::register_user_region(USER_X_VA, x);
 
-    unsafe {
-        let ctx = core::ptr::addr_of_mut!(USER_CTX);
-        *ctx = Some(UserCtx {
+    USER_CTX.with_mut(|slot| {
+        *slot = Some(UserCtx {
             offset,
             orig_x_phys: x,
         });
-    }
+    });
     Ok(())
 }
 
@@ -1422,7 +1419,7 @@ pub fn prepare_task2(offset: u64) -> Result<(), VspaceError> {
 
     let code_bytes = task2_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
-        unsafe { core::ptr::write_volatile((map(code) + index as u64) as *mut u8, byte) };
+        prima_ostd::mm::write_u8_at(map(code), index as u64, byte);
     }
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(stack) + index * 8, 0);
@@ -1449,7 +1446,7 @@ pub fn prepare_task2(offset: u64) -> Result<(), VspaceError> {
     map_region(y_cap, task_cap, USER2_Y_VA, y_access, task_root, offset)?;
 
     sched::set_root(TASK2_ID, task_root);
-    sched::set_kstack_top(TASK2_ID, kstack_top(core::ptr::addr_of!(KSTACK_TASK2)));
+    sched::set_kstack_top(TASK2_ID, kstack_top(KSTACK_TASK2.as_ptr()));
     TASK2_Y_PHYS.store(y, Ordering::Relaxed);
     Ok(())
 }
@@ -1489,7 +1486,7 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 
         let bytes = spin_code(task_id as u64);
         for (index, &byte) in bytes.iter().enumerate() {
-            unsafe { core::ptr::write_volatile((map(code) + index as u64) as *mut u8, byte) };
+            prima_ostd::mm::write_u8_at(map(code), index as u64, byte);
         }
         for index in 0..(FRAME_SIZE / 8) {
             write_qword(map(data) + index * 8, 0);
@@ -1517,13 +1514,9 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
 
 /// 把 `code` 写到代码段首帧的页内偏移 `at` 处。
 fn write_code(frame: u64, offset: u64, at: u64, code: &[u8]) {
+    let base = phys_to_virt(frame, offset) + at;
     for (index, &byte) in code.iter().enumerate() {
-        unsafe {
-            core::ptr::write_volatile(
-                (phys_to_virt(frame, offset) + at + index as u64) as *mut u8,
-                byte,
-            )
-        };
+        prima_ostd::mm::write_u8_at(base, index as u64, byte);
     }
 }
 
@@ -1585,13 +1578,10 @@ pub fn enter() -> ! {
 
 /// 收集用户态 COW 见证（在 `int3` 回调中调用）。
 pub fn witness(err: u64) -> UserWitness {
-    let (offset, orig_x_phys) = unsafe {
-        let ctx = core::ptr::addr_of!(USER_CTX);
-        match (*ctx).as_ref() {
-            Some(ctx) => (ctx.offset, ctx.orig_x_phys),
-            None => (0, 0),
-        }
-    };
+    let (offset, orig_x_phys) = USER_CTX.with(|slot| {
+        slot.as_ref()
+            .map_or((0, 0), |ctx| (ctx.offset, ctx.orig_x_phys))
+    });
     let shared0 = read_qword(phys_to_virt(orig_x_phys, offset));
     UserWitness {
         va: USER_X_VA,

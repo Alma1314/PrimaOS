@@ -1,13 +1,14 @@
-//! IDT 装载与最小 interrupt gate（vector 3 / breakpoint）trap 闭环的细化
-//! (refine) 模块：承载 `lidt`/`int3` 与 `extern "x86-interrupt"` handler 的
-//! `asm!`。`no_std` 由 crate 根 (`lib.rs`) 统一设置，故本模块无需（也不能）再
-//! 声明 `#![no_std]` 内层属性。
+//! IDT 门编码与装载的细化（refine）模块。
+//!
+//! 切片 AH 后，**裸入口、`extern "x86-interrupt"` handler、`lidt`/`int3` 与 asm 直接触碰
+//! 的静态**全部下沉 [`prima_ostd::entry`]；本模块只保留可在 safe Rust 中完成的**门描述符
+//! 字节编码**与装载调用点，以及对外仍以 `crate::idt::*` 暴露的薄转发（保持既有调用方与
+//! host 单测不变）。`no_std` 由 crate 根 (`lib.rs`) 统一设置。
 
-use core::arch::asm;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use crate::exc::SretFrame;
+use prima_ostd::sync::StaticCell;
 
 /// IDT 条目（64-bit interrupt gate，16 字节）。
 ///
@@ -33,15 +34,6 @@ pub struct Idt {
     entries: [Entry; 256],
 }
 
-/// CPU 压入的中断帧（同级 trap：int3 压 rip/cs/rflags）。
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct InterruptStackFrame {
-    pub instruction_pointer: u64,
-    pub code_segment: u64,
-    pub cpu_flags: u64,
-}
-
 impl Idt {
     pub const fn new() -> Self {
         // 用 const 初始化器填零，避免 const 上下文中调用 Entry::default()（E0015）。
@@ -60,30 +52,15 @@ impl Idt {
         }
     }
 
-    /// 把 `handler` 装入第 `index` 号向量，selector 为内核代码段 RPL0（0x8）、DPL0。
-    pub fn set_handler(&mut self, index: u8, handler: HandlerFunc) {
-        let h = handler as *const () as u64;
-        self.entries[index as usize] = Self::gate_entry(h, 0);
-    }
-
-    /// 同 [`Idt::set_handler`]，但把门描述符 DPL 设为 3。
-    ///
-    /// 软件中断（如 `int3`）在 CPL3 调用时要求门 DPL ≥ CPL，否则 #GP；故用户态可触发
-    /// 的向量必须用 DPL3 门。CPL0 调用不受影响（DPL ≥ CPL 仍成立）。
-    pub fn set_handler_dpl3(&mut self, index: u8, handler: HandlerFunc) {
-        let h = handler as *const () as u64;
-        self.entries[index as usize] = Self::gate_entry(h, 3);
-    }
-
-    /// 直接把 `handler_addr` 装入第 `index` 号向量。用于注册非 `HandlerFunc`
-    /// 形态的裸函数入口（如 #PF 的 `page_fault_entry`），它们由 CPU 经 IDT 直接
-    /// 调用、自带手动现场处理与 iretq。
+    /// 把 `handler_addr` 装入第 `index` 号向量，selector 为内核代码段 RPL0（0x8）、DPL0。
     pub fn set_handler_addr(&mut self, index: u8, handler_addr: u64) {
         self.entries[index as usize] = Self::gate_entry(handler_addr, 0);
     }
 
-    /// 同 [`Idt::set_handler_addr`]，但门 DPL 设为 3，供 CPL3 软件中断（`int 0x80`）
-    /// 进入。
+    /// 同 [`Idt::set_handler_addr`]，但门 DPL 设为 3。
+    ///
+    /// 软件中断（如 `int3`/`int 0x80`）在 CPL3 调用时要求门 DPL ≥ CPL，否则 #GP；故用户态
+    /// 可触发的向量必须用 DPL3 门。CPL0 调用不受影响（DPL ≥ CPL 仍成立）。
     pub fn set_handler_addr_dpl3(&mut self, index: u8, handler_addr: u64) {
         self.entries[index as usize] = Self::gate_entry(handler_addr, 3);
     }
@@ -103,111 +80,41 @@ impl Idt {
     }
 }
 
-/// x86-interrupt handler 类型（编译器生成 iretq）。
-pub type HandlerFunc = extern "x86-interrupt" fn(&mut InterruptStackFrame);
-
 impl Default for Idt {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// 装载 IDT。
+/// 装载 IDT（委派 [`prima_ostd::entry::load_idt`] 执行 `lidt`）。
 #[allow(clippy::result_unit_err)]
 pub fn load_idt(idt: &Idt) -> Result<(), ()> {
     let limit = (size_of::<Idt>() - 1) as u16;
-    let base = idt as *const Idt as u64;
-    let mut idtr = [0u8; 10];
-    idtr[0..2].copy_from_slice(&limit.to_le_bytes());
-    idtr[2..10].copy_from_slice(&base.to_le_bytes());
-    unsafe {
-        asm!("lidt [{}]", in(reg) idtr.as_ptr(), options(nostack, readonly, preserves_flags));
-    }
+    prima_ostd::entry::load_idt(idt as *const Idt as u64, limit);
     Ok(())
 }
 
-static TRAP_VECTOR_SEEN: AtomicU8 = AtomicU8::new(0);
-
-/// 切片 G：用户任务以 `int3` 从 CPL3 陷入时调用的收尾回调（由二进制 crate 注册）。
-///
-/// `breakpoint_handler` 位于 lib crate，无法访问 `protocol`/`qemu`；故经此函数指针把
-/// "用户任务完成"的收尾（发事件 + 退出 QEMU）委派给二进制 crate。为 0 时按普通 int3 处理。
-static USER_TRAP_HANDLER: AtomicU64 = AtomicU64::new(0);
-
-/// 注册用户 `int3` 收尾回调。回调不得返回。
+/// 切片 G：注册用户 `int3` 收尾回调（委派框架）。
 pub fn set_user_trap_handler(handler: extern "C" fn() -> !) {
-    USER_TRAP_HANDLER.store(handler as usize as u64, Ordering::Relaxed);
-}
-
-/// vector 3（breakpoint）handler。
-///
-/// 若已注册用户收尾回调（切片 G 进入用户态前注册），则调用它（不返回）；否则按普通
-/// int3 记录触发，返回后 iretq 回到 int3 之后。
-extern "x86-interrupt" fn breakpoint_handler(_frame: &mut InterruptStackFrame) {
-    let raw = USER_TRAP_HANDLER.load(Ordering::Relaxed);
-    if raw != 0 {
-        let handler: extern "C" fn() -> ! = unsafe { core::mem::transmute(raw as usize) };
-        handler();
-    }
-    TRAP_VECTOR_SEEN.store(3, Ordering::Relaxed);
+    prima_ostd::entry::set_user_trap_handler(handler);
 }
 
 /// 触发一次 int3（breakpoint）。由 IDT vector 3 处理，返回后继续。
 pub fn trigger_int3() {
-    unsafe {
-        asm!("int3", options(nostack));
-    }
+    prima_ostd::arch::int3();
 }
 
 /// 读取已触发的向量号（初始 0；int3 后为 3）。
 pub fn trap_seen() -> u8 {
-    TRAP_VECTOR_SEEN.load(Ordering::Relaxed)
+    prima_ostd::entry::trap_seen()
 }
-
-/// 记录最近一次 #PF 的 CR2 地址（初始 0；触发后为缺页地址）。
-///
-/// 由 `page_fault_entry` 裸入口写入、`fault_addr` 读取。static 被子线程无关地以
-/// 原子语义读、以裸 mov 写在单核 boot 阶段写——同一处理器上无竞争。
-static FAULT_ADDR: AtomicU64 = AtomicU64::new(0);
-
-/// 记录最近一次 #PF 的 error code（初始 0）。由裸入口在弹出前写入、`last_fault_err` 读取。
-static FAULT_ERROR: AtomicU64 = AtomicU64::new(0);
-
-/// 切片 G：最近一次来自 CPL3 的 #PF 的返回现场（特权切换时硬件压入的 5 个 qword）。
-///
-/// CPL3→CPL0 的 #PF 硬件压 6 个 qword（`err, rip, cs, rflags, rsp, ss`），入口据此重建
-/// iretq 帧以回到用户态。偏移与 CPL0 路径的前 4 项相同，故都用固定栈偏移读取。
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UserFrame {
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-}
-
-static mut USER_FRAME: UserFrame = UserFrame {
-    rip: 0,
-    cs: 0,
-    rflags: 0,
-    rsp: 0,
-    ss: 0,
-};
-
-/// 最近一次 #PF 的完整现场帧（初始全零）。
-///
-/// 由 `page_fault_entry` 裸入口在弹出 GPR 前写入，`fault_frame` 读取。以 `static
-/// mut` 而非原子：帧是 20×u64，单核 boot 早期写入与读取之间不会并发（与既有的
-/// `FAULT_ADDR`/`FAULT_ERROR` 同属"同一处理器上无竞争"的假设）。
-static mut FAULT_FRAME: SretFrame = SretFrame::ZERO;
 
 /// 触发 #PF 的故障指令长度（字节）。
 ///
 /// #PF 是 fault 类异常：CPU 把返回地址设为故障指令本身，iretq 后会用同一 rip
-/// 重试故障指令，若不加处理将无限循环。`page_fault_entry` 把返回地址前移该
-/// 常量，落到故障指令之后继续执行。与 `trigger_page_fault` 的 `mov rax, [rax]`
-/// 指令（REX.W 8B + modrm，固定 3 字节）成对保证。
+/// 重试故障指令，若不加处理将无限循环。裸入口把返回地址前移该常量，落到故障指令之后
+/// 继续执行。与 #[`trigger_page_fault`] 的 `mov rax, [rax]` 指令（REX.W 8B + modrm，
+/// 固定 3 字节）成对保证。
 pub const FAULT_SKIP_LEN: u64 = 3;
 
 /// 切片 H：syscall 陷入向量（`int 0x80`）。
@@ -217,452 +124,67 @@ pub const FAULT_SKIP_LEN: u64 = 3;
 /// "OS 中立的 syscall 递送"的最小见证，不宣称 x86-64 `syscall` 快速路径。
 pub const SYSCALL_VECTOR: u8 = 0x80;
 
-/// vector 14（page fault）入口（裸函数）。
-///
-/// #PF 是带 error code 的 fault 类异常。naked 入口完成两件事：
-/// 1. **完整现场捕获**：把全部 15 个 GPR、硬件压栈的 rip/cs/rflags、合成的原始
-///    rsp 与实时 ss 写入 `FAULT_FRAME`（供 `fault_frame` 读取与后续恢复验证）；
-/// 2. **最小继续**：把返回地址前移 `FAULT_SKIP_LEN`（跳过触发指令，避免 iretq 后
-///    重试同一故障指令而死循环）、弹出 error code，再 iretq，恢复全部 GPR。
-///
-/// 之所以不用 Rust 的 `extern "x86-interrupt"` 第二参（error code）ABI，是因为当前
-/// nightly 工具链（2026-07-30）对带 error code 的 x86-interrupt 函数在
-/// `x86_64-unknown-none` 上会误生成 16 字节对齐错误；裸入口自控寄存与栈更直接。
-///
-/// 栈布局假设：进入时（CPL0、ist=0，无特权级切换）CPU 压入 `err, rip, cs, rflags`
-/// 四个 qword，`rsp` 指向 error code。入口再压 15 个 GPR（0x78 字节）后：
-/// `[rsp+0x00..0x70]` = 15 个 GPR（rax…r15），`[rsp+0x78]` err、`[rsp+0x80]` rip、
-/// `[rsp+0x88]` cs、`[rsp+0x90]` rflags；合成的原始 rsp = `rsp + 0x98`。
-///
-/// # Safety
-///
-/// 该函数是 naked 的异常入口，只能由 CPU 在 #PF（vector 14）经 IDT 调用，不能
-/// 当作普通函数从 Rust 侧调用。其 naked 汇编硬编码上述入口栈布局；任何违反该
-/// 进入约定的调用都是未定义行为。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn page_fault_entry() -> ! {
-    core::arch::naked_asm!(
-        // 保存全部 15 个 GPR：压栈顺序使压出的块与 SretFrame 字段序对齐
-        // （rax 最后压、位于最低地址；rsp 槽由 lea 合成，不经压栈）。
-        "push r15",
-        "push r14",
-        "push r13",
-        "push r12",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rbp",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push rbx",
-        "push rax",
-        // 把压出的 GPR 块逐字段搬入 FAULT_FRAME。r11 作帧基址、r10 作暂存：
-        // 两者的原值都已在栈上（故可安全改写），且 rsp 从不作暂存。
-        "lea r11, [rip + {frame}]",
-        "mov r10, qword ptr [rsp + 0x00]",
-        "mov qword ptr [r11 + 0x00], r10", // rax
-        "mov r10, qword ptr [rsp + 0x08]",
-        "mov qword ptr [r11 + 0x08], r10", // rbx
-        "mov r10, qword ptr [rsp + 0x10]",
-        "mov qword ptr [r11 + 0x10], r10", // rcx
-        "mov r10, qword ptr [rsp + 0x18]",
-        "mov qword ptr [r11 + 0x18], r10", // rdx
-        "mov r10, qword ptr [rsp + 0x20]",
-        "mov qword ptr [r11 + 0x20], r10", // rsi
-        "mov r10, qword ptr [rsp + 0x28]",
-        "mov qword ptr [r11 + 0x28], r10", // rdi
-        "mov r10, qword ptr [rsp + 0x30]",
-        "mov qword ptr [r11 + 0x30], r10", // rbp
-        "lea r10, [rsp + 0x98]",
-        "mov qword ptr [r11 + 0x38], r10", // 合成的原始 rsp
-        "mov r10, qword ptr [rsp + 0x38]",
-        "mov qword ptr [r11 + 0x40], r10", // r8
-        "mov r10, qword ptr [rsp + 0x40]",
-        "mov qword ptr [r11 + 0x48], r10", // r9
-        "mov r10, qword ptr [rsp + 0x48]",
-        "mov qword ptr [r11 + 0x50], r10", // r10
-        "mov r10, qword ptr [rsp + 0x50]",
-        "mov qword ptr [r11 + 0x58], r10", // r11
-        "mov r10, qword ptr [rsp + 0x58]",
-        "mov qword ptr [r11 + 0x60], r10", // r12
-        "mov r10, qword ptr [rsp + 0x60]",
-        "mov qword ptr [r11 + 0x68], r10", // r13
-        "mov r10, qword ptr [rsp + 0x68]",
-        "mov qword ptr [r11 + 0x70], r10", // r14
-        "mov r10, qword ptr [rsp + 0x70]",
-        "mov qword ptr [r11 + 0x78], r10", // r15
-        "mov r10, qword ptr [rsp + 0x90]",
-        "mov qword ptr [r11 + 0x80], r10", // rflags
-        "mov r10, qword ptr [rsp + 0x80]",
-        "mov qword ptr [r11 + 0x88], r10", // rip（故障指令地址，稍后再前移）
-        "mov r10, qword ptr [rsp + 0x88]",
-        "mov qword ptr [r11 + 0x90], r10", // cs
-        // 实时 ss：`mov r16, Sreg` 高位不保证清零，故先 xor；64 位下 push ss 是 #UD。
-        "xor eax, eax",
-        "mov ax, ss",
-        "mov qword ptr [r11 + 0x98], rax", // ss
-        // 既有证据面：CR2 与 error code。
-        "mov r10, cr2",
-        "lea r11, [rip + {fault}]",
-        "mov qword ptr [r11], r10",
-        "mov r10, qword ptr [rsp + 0x78]",
-        "lea r11, [rip + {err}]",
-        "mov qword ptr [r11], r10",
-        // 判定故障来源的 CPL：CS 位于 [rsp+0x88]（CPL0/CPL3 两条路径该偏移均成立）。
-        "mov r10, qword ptr [rsp + 0x88]",
-        "test r10, 3",
-        "jz 2f",
-        // ---- CPL3 路径：保存用户返回现场（含特权切换多压的 rsp/ss）----
-        "lea r11, [rip + {uframe}]",
-        "mov r10, qword ptr [rsp + 0x80]",
-        "mov qword ptr [r11 + 0x00], r10", // rip
-        "mov r10, qword ptr [rsp + 0x88]",
-        "mov qword ptr [r11 + 0x08], r10", // cs
-        "mov r10, qword ptr [rsp + 0x90]",
-        "mov qword ptr [r11 + 0x10], r10", // rflags
-        "mov r10, qword ptr [rsp + 0x98]",
-        "mov qword ptr [r11 + 0x18], r10", // rsp
-        "mov r10, qword ptr [rsp + 0xA0]",
-        "mov qword ptr [r11 + 0x20], r10", // ss
-        // 询问分派器返回的 RIP（默认跳过、COW 命中则重试）。
-        "lea rdi, [rip + {frame}]",
-        "mov rbp, rsp",
-        "and rsp, -16",
-        "call {dispatch}",
-        "mov rsp, rbp",
-        "lea r11, [rip + {uframe}]",
-        "mov qword ptr [r11 + 0x00], rax",
-        // 恢复全部 15 个 GPR（用户态现场），丢弃 6 qword 硬件帧，重建 iretq 帧。
-        "pop rax",
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rbp",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        "add rsp, 48",
-        "lea r11, [rip + {uframe}]",
-        "push qword ptr [r11 + 0x20]", // ss
-        "push qword ptr [r11 + 0x18]", // rsp
-        "push qword ptr [r11 + 0x10]", // rflags
-        "push qword ptr [r11 + 0x08]", // cs
-        "push qword ptr [r11 + 0x00]", // rip
-        "iretq",
-        "2:",
-        // ---- CPL0 路径（原逻辑）----
-        "lea rdi, [rip + {frame}]",
-        "mov rbp, rsp",
-        "and rsp, -16",
-        "call {dispatch}",
-        "mov rsp, rbp",
-        "mov qword ptr [rsp + 0x80], rax",
-        // 恢复全部 15 个 GPR（逆序），不清空现场。
-        "pop rax",
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rbp",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        // 弹出硬件压栈的 error code，使 rsp 指向 rip。
-        "add rsp, 8",
-        "iretq",
-        frame = sym FAULT_FRAME,
-        fault = sym FAULT_ADDR,
-        err = sym FAULT_ERROR,
-        uframe = sym USER_FRAME,
-        dispatch = sym crate::cow::dispatch,
-    )
-}
-
-/// 切片 H：vector 0x80（syscall）裸入口。
-///
-/// `int 0x80` 是软件中断、无 error code。CPL3→CPL0 时 CPU 经 TSS.rsp0 换到内核栈，
-/// 压入 `ss, rsp, rflags, cs, rip`（5 个 qword）；入口再压 15 个 GPR 后：
-/// `[rsp+0x00..0x70]` = 15 个 GPR（rax…r15）、`[rsp+0x78]` rip、`[rsp+0x80]` cs、
-/// `[rsp+0x88]` rflags、`[rsp+0x90]` rsp、`[rsp+0x98]` ss。
-///
-/// 入口在栈上组装 8 个 qword 的 ABI 现场帧 `[num, arg0..arg5, cs]`，把帧指针传给
-/// [`crate::syscall::handle`]，把返回值写回保存的 `rax` 槽，恢复全部 GPR 后 `iretq`
-/// 回 CPL3（`iretq` 按目标 CS 的 RPL 自动决定弹 3 或 5 个 qword）。
-///
-/// 参数寄存器按 ABI 序取 `rdi, rsi, rdx, r10, r8, r9`（与保存槽偏移成对）。
-///
-/// # Safety
-///
-/// 只能由 CPU 在 `int 0x80`（vector 0x80）经 IDT 调用，不能当作普通函数从 Rust
-/// 侧调用；裸汇编硬编码上述入口栈布局，违反进入约定即为未定义行为。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn syscall_entry() -> ! {
-    core::arch::naked_asm!(
-        // 保存全部 15 个 GPR：rax 最后压、位于最低地址，与恢复时的弹出序对齐。
-        // 保存块偏移：rax=0x00 rbx=0x08 rcx=0x10 rdx=0x18 rsi=0x20 rdi=0x28
-        // rbp=0x30 r8=0x38 r9=0x40 r10=0x48 r11=0x50 r12=0x58 r13=0x60 r14=0x68 r15=0x70。
-        "push r15",
-        "push r14",
-        "push r13",
-        "push r12",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rbp",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push rbx",
-        "push rax",
-        // 以 rbp 为保存块基址；rsp 对齐后留 64 字节 ABI 现场帧（r10 作暂存，其原值已入栈）。
-        "mov rbp, rsp",
-        // 切片 M：把保存块基址存入静态，供 SYS_YIELD 读出当前任务完整用户上下文。
-        "mov qword ptr [rip + {ctx}], rbp",
-        "and rsp, -16",
-        "sub rsp, 64",
-        "mov r10, qword ptr [rbp + 0x00]",
-        "mov qword ptr [rsp + 0x00], r10", // 调用号 rax
-        "mov r10, qword ptr [rbp + 0x28]",
-        "mov qword ptr [rsp + 0x08], r10", // arg0 rdi
-        "mov r10, qword ptr [rbp + 0x20]",
-        "mov qword ptr [rsp + 0x10], r10", // arg1 rsi
-        "mov r10, qword ptr [rbp + 0x18]",
-        "mov qword ptr [rsp + 0x18], r10", // arg2 rdx
-        "mov r10, qword ptr [rbp + 0x48]",
-        "mov qword ptr [rsp + 0x20], r10", // arg3 r10
-        "mov r10, qword ptr [rbp + 0x38]",
-        "mov qword ptr [rsp + 0x28], r10", // arg4 r8
-        "mov r10, qword ptr [rbp + 0x40]",
-        "mov qword ptr [rsp + 0x30], r10", // arg5 r9
-        "mov r10, qword ptr [rbp + 0x80]",
-        "mov qword ptr [rsp + 0x38], r10", // 进入时 CS（硬件压栈）
-        "mov rdi, rsp",
-        "call {handle}",
-        "mov rsp, rbp",
-        // 返回值写回保存的 rax 槽，随后弹出即进入 rax。
-        "mov qword ptr [rsp + 0x00], rax",
-        "pop rax",
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rbp",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        // rsp 现指向硬件压栈的 rip；iretq 依目标 CS 决定弹 3（CPL0）或 5（CPL3）个 qword。
-        "iretq",
-        handle = sym crate::syscall::handle,
-        ctx = sym crate::syscall::CONTEXT_BASE,
-    )
-}
-
-/// 切片 J：`syscall` 快路径的专用内核栈（大小见 [`SYSCALL_STACK_SIZE`]）。
-const SYSCALL_STACK_SIZE: usize = 16 * 1024;
-
-#[repr(align(16))]
-struct SyscallStack(
-    #[allow(dead_code)] // 只经 `addr_of!` 取地址使用，从不按字段读取。
-    [u8; SYSCALL_STACK_SIZE],
-);
-
-static mut SYSCALL_STACK: SyscallStack = SyscallStack([0; SYSCALL_STACK_SIZE]);
-
-/// `syscall` 进入前的用户 `rsp`（`sysretq` 前恢复）。
-static mut USER_RSP: u64 = 0;
-
-/// 切片 J：x86-64 `syscall` 快路径入口（裸函数，由 IA32_LSTAR 指向）。
-///
-/// 与 `int 0x80` 路径的关键差异：`syscall` **不换栈、不压帧**，只把返回 RIP 写入
-/// `rcx`、RFLAGS 写入 `r11`，并清 FMASK 位。故入口自行：
-/// 1. 把用户 `rsp` 存入 [`USER_RSP`]，切到专用 [`SYSCALL_STACK`]；
-/// 2. 保存 `rcx`（用户返回 RIP）与 `r11`（用户 RFLAGS）到栈上，再保存 15 个 GPR；
-/// 3. 组装与 `int 0x80` 相同的 8-qword ABI 帧 `[num, arg0..arg5, cs]`（`cs` 填
-///    [`crate::gdt::USER_CS`]，因 `syscall` 不压 CS），调用 [`crate::syscall::handle_fast`]；
-/// 4. 返回值写回保存的 `rax` 槽，恢复 GPR、`r11`、`rcx`、用户 `rsp`，`sysretq` 回 CPL3。
-///
-/// # Safety
-///
-/// 只能由 CPU 在 EFER.SCE=1、STAR/LSTAR 已配置后经 `syscall` 指令进入；不可从 Rust
-/// 侧调用。裸汇编硬编码上述栈布局与寄存器约定，违反即为未定义行为。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn syscall_fast_entry() -> ! {
-    core::arch::naked_asm!(
-        // 1) 记下用户 rsp，切到专用内核栈（单核，无需 swapgs/per-CPU）。
-        "mov qword ptr [rip + {user_rsp}], rsp",
-        "lea rsp, [rip + {stack}]",
-        "add rsp, {size}",
-        // 2) 保存全部 15 个 GPR：rax 最后压、位于最低地址。注意 rcx（用户返回 RIP）与
-        //    r11（用户 RFLAGS）由 syscall 写入，也在其中被保存，sysretq 前据以恢复。
-        "push r15",
-        "push r14",
-        "push r13",
-        "push r12",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rbp",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push rbx",
-        "push rax",
-        // 3) 以 rbp 为保存块基址，组装 8-qword ABI 现场帧。
-        "mov rbp, rsp",
-        "and rsp, -16",
-        "sub rsp, 64",
-        "mov r10, qword ptr [rbp + 0x00]",
-        "mov qword ptr [rsp + 0x00], r10", // 调用号 rax
-        "mov r10, qword ptr [rbp + 0x28]",
-        "mov qword ptr [rsp + 0x08], r10", // arg0 rdi
-        "mov r10, qword ptr [rbp + 0x20]",
-        "mov qword ptr [rsp + 0x10], r10", // arg1 rsi
-        "mov r10, qword ptr [rbp + 0x18]",
-        "mov qword ptr [rsp + 0x18], r10", // arg2 rdx
-        "mov r10, qword ptr [rbp + 0x48]",
-        "mov qword ptr [rsp + 0x20], r10", // arg3 r10
-        "mov r10, qword ptr [rbp + 0x38]",
-        "mov qword ptr [rsp + 0x28], r10", // arg4 r8
-        "mov r10, qword ptr [rbp + 0x40]",
-        "mov qword ptr [rsp + 0x30], r10", // arg5 r9
-        "mov qword ptr [rsp + 0x38], 0x33", // CS = USER_CS（syscall 不压 CS）
-        "mov rdi, rsp",
-        "call {handle}",
-        "mov rsp, rbp",
-        "mov qword ptr [rsp + 0x00], rax",
-        // 4) 恢复 GPR，再恢复用户 RFLAGS/RIP 与 rsp，sysretq 回 CPL3。
-        "pop rax",
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rbp",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        "mov rsp, qword ptr [rip + {user_rsp}]",
-        "sysretq",
-        stack = sym SYSCALL_STACK,
-        size = const SYSCALL_STACK_SIZE,
-        user_rsp = sym USER_RSP,
-        handle = sym crate::syscall::handle_fast,
-    )
-}
-
 /// 读取最近一次 #PF 的 CR2 地址（初始 0）。
 pub fn fault_addr() -> u64 {
-    FAULT_ADDR.load(Ordering::Relaxed)
+    prima_ostd::entry::fault_addr()
 }
 
 /// 读取最近一次 #PF 的 error code（初始 0；CPU 压入为 64 位零扩展，低 32 位有效）。
 pub fn last_fault_err() -> u64 {
-    FAULT_ERROR.load(Ordering::Relaxed)
+    prima_ostd::entry::last_fault_err()
 }
 
 /// 读取最近一次 #PF 捕获的完整现场帧（初始全零）。
 pub fn fault_frame() -> SretFrame {
-    // 单核 boot 早期，handler 与读取不会并发；用 addr_of 避免 `static_mut_refs`。
-    unsafe { core::ptr::read(core::ptr::addr_of!(FAULT_FRAME)) }
+    prima_ostd::entry::fault_frame()
 }
 
 /// 触发一次写只读页的 page fault：向 `addr` 写入，若该页 present 但只读则 #PF。
 ///
-/// 故障指令固定为 `mov qword ptr [rax], rax`（`48 89 00`，3 字节），与 handler 的
-/// `FAULT_SKIP_LEN` 成对。写故障的 error code 为 `P|W`（0x3），`fault::classify`
-/// 判为 `WriteProtection`。
+/// 故障指令固定为 `mov qword ptr [rax], rax`（`48 89 00`，3 字节），与 [`FAULT_SKIP_LEN`]
+/// 成对。写故障的 error code 为 `P|W`（0x3），`fault::classify` 判为 `WriteProtection`。
 pub fn trigger_page_fault_write(addr: u64) {
-    unsafe {
-        core::arch::asm!(
-            "mov qword ptr [rax], rax",
-            inout("rax") addr => _,
-            options(nostack, preserves_flags)
-        );
-    }
+    prima_ostd::entry::trigger_page_fault_write(addr);
 }
 
 /// 触发一次读 `addr` 的 page fault：读该线性地址，若未映射则 #PF。
-///
-/// 故障指令固定为 `mov tmp, [addr]`（REX.W 8B，基址寻址，3 字节），与 handler
-/// 的 `FAULT_SKIP_LEN` 成对：handler 记录 CR2 并把返回地址前移 3 字节后 iretq，
-/// CPU 落到该指令之后继续执行（不会重试同一故障指令而死循环）。
 pub fn trigger_page_fault(addr: u64) {
-    unsafe {
-        core::arch::asm!(
-            "mov rax, qword ptr [rax]",
-            inout("rax") addr => _,
-            options(nostack, preserves_flags)
-        );
-    }
+    prima_ostd::entry::trigger_page_fault(addr);
 }
 
 // 静态持有 IDT：lidt 后需存活整个执行。
-static mut IDT_ITEM: Idt = Idt::new();
+static IDT_ITEM: StaticCell<Idt> = StaticCell::new(Idt::new());
 
-/// 供 `main.rs` 调用：初始化 IDT（vector 3 指向 breakpoint handler）并装载。
+/// 供 `main.rs` 调用：注册四个入口回调、初始化 IDT 并装载。
 ///
-/// 单核 boot 早期仅调用一次；通过 `addr_of_mut!`/`addr_of!` 访问静态，避免
-/// 2024 edition 的 `static_mut_refs` 拒绝。
+/// 单核 boot 早期仅调用一次。**注册先于任何触发**：`init_idt` 在所有 #PF/`int 0x80`/
+/// 时钟之前执行，故不存在"handler 未注册即被触发"的窗口。
 #[allow(clippy::result_unit_err)]
 pub fn init_idt() -> Result<(), ()> {
-    unsafe {
-        IDT_ITEM = Idt::new();
-    }
-    let rt_mut = core::ptr::addr_of_mut!(IDT_ITEM);
-    unsafe {
+    prima_ostd::entry::set_page_fault_handler(crate::cow::dispatch);
+    prima_ostd::entry::set_syscall_handler(crate::syscall::handle);
+    prima_ostd::entry::set_fast_syscall_handler(crate::syscall::handle_fast);
+    IDT_ITEM.with_mut(|idt| {
+        *idt = Idt::new();
         // vector 3 用 DPL3 门：切片 G 的用户任务在 CPL3 执行 `int3` 陷入内核。
-        (*rt_mut).set_handler_dpl3(3, breakpoint_handler);
+        idt.set_handler_addr_dpl3(3, prima_ostd::entry::breakpoint_handler_addr());
         // #PF 用裸入口（自带现场处理与 iretq）。
-        let entry_addr = page_fault_entry as *const () as u64;
-        (*rt_mut).set_handler_addr(14, entry_addr);
+        idt.set_handler_addr(14, prima_ostd::entry::page_fault_entry_addr());
         // syscall 用 DPL3 门 + 裸入口：允许 CPL3 执行 `int 0x80`。
-        let syscall_addr = syscall_entry as *const () as u64;
-        (*rt_mut).set_handler_addr_dpl3(SYSCALL_VECTOR, syscall_addr);
+        idt.set_handler_addr_dpl3(SYSCALL_VECTOR, prima_ostd::entry::syscall_entry_addr());
         // 切片 O：IRQ0（PIT 时钟）用裸入口；中断门 DPL0，IF 由门自动清除。
-        let timer_addr = crate::preempt::timer_entry as *const () as u64;
-        (*rt_mut).set_handler_addr(crate::preempt::TIMER_VECTOR, timer_addr);
-    }
-    let rt = core::ptr::addr_of!(IDT_ITEM);
-    load_idt(unsafe { &*rt })
+        idt.set_handler_addr(
+            crate::preempt::TIMER_VECTOR,
+            prima_ostd::entry::timer_entry_addr(),
+        );
+    });
+    IDT_ITEM.with(load_idt)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prima_ostd::entry::InterruptStackFrame;
 
     #[test]
     fn idt_entry_size_is_16() {
@@ -681,12 +203,12 @@ mod tests {
     }
 
     #[test]
-    fn set_handler_encodes_offsets_and_selector() {
+    fn breakpoint_gate_encodes_offsets_and_selector() {
         let mut idt = Idt::new();
-        // 用真实 handler 地址验证编码位。这里不写死具体值，而是与
-        // breakpoint_handler 自身取出的地址对账，从而既测试 set_handler 又验证 offset 分段。
-        let handler_addr = breakpoint_handler as *const () as u64;
-        idt.set_handler(3, breakpoint_handler);
+        // 用真实 handler 地址验证编码位。这里不写死具体值，而是与 breakpoint handler
+        // 自身取出的地址对账，从而既测试 gate 编码又验证 offset 分段。
+        let handler_addr = prima_ostd::entry::breakpoint_handler_addr();
+        idt.set_handler_addr(3, handler_addr);
         let e = idt.entries[3];
         let encoded =
             (e.offset_low as u64) | ((e.offset_mid as u64) << 16) | ((e.offset_high as u64) << 32);
@@ -700,7 +222,7 @@ mod tests {
     fn set_handler_addr_encodes_naked_entry_offsets_and_selector() {
         let mut idt = Idt::new();
         // 裸函数入口同样可经 gate 编码装入 IDT：#PF entry 地址分段写入描述符。
-        let entry_addr = page_fault_entry as *const () as u64;
+        let entry_addr = prima_ostd::entry::page_fault_entry_addr();
         idt.set_handler_addr(14, entry_addr);
         let e = idt.entries[14];
         let encoded =
@@ -714,7 +236,7 @@ mod tests {
     #[test]
     fn set_handler_addr_dpl3_encodes_naked_entry_with_dpl3() {
         let mut idt = Idt::new();
-        let entry_addr = syscall_entry as *const () as u64;
+        let entry_addr = prima_ostd::entry::syscall_entry_addr();
         idt.set_handler_addr_dpl3(SYSCALL_VECTOR, entry_addr);
         let e = idt.entries[SYSCALL_VECTOR as usize];
         let encoded =
@@ -732,21 +254,20 @@ mod tests {
     }
 
     #[test]
-    fn set_handler_dpl3_sets_gate_dpl() {
+    fn set_handler_addr_dpl3_sets_gate_dpl() {
         let mut idt = Idt::new();
-        idt.set_handler_dpl3(3, breakpoint_handler);
+        idt.set_handler_addr_dpl3(3, prima_ostd::entry::breakpoint_handler_addr());
         let e = idt.entries[3];
         // present | DPL3 | 64-bit interrupt gate = 0xee
         assert_eq!(e.type_attr, 0xee);
         // 其余 DPL0 门不受影响。
         let mut idt2 = Idt::new();
-        idt2.set_handler(3, breakpoint_handler);
+        idt2.set_handler_addr(3, prima_ostd::entry::breakpoint_handler_addr());
         assert_eq!(idt2.entries[3].type_attr, 0x8e);
     }
 
     #[test]
     fn last_fault_err_defaults_to_zero() {
-        assert_eq!(FAULT_ERROR.load(Ordering::Relaxed), 0);
         assert_eq!(last_fault_err(), 0);
     }
 
@@ -763,12 +284,7 @@ mod tests {
             code_segment: 0x8,
             cpu_flags: 0x202,
         };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                &f as *const _ as *const u8,
-                size_of::<InterruptStackFrame>(),
-            )
-        };
+        let bytes = prima_ostd::mm::bytes_of(&f);
         assert_eq!(&bytes[0..8], &0xdead_beefu64.to_le_bytes());
         assert_eq!(&bytes[8..16], &0x8u64.to_le_bytes());
         assert_eq!(&bytes[16..24], &0x202u64.to_le_bytes());

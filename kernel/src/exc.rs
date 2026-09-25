@@ -9,13 +9,13 @@
 //! 内核代码段/数据段选择子，不做用户态投递、不检查 capability/subscription、
 //! 不实现抽象模型的 `Faulted → Ready`/`TaskResumed` audit 语义。
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
 /// `SretFrame` 的字节长度（20 × u64）。
-pub const SRET_FRAME_LEN: usize = 0xA0;
+///
+/// 帧类型与编解码已下沉框架 [`prima_ostd::entry`]；此别名保留内核侧既有引用。
+pub const SRET_FRAME_LEN: usize = prima_ostd::entry::SRET_FRAME_LEN;
 
 /// `SretFrame` 的对齐要求。
-pub const SRET_FRAME_ALIGN: usize = 16;
+pub const SRET_FRAME_ALIGN: usize = prima_ostd::entry::SRET_FRAME_ALIGN;
 
 /// 内核代码段选择子（`gdt.rs` 槽位 1）。
 pub const KERNEL_CS: u64 = 0x8;
@@ -29,122 +29,8 @@ pub const RESUME_SENTINEL_A: u64 = 0x1234_5678_9abc_def0;
 /// 恢复帧哨兵 B：与 A 互异，防单条车道误判。
 pub const RESUME_SENTINEL_B: u64 = 0x0fed_cba9_8765_4321;
 
-/// x86_64 异常返回帧：20 个 u64，字段顺序与 `cosir::state::SretFrame` 一致。
-///
-/// 字节布局（little-endian，8 字节槽）：
-/// `0x00 rax, 0x08 rbx, 0x10 rcx, 0x18 rdx, 0x20 rsi, 0x28 rdi, 0x30 rbp,
-/// 0x38 rsp, 0x40 r8, 0x48 r9, 0x50 r10, 0x58 r11, 0x60 r12, 0x68 r13,
-/// 0x70 r14, 0x78 r15, 0x80 rflags, 0x88 rip, 0x90 cs, 0x98 ss`。
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SretFrame {
-    pub rax: u64,
-    pub rbx: u64,
-    pub rcx: u64,
-    pub rdx: u64,
-    pub rsi: u64,
-    pub rdi: u64,
-    pub rbp: u64,
-    pub rsp: u64,
-    pub r8: u64,
-    pub r9: u64,
-    pub r10: u64,
-    pub r11: u64,
-    pub r12: u64,
-    pub r13: u64,
-    pub r14: u64,
-    pub r15: u64,
-    pub rflags: u64,
-    pub rip: u64,
-    pub cs: u64,
-    pub ss: u64,
-}
-
-impl SretFrame {
-    /// 全零帧（供静态初始化与默认值）。
-    pub const ZERO: Self = Self {
-        rax: 0,
-        rbx: 0,
-        rcx: 0,
-        rdx: 0,
-        rsi: 0,
-        rdi: 0,
-        rbp: 0,
-        rsp: 0,
-        r8: 0,
-        r9: 0,
-        r10: 0,
-        r11: 0,
-        r12: 0,
-        r13: 0,
-        r14: 0,
-        r15: 0,
-        rflags: 0,
-        rip: 0,
-        cs: 0,
-        ss: 0,
-    };
-
-    /// 从固定长度字节流解码（little-endian）。
-    pub fn decode(bytes: &[u8; SRET_FRAME_LEN]) -> Self {
-        let word = |offset: usize| {
-            let mut raw = [0u8; 8];
-            raw.copy_from_slice(&bytes[offset..offset + 8]);
-            u64::from_le_bytes(raw)
-        };
-        Self {
-            rax: word(0x00),
-            rbx: word(0x08),
-            rcx: word(0x10),
-            rdx: word(0x18),
-            rsi: word(0x20),
-            rdi: word(0x28),
-            rbp: word(0x30),
-            rsp: word(0x38),
-            r8: word(0x40),
-            r9: word(0x48),
-            r10: word(0x50),
-            r11: word(0x58),
-            r12: word(0x60),
-            r13: word(0x68),
-            r14: word(0x70),
-            r15: word(0x78),
-            rflags: word(0x80),
-            rip: word(0x88),
-            cs: word(0x90),
-            ss: word(0x98),
-        }
-    }
-
-    /// 编码为固定长度字节流（little-endian）。
-    pub fn encode(&self) -> [u8; SRET_FRAME_LEN] {
-        let mut bytes = [0u8; SRET_FRAME_LEN];
-        let mut put = |offset: usize, value: u64| {
-            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-        };
-        put(0x00, self.rax);
-        put(0x08, self.rbx);
-        put(0x10, self.rcx);
-        put(0x18, self.rdx);
-        put(0x20, self.rsi);
-        put(0x28, self.rdi);
-        put(0x30, self.rbp);
-        put(0x38, self.rsp);
-        put(0x40, self.r8);
-        put(0x48, self.r9);
-        put(0x50, self.r10);
-        put(0x58, self.r11);
-        put(0x60, self.r12);
-        put(0x68, self.r13);
-        put(0x70, self.r14);
-        put(0x78, self.r15);
-        put(0x80, self.rflags);
-        put(0x88, self.rip);
-        put(0x90, self.cs);
-        put(0x98, self.ss);
-        bytes
-    }
-}
+/// x86_64 异常返回帧（布局定义与编解码见 [`prima_ostd::entry::SretFrame`]）。
+pub use prima_ostd::entry::SretFrame;
 
 /// x86_64 canonical 地址判定（bits 63:47 全等于 bit 47）。
 ///
@@ -245,75 +131,12 @@ pub fn validate_for_kernel_resume(
     Ok(())
 }
 
-/// `exc_resume_entry` 读取的恢复帧指针（由 [`resume`] 在跳转前写入）。
-static RESUME_FRAME_PTR: AtomicU64 = AtomicU64::new(0);
-
-/// 经真实 `iretq` 恢复进一帧：压入完整 64 位 `iretq` 帧
-/// （`ss, rsp, rflags, cs, rip`），加载除 `rsp` 外的全部 GPR，再 `iretq`。
+/// 经真实 `iretq` 恢复进一帧（跳板与帧指针存储已下沉 [`prima_ostd::entry`]）。
 ///
-/// 调用前必须已用 [`validate_for_kernel_resume`] 校验该帧；本函数自身不做校验
-/// （纯跳板，保持 naked 与最小）。
-///
-/// **64 位 `iretq` 语义（本实现的关键约束）：** x86-64 下 `iretq` 无条件弹出 5 元
-/// 帧 `RIP/CS/RFLAGS/RSP/SS`（不像 legacy 模式那样按特权级差异决定是否弹 SS:RSP），
-/// `RSP` 由帧内值决定、无需预先切栈。这正是本跳板与切片 C "只处理 error code 后
-/// iretq" 的根本区别：它能真正恢复一个完整上下文。
-///
-/// # Safety
-///
-/// 调用者必须保证 `frame` 指向的 `SretFrame` 在整个跳转期间有效、已通过
-/// [`validate_for_kernel_resume`]、且 `frame.rsp` 指向一块可写的 canonical 栈、
-/// `frame.cs`/`frame.ss` 是当前 GDT 中合法的内核选择子。该函数不返回：控制权
-/// 转移至 `frame.rip`。
-pub unsafe fn resume(frame: &SretFrame) -> ! {
-    unsafe {
-        RESUME_FRAME_PTR.store(frame as *const SretFrame as u64, Ordering::Relaxed);
-        exc_resume_entry();
-    }
-}
-
-/// 恢复跳板的裸入口：见 [`resume`] 的语义与安全约定。
-///
-/// 由于本 nightly 上裸函数的参数 ABI 不可靠，帧指针经 `RESUME_FRAME_PTR` 静态传递。
-/// 寄存器纪律：`r10` 作帧基址，直到最后一步才加载自身；压栈只用当前（boot）栈，
-/// 新 `rsp` 由 iret 帧内的值决定。
-///
-/// # Safety
-///
-/// 只能经 [`resume`] 调用（由它写入 `RESUME_FRAME_PTR` 并保证帧有效且已校验）。
-/// 直接调用会让 `r10` 取自未初始化/陈旧的指针，导致 iretq 到任意地址。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn exc_resume_entry() -> ! {
-    core::arch::naked_asm!(
-        "lea r10, [rip + {ptr}]",
-        "mov r10, qword ptr [r10]",
-        // 压入完整 64 位 iret 帧：ss 先压（最高地址）、rip 最后压（最先弹）。
-        // 弹出顺序 RIP/CS/RFLAGS/RSP/SS —— 与 SretFrame 的 0x88/0x90/0x80/0x38/0x98 对应。
-        "push qword ptr [r10 + 0x98]",
-        "push qword ptr [r10 + 0x38]",
-        "push qword ptr [r10 + 0x80]",
-        "push qword ptr [r10 + 0x90]",
-        "push qword ptr [r10 + 0x88]",
-        // 加载 GPR（跳过 rsp 槽 0x38；r10 最后加载）。
-        "mov rax, qword ptr [r10 + 0x00]",
-        "mov rbx, qword ptr [r10 + 0x08]",
-        "mov rcx, qword ptr [r10 + 0x10]",
-        "mov rdx, qword ptr [r10 + 0x18]",
-        "mov rsi, qword ptr [r10 + 0x20]",
-        "mov rdi, qword ptr [r10 + 0x28]",
-        "mov rbp, qword ptr [r10 + 0x30]",
-        "mov r8, qword ptr [r10 + 0x40]",
-        "mov r9, qword ptr [r10 + 0x48]",
-        "mov r11, qword ptr [r10 + 0x58]",
-        "mov r12, qword ptr [r10 + 0x60]",
-        "mov r13, qword ptr [r10 + 0x68]",
-        "mov r14, qword ptr [r10 + 0x70]",
-        "mov r15, qword ptr [r10 + 0x78]",
-        "mov r10, qword ptr [r10 + 0x50]",
-        "iretq",
-        ptr = sym RESUME_FRAME_PTR,
-    )
+/// 契约（信任调用方）：必须先经 [`validate_for_kernel_resume`] 校验该帧，并保证帧在整个
+/// 跳转期间有效、`rsp` 指向可写 canonical 栈、`cs`/`ss` 为合法内核选择子。不返回。
+pub fn resume(frame: &SretFrame) -> ! {
+    prima_ostd::entry::resume(frame)
 }
 
 #[cfg(test)]

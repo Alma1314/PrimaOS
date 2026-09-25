@@ -13,13 +13,14 @@
 //!
 //! **范围边界：** 单核、无 APIC timer、无 PCID/TLB shootdown、不宣称真实硬件或 `KERNEL-TRACE`。
 
-use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::bootstrap::INIT_TASK_ID;
 use crate::mem::phys_to_virt;
 use crate::sched;
 use crate::syscall::TASK2_ID;
+use prima_ostd::entry::SaveBlock;
+use prima_ostd::sync::StaticCell;
 
 /// 8259 主片命令/数据口。
 const PIC1_CMD: u16 = 0x20;
@@ -46,114 +47,51 @@ static OBS_CR3: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU6
 /// 各任务在时钟入口观测到的内核栈 rsp（证明 per-task 内核栈）。
 static OBS_RSP: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 /// 完成回调（由二进制 crate 注册；不返回）。
-static FINISH: AtomicU64 = AtomicU64::new(0);
+static FINISH: StaticCell<Option<fn() -> !>> = StaticCell::new(None);
 
 /// 注册完成回调。回调不得返回。
 pub fn set_finish_handler(handler: fn() -> !) {
-    FINISH.store(handler as usize as u64, Ordering::Relaxed);
-}
-
-unsafe fn outb(port: u16, value: u8) {
-    unsafe {
-        asm!("out dx, al", in("dx") port, in("al") value, options(nostack, preserves_flags));
-    }
+    FINISH.with_mut(|slot| *slot = Some(handler));
 }
 
 /// 发 EOI 给主片（IRQ0 只需主片）。
 fn eoi() {
-    unsafe { outb(PIC1_CMD, 0x20) };
+    prima_ostd::arch::outb(PIC1_CMD, 0x20);
 }
 
 /// 重映射 8259、只放行 IRQ0，并启动 8254 通道 0（~100 Hz）。
 ///
 /// 在 IF=0 的内核态调用：PIC/PIT 就绪后由 `iretq` 恢复到 IF=1 的用户帧，时钟才开始到达。
 pub fn init_timer() {
-    unsafe {
-        // ICW1：初始化 + 需要 ICW4。
-        outb(PIC1_CMD, 0x11);
-        outb(PIC2_CMD, 0x11);
-        // ICW2：主片偏移 0x20、从片偏移 0x28。
-        outb(PIC1_DATA, TIMER_VECTOR);
-        outb(PIC2_DATA, 0x28);
-        // ICW3：主片 IRQ2 接从片；从片接在 IRQ2。
-        outb(PIC1_DATA, 0x04);
-        outb(PIC2_DATA, 0x02);
-        // ICW4：8086 模式。
-        outb(PIC1_DATA, 0x01);
-        outb(PIC2_DATA, 0x01);
-        // OCW1：主片只放行 IRQ0（0xFE），从片全屏蔽。
-        outb(PIC1_DATA, 0xFE);
-        outb(PIC2_DATA, 0xFF);
-        // 8254 通道 0：模式 3（方波）、先低后高写分频。
-        outb(PIT_CMD, 0x36);
-        outb(PIT_CH0, (PIT_DIVISOR & 0xff) as u8);
-        outb(PIT_CH0, (PIT_DIVISOR >> 8) as u8);
-    }
+    // ICW1：初始化 + 需要 ICW4。
+    prima_ostd::arch::outb(PIC1_CMD, 0x11);
+    prima_ostd::arch::outb(PIC2_CMD, 0x11);
+    // ICW2：主片偏移 0x20、从片偏移 0x28。
+    prima_ostd::arch::outb(PIC1_DATA, TIMER_VECTOR);
+    prima_ostd::arch::outb(PIC2_DATA, 0x28);
+    // ICW3：主片 IRQ2 接从片；从片接在 IRQ2。
+    prima_ostd::arch::outb(PIC1_DATA, 0x04);
+    prima_ostd::arch::outb(PIC2_DATA, 0x02);
+    // ICW4：8086 模式。
+    prima_ostd::arch::outb(PIC1_DATA, 0x01);
+    prima_ostd::arch::outb(PIC2_DATA, 0x01);
+    // OCW1：主片只放行 IRQ0（0xFE），从片全屏蔽。
+    prima_ostd::arch::outb(PIC1_DATA, 0xFE);
+    prima_ostd::arch::outb(PIC2_DATA, 0xFF);
+    // 8254 通道 0：模式 3（方波）、先低后高写分频。
+    prima_ostd::arch::outb(PIT_CMD, 0x36);
+    prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR & 0xff) as u8);
+    prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR >> 8) as u8);
 }
 
-/// 切片 O：IRQ0（vector 32）裸入口。
+/// 时钟 tick 的内核侧处理（由框架裸入口 `timer_entry` 经注册回调调用）。
 ///
-/// 布局与 `syscall_entry` 相同：入口先 `mov rsi, rsp` 记录进入时的内核栈 rsp（per-task
-/// 内核栈见证），再压 15 个 GPR（rax 最低地址），`rbp` 作保存块基址。`preempt_tick` 返回
-/// 则弹栈 + 丢弃 5-qword 硬件帧 + `iretq`；若发生抢占切换则永不返回。
-///
-/// # Safety
-///
-/// 只能由 CPU 在 IRQ0（vector 32）经 IDT 调用；不可从 Rust 侧调用。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn timer_entry() -> ! {
-    core::arch::naked_asm!(
-        "mov rsi, rsp",
-        "push r15",
-        "push r14",
-        "push r13",
-        "push r12",
-        "push r11",
-        "push r10",
-        "push r9",
-        "push r8",
-        "push rbp",
-        "push rdi",
-        "push rsi",
-        "push rdx",
-        "push rcx",
-        "push rbx",
-        "push rax",
-        "mov rbp, rsp",
-        "mov rdi, rbp",
-        "and rsp, -16",
-        "call {tick}",
-        "mov rsp, rbp",
-        "pop rax",
-        "pop rbx",
-        "pop rcx",
-        "pop rdx",
-        "pop rsi",
-        "pop rdi",
-        "pop rbp",
-        "pop r8",
-        "pop r9",
-        "pop r10",
-        "pop r11",
-        "pop r12",
-        "pop r13",
-        "pop r14",
-        "pop r15",
-        "add rsp, 40",
-        "iretq",
-        tick = sym preempt_tick,
-    )
-}
-
-/// 时钟 tick 的内核侧处理。
-///
-/// `frame` 指向裸入口的 15-GPR 保存块；`entry_rsp` 是进入时的内核栈 rsp。仅 CPL3 且抢占
-/// 已启用时动作：发 EOI、计数、记录当前任务 CR3/rsp，把当前完整 `SretFrame` 存入调度器，
-/// 若阈值达到则收尾，否则切到下一 Ready 任务（不返回）。
-extern "C" fn preempt_tick(frame: *const u64, entry_rsp: u64) {
+/// `frame` 是裸入口 15-GPR 保存块的类型化视图；`entry_rsp` 是进入时的内核栈 rsp。仅 CPL3
+/// 且抢占已启用时动作：发 EOI、计数、记录当前任务 CR3/rsp，把当前完整 `SretFrame` 存入
+/// 调度器，若阈值达到则收尾，否则切到下一 Ready 任务（不返回）。
+extern "C" fn preempt_tick(frame: SaveBlock, entry_rsp: u64) {
     // 保存块中 CS 位于第 16 个 qword（15 GPR + rip）。
-    let cs = unsafe { core::ptr::read_volatile(frame.add(16)) };
+    let cs = frame.cs();
     if cs & 3 != 3 {
         return;
     }
@@ -174,7 +112,7 @@ extern "C" fn preempt_tick(frame: *const u64, entry_rsp: u64) {
         return;
     };
 
-    let frame_value = unsafe { crate::syscall::frame_from_save_block(frame) };
+    let frame_value = frame.to_sret_frame();
     if idx < PREEMPTS.len() {
         PREEMPTS[idx].fetch_add(1, Ordering::Relaxed);
     }
@@ -191,13 +129,11 @@ extern "C" fn preempt_tick(frame: *const u64, entry_rsp: u64) {
 
 /// 调用完成回调（不返回）；未注册时停机。
 fn finish() -> ! {
-    let raw = FINISH.load(Ordering::Relaxed);
-    if raw != 0 {
-        let handler: fn() -> ! = unsafe { core::mem::transmute(raw as usize) };
+    if let Some(handler) = FINISH.with(|slot| *slot) {
         handler();
     }
     loop {
-        unsafe { asm!("hlt") };
+        prima_ostd::arch::hlt();
     }
 }
 
@@ -254,7 +190,7 @@ impl PreemptWitness {
 
 /// 读取一个 qword（经直映射）。
 fn read_phys_qword(phys: u64, offset: u64) -> u64 {
-    unsafe { core::ptr::read_volatile(phys_to_virt(phys, offset) as *const u64) }
+    prima_ostd::mm::read_u64(phys_to_virt(phys, offset))
 }
 
 /// 某任务根的 PML4 虚拟地址（直映射），用于 `cpu::translate`。
@@ -314,16 +250,16 @@ pub fn witness() -> PreemptWitness {
 ///
 /// `init_timer` 自己用 OCW1 只放行 IRQ0（`0xFE`），故时钟抢占阶段不受影响。
 pub fn mask_all_irqs() {
-    unsafe {
-        outb(PIC1_DATA, 0xff);
-        outb(PIC2_DATA, 0xff);
-    }
+    prima_ostd::arch::outb(PIC1_DATA, 0xff);
+    prima_ostd::arch::outb(PIC2_DATA, 0xff);
 }
 
 /// 进入时钟抢占阶段：装入两任务空转帧、启动 PIT/PIC，然后恢复 task 1（不返回）。
 ///
 /// 由 `user_trap_exit` 在所有既有 witness 之后调用；此时 task 1 为 Running、task 2 为 Ready。
 pub fn run() -> ! {
+    // 先把 tick 回调注册进框架裸入口，再放行 IRQ0（此前 PIC 全屏蔽，不会有时钟到达）。
+    prima_ostd::entry::set_timer_handler(preempt_tick);
     let (f1, f2) = crate::user::spin_frames();
     sched::set_frame(INIT_TASK_ID, f1);
     sched::set_frame(TASK2_ID, f2);

@@ -14,27 +14,21 @@ pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
 /// 归还帧仍在空闲池中保留上次归属的字节，故每次 `memseg_create` 取帧后必须调用本函数。
 pub fn zero_frame(phys: u64, phys_map_offset: u64) {
     let base = phys_to_virt(phys, phys_map_offset);
-    let mut index = 0;
-    while index < FRAME_SIZE / 8 {
-        unsafe { core::ptr::write_volatile((base + index * 8) as *mut u64, 0) };
-        index += 1;
-    }
+    prima_ostd::mm::fill_zero(base, FRAME_SIZE);
 }
 
 /// 读取一个物理地址处的字节（经直映射），返回 (虚拟地址, 读到字节)。
 ///
-/// 纯逻辑部分（换算 va）在本模块，真正的 `unsafe` 读取收敛到细化模块
-/// [`crate::safety::read_phys_byte`]。
+/// 纯逻辑部分（换算 va）在本模块，真实的裸读取收敛到框架层 [`prima_ostd::mm`]。
 ///
-/// # Safety 约束
+/// # 前置约束
 ///
 /// `probed_phys` 必须处于 bootloader 报告为 `Usable` 的物理内存中，且该地址必须
 /// 落在物理内存直映射区内（调用方应先确认 `physical_memory_offset` 为 `Some`）。
 /// 调用方负责保证 `probed_phys` 是可安全读取的内核可用物理帧。
 pub fn probe_physical_memory(probed_phys: u64, phys_map_offset: u64) -> (u64, u8) {
     let va = phys_to_virt(probed_phys, phys_map_offset);
-    // 真实 unsafe 读取收敛在细化层 safety 模块；此处仅保留最小的调用点。
-    let byte = unsafe { crate::safety::read_phys_byte(va) };
+    let byte = prima_ostd::mm::read_u8(va);
     (va, byte)
 }
 

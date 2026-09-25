@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 #![deny(unsafe_op_in_unsafe_fn)]
+// framekernel 边界（SPEC-076/079）：bin 侧同样零 unsafe——全部 asm 触面（含恢复落点）已在
+// `prima-ostd`，由编译器强制。
+#![deny(unsafe_code)]
 
 mod config;
 mod protocol;
