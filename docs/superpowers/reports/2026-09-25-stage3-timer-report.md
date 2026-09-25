@@ -16,7 +16,7 @@
 | 内核事件投递 | `enqueue_kernel_event`（§6.3）——**不复用** `send_message_with_capabilities`（它要 `TaskSend`，而 `FromKernel` 无 sender Task），直接复用其投递主体（直投 / 排队两条路径）；payload 编码 `TIMER_FIRED_TAG \| timer_id` |
 | `task_destroy` 联动 | §8.2 步骤 5：recipient 的全部 Timer，`Pending` 先 `TimerCancelled(RecipientDestroyed)`，随后一律删除（W11）；审计预算计入 `destroy_audit_events` |
 | 审计事件 | `TimerSet` / `TimerFired` / `TimerCancelled`（§13.1 三项齐备；对象销毁沿用 `ObjectDestroyed`） |
-| PIT 接入 | `preempt_tick` 在 `TICKS` 递增后调 `bootstrap::advance_time(ticks)`——只发生在 CPL3 且抢占启用时 |
+| PIT 接入 | `TICKS` 仍在 `preempt_tick` 里递增（只在 CPL3 且抢占启用时），但 `advance_time` 落在**抢占收尾点**（`resume::preempt_finish`）一次性推进到累计 tick——理由见 §6 第 2 条 |
 | ring3 面 | 4 个 syscall（28–31：`SYS_TIME_NOW`/`SYS_TIMER_SET`/`SYS_TIMER_CANCEL`/`SYS_TIMER_DESTROY`）+ `user.rs` 的约 60 条指令见证块；回执缓存（`cache_timer_receipts`，因为 `after_resume` 已切回内核根、`USER_Y_VA` 不再映射） |
 | 协议 | 新事件 `timer_ready`（seq 27）+ `validate_timer_data` + 6 条反例单测 |
 
@@ -109,8 +109,15 @@ already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok
 
 1. **`now` 的单位是 PIT tick**（约 10 ms，`PIT_DIVISOR = 11932`），零起点 = 首次进入 CPL3 抢占
    阶段；规范 §5.6 允许平台时钟以固定偏移细化零起点，抽象层不规定单位与精度。
-2. **`advance_time` 的驱动者是 `KernelActor`**（§10.3），实现层落在 `preempt_tick`；用户在 ring3
-   阶段读到 `now = 0`（抢占尚未启用），`ring3` 机码因此按**相对偏移**构造 deadline 而不是把 0 写死。
+2. **`advance_time` 的驱动者是 `KernelActor`**（§10.3），实现层落在**抢占收尾点**
+   （`resume::preempt_finish`）：一次把 `now` 推进到已累计的 tick。**不逐 tick 在 `preempt_tick`
+   里调用**——那会在**中断上下文**做通知投递，而投递会唤醒任务、改调度状态（此刻 `preempt_tick`
+   正在保存/切换上下文），并且中断处理时长会进入用户任务的执行时序，扰动 `preempt_ready.mark*`
+   这类时序敏感见证（实测：逐 tick 调用会让 `mark1` 由 `0x1` 变成 `0x0`，地址空间隔离的判决性
+   证据被削弱）。收尾点推进同样满足 §10.3 的单调性与「迁移后无 `deadline ≤ now` 的 `Pending`」，
+   且 `now` 的最终值就是累计 tick 数（实测 `now = 4 = ticks`）。
+   用户在 ring3 阶段读到 `now = 0`（抢占尚未启用），故 `ring3` 机码按**相对偏移**构造 deadline
+   而不是把 0 写死。
 3. **Timer 表内联**（8 × 约 32 B ≈ 256 B）：与切片 AJ 的「大存储走 arena」不矛盾——那一片的条目
    含 69 B 路径且上限 16。
 4. **通知 payload 编码** `TIMER_FIRED_TAG | timer_id` 作为不可伪造的 `FromKernel(TimerFired(id))`

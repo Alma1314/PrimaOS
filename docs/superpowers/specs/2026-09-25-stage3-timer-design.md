@@ -54,6 +54,9 @@ pub type Instant = u64;
 pub now: Instant,
 ```
 
+驱动点：`resume::preempt_finish`（抢占收尾回调）调用
+`bootstrap::advance_time(preempt::ticks())`——见 §0.1 第 2 条。
+
 - `time_now()` → `now`（纯查询，不改状态；§10.1 无失败分支）。
 - `advance_time(new_now) -> Result<(), TimerError>`（§10.3）：
   1. `new_now < now` ⇒ `InvalidTime`，**`now` 与全部 Timer 状态不变**；
