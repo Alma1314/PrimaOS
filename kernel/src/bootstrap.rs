@@ -77,7 +77,17 @@ const MAX_TASKS: usize = 8;
 /// 15304 B 增至 **16312 B**，仍 ≤ 守卫 16384 B——**守卫未放宽**，但结构体余量只剩 72 B。
 /// 后续任何进一步存储增长都**必须先做审计存储重构**（把 `AuditLog` 移出 `BootstrapState`），
 /// 登记为已知瓶颈。
-const MAX_AUDIT_EVENTS: usize = 170;
+/// SPEC-074：容量不再受 `BootstrapState` 守卫约束（存储已移出结构体），故提到 256 以留足余量。
+const MAX_AUDIT_EVENTS: usize = 256;
+
+/// SPEC-074：审计 arena 按**实例**划分的区段数。
+///
+/// 内核只构造一个 `BootstrapState`，故只需 1 段；host 单测并行构造多个 state（每次 `empty()`
+/// 领一段），需要足够多段才不至于耗尽。段数与容量都**不影响 `BootstrapState` 尺寸**。
+#[cfg(not(test))]
+const AUDIT_REGIONS: usize = 1;
+#[cfg(test)]
+const AUDIT_REGIONS: usize = 512;
 
 /// 切片 L：内核 actor 的 Task ID。异常通知以此作为发送者，永不参与 `is_live` 校验。
 pub const KERNEL_ACTOR: u32 = 0;
@@ -198,18 +208,54 @@ pub enum AuditEvent {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct AuditLog {
-    pub entries: [Option<AuditEvent>; MAX_AUDIT_EVENTS],
-    pub count: usize,
+    /// 本实例在 [`AUDIT_ARENA`] 中的区段起点（按段划分，实例之间不重叠）。
+    base: usize,
+    /// 已追加条数（区段内的偏移由 `base + count` 给出）。
+    count: usize,
 }
 
+impl core::fmt::Debug for AuditLog {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuditLog")
+            .field("base", &self.base)
+            .field("count", &self.count)
+            .finish()
+    }
+}
+
+impl PartialEq for AuditLog {
+    fn eq(&self, other: &Self) -> bool {
+        self.count == other.count
+    }
+}
+
+impl Eq for AuditLog {}
+
+/// SPEC-074：审计条目的**存储**——与 `BootstrapState` 解耦。
+///
+/// 移出结构体的理由是尺寸：`BootstrapState` 已贴到 16 KiB 守卫（余 72 B），而审计日志是其中
+/// 最大的一块（170 条 × 24 B = 4080 B）。移到静态 arena 后，结构体降到约 **12.2 KiB**，
+/// 且容量/段数都不再占结构体空间——后续切片可自由扩容。
+///
+/// 段由 `AUDIT_CURSOR` 原子分配，故 host 单测并行构造的多个 state **各有独立区段**，互不干扰。
+static mut AUDIT_ARENA: [Option<AuditEvent>; MAX_AUDIT_EVENTS * AUDIT_REGIONS] =
+    [None; MAX_AUDIT_EVENTS * AUDIT_REGIONS];
+static AUDIT_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 impl AuditLog {
-    const fn empty() -> Self {
-        Self {
-            entries: [None; MAX_AUDIT_EVENTS],
-            count: 0,
-        }
+    /// SPEC-074：在 arena 里为本实例领一段并返回句柄。
+    ///
+    /// 段耗尽即确定性 panic（不静默复用他人区段）——单测里段数足够，内核只用 1 段。
+    fn claim() -> Self {
+        use core::sync::atomic::Ordering;
+        let base = AUDIT_CURSOR.fetch_add(MAX_AUDIT_EVENTS, Ordering::Relaxed);
+        assert!(
+            base + MAX_AUDIT_EVENTS <= MAX_AUDIT_EVENTS * AUDIT_REGIONS,
+            "audit arena exhausted: 提高 AUDIT_REGIONS（它不占 BootstrapState 空间）"
+        );
+        Self { base, count: 0 }
     }
 
     fn can_append(&self, count: usize) -> bool {
@@ -217,8 +263,52 @@ impl AuditLog {
     }
 
     fn append(&mut self, event: AuditEvent) {
-        self.entries[self.count] = Some(event);
+        let index = self.base + self.count;
+        let slot = unsafe {
+            core::ptr::addr_of_mut!(AUDIT_ARENA)
+                .cast::<Option<AuditEvent>>()
+                .add(index)
+        };
+        unsafe { core::ptr::write(slot, Some(event)) };
         self.count += 1;
+    }
+
+    /// 第 `index` 条的**副本**（存储不在结构体内，故不暴露内部引用）。
+    fn entry(&self, index: usize) -> Option<AuditEvent> {
+        if index >= self.count {
+            return None;
+        }
+        let slot = unsafe {
+            core::ptr::addr_of!(AUDIT_ARENA)
+                .cast::<Option<AuditEvent>>()
+                .add(self.base + index)
+        };
+        unsafe { core::ptr::read(slot) }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    /// 是否存在满足谓词的条目（同样避免借出 arena 内部引用）。
+    #[cfg(test)]
+    fn any(&self, mut pred: impl FnMut(&AuditEvent) -> bool) -> bool {
+        for index in 0..self.count {
+            if self.entry(index).is_some_and(|event| pred(&event)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 按序遍历已追加条目（值拷贝，避免借出 arena 内部）。
+    fn for_each(&self, mut visit: impl FnMut(&AuditEvent)) {
+        for index in 0..self.count {
+            if let Some(event) = self.entry(index) {
+                visit(&event);
+            }
+        }
     }
 }
 
@@ -2118,7 +2208,8 @@ impl BootstrapState {
             used: self.audit.count as u32,
             cap: MAX_AUDIT_EVENTS as u32,
         };
-        for event in self.audit.entries[..self.audit.count].iter().flatten() {
+        let log = self.audit;
+        log.for_each(|event| {
             if let AuditEvent::TaskStateChanged { status, .. } = event {
                 match status {
                     TaskStatus::Running => audit.to_running += 1,
@@ -2129,7 +2220,7 @@ impl BootstrapState {
                     TaskStatus::Dead => {}
                 }
             }
-        }
+        });
         audit
     }
 
@@ -2754,15 +2845,14 @@ impl BootstrapState {
             unsubscribed: 0,
             raised: 0,
         };
-        for event in self.audit.entries[..self.audit.count].iter().flatten() {
-            match event {
-                AuditEvent::ExcSourceCreated { .. } => counts.created += 1,
-                AuditEvent::ExcSubscribed { .. } => counts.subscribed += 1,
-                AuditEvent::ExcUnsubscribed { .. } => counts.unsubscribed += 1,
-                AuditEvent::ExceptionRaised { .. } => counts.raised += 1,
-                _ => {}
-            }
-        }
+        let log = self.audit;
+        log.for_each(|event| match event {
+            AuditEvent::ExcSourceCreated { .. } => counts.created += 1,
+            AuditEvent::ExcSubscribed { .. } => counts.subscribed += 1,
+            AuditEvent::ExcUnsubscribed { .. } => counts.unsubscribed += 1,
+            AuditEvent::ExceptionRaised { .. } => counts.raised += 1,
+            _ => {}
+        });
         counts
     }
 
@@ -3422,25 +3512,23 @@ impl BootstrapState {
         Ok(())
     }
 
-    /// §8.2 L735 / §12.6 L1440：目标是否处于「**不可恢复终态**」。
+    /// §8.2 L735：目标是否处于「**不可恢复终态**」——判词 = **`exc_resume` 必定失败**。
     ///
-    /// 判词（**本切片口径**）：目标为 `Faulted`，且其 `pending_exc` 的种类**不可恢复**
-    /// （§12.10 前置 6，如 `DoubleFault`），**或**该故障的异常源已不存在
-    /// （§12.6 L1440：源销毁后该故障不可能再经 `exc_resume` 恢复）。
+    /// 与 [`Self::exc_resume_faulted`] 的前置**逐条对应**，防止两者漂移：
+    /// - 前置 5（`Faulted` 且有 `pending_exc`）是本判据的前提；
+    /// - 前置 6（`pending_exc.kind` 不可恢复）是本细化层内**唯一**能成立的不成功条件。
     ///
-    /// 登记：§12.10 `exc_resume` 用户化落地后，本判词应收紧为「依据当前 State 不可能成功
-    /// `exc_resume`」——彼时才有 `kernel_resume_frame`、源 cap 可达性等更细的依据。
+    /// **SPEC-074 收紧（登记）**：SPEC-072 的过渡口径还含「异常源已不存在」一支（依 §12.6
+    /// L1440）。但 §12.10 的 `exc_source_cap` 授权语义在本细化层尚未实现（`exc_resume` 不查源），
+    /// 源销毁后我们**照样能恢复**该任务——故那一支与实现不符，**据此撤销**。收紧后的判词只认
+    /// 「种类不可恢复」，与 `exc_resume` 的实际前置一致。
     pub fn is_unrecoverable_faulted(&self, task_id: u32) -> bool {
-        let Some(task) = self.tasks.find(task_id) else {
-            return false;
-        };
-        if task.status != TaskStatus::Faulted {
-            return false;
-        }
-        let Some(pending) = task.pending_exc else {
-            return false;
-        };
-        !pending.kind.is_recoverable() || self.exc_sources.find(pending.source_id).is_none()
+        self.tasks.find(task_id).is_some_and(|task| {
+            task.status == TaskStatus::Faulted
+                && task
+                    .pending_exc
+                    .is_some_and(|pending| !pending.kind.is_recoverable())
+        })
     }
 
     /// §8.2 的**内核回收路径**（`KernelActor`，**无需 `task_cap`**）。
@@ -4502,7 +4590,7 @@ pub fn create_state(
         records: CapabilityRecordTable::empty(),
         tasks: TaskTable::with_init(),
         ipc: IpcQueue::empty(),
-        audit: AuditLog::empty(),
+        audit: AuditLog::claim(),
         frame_ownership: FrameOwnership {
             image_start: inventory.kernel_phys_start,
             image_end: inventory.kernel_phys_end,
@@ -5477,9 +5565,8 @@ mod tests {
         state
             .move_capability(IMAGE_CAP_HANDLE, INIT_TASK_ID, 2)
             .unwrap();
-        assert!(state.audit.entries[..state.audit.count]
-            .iter()
-            .flatten()
+        assert!(state
+            .audit
             .any(|event| matches!(event, AuditEvent::CapabilityMoved { cap, .. } if *cap == IMAGE_CAP_HANDLE)));
         assert_eq!(
             state
@@ -5641,10 +5728,9 @@ mod tests {
         assert!(state.records.find(parent).is_none());
         assert!(state.records.find(child).is_none());
         for cap in [parent, child] {
-            assert!(state.audit.entries[..state.audit.count]
-                .iter()
-                .flatten()
-                .any(|event| matches!(event, AuditEvent::CapabilityRevoked { cap: id } if *id == cap)));
+            assert!(state.audit.any(
+                |event| matches!(event, AuditEvent::CapabilityRevoked { cap: id } if *id == cap)
+            ));
         }
         // 撤销后句柄所在槽被释放并递增 generation → 旧句柄不再可用（对用户同为 ENOENT）。
         assert_eq!(
@@ -5811,15 +5897,13 @@ mod tests {
         state.destroy_task(2).unwrap();
         assert_eq!(state.ipc.count, 0);
         assert!(
-            state.audit.entries[..state.audit.count]
-                .iter()
-                .flatten()
+            state
+                .audit
                 .any(|event| matches!(event, AuditEvent::MessageDropped { message_id: 3 }))
         );
         assert!(
-            state.audit.entries[..state.audit.count]
-                .iter()
-                .flatten()
+            state
+                .audit
                 .any(|event| matches!(event, AuditEvent::TaskDestroyed { task_id: 2 }))
         );
     }
@@ -5870,11 +5954,11 @@ mod tests {
         // （`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞与投递唤醒）与消息事件。
         assert_eq!(state.audit.count, 9);
         assert!(matches!(
-            state.audit.entries[state.audit.count - 2],
+            state.audit.entry(state.audit.len() - 2),
             Some(AuditEvent::MessageSent { message_id: 1, .. })
         ));
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::MessageReceived { message_id: 1, .. })
         ));
         assert_eq!(
@@ -6380,19 +6464,18 @@ mod tests {
         }
 
         // 13 条位置迁移审计（11 段 + 2 task cap），源位置为内核持有。
-        let moved = state.audit.entries[..state.audit.count]
-            .iter()
-            .flatten()
-            .filter(|event| {
-                matches!(
-                    event,
-                    AuditEvent::CapabilityMoved {
-                        from: CapabilityLocation::HeldByKernel,
-                        ..
-                    }
-                )
-            })
-            .count();
+        let mut moved = 0usize;
+        state.audit.for_each(|event| {
+            if matches!(
+                event,
+                AuditEvent::CapabilityMoved {
+                    from: CapabilityLocation::HeldByKernel,
+                    ..
+                }
+            ) {
+                moved += 1;
+            }
+        });
         assert_eq!(moved, 13);
         assert_eq!(state.validate_authority(), Ok(()));
     }
@@ -6650,7 +6733,7 @@ mod tests {
         let base = state.audit.count;
         state.schedule_task(2).unwrap(); // Ready → Running
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::TaskStateChanged {
                 task_id: 2,
                 status: TaskStatus::Running
@@ -6658,7 +6741,7 @@ mod tests {
         ));
         state.yield_task(2).unwrap(); // Running → Ready
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::TaskStateChanged {
                 task_id: 2,
                 status: TaskStatus::Ready
@@ -6666,7 +6749,7 @@ mod tests {
         ));
         state.block_recv_task(2).unwrap(); // Ready → BlockedRecv
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::TaskStateChanged {
                 task_id: 2,
                 status: TaskStatus::BlockedRecv
@@ -6674,7 +6757,7 @@ mod tests {
         ));
         state.wake_recv_task(2).unwrap(); // BlockedRecv → Ready
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::TaskStateChanged {
                 task_id: 2,
                 status: TaskStatus::Ready
@@ -6734,7 +6817,7 @@ mod tests {
             "成功动作 3：存 kernel_resume_frame"
         );
         assert!(matches!(
-            state.audit.entries[state.audit.count - 1],
+            state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::TaskResumed { task_id: 2 })
         ));
         assert_eq!(
@@ -6848,9 +6931,11 @@ mod tests {
         );
     }
 
-    /// SPEC-072：「源已销毁」也构成不可恢复终态（§12.6 L1440：源销毁后该故障不可能再恢复）。
+    /// SPEC-074：**源销毁不构成回收条件**——§12.10 的 `exc_source_cap` 授权语义未实现，
+    /// `exc_resume` 不查源，故源销毁后该任务**仍可恢复**；判据必须与实现的前置一致，
+    /// 不能沿用 SPEC-072 过渡口径里"源已销毁 ⇒ 不可恢复"那一支。
     #[test]
-    fn destroyed_fault_source_makes_a_faulted_task_unrecoverable() {
+    fn destroyed_fault_source_does_not_make_a_faulted_task_reclaimable() {
         let mut state = exc_state();
         state.create_task(2).unwrap();
         state.schedule_task(2).unwrap();
@@ -6858,15 +6943,22 @@ mod tests {
             .tasks
             .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
             .unwrap();
+        // 摘掉该源记录。
+        state.exc_sources.entries[0] = None;
         assert!(
             !state.is_unrecoverable_faulted(2),
-            "源存活时 PageFault 是可恢复的"
+            "源销毁不构成回收条件：exc_resume 本就不查源，该任务仍可恢复"
         );
-        // 直接摘掉该源记录（等价于源销毁后 `exc_resume` 已不可能成功）。
-        state.exc_sources.entries[0] = None;
+        assert_eq!(
+            state.kernel_reclaim_task(2, None, 0),
+            Err(TaskError::NotUnrecoverable)
+        );
+        // 真正的不可恢复终态仍由「种类不可恢复」判定。
+        state.tasks.find_mut(2).unwrap().pending_exc = Some(PendingExc {
+            source_id: PAGE_FAULT_SOURCE_ID,
+            kind: ExcKind::DoubleFault,
+        });
         assert!(state.is_unrecoverable_faulted(2));
-        assert!(state.kernel_reclaim_task(2, None, 0).is_ok());
-        assert!(!state.tasks.is_live(2));
     }
 
     #[test]
@@ -7106,9 +7198,8 @@ mod tests {
         state.create_task(2).unwrap();
         state.audit.append(AuditEvent::TaskCreated { task_id: 2 });
         assert!(
-            state.audit.entries[..state.audit.count]
-                .iter()
-                .flatten()
+            state
+                .audit
                 .any(|event| matches!(event, AuditEvent::TaskCreated { task_id: 2 }))
         );
         // 无消息、无 pending：恰好 1 条 TaskDestroyed。
@@ -7134,12 +7225,11 @@ mod tests {
         // `create_state` 按值返回该结构，内核启动栈有限：钉死上限防止后续扩容悄悄超栈。
         let size = core::mem::size_of::<super::BootstrapState>();
         assert!(size <= 16 * 1024, "BootstrapState size = {size} bytes");
-        // SPEC-071：容量提到 170 后实测 16312 B——**余量只剩 72 B**。
-        // 再往里加存储（新字段或再扩数组）会直接撞上守卫，故先把"余量已枯竭"钉进测试：
-        // 任何进一步存储增长都必须先做审计存储重构（把 `AuditLog` 移出该结构）。
+        // SPEC-074：审计日志移出结构体后实测 12240 B（原 16312 B，释放 4072 B）。
+        // 这里把"余量充足"钉住，既防再次撞 16 KiB 守卫，也防悄悄回归到内联存储。
         assert!(
-            size >= 16 * 1024 - 128,
-            "BootstrapState size = {size} bytes：结构体余量意外变大，请复核 SPEC-071 登记的余量结论"
+            size <= 13 * 1024,
+            "BootstrapState size = {size} bytes：审计存储应已移出结构体（SPEC-074），余量应 ≥ 3 KiB"
         );
     }
 
