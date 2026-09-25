@@ -226,6 +226,45 @@ pub(crate) fn resume_ready(witness: &kernel::bootstrap::ResumeWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-081：§11 Namespace 路径操作的阶段末见证（ring3 回执 + 内核审计计数）。
+pub(crate) fn namespace_ready(witness: &kernel::syscall::NsWitness) {
+    let audit = witness.audit;
+    write_prefix("namespace_ready", "ok");
+    serial::write_bytes(b"|data=namespaces=");
+    write_u32(audit.namespaces);
+    serial::write_bytes(b";entries=");
+    write_u32(audit.entries);
+    serial::write_bytes(b";binds=");
+    write_u32(audit.binds);
+    serial::write_bytes(b";unbinds=");
+    write_u32(audit.unbinds);
+    serial::write_bytes(b";mounts=");
+    write_u32(audit.mounts);
+    serial::write_bytes(b";unmounts=");
+    write_u32(audit.unmounts);
+    serial::write_bytes(b";resolves=");
+    write_u32(audit.resolves);
+    serial::write_bytes(b";cycles_rejected=");
+    write_u32(audit.cycles_rejected);
+    serial::write_bytes(b";overlaps_rejected=");
+    write_u32(audit.overlaps_rejected);
+    serial::write_bytes(b";invalid_path_rejected=");
+    write_u32(audit.invalid_path_rejected);
+    serial::write_bytes(b";acyclic_ok=");
+    write_u32(audit.acyclic_ok);
+    serial::write_bytes(b";create_ok=");
+    write_u32((witness.create_a != 0 && witness.create_b != 0 && witness.create_c != 0) as u32);
+    serial::write_bytes(b";resolve_ok=");
+    write_u32((witness.resolve_lib != 0 && witness.resolve_sub != 0) as u32);
+    serial::write_bytes(b";overlap_rejected=");
+    write_u32((witness.bind_overlap == kernel::syscall::ERRNO_EXIST) as u32);
+    serial::write_bytes(b";cycle_rejected=");
+    write_u32((witness.mount_cycle == kernel::syscall::ERRNO_INVALID) as u32);
+    serial::write_bytes(b";evidence_ok=");
+    write_u32(witness.evidence_ok() as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

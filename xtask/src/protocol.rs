@@ -24,6 +24,7 @@ enum EventKind {
     MemsegReady,
     IpcReady,
     TaskReady,
+    NamespaceReady,
     PreemptReady,
     ExcResumeReady,
     PlatformSegmentsReady,
@@ -117,7 +118,7 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// 再加 ring3 存活段 cap 3（槽 6/7/8）与调用者的 manager cap 1（槽 10）。
 /// 被销毁子任务的 self cap 与 root_ns cap 已撤销，故不计入。
 /// **切片 V**：另有 task 4 的 manager cap 1（目标已 Dead，仍是 live 槽位）→ 29。
-const TASK_READY_LIVE_CAPS: usize = 29;
+const TASK_READY_LIVE_CAPS: usize = 40;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -211,7 +212,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 35] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 36] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -236,17 +237,18 @@ const EXPECTED_EVENTS: [(u32, EventKind); 35] = [
     (22, EventKind::MemsegReady),
     (23, EventKind::IpcReady),
     (24, EventKind::TaskReady),
-    (25, EventKind::PreemptReady),
-    (26, EventKind::ExcResumeReady),
-    (27, EventKind::PlatformSegmentsReady),
-    (28, EventKind::AuthorityReady),
-    (29, EventKind::FramesReady),
-    (30, EventKind::SelfRootReady),
-    (31, EventKind::FaultReady),
-    (32, EventKind::StateAuditReady),
-    (33, EventKind::ReclaimReady),
-    (34, EventKind::ResumeReady),
-    (35, EventKind::BootComplete),
+    (25, EventKind::NamespaceReady),
+    (26, EventKind::PreemptReady),
+    (27, EventKind::ExcResumeReady),
+    (28, EventKind::PlatformSegmentsReady),
+    (29, EventKind::AuthorityReady),
+    (30, EventKind::FramesReady),
+    (31, EventKind::SelfRootReady),
+    (32, EventKind::FaultReady),
+    (33, EventKind::StateAuditReady),
+    (34, EventKind::ReclaimReady),
+    (35, EventKind::ResumeReady),
+    (36, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -533,6 +535,12 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     {
         validate_resume_data(resume.data.as_deref())?;
     }
+    if let Some(namespace) = events
+        .iter()
+        .find(|event| event.kind == EventKind::NamespaceReady)
+    {
+        validate_namespace_data(namespace.data.as_deref())?;
+    }
     Ok(())
 }
 
@@ -579,6 +587,90 @@ fn validate_resume_data(data: Option<&str>) -> Result<(), String> {
         if get(key)? != 1 {
             return Err(format!(
                 "resume_ready {key} must be 1 — a successful exc_resume must clear pending_exc, save the kernel_resume_frame, zero the consumed frame bytes, be consumed on the next schedule, reject an unrecoverable kind, and leave the W9 invariant intact"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-081：校验 §11 Namespace 路径操作的判决性见证（S3-D1/D2 与 S3-X1）。
+///
+/// 判决性条件：三个 Namespace 被真实创建、绑定/挂载/解析各按 §11 的成功动作留下审计事件、
+/// **成环的挂载被拒绝**（`MountCycle`）、路径冲突与非法路径文本各被拒绝一次，且最终活动对象
+/// 与存活条目数与整条操作链一致（`c` 经 `ns_destroy` 回收后只剩 `a` 的挂载项）。
+fn validate_namespace_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "namespace_ready event is missing its data field".to_owned())?;
+    let mut fields = std::collections::BTreeMap::new();
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed namespace_ready field: {field}"))?;
+        fields.insert(key, value);
+    }
+    let get = |key: &str| -> Result<usize, String> {
+        fields
+            .get(key)
+            .ok_or_else(|| format!("namespace_ready is missing {key}"))
+            .and_then(|value| parse_count(value))
+    };
+
+    // 活动 Namespace：init + a + b（c 已被 ns_destroy 从活动表删除）。
+    if get("namespaces")? != 3 {
+        return Err(
+            "namespace_ready namespaces must be 3 — after ns_create ×3 and ns_destroy ×1 only init, a and b stay live"
+                .to_owned(),
+        );
+    }
+    // 存活条目：只有 a 的 `x`（Mount b）留下；init 的 `lib`/`mnt` 分别被 unbind/unmount 清掉。
+    if get("entries")? != 1 {
+        return Err(
+            "namespace_ready entries must be 1 — after unbind/unmount/destroy only a's mount entry survives"
+                .to_owned(),
+        );
+    }
+    // 审计事件计数：每类与 ring3 程序实际执行的成功操作一一对应（§13.1 要求路径操作追加 Ns* 事件）。
+    for (key, expected) in [
+        ("binds", 2usize),
+        ("unbinds", 1),
+        ("mounts", 2),
+        ("unmounts", 1),
+        ("resolves", 2),
+    ] {
+        if get(key)? != expected {
+            return Err(format!(
+                "namespace_ready {key} must be {expected} — the audit log must record exactly one Ns* event per successful path operation"
+            ));
+        }
+    }
+    // 拒绝路径：环 / 路径冲突 / 非法路径文本各恰好一次（失败不追加审计事件，故用实现层计数）。
+    for key in [
+        "cycles_rejected",
+        "overlaps_rejected",
+        "invalid_path_rejected",
+    ] {
+        if get(key)? != 1 {
+            return Err(format!(
+                "namespace_ready {key} must be 1 — the rejected path operation must be observed exactly once"
+            ));
+        }
+    }
+    // 环检测：每次成功的 ns_mount 都在提交前判无环，故执行次数等于成功挂载次数。
+    if get("acyclic_ok")? != 2 {
+        return Err(
+            "namespace_ready acyclic_ok must be 2 — every successful ns_mount must have run the cycle DFS and found no cycle"
+                .to_owned(),
+        );
+    }
+    for key in [
+        "create_ok",
+        "resolve_ok",
+        "overlap_rejected",
+        "cycle_rejected",
+        "evidence_ok",
+    ] {
+        if get(key)? != 1 {
+            return Err(format!(
+                "namespace_ready {key} must be 1 — the ring3 receipts must show three ns_create handles, two resolve handles, an EEXIST overlap rejection, an EINVAL cycle rejection, and an overall pass"
             ));
         }
     }
@@ -3081,6 +3173,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("memseg_ready", "ok") => EventKind::MemsegReady,
         ("ipc_ready", "ok") => EventKind::IpcReady,
         ("task_ready", "ok") => EventKind::TaskReady,
+        ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
@@ -3125,6 +3218,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemsegReady
             | EventKind::IpcReady
             | EventKind::TaskReady
+            | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -3162,6 +3256,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemsegReady
             | EventKind::IpcReady
             | EventKind::TaskReady
+            | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
@@ -3216,18 +3311,19 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=3;direct=3;blocks=3\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=29;root_cleared=1;grandchild=4;tasks_after=3;caps_after=29;root4_cleared=1\n",
-        "PRIMA|v=1|seq=25|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=26|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=28|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=30|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=31|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=32|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
-        "PRIMA|v=1|seq=33|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=34|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=35|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=40;root_cleared=1;grandchild=4;tasks_after=3;caps_after=40;root4_cleared=1\n",
+        "PRIMA|v=1|seq=25|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=26|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=27|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=28|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=29|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=30|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=31|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=32|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=33|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=34|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=35|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=36|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3303,7 +3399,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=29;root_cleared", ";caps=30;root_cleared");
+        let output = VALID.replace(";caps=40;root_cleared", ";caps=41;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4638,5 +4734,70 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("missing"), "{error}");
+    }
+
+    /// SPEC-081：`namespace_ready` 的判决性数据（与 `VALID` 中的一致）。
+    const NAMESPACE_DATA: &str = "namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1";
+
+    #[test]
+    fn rejects_namespace_without_a_rejected_cycle() {
+        let output = VALID.replace(
+            NAMESPACE_DATA,
+            &NAMESPACE_DATA
+                .replace("cycles_rejected=1", "cycles_rejected=0")
+                .replace("cycle_rejected=1", "cycle_rejected=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("cycles_rejected must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_namespace_when_the_cycle_dfs_did_not_run_per_mount() {
+        let output = VALID.replace(
+            NAMESPACE_DATA,
+            &NAMESPACE_DATA.replace("acyclic_ok=2", "acyclic_ok=1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("acyclic_ok must be 2"), "{error}");
+    }
+
+    #[test]
+    fn rejects_namespace_when_a_path_audit_event_is_missing() {
+        let output = VALID.replace(
+            NAMESPACE_DATA,
+            &NAMESPACE_DATA.replace("mounts=2", "mounts=1"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("mounts must be 2"), "{error}");
+    }
+
+    #[test]
+    fn rejects_namespace_with_wrong_live_object_count() {
+        let output = VALID.replace(
+            NAMESPACE_DATA,
+            &NAMESPACE_DATA.replace("namespaces=3", "namespaces=4"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("namespaces must be 3"), "{error}");
+    }
+
+    #[test]
+    fn rejects_namespace_without_the_ring3_evidence_flag() {
+        let output = VALID.replace(
+            NAMESPACE_DATA,
+            &NAMESPACE_DATA.replace("evidence_ok=1", "evidence_ok=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("evidence_ok must be 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_namespace_missing_data() {
+        let output = VALID.replace(
+            "|event=namespace_ready|status=ok|data=namespaces=3",
+            "|event=namespace_ready|status=ok|data=entries=1",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("namespaces"), "{error}");
     }
 }

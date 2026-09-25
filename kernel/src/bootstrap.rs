@@ -2,6 +2,7 @@ use core::fmt;
 
 use crate::handle::Handle;
 use crate::mem::FrameInventory;
+use crate::namespace::{MAX_PATH_COMPONENTS, NsEntry, NsEntryKind, Path};
 use crate::rights::{ObjectKind, Right, Rights};
 use prima_ostd::sync::StaticCell;
 
@@ -206,6 +207,52 @@ pub enum AuditEvent {
     /// S2-D4：`task_create` 成功（§8.1 步骤 8）。
     TaskCreated {
         task_id: u32,
+    },
+    /// SPEC-081 / §13.1 `CapMinted`：随对象创建铸造根 Capability（`parent = None`）。
+    ///
+    /// `bootstrap` 期的三条初始根仍由 [`InitialCapability`] 表示、**不**补发本事件（它们不是
+    /// 「随对象创建铸造」的运行时路径）；本事件用于 `ns_create` 等运行时铸造。
+    CapabilityMinted {
+        cap: Handle,
+        holder: u32,
+    },
+    /// SPEC-081 / §11.3：`ns_bind` 成功。
+    NsBound {
+        ns: u32,
+        path: Path,
+        cap: Handle,
+    },
+    /// SPEC-081 / §11.4：`ns_unbind` 成功。
+    NsUnbound {
+        ns: u32,
+        path: Path,
+        cap: Handle,
+    },
+    /// SPEC-081 / §11.5：`ns_mount` 成功（挂载子 Capability 是新派生的）。
+    NsMounted {
+        ns: u32,
+        path: Path,
+        source_ns: u32,
+        cap: Handle,
+    },
+    /// SPEC-081 / §11.6：`ns_unmount` 成功（含 stale Mount 的清理）。
+    NsUnmounted {
+        ns: u32,
+        path: Path,
+        cap: Handle,
+    },
+    /// SPEC-081 / §11.7：`ns_resolve` 成功。
+    ///
+    /// §13.1 要求它记录：起始 Namespace Capability、规范化路径、依次经过的 Mount Capability、
+    /// 最终父 Capability 与新 Capability——本事件的 `start_cap`/`path`/`mounts`/`parent`/`cap`
+    /// 逐项对应。
+    NsResolved {
+        start_cap: Handle,
+        path: Path,
+        mount_count: u8,
+        mounts: [Handle; MAX_PATH_COMPONENTS],
+        parent: Handle,
+        cap: Handle,
     },
 }
 
@@ -811,15 +858,33 @@ pub enum CapabilityLocation {
     /// 内核平台 actor 持有（[`KERNEL_ACTOR`]）；不是 TaskTable 条目。
     HeldByKernel,
     InMessage(u32),
+    /// SPEC-081 / §4.3：位于 Namespace `ns` 的某条路径上。
+    ///
+    /// 只编码 `ns` id——具体路径由 [`NsEntry`] 反查、并由 `Ns*` 审计事件显式记录（见设计文档
+    /// §0.1 第 2 条：把 69 B 的 `Path` 塞进每条位置会无谓放大按槽直索引的位置表）。
+    InNamespace(u32),
 }
 
 impl CapabilityLocation {
-    /// 位置对应的持有者 id（`InMessage` 无持有者）。
+    /// 位置对应的持有者 id（`InMessage` 与 `InNamespace` 都没有 Task 持有者）。
+    ///
+    /// `InNamespace` 返回 `None` 是**有意**的：§4.5/§4.6 要求「移动只在规范列出的原子操作内
+    /// 发生」，于是 `authorize`/`derive`/`drop` 的「必须由 caller 持有」前置对它自然给出
+    /// `NotHeld`/`NotHolder`，不需要各处再加特例。
     pub const fn holder_id(self) -> Option<u32> {
         match self {
             CapabilityLocation::HeldByTask(task_id) => Some(task_id),
             CapabilityLocation::HeldByKernel => Some(KERNEL_ACTOR),
             CapabilityLocation::InMessage(_) => None,
+            CapabilityLocation::InNamespace(_) => None,
+        }
+    }
+
+    /// 位置所在的 Namespace（仅 [`CapabilityLocation::InNamespace`] 返回 `Some`）。
+    pub const fn namespace_id(self) -> Option<u32> {
+        match self {
+            CapabilityLocation::InNamespace(ns) => Some(ns),
+            _ => None,
         }
     }
 
@@ -1564,6 +1629,40 @@ impl CapabilityPositionTable {
         entry.location = CapabilityLocation::HeldByTask(receiver);
         Ok(())
     }
+
+    /// SPEC-081 / §4.6：`HeldBy(holder) → InNamespace(ns)`（`ns_bind` 的位置变化）。
+    pub fn move_to_namespace(
+        &mut self,
+        handle: Handle,
+        holder: u32,
+        ns: u32,
+    ) -> Result<(), CapabilityPositionError> {
+        let entry = self
+            .find_mut(handle)
+            .ok_or(CapabilityPositionError::NoSuchCapability)?;
+        if !entry.location.is_held_by(holder) {
+            return Err(CapabilityPositionError::HolderMismatch);
+        }
+        entry.location = CapabilityLocation::InNamespace(ns);
+        Ok(())
+    }
+
+    /// SPEC-081 / §4.6：`InNamespace(ns) → HeldBy(holder)`（`ns_unbind` 的位置变化）。
+    pub fn move_from_namespace(
+        &mut self,
+        handle: Handle,
+        ns: u32,
+        holder: u32,
+    ) -> Result<(), CapabilityPositionError> {
+        let entry = self
+            .find_mut(handle)
+            .ok_or(CapabilityPositionError::NoSuchCapability)?;
+        if entry.location != CapabilityLocation::InNamespace(ns) {
+            return Err(CapabilityPositionError::HolderMismatch);
+        }
+        entry.location = CapabilityLocation::HeldByTask(holder);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1886,12 +1985,264 @@ pub enum MemsegError {
     AuditFull,
 }
 
-/// §5.4：Namespace 对象（本切片只物化空 init Namespace）。
+/// §5.4：Namespace 对象。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamespaceObject {
     pub id: u32,
     pub creator: u32,
+    /// 当前活动条目数（条目内容在 [`NsEntryTable`] 承载）。
     pub entries: usize,
+}
+
+/// SPEC-081：Namespace 条目存储。
+///
+/// 与 [`AuditLog`] 同构：内容在静态 arena（[`NS_ARENA`]）里按实例分段，结构体内只留一个
+/// 区段句柄——`BootstrapState` 已贴 13 KiB 守卫，**不得内联**。
+#[derive(Clone, Copy)]
+pub struct NsEntryTable {
+    slice: crate::arena::ArenaSlice,
+}
+
+impl core::fmt::Debug for NsEntryTable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NsEntryTable")
+            .field("region", &self.slice.region())
+            .field("count", &self.count())
+            .finish()
+    }
+}
+
+impl PartialEq for NsEntryTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.slice == other.slice
+    }
+}
+
+impl Eq for NsEntryTable {}
+
+static NS_ARENA: crate::arena::Arena<NsEntry, MAX_NS_ENTRIES, NS_REGIONS> =
+    crate::arena::Arena::new();
+
+impl NsEntryTable {
+    /// 在 arena 里为本实例领一段（段耗尽即确定性 panic，见 [`crate::arena::Arena::claim`]）。
+    fn claim() -> Self {
+        Self {
+            slice: NS_ARENA.claim(),
+        }
+    }
+
+    /// 当前条目数（线性扫描；条目上限 16，代价可忽略）。
+    pub fn count(&self) -> usize {
+        let mut count = 0;
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            if NS_ARENA.get(self.slice, index).is_some() {
+                count += 1;
+            }
+            index += 1;
+        }
+        count
+    }
+
+    /// 是否存在条目（用于「条目全清空后才能销毁 Namespace」之类的判定）。
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// `ns` 内的条目数。
+    pub fn count_in(&self, ns: u32) -> usize {
+        let mut count = 0;
+        self.for_each(|entry| {
+            if entry.ns == ns {
+                count += 1;
+            }
+        });
+        count
+    }
+
+    /// 第一个空槽（满则 `None`）。
+    fn free_slot(&self) -> Option<usize> {
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            if NS_ARENA.get(self.slice, index).is_none() {
+                return Some(index);
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn store(&self, index: usize, entry: NsEntry) {
+        NS_ARENA.set(self.slice, index, Some(entry));
+    }
+
+    fn clear(&self, index: usize) {
+        NS_ARENA.set(self.slice, index, None);
+    }
+
+    /// 按序遍历条目（值拷贝，不借出 arena 内部）。
+    pub fn for_each(&self, mut visit: impl FnMut(NsEntry)) {
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            if let Some(entry) = NS_ARENA.get(self.slice, index) {
+                visit(entry);
+            }
+            index += 1;
+        }
+    }
+
+    /// 在 `ns` 内精确查找路径为 `path` 的条目。
+    pub fn find_in(&self, ns: u32, path: &Path) -> Option<(usize, NsEntry)> {
+        let mut found = None;
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            if let Some(entry) = NS_ARENA
+                .get(self.slice, index)
+                .filter(|entry| entry.ns == ns && entry.path == *path)
+            {
+                found = Some((index, entry));
+                break;
+            }
+            index += 1;
+        }
+        found
+    }
+
+    /// 按 Capability 反查条目（位置 `InNamespace(ns)` 的具体路径由它给出）。
+    pub fn find_by_cap(&self, cap: Handle) -> Option<NsEntry> {
+        let mut found = None;
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            if let Some(entry) = NS_ARENA
+                .get(self.slice, index)
+                .filter(|entry| entry.cap == cap)
+            {
+                found = Some(entry);
+                break;
+            }
+            index += 1;
+        }
+        found
+    }
+
+    /// `ns` 内是否存在「`path` 的终端祖先」——即某条目的路径严格前缀于 `path`（§11.1 约束 3）。
+    pub fn has_terminal_ancestor(&self, ns: u32, path: &Path) -> bool {
+        let mut found = false;
+        self.for_each(|entry| {
+            if entry.ns == ns && entry.path.strict_prefix_of(path) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    /// `ns` 内是否存在「`path` 的后代条目」——即某条目的路径以 `path` 为严格前缀（§11.1 约束 3）。
+    pub fn has_descendant(&self, ns: u32, path: &Path) -> bool {
+        let mut found = false;
+        self.for_each(|entry| {
+            if entry.ns == ns && path.strict_prefix_of(&entry.path) {
+                found = true;
+            }
+        });
+        found
+    }
+
+    /// `ns` 内沿 `Mount` 边可直达的 Namespace id（供 `ns_mount` 的环检测 DFS）。
+    pub fn mount_targets(&self, ns: u32, mut visit: impl FnMut(u32)) {
+        self.for_each(|entry| {
+            if entry.ns == ns && entry.kind == NsEntryKind::Mount {
+                visit(entry.target_ns);
+            }
+        });
+    }
+
+    /// 删除 `ns` 内的全部条目并返回被删除条目数（`ns_destroy` 与测试用）。
+    pub fn clear_namespace(&self, ns: u32) -> usize {
+        let mut removed = 0;
+        let mut index = 0;
+        while index < MAX_NS_ENTRIES {
+            let matched = NS_ARENA
+                .get(self.slice, index)
+                .is_some_and(|entry| entry.ns == ns);
+            if matched {
+                self.clear(index);
+                removed += 1;
+            }
+            index += 1;
+        }
+        removed
+    }
+}
+
+/// SPEC-081 / §11：Namespace 路径操作的失败域。
+///
+/// 前 15 个与规范 §11.2–§11.8 列出的错误名一一对应；末两个是实现层的资源可用性失败
+/// （§6.2 明确排除在抽象层失败之外）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NsError {
+    /// §6.1 Actor 约束：调用者不是活动 Task。
+    InvalidCaller,
+    /// `cap` 不是有效 CapId（§11.3/§11.5 的 `InvalidCap`）。
+    InvalidCap,
+    /// 目标不是活动 Namespace（含目标已销毁）。
+    InvalidNamespace,
+    /// 缺少指定权限（§11.3–§11.8 的 `MissingRight`）。
+    MissingRight(Right),
+    /// 调用者未持有该 Capability（§11.3/§11.5/§11.8 的 `NotHeld`）。
+    NotHeld,
+    /// `ns_bind` 的 `cap` 目标对象已销毁（`usable` 失败）。
+    TargetDead,
+    /// `ns_resolve` 遇到已销毁的挂载目标（§11.7 的 `MountTargetDead`）。
+    MountTargetDead,
+    /// 是活动 Task 的结构性根 Namespace（§11.8 的 `StructuralCap`）。
+    StructuralCap,
+    /// 父项不可被派生（缺 `NsResolve`/`Derive`，§11.5/§11.7 的 `NotDelegable`）。
+    NotDelegable,
+    /// 新增 `destination → source` 边会形成 Mount 环（§11.5 的 `MountCycle`）。
+    MountCycle,
+    /// 路径未精确指向预期条目（§11.4/§11.6 的 `NotFound`）。
+    NotFound,
+    /// `Bound` 之后仍有剩余分量（§11.7 的 `NotDirectory`）。
+    NotDirectory,
+    /// 路径存在终端祖先、同名条目或后代条目（§11.1 约束 3 的 `Overlap`）。
+    Overlap,
+    /// 请求权限不是父权限的子集（§11.7 的 `RightsExceeded`）。
+    RightsExceeded,
+    /// 请求权限对目标对象类型非法。
+    WrongRightType,
+    /// 实现层：槽位/对象/条目容量耗尽（§6.2 排除项）。
+    CapacityExceeded,
+    /// 实现层：审计容量耗尽（§6.2 排除项）。
+    AuditFull,
+}
+
+/// SPEC-081：Namespace 路径操作被拒绝的**实现层计数**（供 `namespace_ready` 见证）。
+///
+/// 失败不改变抽象状态（§6.2），故这些计数不进审计日志——它们只是本切片的观测记录。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NsRejects {
+    pub cycles: u32,
+    pub overlaps: u32,
+    pub non_directory: u32,
+    pub invalid_path: u32,
+}
+
+/// SPEC-081：`namespace_ready` 见证的计数（活动对象 + 审计事件 + 拒绝计数）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NamespaceAudit {
+    pub namespaces: u32,
+    pub entries: u32,
+    pub binds: u32,
+    pub unbinds: u32,
+    pub mounts: u32,
+    pub unmounts: u32,
+    pub resolves: u32,
+    pub cycles_rejected: u32,
+    pub overlaps_rejected: u32,
+    pub non_directory_rejected: u32,
+    pub invalid_path_rejected: u32,
+    /// 成功执行过环检测并判定无环的挂载次数（每次成功 `ns_mount` 一次）。
+    pub acyclic_ok: u32,
 }
 
 /// 切片 P：初始 Authority 的阶段末见证（供 `authority_ready` 事件使用）。
@@ -1916,7 +2267,26 @@ pub struct BootstrapRecord {
 /// `memseg_create` 都消耗一个新槽。上限受 `bootstrap_state_stays_within_the_stack_budget`
 /// 的 16 KiB 结构体守卫约束：32 槽时约 15 KiB，**不得再向 `BootstrapState` 增加存储字段**。
 pub const MAX_SEGMENT_OBJECTS: usize = 32;
-pub const MAX_NAMESPACE_OBJECTS: usize = 2;
+/// SPEC-081：Namespace 对象上限（init + `ns_create` 创建的）。
+///
+/// 原为 2（只物化 init）。切片 AJ 把它提到 8 以便 `ns_mount` 有环检测的真实对象可挂；
+/// `NamespaceObject` 只有 16 B，内联增量约 96 B，远在 13 KiB 守卫余量（约 3.2 KiB）内。
+pub const MAX_NAMESPACE_OBJECTS: usize = 8;
+
+/// SPEC-081：`ns_create` 铸造的根 Capability 预留槽位基址。
+///
+/// ring3 见证程序以 const fn 拼装机码，句柄必须编译期可知——故仿 SPEC-066 的
+/// `PLATFORM_SEGMENT_CAP_SLOT_BASE` 用显式高位区间，而非「最低空闲槽」（后者会被
+/// `cap_derive`/`memseg_create` 的动态分配抢占，且位置取决于此前执行过的全部 syscall）。
+pub const NS_ROOT_CAP_SLOT_BASE: u32 = 52;
+/// SPEC-081：单个 Namespace 的条目上限（§5.4 的细化层容量约束）。
+pub const MAX_NS_ENTRIES: usize = 16;
+/// SPEC-081：Namespace 条目 arena 的区段数（内核只构造一个 state，故 1 段；host 单测并行
+/// 构造多个 state，各领一段互不干扰——理由与 [`AUDIT_REGIONS`] 完全相同）。
+#[cfg(not(test))]
+const NS_REGIONS: usize = 1;
+#[cfg(test)]
+const NS_REGIONS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootstrapState {
@@ -1941,6 +2311,10 @@ pub struct BootstrapState {
     /// 切片 P：§14 步骤 3 物化的 init Namespace。
     pub namespaces: [Option<NamespaceObject>; MAX_NAMESPACE_OBJECTS],
     pub namespace_count: usize,
+    /// SPEC-081：Namespace 条目存储（内容在静态 arena，本字段只是一个区段句柄）。
+    pub ns_entries: NsEntryTable,
+    /// SPEC-081：被拒绝的 Namespace 操作计数（实现层观测，不属抽象状态）。
+    pub ns_rejects: NsRejects,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -2054,7 +2428,7 @@ impl BootstrapState {
         }
 
         // 位置：HeldByTask 的任务必须活跃；HeldByKernel 的持有者不是 Task、恒在；InMessage
-        // 的消息必须在队列中且含该句柄。
+        // 的消息必须在队列中且含该句柄；InNamespace 的条目必须存在（SPEC-081）。
         for position in self.positions.entries.iter().flatten() {
             match position.location {
                 CapabilityLocation::HeldByTask(task_id) => {
@@ -2074,6 +2448,16 @@ impl BootstrapState {
                                         .contains(&position.handle)
                             });
                     if !queued {
+                        return Err(AuthorityError::PositionMismatch);
+                    }
+                }
+                CapabilityLocation::InNamespace(ns_id) => {
+                    // 条目（而非仅 Namespace 对象）必须存在，且它的 cap 就是这条位置。
+                    let recorded = self
+                        .ns_entries
+                        .find_by_cap(position.handle)
+                        .is_some_and(|entry| entry.ns == ns_id);
+                    if !recorded {
                         return Err(AuthorityError::PositionMismatch);
                     }
                 }
@@ -2211,6 +2595,36 @@ impl BootstrapState {
                 }
             }
         });
+        audit
+    }
+
+    /// SPEC-081：Namespace 路径操作的汇总（活动对象 + 审计事件计数 + 拒绝计数）。
+    pub fn namespace_audit(&self) -> NamespaceAudit {
+        let mut audit = NamespaceAudit {
+            namespaces: self.namespace_count as u32,
+            entries: self.ns_entries.count() as u32,
+            binds: 0,
+            unbinds: 0,
+            mounts: 0,
+            unmounts: 0,
+            resolves: 0,
+            cycles_rejected: self.ns_rejects.cycles,
+            overlaps_rejected: self.ns_rejects.overlaps,
+            non_directory_rejected: self.ns_rejects.non_directory,
+            invalid_path_rejected: self.ns_rejects.invalid_path,
+            acyclic_ok: 0,
+        };
+        let log = self.audit;
+        log.for_each(|event| match event {
+            AuditEvent::NsBound { .. } => audit.binds += 1,
+            AuditEvent::NsUnbound { .. } => audit.unbinds += 1,
+            AuditEvent::NsMounted { .. } => audit.mounts += 1,
+            AuditEvent::NsUnmounted { .. } => audit.unmounts += 1,
+            AuditEvent::NsResolved { .. } => audit.resolves += 1,
+            _ => {}
+        });
+        // 每次成功的 `ns_mount` 都在提交前跑完了环检测 DFS 并判定无环。
+        audit.acyclic_ok = audit.mounts;
         audit
     }
 
@@ -2944,6 +3358,629 @@ impl BootstrapState {
             holder,
         });
         Ok(handle)
+    }
+
+    // -----------------------------------------------------------------------
+    // SPEC-081：§11 Namespace 路径操作（切片 AJ）
+    // -----------------------------------------------------------------------
+
+    /// SPEC-081：`cap` 必须由 `caller` 持有、可用、指向活动 Namespace 且含 `right`；
+    /// 成功返回该 Namespace 的 id。七个 `ns_*` 操作共用的前置入口。
+    pub fn authorize_namespace(
+        &self,
+        caller: u32,
+        cap: Handle,
+        right: Right,
+    ) -> Result<u32, NsError> {
+        if !self.tasks.is_live(caller) {
+            return Err(NsError::InvalidCaller);
+        }
+        match self.slots.check(cap) {
+            SlotState::Free => return Err(NsError::InvalidCap),
+            SlotState::Stale => return Err(NsError::InvalidNamespace),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(cap).ok_or(NsError::InvalidCap)?;
+        let ObjectRef::Namespace(ns) = target else {
+            return Err(NsError::InvalidNamespace);
+        };
+        if !self.target_live(target) {
+            return Err(NsError::InvalidNamespace);
+        }
+        if self.holder_of(cap) != Some(caller) {
+            return Err(NsError::NotHeld);
+        }
+        let rights = self.rights_of(cap).ok_or(NsError::InvalidCap)?;
+        if !rights.contains(right) {
+            return Err(NsError::MissingRight(right));
+        }
+        Ok(ns)
+    }
+
+    /// SPEC-081 / §11.8：`ns` 是否是任一**活动** Task 的结构性根 Namespace。
+    ///
+    /// 按 **Namespace** 而非 Capability 判定（规范原文是「该 Namespace 不是任何活动 Task 的
+    /// 结构性根 Namespace」）：即使要销毁的是指向该 ns 的另一个 Capability，只要该 ns 仍是某
+    /// 活动 Task 的根，销毁就必须被拒绝。
+    pub fn is_structural_root_namespace(&self, ns: u32) -> bool {
+        self.tasks.entries.iter().flatten().any(|task| {
+            task.status != TaskStatus::Dead
+                && task.root_ns_cap != Handle::ZERO
+                && self.target_of(task.root_ns_cap) == Some(ObjectRef::Namespace(ns))
+        })
+    }
+
+    /// SPEC-081 / §11.3 前置 4：`cap` 是否是任一活动 Task 的结构性根 Namespace Capability。
+    fn is_structural_root_ns_cap(&self, cap: Handle) -> bool {
+        self.tasks
+            .entries
+            .iter()
+            .flatten()
+            .any(|task| task.status != TaskStatus::Dead && task.root_ns_cap == cap)
+    }
+
+    /// SPEC-081：`cap` 是否「可用」（槽活动 + 目标存活）。§11.4/§11.6 的 stale token 清理
+    /// 路径**不**要求这一点，故单列一个判定。
+    fn is_usable_cap(&self, cap: Handle) -> bool {
+        matches!(self.slots.check(cap), SlotState::Live)
+            && self
+                .target_of(cap)
+                .is_some_and(|target| self.target_live(target))
+    }
+
+    /// SPEC-081：最小未用的 Namespace id（`ns_destroy` 释放的 id 可被复用）。
+    fn next_namespace_id(&self) -> u32 {
+        let mut candidate = 1;
+        loop {
+            let used = self
+                .namespaces
+                .iter()
+                .flatten()
+                .any(|namespace| namespace.id == candidate);
+            if !used {
+                return candidate;
+            }
+            candidate += 1;
+        }
+    }
+
+    /// SPEC-081：更新某 Namespace 的条目计数（`NamespaceObject.entries` 只用于上报/见证，
+    /// 真实内容在 [`NsEntryTable`]）。
+    fn set_namespace_entry_count(&mut self, ns: u32, entries: usize) {
+        if let Some(object) = self
+            .namespaces
+            .iter_mut()
+            .flatten()
+            .find(|object| object.id == ns)
+        {
+            object.entries = entries;
+        }
+    }
+
+    /// SPEC-081 / §11.5、§11.7：从**非调用者持有**的父项派生（路径授权语义）。
+    ///
+    /// 与 [`Self::derive_capability`] 的差别：父项不要求由 `caller` 持有（`ns_resolve` 的父项
+    /// 就在 Namespace 里），且子 Capability 的落点由 `location` 指定。`record.holder` 记为
+    /// `caller`——位于 Namespace 中的 Capability 没有 Task 持有者（§4.6），`caller` 是唯一
+    /// 可归属的 actor（登记见设计文档 §5 第 4 条）。
+    fn derive_capability_at(
+        &mut self,
+        caller: u32,
+        parent: Handle,
+        rights: Rights,
+        location: CapabilityLocation,
+    ) -> Result<Handle, NsError> {
+        match self.slots.check(parent) {
+            SlotState::Free => return Err(NsError::InvalidCap),
+            SlotState::Stale => return Err(NsError::MountTargetDead),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(parent).ok_or(NsError::InvalidCap)?;
+        if !self.target_live(target) {
+            return Err(NsError::MountTargetDead);
+        }
+        let parent_rights = self.rights_of(parent).ok_or(NsError::InvalidCap)?;
+        if !parent_rights.contains(Right::Derive) {
+            return Err(NsError::NotDelegable);
+        }
+        if !rights.subset_of(parent_rights) {
+            return Err(NsError::RightsExceeded);
+        }
+        if !rights.well_typed(target.kind()) {
+            return Err(NsError::WrongRightType);
+        }
+        let handle = self.slots.alloc().ok_or(NsError::CapacityExceeded)?;
+        self.records
+            .insert(handle, Some(parent), caller, rights, target)
+            .map_err(|_| NsError::CapacityExceeded)?;
+        self.positions
+            .register_location(handle, location)
+            .map_err(|_| NsError::CapacityExceeded)?;
+        self.audit.append(AuditEvent::CapabilityDerived {
+            cap: handle,
+            parent,
+            holder: caller,
+        });
+        Ok(handle)
+    }
+
+    /// SPEC-081 / §11.2 `ns_create`：建空 Namespace 并铸造调用者持有的完整根 Capability。
+    ///
+    /// §11.2 声明「无失败分支」；细化层的元数据空间耗尽（槽/对象/审计容量）映射为
+    /// [`NsError::CapacityExceeded`]/[`NsError::AuditFull`]，属 §6.2 明确排除的资源可用性问题。
+    pub fn ns_create(&mut self, caller: u32) -> Result<Handle, NsError> {
+        if !self.tasks.is_live(caller) {
+            return Err(NsError::InvalidCaller);
+        }
+        let object_slot = self
+            .namespaces
+            .iter()
+            .position(|slot| slot.is_none())
+            .ok_or(NsError::CapacityExceeded)?;
+        // 根 Capability 落在预留区间的**第一个空闲槽**：`ns_destroy` 只销毁对象、不释放仍被
+        // 调用者持有的根 Capability，故不能按对象槽索引直接映射到 cap 槽。
+        let cap_slot = (NS_ROOT_CAP_SLOT_BASE
+            ..NS_ROOT_CAP_SLOT_BASE + MAX_NAMESPACE_OBJECTS as u32)
+            .find(|slot| self.slots.slot_free(*slot))
+            .ok_or(NsError::CapacityExceeded)?;
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        let ns_id = self.next_namespace_id();
+        let handle = self
+            .mint_root_capability_at(
+                CapabilityLocation::HeldByTask(caller),
+                cap_slot,
+                NAMESPACE_RIGHTS,
+                ObjectRef::Namespace(ns_id),
+            )
+            .map_err(|_| NsError::CapacityExceeded)?;
+        self.namespaces[object_slot] = Some(NamespaceObject {
+            id: ns_id,
+            creator: caller,
+            entries: 0,
+        });
+        self.namespace_count += 1;
+        self.audit.append(AuditEvent::ObjectCreated {
+            object_id: ns_id,
+            segment: false,
+        });
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: handle,
+            holder: caller,
+        });
+        Ok(handle)
+    }
+
+    /// SPEC-081 / §11.3 `ns_bind`：把调用者持有的 `cap` 移到 `InNamespace(ns, path)`。
+    pub fn ns_bind(
+        &mut self,
+        caller: u32,
+        ns_cap: Handle,
+        path: Path,
+        cap: Handle,
+    ) -> Result<(), NsError> {
+        let ns = self.authorize_namespace(caller, ns_cap, Right::NsBind)?;
+        match self.slots.check(cap) {
+            SlotState::Free | SlotState::Stale => return Err(NsError::InvalidCap),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(cap).ok_or(NsError::InvalidCap)?;
+        if !self.target_live(target) {
+            return Err(NsError::TargetDead);
+        }
+        if self.holder_of(cap) != Some(caller) {
+            return Err(NsError::NotHeld);
+        }
+        if self.is_structural_root_ns_cap(cap) {
+            return Err(NsError::StructuralCap);
+        }
+        if self.ns_entries.find_in(ns, &path).is_some()
+            || self.ns_entries.has_terminal_ancestor(ns, &path)
+            || self.ns_entries.has_descendant(ns, &path)
+        {
+            self.ns_rejects.overlaps += 1;
+            return Err(NsError::Overlap);
+        }
+        let slot = self
+            .ns_entries
+            .free_slot()
+            .ok_or(NsError::CapacityExceeded)?;
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        let from = self
+            .positions
+            .find(cap)
+            .map(|position| position.location)
+            .ok_or(NsError::NotHeld)?;
+        self.positions
+            .move_to_namespace(cap, caller, ns)
+            .map_err(|_| NsError::NotHeld)?;
+        self.ns_entries.store(
+            slot,
+            NsEntry {
+                ns,
+                path,
+                kind: NsEntryKind::Bound,
+                cap,
+                creator: caller,
+                target_ns: 0,
+            },
+        );
+        let entries = self.ns_entries.count();
+        self.set_namespace_entry_count(ns, entries);
+        self.audit.append(AuditEvent::CapabilityMoved {
+            cap,
+            from,
+            to: CapabilityLocation::InNamespace(ns),
+        });
+        self.audit.append(AuditEvent::NsBound { ns, path, cap });
+        Ok(())
+    }
+
+    /// SPEC-081 / §11.4 `ns_unbind`：删条目并把 `cap` 取回调用者手中。
+    ///
+    /// 被绑定 Capability 的**目标可以已经销毁**——stale token 仍可取回（§11.4 明示）。
+    pub fn ns_unbind(
+        &mut self,
+        caller: u32,
+        ns_cap: Handle,
+        path: Path,
+    ) -> Result<Handle, NsError> {
+        let ns = self.authorize_namespace(caller, ns_cap, Right::NsUnbind)?;
+        let (slot, entry) = self
+            .ns_entries
+            .find_in(ns, &path)
+            .ok_or(NsError::NotFound)?;
+        if entry.kind != NsEntryKind::Bound {
+            return Err(NsError::NotFound);
+        }
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        self.ns_entries.clear(slot);
+        let entries = self.ns_entries.count();
+        self.set_namespace_entry_count(ns, entries);
+        self.positions
+            .move_from_namespace(entry.cap, ns, caller)
+            .map_err(|_| NsError::NotFound)?;
+        self.audit.append(AuditEvent::CapabilityMoved {
+            cap: entry.cap,
+            from: CapabilityLocation::InNamespace(ns),
+            to: CapabilityLocation::HeldByTask(caller),
+        });
+        self.audit.append(AuditEvent::NsUnbound {
+            ns,
+            path,
+            cap: entry.cap,
+        });
+        Ok(entry.cap)
+    }
+
+    /// SPEC-081 / §11.5 `ns_mount`：把 `source` Namespace 挂到 `destination` 的 `path` 上。
+    pub fn ns_mount(
+        &mut self,
+        caller: u32,
+        destination_cap: Handle,
+        path: Path,
+        source_cap: Handle,
+    ) -> Result<(), NsError> {
+        let destination = self.authorize_namespace(caller, destination_cap, Right::NsMount)?;
+        match self.slots.check(source_cap) {
+            SlotState::Free => return Err(NsError::InvalidCap),
+            SlotState::Stale => return Err(NsError::InvalidNamespace),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(source_cap).ok_or(NsError::InvalidCap)?;
+        let ObjectRef::Namespace(source) = target else {
+            return Err(NsError::InvalidNamespace);
+        };
+        if !self.target_live(target) {
+            return Err(NsError::InvalidNamespace);
+        }
+        if self.holder_of(source_cap) != Some(caller) {
+            return Err(NsError::NotHeld);
+        }
+        let source_rights = self.rights_of(source_cap).ok_or(NsError::InvalidCap)?;
+        if !source_rights.contains(Right::NsResolve) || !source_rights.contains(Right::Derive) {
+            return Err(NsError::NotDelegable);
+        }
+        // 前置 6「同一节点」：单机细化层恒满足（跨节点挂载不在本实现范围，登记）。
+        if self.ns_entries.find_in(destination, &path).is_some()
+            || self.ns_entries.has_terminal_ancestor(destination, &path)
+            || self.ns_entries.has_descendant(destination, &path)
+        {
+            self.ns_rejects.overlaps += 1;
+            return Err(NsError::Overlap);
+        }
+        if self.namespace_reaches(source, destination) {
+            self.ns_rejects.cycles += 1;
+            return Err(NsError::MountCycle);
+        }
+        let slot = self
+            .ns_entries
+            .free_slot()
+            .ok_or(NsError::CapacityExceeded)?;
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        // 成功动作 1/2：派生权限恰为 `{NsResolve, Derive}` 的子 Capability，直接放入
+        // `InNamespace(destination, path)`；`source_cap` 仍由调用者持有。
+        let child_rights = Rights::from_rights(&[Right::NsResolve, Right::Derive]);
+        let child = self.derive_capability_at(
+            caller,
+            source_cap,
+            child_rights,
+            CapabilityLocation::InNamespace(destination),
+        )?;
+        self.ns_entries.store(
+            slot,
+            NsEntry {
+                ns: destination,
+                path,
+                kind: NsEntryKind::Mount,
+                cap: child,
+                creator: caller,
+                target_ns: source,
+            },
+        );
+        let entries = self.ns_entries.count();
+        self.set_namespace_entry_count(destination, entries);
+        self.audit.append(AuditEvent::NsMounted {
+            ns: destination,
+            path,
+            source_ns: source,
+            cap: child,
+        });
+        Ok(())
+    }
+
+    /// SPEC-081 / §11.6 `ns_unmount`：删挂载条目与挂载子 Capability 的位置。
+    ///
+    /// 源 Namespace 已销毁、挂载 Capability 已 stale 均**不**构成失败（§11.6 明示）。
+    pub fn ns_unmount(&mut self, caller: u32, ns_cap: Handle, path: Path) -> Result<(), NsError> {
+        let ns = self.authorize_namespace(caller, ns_cap, Right::NsUnmount)?;
+        let (slot, entry) = self
+            .ns_entries
+            .find_in(ns, &path)
+            .ok_or(NsError::NotFound)?;
+        if entry.kind != NsEntryKind::Mount {
+            return Err(NsError::NotFound);
+        }
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        self.ns_entries.clear(slot);
+        let entries = self.ns_entries.count();
+        self.set_namespace_entry_count(ns, entries);
+        // §11.6 / §4.6：**只删除位置**（`CapRecord` 不变）；已经解析出去的子 Capability 不受影响。
+        self.positions.remove(entry.cap);
+        self.audit
+            .append(AuditEvent::CapabilityDropped { cap: entry.cap });
+        self.audit.append(AuditEvent::NsUnmounted {
+            ns,
+            path,
+            cap: entry.cap,
+        });
+        Ok(())
+    }
+
+    /// SPEC-081 / §11.7 `ns_resolve`：按路径解析并派生新 Capability 到调用者手中。
+    pub fn ns_resolve(
+        &mut self,
+        caller: u32,
+        ns_cap: Handle,
+        path: Path,
+        requested_rights: Rights,
+    ) -> Result<Handle, NsError> {
+        let start_ns = self.authorize_namespace(caller, ns_cap, Right::NsResolve)?;
+        let mut current_ns = start_ns;
+        let mut index = 0usize;
+        // 起始父项是调用者持有的 `ns_cap`（路径为空时即它本身）；每遇到一个条目就前推。
+        let mut parent = ns_cap;
+        let mut mounts = [Handle::ZERO; MAX_PATH_COMPONENTS];
+        let mut mount_count = 0usize;
+
+        while index < path.len() {
+            let (consumed, entry) = self
+                .match_entry_prefix(current_ns, &path, index)
+                .ok_or(NsError::NotFound)?;
+            index += consumed;
+            match entry.kind {
+                NsEntryKind::Bound => {
+                    if index != path.len() {
+                        // §11.7 算法 3：`Bound` 后仍有剩余分量。
+                        self.ns_rejects.non_directory += 1;
+                        return Err(NsError::NotDirectory);
+                    }
+                    parent = entry.cap;
+                }
+                NsEntryKind::Mount => {
+                    // §11.7 算法 4：挂载 Capability 必须可用（槽活动 + 目标存活，stale Mount
+                    // 因此在此得 `MountTargetDead`），且目标是 Namespace 且有 `NsResolve`。
+                    if !self.is_usable_cap(entry.cap) {
+                        return Err(NsError::MountTargetDead);
+                    }
+                    let rights = self.rights_of(entry.cap).ok_or(NsError::MountTargetDead)?;
+                    if !rights.contains(Right::NsResolve) {
+                        return Err(NsError::NotDelegable);
+                    }
+                    if index == path.len() {
+                        // 挂载点恰为路径末端：以挂载 Capability 为派生父项。
+                        parent = entry.cap;
+                    } else {
+                        if mount_count == MAX_PATH_COMPONENTS {
+                            return Err(NsError::NotFound);
+                        }
+                        mounts[mount_count] = entry.cap;
+                        mount_count += 1;
+                        current_ns = entry.target_ns;
+                    }
+                }
+            }
+        }
+
+        // 算法 5/6：最终父项可用、含 `Derive`，且 `requested_rights` 是它的合法子集。
+        let parent_target = self.target_of(parent).ok_or(NsError::TargetDead)?;
+        if !self.target_live(parent_target) {
+            return Err(NsError::TargetDead);
+        }
+        let parent_rights = self.rights_of(parent).ok_or(NsError::TargetDead)?;
+        if !parent_rights.contains(Right::Derive) {
+            return Err(NsError::NotDelegable);
+        }
+        if !requested_rights.subset_of(parent_rights) {
+            return Err(NsError::RightsExceeded);
+        }
+        if !self.audit.can_append(2) {
+            return Err(NsError::AuditFull);
+        }
+        // 算法 7：派生新 Capability 放到 `HeldBy(caller)`；父项保持在 Namespace 中不变。
+        let handle = self.derive_capability_at(
+            caller,
+            parent,
+            requested_rights,
+            CapabilityLocation::HeldByTask(caller),
+        )?;
+        let mut mount_list = [Handle::ZERO; MAX_PATH_COMPONENTS];
+        let mut i = 0;
+        while i < mount_count {
+            mount_list[i] = mounts[i];
+            i += 1;
+        }
+        self.audit.append(AuditEvent::NsResolved {
+            start_cap: ns_cap,
+            path,
+            mount_count: mount_count as u8,
+            mounts: mount_list,
+            parent,
+            cap: handle,
+        });
+        Ok(handle)
+    }
+
+    /// SPEC-081 / §11.8 `ns_destroy`：删 Namespace 的全部条目与对象。
+    pub fn ns_destroy(&mut self, caller: u32, ns_cap: Handle) -> Result<(), NsError> {
+        let ns = self.authorize_namespace(caller, ns_cap, Right::NsDestroy)?;
+        if self.is_structural_root_namespace(ns) {
+            return Err(NsError::StructuralCap);
+        }
+        // 审计预算：每个条目一条 `CapabilityDropped`，加一条 `ObjectDestroyed`。
+        let entry_count = self.ns_entries.count_in(ns);
+        if !self.audit.can_append(entry_count + 1) {
+            return Err(NsError::AuditFull);
+        }
+        // 收集待删条目（先取值再改，避免闭包借用冲突）。
+        let mut doomed = [Handle::ZERO; MAX_NS_ENTRIES];
+        let mut doomed_count = 0usize;
+        self.ns_entries.for_each(|entry| {
+            if entry.ns == ns && doomed_count < MAX_NS_ENTRIES {
+                doomed[doomed_count] = entry.cap;
+                doomed_count += 1;
+            }
+        });
+        self.ns_entries.clear_namespace(ns);
+        let mut i = 0;
+        while i < doomed_count {
+            let cap = doomed[i];
+            // 成功动作 2 / §4.6：删除这些 Bound/Mount Capability 的**位置**（`CapRecord`
+            // 不变）——细化层因此不回收其槽位（无位置 Capability 不可表示），登记见设计 §5。
+            self.positions.remove(cap);
+            self.audit.append(AuditEvent::CapabilityDropped { cap });
+            i += 1;
+        }
+        // 成功动作 3：从活动 Namespace 表删除。
+        self.remove_namespace_object(ns);
+        self.audit
+            .append(AuditEvent::ObjectDestroyed { object_id: ns });
+        Ok(())
+    }
+
+    /// SPEC-081：从活动 Namespace 表删除对象（`ns_destroy` 用）。
+    ///
+    /// §11.8 明示**不**全局扫描其他 Namespace 中指向它的挂载项——那些条目留作 stale Mount，
+    /// 解析时得 `MountTargetDead`，由管理者另行 `ns_unmount`。
+    fn remove_namespace_object(&mut self, ns: u32) {
+        if let Some(slot) = self
+            .namespaces
+            .iter()
+            .position(|object| object.is_some_and(|object| object.id == ns))
+        {
+            self.namespaces[slot] = None;
+            self.namespace_count = self.namespace_count.saturating_sub(1);
+        }
+    }
+
+    /// SPEC-081 / §11.7：在 `ns` 内找「从分量 `from` 起、路径前缀恰好匹配」的条目。
+    ///
+    /// §11.1 约束 3 保证同一 Namespace 内不会有两个条目互为前缀，故至多一个匹配。
+    fn match_entry_prefix(&self, ns: u32, path: &Path, from: usize) -> Option<(usize, NsEntry)> {
+        let mut found = None;
+        self.ns_entries.for_each(|entry| {
+            if entry.ns != ns {
+                return;
+            }
+            let len = entry.path.len();
+            if from + len > path.len() {
+                return;
+            }
+            let mut matches = true;
+            let mut i = 0;
+            while i < len {
+                if entry.path.component(i) != path.component(from + i) {
+                    matches = false;
+                    break;
+                }
+                i += 1;
+            }
+            if matches {
+                found = Some((len, entry));
+            }
+        });
+        found
+    }
+
+    /// SPEC-081 / §11.1 约束 6：从 `from` 沿 Mount 边能否到达 `to`（环检测）。
+    ///
+    /// `visited` 位集保证 DFS 终止（节点数 ≤ [`MAX_NAMESPACE_OBJECTS`]）——这是确定性判据，
+    /// 不是「限制深度」的近似。
+    pub fn namespace_reaches(&self, from: u32, to: u32) -> bool {
+        if from == to {
+            return true;
+        }
+        let mut visited = [false; MAX_NAMESPACE_OBJECTS];
+        let mut stack = [0u32; MAX_NAMESPACE_OBJECTS];
+        let mut stack_len = 1usize;
+        stack[0] = from;
+        while stack_len > 0 {
+            stack_len -= 1;
+            let current = stack[stack_len];
+            if let Some(mark) = self
+                .namespaces
+                .iter()
+                .position(|object| object.is_some_and(|object| object.id == current))
+            {
+                if visited[mark] {
+                    continue;
+                }
+                visited[mark] = true;
+            }
+            let mut reached = false;
+            self.ns_entries.mount_targets(current, |target| {
+                if target == to {
+                    reached = true;
+                }
+                if stack_len < MAX_NAMESPACE_OBJECTS {
+                    stack[stack_len] = target;
+                    stack_len += 1;
+                }
+            });
+            if reached {
+                return true;
+            }
+        }
+        false
     }
 
     /// 撤销以 `cap` 为根的派生子树（内部模型能力；§4.7 第一版不提供用户可调 `cap_revoke`）。
@@ -4593,6 +5630,8 @@ pub fn create_state(
         segment_count: 1,
         namespaces,
         namespace_count: 1,
+        ns_entries: NsEntryTable::claim(),
+        ns_rejects: NsRejects::default(),
         vspace: TaskVspaceTable::empty(),
         // §14 步骤 9 / W14：bootstrap 成功即置位。
         booted: true,
@@ -4942,6 +5981,90 @@ pub fn derive_capability(
     })
 }
 
+/// SPEC-081：全局 `ns_create`（§11.2）。
+pub fn ns_create(caller: u32) -> Result<Handle, NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_create(caller),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_bind`（§11.3）。
+pub fn ns_bind(caller: u32, ns_cap: Handle, path: Path, cap: Handle) -> Result<(), NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_bind(caller, ns_cap, path, cap),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_unbind`（§11.4）。
+pub fn ns_unbind(caller: u32, ns_cap: Handle, path: Path) -> Result<Handle, NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_unbind(caller, ns_cap, path),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_mount`（§11.5）。
+pub fn ns_mount(
+    caller: u32,
+    destination_cap: Handle,
+    path: Path,
+    source_cap: Handle,
+) -> Result<(), NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_mount(caller, destination_cap, path, source_cap),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_unmount`（§11.6）。
+pub fn ns_unmount(caller: u32, ns_cap: Handle, path: Path) -> Result<(), NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_unmount(caller, ns_cap, path),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_resolve`（§11.7）。
+pub fn ns_resolve(
+    caller: u32,
+    ns_cap: Handle,
+    path: Path,
+    requested_rights: Rights,
+) -> Result<Handle, NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_resolve(caller, ns_cap, path, requested_rights),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：全局 `ns_destroy`（§11.8）。
+pub fn ns_destroy(caller: u32, ns_cap: Handle) -> Result<(), NsError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.ns_destroy(caller, ns_cap),
+        None => Err(NsError::InvalidCaller),
+    })
+}
+
+/// SPEC-081：记录一次「用户传入的路径文本非法」（`Path::parse` 在 syscall 层失败）。
+///
+/// 抽象状态不变（§6.2），只计一次实现层观测。
+pub fn note_ns_invalid_path() {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        if let Some(state) = slot.as_mut() {
+            state.ns_rejects.invalid_path += 1;
+        }
+    });
+}
+
+/// SPEC-081：Namespace 路径操作的审计汇总（供 `namespace_ready` 见证）。
+///
+/// 供 `namespace_ready` 见证使用——计数直接从审计日志推导，不额外占状态。
+pub fn namespace_audit() -> Option<NamespaceAudit> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.namespace_audit()))
+}
+
 /// S2-D3：全局 `memseg_create`（§7.1）。
 pub fn memseg_create(
     caller: u32,
@@ -5230,15 +6353,15 @@ mod tests {
         EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, ExcResumeError, Handle, IMAGE_CAP_HANDLE,
         IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
         INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR, MAX_CAPABILITY_SLOTS,
-        MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, ObjectRef,
-        PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
-        PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
-        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, PendingExc, SEGMENT_ROOT_RIGHTS,
-        SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
-        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TaskError, TaskStatus,
-        USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
-        entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
-        platform_segment_is_direct,
+        MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS,
+        NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
+        PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT, PLATFORM_SEGMENT_ID_FIRST,
+        PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
+        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SYSCALL_TRAP_SOURCE_ID,
+        SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE,
+        TASK2_SEND_CAP_HANDLE, TaskError, TaskStatus, USER_IPC_CAP_SLOT_BASE,
+        USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state, entry_in_image,
+        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{ObjectKind, Right, Rights};
@@ -5261,6 +6384,434 @@ mod tests {
 
     fn fresh_state() -> super::BootstrapState {
         create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory()).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // SPEC-081：§11 Namespace 路径操作
+    // -----------------------------------------------------------------------
+
+    fn path(text: &str) -> Path {
+        Path::parse(text.as_bytes()).expect("test path parses")
+    }
+
+    fn ns_of(state: &super::BootstrapState, cap: Handle) -> u32 {
+        match state.target_of(cap) {
+            Some(ObjectRef::Namespace(id)) => id,
+            _ => panic!("cap does not target a namespace"),
+        }
+    }
+
+    #[test]
+    fn ns_create_mints_a_root_capability_in_the_reserved_slot_range() {
+        let mut state = fresh_state();
+        assert_eq!(state.namespace_count, 1);
+        let cap = state.ns_create(INIT_TASK_ID).expect("create succeeds");
+        assert_eq!(cap.index(), NS_ROOT_CAP_SLOT_BASE);
+        assert_eq!(cap.generation(), INITIAL_CAP_GENERATION);
+        assert_eq!(state.namespace_count, 2);
+        assert_eq!(ns_of(&state, cap), 2);
+        assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
+        assert_eq!(state.rights_of(cap), Some(NAMESPACE_RIGHTS));
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::CapabilityMinted { cap: minted, holder }
+                if *minted == cap && *holder == INIT_TASK_ID
+        )));
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::ObjectCreated {
+                object_id: 2,
+                segment: false
+            }
+        )));
+    }
+
+    #[test]
+    fn ns_create_rejects_a_non_live_caller() {
+        let mut state = fresh_state();
+        assert_eq!(state.ns_create(2), Err(NsError::InvalidCaller));
+    }
+
+    #[test]
+    fn ns_bind_moves_the_capability_into_the_namespace() {
+        let mut state = fresh_state();
+        state
+            .ns_bind(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("lib"),
+                IMAGE_CAP_HANDLE,
+            )
+            .expect("bind succeeds");
+        assert_eq!(
+            state
+                .positions
+                .find(IMAGE_CAP_HANDLE)
+                .map(|position| position.location),
+            Some(CapabilityLocation::InNamespace(1))
+        );
+        // 位于命名空间中的 Capability 没有 Task 持有者——`derive`/`drop` 因此自然拒绝它。
+        assert_eq!(state.holder_of(IMAGE_CAP_HANDLE), None);
+        assert_eq!(state.ns_entries.count_in(1), 1);
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::NsBound { ns: 1, cap, .. } if *cap == IMAGE_CAP_HANDLE
+        )));
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::CapabilityMoved {
+                cap,
+                from: CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                to: CapabilityLocation::InNamespace(1),
+            } if *cap == IMAGE_CAP_HANDLE
+        )));
+    }
+
+    #[test]
+    fn ns_bind_rejects_overlap_including_ancestors_and_descendants() {
+        let mut state = fresh_state();
+        let first = state.ns_create(INIT_TASK_ID).expect("create");
+        let second = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("a"), first)
+            .expect("first bind");
+        // 同名条目。
+        assert_eq!(
+            state.ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("a"), second),
+            Err(NsError::Overlap)
+        );
+        // 终端祖先（`a` 是 `a/b` 的严格前缀）。
+        assert_eq!(
+            state.ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("a/b"), second),
+            Err(NsError::Overlap)
+        );
+        // 后代条目（先绑 `c/d`，再绑 `c`）。
+        let third = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("c/d"), second)
+            .expect("bind descendant");
+        assert_eq!(
+            state.ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("c"), third),
+            Err(NsError::Overlap)
+        );
+    }
+
+    #[test]
+    fn ns_bind_rejects_a_structural_root_namespace_capability() {
+        let mut state = fresh_state();
+        assert_eq!(
+            state.ns_bind(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("root"),
+                NAMESPACE_CAP_HANDLE
+            ),
+            Err(NsError::StructuralCap)
+        );
+    }
+
+    #[test]
+    fn ns_bind_rejects_missing_rights_and_foreign_namespaces() {
+        let mut state = fresh_state();
+        let cap = state.ns_create(INIT_TASK_ID).expect("create");
+        // `cap` 只含 NsResolve/NsBind/... 但没有 Init 的根 cap 那种……用 Segment cap 当 ns_cap：
+        assert_eq!(
+            state.ns_bind(INIT_TASK_ID, IMAGE_CAP_HANDLE, path("x"), cap),
+            Err(NsError::InvalidNamespace)
+        );
+        // ns_cap 是 TASK cap（也不是 Namespace）。
+        assert_eq!(
+            state.ns_bind(INIT_TASK_ID, TASK_CAP_HANDLE, path("x"), cap),
+            Err(NsError::InvalidNamespace)
+        );
+    }
+
+    #[test]
+    fn ns_unbind_returns_the_capability_to_the_caller() {
+        let mut state = fresh_state();
+        let cap = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib"), cap)
+            .expect("bind");
+        let returned = state
+            .ns_unbind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib"))
+            .expect("unbind");
+        assert_eq!(returned, cap);
+        assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
+        assert_eq!(state.ns_entries.count_in(1), 0);
+        assert_eq!(
+            state.ns_unbind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib")),
+            Err(NsError::NotFound)
+        );
+    }
+
+    #[test]
+    fn ns_unbind_rejects_a_mount_entry() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_mount(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("mnt"), a)
+            .expect("mount");
+        assert_eq!(
+            state.ns_unbind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("mnt")),
+            Err(NsError::NotFound)
+        );
+    }
+
+    #[test]
+    fn ns_mount_links_namespaces_and_rejects_cycles() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create a");
+        let b = state.ns_create(INIT_TASK_ID).expect("create b");
+        let a_ns = ns_of(&state, a);
+        let b_ns = ns_of(&state, b);
+        state
+            .ns_mount(INIT_TASK_ID, a, path("x"), b)
+            .expect("mount b under a");
+        // 已有边 a → b；再加 b → a 会成环。
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, b, path("y"), a),
+            Err(NsError::MountCycle)
+        );
+        assert!(state.namespace_reaches(a_ns, b_ns));
+        assert!(!state.namespace_reaches(b_ns, a_ns));
+        // 自挂（destination == source）也成环。
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, a, path("self"), a),
+            Err(NsError::MountCycle)
+        );
+        assert_eq!(state.ns_entries.count_in(a_ns), 1);
+    }
+
+    #[test]
+    fn ns_mount_requires_a_delegable_source() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create a");
+        let b = state.ns_create(INIT_TASK_ID).expect("create b");
+        let bare = state
+            .derive_capability(INIT_TASK_ID, a, Rights::from_rights(&[Right::Derive]))
+            .expect("derive");
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, b, path("x"), bare),
+            Err(NsError::NotDelegable)
+        );
+        // 非 Namespace 的 source 直接无效。
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, b, path("x"), TASK_CAP_HANDLE),
+            Err(NsError::InvalidNamespace)
+        );
+    }
+
+    #[test]
+    fn ns_resolve_walks_bound_and_mounted_entries() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, a, path("sub"), IMAGE_CAP_HANDLE)
+            .expect("bind inside a");
+        state
+            .ns_mount(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("mnt"), a)
+            .expect("mount a");
+        let derived = state
+            .ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("mnt/sub"),
+                Rights::from_rights(&[Right::SegMapR]),
+            )
+            .expect("resolve through the mount");
+        assert_eq!(state.holder_of(derived), Some(INIT_TASK_ID));
+        assert_eq!(
+            state.target_of(derived),
+            Some(ObjectRef::Segment(IMAGE_SEGMENT_ID))
+        );
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::NsResolved {
+                start_cap,
+                mount_count: 1,
+                parent,
+                cap,
+                ..
+            } if *start_cap == NAMESPACE_CAP_HANDLE
+                && *parent == IMAGE_CAP_HANDLE
+                && *cap == derived
+        )));
+    }
+
+    #[test]
+    fn ns_resolve_rejects_missing_and_non_directory_paths() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib"), a)
+            .expect("bind");
+        let ns_resolve_rights = Rights::from_rights(&[Right::NsResolve]);
+        assert_eq!(
+            state.ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("nope"),
+                ns_resolve_rights
+            ),
+            Err(NsError::NotFound)
+        );
+        assert_eq!(
+            state.ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("lib/x"),
+                ns_resolve_rights
+            ),
+            Err(NsError::NotDirectory)
+        );
+    }
+
+    #[test]
+    fn ns_resolve_enforces_the_parent_rights_subset() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib"), a)
+            .expect("bind");
+        // 父项权限是 NAMESPACE_RIGHTS（不含 SegMapR）⇒ 请求 Segment 权限被拒。
+        assert_eq!(
+            state.ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("lib"),
+                Rights::from_rights(&[Right::SegMapR])
+            ),
+            Err(NsError::RightsExceeded)
+        );
+    }
+
+    #[test]
+    fn ns_resolve_terminates_on_the_deepest_path() {
+        // S3-X1：解析步数受路径分量数约束——最深的合法路径也必须终止并给出确定结果。
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        state
+            .ns_mount(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("m"), a)
+            .expect("mount");
+        let result = state.ns_resolve(
+            INIT_TASK_ID,
+            NAMESPACE_CAP_HANDLE,
+            path("m/a/b/c"),
+            Rights::from_rights(&[Right::NsResolve]),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ns_resolve_reports_mount_target_dead_for_stale_mounts() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        // 另派生一个持有 Capability，供挂载后销毁源 Namespace 使用。
+        let destroy_cap = state
+            .derive_capability(INIT_TASK_ID, a, NAMESPACE_RIGHTS)
+            .expect("derive");
+        state
+            .ns_mount(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("mnt"), a)
+            .expect("mount");
+        state
+            .ns_destroy(INIT_TASK_ID, destroy_cap)
+            .expect("destroy source");
+        // stale Mount 保留在原路径（§11.1 约束 5），解析得 `MountTargetDead`。
+        assert_eq!(
+            state.ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("mnt"),
+                Rights::from_rights(&[Right::NsResolve])
+            ),
+            Err(NsError::MountTargetDead)
+        );
+        // 它只能被 `ns_unmount` 清理（§11.6：源已销毁不构成失败）。
+        state
+            .ns_unmount(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("mnt"))
+            .expect("unmount stale mount");
+        assert_eq!(state.ns_entries.count_in(1), 0);
+    }
+
+    #[test]
+    fn ns_destroy_rejects_a_structural_root_namespace() {
+        let mut state = fresh_state();
+        assert_eq!(
+            state.ns_destroy(INIT_TASK_ID, NAMESPACE_CAP_HANDLE),
+            Err(NsError::StructuralCap)
+        );
+    }
+
+    #[test]
+    fn ns_destroy_clears_entries_and_removes_the_object() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        let keeper = state
+            .derive_capability(INIT_TASK_ID, a, NAMESPACE_RIGHTS)
+            .expect("derive keeper");
+        state
+            .ns_bind(INIT_TASK_ID, a, path("lib"), IMAGE_CAP_HANDLE)
+            .expect("bind");
+        let a_ns = ns_of(&state, a);
+        assert_eq!(state.ns_entries.count_in(a_ns), 1);
+        state.ns_destroy(INIT_TASK_ID, keeper).expect("destroy");
+        assert_eq!(state.ns_entries.count_in(a_ns), 0);
+        assert_eq!(state.namespace_count, 1);
+        assert!(!state.target_live(ObjectRef::Namespace(a_ns)));
+        // §11.8：指向已销毁 Namespace 的 Capability 仍在（成为 stale token）。
+        assert_eq!(state.holder_of(keeper), Some(INIT_TASK_ID));
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::ObjectDestroyed { object_id } if *object_id == a_ns
+        )));
+    }
+
+    #[test]
+    fn failed_ns_operations_leave_the_state_unchanged() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create");
+        let audit_before = state.audit.len();
+        let entries_before = state.ns_entries.count();
+        // 环检测失败：不改状态、不追加事件。
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, a, path("self"), a),
+            Err(NsError::MountCycle)
+        );
+        // 非目录解析失败：同样不改状态。
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("lib"), a)
+            .expect("bind");
+        let audit_after_bind = state.audit.len();
+        let entries_after_bind = state.ns_entries.count();
+        assert_eq!(
+            state.ns_resolve(
+                INIT_TASK_ID,
+                NAMESPACE_CAP_HANDLE,
+                path("lib/x"),
+                Rights::from_rights(&[Right::NsResolve])
+            ),
+            Err(NsError::NotDirectory)
+        );
+        assert_eq!(state.audit.len(), audit_after_bind);
+        assert_eq!(state.ns_entries.count(), entries_after_bind);
+        assert!(state.audit.len() > audit_before);
+        assert_eq!(entries_before, 0);
+    }
+
+    #[test]
+    fn namespace_reaches_is_a_bounded_dfs() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create a");
+        let b = state.ns_create(INIT_TASK_ID).expect("create b");
+        let c = state.ns_create(INIT_TASK_ID).expect("create c");
+        let (a_ns, c_ns) = (ns_of(&state, a), ns_of(&state, c));
+        state.ns_mount(INIT_TASK_ID, a, path("b"), b).expect("a→b");
+        state.ns_mount(INIT_TASK_ID, b, path("c"), c).expect("b→c");
+        assert!(state.namespace_reaches(a_ns, c_ns));
+        assert!(!state.namespace_reaches(c_ns, a_ns));
+        // 自身恒可达（`ns_mount` 因此拒绝自挂）。
+        assert!(state.namespace_reaches(c_ns, c_ns));
     }
 
     #[test]

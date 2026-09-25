@@ -28,6 +28,7 @@ use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
 use crate::handle::Handle;
 use crate::mem::phys_to_virt;
+use crate::namespace::Path;
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
@@ -78,6 +79,66 @@ pub const SYS_RECV: u64 = 18;
 pub const SYS_TASK_CREATE: u64 = 19;
 /// S2-D4：`task_destroy`（`args[0]=task_cap`，须含 `TaskDestroy`）。
 pub const SYS_TASK_DESTROY: u64 = 20;
+/// SPEC-081：`ns_create`（无参数），返回新 Namespace 根 Capability 句柄。
+pub const SYS_NS_CREATE: u64 = 21;
+/// SPEC-081：`ns_bind`（`args[0]=ns cap`、`args[1..3]=path ptr/len`、`args[3]=cap`）。
+pub const SYS_NS_BIND: u64 = 22;
+/// SPEC-081：`ns_unbind`（`args[0]=ns cap`、`args[1..3]=path ptr/len`），返回取回的句柄。
+pub const SYS_NS_UNBIND: u64 = 23;
+/// SPEC-081：`ns_mount`（`args[0]=destination cap`、`args[1..3]=path ptr/len`、
+/// `args[3]=source cap`）。
+pub const SYS_NS_MOUNT: u64 = 24;
+/// SPEC-081：`ns_unmount`（`args[0]=ns cap`、`args[1..3]=path ptr/len`）。
+pub const SYS_NS_UNMOUNT: u64 = 25;
+/// SPEC-081：`ns_resolve`（`args[0]=ns cap`、`args[1..3]=path ptr/len`、
+/// `args[3]=requested rights bits`），返回派生句柄。
+pub const SYS_NS_RESOLVE: u64 = 26;
+/// SPEC-081：`ns_destroy`（`args[0]=ns cap`）。
+pub const SYS_NS_DESTROY: u64 = 27;
+
+/// SPEC-081：路径文本的最大字节数（细化层上限，见设计文档 §0.1）。
+pub const MAX_NS_PATH_BYTES: u64 = 64;
+/// SPEC-081：路径文本在用户**代码页**内的数据偏移。
+///
+/// 放在代码页（只读 + user，可读）而不是回执页，是为了省掉「运行时逐字节写路径」的机器码：
+/// 用户程序只需 `mov rsi, imm64` 指向这段静态数据。位于 `int3` 之后，不会被当作指令执行。
+pub const NS_PATH_DATA_OFFSET: usize = 4000;
+/// SPEC-081：路径文本数据区的 VA。
+pub const NS_PATH_DATA_VA: u64 = crate::user::USER_CODE_VA + NS_PATH_DATA_OFFSET as u64;
+/// SPEC-081：各路径文本在数据区内的偏移。
+pub const NS_PATH_LIB_OFF: u64 = 0;
+pub const NS_PATH_SUB_OFF: u64 = 8;
+pub const NS_PATH_MNT_OFF: u64 = 16;
+pub const NS_PATH_MNTSUB_OFF: u64 = 24;
+pub const NS_PATH_ILLEGAL_OFF: u64 = 32;
+pub const NS_PATH_X_OFF: u64 = 40;
+pub const NS_PATH_Y_OFF: u64 = 48;
+/// SPEC-081：`{Derive, SegMapR}` 位集——ring3 见证里被绑进 Namespace 的可绑定 Capability 权限。
+pub const NS_BIND_RIGHTS_BITS: u64 =
+    Rights::from_rights(&[Right::Derive, Right::SegMapR]).bits() as u64;
+/// SPEC-081：Namespace 根权限位集（`ns_create` 铸出的根 cap，供派生副本用）。
+pub const NS_ROOT_RIGHTS_BITS: u64 = crate::bootstrap::NAMESPACE_RIGHTS.bits() as u64;
+
+/// SPEC-081：Y 回执页中各步的字节偏移（紧接 SPEC-067 的 496）。
+pub const NS_RECEIPT_CREATE_A: u64 = 512;
+pub const NS_RECEIPT_CREATE_B: u64 = 520;
+pub const NS_RECEIPT_CREATE_C: u64 = 528;
+pub const NS_RECEIPT_DERIVE1: u64 = 536;
+pub const NS_RECEIPT_DERIVE2: u64 = 544;
+pub const NS_RECEIPT_COPY_B: u64 = 552;
+pub const NS_RECEIPT_COPY_C: u64 = 560;
+pub const NS_RECEIPT_MOUNT_A_B: u64 = 568;
+pub const NS_RECEIPT_MOUNT_CYCLE: u64 = 576;
+pub const NS_RECEIPT_BIND: u64 = 584;
+pub const NS_RECEIPT_BIND_OVERLAP: u64 = 592;
+pub const NS_RECEIPT_BIND_SUB: u64 = 600;
+pub const NS_RECEIPT_RESOLVE_LIB: u64 = 608;
+pub const NS_RECEIPT_MOUNT_INIT_C: u64 = 616;
+pub const NS_RECEIPT_RESOLVE_SUB: u64 = 624;
+pub const NS_RECEIPT_BAD_PATH: u64 = 632;
+pub const NS_RECEIPT_UNBIND: u64 = 640;
+pub const NS_RECEIPT_UNMOUNT: u64 = 648;
+pub const NS_RECEIPT_DESTROY: u64 = 656;
 
 /// S2-D4：`task_create` 请求块的 qword 个数与字节长度。
 pub const TASK_CREATE_REQ_QWORDS: usize = 10;
@@ -273,6 +334,10 @@ pub enum Errno {
     Access = 13,
     /// 用户指针不可读（未映射或非 user 页）。
     Fault = 14,
+    /// SPEC-081：路径冲突——`ns_bind`/`ns_mount` 的 `Overlap`（`EEXIST`）。
+    Exist = 17,
+    /// SPEC-081：路径中间分量不是目录（`ns_resolve` 的 `NotDirectory`）。
+    NotDir = 20,
     /// 参数非法（保留号、长度越界等）。
     Invalid = 22,
     /// 空间不足（队列/Audit 容量已满）。
@@ -286,6 +351,11 @@ pub const fn encode_errno(errno: Errno) -> u64 {
     (-(errno as i64)) as u64
 }
 
+/// SPEC-081：`EEXIST` 的负值编码（`namespace_ready` 见证与协议断言共用）。
+pub const ERRNO_EXIST: u64 = encode_errno(Errno::Exist);
+/// SPEC-081：`EINVAL` 的负值编码（同上）。
+pub const ERRNO_INVALID: u64 = encode_errno(Errno::Invalid);
+
 /// errno 的稳定名字（协议/日志用）。
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
@@ -293,6 +363,8 @@ pub const fn errno_name(errno: Errno) -> &'static str {
         Errno::Again => "EAGAIN",
         Errno::Access => "EACCES",
         Errno::Fault => "EFAULT",
+        Errno::Exist => "EEXIST",
+        Errno::NotDir => "ENOTDIR",
         Errno::Invalid => "EINVAL",
         Errno::NoSpace => "ENOSPC",
         Errno::NoSys => "ENOSYS",
@@ -546,6 +618,247 @@ fn cap_drop_call(raw_cap: u64) -> u64 {
     match bootstrap::drop_capability(sched::current(), cap) {
         Ok(()) => 0,
         Err(error) => encode_errno(drop_errno(error)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-081：§11 Namespace 路径操作的 syscall 面
+// ---------------------------------------------------------------------------
+
+/// SPEC-081：把 `NsError` 映射到 errno（与规范错误名的语义对应）。
+fn ns_errno(error: bootstrap::NsError) -> Errno {
+    use bootstrap::NsError;
+    match error {
+        NsError::InvalidCaller
+        | NsError::MissingRight(_)
+        | NsError::NotHeld
+        | NsError::TargetDead
+        | NsError::StructuralCap
+        | NsError::NotDelegable
+        | NsError::RightsExceeded => Errno::Access,
+        NsError::InvalidCap
+        | NsError::InvalidNamespace
+        | NsError::MountTargetDead
+        | NsError::NotFound => Errno::NoEnt,
+        NsError::MountCycle | NsError::WrongRightType => Errno::Invalid,
+        NsError::NotDirectory => Errno::NotDir,
+        NsError::Overlap => Errno::Exist,
+        NsError::CapacityExceeded | NsError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// SPEC-081：从用户缓冲读入路径文本并按 §3.1 解析。
+///
+/// 复用 [`copy_in`] 的 present+user 与不跨页校验（故跨页路径文本得 `EFAULT`）；语法非法得
+/// `EINVAL`，并在内核侧记一次 `invalid_path` 观测。
+fn read_user_path(ptr: u64, len: u64) -> Result<Path, Errno> {
+    if len == 0 || len > MAX_NS_PATH_BYTES {
+        bootstrap::note_ns_invalid_path();
+        return Err(Errno::Invalid);
+    }
+    let mut bytes = [0u8; MAX_NS_PATH_BYTES as usize];
+    let mut offset = 0u64;
+    while offset < len {
+        let chunk = core::cmp::min(8, len - offset);
+        let value = copy_in(ptr + offset, chunk)?;
+        let mut index = 0u64;
+        while index < chunk {
+            bytes[(offset + index) as usize] = (value >> (8 * index)) as u8;
+            index += 1;
+        }
+        offset += chunk;
+    }
+    match Path::parse(&bytes[..len as usize]) {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            bootstrap::note_ns_invalid_path();
+            Err(Errno::Invalid)
+        }
+    }
+}
+
+/// SPEC-081：`ns_create` 服务。
+fn ns_create_call() -> u64 {
+    match bootstrap::ns_create(sched::current()) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：`ns_bind` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`、
+/// `args[3]=cap`。
+fn ns_bind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, raw_cap: u64) -> u64 {
+    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let path = match read_user_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return encode_errno(errno),
+    };
+    match bootstrap::ns_bind(sched::current(), ns_cap, path, cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：`ns_unbind` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`。
+fn ns_unbind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
+    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let path = match read_user_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return encode_errno(errno),
+    };
+    match bootstrap::ns_unbind(sched::current(), ns_cap, path) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：`ns_mount` 服务——`args[0]=destination cap`、`args[1]=path ptr`、
+/// `args[2]=path len`、`args[3]=source cap`。
+fn ns_mount_call(raw_dst_cap: u64, path_ptr: u64, path_len: u64, raw_src_cap: u64) -> u64 {
+    let Ok(destination_cap) = bootstrap::decode_handle(raw_dst_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let Ok(source_cap) = bootstrap::decode_handle(raw_src_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let path = match read_user_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return encode_errno(errno),
+    };
+    match bootstrap::ns_mount(sched::current(), destination_cap, path, source_cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：`ns_unmount` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`。
+fn ns_unmount_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
+    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let path = match read_user_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return encode_errno(errno),
+    };
+    match bootstrap::ns_unmount(sched::current(), ns_cap, path) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：`ns_resolve` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`、
+/// `args[3]=requested rights bits`。
+fn ns_resolve_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, rights_bits: u64) -> u64 {
+    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let path = match read_user_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(errno) => return encode_errno(errno),
+    };
+    let rights = Rights::from_bits(rights_bits as u32);
+    match bootstrap::ns_resolve(sched::current(), ns_cap, path, rights) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+/// SPEC-081：ring3 Namespace 路径操作见证（回执 + 内核侧审计计数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NsWitness {
+    pub create_a: u64,
+    pub create_b: u64,
+    pub create_c: u64,
+    pub derive1: u64,
+    pub derive2: u64,
+    pub bind: u64,
+    pub bind_overlap: u64,
+    pub bind_sub: u64,
+    pub resolve_lib: u64,
+    pub mount_a_b: u64,
+    pub mount_cycle: u64,
+    pub mount_init_c: u64,
+    pub resolve_sub: u64,
+    pub bad_path: u64,
+    pub unbind: u64,
+    pub unmount: u64,
+    pub destroy: u64,
+    pub audit: bootstrap::NamespaceAudit,
+}
+
+impl NsWitness {
+    /// 纯判定：一次完整的 Namespace 见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.create_a != 0
+            && self.create_b != 0
+            && self.create_c != 0
+            && self.derive1 != 0
+            && self.derive2 != 0
+            && self.bind == 0
+            && self.bind_overlap == encode_errno(Errno::Exist)
+            && self.bind_sub == 0
+            && self.resolve_lib != 0
+            && self.mount_a_b == 0
+            && self.mount_cycle == encode_errno(Errno::Invalid)
+            && self.mount_init_c == 0
+            && self.resolve_sub != 0
+            && self.bad_path == encode_errno(Errno::Invalid)
+            && self.unbind == self.derive1
+            && self.unmount == 0
+            && self.destroy == 0
+            // 审计侧：三次成功挂载/绑定各留一条事件，三类拒绝各计一次。
+            && self.audit.binds == 2
+            && self.audit.unbinds == 1
+            && self.audit.mounts == 2
+            && self.audit.unmounts == 1
+            && self.audit.resolves == 2
+            && self.audit.cycles_rejected == 1
+            && self.audit.overlaps_rejected == 1
+            && self.audit.invalid_path_rejected == 1
+            && self.audit.acyclic_ok == 2
+    }
+}
+
+/// 读取 Namespace 见证（回执页 + 内核审计计数）。
+pub fn ns_witness() -> NsWitness {
+    let base = USER_Y_VA;
+    NsWitness {
+        create_a: read_user_qword(base + NS_RECEIPT_CREATE_A),
+        create_b: read_user_qword(base + NS_RECEIPT_CREATE_B),
+        create_c: read_user_qword(base + NS_RECEIPT_CREATE_C),
+        derive1: read_user_qword(base + NS_RECEIPT_DERIVE1),
+        derive2: read_user_qword(base + NS_RECEIPT_DERIVE2),
+        bind: read_user_qword(base + NS_RECEIPT_BIND),
+        bind_overlap: read_user_qword(base + NS_RECEIPT_BIND_OVERLAP),
+        bind_sub: read_user_qword(base + NS_RECEIPT_BIND_SUB),
+        resolve_lib: read_user_qword(base + NS_RECEIPT_RESOLVE_LIB),
+        mount_a_b: read_user_qword(base + NS_RECEIPT_MOUNT_A_B),
+        mount_cycle: read_user_qword(base + NS_RECEIPT_MOUNT_CYCLE),
+        mount_init_c: read_user_qword(base + NS_RECEIPT_MOUNT_INIT_C),
+        resolve_sub: read_user_qword(base + NS_RECEIPT_RESOLVE_SUB),
+        bad_path: read_user_qword(base + NS_RECEIPT_BAD_PATH),
+        unbind: read_user_qword(base + NS_RECEIPT_UNBIND),
+        unmount: read_user_qword(base + NS_RECEIPT_UNMOUNT),
+        destroy: read_user_qword(base + NS_RECEIPT_DESTROY),
+        audit: bootstrap::namespace_audit().unwrap_or_default(),
+    }
+}
+
+/// SPEC-081：`ns_destroy` 服务——`args[0]=ns cap`。
+fn ns_destroy_call(raw_ns_cap: u64) -> u64 {
+    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::ns_destroy(sched::current(), ns_cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(ns_errno(error)),
     }
 }
 
@@ -1614,6 +1927,20 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         task_create_call(args[0])
     } else if num == SYS_TASK_DESTROY {
         task_destroy_call(args[0])
+    } else if num == SYS_NS_CREATE {
+        ns_create_call()
+    } else if num == SYS_NS_BIND {
+        ns_bind_call(args[0], args[1], args[2], args[3])
+    } else if num == SYS_NS_UNBIND {
+        ns_unbind_call(args[0], args[1], args[2])
+    } else if num == SYS_NS_MOUNT {
+        ns_mount_call(args[0], args[1], args[2], args[3])
+    } else if num == SYS_NS_UNMOUNT {
+        ns_unmount_call(args[0], args[1], args[2])
+    } else if num == SYS_NS_RESOLVE {
+        ns_resolve_call(args[0], args[1], args[2], args[3])
+    } else if num == SYS_NS_DESTROY {
+        ns_destroy_call(args[0])
     } else {
         dispatch_plain(num, args)
     }

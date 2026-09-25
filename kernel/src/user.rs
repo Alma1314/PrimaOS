@@ -21,8 +21,8 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
-    INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE,
-    SegmentFrames, TASK_CAP_HANDLE,
+    IMAGE_CAP_HANDLE, INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE,
+    PLATFORM_TASK2_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE,
 };
 use crate::exc::SretFrame;
 use crate::frames;
@@ -35,14 +35,22 @@ use crate::syscall::{
     ACCESS_R_BITS, AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN,
     COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP,
     FAST_ARG, IPC_DIRECT_PAYLOAD, IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE,
-    MEMSEG_PATTERN, MEMSEG_RW_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
+    MEMSEG_PATTERN, MEMSEG_RW_BITS, NS_BIND_RIGHTS_BITS, NS_PATH_DATA_OFFSET, NS_PATH_DATA_VA,
+    NS_PATH_ILLEGAL_OFF, NS_PATH_LIB_OFF, NS_PATH_MNT_OFF, NS_PATH_MNTSUB_OFF, NS_PATH_SUB_OFF,
+    NS_PATH_X_OFF, NS_PATH_Y_OFF, NS_RECEIPT_BAD_PATH, NS_RECEIPT_BIND, NS_RECEIPT_BIND_OVERLAP,
+    NS_RECEIPT_BIND_SUB, NS_RECEIPT_COPY_B, NS_RECEIPT_COPY_C, NS_RECEIPT_CREATE_A,
+    NS_RECEIPT_CREATE_B, NS_RECEIPT_CREATE_C, NS_RECEIPT_DERIVE1, NS_RECEIPT_DERIVE2,
+    NS_RECEIPT_DESTROY, NS_RECEIPT_MOUNT_A_B, NS_RECEIPT_MOUNT_CYCLE, NS_RECEIPT_MOUNT_INIT_C,
+    NS_RECEIPT_RESOLVE_LIB, NS_RECEIPT_RESOLVE_SUB, NS_RECEIPT_UNBIND, NS_RECEIPT_UNMOUNT,
+    NS_ROOT_RIGHTS_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
     RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE, SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP,
     SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT,
-    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_RECV, SYS_SEND,
-    SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TRAP, SYS_YIELD, TASK_RECV_BUF,
-    TASK_REQ_VA, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP, TASK2_WAKE_PAYLOAD, UNSET_CAP,
-    USER_MAP_WITNESS_VA, USER_MAP_WITNESS_VA2, USER_SEG_SHARED_VA, USER_SEG_VA, USER2_RECV_BUF,
-    USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
+    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
+    SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
+    SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TRAP,
+    SYS_YIELD, TASK_RECV_BUF, TASK_REQ_VA, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP,
+    TASK2_WAKE_PAYLOAD, UNSET_CAP, USER_MAP_WITNESS_VA, USER_MAP_WITNESS_VA2, USER_SEG_SHARED_VA,
+    USER_SEG_VA, USER2_RECV_BUF, USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
 use prima_ostd::sync::StaticCell;
@@ -162,8 +170,9 @@ pub const TASK4_CODE_LEN: usize = 109;
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
 /// 用户代码长度。SPEC-066 追加「自持平台 cap 映射」块（2458..2636），
-/// SPEC-067 追加「task 4 自毁见证」块（2636..2907）。
-pub const USER_CODE_LEN: usize = 2980;
+/// SPEC-067 追加「task 4 自毁见证」块（2636..2907），SPEC-081 追加「Namespace 路径操作」
+/// 块（2979..，含末尾 `int3` 与代码页高偏移的路径文本数据区）。
+pub const USER_CODE_LEN: usize = 4056;
 
 /// 第二任务代码字节长度。
 pub const TASK2_CODE_LEN: usize = 496;
@@ -189,6 +198,32 @@ const fn put_imm64<const N: usize>(
     code[at + 1] = opcode1;
     put(code, at + 2, &imm.to_le_bytes());
 }
+
+/// `mov [rcx+disp32], rax`（6 字节）——把 syscall 返回值写入 Y 回执页。
+const fn put_store_rax<const N: usize>(code: &mut [u8; N], at: usize, disp: u32) {
+    put(code, at, &[0x48, 0x89, 0x81]);
+    put(code, at + 3, &disp.to_le_bytes());
+}
+
+/// `mov <reg>, [rcx+disp32]`（6 字节）——从 Y 回执页读回句柄。
+///
+/// `rex`/`modrm` 由调用点给出：`rdi`=`(0x48, 0xB9)`、`rsi`=`(0x48, 0xB1)`、
+/// `rdx`=`(0x48, 0x91)`、`r10`=`(0x4C, 0x91)`。
+const fn put_load_reg<const N: usize>(
+    code: &mut [u8; N],
+    at: usize,
+    rex: u8,
+    modrm: u8,
+    disp: u32,
+) {
+    put(code, at, &[rex, 0x8B, modrm]);
+    put(code, at + 3, &disp.to_le_bytes());
+}
+
+/// `mov rdi, [rcx+disp32]` 的 `modrm`。
+const NS_MODRM_RDI: u8 = 0xB9;
+/// `mov r10, [rcx+disp32]` 的 `modrm`（配合 REX.WR = 0x4C）。
+const NS_MODRM_R10: u8 = 0x91;
 
 /// 组装用户代码机器码：
 /// `mov rdx, X; mov rax, VAL; mov [rdx], rax;`（COW 故障点）
@@ -828,8 +863,315 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 2957, 0x49, 0xB9, 0);
     put_imm64(&mut code, 2967, 0x48, 0xB8, SYS_SEND);
     put(&mut code, 2977, &[0xCD, 0x80]);
-    // 2979: int3（收尾）
-    code[2979] = 0xCC;
+
+    // ---- SPEC-081：§11 Namespace 路径操作（切片 AJ）----
+    // 布局：本块接在 SPEC-067 块之后；末尾 `int3` 收尾，路径文本数据放在代码页高偏移
+    // （`int3` 之后不会被当作指令执行）。`rcx` 恒为回执页基址（syscall 返回后由内核
+    // 保存/恢复全部用户寄存器，故一直有效）。
+    let mut at = 2979usize;
+    put_imm64(&mut code, at, 0x48, 0xB9, USER_Y_VA);
+    at += 10;
+
+    // child1/child2 = derive(image_cap, {Derive, SegMapR})——避免移动初始 image cap。
+    put_imm64(&mut code, at, 0x48, 0xBF, IMAGE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_BIND_RIGHTS_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_CAP_DERIVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_DERIVE1 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBF, IMAGE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_BIND_RIGHTS_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_CAP_DERIVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_DERIVE2 as u32);
+    at += 7;
+
+    // ns_create ×3（a / b / c），回执依次写 512/520/528。
+    let mut created = 0u32;
+    while created < 3 {
+        put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_CREATE);
+        at += 10;
+        put(&mut code, at, &[0xCD, 0x80]);
+        at += 2;
+        put_store_rax(&mut code, at, NS_RECEIPT_CREATE_A as u32 + created * 8);
+        at += 7;
+        created += 1;
+    }
+
+    // b_copy / c_copy = derive(ns 根 cap, NAMESPACE_RIGHTS)——挂载会移走源 cap，副本留作
+    // 环检测的 destination 与销毁见证。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        NS_RECEIPT_CREATE_B as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_ROOT_RIGHTS_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_CAP_DERIVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_COPY_B as u32);
+    at += 7;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        NS_RECEIPT_CREATE_C as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_ROOT_RIGHTS_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_CAP_DERIVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_COPY_C as u32);
+    at += 7;
+
+    // mount(a, "x", b)：建立边 a → b（b 的 cap 移入 a）。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        NS_RECEIPT_CREATE_A as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_X_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 1);
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x4C,
+        NS_MODRM_R10,
+        NS_RECEIPT_CREATE_B as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_A_B as u32);
+    at += 7;
+
+    // mount(b_copy, "y", a)：a 沿边可达 b ⇒ 成环 ⇒ EINVAL。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, NS_RECEIPT_COPY_B as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_Y_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 1);
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x4C,
+        NS_MODRM_R10,
+        NS_RECEIPT_CREATE_A as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_CYCLE as u32);
+    at += 7;
+
+    // bind(init_ns, "lib", child1) 成功；再 bind 同名 child2 ⇒ EEXIST。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE1 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_BIND as u32);
+    at += 7;
+
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE2 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_BIND_OVERLAP as u32);
+    at += 7;
+
+    // bind(c, "sub", child2)：为跨挂载解析准备子 Namespace 内的绑定项。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        NS_RECEIPT_CREATE_C as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_SUB_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE2 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_BIND_SUB as u32);
+    at += 7;
+
+    // resolve(init_ns, "lib", {NsResolve})：同一 Namespace 内的末端绑定解析。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, 1 << 1); // r10 = {SegMapR}（父项 child1 的合法子集）
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_RESOLVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_RESOLVE_LIB as u32);
+    at += 7;
+
+    // mount(init_ns, "mnt", c_copy)：把子 Namespace 挂到 init 下。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_MNT_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_COPY_C as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_INIT_C as u32);
+    at += 7;
+
+    // resolve(init_ns, "mnt/sub", {SegMapR})：跨挂载解析，父项是 c 内的 child2。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBE,
+        NS_PATH_DATA_VA + NS_PATH_MNTSUB_OFF,
+    );
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 7);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, 1 << 1); // r10 = {SegMapR}
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_RESOLVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_RESOLVE_SUB as u32);
+    at += 7;
+
+    // bind(init_ns, "/lib", task_cap)：前导 `/` 产生空分量 ⇒ Path::parse 拒绝 ⇒ EINVAL。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBE,
+        NS_PATH_DATA_VA + NS_PATH_ILLEGAL_OFF,
+    );
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 4);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, TASK_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_BAD_PATH as u32);
+    at += 7;
+
+    // unbind(init_ns, "lib") → 取回 child1；unmount(init_ns, "mnt")。
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_UNBIND);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_UNBIND as u32);
+    at += 7;
+
+    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_MNT_OFF);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 3);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_UNMOUNT);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_UNMOUNT as u32);
+    at += 7;
+
+    // destroy(c_copy)：清空 c 的条目、从活动表删除对象（c_copy 变 stale token）。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, NS_RECEIPT_COPY_C as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_DESTROY);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, NS_RECEIPT_DESTROY as u32);
+    at += 7;
+
+    // int3（收尾）：本块必须落在路径文本数据区之前。
+    assert!(
+        at < NS_PATH_DATA_OFFSET,
+        "SPEC-081 用户代码块越过路径文本数据区"
+    );
+    code[at] = 0xCC;
+
+    // 路径文本数据区（`int3` 之后，不会被当作指令执行；每个槽 8 字节）。
+    put(&mut code, NS_PATH_DATA_OFFSET, b"lib");
+    put(&mut code, NS_PATH_DATA_OFFSET + 8, b"sub");
+    put(&mut code, NS_PATH_DATA_OFFSET + 16, b"mnt");
+    put(&mut code, NS_PATH_DATA_OFFSET + 24, b"mnt/sub");
+    put(&mut code, NS_PATH_DATA_OFFSET + 32, b"/lib");
+    put(&mut code, NS_PATH_DATA_OFFSET + 40, b"x");
+    put(&mut code, NS_PATH_DATA_OFFSET + 48, b"y");
     code
 }
 
@@ -1616,7 +1958,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 2980);
+        assert_eq!(USER_CODE_LEN, 4056);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -2015,7 +2357,17 @@ mod tests {
         assert_eq!(&code[2900..2907], &[0x48, 0x89, 0x81, 0xF0, 0x01, 0, 0]);
         // 抢占阶段前再唤醒一次 task 2（第一次让出已把它排空）。
         assert_eq!(&code[2909..2917], &2u64.to_le_bytes());
-        assert_eq!(&code[2979], &0xCC); // int3
+        // SPEC-081：Namespace 块从 2979 起（`mov rcx, Y`），路径文本数据落在代码页高偏移。
+        assert_eq!(&code[2979..2981], &[0x48, 0xB9]);
+        assert_eq!(
+            &code[NS_PATH_DATA_OFFSET + 24..NS_PATH_DATA_OFFSET + 31],
+            b"mnt/sub"
+        );
+        // 块内有且仅有一次 `int3` 收尾，之后到路径数据区之间是零填充（不会被当作指令执行）。
+        let int3 = (2979..NS_PATH_DATA_OFFSET)
+            .find(|index| code[*index] == 0xCC)
+            .expect("SPEC-081 块必须以 int3 收尾");
+        assert!((int3 + 1..NS_PATH_DATA_OFFSET).all(|index| code[index] == 0));
     }
 
     #[test]

@@ -143,6 +143,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
     let task = kernel::syscall::task_witness();
     protocol::task_ready(&task);
+    // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
+    let namespace = kernel::syscall::ns_witness();
+    protocol::namespace_ready(&namespace);
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()

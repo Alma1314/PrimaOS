@@ -4,6 +4,7 @@
 // 硬件触面收敛进唯一信任面 `prima-ostd`。本 crate 内不存在任何 `#[allow(unsafe_code)]`。
 #![deny(unsafe_code)]
 
+pub mod arena;
 pub mod bootstrap;
 pub mod cow;
 pub mod cpu;
@@ -15,6 +16,7 @@ pub mod handle;
 pub mod idt;
 pub mod mem;
 pub mod msr;
+pub mod namespace;
 pub mod preempt;
 pub mod rights;
 pub mod sched;
