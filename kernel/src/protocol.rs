@@ -200,6 +200,32 @@ pub(crate) fn reclaim_ready(witness: &kernel::bootstrap::ReclaimWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-073：§12.10 `exc_resume` 见证（独立事件，落在 `reclaim_ready` 之后）。
+pub(crate) fn resume_ready(witness: &kernel::bootstrap::ResumeWitness) {
+    write_prefix("resume_ready", "ok");
+    serial::write_bytes(b"|data=task=");
+    write_u32(witness.task_id);
+    serial::write_bytes(b";resumed=");
+    write_u32(witness.resumed);
+    serial::write_bytes(b";status_after=");
+    write_u32(witness.status_after);
+    serial::write_bytes(b";pending_cleared=");
+    write_u32(witness.pending_cleared);
+    serial::write_bytes(b";frame_saved=");
+    write_u32(witness.frame_saved);
+    serial::write_bytes(b";frame_bytes_zeroed=");
+    write_u32(witness.frame_bytes_zeroed);
+    serial::write_bytes(b";frame_consumed=");
+    write_u32(witness.frame_consumed);
+    serial::write_bytes(b";unrecoverable_rejected=");
+    write_u32(witness.unrecoverable_rejected);
+    serial::write_bytes(b";reclaimed_after=");
+    write_u32(witness.reclaimed_after);
+    serial::write_bytes(b";invariant_ok=");
+    write_u32(witness.invariant_ok);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

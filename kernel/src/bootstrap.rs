@@ -187,6 +187,11 @@ pub enum AuditEvent {
         task_id: u32,
         status: TaskStatus,
     },
+    /// SPEC-073 / §12.10 成功动作 4：一次成功的 `exc_resume`（§13.1 的唯一例外——
+    /// `Faulted → Ready` 以本事件记录，而非 `TaskStateChanged`）。
+    TaskResumed {
+        task_id: u32,
+    },
     /// S2-D4：`task_create` 成功（§8.1 步骤 8）。
     TaskCreated {
         task_id: u32,
@@ -477,6 +482,14 @@ impl TaskTable {
         }
         task.status = TaskStatus::Faulted;
         task.pending_exc = Some(PendingExc { source_id, kind });
+        Ok(())
+    }
+
+    /// §12.10 成功动作 2/5：清除 `pending_exc` 并把目标从 `Faulted` 置为 `Ready`。
+    fn resume_faulted(&mut self, task_id: u32) -> Result<(), TaskError> {
+        let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
+        task.pending_exc = None;
+        task.status = TaskStatus::Ready;
         Ok(())
     }
 
@@ -1162,6 +1175,84 @@ impl TaskStateAudit {
     pub fn total(&self) -> u32 {
         self.to_running + self.to_ready + self.to_blocked + self.to_faulted
     }
+}
+
+/// SPEC-073：§12.10 `exc_resume` 的失败原因（对齐规范错误名）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExcResumeError {
+    NoSuchTask,
+    /// 前置 5：调用者（细化口径：故障任务本身）必须处于 `Faulted` 且有 `pending_exc`。
+    NotFaulted,
+    /// 前置 6：`pending_exc.kind` 不可恢复（`DoubleFault` 等）——保持 `Faulted`。
+    UnrecoverableFault,
+    /// 前置 8：调用者的 `kernel_resume_frame` 必须为 `None`。
+    FramePending,
+    /// 帧未通过 `validate_for_kernel_resume`。
+    InvalidFrame,
+    /// 帧偏移越界（超出内核持有的恢复帧缓冲）。
+    OutOfBounds,
+    /// Audit 容量不足。
+    AuditFull,
+}
+
+/// SPEC-073：§12.10 的 `sret_frame_seg_cap` 所指存储（**细化口径**）。
+///
+/// POSIR 侧该参数是「持有恢复现场的 Segment Capability」；本细化层由 **KernelActor 持有的
+/// 静态缓冲**承担（与 SPEC-066 的 `HeldByKernel` 同一取向：内核私有、不铸用户可持 cap）。
+/// §12.10 成功动作 1「清零 Segment 中 `[frame_offset, frame_offset + 0xA0)` 的已消费 frame
+/// bytes」在此等价为清零该缓冲的对应字节。
+pub const RESUME_FRAME_BUFFER_LEN: usize = 0x200;
+static mut RESUME_FRAME_BUFFER: [u8; RESUME_FRAME_BUFFER_LEN] = [0; RESUME_FRAME_BUFFER_LEN];
+
+/// SPEC-073：把一帧的编码写进内核持有的恢复帧缓冲（见证/代调方在调用前使用）。
+pub fn install_resume_frame(frame_offset: usize, bytes: &[u8]) -> Result<(), ExcResumeError> {
+    if frame_offset + bytes.len() > RESUME_FRAME_BUFFER_LEN {
+        return Err(ExcResumeError::OutOfBounds);
+    }
+    let base = core::ptr::addr_of!(RESUME_FRAME_BUFFER).cast::<u8>();
+    // SAFETY：`frame_offset + bytes.len()` 已在上面校验过不超过缓冲长度。
+    let target =
+        unsafe { core::slice::from_raw_parts_mut(base.add(frame_offset).cast_mut(), bytes.len()) };
+    target.copy_from_slice(bytes);
+    Ok(())
+}
+
+/// SPEC-073：读取内核持有的恢复帧缓冲（见证断言用）。
+pub fn resume_frame_bytes(frame_offset: usize) -> Option<[u8; crate::exc::SRET_FRAME_LEN]> {
+    if frame_offset + crate::exc::SRET_FRAME_LEN > RESUME_FRAME_BUFFER_LEN {
+        return None;
+    }
+    let base = core::ptr::addr_of!(RESUME_FRAME_BUFFER).cast::<u8>();
+    // SAFETY：上面的边界检查保证该区间落在缓冲内。
+    let source =
+        unsafe { core::slice::from_raw_parts(base.add(frame_offset), crate::exc::SRET_FRAME_LEN) };
+    let mut bytes = [0u8; crate::exc::SRET_FRAME_LEN];
+    bytes.copy_from_slice(source);
+    Some(bytes)
+}
+
+/// SPEC-073：§12.10 `exc_resume` 的 QEMU 见证。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResumeWitness {
+    pub task_id: u32,
+    /// 正例（可恢复的 `Faulted`）恢复成功（1 = 成功）。
+    pub resumed: u32,
+    /// 成功动作 5 之后的状态编码（应为 `Ready` = 0）。
+    pub status_after: u32,
+    /// 成功动作 2：`pending_exc` 已清除（1 = 已清）。
+    pub pending_cleared: u32,
+    /// 成功动作 3：`kernel_resume_frame` 已写入（1 = 已写）。
+    pub frame_saved: u32,
+    /// 成功动作 1：缓冲中该帧的字节已清零（1 = 已清）。
+    pub frame_bytes_zeroed: u32,
+    /// §8.4 步骤 3：再次 `schedule` 进 `Running` 时 `kernel_resume_frame` 被消费清空（1 = 成立）。
+    pub frame_consumed: u32,
+    /// 前置 6：不可恢复种类再次 `exc_resume` 被拒且保持 `Faulted`（1 = 成立）。
+    pub unrecoverable_rejected: u32,
+    /// 生命周期收尾：该任务随后经 §8.2 内核路径回收为 `Dead`（1 = 成功）。
+    pub reclaimed_after: u32,
+    /// W9 双向不变量在全程后仍成立（1 = 成立）。
+    pub invariant_ok: u32,
 }
 
 /// SPEC-072：§8.2 内核回收路径（`KernelActor`，无 `task_cap`）的 QEMU 见证。
@@ -3289,6 +3380,48 @@ impl BootstrapState {
         self.task_destroy(u32::MAX, task_id, None, 0)
     }
 
+    /// §12.10 的 `exc_resume`——**细化口径 (A)：`KernelActor` 代故障任务调用**。
+    ///
+    /// POSIR 侧要求「调用者 Task 处于 `Faulted`」，而细化层中 `Faulted` 任务不在 `Running`、
+    /// 无法发起 syscall，故由内核在故障路径上代调；`sret_frame_seg_cap` 由内核持有的
+    /// [`RESUME_FRAME_BUFFER`] 承担（同 SPEC-066 `HeldByKernel` 的取向）。**该口径偏差登记在案。**
+    ///
+    /// 前置（全部先于任何写入）：5（`Faulted` 且有 `pending_exc`）、6（种类可恢复）、
+    /// 8（`kernel_resume_frame == None`）。成功动作：2 清 `pending_exc`、3 存
+    /// `kernel_resume_frame`、4 追加 `TaskResumed`、5 `Faulted → Ready`。
+    /// （动作 1「清零已消费帧字节」由调用方在缓冲上完成，见 [`kernel_exc_resume`]。）
+    pub fn exc_resume_faulted(
+        &mut self,
+        task_id: u32,
+        frame: crate::exc::SretFrame,
+    ) -> Result<(), ExcResumeError> {
+        let Some(task) = self.tasks.find(task_id) else {
+            return Err(ExcResumeError::NoSuchTask);
+        };
+        let Some(pending) = task.pending_exc else {
+            return Err(ExcResumeError::NotFaulted);
+        };
+        if task.status != TaskStatus::Faulted {
+            return Err(ExcResumeError::NotFaulted);
+        }
+        if !pending.kind.is_recoverable() {
+            return Err(ExcResumeError::UnrecoverableFault);
+        }
+        if crate::sched::kernel_resume_frame(task_id).is_some() {
+            return Err(ExcResumeError::FramePending);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcResumeError::AuditFull);
+        }
+        // 预检已全部通过，此后不再有失败点。
+        self.tasks
+            .resume_faulted(task_id)
+            .map_err(|_| ExcResumeError::NoSuchTask)?;
+        crate::sched::set_kernel_resume_frame(task_id, frame);
+        self.audit.append(AuditEvent::TaskResumed { task_id });
+        Ok(())
+    }
+
     /// §8.2 L735 / §12.6 L1440：目标是否处于「**不可恢复终态**」。
     ///
     /// 判词（**本切片口径**）：目标为 `Faulted`，且其 `pending_exc` 的种类**不可恢复**
@@ -4480,6 +4613,170 @@ pub fn record_fault_witness() -> Result<(), TaskError> {
     Ok(())
 }
 
+/// SPEC-073：§12.10 `exc_resume` 的 KernelActor 代调入口（细化口径 A）。
+///
+/// 帧从内核持有的 [`RESUME_FRAME_BUFFER`] 的 `frame_offset` 处读取并**先验证**；验证与全部
+/// 前置通过后才落状态，成功后再执行动作 1（清零该段已消费字节）。任一失败即返回错误且
+/// **State 与缓冲都不变**。
+pub fn kernel_exc_resume(
+    task_id: u32,
+    frame_offset: usize,
+    landing: u64,
+    stack_bottom: u64,
+    stack_top: u64,
+) -> Result<(), ExcResumeError> {
+    let Some(bytes) = resume_frame_bytes(frame_offset) else {
+        return Err(ExcResumeError::OutOfBounds);
+    };
+    let frame = crate::exc::SretFrame::decode(&bytes);
+    if crate::exc::validate_for_kernel_resume(&frame, landing, stack_bottom, stack_top).is_err() {
+        return Err(ExcResumeError::InvalidFrame);
+    }
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.exc_resume_faulted(task_id, frame)?,
+            None => return Err(ExcResumeError::NoSuchTask),
+        }
+    }
+    // 成功动作 1：清零该段已消费的帧字节（此刻已无失败点）。
+    let base = core::ptr::addr_of_mut!(RESUME_FRAME_BUFFER).cast::<u8>();
+    // SAFETY：`resume_frame_bytes` 已对同一区间做过边界校验。
+    let consumed = unsafe {
+        core::slice::from_raw_parts_mut(base.add(frame_offset), crate::exc::SRET_FRAME_LEN)
+    };
+    for byte in consumed.iter_mut() {
+        *byte = 0;
+    }
+    Ok(())
+}
+
+/// SPEC-073：§12.10 的完整见证（`KernelActor` 代故障任务 `exc_resume`）。
+///
+/// 必须在 `activate_init` **之前**的同一窗口调用（此刻无 Task `Running`，`schedule` 合法）。
+/// 全过程只用**保留槽位任务** [`RECLAIM_NEGATIVE_TASK_ID`]（§8.2 回收见证已证明它"可恢复
+/// ⇒ 不得回收"）：把它从 `Faulted` 恢复 → 再次 `schedule` 见证帧被消费 → 置为不可恢复终态
+/// 并见证前置 6 拒绝 → 最后由 §8.2 内核路径回收。既覆盖 §12.10 的全部成功动作，又把该任务
+/// 收尾为 `Dead`，不再留下永久 `Faulted` 记录。
+pub fn record_resume_witness(
+    landing: u64,
+    stack_bottom: u64,
+    stack_top: u64,
+) -> Result<(), ExcResumeError> {
+    let task_id = RECLAIM_NEGATIVE_TASK_ID;
+    let mut frame = crate::exc::SretFrame::ZERO;
+    frame.rip = landing;
+    frame.rsp = stack_top - 16;
+    frame.cs = crate::exc::KERNEL_CS;
+    frame.ss = crate::exc::KERNEL_SS;
+    // 与切片 D 的恢复跳板同一约定：固定位 + ZF（落点据此证明 RFLAGS 真被 iretq 恢复）。
+    frame.rflags = crate::exc::KERNEL_RFLAGS_FIXED | (1 << 6);
+    frame.r12 = crate::exc::RESUME_SENTINEL_A;
+    frame.r13 = crate::exc::RESUME_SENTINEL_B;
+    if crate::exc::validate_for_kernel_resume(&frame, landing, stack_bottom, stack_top).is_err() {
+        return Err(ExcResumeError::InvalidFrame);
+    }
+    install_resume_frame(0, &frame.encode())?;
+
+    // 正例：代调 exc_resume。
+    let resumed = kernel_exc_resume(task_id, 0, landing, stack_bottom, stack_top).is_ok();
+    let status_after = match task_status(task_id) {
+        Some(TaskStatus::Ready) => 0u32,
+        Some(TaskStatus::Running) => 1,
+        Some(TaskStatus::BlockedRecv) => 2,
+        Some(TaskStatus::Faulted) => 3,
+        _ => 4,
+    };
+    let pending_cleared = unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot)
+            .as_ref()
+            .and_then(|state| state.tasks.find(task_id))
+            .is_some_and(|task| task.pending_exc.is_none())
+    };
+    let frame_saved = crate::sched::kernel_resume_frame(task_id).is_some();
+    let frame_bytes_zeroed = resume_frame_bytes(0) == Some([0u8; crate::exc::SRET_FRAME_LEN]);
+
+    // §8.4 步骤 3：再次调度进 Running 时 `kernel_resume_frame` 被消费清空。
+    let frame_consumed = schedule_task_global(task_id).is_ok()
+        && crate::sched::kernel_resume_frame(task_id).is_none();
+
+    // 前置 6 反例：不可恢复种类再次代调必须被拒且保持 Faulted。
+    install_resume_frame(0, &frame.encode())?;
+    let unrecoverable_rejected = {
+        let faulted = unsafe {
+            let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+            match (*slot).as_mut() {
+                Some(state) => state
+                    .tasks
+                    .fault(task_id, PAGE_FAULT_SOURCE_ID, ExcKind::DoubleFault)
+                    .is_ok(),
+                None => false,
+            }
+        };
+        if faulted {
+            unsafe {
+                let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+                if let Some(state) = (*slot).as_mut() {
+                    state.audit.append(AuditEvent::TaskStateChanged {
+                        task_id,
+                        status: TaskStatus::Faulted,
+                    });
+                }
+            }
+        }
+        matches!(
+            kernel_exc_resume(task_id, 0, landing, stack_bottom, stack_top),
+            Err(ExcResumeError::UnrecoverableFault)
+        ) && task_status(task_id) == Some(TaskStatus::Faulted)
+    };
+
+    // 收尾：不可恢复终态 → §8.2 内核回收。
+    let reclaimed_after =
+        kernel_reclaim_task(task_id).is_ok() && task_status(task_id) != Some(TaskStatus::Faulted);
+    let invariant_ok = unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot)
+            .as_ref()
+            .is_some_and(|state| state.tasks.check_faulted_invariant().is_ok())
+    };
+
+    let witness = ResumeWitness {
+        task_id,
+        resumed: u32::from(resumed),
+        status_after,
+        pending_cleared: u32::from(pending_cleared),
+        frame_saved: u32::from(frame_saved),
+        frame_bytes_zeroed: u32::from(frame_bytes_zeroed),
+        frame_consumed: u32::from(frame_consumed),
+        unrecoverable_rejected: u32::from(unrecoverable_rejected),
+        reclaimed_after: u32::from(reclaimed_after),
+        invariant_ok: u32::from(invariant_ok),
+    };
+    unsafe {
+        *core::ptr::addr_of_mut!(RESUME_WITNESS) = Some(witness);
+    }
+    Ok(())
+}
+
+/// SPEC-073：把 §8.2 内核回收路径包装成布尔（见证用）。
+fn kernel_reclaim_task(task_id: u32) -> Result<(), TaskError> {
+    unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.kernel_reclaim_task(task_id, None, 0),
+            None => Err(TaskError::NoSuchTask),
+        }
+    }
+}
+
+static mut RESUME_WITNESS: Option<ResumeWitness> = None;
+
+/// SPEC-073：已登记的 `exc_resume` 见证（未采集时为 `None`）。
+pub fn resume_witness_record() -> Option<ResumeWitness> {
+    unsafe { *core::ptr::addr_of!(RESUME_WITNESS) }
+}
+
 /// SPEC-072：采集并登记内核回收见证（必须在 `activate_init` 之前调用）。
 pub fn record_reclaim_witness() -> Result<(), TaskError> {
     let witness = unsafe {
@@ -4998,8 +5295,8 @@ mod tests {
     use super::{
         AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityLocation,
         CapabilityPositionError, DeriveError, DropError, EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS,
-        EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, Handle, IMAGE_CAP_HANDLE, IMAGE_CAP_SLOT,
-        IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
+        EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, ExcResumeError, Handle, IMAGE_CAP_HANDLE,
+        IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
         INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR, MAX_CAPABILITY_SLOTS,
         MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, ObjectRef,
         PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
@@ -6407,6 +6704,93 @@ mod tests {
 
     /// SPEC-071：审计汇总按**目标状态**分类，且 `Dead`（细化态）不产生事件。
     /// SPEC-072：§8.2 内核回收路径——只回收「不可恢复的 Faulted」，并有真实清理效果。
+    /// SPEC-073：§12.10 成功动作 2/3/4/5——清 `pending_exc`、存 `kernel_resume_frame`、
+    /// 追加 `TaskResumed`、`Faulted → Ready`。
+    #[test]
+    fn exc_resume_moves_a_recoverable_faulted_task_to_ready() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        state
+            .tasks
+            .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+            .unwrap();
+        crate::sched::clear_kernel_resume_frame(2);
+        let before = state.audit.count;
+        assert!(
+            state
+                .exc_resume_faulted(2, crate::exc::SretFrame::ZERO)
+                .is_ok()
+        );
+        let task = state.tasks.find(2).copied().unwrap();
+        assert_eq!(
+            task.status,
+            TaskStatus::Ready,
+            "成功动作 5：Faulted → Ready"
+        );
+        assert!(task.pending_exc.is_none(), "成功动作 2：清 pending_exc");
+        assert!(
+            crate::sched::kernel_resume_frame(2).is_some(),
+            "成功动作 3：存 kernel_resume_frame"
+        );
+        assert!(matches!(
+            state.audit.entries[state.audit.count - 1],
+            Some(AuditEvent::TaskResumed { task_id: 2 })
+        ));
+        assert_eq!(
+            state.audit.count,
+            before + 1,
+            "成功动作 4：恰追加一条 TaskResumed"
+        );
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+        crate::sched::clear_kernel_resume_frame(2);
+    }
+
+    /// SPEC-073：前置 5/6/8 的反例——非 `Faulted`、不可恢复种类、已有待消费帧都必须被拒
+    /// 且**状态原子不变**。
+    #[test]
+    fn exc_resume_rejects_precondition_violations_atomically() {
+        let mut state = exc_state();
+        state.create_task(3).unwrap();
+        crate::sched::clear_kernel_resume_frame(3);
+        // 前置 5：Ready 不是 Faulted。
+        let ready = state.tasks.find(3).copied().unwrap();
+        assert_eq!(
+            state.exc_resume_faulted(3, crate::exc::SretFrame::ZERO),
+            Err(ExcResumeError::NotFaulted)
+        );
+        assert_eq!(state.tasks.find(3).copied().unwrap(), ready);
+        // 前置 6：不可恢复种类。
+        state.schedule_task(3).unwrap();
+        state
+            .tasks
+            .fault(3, PAGE_FAULT_SOURCE_ID, ExcKind::DoubleFault)
+            .unwrap();
+        let faulted = state.tasks.find(3).copied().unwrap();
+        assert_eq!(
+            state.exc_resume_faulted(3, crate::exc::SretFrame::ZERO),
+            Err(ExcResumeError::UnrecoverableFault)
+        );
+        assert_eq!(
+            state.tasks.find(3).copied().unwrap(),
+            faulted,
+            "被拒的 exc_resume 不得改动任何字段"
+        );
+        // 前置 8：已有待消费的 kernel_resume_frame。
+        state.tasks.find_mut(3).unwrap().pending_exc = Some(PendingExc {
+            source_id: PAGE_FAULT_SOURCE_ID,
+            kind: ExcKind::PageFault,
+        });
+        crate::sched::set_kernel_resume_frame(3, crate::exc::SretFrame::ZERO);
+        assert_eq!(
+            state.exc_resume_faulted(3, crate::exc::SretFrame::ZERO),
+            Err(ExcResumeError::FramePending)
+        );
+        crate::sched::clear_kernel_resume_frame(3);
+        state.tasks.find_mut(3).unwrap().pending_exc = None;
+        state.tasks.find_mut(3).unwrap().status = TaskStatus::Dead;
+    }
+
     #[test]
     fn kernel_reclaim_destroys_an_unrecoverable_faulted_task() {
         let mut state = exc_state();

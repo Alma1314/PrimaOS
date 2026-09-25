@@ -33,6 +33,7 @@ enum EventKind {
     FaultReady,
     StateAuditReady,
     ReclaimReady,
+    ResumeReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -210,7 +211,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 34] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 35] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -244,7 +245,8 @@ const EXPECTED_EVENTS: [(u32, EventKind); 34] = [
     (31, EventKind::FaultReady),
     (32, EventKind::StateAuditReady),
     (33, EventKind::ReclaimReady),
-    (34, EventKind::BootComplete),
+    (34, EventKind::ResumeReady),
+    (35, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -524,6 +526,61 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::ReclaimReady)
     {
         validate_reclaim_data(reclaim.data.as_deref())?;
+    }
+    if let Some(resume) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ResumeReady)
+    {
+        validate_resume_data(resume.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 切片 AB：校验 §12.10 `exc_resume`（KernelActor 代故障任务调用）的全部成功动作。
+///
+/// 断言：恢复成功、成功动作 5 后状态为 `Ready`、动作 1/2/3 都有实测结果、§8.4 步骤 3 的
+/// 帧消费清空成立、前置 6（不可恢复种类）被拒且保持 `Faulted`、随后经 §8.2 内核路径回收，
+/// 且 W9 双向不变量全程成立。
+fn validate_resume_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "resume_ready event is missing its data field".to_owned())?;
+    let mut fields = std::collections::BTreeMap::new();
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed resume_ready field: {field}"))?;
+        fields.insert(key, value);
+    }
+    let get = |key: &str| -> Result<usize, String> {
+        fields
+            .get(key)
+            .ok_or_else(|| format!("resume_ready is missing {key}"))
+            .and_then(|value| parse_count(value))
+    };
+    if get("task")? == 0 {
+        return Err("resume_ready task must be a non-zero task id".to_owned());
+    }
+    // 成功动作 5：`Faulted → Ready`（状态编码 0 = Ready）。
+    if get("status_after")? != 0 {
+        return Err(format!(
+            "resume_ready status_after must be Ready (0), got {}",
+            get("status_after")?
+        ));
+    }
+    for key in [
+        "resumed",
+        "pending_cleared",
+        "frame_saved",
+        "frame_bytes_zeroed",
+        "frame_consumed",
+        "unrecoverable_rejected",
+        "reclaimed_after",
+        "invariant_ok",
+    ] {
+        if get(key)? != 1 {
+            return Err(format!(
+                "resume_ready {key} must be 1 — a successful exc_resume must clear pending_exc, save the kernel_resume_frame, zero the consumed frame bytes, be consumed on the next schedule, reject an unrecoverable kind, and leave the W9 invariant intact"
+            ));
+        }
     }
     Ok(())
 }
@@ -2225,12 +2282,12 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready map_other (0x{map_other:x}) must be EACCES — mapping a segment owned by another task must be denied"
         ));
     }
-    // SPEC-070/072：存活 Task = init + task 2 + **保留槽位的两个 Faulted 见证 Task**
-    // （`fault_ready` 的任务 7、`reclaim_ready` 的反例任务 5；回收见证的任务 6 已被内核回收为
-    // Dead，故不计入）。Faulted 是"存活"（非 Dead）的常规状态，故计入。
-    if tasks != 4 {
+    // SPEC-070/072/073：存活 Task = init + task 2 + **`fault_ready` 的保留槽位任务 7**。
+    // 回收见证的任务 6 与 `resume_ready` 生命周期收尾的保留槽位任务 5 都已由内核路径销毁
+    // （Dead 记录保留但不计入存活）。Faulted 是"存活"（非 Dead）的常规状态，故任务 7 计入。
+    if tasks != 3 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 4 (init + task 2 + the two reserved Faulted witness tasks) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 3 (init + task 2 + the reserved Faulted witness task) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2264,9 +2321,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 4 {
+    if tasks_after != 3 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 4 (init + task 2 + the two reserved Faulted witness tasks) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 3 (init + task 2 + the reserved Faulted witness task) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -3033,6 +3090,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("fault_ready", "ok") => EventKind::FaultReady,
         ("state_audit_ready", "ok") => EventKind::StateAuditReady,
         ("reclaim_ready", "ok") => EventKind::ReclaimReady,
+        ("resume_ready", "ok") => EventKind::ResumeReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -3075,7 +3133,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SelfRootReady
             | EventKind::FaultReady
             | EventKind::StateAuditReady
-            | EventKind::ReclaimReady,
+            | EventKind::ReclaimReady
+            | EventKind::ResumeReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -3111,7 +3170,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::SelfRootReady
             | EventKind::FaultReady
             | EventKind::StateAuditReady
-            | EventKind::ReclaimReady,
+            | EventKind::ReclaimReady
+            | EventKind::ResumeReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -3156,7 +3216,7 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=3;direct=3;blocks=3\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=4;caps=29;root_cleared=1;grandchild=4;tasks_after=4;caps_after=29;root4_cleared=1\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=29;root_cleared=1;grandchild=4;tasks_after=3;caps_after=29;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=26|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
         "PRIMA|v=1|seq=27|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
@@ -3166,7 +3226,8 @@ mod tests {
         "PRIMA|v=1|seq=31|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
         "PRIMA|v=1|seq=32|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
         "PRIMA|v=1|seq=33|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=34|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=34|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=35|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3220,9 +3281,9 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
-        // SPEC-070/072：合法值为 4（init + task 2 + 两个保留槽位的 Faulted 见证 Task）；
-        // 5 表示子任务未清除。
-        let output = VALID.replace(";tasks=4;", ";tasks=5;");
+        // SPEC-070/072/073：合法值为 3（init + task 2 + 保留槽位的 Faulted 见证任务）；
+        // 4 表示子任务未清除。
+        let output = VALID.replace(";tasks=3;", ";tasks=4;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -3361,6 +3422,41 @@ mod tests {
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("booted/entry_in_image/init_running"),
+            "{error}"
+        );
+    }
+
+    /// 切片 AB：`exc_resume` 未把状态置为 `Ready`（成功动作 5 缺失）即拒绝。
+    #[test]
+    fn rejects_resume_without_the_ready_transition() {
+        let output = VALID.replace("status_after=0", "status_after=3");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("status_after must be Ready"), "{error}");
+    }
+
+    /// 切片 AB：成功动作 1（清零已消费帧字节）缺失即拒绝。
+    #[test]
+    fn rejects_resume_without_zeroing_the_consumed_frame() {
+        let output = VALID.replace("frame_bytes_zeroed=1", "frame_bytes_zeroed=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("frame_bytes_zeroed must be 1"), "{error}");
+    }
+
+    /// 切片 AB：§8.4 步骤 3 的帧消费清空缺失即拒绝。
+    #[test]
+    fn rejects_resume_without_frame_consumption_on_schedule() {
+        let output = VALID.replace("frame_consumed=1", "frame_consumed=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("frame_consumed must be 1"), "{error}");
+    }
+
+    /// 切片 AB：前置 6（不可恢复种类必须被拒）缺失即拒绝。
+    #[test]
+    fn rejects_resume_without_the_unrecoverable_rejection() {
+        let output = VALID.replace("unrecoverable_rejected=1", "unrecoverable_rejected=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("unrecoverable_rejected must be 1"),
             "{error}"
         );
     }

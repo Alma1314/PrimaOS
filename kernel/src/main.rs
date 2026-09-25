@@ -290,6 +290,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // SPEC-073：同一窗口见证 §12.10 `exc_resume`（KernelActor 代故障任务
+                                    // 调用）。帧的 landing/栈界取自切片 D 的恢复跳板与专用栈。
+                                    let (landing, stack_bottom, stack_top) =
+                                        resume::resume_target();
+                                    if kernel::bootstrap::record_resume_witness(
+                                        landing,
+                                        stack_bottom,
+                                        stack_top,
+                                    )
+                                    .is_err()
+                                    {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
                                     if kernel::bootstrap::activate_init().is_err() {
                                         protocol::panic_event();

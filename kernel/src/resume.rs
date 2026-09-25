@@ -34,6 +34,12 @@ static SEEN_R13: AtomicU64 = AtomicU64::new(0);
 static SEEN_RSP: AtomicU64 = AtomicU64::new(0);
 static SEEN_RFLAGS: AtomicU64 = AtomicU64::new(0);
 
+/// SPEC-073：§12.10 帧验证所需的 `(landing, stack_bottom, stack_top)`。
+pub fn resume_target() -> (u64, u64, u64) {
+    let (bottom, top) = stack_bounds();
+    (resume_landing as *const () as u64, bottom, top)
+}
+
 /// 恢复栈的 `(下界, 上界)`；上界为 one-past-end、16 对齐。
 fn stack_bounds() -> (u64, u64) {
     let base = core::ptr::addr_of!(RESUME_STACK) as u64;
@@ -119,6 +125,11 @@ extern "C" fn after_resume() -> ! {
     // SPEC-072：§8.2 内核回收路径见证。
     match kernel::bootstrap::reclaim_witness_record() {
         Some(witness) => protocol::reclaim_ready(&witness),
+        None => protocol::panic_event(),
+    }
+    // SPEC-073：§12.10 `exc_resume` 的 KernelActor 代调见证。
+    match kernel::bootstrap::resume_witness_record() {
+        Some(witness) => protocol::resume_ready(&witness),
         None => protocol::panic_event(),
     }
     protocol::boot_complete();
