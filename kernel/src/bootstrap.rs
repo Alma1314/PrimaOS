@@ -4470,7 +4470,12 @@ impl BootstrapState {
         Ok(())
     }
 
-    /// §10.3 `advance_time`：KernelActor 内部迁移（本实现由 `preempt_tick` 驱动）。
+    /// §10.3 `advance_time`：KernelActor 内部迁移。
+    ///
+    /// 本实现的驱动点是**抢占收尾**（`resume::preempt_finish` 一次推进到累计 tick），
+    /// **不是** `preempt_tick` 逐 tick 调用——后者会在中断上下文里做通知投递（唤醒任务、
+    /// 改调度状态），并让中断处理时长进入用户任务的执行时序，扰动 `preempt_ready.mark*`
+    /// 这类时序敏感见证（实测逐 tick 调用会让 `mark1` 由 `0x1` 变 `0x0`）。
     pub fn advance_time(&mut self, new_now: Instant) -> Result<(), TimerError> {
         if new_now < self.now {
             // §10.3：失败时 `now` 与全部 Timer 状态**不变**。
