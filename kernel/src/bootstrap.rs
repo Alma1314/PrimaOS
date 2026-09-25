@@ -67,8 +67,17 @@ pub const MAX_CAPABILITY_SLOTS: usize = 64;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 const MAX_TASKS: usize = 8;
-/// Audit 容量（walk-in：平台 Segment 对象化会为每个区域追加创建/铸 cap 事件）。
-const MAX_AUDIT_EVENTS: usize = 128;
+/// Audit 容量。
+///
+/// SPEC-071（`ISSUE-TASK-003`）：§13.1/W13 要求**每次** Task 状态迁移都追加 `TaskStateChanged`。
+/// 实测补齐调度路径后 boot 期共 **50** 条该类事件、审计总需求 130 条 > 原容量 128（被打满），
+/// 故按项目既有先例（切片 R：**保留 16 KiB 结构体守卫**、调整容量并显式登记）把容量提到 170。
+///
+/// 尺寸实测：`AuditEvent` = 24 B（`Option` 经 niche 优化同为 24 B），`BootstrapState` 由
+/// 15304 B 增至 **16312 B**，仍 ≤ 守卫 16384 B——**守卫未放宽**，但结构体余量只剩 72 B。
+/// 后续任何进一步存储增长都**必须先做审计存储重构**（把 `AuditLog` 移出 `BootstrapState`），
+/// 登记为已知瓶颈。
+const MAX_AUDIT_EVENTS: usize = 170;
 
 /// 切片 L：内核 actor 的 Task ID。异常通知以此作为发送者，永不参与 `is_live` 校验。
 pub const KERNEL_ACTOR: u32 = 0;
@@ -1128,6 +1137,26 @@ impl ExcSourceTable {
     }
 }
 
+/// SPEC-071：§13.1/W13 的 Task 状态迁移审计汇总（QEMU 见证）。
+///
+/// 计数**按目标状态**分列，使"每条迁移路径都真的有事件"成为可断言的事实；
+/// `used`/`cap` 钉住审计余量（本切片实测 81+32=113 ≤ 128，故无需存储重构）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskStateAudit {
+    pub to_running: u32,
+    pub to_ready: u32,
+    pub to_blocked: u32,
+    pub to_faulted: u32,
+    pub used: u32,
+    pub cap: u32,
+}
+
+impl TaskStateAudit {
+    pub fn total(&self) -> u32 {
+        self.to_running + self.to_ready + self.to_blocked + self.to_faulted
+    }
+}
+
 /// SPEC-070：`Faulted` 状态机的 QEMU 见证。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FaultWitness {
@@ -1960,6 +1989,31 @@ impl BootstrapState {
         }
     }
 
+    /// SPEC-071：汇总审计日志里按目标状态分类的 `TaskStateChanged` 计数与审计余量。
+    pub fn task_state_audit(&self) -> TaskStateAudit {
+        let mut audit = TaskStateAudit {
+            to_running: 0,
+            to_ready: 0,
+            to_blocked: 0,
+            to_faulted: 0,
+            used: self.audit.count as u32,
+            cap: MAX_AUDIT_EVENTS as u32,
+        };
+        for event in self.audit.entries[..self.audit.count].iter().flatten() {
+            if let AuditEvent::TaskStateChanged { status, .. } = event {
+                match status {
+                    TaskStatus::Running => audit.to_running += 1,
+                    TaskStatus::Ready => audit.to_ready += 1,
+                    TaskStatus::BlockedRecv => audit.to_blocked += 1,
+                    TaskStatus::Faulted => audit.to_faulted += 1,
+                    // `Dead` 是细化态、非 POSIR 状态，§13.1 不对它要求事件（登记在案）。
+                    TaskStatus::Dead => {}
+                }
+            }
+        }
+        audit
+    }
+
     /// SPEC-070：`Faulted` 状态机的 boot 期见证。
     ///
     /// **采集时机必须在 `activate_init` 之前**：§8.4 的 `schedule` 只允许至多一个 Running，
@@ -2423,7 +2477,7 @@ impl BootstrapState {
             .filter(|task| self.tasks.is_blocked_recv(**task))
             .count();
         let queued = count - direct;
-        let audit_events = 1 + direct * 2 + queued;
+        let audit_events = 1 + direct * 3 + queued;
         if !self.audit.can_append(audit_events) {
             return Err(ExcError::AuditFull);
         }
@@ -2451,8 +2505,7 @@ impl BootstrapState {
                 capability_count: 0,
             };
             if self.tasks.is_blocked_recv(task) {
-                self.tasks
-                    .set_pending(task, message)
+                self.set_pending_task(task, message)
                     .map_err(|_| ExcError::NoSuchTask)?;
                 self.audit.append(AuditEvent::MessageSent {
                     message_id,
@@ -2495,7 +2548,7 @@ impl BootstrapState {
         let _ = self.exc_source_create(ExcKind::SyscallTrap)?;
         self.create_task(2).map_err(|_| ExcError::Full)?;
         self.exc_source_add_subscriber(page_fault_source, 2)?;
-        self.tasks.block_recv(2).map_err(|_| ExcError::NoSuchTask)?;
+        self.block_recv_task(2).map_err(|_| ExcError::NoSuchTask)?;
         let outcome = self.exc_raise(page_fault_source, ExcKind::PageFault)?;
         let message = self.tasks.take_pending(2);
         let task_ready_after = self
@@ -2723,12 +2776,70 @@ impl BootstrapState {
         self.tasks.create(task_id)
     }
 
-    pub fn schedule_task(&mut self, task_id: u32) -> Result<(), TaskError> {
-        self.tasks.schedule(task_id)
+    /// §13.1/W13：为一次**已提交**的 Task 状态迁移追加 `TaskStateChanged`。
+    ///
+    /// 容量预检必须**先于**迁移提交：调用方在改动状态前用 `can_append(1)` 预检，失败即
+    /// `AuditFull` 且状态不变（§6.5 先验证后原子提交）。容量不足时调度会显式失败，
+    /// 不静默丢弃事件。
+    fn audit_transition(&mut self, task_id: u32, status: TaskStatus) {
+        self.audit
+            .append(AuditEvent::TaskStateChanged { task_id, status });
     }
 
+    /// §8.4 步骤 3 + §13.1：`Ready → Running` 并追加 `TaskStateChanged`。
+    pub fn schedule_task(&mut self, task_id: u32) -> Result<(), TaskError> {
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.schedule(task_id)?;
+        self.audit_transition(task_id, TaskStatus::Running);
+        Ok(())
+    }
+
+    /// §8.4 + §13.1：`Running → Ready`（协作让出）并追加 `TaskStateChanged`。
     pub fn yield_task(&mut self, task_id: u32) -> Result<(), TaskError> {
-        self.tasks.yield_task(task_id)
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.yield_task(task_id)?;
+        self.audit_transition(task_id, TaskStatus::Ready);
+        Ok(())
+    }
+
+    /// §8.2/§12.9 + §13.1：`Running|Ready → BlockedRecv` 并追加 `TaskStateChanged`。
+    pub fn block_recv_task(&mut self, task_id: u32) -> Result<(), TaskError> {
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.block_recv(task_id)?;
+        self.audit_transition(task_id, TaskStatus::BlockedRecv);
+        Ok(())
+    }
+
+    /// §8.2 唤醒 + §13.1：`BlockedRecv → Ready` 并追加 `TaskStateChanged`（无迁移则不追加）。
+    pub fn wake_recv_task(&mut self, task_id: u32) -> Result<(), TaskError> {
+        if !self.tasks.is_blocked_recv(task_id) {
+            return Ok(());
+        }
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.wake_recv(task_id)?;
+        self.audit_transition(task_id, TaskStatus::Ready);
+        Ok(())
+    }
+
+    /// §12.9 pending 直投：写 pending 并在 `BlockedRecv` 时唤醒（§13.1 记 `→ Ready`）。
+    pub fn set_pending_task(&mut self, task_id: u32, message: IpcMessage) -> Result<(), TaskError> {
+        let wakes = self.tasks.is_blocked_recv(task_id);
+        if wakes && !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.set_pending(task_id, message)?;
+        if wakes {
+            self.audit_transition(task_id, TaskStatus::Ready);
+        }
+        Ok(())
     }
 
     /// S2-D4：§8.1 `task_create` 的完整成功动作。
@@ -3244,8 +3355,7 @@ impl BootstrapState {
                     .move_to_task(cap, sender, receiver)
                     .map_err(|_| IpcError::CapabilityHolderMismatch)?;
             }
-            self.tasks
-                .set_pending(receiver, message)
+            self.set_pending_task(receiver, message)
                 .map_err(|_| IpcError::NoSuchTask)?;
             self.audit.append(AuditEvent::MessageSent {
                 message_id: message.id,
@@ -3296,11 +3406,11 @@ impl BootstrapState {
                     message_id: message.id,
                     receiver,
                 });
-                let _ = self.tasks.wake_recv(receiver);
+                let _ = self.wake_recv_task(receiver);
                 Ok(message)
             }
             Err(IpcError::QueueEmpty) => {
-                let _ = self.tasks.block_recv(receiver);
+                let _ = self.block_recv_task(receiver);
                 Err(IpcError::QueueEmpty)
             }
             Err(error) => Err(error),
@@ -4187,6 +4297,14 @@ pub fn activate_init() -> Result<(), BootstrapError> {
     }
 }
 
+/// SPEC-071：取 Task 状态迁移审计汇总（授权表未安装时 `None`）。
+pub fn task_state_audit() -> Option<TaskStateAudit> {
+    unsafe {
+        let slot = core::ptr::addr_of!(BOOTSTRAP_STATE);
+        (*slot).as_ref().map(|state| state.task_state_audit())
+    }
+}
+
 /// SPEC-070：采集 `Faulted` 见证（必须在 `activate_init` **之前**调用）。
 pub fn collect_fault_witness() -> Result<FaultWitness, TaskError> {
     unsafe {
@@ -4673,7 +4791,7 @@ pub fn block_recv_global(task_id: u32) -> Result<(), TaskError> {
     unsafe {
         let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
         match (*slot).as_mut() {
-            Some(state) => state.tasks.block_recv(task_id),
+            Some(state) => state.block_recv_task(task_id),
             None => Err(TaskError::NoSuchTask),
         }
     }
@@ -5277,8 +5395,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state.ipc.count, 0);
-        // 前 5 条是 SPEC-061 的初始 Authority 审计，此处只验证新增的最后两条。
-        assert_eq!(state.audit.count, 7);
+        // 前 5 条是 SPEC-061 的初始 Authority 审计；随后是 SPEC-071 的 Task 状态迁移
+        // （`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞与投递唤醒）与消息事件。
+        assert_eq!(state.audit.count, 9);
         assert!(matches!(
             state.audit.entries[state.audit.count - 2],
             Some(AuditEvent::MessageSent { message_id: 1, .. })
@@ -6052,6 +6171,87 @@ mod tests {
     /// 切片 V：§8.2「删除自身是合法的」——自毁路径必须先于 `CannotDestroyRunning` 判定生效；
     /// init 仍受结构保护。
     /// SPEC-070：§12.5 硬件执行异常把 **Running** 任务置 `Faulted` 并写唯一 `pending_exc`。
+    /// SPEC-071：调度路径的每条迁移都必须追加 `TaskStateChanged`（§13.1/W13）。
+    #[test]
+    fn every_scheduler_transition_appends_a_state_change_event() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        let base = state.audit.count;
+        state.schedule_task(2).unwrap(); // Ready → Running
+        assert!(matches!(
+            state.audit.entries[state.audit.count - 1],
+            Some(AuditEvent::TaskStateChanged {
+                task_id: 2,
+                status: TaskStatus::Running
+            })
+        ));
+        state.yield_task(2).unwrap(); // Running → Ready
+        assert!(matches!(
+            state.audit.entries[state.audit.count - 1],
+            Some(AuditEvent::TaskStateChanged {
+                task_id: 2,
+                status: TaskStatus::Ready
+            })
+        ));
+        state.block_recv_task(2).unwrap(); // Ready → BlockedRecv
+        assert!(matches!(
+            state.audit.entries[state.audit.count - 1],
+            Some(AuditEvent::TaskStateChanged {
+                task_id: 2,
+                status: TaskStatus::BlockedRecv
+            })
+        ));
+        state.wake_recv_task(2).unwrap(); // BlockedRecv → Ready
+        assert!(matches!(
+            state.audit.entries[state.audit.count - 1],
+            Some(AuditEvent::TaskStateChanged {
+                task_id: 2,
+                status: TaskStatus::Ready
+            })
+        ));
+        assert_eq!(state.audit.count, base + 4);
+        // 无迁移的重复唤醒不得再追加事件（避免把"通知"误记成"迁移"）。
+        state.wake_recv_task(2).unwrap();
+        assert_eq!(state.audit.count, base + 4);
+    }
+
+    /// SPEC-071：审计容量不足时迁移必须**整体失败**且状态不变（§6.5 先验证后原子提交）。
+    #[test]
+    fn transition_is_rejected_when_the_audit_log_is_full() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        while state.audit.can_append(1) {
+            state.audit.append(AuditEvent::TaskStateChanged {
+                task_id: 0,
+                status: TaskStatus::Ready,
+            });
+        }
+        let before = state.tasks.find(2).copied().unwrap();
+        assert_eq!(state.schedule_task(2), Err(TaskError::AuditFull));
+        assert_eq!(state.tasks.find(2).copied().unwrap(), before);
+    }
+
+    /// SPEC-071：审计汇总按**目标状态**分类，且 `Dead`（细化态）不产生事件。
+    #[test]
+    fn task_state_audit_counts_each_target_status() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        // 相对基线断言：夹具本身可能已产生状态迁移事件（不是本用例的被测面）。
+        let before = state.task_state_audit();
+        state.schedule_task(2).unwrap();
+        state.yield_task(2).unwrap();
+        state.block_recv_task(2).unwrap();
+        state.wake_recv_task(2).unwrap();
+        let audit = state.task_state_audit();
+        assert_eq!(audit.to_running - before.to_running, 1);
+        assert_eq!(audit.to_ready - before.to_ready, 2);
+        assert_eq!(audit.to_blocked - before.to_blocked, 1);
+        assert_eq!(audit.to_faulted - before.to_faulted, 0);
+        assert_eq!(audit.total() - before.total(), 4);
+        assert_eq!(audit.cap, super::MAX_AUDIT_EVENTS as u32);
+        assert!(audit.used <= audit.cap);
+    }
+
     #[test]
     fn faulting_a_running_task_sets_pending_exc_and_faulted_status() {
         let mut state = exc_state();
@@ -6297,6 +6497,13 @@ mod tests {
         // `create_state` 按值返回该结构，内核启动栈有限：钉死上限防止后续扩容悄悄超栈。
         let size = core::mem::size_of::<super::BootstrapState>();
         assert!(size <= 16 * 1024, "BootstrapState size = {size} bytes");
+        // SPEC-071：容量提到 170 后实测 16312 B——**余量只剩 72 B**。
+        // 再往里加存储（新字段或再扩数组）会直接撞上守卫，故先把"余量已枯竭"钉进测试：
+        // 任何进一步存储增长都必须先做审计存储重构（把 `AuditLog` 移出该结构）。
+        assert!(
+            size >= 16 * 1024 - 128,
+            "BootstrapState size = {size} bytes：结构体余量意外变大，请复核 SPEC-071 登记的余量结论"
+        );
     }
 
     #[test]

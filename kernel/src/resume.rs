@@ -111,6 +111,11 @@ extern "C" fn after_resume() -> ! {
         Some(witness) => protocol::fault_ready(&witness),
         None => protocol::panic_event(),
     }
+    // SPEC-071：§13.1/W13 Task 状态迁移审计汇总。
+    match kernel::bootstrap::task_state_audit() {
+        Some(audit) => protocol::state_audit_ready(&audit),
+        None => protocol::panic_event(),
+    }
     protocol::boot_complete();
     serial::flush();
     qemu::exit(qemu::SUCCESS)

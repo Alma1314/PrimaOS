@@ -31,6 +31,7 @@ enum EventKind {
     FramesReady,
     SelfRootReady,
     FaultReady,
+    StateAuditReady,
     BootComplete,
     Panic,
     MemoryError,
@@ -208,7 +209,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 32] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 33] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -240,7 +241,8 @@ const EXPECTED_EVENTS: [(u32, EventKind); 32] = [
     (29, EventKind::FramesReady),
     (30, EventKind::SelfRootReady),
     (31, EventKind::FaultReady),
-    (32, EventKind::BootComplete),
+    (32, EventKind::StateAuditReady),
+    (33, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -508,6 +510,71 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
             })
             .map(|value| value.to_owned());
         validate_self_root_data(self_root.data.as_deref(), translated.as_deref())?;
+    }
+    if let Some(audit) = events
+        .iter()
+        .find(|event| event.kind == EventKind::StateAuditReady)
+    {
+        validate_state_audit_data(audit.data.as_deref())?;
+    }
+    Ok(())
+}
+
+/// 切片 Z（ISSUE-TASK-003）：校验 §13.1/W13 Task 状态迁移审计汇总。
+///
+/// 断言：四类目标状态**都**至少有 1 条真实迁移事件（证明 yield/抢占、block/wake、schedule
+/// 与 §12.5 故障四条路径都接上了事件）、`total` 等于分项之和、审计日志**未被打满**
+/// （`used <= cap` 且 `cap >= total`——余量枯竭会让后续受审计操作失败）。
+fn validate_state_audit_data(data: Option<&str>) -> Result<(), String> {
+    let data =
+        data.ok_or_else(|| "state_audit_ready event is missing its data field".to_owned())?;
+    let mut fields = std::collections::BTreeMap::new();
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed state_audit_ready field: {field}"))?;
+        fields.insert(key, value);
+    }
+    let get = |key: &str| -> Result<usize, String> {
+        fields
+            .get(key)
+            .ok_or_else(|| format!("state_audit_ready is missing {key}"))
+            .and_then(|value| parse_count(value))
+    };
+    let total = get("total")?;
+    let to_running = get("to_running")?;
+    let to_ready = get("to_ready")?;
+    let to_blocked = get("to_blocked")?;
+    let to_faulted = get("to_faulted")?;
+    let used = get("used")?;
+    let cap = get("cap")?;
+    for (name, value) in [
+        ("to_running", to_running),
+        ("to_ready", to_ready),
+        ("to_blocked", to_blocked),
+        ("to_faulted", to_faulted),
+    ] {
+        if value == 0 {
+            return Err(format!(
+                "state_audit_ready {name} must be non-zero — every POSIR Task transition path must append TaskStateChanged"
+            ));
+        }
+    }
+    if total != to_running + to_ready + to_blocked + to_faulted {
+        return Err(format!(
+            "state_audit_ready total ({total}) must equal the per-status sum ({} )",
+            to_running + to_ready + to_blocked + to_faulted
+        ));
+    }
+    if cap < total || used < total {
+        return Err(format!(
+            "state_audit_ready capacity too small: cap={cap}, used={used}, transitions={total}"
+        ));
+    }
+    if used > cap {
+        return Err(format!(
+            "state_audit_ready audit log overflowed: used={used} > cap={cap}"
+        ));
     }
     Ok(())
 }
@@ -2911,6 +2978,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("frames_ready", "ok") => EventKind::FramesReady,
         ("self_root_ready", "ok") => EventKind::SelfRootReady,
         ("fault_ready", "ok") => EventKind::FaultReady,
+        ("state_audit_ready", "ok") => EventKind::StateAuditReady,
         ("boot_complete", "ok") => EventKind::BootComplete,
         ("memory_error", "error") => EventKind::MemoryError,
         ("physical_map_error", "error") => EventKind::PhysicalMapError,
@@ -2951,7 +3019,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::AuthorityReady
             | EventKind::FramesReady
             | EventKind::SelfRootReady
-            | EventKind::FaultReady,
+            | EventKind::FaultReady
+            | EventKind::StateAuditReady,
             None,
         ) => {
             return Err(format!("{event} event is missing its data field"));
@@ -2985,7 +3054,8 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::AuthorityReady
             | EventKind::FramesReady
             | EventKind::SelfRootReady
-            | EventKind::FaultReady,
+            | EventKind::FaultReady
+            | EventKind::StateAuditReady,
             Some(_),
         ) => {}
         (EventKind::PhysicalMapError | EventKind::PageTableError, Some(_))
@@ -3038,7 +3108,8 @@ mod tests {
         "PRIMA|v=1|seq=29|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
         "PRIMA|v=1|seq=30|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
         "PRIMA|v=1|seq=31|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=32|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=32|event=state_audit_ready|status=ok|data=total=50;to_running=22;to_ready=22;to_blocked=5;to_faulted=1;used=128;cap=170\n",
+        "PRIMA|v=1|seq=33|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3234,6 +3305,30 @@ mod tests {
             error.contains("booted/entry_in_image/init_running"),
             "{error}"
         );
+    }
+
+    /// 切片 Z：任一迁移路径缺事件（分项为 0）即拒绝。
+    #[test]
+    fn rejects_state_audit_with_a_missing_transition_path() {
+        let output = VALID.replace("to_blocked=5", "to_blocked=0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be non-zero"), "{error}");
+    }
+
+    /// 切片 Z：审计日志被打满（`used > cap`）即拒绝——余量枯竭会让后续受审计操作失败。
+    #[test]
+    fn rejects_state_audit_with_an_overflowed_log() {
+        let output = VALID.replace("used=128;cap=170", "used=171;cap=170");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("overflowed"), "{error}");
+    }
+
+    /// 切片 Z：`total` 必须等于分项之和。
+    #[test]
+    fn rejects_state_audit_with_inconsistent_total() {
+        let output = VALID.replace("total=50;", "total=51;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must equal the per-status sum"), "{error}");
     }
 
     /// 切片 Y：§12.5 前置 4 未满足（`before` 不是 Running）即拒绝。

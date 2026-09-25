@@ -158,6 +158,26 @@ fn status_code(status: kernel::bootstrap::TaskStatus) -> u32 {
     }
 }
 
+/// SPEC-071：§13.1/W13 Task 状态迁移审计汇总（独立事件，落在 `fault_ready` 之后）。
+pub(crate) fn state_audit_ready(audit: &kernel::bootstrap::TaskStateAudit) {
+    write_prefix("state_audit_ready", "ok");
+    serial::write_bytes(b"|data=total=");
+    write_u32(audit.total());
+    serial::write_bytes(b";to_running=");
+    write_u32(audit.to_running);
+    serial::write_bytes(b";to_ready=");
+    write_u32(audit.to_ready);
+    serial::write_bytes(b";to_blocked=");
+    write_u32(audit.to_blocked);
+    serial::write_bytes(b";to_faulted=");
+    write_u32(audit.to_faulted);
+    serial::write_bytes(b";used=");
+    write_u32(audit.used);
+    serial::write_bytes(b";cap=");
+    write_u32(audit.cap);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }
