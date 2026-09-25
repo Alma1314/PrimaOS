@@ -57,6 +57,8 @@ extern "C" fn after_resume() -> ! {
     // 恢复帧把 ZF(bit 6) 置位；若 RFLAGS 未被 iretq 恢复则该位不会出现。
     let flags_ok = rflags & (1 << 6) != 0;
 
+    // SPEC-082：Timer 见证——采集点必须在抢占阶段**之后**（`t1` 依赖 PIT tick 推进到期）。
+    protocol::timer_ready(&kernel::syscall::timer_witness());
     protocol::exc_resume_ready(r12, r13, resumed as u32, rsp_ok as u32, flags_ok as u32);
     // 切片 R：平台 bring-up 区域对象化见证（真实 Segment 对象 + 内核持有的可授权根 Capability）。
     match kernel::bootstrap::platform_segments_record() {
@@ -146,6 +148,9 @@ pub extern "C" fn user_trap_exit() -> ! {
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);
+    // SPEC-082：Timer 的 ring3 回执在此**缓存**——`after_resume` 已切回内核根，`USER_Y_VA`
+    // 不再映射，故回执必须在 task 1 的地址空间下读出。
+    kernel::syscall::cache_timer_receipts();
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()
@@ -153,6 +158,13 @@ pub extern "C" fn user_trap_exit() -> ! {
 
 /// 切片 O 完成回调：上报时钟抢占见证，再走既有 `exc_resume` 收尾（不返回）。
 fn preempt_finish() -> ! {
+    // SPEC-082 / §10.3：`advance_time` 是 `KernelActor` 的内部迁移。本实现把它放在**抢占收尾点**
+    // 一次推进到已累计的 tick——单调性与「迁移后无 `deadline ≤ now` 的 Pending」都成立。
+    //
+    // **不在 `preempt_tick` 里逐 tick 调用**：那会在中断上下文里做通知投递（投递会唤醒任务、
+    // 改调度状态，而此刻正在保存/切换上下文），且中断处理时长会进入用户任务的执行时序、扰动
+    // `preempt_ready.mark*` 这类时序敏感见证（实测：逐 tick 调用会让 `mark1` 由 0x1 变 0x0）。
+    let _ = kernel::bootstrap::advance_time(kernel::preempt::ticks());
     let witness = kernel::preempt::witness();
     protocol::preempt_ready(&witness);
     run_and_exit()

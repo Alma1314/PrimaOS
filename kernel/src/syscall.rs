@@ -95,6 +95,33 @@ pub const SYS_NS_UNMOUNT: u64 = 25;
 pub const SYS_NS_RESOLVE: u64 = 26;
 /// SPEC-081：`ns_destroy`（`args[0]=ns cap`）。
 pub const SYS_NS_DESTROY: u64 = 27;
+/// SPEC-082：`time_now`（无参数），返回抽象绝对时间（§10.1）。
+pub const SYS_TIME_NOW: u64 = 28;
+/// SPEC-082：`timer_set`（`args[0]=deadline`），返回 Timer 根 Capability 句柄。
+pub const SYS_TIMER_SET: u64 = 29;
+/// SPEC-082：`timer_cancel`（`args[0]=timer cap`）——`0=Cancelled`、`1=AlreadyFired`、
+/// `2=AlreadyCancelled`（§10.4 的后两者是**状态返回**而非失败）。
+pub const SYS_TIMER_CANCEL: u64 = 30;
+/// SPEC-082：`timer_destroy`（`args[0]=timer cap`）。
+pub const SYS_TIMER_DESTROY: u64 = 31;
+
+/// SPEC-082：`timer_cancel` 的状态返回编码。
+pub const TIMER_CANCEL_OUTCOME_CANCELLED: u64 = 0;
+pub const TIMER_CANCEL_OUTCOME_ALREADY_FIRED: u64 = 1;
+pub const TIMER_CANCEL_OUTCOME_ALREADY_CANCELLED: u64 = 2;
+
+/// SPEC-082：Y 回执页中 Timer 各步的字节偏移（紧接 SPEC-081 的 656）。
+pub const TIMER_RECEIPT_NOW: u64 = 664;
+pub const TIMER_RECEIPT_T1: u64 = 672;
+pub const TIMER_RECEIPT_T2: u64 = 680;
+pub const TIMER_RECEIPT_T3: u64 = 688;
+pub const TIMER_RECEIPT_CANCEL: u64 = 696;
+pub const TIMER_RECEIPT_CANCEL_AGAIN: u64 = 704;
+pub const TIMER_RECEIPT_DESTROY: u64 = 712;
+/// SPEC-082：ring3 设定的第一个 Timer 的 deadline 相对偏移（未来 ⇒ `Pending`）。
+pub const TIMER_DEADLINE_DELTA: u64 = 2;
+/// SPEC-082：ring3 立即触发用的 deadline（`deadline ≤ now` ⇒ 同操作内 `Fired`，S3-D4）。
+pub const TIMER_DEADLINE_IMMEDIATE: u64 = 0;
 
 /// SPEC-081：路径文本的最大字节数（细化层上限，见设计文档 §0.1）。
 pub const MAX_NS_PATH_BYTES: u64 = 64;
@@ -102,17 +129,19 @@ pub const MAX_NS_PATH_BYTES: u64 = 64;
 ///
 /// 放在代码页（只读 + user，可读）而不是回执页，是为了省掉「运行时逐字节写路径」的机器码：
 /// 用户程序只需 `mov rsi, imm64` 指向这段静态数据。位于 `int3` 之后，不会被当作指令执行。
-pub const NS_PATH_DATA_OFFSET: usize = 4000;
+pub const NS_PATH_DATA_OFFSET: usize = 4040;
 /// SPEC-081：路径文本数据区的 VA。
 pub const NS_PATH_DATA_VA: u64 = crate::user::USER_CODE_VA + NS_PATH_DATA_OFFSET as u64;
-/// SPEC-081：各路径文本在数据区内的偏移。
+/// SPEC-081：各路径文本在数据区内的偏移（NUL 分隔的紧凑排布）。
 pub const NS_PATH_LIB_OFF: u64 = 0;
-pub const NS_PATH_SUB_OFF: u64 = 8;
-pub const NS_PATH_MNT_OFF: u64 = 16;
-pub const NS_PATH_MNTSUB_OFF: u64 = 24;
-pub const NS_PATH_ILLEGAL_OFF: u64 = 32;
-pub const NS_PATH_X_OFF: u64 = 40;
-pub const NS_PATH_Y_OFF: u64 = 48;
+pub const NS_PATH_SUB_OFF: u64 = 4;
+pub const NS_PATH_MNT_OFF: u64 = 8;
+pub const NS_PATH_MNTSUB_OFF: u64 = 12;
+pub const NS_PATH_ILLEGAL_OFF: u64 = 20;
+pub const NS_PATH_X_OFF: u64 = 25;
+pub const NS_PATH_Y_OFF: u64 = 27;
+/// SPEC-081：路径文本数据区的字节长度（含各串的 NUL 终止符与尾部对齐）。
+pub const NS_PATH_DATA_LEN: usize = 32;
 /// SPEC-081：`{Derive, SegMapR}` 位集——ring3 见证里被绑进 Namespace 的可绑定 Capability 权限。
 pub const NS_BIND_RIGHTS_BITS: u64 =
     Rights::from_rights(&[Right::Derive, Right::SegMapR]).bits() as u64;
@@ -859,6 +888,130 @@ fn ns_destroy_call(raw_ns_cap: u64) -> u64 {
     match bootstrap::ns_destroy(sched::current(), ns_cap) {
         Ok(()) => 0,
         Err(error) => encode_errno(ns_errno(error)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SPEC-082：§10 Timer 的 syscall 面
+// ---------------------------------------------------------------------------
+
+/// SPEC-082：把 `TimerError` 映射到 errno（与规范错误名的语义对应）。
+fn timer_errno(error: bootstrap::TimerError) -> Errno {
+    use bootstrap::TimerError;
+    match error {
+        TimerError::InvalidCaller | TimerError::NotHeld | TimerError::MissingRight(_) => {
+            Errno::Access
+        }
+        TimerError::InvalidCap | TimerError::InvalidTimer => Errno::NoEnt,
+        TimerError::InvalidTime => Errno::Invalid,
+        TimerError::CapacityExceeded | TimerError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// SPEC-082：`time_now` 服务（§10.1，纯查询）。
+fn time_now_call() -> u64 {
+    bootstrap::time_now().unwrap_or(0)
+}
+
+/// SPEC-082：`timer_set` 服务——`args[0]=deadline`。
+fn timer_set_call(deadline: u64) -> u64 {
+    match bootstrap::timer_set(sched::current(), deadline) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(timer_errno(error)),
+    }
+}
+
+/// SPEC-082：`timer_cancel` 服务——`args[0]=timer cap`。
+fn timer_cancel_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::timer_cancel(sched::current(), cap) {
+        Ok(bootstrap::TimerCancelOutcome::Cancelled) => TIMER_CANCEL_OUTCOME_CANCELLED,
+        Ok(bootstrap::TimerCancelOutcome::AlreadyFired) => TIMER_CANCEL_OUTCOME_ALREADY_FIRED,
+        Ok(bootstrap::TimerCancelOutcome::AlreadyCancelled) => {
+            TIMER_CANCEL_OUTCOME_ALREADY_CANCELLED
+        }
+        Err(error) => encode_errno(timer_errno(error)),
+    }
+}
+
+/// SPEC-082：`timer_destroy` 服务——`args[0]=timer cap`。
+fn timer_destroy_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::timer_destroy(sched::current(), cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(timer_errno(error)),
+    }
+}
+
+/// SPEC-082：ring3 Timer 回执的缓存。
+///
+/// `user_trap_exit` 在 task 1 的根下读出回执并存入此静态；`after_resume`（已切回内核根、
+/// `USER_Y_VA` 不再映射）只读缓存。
+static TIMER_RECEIPTS: StaticCell<[u64; 7]> = StaticCell::new([0; 7]);
+
+/// SPEC-082：在 `user_trap_exit` 里缓存 Timer 回执（必须在 task 1 的地址空间下调用）。
+pub fn cache_timer_receipts() {
+    let base = USER_Y_VA;
+    TIMER_RECEIPTS.with_mut(|slots| {
+        slots[0] = read_user_qword(base + TIMER_RECEIPT_NOW);
+        slots[1] = read_user_qword(base + TIMER_RECEIPT_T1);
+        slots[2] = read_user_qword(base + TIMER_RECEIPT_T2);
+        slots[3] = read_user_qword(base + TIMER_RECEIPT_T3);
+        slots[4] = read_user_qword(base + TIMER_RECEIPT_CANCEL);
+        slots[5] = read_user_qword(base + TIMER_RECEIPT_CANCEL_AGAIN);
+        slots[6] = read_user_qword(base + TIMER_RECEIPT_DESTROY);
+    });
+}
+
+/// SPEC-082：ring3 Timer 见证（缓存回执 + 内核侧审计计数）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimerWitness {
+    pub now: u64,
+    pub t1: u64,
+    pub t2: u64,
+    pub t3: u64,
+    pub cancel: u64,
+    pub cancel_again: u64,
+    pub destroy: u64,
+    pub audit: bootstrap::TimerAudit,
+}
+
+impl TimerWitness {
+    /// 纯判定：一次完整的 Timer 见证是否满足全部成功条件（host 可测）。
+    pub fn evidence_ok(&self) -> bool {
+        self.t1 != 0
+            && self.t2 != 0
+            && self.t3 != 0
+            && self.cancel == TIMER_CANCEL_OUTCOME_CANCELLED
+            && self.cancel_again == TIMER_CANCEL_OUTCOME_ALREADY_CANCELLED
+            && self.destroy == 0
+            && self.audit.sets == 3
+            && self.audit.fired == 2
+            && self.audit.immediate_fired == 1
+            && self.audit.cancelled == 1
+            && self.audit.destroyed == 1
+            && self.audit.timers == 2
+            && self.audit.already_cancelled == 1
+            && self.audit.exactly_once_ok == 1
+    }
+}
+
+/// 读取 Timer 见证（缓存回执 + 内核审计计数）；须在 `cache_timer_receipts` 之后调用。
+pub fn timer_witness() -> TimerWitness {
+    let receipts = TIMER_RECEIPTS.with(|slots| *slots);
+    TimerWitness {
+        now: receipts[0],
+        t1: receipts[1],
+        t2: receipts[2],
+        t3: receipts[3],
+        cancel: receipts[4],
+        cancel_again: receipts[5],
+        destroy: receipts[6],
+        audit: bootstrap::timer_audit().unwrap_or_default(),
     }
 }
 
@@ -1941,6 +2094,14 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         ns_resolve_call(args[0], args[1], args[2], args[3])
     } else if num == SYS_NS_DESTROY {
         ns_destroy_call(args[0])
+    } else if num == SYS_TIME_NOW {
+        time_now_call()
+    } else if num == SYS_TIMER_SET {
+        timer_set_call(args[0])
+    } else if num == SYS_TIMER_CANCEL {
+        timer_cancel_call(args[0])
+    } else if num == SYS_TIMER_DESTROY {
+        timer_destroy_call(args[0])
     } else {
         dispatch_plain(num, args)
     }

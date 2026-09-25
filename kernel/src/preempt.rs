@@ -198,6 +198,11 @@ fn root_va(root_phys: u64, offset: u64) -> u64 {
     phys_to_virt(root_phys, offset)
 }
 
+/// SPEC-082：累计的 PIT tick 数——`advance_time` 的推进源（`now` 的单位即 tick）。
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
+}
+
 /// 收集抢占见证（在完成回调中调用，单核无并发）。
 pub fn witness() -> PreemptWitness {
     let offset = crate::cow::root_and_offset()

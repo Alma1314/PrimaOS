@@ -47,10 +47,13 @@ use crate::syscall::{
     SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT,
     SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
     SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
-    SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TRAP,
-    SYS_YIELD, TASK_RECV_BUF, TASK_REQ_VA, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP,
-    TASK2_WAKE_PAYLOAD, UNSET_CAP, USER_MAP_WITNESS_VA, USER_MAP_WITNESS_VA2, USER_SEG_SHARED_VA,
-    USER_SEG_VA, USER2_RECV_BUF, USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
+    SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TIME_NOW,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD, TASK_RECV_BUF,
+    TASK_REQ_VA, TASK2_ID, TASK2_SELF_CAP, TASK2_SEND_CAP, TASK2_WAKE_PAYLOAD,
+    TIMER_RECEIPT_CANCEL, TIMER_RECEIPT_CANCEL_AGAIN, TIMER_RECEIPT_DESTROY, TIMER_RECEIPT_NOW,
+    TIMER_RECEIPT_T1, TIMER_RECEIPT_T2, TIMER_RECEIPT_T3, UNSET_CAP, USER_MAP_WITNESS_VA,
+    USER_MAP_WITNESS_VA2, USER_SEG_SHARED_VA, USER_SEG_VA, USER2_RECV_BUF, USER2_RECV_BUF2,
+    USER2_RECV_BUF3, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
 use prima_ostd::sync::StaticCell;
@@ -172,7 +175,7 @@ pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 /// 用户代码长度。SPEC-066 追加「自持平台 cap 映射」块（2458..2636），
 /// SPEC-067 追加「task 4 自毁见证」块（2636..2907），SPEC-081 追加「Namespace 路径操作」
 /// 块（2979..，含末尾 `int3` 与代码页高偏移的路径文本数据区）。
-pub const USER_CODE_LEN: usize = 4056;
+pub const USER_CODE_LEN: usize = 4072;
 
 /// 第二任务代码字节长度。
 pub const TASK2_CODE_LEN: usize = 496;
@@ -222,6 +225,11 @@ const fn put_load_reg<const N: usize>(
 
 /// `mov rdi, [rcx+disp32]` 的 `modrm`。
 const NS_MODRM_RDI: u8 = 0xB9;
+
+/// `add rdi, imm8`（4 字节）——SPEC-082 用来把 `time_now` 的结果加上相对偏移。
+const fn put_add_rdi<const N: usize>(code: &mut [u8; N], at: usize, imm: u8) {
+    put(code, at, &[0x48, 0x83, 0xC7, imm]);
+}
 /// `mov r10, [rcx+disp32]` 的 `modrm`（配合 REX.WR = 0x4C）。
 const NS_MODRM_R10: u8 = 0x91;
 
@@ -1157,21 +1165,86 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, NS_RECEIPT_DESTROY as u32);
     at += 7;
 
+    // ---- SPEC-082：§10 Timer（切片 AK）----
+    // `now` 在 ring3 阶段恒为 0（§10.3 的推进由 CPL3 抢占 tick 驱动），但这里仍经
+    // `SYS_TIME_NOW` 读取并按相对偏移构造 deadline——不把「now 恰好是 0」写死进机码。
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIME_NOW);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_NOW as u32);
+    at += 7;
+    // t1 = timer_set(now + 2)：未来 deadline ⇒ Pending。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_NOW as u32);
+    at += 7;
+    put_add_rdi(&mut code, at, 2);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_T1 as u32);
+    at += 7;
+    // t2 = timer_set(0)：deadline ≤ now ⇒ 同一原子操作内 Fired（S3-D4）。
+    put_imm64(&mut code, at, 0x48, 0xBF, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_T2 as u32);
+    at += 7;
+    // t3 = timer_set(now + 1)：Pending，随后被显式取消两次。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_NOW as u32);
+    at += 7;
+    put_add_rdi(&mut code, at, 1);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_T3 as u32);
+    at += 7;
+    // timer_cancel(t3) → 0（Cancelled）；再次 → 2（AlreadyCancelled，状态返回）。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T3 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_CANCEL);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_CANCEL as u32);
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T3 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_CANCEL);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_CANCEL_AGAIN as u32);
+    at += 7;
+    // timer_destroy(t2)：Fired 的已排队通知不撤回。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T2 as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_DESTROY);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, TIMER_RECEIPT_DESTROY as u32);
+    at += 7;
+
     // int3（收尾）：本块必须落在路径文本数据区之前。
     assert!(
         at < NS_PATH_DATA_OFFSET,
-        "SPEC-081 用户代码块越过路径文本数据区"
+        "SPEC-081/082 用户代码块越过路径文本数据区"
     );
     code[at] = 0xCC;
 
     // 路径文本数据区（`int3` 之后，不会被当作指令执行；每个槽 8 字节）。
-    put(&mut code, NS_PATH_DATA_OFFSET, b"lib");
-    put(&mut code, NS_PATH_DATA_OFFSET + 8, b"sub");
-    put(&mut code, NS_PATH_DATA_OFFSET + 16, b"mnt");
-    put(&mut code, NS_PATH_DATA_OFFSET + 24, b"mnt/sub");
-    put(&mut code, NS_PATH_DATA_OFFSET + 32, b"/lib");
-    put(&mut code, NS_PATH_DATA_OFFSET + 40, b"x");
-    put(&mut code, NS_PATH_DATA_OFFSET + 48, b"y");
+    put(
+        &mut code,
+        NS_PATH_DATA_OFFSET,
+        b"lib\0sub\0mnt\0mnt/sub\0/lib\0x\0y\0",
+    );
     code
 }
 
@@ -1958,7 +2031,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 4056);
+        assert_eq!(USER_CODE_LEN, 4072);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -2360,13 +2433,15 @@ mod tests {
         // SPEC-081：Namespace 块从 2979 起（`mov rcx, Y`），路径文本数据落在代码页高偏移。
         assert_eq!(&code[2979..2981], &[0x48, 0xB9]);
         assert_eq!(
-            &code[NS_PATH_DATA_OFFSET + 24..NS_PATH_DATA_OFFSET + 31],
+            &code[NS_PATH_DATA_OFFSET + NS_PATH_MNTSUB_OFF as usize
+                ..NS_PATH_DATA_OFFSET + NS_PATH_MNTSUB_OFF as usize + 7],
             b"mnt/sub"
         );
-        // 块内有且仅有一次 `int3` 收尾，之后到路径数据区之间是零填充（不会被当作指令执行）。
+        // 块以 `int3` 收尾：取区间内**最后**一个 0xCC（其后到路径数据区之间是零填充，
+        // 故它就是收尾的 `int3`，而机器码立即数里可能出现的 0xCC 都在它之前）。
         let int3 = (2979..NS_PATH_DATA_OFFSET)
-            .find(|index| code[*index] == 0xCC)
-            .expect("SPEC-081 块必须以 int3 收尾");
+            .rfind(|index| code[*index] == 0xCC)
+            .expect("SPEC-081/082 块必须以 int3 收尾");
         assert!((int3 + 1..NS_PATH_DATA_OFFSET).all(|index| code[index] == 0));
     }
 

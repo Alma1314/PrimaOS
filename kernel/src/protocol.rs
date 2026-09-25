@@ -265,6 +265,41 @@ pub(crate) fn namespace_ready(witness: &kernel::syscall::NsWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-082：§10 Timer 的阶段末见证（ring3 回执缓存 + 内核审计计数 + exactly-once）。
+pub(crate) fn timer_ready(witness: &kernel::syscall::TimerWitness) {
+    let audit = witness.audit;
+    write_prefix("timer_ready", "ok");
+    serial::write_bytes(b"|data=now=");
+    write_u64(audit.now);
+    serial::write_bytes(b";timers=");
+    write_u32(audit.timers);
+    serial::write_bytes(b";sets=");
+    write_u32(audit.sets);
+    serial::write_bytes(b";fired=");
+    write_u32(audit.fired);
+    serial::write_bytes(b";cancelled=");
+    write_u32(audit.cancelled);
+    serial::write_bytes(b";destroyed=");
+    write_u32(audit.destroyed);
+    serial::write_bytes(b";immediate_fired=");
+    write_u32(audit.immediate_fired);
+    serial::write_bytes(b";already_cancelled=");
+    write_u32(audit.already_cancelled);
+    serial::write_bytes(b";exactly_once_ok=");
+    write_u32(audit.exactly_once_ok);
+    serial::write_bytes(b";sets_ok=");
+    write_u32((witness.t1 != 0 && witness.t2 != 0 && witness.t3 != 0) as u32);
+    serial::write_bytes(b";cancel_ok=");
+    write_u32((witness.cancel == kernel::syscall::TIMER_CANCEL_OUTCOME_CANCELLED) as u32);
+    serial::write_bytes(b";already_cancelled_ok=");
+    write_u32(
+        (witness.cancel_again == kernel::syscall::TIMER_CANCEL_OUTCOME_ALREADY_CANCELLED) as u32,
+    );
+    serial::write_bytes(b";evidence_ok=");
+    write_u32(witness.evidence_ok() as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

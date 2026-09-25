@@ -254,6 +254,23 @@ pub enum AuditEvent {
         parent: Handle,
         cap: Handle,
     },
+    /// SPEC-082 / §10.2 成功动作 3：`timer_set`（无论随后是 `Pending` 还是立即 `Fired`）。
+    TimerSet {
+        timer_id: u32,
+        creator: u32,
+        deadline: Instant,
+    },
+    /// SPEC-082 / §10.2/§10.3/§10.6：Timer 进入 `Fired`（每次进入恰一条——exactly-once 的一半）。
+    TimerFired {
+        timer_id: u32,
+        deadline: Instant,
+        fired_at: Instant,
+    },
+    /// SPEC-082 / §10.4/§10.5：Timer 进入 `Cancelled`（`Pending` 的显式取消或 recipient 销毁）。
+    TimerCancelled {
+        timer_id: u32,
+        reason: TimerCancelReason,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -820,6 +837,8 @@ pub enum ObjectRef {
     Task(u32),
     Namespace(u32),
     ExcSource(u32),
+    /// SPEC-082 / §5.5：定时器对象。
+    Timer(u32),
 }
 
 impl ObjectRef {
@@ -829,6 +848,7 @@ impl ObjectRef {
             ObjectRef::Task(_) => ObjectKind::Task,
             ObjectRef::Namespace(_) => ObjectKind::Namespace,
             ObjectRef::ExcSource(_) => ObjectKind::ExcSource,
+            ObjectRef::Timer(_) => ObjectKind::Timer,
         }
     }
 }
@@ -2227,6 +2247,225 @@ pub struct NsRejects {
     pub invalid_path: u32,
 }
 
+/// SPEC-082 / §5.5：Timer 的取消原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerCancelReason {
+    ByTask(u32),
+    RecipientDestroyed,
+}
+
+/// SPEC-082 / §5.5：`TimerState`。Timer 是一次性的——`Fired` 与 `Cancelled` 都不回到 `Pending`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerState {
+    Pending {
+        deadline: Instant,
+        recipient: u32,
+    },
+    Fired {
+        deadline: Instant,
+        recipient: u32,
+        fired_at: Instant,
+        /// §10.6：本 Timer 对应的唯一通知 `MsgId`（`TimerFired` 与 `MessageSent` 的交汇点）。
+        notification: u32,
+    },
+    Cancelled {
+        deadline: Instant,
+        recipient: u32,
+        reason: TimerCancelReason,
+    },
+}
+
+impl TimerState {
+    pub const fn deadline(&self) -> Instant {
+        match self {
+            TimerState::Pending { deadline, .. }
+            | TimerState::Fired { deadline, .. }
+            | TimerState::Cancelled { deadline, .. } => *deadline,
+        }
+    }
+
+    pub const fn recipient(&self) -> u32 {
+        match self {
+            TimerState::Pending { recipient, .. }
+            | TimerState::Fired { recipient, .. }
+            | TimerState::Cancelled { recipient, .. } => *recipient,
+        }
+    }
+
+    pub const fn is_pending(&self) -> bool {
+        matches!(self, TimerState::Pending { .. })
+    }
+
+    pub const fn is_fired(&self) -> bool {
+        matches!(self, TimerState::Fired { .. })
+    }
+
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, TimerState::Cancelled { .. })
+    }
+}
+
+/// SPEC-082 / §5.5：`Timer { creator, state }`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimerObject {
+    pub id: u32,
+    pub creator: u32,
+    pub state: TimerState,
+}
+
+/// SPEC-082：活动 Timer 表（固定容量）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimerTable {
+    pub entries: [Option<TimerObject>; MAX_TIMERS],
+    pub count: usize,
+}
+
+impl TimerTable {
+    pub const fn empty() -> Self {
+        Self {
+            entries: [None; MAX_TIMERS],
+            count: 0,
+        }
+    }
+
+    pub fn find(&self, id: u32) -> Option<&TimerObject> {
+        self.entries.iter().flatten().find(|timer| timer.id == id)
+    }
+
+    fn find_mut(&mut self, id: u32) -> Option<&mut TimerObject> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|timer| timer.id == id)
+    }
+
+    /// 最小的空闲 id（`ns_destroy` 式的复用语义：删除后 id 可被再次使用）。
+    fn next_id(&self) -> u32 {
+        let mut candidate = 1;
+        loop {
+            if self.find(candidate).is_none() {
+                return candidate;
+            }
+            candidate += 1;
+        }
+    }
+
+    fn insert(&mut self, timer: TimerObject) -> bool {
+        let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) else {
+            return false;
+        };
+        *slot = Some(timer);
+        self.count += 1;
+        true
+    }
+
+    /// 从活动表删除并返回被删除的对象（§8.2 步骤 5 / §10.5 用）。
+    fn remove(&mut self, id: u32) -> Option<TimerObject> {
+        let slot = self
+            .entries
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|timer| timer.id == id))?;
+        let removed = slot.take();
+        if removed.is_some() {
+            self.count -= 1;
+        }
+        removed
+    }
+
+    /// 按 `(deadline, id)` 稳定序收集全部 `Pending` 且已到期的 Timer id。
+    fn due_pending(&self, now: Instant) -> [Option<u32>; MAX_TIMERS] {
+        let mut due = [None; MAX_TIMERS];
+        let mut count = 0;
+        // 选择排序式的稳定收集：反复取「最小 (deadline, id)」的未收集项。
+        let mut taken = [false; MAX_TIMERS];
+        loop {
+            let mut best: Option<(usize, Instant, u32)> = None;
+            for (index, timer) in self.entries.iter().enumerate() {
+                let Some(timer) = timer else { continue };
+                if taken[index] || !timer.state.is_pending() || timer.state.deadline() > now {
+                    continue;
+                }
+                let key = (timer.state.deadline(), timer.id);
+                let better = match best {
+                    None => true,
+                    Some((_, deadline, id)) => key < (deadline, id),
+                };
+                if better {
+                    best = Some((index, key.0, key.1));
+                }
+            }
+            let Some((index, _, id)) = best else { break };
+            taken[index] = true;
+            due[count] = Some(id);
+            count += 1;
+            if count == MAX_TIMERS {
+                break;
+            }
+        }
+        due
+    }
+}
+
+/// SPEC-082：`timer_cancel` 的状态返回（§10.4 明示 `AlreadyFired`/`AlreadyCancelled` **不是**失败）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerCancelOutcome {
+    Cancelled,
+    AlreadyFired,
+    AlreadyCancelled,
+}
+
+/// SPEC-082 / §10：Timer 操作的失败域。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerError {
+    /// §6.1 Actor 约束：调用者不是活动 Task。
+    InvalidCaller,
+    /// `cap` 不是有效 CapId。
+    InvalidCap,
+    /// §10.4/§10.5 的 `InvalidTimer`：`cap` 不指向有效 Timer。
+    InvalidTimer,
+    /// 不在 `HeldBy(caller)`。
+    NotHeld,
+    /// 缺少指定权限。
+    MissingRight(Right),
+    /// §10.3 的 `InvalidTime`：`new_now < now`（违反时间单调性）。
+    InvalidTime,
+    /// 实现层：Timer 表或槽位容量耗尽（§6.2 排除项）。
+    CapacityExceeded,
+    /// 实现层：审计容量耗尽（§6.2 排除项）。
+    AuditFull,
+}
+
+/// SPEC-082：Timer 的实现层计数（失败/状态返回不产生审计事件，故单列）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimerStats {
+    /// `deadline ≤ now` 而在 `timer_set` 的同一原子操作内立即触发者（S3-D4）。
+    pub immediate_fired: u32,
+    /// `timer_cancel` 得到 `AlreadyCancelled` 的次数（§10.4 的状态返回）。
+    pub already_cancelled: u32,
+    /// `timer_cancel` 得到 `AlreadyFired` 的次数。
+    pub already_fired: u32,
+    /// 用户显式 `timer_destroy` 成功的次数（审计里的 `ObjectDestroyed` 不区分对象类型，
+    /// 故本计数单列）。
+    pub destroyed: u32,
+}
+
+/// SPEC-082：`timer_ready` 见证的计数。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TimerAudit {
+    pub now: u64,
+    pub timers: u32,
+    pub sets: u32,
+    pub fired: u32,
+    pub cancelled: u32,
+    pub destroyed: u32,
+    /// 其中 `deadline ≤ now` 而**在同一原子操作内**立即触发者（S3-D4）。
+    pub immediate_fired: u32,
+    /// `timer_cancel` 得到 `AlreadyCancelled` 的次数（状态返回，不产生新事件）。
+    pub already_cancelled: u32,
+    /// 每个 Fired Timer 都恰有一条 `TimerFired` 且恰有一条同 `MsgId` 的 `MessageSent`（S3-X2）。
+    pub exactly_once_ok: u32,
+}
+
 /// SPEC-081：`namespace_ready` 见证的计数（活动对象 + 审计事件 + 拒绝计数）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NamespaceAudit {
@@ -2281,6 +2520,30 @@ pub const MAX_NAMESPACE_OBJECTS: usize = 8;
 pub const NS_ROOT_CAP_SLOT_BASE: u32 = 52;
 /// SPEC-081：单个 Namespace 的条目上限（§5.4 的细化层容量约束）。
 pub const MAX_NS_ENTRIES: usize = 16;
+
+/// SPEC-082 / §10.1：抽象绝对时间。单位由细化层定（本实现取 PIT tick，见设计文档 §0.1）。
+pub type Instant = u64;
+/// SPEC-082：活动 Timer 上限（§5.5；细化为固定容量表，约 8 × 32 B = 256 B 内联）。
+pub const MAX_TIMERS: usize = 8;
+/// SPEC-082 / §10.2 成功动作 2：Timer 根 Capability 的权限集。
+pub const TIMER_RIGHTS: Rights =
+    Rights::from_rights(&[Right::Derive, Right::TimerCancel, Right::TimerDestroy]);
+/// SPEC-082 / §10.6：`FromKernel(TimerFired(id))` 通知 payload 的来源标签（不可伪造标记）。
+pub const TIMER_FIRED_TAG: u64 = 0x71E4_0000_0000_0000;
+
+/// SPEC-082：把 Timer id 编码为内核事件 payload。
+pub const fn timer_fired_payload(timer_id: u32) -> u64 {
+    TIMER_FIRED_TAG | timer_id as u64
+}
+
+/// SPEC-082：从 payload 解出 Timer id（非本类事件返回 `None`）。
+pub const fn timer_fired_id(payload: u64) -> Option<u32> {
+    if payload & TIMER_FIRED_TAG == TIMER_FIRED_TAG {
+        Some((payload & 0xffff_ffff) as u32)
+    } else {
+        None
+    }
+}
 /// SPEC-081：Namespace 条目 arena 的区段数（内核只构造一个 state，故 1 段；host 单测并行
 /// 构造多个 state，各领一段互不干扰——理由与 [`AUDIT_REGIONS`] 完全相同）。
 #[cfg(not(test))]
@@ -2315,6 +2578,12 @@ pub struct BootstrapState {
     pub ns_entries: NsEntryTable,
     /// SPEC-081：被拒绝的 Namespace 操作计数（实现层观测，不属抽象状态）。
     pub ns_rejects: NsRejects,
+    /// SPEC-082 / §10.1：抽象绝对时间（单位 = PIT tick，见设计文档 §0.1）。
+    pub now: Instant,
+    /// SPEC-082 / §5.5：活动 Timer 表。
+    pub timers: TimerTable,
+    /// SPEC-082：Timer 的实现层计数（不属抽象状态）。
+    pub timer_stats: TimerStats,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -2569,6 +2838,7 @@ impl BootstrapState {
                 .flatten()
                 .any(|namespace| namespace.id == id),
             ObjectRef::ExcSource(id) => self.exc_sources.find(id).is_some(),
+            ObjectRef::Timer(id) => self.timers.find(id).is_some(),
         }
     }
 
@@ -3983,6 +4253,359 @@ impl BootstrapState {
         false
     }
 
+    // -----------------------------------------------------------------------
+    // SPEC-082：§10 Timer（切片 AK）
+    // -----------------------------------------------------------------------
+
+    /// §10.1 `time_now`：纯查询，不改状态、无失败分支。
+    pub const fn time_now(&self) -> Instant {
+        self.now
+    }
+
+    /// SPEC-082：`cap` 必须由 `caller` 持有、可用、指向活动 Timer 且含 `right`。
+    fn authorize_timer(&self, caller: u32, cap: Handle, right: Right) -> Result<u32, TimerError> {
+        if !self.tasks.is_live(caller) {
+            return Err(TimerError::InvalidCaller);
+        }
+        match self.slots.check(cap) {
+            SlotState::Free => return Err(TimerError::InvalidCap),
+            SlotState::Stale => return Err(TimerError::InvalidTimer),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(cap).ok_or(TimerError::InvalidCap)?;
+        let ObjectRef::Timer(id) = target else {
+            return Err(TimerError::InvalidTimer);
+        };
+        if self.timers.find(id).is_none() {
+            return Err(TimerError::InvalidTimer);
+        }
+        if self.holder_of(cap) != Some(caller) {
+            return Err(TimerError::NotHeld);
+        }
+        let rights = self.rights_of(cap).ok_or(TimerError::InvalidCap)?;
+        if !rights.contains(right) {
+            return Err(TimerError::MissingRight(right));
+        }
+        Ok(id)
+    }
+
+    /// SPEC-082 / §6.3：内核事件投递（`FromKernel`，无 sender Task、不携带 Capability）。
+    ///
+    /// **不复用** `send_message_with_capabilities`——它要求指向 receiver 的 `TaskSend`
+    /// Capability，而内核事件没有发送方 Task；这里复用其投递主体（直投 / 排队两条路径）。
+    fn enqueue_kernel_event(&mut self, receiver: u32, timer_id: u32) -> u32 {
+        let message = IpcMessage {
+            id: self.ipc.allocate_id(),
+            sender: KERNEL_ACTOR,
+            receiver,
+            payload: timer_fired_payload(timer_id),
+            capabilities: [Handle::ZERO; MAX_MESSAGE_CAPABILITIES],
+            capability_count: 0,
+        };
+        let message_id = message.id;
+        if self.tasks.is_blocked_recv(receiver) {
+            // 直投：写 pending 并把接收者从 `BlockedRecv` 迁到 `Ready`（§6.3 步骤 3）。
+            let _ = self.set_pending_task(receiver, message);
+            self.audit.append(AuditEvent::MessageSent {
+                message_id,
+                sender: KERNEL_ACTOR,
+                receiver,
+            });
+            self.audit.append(AuditEvent::MessageReceived {
+                message_id,
+                receiver,
+            });
+        } else {
+            let _ = self.ipc.send(message);
+            self.audit.append(AuditEvent::MessageSent {
+                message_id,
+                sender: KERNEL_ACTOR,
+                receiver,
+            });
+        }
+        message_id
+    }
+
+    /// §10.2 `timer_set`：只能为自己创建 Timer（接收者固定为调用者）。
+    ///
+    /// §10.2 声明「无失败分支」；细化层的表/槽/审计容量耗尽映射为
+    /// [`TimerError::CapacityExceeded`]/[`TimerError::AuditFull`]（§6.2 排除项）。
+    pub fn timer_set(&mut self, caller: u32, deadline: Instant) -> Result<Handle, TimerError> {
+        if !self.tasks.is_live(caller) {
+            return Err(TimerError::InvalidCaller);
+        }
+        if self.timers.count == MAX_TIMERS {
+            return Err(TimerError::CapacityExceeded);
+        }
+        let immediate = deadline <= self.now;
+        // 审计预算：TimerSet + CapabilityMinted（+ 立即触发时的 TimerFired 与通知最多 3 条）。
+        let audit_needed = 2 + if immediate { 4 } else { 0 };
+        if !self.audit.can_append(audit_needed) {
+            return Err(TimerError::AuditFull);
+        }
+        if immediate && !self.tasks.is_blocked_recv(caller) && self.ipc.count == MAX_MESSAGES {
+            return Err(TimerError::CapacityExceeded);
+        }
+        let id = self.timers.next_id();
+        let handle = self
+            .mint_root_capability(caller, TIMER_RIGHTS, ObjectRef::Timer(id))
+            .map_err(|_| TimerError::CapacityExceeded)?;
+        let state = if immediate {
+            TimerState::Fired {
+                deadline,
+                recipient: caller,
+                fired_at: self.now,
+                notification: 0,
+            }
+        } else {
+            TimerState::Pending {
+                deadline,
+                recipient: caller,
+            }
+        };
+        if !self.timers.insert(TimerObject {
+            id,
+            creator: caller,
+            state,
+        }) {
+            return Err(TimerError::CapacityExceeded);
+        }
+        // §10.2 成功动作 3：`TimerSet` 先于任何 `TimerFired`。
+        self.audit.append(AuditEvent::TimerSet {
+            timer_id: id,
+            creator: caller,
+            deadline,
+        });
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: handle,
+            holder: caller,
+        });
+        if immediate {
+            // §10.2 成功动作 5：同一原子操作内追 `TimerFired` → 投递通知 → 以该 `MsgId` 进入 `Fired`。
+            self.timer_stats.immediate_fired += 1;
+            self.audit.append(AuditEvent::TimerFired {
+                timer_id: id,
+                deadline,
+                fired_at: self.now,
+            });
+            let notification = self.enqueue_kernel_event(caller, id);
+            if let Some(timer) = self.timers.find_mut(id) {
+                timer.state = TimerState::Fired {
+                    deadline,
+                    recipient: caller,
+                    fired_at: self.now,
+                    notification,
+                };
+            }
+        }
+        Ok(handle)
+    }
+
+    /// §10.4 `timer_cancel`。
+    ///
+    /// `Fired`/`Cancelled` 返回 [`TimerCancelOutcome`] 的状态返回（**不是**失败），且状态不变。
+    pub fn timer_cancel(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+    ) -> Result<TimerCancelOutcome, TimerError> {
+        let id = self.authorize_timer(caller, cap, Right::TimerCancel)?;
+        let Some(timer) = self.timers.find(id).copied() else {
+            return Err(TimerError::InvalidTimer);
+        };
+        match timer.state {
+            TimerState::Pending {
+                deadline,
+                recipient,
+            } => {
+                if !self.audit.can_append(1) {
+                    return Err(TimerError::AuditFull);
+                }
+                let reason = TimerCancelReason::ByTask(caller);
+                if let Some(timer) = self.timers.find_mut(id) {
+                    timer.state = TimerState::Cancelled {
+                        deadline,
+                        recipient,
+                        reason,
+                    };
+                }
+                self.audit.append(AuditEvent::TimerCancelled {
+                    timer_id: id,
+                    reason,
+                });
+                Ok(TimerCancelOutcome::Cancelled)
+            }
+            TimerState::Fired { .. } => {
+                self.timer_stats.already_fired += 1;
+                Ok(TimerCancelOutcome::AlreadyFired)
+            }
+            TimerState::Cancelled { .. } => {
+                self.timer_stats.already_cancelled += 1;
+                Ok(TimerCancelOutcome::AlreadyCancelled)
+            }
+        }
+    }
+
+    /// §10.5 `timer_destroy`：从活动 Timer 表删除；已排队/已交付的通知**不撤回**。
+    pub fn timer_destroy(&mut self, caller: u32, cap: Handle) -> Result<(), TimerError> {
+        let id = self.authorize_timer(caller, cap, Right::TimerDestroy)?;
+        let Some(timer) = self.timers.find(id).copied() else {
+            return Err(TimerError::InvalidTimer);
+        };
+        let pending = timer.state.is_pending();
+        if !self.audit.can_append(if pending { 2 } else { 1 }) {
+            return Err(TimerError::AuditFull);
+        }
+        self.timers.remove(id);
+        if pending {
+            // §10.5：仍为 `Pending` 时先追 `TimerCancelled`，**不产生通知**。
+            self.audit.append(AuditEvent::TimerCancelled {
+                timer_id: id,
+                reason: TimerCancelReason::ByTask(caller),
+            });
+        }
+        self.audit
+            .append(AuditEvent::ObjectDestroyed { object_id: id });
+        self.timer_stats.destroyed += 1;
+        Ok(())
+    }
+
+    /// §10.3 `advance_time`：KernelActor 内部迁移（本实现由 `preempt_tick` 驱动）。
+    pub fn advance_time(&mut self, new_now: Instant) -> Result<(), TimerError> {
+        if new_now < self.now {
+            // §10.3：失败时 `now` 与全部 Timer 状态**不变**。
+            return Err(TimerError::InvalidTime);
+        }
+        let due = self.timers.due_pending(new_now);
+        let due_count = due.iter().flatten().count();
+        if due_count == 0 {
+            self.now = new_now;
+            return Ok(());
+        }
+        // 保守预算：每个到期 Timer 最多 TimerFired + MessageSent + MessageReceived/TaskStateChanged。
+        if !self.audit.can_append(due_count * 3) {
+            return Err(TimerError::AuditFull);
+        }
+        // 排队路径需要队列余量（保守地按全部到期 Timer 都要排队计）。
+        if self.ipc.count + due_count > MAX_MESSAGES {
+            return Err(TimerError::CapacityExceeded);
+        }
+        self.now = new_now;
+        let mut index = 0;
+        while index < MAX_TIMERS {
+            let Some(id) = due[index] else { break };
+            index += 1;
+            let Some(timer) = self.timers.find(id).copied() else {
+                continue;
+            };
+            let deadline = timer.state.deadline();
+            let recipient = timer.state.recipient();
+            // §10.3 步骤 4/5：先追 `TimerFired`，再投递通知并取得 `MsgId`，Timer 以该 `MsgId`
+            // 进入 `Fired`。（§6.3 保证同一消息的 `MessageSent` 先于 `MessageReceived`。）
+            self.audit.append(AuditEvent::TimerFired {
+                timer_id: id,
+                deadline,
+                fired_at: new_now,
+            });
+            let notification = self.enqueue_kernel_event(recipient, id);
+            if let Some(timer) = self.timers.find_mut(id) {
+                timer.state = TimerState::Fired {
+                    deadline,
+                    recipient,
+                    fired_at: new_now,
+                    notification,
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// SPEC-082 / §8.2 步骤 5：Task 销毁时清理以它为 recipient 的全部 Timer。
+    ///
+    /// `Pending` 先追加 `TimerCancelled(RecipientDestroyed)`（**不产生**通知）；`Fired`/`Cancelled`
+    /// 只追加对象销毁事件；随后一律从活动表删除。返回处理的 Timer 数。
+    fn destroy_timers_of_recipient(&mut self, task_id: u32) -> usize {
+        let mut ids = [0u32; MAX_TIMERS];
+        let mut count = 0;
+        for timer in self.timers.entries.iter().flatten() {
+            if timer.state.recipient() == task_id && count < MAX_TIMERS {
+                ids[count] = timer.id;
+                count += 1;
+            }
+        }
+        let mut index = 0;
+        while index < count {
+            let id = ids[index];
+            index += 1;
+            if let Some(timer) = self.timers.find(id).copied() {
+                self.timers.remove(id);
+                if timer.state.is_pending() {
+                    self.audit.append(AuditEvent::TimerCancelled {
+                        timer_id: id,
+                        reason: TimerCancelReason::RecipientDestroyed,
+                    });
+                }
+                self.audit
+                    .append(AuditEvent::ObjectDestroyed { object_id: id });
+            }
+        }
+        count
+    }
+
+    /// SPEC-082：§8.2 步骤 5 的审计预算（0 = 无需预算，多数销毁路径用它预检）。
+    fn timers_of_recipient_audit_cost(&self, task_id: u32) -> usize {
+        self.timers
+            .entries
+            .iter()
+            .flatten()
+            .filter(|timer| timer.state.recipient() == task_id)
+            .map(|timer| if timer.state.is_pending() { 2 } else { 1 })
+            .sum()
+    }
+
+    /// SPEC-082：`timer_ready` 见证的计数（含 exactly-once 判定，S3-X2）。
+    pub fn timer_audit(&self) -> TimerAudit {
+        let mut audit = TimerAudit {
+            now: self.now,
+            timers: self.timers.count as u32,
+            immediate_fired: self.timer_stats.immediate_fired,
+            already_cancelled: self.timer_stats.already_cancelled,
+            destroyed: self.timer_stats.destroyed,
+            ..TimerAudit::default()
+        };
+        let log = self.audit;
+        log.for_each(|event| match event {
+            AuditEvent::TimerSet { .. } => audit.sets += 1,
+            AuditEvent::TimerCancelled { .. } => audit.cancelled += 1,
+            AuditEvent::TimerFired { .. } => audit.fired += 1,
+            _ => {}
+        });
+        // S3-X2（exactly-once）：每个**处于 `Fired` 的活动 Timer** 必须恰有一条 `TimerFired`
+        // 事件、且其 `notification` 恰对应一条 `MessageSent`。
+        let mut exactly_once = true;
+        for timer in self.timers.entries.iter().flatten() {
+            let TimerState::Fired { notification, .. } = timer.state else {
+                continue;
+            };
+            let mut fired_events = 0;
+            let mut sent_events = 0;
+            log.for_each(|event| match event {
+                AuditEvent::TimerFired { timer_id, .. } if *timer_id == timer.id => {
+                    fired_events += 1;
+                }
+                AuditEvent::MessageSent { message_id, .. } if *message_id == notification => {
+                    sent_events += 1;
+                }
+                _ => {}
+            });
+            if fired_events != 1 || sent_events != 1 {
+                exactly_once = false;
+            }
+        }
+        audit.exactly_once_ok = exactly_once as u32;
+        audit
+    }
+
     /// 撤销以 `cap` 为根的派生子树（内部模型能力；§4.7 第一版不提供用户可调 `cap_revoke`）。
     pub fn revoke_capability(
         &mut self,
@@ -4489,7 +5112,7 @@ impl BootstrapState {
                 dropped += 1;
             }
         }
-        dropped + usize::from(pending) + 1
+        dropped + usize::from(pending) + 1 + self.timers_of_recipient_audit_cost(task_id)
     }
 
     /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
@@ -4640,7 +5263,10 @@ impl BootstrapState {
                 dropped_count += 1;
             }
         }
-        let audit_events = dropped_count + if pending_message.is_some() { 1 } else { 0 } + 1;
+        let audit_events = dropped_count
+            + if pending_message.is_some() { 1 } else { 0 }
+            + 1
+            + self.timers_of_recipient_audit_cost(task_id);
         if !self.audit.can_append(audit_events) {
             return Err(TaskError::AuditFull);
         }
@@ -4670,6 +5296,9 @@ impl BootstrapState {
                 self.retire_capability(cap);
             }
         }
+        // §8.2 步骤 5：清理以该 Task 为 recipient 的全部 Timer（`Pending` 先记
+        // `TimerCancelled(RecipientDestroyed)`，随后一律删除；已排队/已交付的通知不撤回）。
+        self.destroy_timers_of_recipient(task_id);
         let _ = self.tasks.take_pending(task_id);
         self.ipc.remove_task(task_id);
         self.tasks.finish_destroy(task_id)?;
@@ -5632,6 +6261,9 @@ pub fn create_state(
         namespace_count: 1,
         ns_entries: NsEntryTable::claim(),
         ns_rejects: NsRejects::default(),
+        now: 0,
+        timers: TimerTable::empty(),
+        timer_stats: TimerStats::default(),
         vspace: TaskVspaceTable::empty(),
         // §14 步骤 9 / W14：bootstrap 成功即置位。
         booted: true,
@@ -6058,6 +6690,48 @@ pub fn note_ns_invalid_path() {
     });
 }
 
+/// SPEC-082：全局 `time_now`（§10.1；未安装时 `None`）。
+pub fn time_now() -> Option<Instant> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.time_now()))
+}
+
+/// SPEC-082：全局 `timer_set`（§10.2）。
+pub fn timer_set(caller: u32, deadline: Instant) -> Result<Handle, TimerError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.timer_set(caller, deadline),
+        None => Err(TimerError::InvalidCaller),
+    })
+}
+
+/// SPEC-082：全局 `timer_cancel`（§10.4）。
+pub fn timer_cancel(caller: u32, cap: Handle) -> Result<TimerCancelOutcome, TimerError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.timer_cancel(caller, cap),
+        None => Err(TimerError::InvalidCaller),
+    })
+}
+
+/// SPEC-082：全局 `timer_destroy`（§10.5）。
+pub fn timer_destroy(caller: u32, cap: Handle) -> Result<(), TimerError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.timer_destroy(caller, cap),
+        None => Err(TimerError::InvalidCaller),
+    })
+}
+
+/// SPEC-082：全局 `advance_time`（§10.3，`KernelActor` 内部迁移）。
+pub fn advance_time(new_now: Instant) -> Result<(), TimerError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.advance_time(new_now),
+        None => Err(TimerError::InvalidTime),
+    })
+}
+
+/// SPEC-082：Timer 的审计汇总（供 `timer_ready` 见证）。
+pub fn timer_audit() -> Option<TimerAudit> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.timer_audit()))
+}
+
 /// SPEC-081：Namespace 路径操作的审计汇总（供 `namespace_ready` 见证）。
 ///
 /// 供 `namespace_ready` 见证使用——计数直接从审计日志推导，不额外占状态。
@@ -6359,9 +7033,10 @@ mod tests {
         PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
         PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SYSCALL_TRAP_SOURCE_ID,
         SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE,
-        TASK2_SEND_CAP_HANDLE, TaskError, TaskStatus, USER_IPC_CAP_SLOT_BASE,
-        USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state, entry_in_image,
-        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
+        TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskStatus, TimerCancelOutcome,
+        TimerCancelReason, TimerError, TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST,
+        VspaceEntry, create_snapshot, create_state, entry_in_image, platform_segment_cap_handle,
+        platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{ObjectKind, Right, Rights};
@@ -6812,6 +7487,248 @@ mod tests {
         assert!(!state.namespace_reaches(c_ns, a_ns));
         // 自身恒可达（`ns_mount` 因此拒绝自挂）。
         assert!(state.namespace_reaches(c_ns, c_ns));
+    }
+
+    // -----------------------------------------------------------------------
+    // SPEC-082：§10 Timer
+    // -----------------------------------------------------------------------
+
+    fn count_events(
+        state: &super::BootstrapState,
+        mut pred: impl FnMut(&AuditEvent) -> bool,
+    ) -> usize {
+        let mut count = 0;
+        state.audit.for_each(|event| {
+            if pred(event) {
+                count += 1;
+            }
+        });
+        count
+    }
+
+    #[test]
+    fn timer_set_with_a_future_deadline_leaves_it_pending() {
+        let mut state = fresh_state();
+        assert_eq!(state.time_now(), 0);
+        let cap = state.timer_set(INIT_TASK_ID, 2).expect("set");
+        assert_eq!(state.rights_of(cap), Some(TIMER_RIGHTS));
+        assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
+        let timer = state.timers.find(1).expect("timer 1 exists");
+        assert_eq!(timer.creator, INIT_TASK_ID);
+        assert!(timer.state.is_pending());
+        assert_eq!(timer.state.deadline(), 2);
+        assert_eq!(timer.state.recipient(), INIT_TASK_ID);
+        assert_eq!(
+            count_events(&state, |event| matches!(
+                event,
+                AuditEvent::TimerSet { timer_id: 1, .. }
+            )),
+            1
+        );
+    }
+
+    #[test]
+    fn timer_set_with_a_past_deadline_fires_in_the_same_operation() {
+        // S3-D4：过去/当前的 deadline **不是错误**，且在同一原子操作内触发。
+        let mut state = fresh_state();
+        let cap = state.timer_set(INIT_TASK_ID, 0).expect("set");
+        let timer = state.timers.find(1).expect("timer 1 exists");
+        let TimerState::Fired {
+            deadline,
+            fired_at,
+            notification,
+            ..
+        } = timer.state
+        else {
+            panic!("timer must be Fired immediately");
+        };
+        assert_eq!((deadline, fired_at), (0, 0));
+        assert_eq!(state.timer_stats.immediate_fired, 1);
+        assert_eq!(
+            count_events(&state, |event| matches!(
+                event,
+                AuditEvent::TimerFired { timer_id: 1, .. }
+            )),
+            1
+        );
+        assert_eq!(
+            count_events(&state, |event| matches!(
+                event,
+                AuditEvent::MessageSent { message_id, .. } if *message_id == notification
+            )),
+            1
+        );
+        assert!(!cap.is_zero());
+    }
+
+    #[test]
+    fn advance_time_rejects_a_backwards_clock_without_mutating() {
+        let mut state = fresh_state();
+        state.advance_time(5).expect("advance forward");
+        let _ = state.timer_set(INIT_TASK_ID, 9).expect("set");
+        let events_before = state.audit.len();
+        // §10.3：`new_now < now` ⇒ `InvalidTime`，`now` 与全部 Timer 状态不变。
+        assert_eq!(state.advance_time(4), Err(TimerError::InvalidTime));
+        assert_eq!(state.time_now(), 5);
+        assert_eq!(
+            state.timers.find(1).map(|timer| timer.state.deadline()),
+            Some(9)
+        );
+        assert_eq!(state.audit.len(), events_before);
+    }
+
+    #[test]
+    fn advance_time_fires_due_timers_in_stable_order() {
+        let mut state = fresh_state();
+        let _first = state.timer_set(INIT_TASK_ID, 3).expect("first");
+        let _second = state.timer_set(INIT_TASK_ID, 3).expect("second");
+        let _late = state.timer_set(INIT_TASK_ID, 9).expect("late");
+        state.advance_time(3).expect("advance");
+        // §10.3 步骤 3：按 `(deadline, TimerId)` 稳定序处理——同 deadline 时 id 升序。
+        let mut fired = [0u32; 4];
+        let mut count = 0;
+        state.audit.for_each(|event| {
+            if let AuditEvent::TimerFired { timer_id, .. } = event {
+                fired[count] = *timer_id;
+                count += 1;
+            }
+        });
+        assert_eq!(&fired[..count], &[1, 2]);
+        assert!(
+            state
+                .timers
+                .find(1)
+                .is_some_and(|timer| timer.state.is_fired())
+        );
+        assert!(
+            state
+                .timers
+                .find(2)
+                .is_some_and(|timer| timer.state.is_fired())
+        );
+        // 未到期者保持 `Pending`（§10.3 迁移后不变式：所有 Pending 的 deadline > now）。
+        assert!(
+            state
+                .timers
+                .find(3)
+                .is_some_and(|timer| timer.state.is_pending())
+        );
+        assert_eq!(state.time_now(), 3);
+    }
+
+    #[test]
+    fn timer_cancel_returns_state_outcomes_not_failures() {
+        let mut state = fresh_state();
+        let pending = state.timer_set(INIT_TASK_ID, 5).expect("pending");
+        assert_eq!(
+            state.timer_cancel(INIT_TASK_ID, pending),
+            Ok(TimerCancelOutcome::Cancelled)
+        );
+        assert!(
+            state
+                .timers
+                .find(1)
+                .is_some_and(|timer| timer.state.is_cancelled())
+        );
+        // 再次取消：`AlreadyCancelled` 是**状态返回**，状态与审计都不变。
+        let events_before = state.audit.len();
+        assert_eq!(
+            state.timer_cancel(INIT_TASK_ID, pending),
+            Ok(TimerCancelOutcome::AlreadyCancelled)
+        );
+        assert_eq!(state.audit.len(), events_before);
+        assert_eq!(state.timer_stats.already_cancelled, 1);
+        // `Fired` 的取消：`AlreadyFired`，状态不变。
+        let fired = state.timer_set(INIT_TASK_ID, 0).expect("immediate");
+        assert_eq!(
+            state.timer_cancel(INIT_TASK_ID, fired),
+            Ok(TimerCancelOutcome::AlreadyFired)
+        );
+        assert_eq!(state.timer_stats.already_fired, 1);
+        assert!(
+            state
+                .timers
+                .find(2)
+                .is_some_and(|timer| timer.state.is_fired())
+        );
+    }
+
+    #[test]
+    fn timer_destroy_cancels_pending_and_keeps_a_fired_notification() {
+        let mut state = fresh_state();
+        let pending = state.timer_set(INIT_TASK_ID, 7).expect("pending");
+        let fired = state.timer_set(INIT_TASK_ID, 0).expect("immediate");
+        let notification = state.timers.find(2).map(|timer| match timer.state {
+            TimerState::Fired { notification, .. } => notification,
+            _ => 0,
+        });
+        state
+            .timer_destroy(INIT_TASK_ID, pending)
+            .expect("destroy pending");
+        state
+            .timer_destroy(INIT_TASK_ID, fired)
+            .expect("destroy fired");
+        assert_eq!(state.timers.count, 0);
+        // §10.5：`Pending` 的销毁先产生取消事件…
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::TimerCancelled {
+                timer_id: 1,
+                reason: TimerCancelReason::ByTask(_)
+            }
+        )));
+        // …而 `Fired` 的已排队通知**不撤回**。
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::MessageSent { message_id, .. } if Some(*message_id) == notification
+        )));
+        // 指向已销毁 Timer 的 Capability 失效（§10.5 的 stale token）。
+        assert_eq!(
+            state.timer_cancel(INIT_TASK_ID, pending),
+            Err(TimerError::InvalidTimer)
+        );
+    }
+
+    #[test]
+    fn destroying_a_recipient_cancels_its_timers() {
+        // §8.2 步骤 5 + W11。
+        let mut state = fresh_state();
+        let _ = state.timer_set(INIT_TASK_ID, 3).expect("set");
+        assert_eq!(state.timers.count, 1);
+        assert_eq!(state.destroy_timers_of_recipient(INIT_TASK_ID), 1);
+        assert_eq!(state.timers.count, 0);
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::TimerCancelled {
+                timer_id: 1,
+                reason: TimerCancelReason::RecipientDestroyed
+            }
+        )));
+        // W11：删除后活动 Timer 表不再含以该 Task 为 recipient 的条目。
+        assert!(
+            !state
+                .timers
+                .entries
+                .iter()
+                .flatten()
+                .any(|timer| timer.state.recipient() == INIT_TASK_ID)
+        );
+    }
+
+    #[test]
+    fn timer_audit_reports_exactly_once_for_fired_timers() {
+        // S3-X2：每个 Fired Timer 恰一条 `TimerFired` 且恰一条同 `MsgId` 的 `MessageSent`。
+        let mut state = fresh_state();
+        let _ = state.timer_set(INIT_TASK_ID, 0).expect("immediate");
+        let _ = state.timer_set(INIT_TASK_ID, 2).expect("future");
+        state.advance_time(2).expect("advance");
+        let audit = state.timer_audit();
+        assert_eq!(audit.sets, 2);
+        assert_eq!(audit.fired, 2);
+        assert_eq!(audit.immediate_fired, 1);
+        assert_eq!(audit.timers, 2);
+        assert_eq!(audit.now, 2);
+        assert_eq!(audit.exactly_once_ok, 1);
     }
 
     #[test]
