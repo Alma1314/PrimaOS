@@ -107,6 +107,11 @@ pub const PAGE_FAULT_SOURCE_ID: u32 = 1;
 /// 用保留槽位而非 `next_free_id`，使该 Task 不占用普通 id——既有 `child=3`/`grandchild=4`
 /// 等 id 证据不发生顺移。
 pub const FAULT_WITNESS_TASK_ID: u32 = 7;
+
+/// SPEC-072：内核回收见证的**保留槽位**——不可恢复的 Faulted 任务（将被回收）。
+pub const RECLAIM_WITNESS_TASK_ID: u32 = 6;
+/// SPEC-072：内核回收反例的**保留槽位**——可恢复的 Faulted 任务（必须被拒绝回收）。
+pub const RECLAIM_NEGATIVE_TASK_ID: u32 = 5;
 /// 切片 L：预定义 `syscall_trap_source` 的 ID。
 pub const SYSCALL_TRAP_SOURCE_ID: u32 = 2;
 
@@ -253,6 +258,8 @@ pub enum TaskError {
     CannotDestroyInit,
     CannotDestroyRunning,
     AuditFull,
+    /// SPEC-072：§8.2 内核回收路径的前置不成立——目标不是「不可恢复的 Faulted」。
+    NotUnrecoverable,
 }
 
 /// S2-D4：`task_create` 的失败原因（§8.1 的错误名）。
@@ -1155,6 +1162,27 @@ impl TaskStateAudit {
     pub fn total(&self) -> u32 {
         self.to_running + self.to_ready + self.to_blocked + self.to_faulted
     }
+}
+
+/// SPEC-072：§8.2 内核回收路径（`KernelActor`，无 `task_cap`）的 QEMU 见证。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReclaimWitness {
+    /// 被回收的保留槽位任务（不可恢复的 Faulted）。
+    pub task_id: u32,
+    /// 反例任务的保留槽位（可恢复的 Faulted，必须拒绝回收）。
+    pub negative_task: u32,
+    /// `is_unrecoverable_faulted` 对正例为真（1 = 成立）。
+    pub unrecoverable: u32,
+    /// 内核回收成功（1 = 成功）。
+    pub reclaimed: u32,
+    /// 反例（可恢复的 Faulted）被拒绝且状态不变（1 = 成立）。
+    pub negative_rejected: u32,
+    /// 回收后目标不再存活（1 = 不再存活）。
+    pub after_dead: u32,
+    /// 回收后 `pending_exc` 已按 §8.2 步骤 6 清空（1 = 已清空）。
+    pub pending_cleared: u32,
+    /// W9 双向不变量在回收后仍成立（1 = 成立）。
+    pub invariant_ok: u32,
 }
 
 /// SPEC-070：`Faulted` 状态机的 QEMU 见证。
@@ -2071,6 +2099,67 @@ impl BootstrapState {
             precond_rejected: u32::from(precond_rejected),
             invariant_ok: u32::from(invariant_ok),
             unschedulable: u32::from(unschedulable),
+        })
+    }
+
+    /// SPEC-072：§8.2 内核回收路径的 boot 期见证（与 `fault_witness` 同一窗口：
+    /// 必须在 `activate_init` **之前**，此刻尚无任何 Task 处于 `Running`，`schedule` 合法）。
+    ///
+    /// 反例先行——**可恢复**的 `Faulted`（`PageFault` 且源存活）**不得**被内核回收（它是
+    /// §12.10 的候选，回收会绕过未来的恢复路径）；正例为**不可恢复**的 `Faulted`
+    /// （`DoubleFault`，§12.10 前置 6），由 KernelActor 无 cap 回收。
+    pub fn reclaim_witness(&mut self) -> Result<ReclaimWitness, TaskError> {
+        // 反例：可恢复的 Faulted。
+        self.tasks.create_with_entry(RECLAIM_NEGATIVE_TASK_ID, 0)?;
+        self.tasks.schedule(RECLAIM_NEGATIVE_TASK_ID)?;
+        self.tasks.fault(
+            RECLAIM_NEGATIVE_TASK_ID,
+            PAGE_FAULT_SOURCE_ID,
+            ExcKind::PageFault,
+        )?;
+        self.audit.append(AuditEvent::TaskStateChanged {
+            task_id: RECLAIM_NEGATIVE_TASK_ID,
+            status: TaskStatus::Faulted,
+        });
+        let negative_rejected = matches!(
+            self.kernel_reclaim_task(RECLAIM_NEGATIVE_TASK_ID, None, 0),
+            Err(TaskError::NotUnrecoverable)
+        ) && self
+            .tasks
+            .find(RECLAIM_NEGATIVE_TASK_ID)
+            .is_some_and(|task| task.status == TaskStatus::Faulted && task.pending_exc.is_some());
+
+        // 正例：不可恢复的 Faulted。
+        self.tasks.create_with_entry(RECLAIM_WITNESS_TASK_ID, 0)?;
+        self.tasks.schedule(RECLAIM_WITNESS_TASK_ID)?;
+        self.tasks.fault(
+            RECLAIM_WITNESS_TASK_ID,
+            PAGE_FAULT_SOURCE_ID,
+            ExcKind::DoubleFault,
+        )?;
+        self.audit.append(AuditEvent::TaskStateChanged {
+            task_id: RECLAIM_WITNESS_TASK_ID,
+            status: TaskStatus::Faulted,
+        });
+        let unrecoverable = self.is_unrecoverable_faulted(RECLAIM_WITNESS_TASK_ID);
+        let reclaimed = self
+            .kernel_reclaim_task(RECLAIM_WITNESS_TASK_ID, None, 0)
+            .is_ok();
+        let after_dead = !self.tasks.is_live(RECLAIM_WITNESS_TASK_ID);
+        let pending_cleared = self
+            .tasks
+            .find(RECLAIM_WITNESS_TASK_ID)
+            .is_some_and(|task| task.pending_exc.is_none());
+        let invariant_ok = self.tasks.check_faulted_invariant().is_ok();
+        Ok(ReclaimWitness {
+            task_id: RECLAIM_WITNESS_TASK_ID,
+            negative_task: RECLAIM_NEGATIVE_TASK_ID,
+            unrecoverable: u32::from(unrecoverable),
+            reclaimed: u32::from(reclaimed),
+            negative_rejected: u32::from(negative_rejected),
+            after_dead: u32::from(after_dead),
+            pending_cleared: u32::from(pending_cleared),
+            invariant_ok: u32::from(invariant_ok),
         })
     }
 
@@ -3130,26 +3219,7 @@ impl BootstrapState {
         if !self.audit.can_append(self.destroy_audit_events(task_id)) {
             return Err(TaskError::AuditFull);
         }
-        if let Some(root) = root_phys {
-            let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
-            let mut entries = [0u64; MAX_VSPACE_ENTRIES];
-            let mut count = 0usize;
-            for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
-                if entry.task_id == task_id && count < MAX_VSPACE_ENTRIES {
-                    entries[count] = entry.va;
-                    count += 1;
-                }
-            }
-            for entry_va in entries[..count].iter().copied() {
-                crate::vspace::unmap_4k(root, entry_va, map, |frame| {
-                    crate::frames::release_table_frame(frame)
-                        .map_err(|_| crate::vspace::VspaceError::NoFrame)
-                })
-                .map_err(|_| TaskError::NoSuchTask)?;
-                let _ = self.vspace.remove(task_id, entry_va);
-            }
-            let _ = crate::frames::release_table_frame(root);
-        }
+        self.teardown_vspace(task_id, root_phys, phys_offset)?;
         // §8.2 步骤 7：从所有异常源的订阅集合移除目标。
         self.exc_sources.remove_subscriber(task_id);
         self.destroy_task_model(task_id)
@@ -3217,6 +3287,88 @@ impl BootstrapState {
     /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
     pub fn destroy_task(&mut self, task_id: u32) -> Result<(), TaskError> {
         self.task_destroy(u32::MAX, task_id, None, 0)
+    }
+
+    /// §8.2 L735 / §12.6 L1440：目标是否处于「**不可恢复终态**」。
+    ///
+    /// 判词（**本切片口径**）：目标为 `Faulted`，且其 `pending_exc` 的种类**不可恢复**
+    /// （§12.10 前置 6，如 `DoubleFault`），**或**该故障的异常源已不存在
+    /// （§12.6 L1440：源销毁后该故障不可能再经 `exc_resume` 恢复）。
+    ///
+    /// 登记：§12.10 `exc_resume` 用户化落地后，本判词应收紧为「依据当前 State 不可能成功
+    /// `exc_resume`」——彼时才有 `kernel_resume_frame`、源 cap 可达性等更细的依据。
+    pub fn is_unrecoverable_faulted(&self, task_id: u32) -> bool {
+        let Some(task) = self.tasks.find(task_id) else {
+            return false;
+        };
+        if task.status != TaskStatus::Faulted {
+            return false;
+        }
+        let Some(pending) = task.pending_exc else {
+            return false;
+        };
+        !pending.kind.is_recoverable() || self.exc_sources.find(pending.source_id).is_none()
+    }
+
+    /// §8.2 的**内核回收路径**（`KernelActor`，**无需 `task_cap`**）。
+    ///
+    /// 前置：目标处于「不可恢复终态」（[`Self::is_unrecoverable_faulted`]）且不是 init。
+    /// 成功动作与 [`Self::task_destroy`] 的模型清理一致——含 §8.2 步骤 6 清空 `pending_exc`
+    /// 与 `kernel_resume_frame`、步骤 7 从异常源订阅集合移除、`TaskDestroyed` 审计。
+    /// `root_phys` 给出时一并拆除目标地址空间（与 `task_destroy` 同一语义；内核回收方通常
+    /// 也持有该根）。
+    ///
+    /// 失败即 `TaskError`，且前置校验先于任何写入。
+    pub fn kernel_reclaim_task(
+        &mut self,
+        task_id: u32,
+        root_phys: Option<u64>,
+        phys_offset: u64,
+    ) -> Result<(), TaskError> {
+        if task_id == INIT_TASK_ID {
+            return Err(TaskError::CannotDestroyInit);
+        }
+        if !self.is_unrecoverable_faulted(task_id) {
+            return Err(TaskError::NotUnrecoverable);
+        }
+        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
+            return Err(TaskError::AuditFull);
+        }
+        self.teardown_vspace(task_id, root_phys, phys_offset)?;
+        // §8.2 步骤 7：从所有异常源的订阅集合移除目标。
+        self.exc_sources.remove_subscriber(task_id);
+        self.destroy_task_body(task_id)
+    }
+
+    /// 拆除目标地址空间（`task_destroy` 与内核回收路径共用）。
+    fn teardown_vspace(
+        &mut self,
+        task_id: u32,
+        root_phys: Option<u64>,
+        phys_offset: u64,
+    ) -> Result<(), TaskError> {
+        let Some(root) = root_phys else {
+            return Ok(());
+        };
+        let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+        let mut entries = [0u64; MAX_VSPACE_ENTRIES];
+        let mut count = 0usize;
+        for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
+            if entry.task_id == task_id && count < MAX_VSPACE_ENTRIES {
+                entries[count] = entry.va;
+                count += 1;
+            }
+        }
+        for entry_va in entries[..count].iter().copied() {
+            crate::vspace::unmap_4k(root, entry_va, map, |frame| {
+                crate::frames::release_table_frame(frame)
+                    .map_err(|_| crate::vspace::VspaceError::NoFrame)
+            })
+            .map_err(|_| TaskError::NoSuchTask)?;
+            let _ = self.vspace.remove(task_id, entry_va);
+        }
+        let _ = crate::frames::release_table_frame(root);
+        Ok(())
     }
 
     fn destroy_task_model(&mut self, task_id: u32) -> Result<(), TaskError> {
@@ -4327,6 +4479,28 @@ pub fn record_fault_witness() -> Result<(), TaskError> {
     }
     Ok(())
 }
+
+/// SPEC-072：采集并登记内核回收见证（必须在 `activate_init` 之前调用）。
+pub fn record_reclaim_witness() -> Result<(), TaskError> {
+    let witness = unsafe {
+        let slot = core::ptr::addr_of_mut!(BOOTSTRAP_STATE);
+        match (*slot).as_mut() {
+            Some(state) => state.reclaim_witness()?,
+            None => return Err(TaskError::NoSuchTask),
+        }
+    };
+    unsafe {
+        *core::ptr::addr_of_mut!(RECLAIM_WITNESS) = Some(witness);
+    }
+    Ok(())
+}
+
+/// SPEC-072：已登记的内核回收见证（未采集时为 `None`）。
+pub fn reclaim_witness_record() -> Option<ReclaimWitness> {
+    unsafe { *core::ptr::addr_of!(RECLAIM_WITNESS) }
+}
+
+static mut RECLAIM_WITNESS: Option<ReclaimWitness> = None;
 
 /// 取已登记的 `Faulted` 见证（未采集时为 `None`）。
 pub fn fault_witness_record() -> Option<FaultWitness> {
@@ -6232,6 +6406,85 @@ mod tests {
     }
 
     /// SPEC-071：审计汇总按**目标状态**分类，且 `Dead`（细化态）不产生事件。
+    /// SPEC-072：§8.2 内核回收路径——只回收「不可恢复的 Faulted」，并有真实清理效果。
+    #[test]
+    fn kernel_reclaim_destroys_an_unrecoverable_faulted_task() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        state
+            .tasks
+            .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::DoubleFault)
+            .unwrap();
+        assert!(state.is_unrecoverable_faulted(2));
+        assert!(state.kernel_reclaim_task(2, None, 0).is_ok());
+        let task = state.tasks.find(2).copied().unwrap();
+        assert_eq!(task.status, TaskStatus::Dead);
+        assert!(
+            task.pending_exc.is_none(),
+            "§8.2 步骤 6 必须清空 pending_exc"
+        );
+        assert!(!state.tasks.is_live(2));
+        assert!(state.tasks.check_faulted_invariant().is_ok());
+    }
+
+    /// SPEC-072：**可恢复**的 Faulted（`PageFault` 且源存活）不得被内核回收——它是 §12.10 的
+    /// 候选，回收会绕过未来的恢复路径。
+    #[test]
+    fn kernel_reclaim_rejects_a_recoverable_faulted_task() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        state
+            .tasks
+            .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+            .unwrap();
+        assert!(!state.is_unrecoverable_faulted(2));
+        let before = state.tasks.find(2).copied().unwrap();
+        assert_eq!(
+            state.kernel_reclaim_task(2, None, 0),
+            Err(TaskError::NotUnrecoverable)
+        );
+        assert_eq!(state.tasks.find(2).copied().unwrap(), before);
+    }
+
+    /// SPEC-072：非 Faulted（`Ready`）与 init 都不在内核回收的范围内。
+    #[test]
+    fn kernel_reclaim_rejects_non_faulted_and_init() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        assert!(!state.is_unrecoverable_faulted(2), "Ready 不是不可恢复终态");
+        assert_eq!(
+            state.kernel_reclaim_task(2, None, 0),
+            Err(TaskError::NotUnrecoverable)
+        );
+        assert_eq!(
+            state.kernel_reclaim_task(INIT_TASK_ID, None, 0),
+            Err(TaskError::CannotDestroyInit)
+        );
+    }
+
+    /// SPEC-072：「源已销毁」也构成不可恢复终态（§12.6 L1440：源销毁后该故障不可能再恢复）。
+    #[test]
+    fn destroyed_fault_source_makes_a_faulted_task_unrecoverable() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        state.schedule_task(2).unwrap();
+        state
+            .tasks
+            .fault(2, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+            .unwrap();
+        assert!(
+            !state.is_unrecoverable_faulted(2),
+            "源存活时 PageFault 是可恢复的"
+        );
+        // 直接摘掉该源记录（等价于源销毁后 `exc_resume` 已不可能成功）。
+        state.exc_sources.entries[0] = None;
+        assert!(state.is_unrecoverable_faulted(2));
+        assert!(state.kernel_reclaim_task(2, None, 0).is_ok());
+        assert!(!state.tasks.is_live(2));
+    }
+
     #[test]
     fn task_state_audit_counts_each_target_status() {
         let mut state = exc_state();

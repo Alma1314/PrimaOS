@@ -283,6 +283,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // SPEC-072：同一窗口采集 §8.2 内核回收见证（KernelActor 无 cap
+                                    // 销毁不可恢复的 Faulted 任务；可恢复者必须被拒）。
+                                    if kernel::bootstrap::record_reclaim_witness().is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
                                     if kernel::bootstrap::activate_init().is_err() {
                                         protocol::panic_event();

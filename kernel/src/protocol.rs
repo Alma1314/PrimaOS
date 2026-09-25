@@ -178,6 +178,28 @@ pub(crate) fn state_audit_ready(audit: &kernel::bootstrap::TaskStateAudit) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-072：§8.2 内核回收路径见证（独立事件，落在 `state_audit_ready` 之后）。
+pub(crate) fn reclaim_ready(witness: &kernel::bootstrap::ReclaimWitness) {
+    write_prefix("reclaim_ready", "ok");
+    serial::write_bytes(b"|data=task=");
+    write_u32(witness.task_id);
+    serial::write_bytes(b";negative_task=");
+    write_u32(witness.negative_task);
+    serial::write_bytes(b";unrecoverable=");
+    write_u32(witness.unrecoverable);
+    serial::write_bytes(b";reclaimed=");
+    write_u32(witness.reclaimed);
+    serial::write_bytes(b";negative_rejected=");
+    write_u32(witness.negative_rejected);
+    serial::write_bytes(b";after_dead=");
+    write_u32(witness.after_dead);
+    serial::write_bytes(b";pending_cleared=");
+    write_u32(witness.pending_cleared);
+    serial::write_bytes(b";invariant_ok=");
+    write_u32(witness.invariant_ok);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

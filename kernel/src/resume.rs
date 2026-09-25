@@ -116,6 +116,11 @@ extern "C" fn after_resume() -> ! {
         Some(audit) => protocol::state_audit_ready(&audit),
         None => protocol::panic_event(),
     }
+    // SPEC-072：§8.2 内核回收路径见证。
+    match kernel::bootstrap::reclaim_witness_record() {
+        Some(witness) => protocol::reclaim_ready(&witness),
+        None => protocol::panic_event(),
+    }
     protocol::boot_complete();
     serial::flush();
     qemu::exit(qemu::SUCCESS)

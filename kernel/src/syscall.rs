@@ -1213,7 +1213,9 @@ pub const fn task_destroy_errno(error: bootstrap::TaskError) -> Errno {
         | E::AlreadyRunning
         | E::NotRunning
         | E::NotReady
-        | E::CapacityExceeded => Errno::Invalid,
+        | E::CapacityExceeded
+        // SPEC-072：内核回收路径只由 KernelActor 走，用户面不会产生该错误；此处映射仅为穷尽性。
+        | E::NotUnrecoverable => Errno::Invalid,
         E::AuditFull => Errno::NoSpace,
     }
 }
