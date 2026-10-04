@@ -59,7 +59,35 @@ use crate::vspace::{self, VspaceError};
 use prima_ostd::sync::StaticCell;
 
 /// 独立 Rust ring3 程序构建产物（ELF）。装载路径由 `prepare_runtime_app` 解析。
-pub static PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
+pub const PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
+
+const fn elf_word(bytes: &[u8], at: usize) -> u64 {
+    let mut value = 0u64;
+    let mut index = 0;
+    while index < 8 {
+        value |= (bytes[at + index] as u64) << (index * 8);
+        index += 1;
+    }
+    value
+}
+
+const fn runtime_app_pages(bytes: &[u8]) -> usize {
+    let phoff = elf_word(bytes, 32) as usize;
+    let phnum = u16::from_le_bytes([bytes[56], bytes[57]]) as usize;
+    let mut max_end = 0u64;
+    let mut index = 0;
+    while index < phnum {
+        let at = phoff + index * 56;
+        if u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) == 1 {
+            let end = elf_word(bytes, at + 16) + elf_word(bytes, at + 40);
+            if end > max_end {
+                max_end = end;
+            }
+        }
+        index += 1;
+    }
+    max_end.div_ceil(FRAME_SIZE) as usize
+}
 
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
 pub const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
@@ -177,16 +205,16 @@ pub const TASK4_CODE_OFFSET: u64 = 256;
 /// 时间片内发送后立即自毁，刚排队的 id 会被自己的销毁清理掉（实测确认），父任务将取不到。
 pub const TASK4_CODE_LEN: usize = 109;
 /// 当前 Rust smoke 用户映像 PT_LOAD 覆盖的页数；ELF 解析器会在启动时重新核验。
-pub const RUNTIME_APP_CODE_PAGES: usize = 4;
+pub const RUNTIME_APP_CODE_PAGES: usize = runtime_app_pages(PRIMA_SMOKE_ELF);
 /// 当前 PIE 用户映像入口相对装载基址的偏移；启动时由 ELF 头核验。
-pub const RUNTIME_APP_ENTRY_OFFSET: u64 = 0x1eb0;
+pub const RUNTIME_APP_ENTRY_OFFSET: u64 = elf_word(PRIMA_SMOKE_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
-/// 用户代码长度。SPEC-066 追加「自持平台 cap 映射」块（2458..2636），
-/// SPEC-067 追加「task 4 自毁见证」块（2636..2907），SPEC-081 追加「Namespace 路径操作」
-/// 块（2979..，含末尾 `int3` 与代码页高偏移的路径文本数据区）。
-pub const USER_CODE_LEN: usize = 4072;
+/// 用户代码占据一个 4 KiB 页；路径文本放在独立的 Y 页。
+pub const USER_CODE_LEN: usize = 4096;
+
+const NS_PATH_BYTES: &[u8] = b"lib\0sub\0mnt\0mnt/sub\0/lib\0x\0y\0";
 
 /// 第二任务代码字节长度。
 pub const TASK2_CODE_LEN: usize = 496;
@@ -1269,8 +1297,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
     );
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xBA, 0);
-    at += 10;
+    put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx（写入 32 位寄存器会清零 rdx）
+    at += 2;
     put_imm64(&mut code, at, 0x49, 0xBA, USER_HELLO_VA);
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB8, 1);
@@ -1284,19 +1312,9 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, 736);
     at += 7;
 
-    // int3（收尾）：本块必须落在路径文本数据区之前。
-    assert!(
-        at < NS_PATH_DATA_OFFSET,
-        "SPEC-081/082 用户代码块越过路径文本数据区"
-    );
+    // int3（收尾）：代码不能越过其单页映射。
+    assert!(at < USER_CODE_LEN, "用户代码越过单页映射");
     code[at] = 0xCC;
-
-    // 路径文本数据区（`int3` 之后，不会被当作指令执行；每个槽 8 字节）。
-    put(
-        &mut code,
-        NS_PATH_DATA_OFFSET,
-        b"lib\0sub\0mnt\0mnt/sub\0/lib\0x\0y\0",
-    );
     code
 }
 
@@ -1866,6 +1884,9 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
         write_qword(map(stack) + index * 8, 0);
         write_qword(map(y) + index * 8, 0);
     }
+    for (index, &byte) in NS_PATH_BYTES.iter().enumerate() {
+        prima_ostd::mm::write_u8_at(map(y), (NS_PATH_DATA_OFFSET + index) as u64, byte);
+    }
 
     // 经授权中介映射进 task 1 根；`memseg_map` 逐页 `invlpg`，故不再显式刷新 TLB。
     // X 的访问集上不含 `SegMapW`，装入的就是只读页——用户态写保护 #PF 由此产生。
@@ -2401,9 +2422,16 @@ mod tests {
     }
 
     #[test]
+    fn runtime_elf_matches_loader_layout() {
+        let layout = elf_layout(PRIMA_SMOKE_ELF).unwrap();
+        assert_eq!(layout.entry, RUNTIME_APP_ENTRY_OFFSET);
+        assert_eq!(layout.pages, RUNTIME_APP_CODE_PAGES);
+    }
+
+    #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, 4072);
+        assert_eq!(USER_CODE_LEN, FRAME_SIZE as usize);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());
@@ -2810,19 +2838,20 @@ mod tests {
         assert_eq!(&code[2900..2907], &[0x48, 0x89, 0x81, 0xF0, 0x01, 0, 0]);
         // 抢占阶段前再唤醒一次 task 2（第一次让出已把它排空）。
         assert_eq!(&code[2909..2917], &2u64.to_le_bytes());
-        // SPEC-081：Namespace 块从 2979 起（`mov rcx, Y`），路径文本数据落在代码页高偏移。
+        // SPEC-081：Namespace 块从 2979 起（`mov rcx, Y`），路径文本位于 Y 页。
         assert_eq!(&code[2979..2981], &[0x48, 0xB9]);
         assert_eq!(
-            &code[NS_PATH_DATA_OFFSET + NS_PATH_MNTSUB_OFF as usize
-                ..NS_PATH_DATA_OFFSET + NS_PATH_MNTSUB_OFF as usize + 7],
+            &NS_PATH_BYTES[NS_PATH_MNTSUB_OFF as usize..NS_PATH_MNTSUB_OFF as usize + 7],
             b"mnt/sub"
         );
-        // 块以 `int3` 收尾：取区间内**最后**一个 0xCC（其后到路径数据区之间是零填充，
+        assert_eq!(NS_PATH_DATA_VA, USER_Y_VA + NS_PATH_DATA_OFFSET as u64);
+        assert!(NS_PATH_DATA_OFFSET + NS_PATH_BYTES.len() <= FRAME_SIZE as usize);
+        // 块以 `int3` 收尾：取区间内**最后**一个 0xCC（其后到页末之间是零填充，
         // 故它就是收尾的 `int3`，而机器码立即数里可能出现的 0xCC 都在它之前）。
-        let int3 = (2979..NS_PATH_DATA_OFFSET)
+        let int3 = (2979..USER_CODE_LEN)
             .rfind(|index| code[*index] == 0xCC)
             .expect("SPEC-081/082 块必须以 int3 收尾");
-        assert!((int3 + 1..NS_PATH_DATA_OFFSET).all(|index| code[index] == 0));
+        assert!((int3 + 1..USER_CODE_LEN).all(|index| code[index] == 0));
     }
 
     #[test]

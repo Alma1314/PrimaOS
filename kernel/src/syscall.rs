@@ -65,13 +65,10 @@ pub const TIMER_DEADLINE_IMMEDIATE: u64 = 0;
 
 /// SPEC-081：路径文本的最大字节数（细化层上限，见设计文档 §0.1）。
 pub const MAX_NS_PATH_BYTES: u64 = 64;
-/// SPEC-081：路径文本在用户**代码页**内的数据偏移。
-///
-/// 放在代码页（只读 + user，可读）而不是回执页，是为了省掉「运行时逐字节写路径」的机器码：
-/// 用户程序只需 `mov rsi, imm64` 指向这段静态数据。位于 `int3` 之后，不会被当作指令执行。
-pub const NS_PATH_DATA_OFFSET: usize = 4040;
+/// SPEC-081：路径文本在用户 Y 页内的数据偏移，避开回执与接收缓冲区。
+pub const NS_PATH_DATA_OFFSET: usize = 1024;
 /// SPEC-081：路径文本数据区的 VA。
-pub const NS_PATH_DATA_VA: u64 = crate::user::USER_CODE_VA + NS_PATH_DATA_OFFSET as u64;
+pub const NS_PATH_DATA_VA: u64 = crate::user::USER_Y_VA + NS_PATH_DATA_OFFSET as u64;
 /// SPEC-081：各路径文本在数据区内的偏移（NUL 分隔的紧凑排布）。
 pub const NS_PATH_LIB_OFF: u64 = 0;
 pub const NS_PATH_SUB_OFF: u64 = 4;

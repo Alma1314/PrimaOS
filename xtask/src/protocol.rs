@@ -113,13 +113,8 @@ const EACCES: u64 = 0xFFFF_FFFF_FFFF_FFF3;
 const TASK_CREATE_CHILD_ID: usize = 3;
 /// S2-D4：`task_create` 返回的 manager cap 句柄（槽 10 gen1），与 `kernel/src/syscall.rs` 一致。
 const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
-/// S2-D4：`task_ready` 时刻的活动 cap 槽位数。
-///
-/// 24 = 初始 3 + 异常源 2 + 平台段 13 + 平台 task 2 + 切片 S 2 + 本切片 bring-up 2；
-/// 再加 ring3 存活段 cap 3（槽 6/7/8）与调用者的 manager cap 1（槽 10）。
-/// 被销毁子任务的 self cap 与 root_ns cap 已撤销，故不计入。
-/// **切片 V**：另有 task 4 的 manager cap 1（目标已 Dead，仍是 live 槽位）→ 29。
-const TASK_READY_LIVE_CAPS: usize = 43;
+/// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap。
+const TASK_READY_LIVE_CAPS: usize = 44;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -3394,7 +3389,7 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=3;direct=3;blocks=3\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=43;root_cleared=1;grandchild=4;tasks_after=3;caps_after=43;root4_cleared=1\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=3;caps=44;root_cleared=1;grandchild=4;tasks_after=3;caps_after=44;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=26|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=27|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -3483,7 +3478,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=43;root_cleared", ";caps=41;root_cleared");
+        let output = VALID.replace(";caps=44;root_cleared", ";caps=41;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
