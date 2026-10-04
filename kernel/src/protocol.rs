@@ -875,6 +875,26 @@ pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// Stage 4：Rust ring3 客户端经 IPC 移交共享 Segment 后的协议回执。
+pub(crate) fn runtime_hello_ready(witness: &kernel::user::RuntimeHelloWitness) {
+    write_prefix("runtime_hello_ready", "ok");
+    serial::write_bytes(b"|data=map=");
+    write_hex_u64(witness.map_result);
+    serial::write_bytes(b";magic=");
+    write_hex_u64(witness.magic_version);
+    serial::write_bytes(b";opcode=");
+    write_hex_u64(witness.opcode_request);
+    serial::write_bytes(b";length=");
+    write_hex_u64(witness.length_version);
+    serial::write_bytes(b";features=");
+    write_hex_u64(witness.features);
+    serial::write_bytes(b";required=");
+    write_hex_u64(witness.required_features);
+    serial::write_bytes(b";max=");
+    write_u32(witness.max_message_size);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

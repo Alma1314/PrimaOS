@@ -888,8 +888,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 2779, &[0xCD, 0x80]);
     put_imm64(&mut code, 2781, 0x48, 0xB8, SYS_YIELD);
     put(&mut code, 2791, &[0xCD, 0x80]);
-    // task 4 自报 id 后自毁并切回本任务；取消息拿它的 id。
-    put_imm64(&mut code, 2793, 0x48, 0xBF, TASK_RECV_BUF);
+    // task 4 自报 id 后自毁并切回本任务；独立缓冲区保留 task 3 移交的 Segment cap。
+    put_imm64(&mut code, 2793, 0x48, 0xBF, TASK_RECV_BUF + 0x20);
     put_imm64(&mut code, 2803, 0x48, 0xB8, SYS_RECV);
     put(&mut code, 2813, &[0xCD, 0x80]);
     put(&mut code, 2815, &[0x48, 0x89, 0x81, 0xE8, 0x01, 0, 0]);
@@ -1349,10 +1349,22 @@ impl RuntimeHelloWitness {
 }
 
 pub fn runtime_hello_witness() -> RuntimeHelloWitness {
+    let map_result = read_qword(USER_Y_VA + 736);
+    if map_result != 0 {
+        return RuntimeHelloWitness {
+            map_result,
+            magic_version: 0,
+            opcode_request: 0,
+            length_version: 0,
+            features: 0,
+            required_features: 0,
+            max_message_size: 0,
+        };
+    }
     let length_version = read_qword(USER_HELLO_VA + 16);
     let max_word = read_qword(USER_HELLO_VA + 40);
     RuntimeHelloWitness {
-        map_result: read_qword(USER_Y_VA + 736),
+        map_result,
         magic_version: read_qword(USER_HELLO_VA),
         opcode_request: read_qword(USER_HELLO_VA + 8),
         length_version,
@@ -2827,7 +2839,7 @@ mod tests {
         assert_eq!(&code[2762..2769], &[0x48, 0x89, 0x81, 0xE0, 0x01, 0, 0]);
         assert_eq!(&code[2771..2779], &SYS_YIELD.to_le_bytes());
         assert_eq!(&code[2783..2791], &SYS_YIELD.to_le_bytes());
-        assert_eq!(&code[2795..2803], &TASK_RECV_BUF.to_le_bytes());
+        assert_eq!(&code[2795..2803], &(TASK_RECV_BUF + 0x20).to_le_bytes());
         assert_eq!(&code[2805..2813], &SYS_RECV.to_le_bytes());
         assert_eq!(&code[2815..2822], &[0x48, 0x89, 0x81, 0xE8, 0x01, 0, 0]);
         // 让出一次，等 task 4 完成自毁。

@@ -145,6 +145,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
     let task = kernel::syscall::task_witness();
     protocol::task_ready(&task);
+    // Stage 4：在 task 1 的地址空间内核对 Rust 客户端共享 Segment 中的真实 wire 消息。
+    protocol::runtime_hello_ready(&kernel::user::runtime_hello_witness());
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);
