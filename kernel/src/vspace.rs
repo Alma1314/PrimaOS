@@ -252,7 +252,8 @@ pub fn leaf_phys_or_none(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> O
                 2 => 1u64 << 21,
                 _ => return None,
             };
-            return Some((entry & PT_ADDR_MASK) + (va & (page_size - 1)));
+            // 大页的 bit 12 是 PAT 标志，不属于物理基址；基址按页大小对齐。
+            return Some((entry & PT_ADDR_MASK & !(page_size - 1)) + (va & (page_size - 1)));
         }
         table = entry & PT_ADDR_MASK;
         level += 1;
@@ -261,7 +262,7 @@ pub fn leaf_phys_or_none(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> O
     if entry & PT_PRESENT == 0 {
         None
     } else {
-        Some(entry & PT_ADDR_MASK)
+        Some((entry & PT_ADDR_MASK) + (va & (crate::mem::FRAME_SIZE - 1)))
     }
 }
 
@@ -699,6 +700,10 @@ mod tests {
             "第二页必须用它自己的物理帧，而不是首帧 + 页偏移"
         );
         assert_eq!(
+            leaf_phys_or_none(root, 0x4000_1234, identity),
+            Some(0x60_1234)
+        );
+        assert_eq!(
             leaf_phys_or_none(root, 0x90_0000_0000, identity),
             Some(0x70_0000)
         );
@@ -784,6 +789,37 @@ mod tests {
             leaf_phys_or_none(root, va + 0x3_0000, identity),
             Some(0x23_0000),
             "大页内偏移必须取自 VA 低位"
+        );
+    }
+
+    #[test]
+    fn leaf_phys_or_none_ignores_huge_page_pat_bit() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let pdpt = pool.alloc().unwrap();
+        let pd = pool.alloc().unwrap();
+        let va = 0x4000_0000u64;
+        let idx = indices(va);
+        const PS: u64 = 1 << 7;
+        const PAT: u64 = 1 << 12;
+
+        write_raw(root + idx[0] as u64 * 8, pdpt | PT_PRESENT);
+        write_raw(pdpt + idx[1] as u64 * 8, pd | PT_PRESENT);
+        write_raw(pd + idx[2] as u64 * 8, 0x20_0000 | PT_PRESENT | PS | PAT);
+        assert_eq!(leaf_phys_or_none(root, va, identity), Some(0x20_0000));
+        assert_eq!(
+            leaf_phys_or_none(root, va + 0x3000, identity),
+            Some(0x20_3000)
+        );
+
+        write_raw(
+            pdpt + idx[1] as u64 * 8,
+            0x8000_0000 | PT_PRESENT | PS | PAT,
+        );
+        assert_eq!(leaf_phys_or_none(root, va, identity), Some(0x8000_0000));
+        assert_eq!(
+            leaf_phys_or_none(root, va + 0x3000, identity),
+            Some(0x8000_3000)
         );
     }
 
