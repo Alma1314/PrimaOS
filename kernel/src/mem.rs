@@ -38,7 +38,9 @@ pub fn probe_physical_memory(probed_phys: u64, phys_map_offset: u64) -> (u64, u8
 pub fn first_usable_frame_phys(regions: &[MemoryRegion]) -> Option<u64> {
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
-            let lo = align_up(region.start, FRAME_SIZE);
+            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let hi = align_down(region.end, FRAME_SIZE);
             if hi > lo {
                 return Some(lo);
@@ -112,14 +114,16 @@ impl FreeFrameAllocator {
         let mut allocator = Self::empty();
         let mut previous_end = 0;
         for region in regions {
-            if region.start < previous_end {
+            if region.start > region.end || region.start < previous_end {
                 return Err(AllocatorError::InvalidRange);
             }
             previous_end = region.end;
             if region.kind != MemoryRegionKind::Usable {
                 continue;
             }
-            let start = align_up(region.start, FRAME_SIZE);
+            let Some(start) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let end = align_down(region.end, FRAME_SIZE);
             if end <= start {
                 continue;
@@ -250,6 +254,7 @@ impl FreeFrameAllocator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemError {
     EmptyImage,
+    InvalidImageRange,
     ImageOverlapsUsable,
     RegionsNotSortedOrOverlapping,
 }
@@ -314,7 +319,7 @@ pub fn build_inventory(
 
     let mut prev_end = 0u64;
     for region in regions {
-        if region.start < prev_end {
+        if region.start > region.end || region.start < prev_end {
             return Err(MemError::RegionsNotSortedOrOverlapping);
         }
         prev_end = region.end;
@@ -325,7 +330,9 @@ pub fn build_inventory(
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
             usable_regions += 1;
-            let lo = align_up(region.start, FRAME_SIZE);
+            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let hi = align_down(region.end, FRAME_SIZE);
             if hi > lo {
                 usable_frames += ((hi - lo) / FRAME_SIZE) as usize;
@@ -334,7 +341,10 @@ pub fn build_inventory(
     }
 
     let kernel_phys_start = align_down(kernel_addr, FRAME_SIZE);
-    let kernel_phys_end = align_up(kernel_addr + kernel_len, FRAME_SIZE);
+    let kernel_phys_end = kernel_addr
+        .checked_add(kernel_len)
+        .and_then(|end| align_up(end, FRAME_SIZE))
+        .ok_or(MemError::InvalidImageRange)?;
     let image_frames = ((kernel_phys_end - kernel_phys_start) / FRAME_SIZE) as usize;
 
     // bootloader 把内核镜像存放在 Bootloader 区（不在 Usable 内）。校验镜像与所有
@@ -343,7 +353,10 @@ pub fn build_inventory(
         if region.kind != MemoryRegionKind::Usable {
             continue;
         }
-        let lo = align_up(region.start, FRAME_SIZE).max(kernel_phys_start);
+        let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+            continue;
+        };
+        let lo = lo.max(kernel_phys_start);
         let hi = align_down(region.end, FRAME_SIZE).min(kernel_phys_end);
         if hi > lo {
             return Err(MemError::ImageOverlapsUsable);
@@ -361,8 +374,8 @@ pub fn build_inventory(
     })
 }
 
-fn align_up(value: u64, align: u64) -> u64 {
-    value.div_ceil(align) * align
+fn align_up(value: u64, align: u64) -> Option<u64> {
+    value.checked_add((align - value % align) % align)
 }
 
 fn align_down(value: u64, align: u64) -> u64 {
@@ -440,6 +453,46 @@ mod tests {
         assert_eq!(
             FreeFrameAllocator::from_regions(&unsorted, 0x8000, 0x9000),
             Err(AllocatorError::InvalidRange)
+        );
+    }
+
+    #[test]
+    fn rejects_reversed_regions_and_skips_unrepresentable_tail() {
+        let reversed = [usable(0x3000, 0x2000)];
+        assert_eq!(
+            build_inventory(&reversed, 0x4000, 0x1000),
+            Err(MemError::RegionsNotSortedOrOverlapping)
+        );
+        assert_eq!(
+            FreeFrameAllocator::from_regions(&reversed, 0x4000, 0x5000),
+            Err(AllocatorError::InvalidRange)
+        );
+
+        let tail = [usable(u64::MAX - 10, u64::MAX)];
+        assert_eq!(first_usable_frame_phys(&tail), None);
+        assert_eq!(
+            build_inventory(&tail, 0x4000, 0x1000)
+                .unwrap()
+                .usable_frames,
+            0
+        );
+        assert_eq!(
+            FreeFrameAllocator::from_regions(&tail, 0x4000, 0x5000)
+                .unwrap()
+                .remaining(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_image_address_overflow() {
+        assert_eq!(
+            build_inventory(&[], u64::MAX - 10, 20),
+            Err(MemError::InvalidImageRange)
+        );
+        assert_eq!(
+            build_inventory(&[], u64::MAX - 10, 1),
+            Err(MemError::InvalidImageRange)
         );
     }
 

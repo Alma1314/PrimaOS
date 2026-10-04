@@ -963,6 +963,7 @@ pub(crate) fn exc_resume_ready(
 fn mem_error_name(error: MemError) -> &'static str {
     match error {
         MemError::EmptyImage => "EmptyImage",
+        MemError::InvalidImageRange => "InvalidImageRange",
         MemError::ImageOverlapsUsable => "ImageOverlapsUsable",
         MemError::RegionsNotSortedOrOverlapping => "RegionsNotSortedOrOverlapping",
     }
