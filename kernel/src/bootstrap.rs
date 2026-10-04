@@ -5460,6 +5460,12 @@ impl BootstrapState {
     }
 }
 
+/// 单核无 PCID：只有当前 Task 的页表根可能在本核缓存了用户页翻译。
+/// 非当前根在下一次 `sched::resume` 写 CR3 时自然失效。
+fn needs_local_tlb_flush(target_root: u64, current_root: Option<u64>) -> bool {
+    current_root == Some(target_root)
+}
+
 impl BootstrapState {
     /// S2-D4：Segment 的第 `index` 帧（`task_create` 装代码页时用）。
     fn segment_frame(&self, id: u32, index: usize) -> Option<u64> {
@@ -5990,15 +5996,14 @@ impl BootstrapState {
             if self.vspace.find(task_id, va).is_some() {
                 return Err(MemsegError::Overlap);
             }
-            if crate::vspace::read_leaf(root_phys, va, map)
-                .is_ok_and(|pte| pte & crate::vspace::PT_PRESENT != 0)
-            {
+            if crate::vspace::leaf_phys_or_none(root_phys, va, map).is_some() {
                 return Err(MemsegError::Overlap);
             }
         }
         if self.vspace.count + page_count > MAX_VSPACE_ENTRIES {
             return Err(MemsegError::CapacityExceeded);
         }
+        let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
         let writable = access.contains(Right::SegMapW);
         for index in 0..page_count {
             let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
@@ -6018,7 +6023,9 @@ impl BootstrapState {
             {
                 return Err(MemsegError::NoMemory);
             }
-            prima_ostd::arch::invlpg(va);
+            if flush_local {
+                prima_ostd::arch::invlpg(va);
+            }
             self.vspace.insert(VspaceEntry {
                 task_id,
                 va,
@@ -6063,6 +6070,7 @@ impl BootstrapState {
                 return Err(MemsegError::EntryMapping);
             }
         }
+        let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
         for index in 0..page_count {
             let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
             crate::vspace::unmap_4k(root_phys, va, map, |frame| {
@@ -6070,7 +6078,9 @@ impl BootstrapState {
                     .map_err(|_| crate::vspace::VspaceError::NoFrame)
             })
             .map_err(|_| MemsegError::NotMapped)?;
-            prima_ostd::arch::invlpg(va);
+            if flush_local {
+                prima_ostd::arch::invlpg(va);
+            }
             let _ = self.vspace.remove(task_id, va);
         }
         Ok(())
@@ -7055,6 +7065,13 @@ mod tests {
     };
     use crate::mem::FrameInventory;
     use crate::rights::{ObjectKind, Right, Rights};
+
+    #[test]
+    fn tlb_flush_only_for_current_root() {
+        assert!(super::needs_local_tlb_flush(0x1000, Some(0x1000)));
+        assert!(!super::needs_local_tlb_flush(0x2000, Some(0x1000)));
+        assert!(!super::needs_local_tlb_flush(0x1000, None));
+    }
 
     /// 测试用权限解析（非法串直接 panic，暴露出测试自身的错误）。
     fn rights(text: &str) -> Rights {

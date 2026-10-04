@@ -4,8 +4,8 @@
 
 use core::panic::PanicInfo;
 use prima_runtime::{
-    Capability, MessageHeader, ProtocolOffer, Rights, Runtime, TaskId,
-    protocol::MESSAGE_HEADER_LEN,
+    Capability, Rights, Runtime, TaskId,
+    protocol::{MESSAGE_HEADER_LEN, MessageHeader, ProtocolOffer},
 };
 
 const USER_HELLO_VA: u64 = 0x0000_0A00_0000_7000;
@@ -47,14 +47,8 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, _initial_cap1_raw
         message[..MESSAGE_HEADER_LEN].copy_from_slice(&header_bytes);
         message[MESSAGE_HEADER_LEN..].copy_from_slice(&offer_bytes);
         if let Ok(segment) = runtime.memseg_create(1, Rights::from_bits(3)) {
-            let mapped = runtime.memseg_map(
-                segment,
-                self_cap,
-                0,
-                USER_HELLO_VA,
-                1,
-                Rights::from_bits(3),
-            );
+            let mapped =
+                runtime.memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, Rights::from_bits(3));
             if mapped.is_ok() && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok() {
                 let _ = runtime.send(
                     TaskId::from_raw(1),

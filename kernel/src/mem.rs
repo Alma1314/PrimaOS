@@ -2,7 +2,8 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 pub const FRAME_SIZE: u64 = 4096;
 const MAX_FREE_RANGES: usize = 128;
-const MAX_RECYCLED_FRAMES: usize = 256;
+// FrameRegistry 最多同时持有 192 个 Segment 帧和 128 个页表帧；全部归还也必须有位置。
+const MAX_RECYCLED_FRAMES: usize = 320;
 
 /// 物理地址经 bootloader 的物理内存直映射换算为虚拟地址（offset + phys）。
 pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
@@ -14,7 +15,7 @@ pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
 /// 归还帧仍在空闲池中保留上次归属的字节，故每次 `memseg_create` 取帧后必须调用本函数。
 pub fn zero_frame(phys: u64, phys_map_offset: u64) {
     let base = phys_to_virt(phys, phys_map_offset);
-    prima_ostd::mm::fill_zero(base, FRAME_SIZE);
+    prima_ostd::mm::fill_zero(base, FRAME_SIZE as usize);
 }
 
 /// 读取一个物理地址处的字节（经直映射），返回 (虚拟地址, 读到字节)。
@@ -37,7 +38,9 @@ pub fn probe_physical_memory(probed_phys: u64, phys_map_offset: u64) -> (u64, u8
 pub fn first_usable_frame_phys(regions: &[MemoryRegion]) -> Option<u64> {
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
-            let lo = align_up(region.start, FRAME_SIZE);
+            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let hi = align_down(region.end, FRAME_SIZE);
             if hi > lo {
                 return Some(lo);
@@ -68,6 +71,8 @@ pub struct FreeFrameRange {
 pub struct FreeFrameAllocator {
     ranges: [Option<FreeFrameRange>; MAX_FREE_RANGES],
     range_count: usize,
+    /// 已耗尽的区间永不重新扫描；归还的帧从 recycled 栈优先取用。
+    next_range: usize,
     remaining: usize,
     recycled: [u64; MAX_RECYCLED_FRAMES],
     recycled_count: usize,
@@ -88,6 +93,7 @@ impl FreeFrameAllocator {
         Self {
             ranges: [None; MAX_FREE_RANGES],
             range_count: 0,
+            next_range: 0,
             remaining: 0,
             recycled: [0; MAX_RECYCLED_FRAMES],
             recycled_count: 0,
@@ -108,14 +114,16 @@ impl FreeFrameAllocator {
         let mut allocator = Self::empty();
         let mut previous_end = 0;
         for region in regions {
-            if region.start < previous_end {
+            if region.start > region.end || region.start < previous_end {
                 return Err(AllocatorError::InvalidRange);
             }
             previous_end = region.end;
             if region.kind != MemoryRegionKind::Usable {
                 continue;
             }
-            let start = align_up(region.start, FRAME_SIZE);
+            let Some(start) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let end = align_down(region.end, FRAME_SIZE);
             if end <= start {
                 continue;
@@ -148,13 +156,15 @@ impl FreeFrameAllocator {
             self.remaining -= 1;
             return Ok(self.recycled[self.recycled_count]);
         }
-        for range in self.ranges[..self.range_count].iter_mut().flatten() {
-            if range.next < range.end {
-                let frame = range.next;
-                range.next += FRAME_SIZE;
-                self.remaining -= 1;
-                return Ok(frame);
+        if self.next_range < self.range_count {
+            let range = self.ranges[self.next_range].as_mut().unwrap();
+            let frame = range.next;
+            range.next += FRAME_SIZE;
+            if range.next == range.end {
+                self.next_range += 1;
             }
+            self.remaining -= 1;
+            return Ok(frame);
         }
         Err(AllocatorError::NoFrame)
     }
@@ -185,6 +195,7 @@ impl FreeFrameAllocator {
             || !image_start.is_multiple_of(FRAME_SIZE)
             || !image_end.is_multiple_of(FRAME_SIZE)
             || self.range_count > MAX_FREE_RANGES
+            || self.next_range > self.range_count
             || self.recycled_count > MAX_RECYCLED_FRAMES
         {
             return Err(AllocatorError::InvariantViolation);
@@ -209,6 +220,8 @@ impl FreeFrameAllocator {
                 || !range.end.is_multiple_of(FRAME_SIZE)
                 || !range.next.is_multiple_of(FRAME_SIZE)
                 || range.start < previous_end
+                || (index < self.next_range && range.next != range.end)
+                || (index >= self.next_range && range.next == range.end)
             {
                 return Err(AllocatorError::InvariantViolation);
             }
@@ -241,6 +254,7 @@ impl FreeFrameAllocator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemError {
     EmptyImage,
+    InvalidImageRange,
     ImageOverlapsUsable,
     RegionsNotSortedOrOverlapping,
 }
@@ -305,7 +319,7 @@ pub fn build_inventory(
 
     let mut prev_end = 0u64;
     for region in regions {
-        if region.start < prev_end {
+        if region.start > region.end || region.start < prev_end {
             return Err(MemError::RegionsNotSortedOrOverlapping);
         }
         prev_end = region.end;
@@ -316,7 +330,9 @@ pub fn build_inventory(
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
             usable_regions += 1;
-            let lo = align_up(region.start, FRAME_SIZE);
+            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+                continue;
+            };
             let hi = align_down(region.end, FRAME_SIZE);
             if hi > lo {
                 usable_frames += ((hi - lo) / FRAME_SIZE) as usize;
@@ -325,7 +341,10 @@ pub fn build_inventory(
     }
 
     let kernel_phys_start = align_down(kernel_addr, FRAME_SIZE);
-    let kernel_phys_end = align_up(kernel_addr + kernel_len, FRAME_SIZE);
+    let kernel_phys_end = kernel_addr
+        .checked_add(kernel_len)
+        .and_then(|end| align_up(end, FRAME_SIZE))
+        .ok_or(MemError::InvalidImageRange)?;
     let image_frames = ((kernel_phys_end - kernel_phys_start) / FRAME_SIZE) as usize;
 
     // bootloader 把内核镜像存放在 Bootloader 区（不在 Usable 内）。校验镜像与所有
@@ -334,7 +353,10 @@ pub fn build_inventory(
         if region.kind != MemoryRegionKind::Usable {
             continue;
         }
-        let lo = align_up(region.start, FRAME_SIZE).max(kernel_phys_start);
+        let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+            continue;
+        };
+        let lo = lo.max(kernel_phys_start);
         let hi = align_down(region.end, FRAME_SIZE).min(kernel_phys_end);
         if hi > lo {
             return Err(MemError::ImageOverlapsUsable);
@@ -352,8 +374,8 @@ pub fn build_inventory(
     })
 }
 
-fn align_up(value: u64, align: u64) -> u64 {
-    value.div_ceil(align) * align
+fn align_up(value: u64, align: u64) -> Option<u64> {
+    value.checked_add((align - value % align) % align)
 }
 
 fn align_down(value: u64, align: u64) -> u64 {
@@ -435,6 +457,46 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reversed_regions_and_skips_unrepresentable_tail() {
+        let reversed = [usable(0x3000, 0x2000)];
+        assert_eq!(
+            build_inventory(&reversed, 0x4000, 0x1000),
+            Err(MemError::RegionsNotSortedOrOverlapping)
+        );
+        assert_eq!(
+            FreeFrameAllocator::from_regions(&reversed, 0x4000, 0x5000),
+            Err(AllocatorError::InvalidRange)
+        );
+
+        let tail = [usable(u64::MAX - 10, u64::MAX)];
+        assert_eq!(first_usable_frame_phys(&tail), None);
+        assert_eq!(
+            build_inventory(&tail, 0x4000, 0x1000)
+                .unwrap()
+                .usable_frames,
+            0
+        );
+        assert_eq!(
+            FreeFrameAllocator::from_regions(&tail, 0x4000, 0x5000)
+                .unwrap()
+                .remaining(),
+            0
+        );
+    }
+
+    #[test]
+    fn rejects_image_address_overflow() {
+        assert_eq!(
+            build_inventory(&[], u64::MAX - 10, 20),
+            Err(MemError::InvalidImageRange)
+        );
+        assert_eq!(
+            build_inventory(&[], u64::MAX - 10, 1),
+            Err(MemError::InvalidImageRange)
+        );
+    }
+
+    #[test]
     fn allocator_releases_and_reuses_a_frame_once() {
         let regions = [usable(0x0, 0x3000)];
         let mut allocator = FreeFrameAllocator::from_regions(&regions, 0x4000, 0x5000).unwrap();
@@ -446,6 +508,22 @@ mod tests {
         assert_eq!(allocator.allocate(), Ok(frame));
         allocator.release(frame).unwrap();
         allocator.check_invariants(0x4000, 0x5000).unwrap();
+    }
+
+    #[test]
+    fn allocator_skips_exhausted_ranges_and_reuses_recycled_frames() {
+        let regions = [usable(0x0, 0x1000), usable(0x3000, 0x5000)];
+        let mut allocator = FreeFrameAllocator::from_regions(&regions, 0x6000, 0x7000).unwrap();
+        assert_eq!(allocator.allocate(), Ok(0));
+        assert_eq!(allocator.next_range, 1);
+        allocator.release(0).unwrap();
+        assert_eq!(allocator.allocate(), Ok(0));
+        assert_eq!(allocator.next_range, 1);
+        assert_eq!(allocator.allocate(), Ok(0x3000));
+        assert_eq!(allocator.allocate(), Ok(0x4000));
+        assert_eq!(allocator.next_range, allocator.range_count);
+        assert_eq!(allocator.allocate(), Err(AllocatorError::NoFrame));
+        allocator.check_invariants(0x6000, 0x7000).unwrap();
     }
 
     #[test]

@@ -270,15 +270,16 @@ impl FrameRegistry {
         else {
             return Err(FrameError::NotOwned);
         };
+        // 分配器可能拒绝归还；先完成可能失败的步骤，避免丢失归属记录。
+        self.alloc
+            .release(frame)
+            .map_err(|_| FrameError::NotOwned)?;
         for shift in index..self.owner_count - 1 {
             self.owners[shift] = self.owners[shift + 1];
         }
         self.owners[self.owner_count - 1] = None;
         self.owner_count -= 1;
         self.segment_frames -= 1;
-        self.alloc
-            .release(frame)
-            .map_err(|_| FrameError::NotOwned)?;
         Ok(())
     }
 
@@ -290,13 +291,13 @@ impl FrameRegistry {
         else {
             return Err(FrameError::NotOwned);
         };
+        self.alloc
+            .release(frame)
+            .map_err(|_| FrameError::NotOwned)?;
         for shift in index..self.table_count - 1 {
             self.table_frames[shift] = self.table_frames[shift + 1];
         }
         self.table_count -= 1;
-        self.alloc
-            .release(frame)
-            .map_err(|_| FrameError::NotOwned)?;
         Ok(())
     }
 
@@ -631,6 +632,66 @@ mod tests {
             Err(FrameError::CapacityExceeded)
         );
         assert!(registry.check_conservation().is_ok());
+    }
+
+    #[test]
+    fn all_live_frames_can_be_returned_without_filling_the_recycle_pool() {
+        let count = MAX_FRAME_OWNERS + MAX_TABLE_FRAMES;
+        let regions = [MemoryRegion {
+            start: 0x10_0000,
+            end: 0x10_0000 + count as u64 * crate::mem::FRAME_SIZE,
+            kind: MemoryRegionKind::Usable,
+        }];
+        let inventory = FrameInventory {
+            usable_frames: count,
+            image_frames: 1,
+            free_frames: count,
+            usable_regions: 1,
+            kernel_phys_start: 0x40_0000,
+            kernel_phys_end: 0x40_1000,
+        };
+        let alloc = FreeFrameAllocator::from_regions(&regions, 0x40_0000, 0x40_1000).unwrap();
+        let mut registry = FrameRegistry::new(&inventory, alloc).unwrap();
+        registry.open_segment(1, Pool::Cpu).unwrap();
+        let mut data = [0; MAX_FRAME_OWNERS];
+        let mut tables = [0; MAX_TABLE_FRAMES];
+        for frame in &mut data {
+            *frame = registry.allocate_for_segment(1).unwrap();
+        }
+        for frame in &mut tables {
+            *frame = registry.allocate_table_frame().unwrap();
+        }
+        for frame in data {
+            registry.release_frame(1, frame).unwrap();
+        }
+        for frame in tables {
+            registry.release_table_frame(frame).unwrap();
+        }
+        assert_eq!(registry.alloc.remaining(), count);
+        assert!(registry.check_conservation().is_ok());
+    }
+
+    #[test]
+    fn rejected_release_preserves_frame_ownership() {
+        let mut registry = registry();
+        registry.open_segment(1, Pool::Cpu).unwrap();
+        registry.allocate_for_segment(1).unwrap();
+        registry.owners[0] = Some((0xdead_0000, 1));
+        let before = registry;
+        assert_eq!(
+            registry.release_frame(1, 0xdead_0000),
+            Err(FrameError::NotOwned)
+        );
+        assert!(registry == before);
+
+        registry.allocate_table_frame().unwrap();
+        registry.table_frames[0] = 0xdead_1000;
+        let before = registry;
+        assert_eq!(
+            registry.release_table_frame(0xdead_1000),
+            Err(FrameError::NotOwned)
+        );
+        assert!(registry == before);
     }
 
     #[test]
