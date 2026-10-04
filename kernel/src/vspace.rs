@@ -14,6 +14,9 @@ pub const PT_WRITABLE: u64 = 1 << 1;
 /// PTE user 位（bit 2）：CPL3 可访问该页。
 pub const PT_USER: u64 = 1 << 2;
 
+/// PDPT/PD 叶项的大页位（bit 7）。
+pub const PT_HUGE: u64 = 1 << 7;
+
 /// PTE 物理地址掩码（bits 12..51）。
 pub const PT_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -31,7 +34,7 @@ pub const MAGIC_B: u64 = 0xBBBB_0000_3333_4444;
 pub enum VspaceError {
     /// 需要新建页表页但帧分配器已耗尽（不产生任何写入）。
     NoFrame,
-    /// 目标映射的中间层级不存在（`set_leaf`/`read_leaf` 只走已建好的路径）。
+    /// 目标映射的中间层级不存在，或路径上已有大页。
     BadRoot,
     /// 演示用的 PML4 槽已被占用（拒绝覆盖 bootloader 已有映射）。
     SlotOccupied,
@@ -80,17 +83,20 @@ fn zero_table(mapped_va: u64) {
 /// PDPT/PD/PT 中自 `k` 起的那 `3 - k` 张表（叶 PT 已含在内），而非"3 个中间层 + 1 个叶 PT"。
 /// 多出的那帧被分配后从不使用、也从不归还，**每个新建路径泄漏一帧**：小规模映射时不可见，
 /// 逐 4 KiB 覆盖 128 MiB 直映射（64 张 PT）时泄漏 60+ 帧并撑爆 `MAX_TABLE_FRAMES`。
-fn count_missing(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> usize {
+fn count_missing(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<usize, VspaceError> {
     let idx = indices(va);
     let mut table = root_phys;
     for (k, &slot) in idx[..3].iter().enumerate() {
         let entry = read_raw(map(table) + (slot as u64) * 8);
         if entry & PT_PRESENT == 0 {
-            return 3 - k;
+            return Ok(3 - k);
+        }
+        if entry & PT_HUGE != 0 {
+            return Err(VspaceError::BadRoot);
         }
         table = entry & PT_ADDR_MASK;
     }
-    0
+    Ok(0)
 }
 
 /// 建立 `va → frame_phys` 的 4KiB 映射，缺页表页时经 `alloc` 取新帧。
@@ -106,7 +112,7 @@ pub fn map_4k(
     writable: bool,
     user: bool,
 ) -> Result<(), VspaceError> {
-    let needed = count_missing(root_phys, va, &map);
+    let needed = count_missing(root_phys, va, &map)?;
     let mut fresh = [0u64; 4];
     for slot in fresh[..needed].iter_mut() {
         *slot = alloc().ok_or(VspaceError::NoFrame)?;
@@ -159,6 +165,9 @@ pub fn unmap_4k(
     for level in 0..3 {
         let entry = read_raw(map(table) + (idx[level] as u64) * 8);
         if entry & PT_PRESENT == 0 {
+            return Err(VspaceError::BadRoot);
+        }
+        if entry & PT_HUGE != 0 {
             return Err(VspaceError::BadRoot);
         }
         table = entry & PT_ADDR_MASK;
@@ -223,6 +232,9 @@ fn walk_to_leaf_table(
         if entry & PT_PRESENT == 0 {
             return Err(VspaceError::BadRoot);
         }
+        if entry & PT_HUGE != 0 {
+            return Err(VspaceError::BadRoot);
+        }
         table = entry & PT_ADDR_MASK;
     }
     Ok(table)
@@ -236,7 +248,6 @@ fn walk_to_leaf_table(
 ///
 /// 返回 `None` 表示路径缺失或叶项 present=0。
 pub fn leaf_phys_or_none(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> Option<u64> {
-    const PS: u64 = 1 << 7;
     let idx = indices(va);
     let mut table = root_phys;
     let mut level = 0;
@@ -245,7 +256,7 @@ pub fn leaf_phys_or_none(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> O
         if entry & PT_PRESENT == 0 {
             return None;
         }
-        if entry & PS != 0 {
+        if entry & PT_HUGE != 0 {
             // 大页：1 GiB（level 1，PDPT）或 2 MiB（level 2，PD）。页内偏移直接取自 VA 低位。
             let page_size = match level {
                 1 => 1u64 << 30,
@@ -609,6 +620,34 @@ mod tests {
         assert_eq!(result, Err(VspaceError::NoFrame));
         // 未产生任何写入：PML4[1] 仍为 0。
         assert_eq!(read_raw(root + 8), 0);
+    }
+
+    #[test]
+    fn four_k_walk_rejects_a_huge_page_in_the_path() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let pdpt = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        let va = VSPACE_VA;
+        let idx = indices(va);
+        write_raw(root + idx[0] as u64 * 8, pdpt | PT_PRESENT);
+        write_raw(pdpt + idx[1] as u64 * 8, data | PT_PRESENT | PT_HUGE);
+        write_raw(data + idx[2] as u64 * 8, 0x1234);
+
+        assert_eq!(
+            map_4k(root, va, identity, || pool.alloc(), data, true, false),
+            Err(VspaceError::BadRoot)
+        );
+        assert_eq!(read_leaf(root, va, identity), Err(VspaceError::BadRoot));
+        assert_eq!(
+            set_leaf(root, va, identity, data, true, false),
+            Err(VspaceError::BadRoot)
+        );
+        assert_eq!(
+            unmap_4k(root, va, identity, |_| Ok(())),
+            Err(VspaceError::BadRoot)
+        );
+        assert_eq!(read_raw(data + idx[2] as u64 * 8), 0x1234);
     }
 
     #[test]

@@ -5989,9 +5989,7 @@ impl BootstrapState {
             if self.vspace.find(task_id, va).is_some() {
                 return Err(MemsegError::Overlap);
             }
-            if crate::vspace::read_leaf(root_phys, va, map)
-                .is_ok_and(|pte| pte & crate::vspace::PT_PRESENT != 0)
-            {
+            if crate::vspace::leaf_phys_or_none(root_phys, va, map).is_some() {
                 return Err(MemsegError::Overlap);
             }
         }
