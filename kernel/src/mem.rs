@@ -2,7 +2,8 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 pub const FRAME_SIZE: u64 = 4096;
 const MAX_FREE_RANGES: usize = 128;
-const MAX_RECYCLED_FRAMES: usize = 256;
+// FrameRegistry 最多同时持有 192 个 Segment 帧和 128 个页表帧；全部归还也必须有位置。
+const MAX_RECYCLED_FRAMES: usize = 320;
 
 /// 物理地址经 bootloader 的物理内存直映射换算为虚拟地址（offset + phys）。
 pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
