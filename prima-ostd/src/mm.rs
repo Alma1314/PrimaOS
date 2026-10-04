@@ -69,16 +69,13 @@ pub fn write_u8_at(va: u64, index: u64, value: u8) {
     write_u8(va + index, value)
 }
 
-/// 从 `va` 起按 qword 写零 `len` 字节（`len` 应为 8 的倍数，调用方保证）。
+/// 从 `va` 起清零 `len` 字节普通 RAM。
 ///
-/// 契约：`[va, va+len)` 已映射且可写。语义与逐 qword `write_u64` 相同。
+/// 契约：`[va, va+len)` 已映射、可写且不是 MMIO；调用方独占该内存。
 #[inline]
-pub fn fill_zero(va: u64, len: u64) {
-    let mut offset = 0;
-    while offset < len {
-        write_u64(va + offset, 0);
-        offset += 8;
-    }
+pub fn fill_zero(va: u64, len: usize) {
+    // SAFETY: 调用方保证整段普通 RAM 有效且独占；无需对每个 qword 做易失写入。
+    unsafe { ptr::write_bytes(va as *mut u8, 0, len) }
 }
 
 /// 取 `value` 的字节视图。
@@ -113,11 +110,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fill_zero_writes_qwords() {
+    fn fill_zero_writes_requested_bytes() {
         let mut buffer = [0xaau64; 4];
         let va = buffer.as_mut_ptr() as u64;
-        fill_zero(va, 16);
-        assert_eq!(buffer, [0, 0, 0xaa, 0xaa]);
+        fill_zero(va + 1, 15);
+        assert_eq!(buffer[0], 0xaa);
+        assert_eq!(buffer[1], 0);
+        assert_eq!(buffer[2..], [0xaa, 0xaa]);
     }
 
     #[test]

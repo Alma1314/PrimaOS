@@ -14,7 +14,7 @@ pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {
 /// 归还帧仍在空闲池中保留上次归属的字节，故每次 `memseg_create` 取帧后必须调用本函数。
 pub fn zero_frame(phys: u64, phys_map_offset: u64) {
     let base = phys_to_virt(phys, phys_map_offset);
-    prima_ostd::mm::fill_zero(base, FRAME_SIZE);
+    prima_ostd::mm::fill_zero(base, FRAME_SIZE as usize);
 }
 
 /// 读取一个物理地址处的字节（经直映射），返回 (虚拟地址, 读到字节)。
@@ -68,6 +68,8 @@ pub struct FreeFrameRange {
 pub struct FreeFrameAllocator {
     ranges: [Option<FreeFrameRange>; MAX_FREE_RANGES],
     range_count: usize,
+    /// 已耗尽的区间永不重新扫描；归还的帧从 recycled 栈优先取用。
+    next_range: usize,
     remaining: usize,
     recycled: [u64; MAX_RECYCLED_FRAMES],
     recycled_count: usize,
@@ -88,6 +90,7 @@ impl FreeFrameAllocator {
         Self {
             ranges: [None; MAX_FREE_RANGES],
             range_count: 0,
+            next_range: 0,
             remaining: 0,
             recycled: [0; MAX_RECYCLED_FRAMES],
             recycled_count: 0,
@@ -148,13 +151,15 @@ impl FreeFrameAllocator {
             self.remaining -= 1;
             return Ok(self.recycled[self.recycled_count]);
         }
-        for range in self.ranges[..self.range_count].iter_mut().flatten() {
-            if range.next < range.end {
-                let frame = range.next;
-                range.next += FRAME_SIZE;
-                self.remaining -= 1;
-                return Ok(frame);
+        if self.next_range < self.range_count {
+            let range = self.ranges[self.next_range].as_mut().unwrap();
+            let frame = range.next;
+            range.next += FRAME_SIZE;
+            if range.next == range.end {
+                self.next_range += 1;
             }
+            self.remaining -= 1;
+            return Ok(frame);
         }
         Err(AllocatorError::NoFrame)
     }
@@ -185,6 +190,7 @@ impl FreeFrameAllocator {
             || !image_start.is_multiple_of(FRAME_SIZE)
             || !image_end.is_multiple_of(FRAME_SIZE)
             || self.range_count > MAX_FREE_RANGES
+            || self.next_range > self.range_count
             || self.recycled_count > MAX_RECYCLED_FRAMES
         {
             return Err(AllocatorError::InvariantViolation);
@@ -209,6 +215,8 @@ impl FreeFrameAllocator {
                 || !range.end.is_multiple_of(FRAME_SIZE)
                 || !range.next.is_multiple_of(FRAME_SIZE)
                 || range.start < previous_end
+                || (index < self.next_range && range.next != range.end)
+                || (index >= self.next_range && range.next == range.end)
             {
                 return Err(AllocatorError::InvariantViolation);
             }
@@ -446,6 +454,22 @@ mod tests {
         assert_eq!(allocator.allocate(), Ok(frame));
         allocator.release(frame).unwrap();
         allocator.check_invariants(0x4000, 0x5000).unwrap();
+    }
+
+    #[test]
+    fn allocator_skips_exhausted_ranges_and_reuses_recycled_frames() {
+        let regions = [usable(0x0, 0x1000), usable(0x3000, 0x5000)];
+        let mut allocator = FreeFrameAllocator::from_regions(&regions, 0x6000, 0x7000).unwrap();
+        assert_eq!(allocator.allocate(), Ok(0));
+        assert_eq!(allocator.next_range, 1);
+        allocator.release(0).unwrap();
+        assert_eq!(allocator.allocate(), Ok(0));
+        assert_eq!(allocator.next_range, 1);
+        assert_eq!(allocator.allocate(), Ok(0x3000));
+        assert_eq!(allocator.allocate(), Ok(0x4000));
+        assert_eq!(allocator.next_range, allocator.range_count);
+        assert_eq!(allocator.allocate(), Err(AllocatorError::NoFrame));
+        allocator.check_invariants(0x6000, 0x7000).unwrap();
     }
 
     #[test]
