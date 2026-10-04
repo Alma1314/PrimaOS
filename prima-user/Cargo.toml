@@ -1,0 +1,14 @@
+[package]
+name = "prima-user"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "prima-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+prima-runtime = { path = "../prima-runtime" }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "prima-ostd", "xtask", "cosir"]
+members = ["kernel", "prima-abi", "prima-ostd", "prima-runtime", "prima-user", "xtask", "cosir"]
 default-members = ["xtask"]
 
 [profile.dev]

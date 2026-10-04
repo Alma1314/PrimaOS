@@ -36,74 +36,14 @@ use crate::vspace::{self, PT_PRESENT, PT_USER, PT_WRITABLE};
 use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
-/// 合法 syscall 号：回显（`arg0 ^ ECHO_MASK`）。
-pub const SYS_ECHO: u64 = 1;
-/// 合法 syscall 号：4 参数求和（多寄存器参数见证）。
-pub const SYS_SUM4: u64 = 2;
-/// 合法 syscall 号：从用户缓冲读入最多 8 字节并组装为 u64。
-pub const SYS_COPY_IN: u64 = 3;
-/// 合法 syscall 号：能力授权查询（`args[0]=cap_id`、`args[1]=right code`）。
-pub const SYS_AUTHORIZE: u64 = 4;
-/// 切片 L：异常订阅（`args[0]=exc source cap_id`、`args[1]=kind code`）。
-pub const SYS_EXC_SUBSCRIBE: u64 = 5;
-/// 切片 L：取消异常订阅（`args[0]=exc source cap_id`）。
-pub const SYS_EXC_UNSUBSCRIBE: u64 = 6;
-/// 切片 M：返回当前运行 Task 的 id（真实调度身份）。
-pub const SYS_TASK_ID: u64 = 7;
-/// 切片 M：协作式让出，切换到下一个 Ready 任务（不返回给调用者，直到其被重新调度）。
-pub const SYS_YIELD: u64 = 8;
-/// 切片 N：阻塞等待一条异常通知（`args[0]=exc source cap_id`、`args[1]=kind code`）。
-pub const SYS_EXC_WAIT: u64 = 9;
-/// 切片 N：发起一次 syscall trap，内核据此 `raise_exception(syscall_trap_source, SyscallTrap)`。
-pub const SYS_TRAP: u64 = 10;
-/// S2-D2：`cap_derive`（`args[0]=parent handle`、`args[1]=rights bitset`）。
-pub const SYS_CAP_DERIVE: u64 = 11;
-/// S2-D2：`cap_drop`（`args[0]=handle`）。
-pub const SYS_CAP_DROP: u64 = 12;
-/// S2-D3：`memseg_create`（`args[0]=page_count`、`args[1]=allowed_access bits`）。
-pub const SYS_MEMSEG_CREATE: u64 = 13;
-/// S2-D3：`memseg_map`（`args[0..5] = seg_cap, task_cap, seg_offset, target_base, page_count, access`）。
-pub const SYS_MEMSEG_MAP: u64 = 14;
-/// S2-D3：`memseg_unmap`（`args[0..2] = task_cap, target_base, page_count`）。
-pub const SYS_MEMSEG_UNMAP: u64 = 15;
-/// S2-D3：`memseg_destroy`（`args[0]=seg_cap`）。
-pub const SYS_MEMSEG_DESTROY: u64 = 16;
-/// 切片 S：`send`（`args[0]=receiver`、`args[1]=send cap`、`args[2]=payload`、
-/// `args[3]=cap_count`、`args[4]=cap0`、`args[5]=cap1`）。
-pub const SYS_SEND: u64 = 17;
-/// 切片 S：`recv`（`args[0]=out_ptr`，指向 3 个 qword：`cap0/cap1/cap_count`）。
-///
-/// 返回 payload；队列为空时阻塞并切走，被发送方直投唤醒后从保存帧 `rax` 取得 payload。
-pub const SYS_RECV: u64 = 18;
-/// S2-D4：`task_create`（`args[0]=req_ptr`，指向 10 个 qword 的请求块；返回 manager cap）。
-pub const SYS_TASK_CREATE: u64 = 19;
-/// S2-D4：`task_destroy`（`args[0]=task_cap`，须含 `TaskDestroy`）。
-pub const SYS_TASK_DESTROY: u64 = 20;
-/// SPEC-081：`ns_create`（无参数），返回新 Namespace 根 Capability 句柄。
-pub const SYS_NS_CREATE: u64 = 21;
-/// SPEC-081：`ns_bind`（`args[0]=ns cap`、`args[1..3]=path ptr/len`、`args[3]=cap`）。
-pub const SYS_NS_BIND: u64 = 22;
-/// SPEC-081：`ns_unbind`（`args[0]=ns cap`、`args[1..3]=path ptr/len`），返回取回的句柄。
-pub const SYS_NS_UNBIND: u64 = 23;
-/// SPEC-081：`ns_mount`（`args[0]=destination cap`、`args[1..3]=path ptr/len`、
-/// `args[3]=source cap`）。
-pub const SYS_NS_MOUNT: u64 = 24;
-/// SPEC-081：`ns_unmount`（`args[0]=ns cap`、`args[1..3]=path ptr/len`）。
-pub const SYS_NS_UNMOUNT: u64 = 25;
-/// SPEC-081：`ns_resolve`（`args[0]=ns cap`、`args[1..3]=path ptr/len`、
-/// `args[3]=requested rights bits`），返回派生句柄。
-pub const SYS_NS_RESOLVE: u64 = 26;
-/// SPEC-081：`ns_destroy`（`args[0]=ns cap`）。
-pub const SYS_NS_DESTROY: u64 = 27;
-/// SPEC-082：`time_now`（无参数），返回抽象绝对时间（§10.1）。
-pub const SYS_TIME_NOW: u64 = 28;
-/// SPEC-082：`timer_set`（`args[0]=deadline`），返回 Timer 根 Capability 句柄。
-pub const SYS_TIMER_SET: u64 = 29;
-/// SPEC-082：`timer_cancel`（`args[0]=timer cap`）——`0=Cancelled`、`1=AlreadyFired`、
-/// `2=AlreadyCancelled`（§10.4 的后两者是**状态返回**而非失败）。
-pub const SYS_TIMER_CANCEL: u64 = 30;
-/// SPEC-082：`timer_destroy`（`args[0]=timer cap`）。
-pub const SYS_TIMER_DESTROY: u64 = 31;
+pub use prima_abi::syscall::{
+    SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO, SYS_EXC_SUBSCRIBE,
+    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
+    SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE,
+    SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
+    SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP,
+    SYS_YIELD,
+};
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
 pub const TIMER_CANCEL_OUTCOME_CANCELLED: u64 = 0;
@@ -1692,6 +1632,7 @@ fn task_create_call(req_ptr: u64) -> u64 {
                 req.entry,
                 req.stack_top,
                 outcome.self_cap.encode(),
+                req.initial_caps.map(Handle::encode),
             )
             .is_err()
             {
@@ -2137,14 +2078,19 @@ pub extern "C" fn handle_fast(frame: AbiFrame) -> u64 {
     }
     let cs = frame.cs();
     let ret = serve(num, &args);
-    FAST.with_mut(|fast| {
-        *fast = FastRecord {
-            num,
-            arg: args[0],
-            cs,
-            ret,
-        };
-    });
+    // 记录指定的 echo 快路径见证，而不让后来运行的服务 Runtime syscall 覆盖它。
+    if num == SYS_ECHO && args[0] == FAST_ARG {
+        FAST.with_mut(|fast| {
+            if fast.num == 0 {
+                *fast = FastRecord {
+                    num,
+                    arg: args[0],
+                    cs,
+                    ret,
+                };
+            }
+        });
+    }
     ret
 }
 

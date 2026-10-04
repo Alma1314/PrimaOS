@@ -5769,16 +5769,23 @@ impl BootstrapState {
 
     /// S2-D4：建新 Task 的代码 Segment（用户区第一个 id）并铸两条 bring-up Capability。
     ///
-    /// 返回代码段首帧物理地址，供内核写入 `task3_code()`。代码段用**用户区 id**而非平台区间，
+    /// 返回代码段帧向量，供内核装载独立用户 ELF。代码段用**用户区 id**而非平台区间，
     /// 故 `PLATFORM_SEGMENT_ID_LAST`/`PLATFORM_SEGMENT_COUNT` 与平台 cap 槽 32..44 不变。
     ///
     /// 必须在 `platform_prepare_task_caps` 之后调用（两条 cap 的目标 Task(1) 已存活），且在
     /// 既有 bring-up 取帧序列**之后**调用（避免平移切片 E/F/G/O 的物理帧序列）。
-    pub fn prepare_task_create_caps(&mut self, phys_offset: u64) -> Result<u64, MemsegError> {
+    pub fn prepare_task_create_caps(
+        &mut self,
+        code_pages: usize,
+        phys_offset: u64,
+    ) -> Result<SegmentFrames, MemsegError> {
+        if code_pages == 0 || code_pages > MAX_SEGMENT_FRAMES {
+            return Err(MemsegError::OutOfBounds);
+        }
         let (_, frames) = self.create_segment_object(
             USER_SEGMENT_ID_FIRST,
             KERNEL_ACTOR,
-            1,
+            code_pages,
             TASK_CREATE_CODE_ACCESS,
             phys_offset,
             Some((
@@ -5801,7 +5808,7 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        frames.frame_at(0).ok_or(MemsegError::NoMemory)
+        Ok(frames)
     }
 
     /// 一条平台根 Capability 的属主：满足全部结构性条件时返回其 holder id。
@@ -6546,10 +6553,13 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
     })
 }
 
-/// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段首帧物理地址。
-pub fn prepare_task_create_caps(phys_offset: u64) -> Result<u64, MemsegError> {
+/// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段帧向量。
+pub fn prepare_task_create_caps(
+    code_pages: usize,
+    phys_offset: u64,
+) -> Result<SegmentFrames, MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => state.prepare_task_create_caps(phys_offset),
+        Some(state) => state.prepare_task_create_caps(code_pages, phys_offset),
         None => Err(MemsegError::TargetDead),
     })
 }

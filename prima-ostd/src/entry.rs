@@ -16,6 +16,54 @@ use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use crate::mm;
 use crate::sync::StaticCell;
 
+/// 用户态 syscall 递送的入口错误。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserSyscallError {
+    /// 当前 CS 不处于 CPL3，拒绝执行可能依赖用户态入口配置的 `syscall` 指令。
+    NotUserMode,
+}
+
+/// 从 CPL3 发起一次 x86_64 `syscall`，返回原始 RAX 位模式。
+///
+/// 入口必须已由内核配置，且本任务需要位于有效的用户地址空间中。函数先读取 CS 并检查
+/// CPL，避免内核态误走用户 syscall 入口。调用约定与 Prima 原型一致：号在 RAX，参数在
+/// RDI/RSI/RDX/R10/R8/R9，返回值在 RAX；RCX/R11 按硬件约定被破坏。
+#[inline]
+pub fn syscall_from_user(number: u64, args: [u64; 6]) -> Result<u64, UserSyscallError> {
+    let cs: u16;
+    // SAFETY: 读取 CS 是非特权可执行的 segment-register read；不访问内存或修改状态。
+    unsafe {
+        asm!(
+            "mov {cs:x}, cs",
+            cs = out(reg) cs,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    if cs & 3 != 3 {
+        return Err(UserSyscallError::NotUserMode);
+    }
+
+    let result: u64;
+    // SAFETY: CPL3 已检查；目标内核必须已安装匹配的 LSTAR 入口。输入寄存器与当前 ABI
+    // 一致，RCX/R11 按 syscall 指令语义声明为 clobber。默认保留内存副作用声明。
+    unsafe {
+        asm!(
+            "syscall",
+            inlateout("rax") number => result,
+            in("rdi") args[0],
+            in("rsi") args[1],
+            in("rdx") args[2],
+            in("r10") args[3],
+            in("r8") args[4],
+            in("r9") args[5],
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    Ok(result)
+}
+
 /// `SretFrame` 的字节长度（20 × u64）。
 pub const SRET_FRAME_LEN: usize = 0xA0;
 

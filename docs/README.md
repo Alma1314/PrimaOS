@@ -1,0 +1,114 @@
+# 文档索引
+
+本目录收录按日期组织的阶段切片资料。每一项设计、计划和报告都保留其编写时的范围与结论；判断当前项目状态时，请以仓库根目录的[实现阶段与证据跟踪](../Prima%20OS%20实现阶段.md)为准。
+
+## 如何选择文档
+
+| 你要了解 | 阅读 |
+|---|---|
+| 为什么这样设计、边界是什么 | `specs/` 中对应切片的设计 |
+| 工作如何拆分、有哪些验收条件 | `plans/` 中对应切片的计划 |
+| 实际改动、验证结果和失败记录 | `reports/` 中对应切片的报告 |
+| 全局架构与规范语义 | [Prima OS 白皮书](../Prima%20OS.md)、[COSIR 原语规范](../COSIR%20原语规范.md) |
+| 当前状态和阶段证据 | [实现阶段跟踪](../Prima%20OS%20实现阶段.md) |
+
+## 计划
+
+按日期倒序排列。
+
+- [2026-09-16 — 阶段 1 收尾](superpowers/plans/2026-09-16-stage1-closure.md)
+- [2026-09-15 — Linux trace 兼容性](superpowers/plans/2026-09-15-linux-trace-compat.md)
+- [2026-09-05 — Page Fault 错误码语义](superpowers/plans/2026-09-05-pf-error-code-semantics.md)
+- [2026-08-18 — BLK-001 Lean 形式化模型](superpowers/plans/2026-08-18-blk001-lean-formal-model.md)
+- [2026-08-17 — 物理内存发现](superpowers/plans/2026-08-17-physmem-discovery.md)
+- [2026-08-17 — 页表、GDT、IDT 与 trap](superpowers/plans/2026-08-17-page-gdt-idt-trap.md)
+- [2026-08-16 — Prima OS 审计修复](superpowers/plans/2026-08-16-primaos-audit-remediation.md)
+- [2026-08-15 — TLB 细化](superpowers/plans/2026-08-15-tlb-refine.md)
+- [2026-08-14 — COW 细化](superpowers/plans/2026-08-14-cow-refinement-slice.md)
+- [2026-08-13 — exc_resume 安全修复](superpowers/plans/2026-08-13-exc-resume-security-remediation.md)
+- [2026-08-12 — MemorySegment 修复](superpowers/plans/2026-08-12-memseg-refinement-remediation.md)
+- [2026-08-12 — MemorySegment 页表细化](superpowers/plans/2026-08-12-memseg-pagewalk-refinement-slice.md)
+- [2026-08-07 — 异常恢复细化](superpowers/plans/2026-08-07-exc-resume-slice.md)
+- [2026-08-07 — BLK-002 细化](superpowers/plans/2026-08-07-blk002-refinement-slice.md)
+- [2026-08-04 — 阶段 1 启动闭环](superpowers/plans/2026-08-04-stage1-boot-slice.md)
+- [2026-07-30 — 实施阶段跟踪文档](superpowers/plans/2026-07-30-implementation-stage-tracker.md)
+- [2026-07-30 — COSIR 原语修复](superpowers/plans/2026-07-30-cosir-primitive-fixes.md)
+
+## 设计
+
+按日期倒序排列；同日切片按主题列出。
+
+- [2026-09-25 — 阶段 4 原生运行时 API 与版本规则（探索）](superpowers/specs/2026-09-25-stage4-runtime-api-design.md)
+- [2026-09-25 — 阶段 3 审计追踪](superpowers/specs/2026-09-25-stage3-audit-trace-design.md)
+- [2026-09-25 — 阶段 3 Namespace](superpowers/specs/2026-09-25-stage3-namespace-design.md)
+- [2026-09-25 — 阶段 3 Timer](superpowers/specs/2026-09-25-stage3-timer-design.md)
+- [2026-09-25 — framekernel 收口](superpowers/specs/2026-09-25-framekernel-closure-design.md)
+- [2026-09-25 — trap/syscall 入口反转](superpowers/specs/2026-09-25-framekernel-entry-inversion-design.md)
+- [2026-09-25 — framekernel 全局状态](superpowers/specs/2026-09-25-framekernel-global-state-design.md)
+- [2026-09-25 — framekernel 内存 POD](superpowers/specs/2026-09-25-framekernel-mm-pod-design.md)
+- [2026-09-25 — framekernel 分层骨架](superpowers/specs/2026-09-25-framekernel-skeleton-design.md)
+- [2026-09-24 — 审计存储重构](superpowers/specs/2026-09-24-stage2-audit-storage-refactor-design.md)
+- [2026-09-24 — exc_resume 用户化](superpowers/specs/2026-09-24-stage2-exc-resume-design.md)
+- [2026-09-24 — Faulted 状态机](superpowers/specs/2026-09-24-stage2-faulted-state-machine-design.md)
+- [2026-09-24 — 内核回收路径](superpowers/specs/2026-09-24-stage2-kernel-reclaim-design.md)
+- [2026-09-24 — 回收判据收紧](superpowers/specs/2026-09-24-stage2-reclaim-predicate-tightening-design.md)
+- [2026-09-24 — 调度状态审计](superpowers/specs/2026-09-24-stage2-scheduler-state-audit-design.md)
+- [2026-09-24 — 自建 CR3](superpowers/specs/2026-09-24-stage2-self-built-cr3-design.md)
+- [2026-09-23 — image Segment 帧向量](superpowers/specs/2026-09-23-stage2-image-frame-vector-design.md)
+- [2026-09-17 — Task 自毁](superpowers/specs/2026-09-17-stage2-task-self-destroy-design.md)
+- [2026-09-17 — Task 生命周期](superpowers/specs/2026-09-17-stage2-task-lifecycle-design.md)
+- [2026-09-17 — 平台 Capability 移交](superpowers/specs/2026-09-17-stage2-platform-cap-handover-design.md)
+- [2026-09-16 — IPC 用户接口](superpowers/specs/2026-09-16-stage2-ipc-user-surface-design.md)
+- [2026-09-16 — 句柄、Capability 与 Segment](superpowers/specs/2026-09-16-stage2-handles-caps-segments-design.md)
+- [2026-09-16 — bring-up Segment 迁移](superpowers/specs/2026-09-16-stage2-bringup-segment-migration-design.md)
+- [2026-09-16 — 阶段 1 收尾](superpowers/specs/2026-09-16-stage1-closure-design.md)
+- [2026-09-15 — Linux trace 兼容性](superpowers/specs/2026-09-15-linux-trace-compat-design.md)
+- [2026-09-05 — Page Fault 错误码语义](superpowers/specs/2026-09-05-pf-error-code-semantics-design.md)
+- [2026-08-18 — BLK-001 Lean 模型](superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md)
+- [2026-08-17 — 物理内存发现](superpowers/specs/2026-08-17-physmem-discovery-design.md)
+- [2026-08-17 — 页表、GDT、IDT 与 trap](superpowers/specs/2026-08-17-page-gdt-idt-trap-design.md)
+- [2026-08-16 — Prima OS 审计修复](superpowers/specs/2026-08-16-primaos-audit-remediation-design.md)
+- [2026-08-15 — TLB 细化](superpowers/specs/2026-08-15-tlb-refine-design.md)
+- [2026-08-14 — COW 细化](superpowers/specs/2026-08-14-cow-refinement-design.md)
+- [2026-08-12 — 细化审计修复](superpowers/specs/2026-08-12-refinement-audit-remediation-design.md)
+- [2026-08-12 — MemorySegment 页表细化](superpowers/specs/2026-08-12-memseg-pagewalk-refinement-design.md)
+- [2026-08-07 — 异常恢复细化](superpowers/specs/2026-08-07-exc-resume-design.md)
+- [2026-08-07 — BLK-002 细化](superpowers/specs/2026-08-07-blk002-refinement-design.md)
+- [2026-08-04 — 阶段 1 启动闭环](superpowers/specs/2026-08-04-stage1-boot-slice-design.md)
+
+## 报告
+
+按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
+
+- [2026-09-25 — 阶段 4 原生运行时 API 初始实现](superpowers/reports/2026-09-25-stage4-runtime-api-prototype-report.md)
+- [2026-09-25 — 阶段 3 审计追踪](superpowers/reports/2026-09-25-stage3-audit-trace-report.md)
+- [2026-09-25 — 阶段 3 Namespace](superpowers/reports/2026-09-25-stage3-namespace-report.md)
+- [2026-09-25 — 阶段 3 Timer](superpowers/reports/2026-09-25-stage3-timer-report.md)
+- [2026-09-25 — framekernel 收口](superpowers/reports/2026-09-25-framekernel-closure-report.md)
+- [2026-09-25 — trap/syscall 入口反转](superpowers/reports/2026-09-25-framekernel-entry-inversion-report.md)
+- [2026-09-25 — framekernel 全局状态](superpowers/reports/2026-09-25-framekernel-global-state-report.md)
+- [2026-09-25 — framekernel 内存 POD](superpowers/reports/2026-09-25-framekernel-mm-pod-report.md)
+- [2026-09-25 — framekernel 分层骨架](superpowers/reports/2026-09-25-framekernel-skeleton-report.md)
+- [2026-09-24 — 审计存储重构](superpowers/reports/2026-09-24-stage2-audit-storage-refactor-report.md)
+- [2026-09-24 — exc_resume 用户化](superpowers/reports/2026-09-24-stage2-exc-resume-report.md)
+- [2026-09-24 — Faulted 状态机](superpowers/reports/2026-09-24-stage2-faulted-state-machine-report.md)
+- [2026-09-24 — 内核回收路径](superpowers/reports/2026-09-24-stage2-kernel-reclaim-report.md)
+- [2026-09-24 — 回收判据收紧](superpowers/reports/2026-09-24-stage2-reclaim-predicate-tightening-report.md)
+- [2026-09-24 — 调度状态审计](superpowers/reports/2026-09-24-stage2-scheduler-state-audit-report.md)
+- [2026-09-24 — 自建 CR3](superpowers/reports/2026-09-24-stage2-self-built-cr3-report.md)
+- [2026-09-23 — image Segment 帧向量](superpowers/reports/2026-09-23-stage2-image-frame-vector-report.md)
+- [2026-09-17 — Task 自毁](superpowers/reports/2026-09-17-stage2-task-self-destroy-report.md)
+- [2026-09-17 — Task 生命周期](superpowers/reports/2026-09-17-stage2-task-lifecycle-report.md)
+- [2026-09-17 — 平台 Capability 移交](superpowers/reports/2026-09-17-stage2-platform-cap-handover-report.md)
+- [2026-09-16 — IPC 用户接口](superpowers/reports/2026-09-16-stage2-ipc-user-surface-report.md)
+- [2026-09-16 — bring-up Segment 迁移](superpowers/reports/2026-09-16-stage2-bringup-segment-migration-report.md)
+- [2026-09-16 — 阶段 2 启动](superpowers/reports/2026-09-16-stage2-opening-report.md)
+- [2026-09-16 — 阶段 1 收尾](superpowers/reports/2026-09-16-stage1-closure-report.md)
+- [2026-09-15 — Linux trace 兼容性](superpowers/reports/2026-09-15-linux-trace-compat-report.md)
+- [2026-09-13 — SPEC-058 生命周期统一修订](superpowers/reports/2026-09-13-spec058-lifecycle-unification.md)
+- [2026-09-13 — S0-X2 操作覆盖](superpowers/reports/2026-09-13-s0x2-operation-coverage.md)
+- [2026-09-13 — S0-X1 生命周期独立审查](superpowers/reports/2026-09-13-s0x1-independent-lifecycle-review.md)
+- [2026-09-13 — S0-X1 修复复核](superpowers/reports/2026-09-13-s0x1-fix-reverification.md)
+- [2026-08-17 — Capability 派生模型缺口](superpowers/reports/2026-08-17-capability-derivation-model-gap.md)
+- [2026-08-16 — framekernel 差距分析](superpowers/reports/2026-08-16-framekernel-gap-analysis.md)
+- [2026-08-13 — Task 6 历史工件一致性](superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md)

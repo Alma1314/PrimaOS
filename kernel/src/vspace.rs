@@ -37,6 +37,8 @@ pub enum VspaceError {
     SlotOccupied,
     /// `unmap_4k` 目标页当前无映射。
     NotMapped,
+    /// 独立用户 ELF 格式或受支持的重定位不合法。
+    InvalidImage,
 }
 
 /// 从虚拟地址取出 4 级索引 `[i4, i3, i2, i1]`。

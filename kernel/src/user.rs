@@ -58,6 +58,9 @@ use crate::syscall::{
 use crate::vspace::{self, VspaceError};
 use prima_ostd::sync::StaticCell;
 
+/// 独立 Rust ring3 程序构建产物（ELF）。装载路径由 `prepare_runtime_app` 解析。
+pub static PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
+
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
 pub const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
 
@@ -69,6 +72,8 @@ pub const USER_STACK_VA: u64 = USER_BASE_VA + 0x1000;
 pub const USER_X_VA: u64 = USER_BASE_VA + 0x2000;
 /// 回执页 Y（可写、user），用户代码写入以证明 CPL3 执行与重试成功。
 pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
+/// Stage 4：Rust 用户客户端将 PRIM Hello 放入共享 Segment；init 经 IPC 收到 cap 后映射到此页。
+pub const USER_HELLO_VA: u64 = USER_BASE_VA + 0x7000;
 
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
@@ -93,7 +98,9 @@ pub const USER3_BASE_VA: u64 = 0x0000_0B00_0000_0000;
 /// `task_create` 创建的任务的代码页 VA（`load_base`/`entry`）。
 pub const USER3_CODE_VA: u64 = USER3_BASE_VA;
 /// `task_create` 创建的任务的栈页 VA（调用者经 manager cap 映射到此）。
-pub const USER3_STACK_VA: u64 = USER3_BASE_VA + 0x1000;
+// Rust ELF 占用 USER3_BASE_VA 起始 4 页；Task 3/4 共用的可写栈放到独立 2 MiB 区域，
+// 防止入口代码 Segment 与栈映射互相覆盖。
+pub const USER3_STACK_VA: u64 = USER3_BASE_VA + 0x10_0000;
 /// 新任务用户区所在的 PML4 槽。
 pub const USER3_SLOT: usize = 22;
 
@@ -169,6 +176,10 @@ pub const TASK4_CODE_OFFSET: u64 = 256;
 /// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一
 /// 时间片内发送后立即自毁，刚排队的 id 会被自己的销毁清理掉（实测确认），父任务将取不到。
 pub const TASK4_CODE_LEN: usize = 109;
+/// 当前 Rust smoke 用户映像 PT_LOAD 覆盖的页数；ELF 解析器会在启动时重新核验。
+pub const RUNTIME_APP_CODE_PAGES: usize = 4;
+/// 当前 PIE 用户映像入口相对装载基址的偏移；启动时由 ELF 头核验。
+pub const RUNTIME_APP_ENTRY_OFFSET: u64 = 0x1eb0;
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
@@ -627,11 +638,17 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, 1824, &[0x48, 0x89, 0x02]);
     put_imm64(&mut code, 1827, 0x48, 0xB8, 0);
     put(&mut code, 1837, &[0x48, 0x89, 0x42, 0x08]);
-    put_imm64(&mut code, 1841, 0x48, 0xB8, 1);
+    put_imm64(&mut code, 1841, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64);
     put(&mut code, 1851, &[0x48, 0x89, 0x42, 0x10]);
     put_imm64(&mut code, 1855, 0x48, 0xB8, USER3_CODE_VA);
     put(&mut code, 1865, &[0x48, 0x89, 0x42, 0x18]);
-    put_imm64(&mut code, 1869, 0x48, 0xB8, USER3_CODE_VA);
+    put_imm64(
+        &mut code,
+        1869,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+    );
     put(&mut code, 1879, &[0x48, 0x89, 0x42, 0x20]);
     put_imm64(&mut code, 1883, 0x48, 0xB8, USER3_STACK_VA + FRAME_SIZE);
     put(&mut code, 1893, &[0x48, 0x89, 0x42, 0x28]);
@@ -1232,6 +1249,41 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, TIMER_RECEIPT_DESTROY as u32);
     at += 7;
 
+    // Stage 4 S4-D5：接收 Rust ring3 客户端随 IPC 移交的共享 Segment，映射到 init 并核验
+    // `PRIM` header/offer。Task 3 已在 TASK_RECV_BUF 中写入 cap0/cap_count。
+    put_imm64(&mut code, at, 0x48, 0xB9, USER_Y_VA);
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        (TASK_RECV_BUF - USER_Y_VA) as u32,
+    );
+    at += 7;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBE,
+        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER_HELLO_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, ACCESS_R_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_MEMSEG_MAP);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, 736);
+    at += 7;
+
     // int3（收尾）：本块必须落在路径文本数据区之前。
     assert!(
         at < NS_PATH_DATA_OFFSET,
@@ -1246,6 +1298,50 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         b"lib\0sub\0mnt\0mnt/sub\0/lib\0x\0y\0",
     );
     code
+}
+
+/// 独立 ring3 Rust 客户端的真实协议握手回执（原始 wire word，避免依赖结构体布局）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimeHelloWitness {
+    pub map_result: u64,
+    pub magic_version: u64,
+    pub opcode_request: u64,
+    pub length_version: u64,
+    pub features: u64,
+    pub required_features: u64,
+    pub max_message_size: u32,
+}
+
+impl RuntimeHelloWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.map_result == 0
+            && self.magic_version as u32 == u32::from_le_bytes(*b"PRIM")
+            && (self.magic_version >> 32) as u16 == 1
+            && (self.magic_version >> 48) as u16 == 0
+            && self.opcode_request as u16 == 1
+            && (self.opcode_request >> 16) as u16 == 0
+            && (self.opcode_request >> 32) as u32 == 3
+            && self.length_version as u32 == 24
+            && (self.length_version >> 32) as u16 == 1
+            && (self.length_version >> 48) as u16 == 0
+            && self.features == 1
+            && self.required_features == 1
+            && self.max_message_size == 4096
+    }
+}
+
+pub fn runtime_hello_witness() -> RuntimeHelloWitness {
+    let length_version = read_qword(USER_HELLO_VA + 16);
+    let max_word = read_qword(USER_HELLO_VA + 40);
+    RuntimeHelloWitness {
+        map_result: read_qword(USER_Y_VA + 736),
+        magic_version: read_qword(USER_HELLO_VA),
+        opcode_request: read_qword(USER_HELLO_VA + 8),
+        length_version,
+        features: read_qword(USER_HELLO_VA + 24),
+        required_features: read_qword(USER_HELLO_VA + 32),
+        max_message_size: max_word as u32,
+    }
 }
 
 /// 组装第二任务机器码：
@@ -1918,12 +2014,285 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 /// 必须在既有 bring-up 取帧序列（`prepare`/`prepare_task2`/`prepare_spin`）**之后**调用，
 /// 否则会平移切片 E/F/G/O 的物理帧序列与既有金标地址。
 pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
-    let frame =
-        crate::bootstrap::prepare_task_create_caps(offset).map_err(|_| VspaceError::NoFrame)?;
-    // task 3 的代码在帧首。
-    write_code(frame, offset, 0, &task3_code());
-    // 切片 V：task 4 的代码复用**同一页**、写在页内偏移处（不新增代码段帧）。
+    let frames = crate::bootstrap::prepare_task_create_caps(RUNTIME_APP_CODE_PAGES, offset)
+        .map_err(|_| VspaceError::NoFrame)?;
+    load_runtime_elf(PRIMA_SMOKE_ELF, &frames, offset, USER3_CODE_VA)?;
+    let frame = frames.frame_at(0).ok_or(VspaceError::NoFrame)?;
+    // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
     write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
+    Ok(())
+}
+
+const ELF_HEADER_SIZE: usize = 64;
+const ELF_PHDR_SIZE: usize = 56;
+const PT_LOAD: u32 = 1;
+const PT_DYNAMIC: u32 = 2;
+const DT_RELA: i64 = 7;
+const DT_RELASZ: i64 = 8;
+const DT_RELAENT: i64 = 9;
+const R_X86_64_RELATIVE: u32 = 8;
+
+#[derive(Clone, Copy)]
+struct ElfSegment {
+    kind: u32,
+    offset: u64,
+    vaddr: u64,
+    filesz: u64,
+    memsz: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ElfLayout {
+    entry: u64,
+    pages: usize,
+    phoff: usize,
+    phnum: usize,
+}
+
+fn image_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
+    ))
+}
+
+fn image_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn image_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset.checked_add(8)?)?.try_into().ok()?,
+    ))
+}
+
+fn elf_layout(bytes: &[u8]) -> Result<ElfLayout, VspaceError> {
+    if bytes.len() < ELF_HEADER_SIZE
+        || bytes.get(0..4) != Some(b"\x7fELF")
+        || bytes[4] != 2
+        || bytes[5] != 1
+        || image_u16(bytes, 16) != Some(3)
+        || image_u16(bytes, 18) != Some(62)
+        || image_u32(bytes, 20) != Some(1)
+        || image_u16(bytes, 54) != Some(ELF_PHDR_SIZE as u16)
+    {
+        return Err(VspaceError::InvalidImage);
+    }
+    let entry = image_u64(bytes, 24).ok_or(VspaceError::InvalidImage)?;
+    let phoff = usize::try_from(image_u64(bytes, 32).ok_or(VspaceError::InvalidImage)?)
+        .map_err(|_| VspaceError::InvalidImage)?;
+    let phnum = image_u16(bytes, 56).ok_or(VspaceError::InvalidImage)? as usize;
+    let phbytes = phnum
+        .checked_mul(ELF_PHDR_SIZE)
+        .and_then(|size| phoff.checked_add(size))
+        .ok_or(VspaceError::InvalidImage)?;
+    if phnum == 0 || phbytes > bytes.len() {
+        return Err(VspaceError::InvalidImage);
+    }
+
+    let mut max_end = 0u64;
+    let mut entry_loaded = false;
+    for index in 0..phnum {
+        let segment = elf_segment(bytes, phoff, index)?;
+        if segment.kind != PT_LOAD {
+            continue;
+        }
+        let end = segment
+            .vaddr
+            .checked_add(segment.memsz)
+            .ok_or(VspaceError::InvalidImage)?;
+        let file_end = segment
+            .offset
+            .checked_add(segment.filesz)
+            .ok_or(VspaceError::InvalidImage)?;
+        if segment.memsz < segment.filesz
+            || usize::try_from(file_end).map_or(true, |end| end > bytes.len())
+            || segment.memsz == 0
+        {
+            return Err(VspaceError::InvalidImage);
+        }
+        max_end = max_end.max(end);
+        entry_loaded |= entry >= segment.vaddr && entry < end;
+    }
+    let pages =
+        usize::try_from(max_end.div_ceil(FRAME_SIZE)).map_err(|_| VspaceError::InvalidImage)?;
+    if !entry_loaded || pages == 0 || pages > RUNTIME_APP_CODE_PAGES {
+        return Err(VspaceError::InvalidImage);
+    }
+    Ok(ElfLayout {
+        entry,
+        pages,
+        phoff,
+        phnum,
+    })
+}
+
+fn elf_segment(bytes: &[u8], phoff: usize, index: usize) -> Result<ElfSegment, VspaceError> {
+    let at = phoff
+        .checked_add(
+            index
+                .checked_mul(ELF_PHDR_SIZE)
+                .ok_or(VspaceError::InvalidImage)?,
+        )
+        .ok_or(VspaceError::InvalidImage)?;
+    Ok(ElfSegment {
+        kind: image_u32(bytes, at).ok_or(VspaceError::InvalidImage)?,
+        offset: image_u64(bytes, at + 8).ok_or(VspaceError::InvalidImage)?,
+        vaddr: image_u64(bytes, at + 16).ok_or(VspaceError::InvalidImage)?,
+        filesz: image_u64(bytes, at + 32).ok_or(VspaceError::InvalidImage)?,
+        memsz: image_u64(bytes, at + 40).ok_or(VspaceError::InvalidImage)?,
+    })
+}
+
+fn load_runtime_elf(
+    bytes: &[u8],
+    frames: &SegmentFrames,
+    offset: u64,
+    load_base: u64,
+) -> Result<(), VspaceError> {
+    let layout = elf_layout(bytes)?;
+    if layout.pages != frames.frame_count()
+        || layout.entry != RUNTIME_APP_ENTRY_OFFSET
+        || layout.pages != RUNTIME_APP_CODE_PAGES
+    {
+        return Err(VspaceError::InvalidImage);
+    }
+    let map = |phys| phys_to_virt(phys, offset);
+    for index in 0..layout.pages {
+        let frame = frames.frame_at(index).ok_or(VspaceError::NoFrame)?;
+        for byte in 0..FRAME_SIZE {
+            prima_ostd::mm::write_u8_at(map(frame), byte, 0);
+        }
+    }
+
+    let mut dynamic = None;
+    for index in 0..layout.phnum {
+        let segment = elf_segment(bytes, layout.phoff, index)?;
+        if segment.kind == PT_LOAD {
+            for index in 0..segment.filesz {
+                let source = usize::try_from(segment.offset + index)
+                    .map_err(|_| VspaceError::InvalidImage)?;
+                let address = segment.vaddr + index;
+                write_image_byte(
+                    frames,
+                    map,
+                    address,
+                    *bytes.get(source).ok_or(VspaceError::InvalidImage)?,
+                )?;
+            }
+        } else if segment.kind == PT_DYNAMIC {
+            dynamic = Some(segment);
+        }
+    }
+    apply_relative_relocations(bytes, frames, map, dynamic, layout, load_base)?;
+    Ok(())
+}
+
+fn write_image_byte(
+    frames: &SegmentFrames,
+    map: impl Fn(u64) -> u64,
+    address: u64,
+    value: u8,
+) -> Result<(), VspaceError> {
+    let page = usize::try_from(address / FRAME_SIZE).map_err(|_| VspaceError::InvalidImage)?;
+    let frame = frames.frame_at(page).ok_or(VspaceError::InvalidImage)?;
+    prima_ostd::mm::write_u8_at(map(frame), address % FRAME_SIZE, value);
+    Ok(())
+}
+
+fn write_image_u64(
+    frames: &SegmentFrames,
+    map: impl Fn(u64) -> u64,
+    address: u64,
+    value: u64,
+) -> Result<(), VspaceError> {
+    if !address.is_multiple_of(8) || address % FRAME_SIZE > FRAME_SIZE - 8 {
+        return Err(VspaceError::InvalidImage);
+    }
+    for (index, byte) in value.to_le_bytes().into_iter().enumerate() {
+        write_image_byte(frames, &map, address + index as u64, byte)?;
+    }
+    Ok(())
+}
+
+fn apply_relative_relocations(
+    bytes: &[u8],
+    frames: &SegmentFrames,
+    map: impl Fn(u64) -> u64,
+    dynamic: Option<ElfSegment>,
+    layout: ElfLayout,
+    load_base: u64,
+) -> Result<(), VspaceError> {
+    let Some(dynamic) = dynamic else {
+        return Ok(());
+    };
+    let mut rela_vaddr = None;
+    let mut rela_size = None;
+    let mut rela_entry_size = None;
+    let dynamic_size = usize::try_from(dynamic.filesz).map_err(|_| VspaceError::InvalidImage)?;
+    let dynamic_offset = usize::try_from(dynamic.offset).map_err(|_| VspaceError::InvalidImage)?;
+    if !dynamic_size.is_multiple_of(16) {
+        return Err(VspaceError::InvalidImage);
+    }
+    for entry in (0..dynamic_size).step_by(16) {
+        let at = dynamic_offset + entry;
+        let tag = image_u64(bytes, at).ok_or(VspaceError::InvalidImage)? as i64;
+        let value = image_u64(bytes, at + 8).ok_or(VspaceError::InvalidImage)?;
+        match tag {
+            DT_RELA => rela_vaddr = Some(value),
+            DT_RELASZ => rela_size = Some(value),
+            DT_RELAENT => rela_entry_size = Some(value),
+            0 => break,
+            _ => {}
+        }
+    }
+    let (Some(rela_vaddr), Some(rela_size), Some(entry_size)) =
+        (rela_vaddr, rela_size, rela_entry_size)
+    else {
+        return Ok(());
+    };
+    if entry_size != 24 || !rela_size.is_multiple_of(entry_size) {
+        return Err(VspaceError::InvalidImage);
+    }
+    let mut rela_offset = None;
+    for index in 0..layout.phnum {
+        let segment = elf_segment(bytes, layout.phoff, index)?;
+        if segment.kind == PT_LOAD
+            && rela_vaddr >= segment.vaddr
+            && rela_vaddr
+                .checked_add(rela_size)
+                .is_some_and(|end| end <= segment.vaddr + segment.filesz)
+        {
+            rela_offset = Some(segment.offset + (rela_vaddr - segment.vaddr));
+            break;
+        }
+    }
+    let rela_offset = usize::try_from(rela_offset.ok_or(VspaceError::InvalidImage)?)
+        .map_err(|_| VspaceError::InvalidImage)?;
+    let count = usize::try_from(rela_size / entry_size).map_err(|_| VspaceError::InvalidImage)?;
+    for index in 0..count {
+        let at = rela_offset + index * 24;
+        let target = image_u64(bytes, at).ok_or(VspaceError::InvalidImage)?;
+        let info = image_u64(bytes, at + 8).ok_or(VspaceError::InvalidImage)?;
+        let addend = i64::from_le_bytes(
+            bytes
+                .get(at + 16..at + 24)
+                .ok_or(VspaceError::InvalidImage)?
+                .try_into()
+                .map_err(|_| VspaceError::InvalidImage)?,
+        );
+        if info as u32 != R_X86_64_RELATIVE || info >> 32 != 0 || addend < 0 {
+            return Err(VspaceError::InvalidImage);
+        }
+        let value = load_base
+            .checked_add(addend as u64)
+            .ok_or(VspaceError::InvalidImage)?;
+        if target >= layout.pages as u64 * FRAME_SIZE {
+            return Err(VspaceError::InvalidImage);
+        }
+        write_image_u64(frames, &map, target, value)?;
+    }
     Ok(())
 }
 
@@ -1945,6 +2314,7 @@ pub fn register_created_task(
     entry: u64,
     stack_top: u64,
     self_cap: u64,
+    initial_caps: [u64; 2],
 ) -> Result<(), VspaceError> {
     let kstack = task_kstack_top(task_id).ok_or(VspaceError::BadRoot)?;
     let mut frame = SretFrame::ZERO;
@@ -1954,6 +2324,8 @@ pub fn register_created_task(
     // `SYS_TASK_DESTROY` 自毁。这是细化层自由度（抽象模型不规定寄存器传参），
     // 不新增槽位、不改句柄分配。
     frame.rdi = self_cap;
+    frame.rsi = initial_caps[0];
+    frame.rdx = initial_caps[1];
     frame.cs = USER_CS as u64;
     frame.ss = USER_DS as u64;
     frame.rflags = 0x2 | (1 << 9); // bit1 固定 + IF=1
@@ -2296,9 +2668,17 @@ mod tests {
         assert_eq!(&code[1816..1824], &TASK_CODE_CAP.to_le_bytes());
         assert_eq!(&code[1824..1827], &[0x48, 0x89, 0x02]); // [rdx+0] = code_seg_cap
         assert_eq!(&code[1837..1841], &[0x48, 0x89, 0x42, 0x08]); // code_offset = 0
-        assert_eq!(&code[1851..1855], &[0x48, 0x89, 0x42, 0x10]); // code_pages = 1
+        assert_eq!(
+            &code[1843..1851],
+            &(RUNTIME_APP_CODE_PAGES as u64).to_le_bytes()
+        );
+        assert_eq!(&code[1851..1855], &[0x48, 0x89, 0x42, 0x10]); // code_pages
         assert_eq!(&code[1857..1865], &USER3_CODE_VA.to_le_bytes());
         assert_eq!(&code[1865..1869], &[0x48, 0x89, 0x42, 0x18]); // load_base
+        assert_eq!(
+            &code[1871..1879],
+            &(USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET).to_le_bytes()
+        );
         assert_eq!(&code[1879..1883], &[0x48, 0x89, 0x42, 0x20]); // entry
         assert_eq!(
             &code[1885..1893],
