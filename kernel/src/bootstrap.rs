@@ -1,4 +1,5 @@
 use core::fmt;
+use core::num::NonZeroU32;
 
 use crate::handle::Handle;
 use crate::mem::FrameInventory;
@@ -72,7 +73,7 @@ const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 ///
 /// SPEC-087：普通 id 空间 `2..8` 被保留的 Dead（3/4）与 Faulted（5/6/7）记录占满，
 /// `next_free_id` 返回 `None`，故上调至 12 使存活的 Rust 客户端拿到 id 8。
-/// 注意 `user::USER_TASK_KSTACK_COUNT` 只覆盖 id 3..8；若将来分配 id ≥ 9，
+/// SPEC-088：`user::USER_TASK_KSTACK_COUNT` 覆盖 id 3..9；若将来分配 id ≥ 10，
 /// `register_created_task` 会确定性失败（`NoSpace`）而非带着空内核栈调度。
 const MAX_TASKS: usize = 12;
 /// Audit 容量。
@@ -1832,6 +1833,11 @@ pub const TASK4_SEND_CAP_HANDLE: Handle = cap_handle(TASK4_SEND_CAP_SLOT, INITIA
 pub const CLIENT_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 5;
 /// SPEC-087：经第三次 create 的 `initial_cap0` 移入存活客户端的 `Task(1)`+`TaskSend`。
 pub const CLIENT_SEND_CAP_HANDLE: Handle = cap_handle(CLIENT_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-088：Rust **服务端点**的回发凭据槽（客户端凭据随其自身持有，服务需另铸一条）。
+pub const SERVICE_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 6;
+/// SPEC-088：经第四次 create 的 `initial_cap0` 移入服务任务的 `Task(1)`+`TaskSend`。
+pub const SERVICE_SEND_CAP_HANDLE: Handle =
+    cap_handle(SERVICE_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -1978,14 +1984,16 @@ impl SegmentObject {
 /// 每个 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护；`StillMapped` 与重叠判定的依据）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VspaceEntry {
-    pub task_id: u32,
+    /// SPEC-088：Task id 恒非零，用 `NonZeroU32` 为 `Option<VspaceEntry>` 提供 niche，
+    /// 使每槽 40 B；容量 40 时结构体仍在 13 KiB 守卫内（否则须放宽守卫或改存储）。
+    pub task_id: NonZeroU32,
     pub va: u64,
     pub seg_id: u32,
     pub seg_offset: u64,
     pub access: Rights,
 }
 
-pub const MAX_VSPACE_ENTRIES: usize = 32;
+pub const MAX_VSPACE_ENTRIES: usize = 44;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskVspaceTable {
@@ -2005,7 +2013,7 @@ impl TaskVspaceTable {
         self.entries[..self.count]
             .iter()
             .flatten()
-            .find(|entry| entry.task_id == task_id && entry.va == va)
+            .find(|entry| entry.task_id.get() == task_id && entry.va == va)
     }
 
     fn insert(&mut self, entry: VspaceEntry) -> Result<(), MemsegError> {
@@ -2019,7 +2027,7 @@ impl TaskVspaceTable {
 
     fn remove(&mut self, task_id: u32, va: u64) -> Option<VspaceEntry> {
         let index = self.entries[..self.count].iter().position(|entry| {
-            entry.is_some_and(|entry| entry.task_id == task_id && entry.va == va)
+            entry.is_some_and(|entry| entry.task_id.get() == task_id && entry.va == va)
         })?;
         let entry = self.entries[index].take();
         for shift in index..self.count - 1 {
@@ -5116,7 +5124,7 @@ impl BootstrapState {
         for index in 0..req.code_pages {
             let va = req.load_base + index * crate::mem::FRAME_SIZE;
             let inserted = self.vspace.insert(VspaceEntry {
-                task_id: new_id,
+                task_id: NonZeroU32::new(new_id).expect("task id is nonzero"),
                 va,
                 seg_id: code_seg_id,
                 seg_offset: req.code_offset + index,
@@ -5246,7 +5254,7 @@ impl BootstrapState {
             let mut entries = [0u64; MAX_VSPACE_ENTRIES];
             let mut count = 0usize;
             for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
-                if entry.task_id == caller && count < MAX_VSPACE_ENTRIES {
+                if entry.task_id.get() == caller && count < MAX_VSPACE_ENTRIES {
                     entries[count] = entry.va;
                     count += 1;
                 }
@@ -5390,7 +5398,7 @@ impl BootstrapState {
         let mut entries = [0u64; MAX_VSPACE_ENTRIES];
         let mut count = 0usize;
         for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
-            if entry.task_id == task_id && count < MAX_VSPACE_ENTRIES {
+            if entry.task_id.get() == task_id && count < MAX_VSPACE_ENTRIES {
                 entries[count] = entry.va;
                 count += 1;
             }
@@ -5982,6 +5990,14 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
+        // SPEC-088：Rust 服务端点的回发凭据（服务与客户端是两个任务，各需一条）。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            SERVICE_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
         Ok(frames)
     }
 
@@ -6195,7 +6211,7 @@ impl BootstrapState {
                 prima_ostd::arch::invlpg(va);
             }
             self.vspace.insert(VspaceEntry {
-                task_id,
+                task_id: NonZeroU32::new(task_id).expect("task id is nonzero"),
                 va,
                 seg_id,
                 seg_offset: seg_offset + index as u64,
@@ -8983,7 +8999,7 @@ mod tests {
         state
             .vspace
             .insert(VspaceEntry {
-                task_id: INIT_TASK_ID,
+                task_id: core::num::NonZeroU32::new(INIT_TASK_ID).expect("task id is nonzero"),
                 va: 0x0000_0A00_0000_0000,
                 seg_id: crate::frames::SEG_TASK1_CODE,
                 seg_offset: 0,

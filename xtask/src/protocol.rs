@@ -26,6 +26,7 @@ enum EventKind {
     TaskReady,
     RuntimeHelloReady,
     ServiceReplyReady,
+    ServiceNegotiatedReady,
     NamespaceReady,
     PreemptReady,
     TimerReady,
@@ -117,8 +118,9 @@ const TASK_CREATE_CHILD_ID: usize = 3;
 /// S2-D4：`task_create` 返回的 manager cap 句柄（槽 10 gen1），与 `kernel/src/syscall.rs` 一致。
 const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap
-/// 与 SPEC-087 存活的客户端持有的 4 条 cap（send + 自持 Task cap + 段 cap + …）。
-const TASK_READY_LIVE_CAPS: usize = 49;
+/// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
+/// manager/self/root-ns 共 5 条（49 → 54）。
+const TASK_READY_LIVE_CAPS: usize = 54;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -215,7 +217,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 40] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 41] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -242,20 +244,21 @@ const EXPECTED_EVENTS: [(u32, EventKind); 40] = [
     (24, EventKind::TaskReady),
     (25, EventKind::RuntimeHelloReady),
     (26, EventKind::ServiceReplyReady),
-    (27, EventKind::NamespaceReady),
-    (28, EventKind::PreemptReady),
-    (29, EventKind::TimerReady),
-    (30, EventKind::AuditReady),
-    (31, EventKind::ExcResumeReady),
-    (32, EventKind::PlatformSegmentsReady),
-    (33, EventKind::AuthorityReady),
-    (34, EventKind::FramesReady),
-    (35, EventKind::SelfRootReady),
-    (36, EventKind::FaultReady),
-    (37, EventKind::StateAuditReady),
-    (38, EventKind::ReclaimReady),
-    (39, EventKind::ResumeReady),
-    (40, EventKind::BootComplete),
+    (27, EventKind::ServiceNegotiatedReady),
+    (28, EventKind::NamespaceReady),
+    (29, EventKind::PreemptReady),
+    (30, EventKind::TimerReady),
+    (31, EventKind::AuditReady),
+    (32, EventKind::ExcResumeReady),
+    (33, EventKind::PlatformSegmentsReady),
+    (34, EventKind::AuthorityReady),
+    (35, EventKind::FramesReady),
+    (36, EventKind::SelfRootReady),
+    (37, EventKind::FaultReady),
+    (38, EventKind::StateAuditReady),
+    (39, EventKind::ReclaimReady),
+    (40, EventKind::ResumeReady),
+    (41, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -481,6 +484,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::ServiceReplyReady)
     {
         validate_service_reply_data(reply.data.as_deref())?;
+    }
+
+    if let Some(negotiated) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ServiceNegotiatedReady)
+    {
+        validate_service_negotiated_data(negotiated.data.as_deref())?;
     }
 
     if let Some(audit) = events
@@ -2339,9 +2349,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 4 || direct != 5 || blocks != 6 {
+    if queued != 6 || direct != 7 || blocks != 9 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 4/5/6 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, and SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 6/7/9 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), and SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs"
         ));
     }
     Ok(())
@@ -2516,9 +2526,10 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     // 回收见证的任务 6 与 `resume_ready` 生命周期收尾的保留槽位任务 5 都已由内核路径销毁
     // （Dead 记录保留但不计入存活）。Faulted 是"存活"（非 Dead）的常规状态，故任务 7 计入。
     // SPEC-087：再加 **存活的 Rust 客户端**（id 8，握手后阻塞等待）。
-    if tasks != 4 {
+    // SPEC-088：再加 **Rust 服务端点**（id 9，自报 id 后阻塞等待协商请求）。
+    if tasks != 5 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 4 (init + task 2 + the reserved Faulted witness task + the surviving Rust client) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 5 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the Rust service endpoint) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2552,9 +2563,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 4 {
+    if tasks_after != 5 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 4 (init + task 2 + the reserved Faulted witness task + the surviving Rust client) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 5 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the Rust service endpoint) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -3296,6 +3307,101 @@ fn validate_service_reply_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
+const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_001c;
+const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_001d;
+const SERVICE_NEGOTIATED_ID: u64 = 9;
+const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
+/// `major<<48 | minor<<32 | max<<16 | features` —— 客户端 offer 与服务端 offer
+/// `{features 0b101, required 0b001, max 2048}` 协商得 `{major 1, minor 0, features 1, max 2048}`。
+/// `max=2048` 只可能来自**服务端** offer（客户端是 4096），是「服务端真的参与协商」的判决性字段。
+const SERVICE_EXPECTED_NEGOTIATED: u64 = 0x0001_0000_0800_0001;
+/// `MajorMismatch(1)<<32 | BadMagic(0)`：两个负例由服务端 ring3 Rust 计算，证明 `decode`/`negotiate` 真跑过。
+const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_0000_0000;
+
+/// SPEC-088：init（broker）与 ring3 Rust 服务端点解析/协商的期望字段。
+///
+/// `token` 是 init 从代码段根派生的只读端点令牌，`service` 是第 4 次 `SYS_TASK_CREATE`
+/// 返回的 manager cap（槽 28/29 gen1），`svc_id` 是服务自报的 task id，`done` 是服务完成
+/// 消息 `SERVICE_DONE_TAG`；`negotiated`/`negatives` 由服务写入共享段、init 从同一物理帧读回。
+fn validate_service_negotiated_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "service_negotiated_ready is missing data".to_owned())?;
+    let mut token = None;
+    let mut service = None;
+    let mut stack = None;
+    let mut svc_id = None;
+    let mut forward = None;
+    let mut done = None;
+    let mut negotiated = None;
+    let mut negatives = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "token" => token = Some(parse_addr(value)?),
+            "service" => service = Some(parse_addr(value)?),
+            "stack" => stack = Some(parse_addr(value)?),
+            "svc_id" => svc_id = Some(parse_addr(value)?),
+            "forward" => forward = Some(parse_addr(value)?),
+            "done" => done = Some(parse_addr(value)?),
+            "negotiated" => negotiated = Some(parse_addr(value)?),
+            "negatives" => negatives = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in service_negotiated_ready data");
+    let token = token.ok_or_else(|| missing("token"))?;
+    let service = service.ok_or_else(|| missing("service"))?;
+    let stack = stack.ok_or_else(|| missing("stack"))?;
+    let svc_id = svc_id.ok_or_else(|| missing("svc_id"))?;
+    let forward = forward.ok_or_else(|| missing("forward"))?;
+    let done = done.ok_or_else(|| missing("done"))?;
+    let negotiated = negotiated.ok_or_else(|| missing("negotiated"))?;
+    let negatives = negatives.ok_or_else(|| missing("negatives"))?;
+    if token != SERVICE_NEGOTIATED_TOKEN {
+        return Err(format!(
+            "service_negotiated_ready token (0x{token:x}) must be the derived endpoint token 0x{SERVICE_NEGOTIATED_TOKEN:x}"
+        ));
+    }
+    if service != SERVICE_NEGOTIATED_CAP {
+        return Err(format!(
+            "service_negotiated_ready service (0x{service:x}) must be the manager cap 0x{SERVICE_NEGOTIATED_CAP:x} returned by the 4th SYS_TASK_CREATE"
+        ));
+    }
+    if stack != 0 {
+        return Err(format!(
+            "service_negotiated_ready stack (0x{stack:x}) must be 0 — init must map the service stack through the manager cap"
+        ));
+    }
+    if svc_id != SERVICE_NEGOTIATED_ID {
+        return Err(format!(
+            "service_negotiated_ready svc_id ({svc_id}) must equal the service id {SERVICE_NEGOTIATED_ID}"
+        ));
+    }
+    if forward != 0 {
+        return Err(format!(
+            "service_negotiated_ready forward (0x{forward:x}) must be 0 — init's cap-carrying forward SYS_SEND must succeed"
+        ));
+    }
+    if done != SERVICE_DONE_TAG {
+        return Err(format!(
+            "service_negotiated_ready done (0x{done:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}"
+        ));
+    }
+    if negotiated != SERVICE_EXPECTED_NEGOTIATED {
+        return Err(format!(
+            "service_negotiated_ready negotiated (0x{negotiated:x}) must be 0x{SERVICE_EXPECTED_NEGOTIATED:x} — the server-side negotiation must yield max=2048 from the service offer, not echo the client's 4096"
+        ));
+    }
+    if negatives != SERVICE_EXPECTED_NEGATIVES {
+        return Err(format!(
+            "service_negotiated_ready negatives (0x{negatives:x}) must be 0x{SERVICE_EXPECTED_NEGATIVES:x} — the ring3 service must observe MajorMismatch (1) and BadMagic (0)"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_physical_map_data(data: Option<&str>) -> Result<(), String> {
     let data =
         data.ok_or_else(|| "physical_map_ready event is missing its data field".to_owned())?;
@@ -3396,6 +3502,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("task_ready", "ok") => EventKind::TaskReady,
         ("runtime_hello_ready", "ok") => EventKind::RuntimeHelloReady,
         ("service_reply_ready", "ok") => EventKind::ServiceReplyReady,
+        ("service_negotiated_ready", "ok") => EventKind::ServiceNegotiatedReady,
         ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("timer_ready", "ok") => EventKind::TimerReady,
@@ -3445,6 +3552,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::TaskReady
             | EventKind::RuntimeHelloReady
             | EventKind::ServiceReplyReady
+            | EventKind::ServiceNegotiatedReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3487,6 +3595,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::TaskReady
             | EventKind::RuntimeHelloReady
             | EventKind::ServiceReplyReady
+            | EventKind::ServiceNegotiatedReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3543,24 +3652,25 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=4;direct=5;blocks=6\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=4;caps=49;root_cleared=1;grandchild=4;tasks_after=4;caps_after=49;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=6;direct=7;blocks=9\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=5;caps=54;root_cleared=1;grandchild=4;tasks_after=5;caps_after=54;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
-        "PRIMA|v=1|seq=27|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=28|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=29|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=30|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=31|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=32|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=33|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=34|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=35|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=36|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=37|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
-        "PRIMA|v=1|seq=38|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=39|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=40|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
+        "PRIMA|v=1|seq=28|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=29|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=30|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=31|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=32|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=33|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=34|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=35|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=36|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=37|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=38|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=39|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=40|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=41|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3634,9 +3744,9 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
-        // SPEC-070/072/073 + SPEC-087：合法值为 4（init + task 2 + 保留槽位的 Faulted 见证
-        // 任务 + 存活的 Rust 客户端）；5 表示子任务未清除。
-        let output = VALID.replace(";tasks=4;", ";tasks=5;");
+        // SPEC-070/072/073 + SPEC-087 + SPEC-088：合法值为 5（init + task 2 + 保留槽位的
+        // Faulted 见证任务 + 存活的 Rust 客户端 + Rust 服务端点）；6 表示子任务未清除。
+        let output = VALID.replace(";tasks=5;", ";tasks=6;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -3656,7 +3766,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=49;root_cleared", ";caps=46;root_cleared");
+        let output = VALID.replace(";caps=54;root_cleared", ";caps=50;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -3747,9 +3857,31 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=5;", ";direct=0;");
+        let output = VALID.replace(";direct=7;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 4/5/6"), "{error}");
+        assert!(error.contains("expected 6/7/9"), "{error}");
+    }
+
+    #[test]
+    fn rejects_service_negotiated_when_result_is_echoed() {
+        // 把协商结果换成客户端 offer 的原值（max=4096）：服务端若只回显客户端 offer 而非用
+        // 自己的 offer 协商，就会得到这个值——判决性检查必须拒绝。
+        let output = VALID.replace("negotiated=0x1000008000001", "negotiated=0x1000010000001");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("server-side negotiation must yield max=2048"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_negotiated_without_negative_cases() {
+        let output = VALID.replace("negatives=0x100000000", "negatives=0x0");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("MajorMismatch (1) and BadMagic (0)"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -22,7 +22,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
     IMAGE_CAP_HANDLE, INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE,
-    PLATFORM_TASK2_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE,
+    PLATFORM_TASK2_CAP_HANDLE, SERVICE_SEND_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE,
+    TASK_CREATE_CODE_CAP_HANDLE,
 };
 use crate::exc::SretFrame;
 use crate::frames;
@@ -125,6 +126,35 @@ pub const SERVICE_REPLY_OFFSET: u64 = 64;
 /// SPEC-087：init 的应答字——`"PONG"`(低 32) ‖ 应答 opcode `0x8001`(32..48) ‖ 回显 request_id `3`(48..64)。
 pub const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
 
+/// SPEC-088：服务端点自报 id 的消息 tag（高 16 位；低 16 位为 id）。与 `prima-user` 一致。
+pub const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
+/// SPEC-088：服务端点完成协商的消息 tag。
+pub const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
+/// SPEC-088：broker 给服务端点的**无 cap 唤醒** payload（内核拒绝向 `BlockedRecv` 投递带 cap 消息）。
+pub const SERVICE_PREPARE_TAG: u64 = 0x5EC3_0000_0000_0000;
+/// SPEC-088：服务端点把协商结果写回的段内偏移（init 经 `USER_HELLO2_VA` 的同一物理帧读回）。
+pub const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
+/// SPEC-088：服务端点把两个负例码写回的段内偏移。
+pub const SERVICE_NEGATIVES_OFFSET: u64 = 136;
+/// SPEC-088：协商结果的期望字 `major<<48 | minor<<32 | max<<16 | features 低 16 位`。
+///
+/// 客户端 offer `{major1,minor0,features1,required1,max4096}` 与服务端 offer
+/// `{major1,minor0,features0b101,required0b001,max2048}` 协商得
+/// `{major1,minor0,features1,max2048}` ⇒ `0x0001_0000_0800_0001`。判决性在 `max=2048`：
+/// 只可能来自**服务端** offer（客户端是 4096）。
+pub const SERVICE_EXPECTED_NEGOTIATED: u64 = 0x0001_0000_0800_0001;
+/// SPEC-088：负例码期望字 `MajorMismatch(1)<<32 | BadMagic(0)`。
+pub const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_0000_0000;
+/// SPEC-088：broker 各步的 Y 页回执偏移与 recv 出缓冲。
+pub const SVC_RECEIPT_TOKEN: u64 = 864;
+pub const SVC_RECEIPT_MGR: u64 = 872;
+pub const SVC_RECEIPT_STACK: u64 = 880;
+pub const SVC_RECEIPT_ID: u64 = 888;
+pub const SVC_RECEIPT_FORWARD: u64 = 896;
+pub const SVC_RECEIPT_DONE: u64 = 904;
+pub const SVC_RECEIPT_PREPARE: u64 = 920;
+pub const SVC_RECV_BUF: u64 = USER_Y_VA + 936;
+
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
 pub const USER2_BASE_VA: u64 = 0x0000_0A80_0000_0000;
@@ -180,7 +210,10 @@ pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_
 /// 只覆盖 id 3..[`USER_TASK_KSTACK_COUNT`]（task 1/2 仍用上面的静态栈，故其地址与
 /// `preempt_ready` 的 `rsp*`/`kstack*_top` 不变）。新增 BSS 追加在既有静态之后，既有静态
 /// 的相对位置不变。
-pub const USER_TASK_KSTACK_COUNT: usize = 6;
+///
+/// SPEC-088：SPEC-087 的存活客户端已占 id 8，本片第 4 次 create 的 Rust 服务端点拿到 id 9，
+/// 故 6→7 把覆盖范围扩到 id 3..9（BSS +16 KiB，布局字段随之变化，逐条登记）。
+pub const USER_TASK_KSTACK_COUNT: usize = 7;
 
 pub static KSTACK_TASKS: StaticCell<[KStack; USER_TASK_KSTACK_COUNT]> =
     StaticCell::new([const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT]);
@@ -307,6 +340,10 @@ const fn put_add_rdi<const N: usize>(code: &mut [u8; N], at: usize, imm: u8) {
 }
 /// `mov r10, [rcx+disp32]` 的 `modrm`（配合 REX.WR = 0x4C）。
 const NS_MODRM_R10: u8 = 0x91;
+/// SPEC-088：`mov rdx, [rcx+disp32]` 的 `modrm`（配合 REX.W = 0x48）。
+const NS_MODRM_RDX: u8 = 0x91;
+/// SPEC-088：`mov r8, [rcx+disp32]` 的 `modrm`（配合 REX.WR = 0x4C）。
+const NS_MODRM_R8: u8 = 0x81;
 
 /// 组装用户代码机器码：
 /// `mov rdx, X; mov rax, VAL; mov [rdx], rax;`（COW 故障点）
@@ -753,8 +790,16 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 1995, 0x48, 0xB8, SYS_TASK_CREATE);
     put(&mut code, 2005, &[0xCD, 0x80]);
     put(&mut code, 2007, &[0x48, 0x89, 0x81, 0x78, 0x01, 0, 0]);
-    // 负例 1：entry 越出代码段 → EINVAL
-    put_imm64(&mut code, 2014, 0x48, 0xB8, USER3_BASE_VA + 0x9000);
+    // 负例 1：entry 越出代码段 → EINVAL。用**代码段末尾**（one-past-end）而非硬编码 `+0x9000`：
+    // 后者在嵌入 ELF 增长到 ≥10 页（`code_end = +0xA000`）后会落入代码段内，使本负例改由
+    // 后置的 initial_cap 检查以 EACCES 拒绝（SPEC-088 实测暴露）。
+    put_imm64(
+        &mut code,
+        2014,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP_CODE_PAGES as u64 * FRAME_SIZE,
+    );
     put(&mut code, 2024, &[0x48, 0x89, 0x42, 0x20]);
     put(&mut code, 2028, &[0x48, 0x89, 0xD7]);
     put_imm64(&mut code, 2031, 0x48, 0xB8, SYS_TASK_CREATE);
@@ -1534,6 +1579,189 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
+
+    // ===== SPEC-088：服务端解析与协商（init 作为 broker）=====
+    // 见设计 `docs/superpowers/specs/2026-10-10-stage4-service-negotiation-design.md`。
+    // 1) 派生端点令牌：从代码段根 cap 派生只读 `{SegMapR}` cap（不含 X/销毁）。
+    put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
+    at += 10;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBF,
+        TASK_CREATE_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_R_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_CAP_DERIVE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SVC_RECEIPT_TOKEN as u32);
+    at += 7;
+    // 请求块：entry = Rust ELF 入口；initial_cap0 = SERVICE_SEND_CAP；initial_cap1 = 令牌。
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]); // mov [rdx+0x48], rax（令牌）
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_SEND_CAP_HANDLE.encode());
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
+    at += 4;
+    // 2) 第 4 次 create：Rust 服务端点。
+    put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
+    at += 3;
+    put_syscall(&mut code, at, SYS_TASK_CREATE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SVC_RECEIPT_MGR as u32);
+    at += 7;
+    // 3) 把栈段映射进服务根：memseg_map(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        crate::syscall::TASK_RECEIPT_STACK_SEG as u32,
+    );
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SVC_RECEIPT_STACK as u32);
+    at += 7;
+    // 4) 让出：服务运行、自报 id 后阻塞在 recv。
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // 5) recv 循环直到 payload 高 16 位 == SERVICE_ID_TAG 高 16 位（0x5EC1）。
+    let svc_id_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
+    at += 3;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
+    at += 4;
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC1
+    put(
+        &mut code,
+        at + 2,
+        &((SERVICE_ID_TAG >> 48) as u32).to_le_bytes(),
+    );
+    at += 6;
+    let back = svc_id_loop as i64 - (at as i64 + 6);
+    put(&mut code, at, &[0x0F, 0x85]); // jne svc_id_loop
+    put(&mut code, at + 2, &(back as i32).to_le_bytes());
+    at += 6;
+    put(&mut code, at, &[0x25]); // and eax, 0xffff → svc_id
+    put(&mut code, at + 1, &(0xFFFFu32).to_le_bytes());
+    at += 5;
+    put_store_rax(&mut code, at, SVC_RECEIPT_ID as u32);
+    at += 7;
+    // 5b) 先发一条**无 cap** 唤醒：内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息
+    //（SPEC-087 注释同款约束），故服务此刻仍阻塞在 recv，必须先直投唤醒再发带 cap 请求。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID as u32);
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, SERVICE_PREPARE_TAG);
+    at += 10;
+    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
+    at += 3;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SVC_RECEIPT_PREPARE as u32);
+    at += 7;
+    // 6) 转发客户端 Hello 段 cap 给服务：send(svc_id, mgr, client_id, 1, seg_cap, 0)。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID as u32);
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
+    at += 7;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        CLIENT_RECEIPT_RECV as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x49, 0xBA, 1);
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x4C,
+        NS_MODRM_R8,
+        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
+    );
+    at += 7;
+    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
+    at += 3;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SVC_RECEIPT_FORWARD as u32);
+    at += 7;
+    // 7) recv 循环直到 payload 高 16 位 == SERVICE_DONE_TAG 高 16 位（0x5EC2）。
+    let svc_done_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
+    at += 3;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
+    at += 4;
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC2
+    put(
+        &mut code,
+        at + 2,
+        &((SERVICE_DONE_TAG >> 48) as u32).to_le_bytes(),
+    );
+    at += 6;
+    let back2 = svc_done_loop as i64 - (at as i64 + 6);
+    put(&mut code, at, &[0x0F, 0x85]); // jne svc_done_loop
+    put(&mut code, at + 2, &(back2 as i32).to_le_bytes());
+    at += 6;
+    put_store_rax(&mut code, at, SVC_RECEIPT_DONE as u32);
+    at += 7;
+
     // 收尾的抢占阶段需要 Ready 任务可轮转：本块的两次让出已把 task 2 排空成 `BlockedRecv`
     // （同 S2-D4 块末尾的情形），故末尾再做一次直投唤醒 `send(2, TASK2_SEND_CAP,
     // TASK2_WAKE_PAYLOAD, 0, 0, 0)`，使 task 2 在 int3 时重新为 Ready。
@@ -1652,6 +1880,53 @@ pub fn service_reply_witness() -> ServiceReplyWitness {
         map: read_qword(USER_Y_VA + CLIENT_RECEIPT_MAP),
         reply: read_qword(USER_Y_VA + CLIENT_RECEIPT_REPLY),
         echo: read_qword(USER_HELLO2_VA + SERVICE_REPLY_OFFSET),
+    }
+}
+
+/// SPEC-088：init（broker）与 ring3 Rust 服务端点协商的回执。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceNegotiatedWitness {
+    /// 派生的端点令牌句柄（非零 = 已派生）。
+    pub token: u64,
+    /// 第 4 次 `task_create` 返回的服务 manager cap（非零 = 服务已建）。
+    pub service: u64,
+    /// 把栈段映射进服务根的回执（应 0）。
+    pub stack: u64,
+    /// 服务自报的 task id（非零）。
+    pub service_id: u64,
+    /// 转发 Hello 段 cap 给服务的 `SYS_SEND` 回执（应 0）。
+    pub forward: u64,
+    /// 服务完成协商的 `SYS_RECV` 回执（应 `SERVICE_DONE_TAG`）。
+    pub done: u64,
+    /// 服务写入共享段 offset 128 的协商结果（判决性：应 `SERVICE_EXPECTED_NEGOTIATED`）。
+    pub negotiated: u64,
+    /// 服务写入共享段 offset 136 的负例码（应 `SERVICE_EXPECTED_NEGATIVES`）。
+    pub negatives: u64,
+}
+
+impl ServiceNegotiatedWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.token != 0
+            && self.service != 0
+            && self.stack == 0
+            && self.service_id != 0
+            && self.forward == 0
+            && self.done == SERVICE_DONE_TAG
+            && self.negotiated == SERVICE_EXPECTED_NEGOTIATED
+            && self.negatives == SERVICE_EXPECTED_NEGATIVES
+    }
+}
+
+pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
+    ServiceNegotiatedWitness {
+        token: read_qword(USER_Y_VA + SVC_RECEIPT_TOKEN),
+        service: read_qword(USER_Y_VA + SVC_RECEIPT_MGR),
+        stack: read_qword(USER_Y_VA + SVC_RECEIPT_STACK),
+        service_id: read_qword(USER_Y_VA + SVC_RECEIPT_ID),
+        forward: read_qword(USER_Y_VA + SVC_RECEIPT_FORWARD),
+        done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE),
+        negotiated: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_OFFSET),
+        negatives: read_qword(USER_HELLO2_VA + SERVICE_NEGATIVES_OFFSET),
     }
 }
 
@@ -3087,7 +3362,10 @@ mod tests {
         assert_eq!(&code[2005..2007], &[0xCD, 0x80]);
         assert_eq!(&code[2007..2014], &[0x48, 0x89, 0x81, 0x78, 0x01, 0, 0]);
         // 负例 1：entry 越界 → [Y+384]；随后还原 entry。
-        assert_eq!(&code[2016..2024], &(USER3_BASE_VA + 0x9000).to_le_bytes());
+        assert_eq!(
+            &code[2016..2024],
+            &(USER3_CODE_VA + RUNTIME_APP_CODE_PAGES as u64 * FRAME_SIZE).to_le_bytes()
+        );
         assert_eq!(&code[2024..2028], &[0x48, 0x89, 0x42, 0x20]);
         assert_eq!(&code[2043..2050], &[0x48, 0x89, 0x81, 0x80, 0x01, 0, 0]);
         assert_eq!(&code[2060..2064], &[0x48, 0x89, 0x42, 0x20]);

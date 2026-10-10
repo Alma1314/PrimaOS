@@ -935,6 +935,28 @@ pub(crate) fn service_reply_ready(witness: &kernel::user::ServiceReplyWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-088：init（broker）与 ring3 Rust 服务端点解析/协商的协议回执。
+pub(crate) fn service_negotiated_ready(witness: &kernel::user::ServiceNegotiatedWitness) {
+    write_prefix("service_negotiated_ready", "ok");
+    serial::write_bytes(b"|data=token=");
+    write_hex_u64(witness.token);
+    serial::write_bytes(b";service=");
+    write_hex_u64(witness.service);
+    serial::write_bytes(b";stack=");
+    write_hex_u64(witness.stack);
+    serial::write_bytes(b";svc_id=");
+    write_hex_u64(witness.service_id);
+    serial::write_bytes(b";forward=");
+    write_hex_u64(witness.forward);
+    serial::write_bytes(b";done=");
+    write_hex_u64(witness.done);
+    serial::write_bytes(b";negotiated=");
+    write_hex_u64(witness.negotiated);
+    serial::write_bytes(b";negatives=");
+    write_hex_u64(witness.negatives);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

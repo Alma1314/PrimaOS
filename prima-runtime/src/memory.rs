@@ -61,4 +61,25 @@ impl<T: SyscallTransport> Runtime<T> {
         }
         Ok(())
     }
+
+    /// 从当前 Task 已映射且可读的用户地址区间读回字节。
+    ///
+    /// SPEC-088：服务端解析对端写入共享 Segment 的 wire 消息时需要读回。调用方必须先通过
+    /// `memseg_map` 建立覆盖整个区间的可读映射；地址加法溢出会在触碰内存前拒绝。
+    pub fn read_user_bytes(&self, address: u64, out: &mut [u8]) -> Result<()> {
+        address
+            .checked_add(out.len() as u64)
+            .ok_or(Error::InvalidInput)?;
+        for (index, byte) in out.iter_mut().enumerate() {
+            *byte = prima_ostd::mm::read_u8_at(address, index as u64);
+        }
+        Ok(())
+    }
+
+    /// 读回一个以 little-endian 编码的 u64。
+    pub fn read_user_u64(&self, address: u64) -> Result<u64> {
+        let mut bytes = [0u8; 8];
+        self.read_user_bytes(address, &mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
 }
