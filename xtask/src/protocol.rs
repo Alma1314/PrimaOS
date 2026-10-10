@@ -28,6 +28,7 @@ enum EventKind {
     NamespaceReady,
     PreemptReady,
     TimerReady,
+    AuditReady,
     ExcResumeReady,
     PlatformSegmentsReady,
     AuthorityReady,
@@ -209,7 +210,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 38] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 39] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -238,16 +239,17 @@ const EXPECTED_EVENTS: [(u32, EventKind); 38] = [
     (26, EventKind::NamespaceReady),
     (27, EventKind::PreemptReady),
     (28, EventKind::TimerReady),
-    (29, EventKind::ExcResumeReady),
-    (30, EventKind::PlatformSegmentsReady),
-    (31, EventKind::AuthorityReady),
-    (32, EventKind::FramesReady),
-    (33, EventKind::SelfRootReady),
-    (34, EventKind::FaultReady),
-    (35, EventKind::StateAuditReady),
-    (36, EventKind::ReclaimReady),
-    (37, EventKind::ResumeReady),
-    (38, EventKind::BootComplete),
+    (29, EventKind::AuditReady),
+    (30, EventKind::ExcResumeReady),
+    (31, EventKind::PlatformSegmentsReady),
+    (32, EventKind::AuthorityReady),
+    (33, EventKind::FramesReady),
+    (34, EventKind::SelfRootReady),
+    (35, EventKind::FaultReady),
+    (36, EventKind::StateAuditReady),
+    (37, EventKind::ReclaimReady),
+    (38, EventKind::ResumeReady),
+    (39, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -466,6 +468,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::RuntimeHelloReady)
     {
         validate_runtime_hello_data(hello.data.as_deref())?;
+    }
+
+    if let Some(audit) = events
+        .iter()
+        .find(|event| event.kind == EventKind::AuditReady)
+    {
+        validate_audit_data(audit.data.as_deref())?;
     }
 
     if let Some(resume) = events
@@ -760,6 +769,38 @@ fn validate_timer_data(data: Option<&str>) -> Result<(), String> {
         if get(key)? != 1 {
             return Err(format!(
                 "timer_ready {key} must be 1 — the ring3 receipts must show three timer handles, a Cancelled outcome, an AlreadyCancelled state return, and an overall pass"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_audit_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "audit_ready event is missing its data field".to_owned())?;
+    let mut fields = std::collections::BTreeMap::new();
+    for field in data.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("malformed audit_ready field: {field}"))?;
+        fields.insert(key, value);
+    }
+    for (key, expected) in [
+        ("chain_len", 2usize),
+        ("derived", 1),
+        ("moves", 2),
+        ("created", 1),
+        ("destroyed", 0),
+        ("stale_ok", 1),
+        ("purity_ok", 1),
+        ("evidence_ok", 1),
+    ] {
+        let actual = fields
+            .get(key)
+            .ok_or_else(|| format!("audit_ready is missing {key}"))
+            .and_then(|value| parse_count(value))?;
+        if actual != expected {
+            return Err(format!(
+                "audit_ready {key}: expected {expected}, got {actual}"
             ));
         }
     }
@@ -3271,6 +3312,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("timer_ready", "ok") => EventKind::TimerReady,
+        ("audit_ready", "ok") => EventKind::AuditReady,
         ("exc_resume_ready", "ok") => EventKind::ExcResumeReady,
         ("platform_segments_ready", "ok") => EventKind::PlatformSegmentsReady,
         ("authority_ready", "ok") => EventKind::AuthorityReady,
@@ -3318,6 +3360,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
+            | EventKind::AuditReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
@@ -3358,6 +3401,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
+            | EventKind::AuditReady
             | EventKind::ExcResumeReady
             | EventKind::PlatformSegmentsReady
             | EventKind::AuthorityReady
@@ -3416,16 +3460,17 @@ mod tests {
         "PRIMA|v=1|seq=26|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=27|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=28|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=29|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=30|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=31|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=32|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=33|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=34|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=35|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
-        "PRIMA|v=1|seq=36|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=37|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=38|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=29|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=30|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=31|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=12;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,1,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=32|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=33|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=34|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=35|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=36|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=37|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=38|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=39|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -4968,5 +5013,32 @@ mod tests {
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("namespaces"), "{error}");
+    }
+
+    const AUDIT_DATA: &str =
+        "chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1";
+
+    #[test]
+    fn rejects_audit_without_the_position_history() {
+        let output = VALID.replace(AUDIT_DATA, &AUDIT_DATA.replace("moves=2", "moves=1"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("moves: expected 2"), "{error}");
+    }
+
+    #[test]
+    fn rejects_audit_that_mutates_the_log() {
+        let output = VALID.replace(
+            AUDIT_DATA,
+            &AUDIT_DATA.replace("purity_ok=1", "purity_ok=0"),
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("purity_ok: expected 1"), "{error}");
+    }
+
+    #[test]
+    fn rejects_audit_that_cannot_query_a_dead_target() {
+        let output = VALID.replace(AUDIT_DATA, &AUDIT_DATA.replace("stale_ok=1", "stale_ok=0"));
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("stale_ok: expected 1"), "{error}");
     }
 }

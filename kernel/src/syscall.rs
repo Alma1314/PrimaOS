@@ -22,7 +22,8 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
-    self, AuthError, DropError, ExcAuditCounts, ExcError, ExcKind, IMAGE_CAP_HANDLE, INIT_TASK_ID,
+    self, AuditError, AuditTrace, AuthError, DropError, ExcAuditCounts, ExcError, ExcKind,
+    IMAGE_CAP_HANDLE, INIT_TASK_ID,
 };
 use crate::exc::SretFrame;
 use crate::gdt::USER_CS;
@@ -37,12 +38,12 @@ use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
 pub use prima_abi::syscall::{
-    SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO, SYS_EXC_SUBSCRIBE,
-    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
-    SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE,
-    SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
-    SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP,
-    SYS_YIELD,
+    SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO,
+    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
+    SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
+    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
+    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
+    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -62,6 +63,10 @@ pub const TIMER_RECEIPT_DESTROY: u64 = 712;
 pub const TIMER_DEADLINE_DELTA: u64 = 2;
 /// SPEC-082：ring3 立即触发用的 deadline（`deadline ≤ now` ⇒ 同操作内 `Fired`，S3-D4）。
 pub const TIMER_DEADLINE_IMMEDIATE: u64 = 0;
+
+/// SPEC-083：Y 回执页中 `audit(cap)` 两步的字节偏移（紧接 SPEC-082 的 712）。
+pub const AUDIT_RECEIPT_LIVE: u64 = 720;
+pub const AUDIT_RECEIPT_STALE: u64 = 728;
 
 /// SPEC-081：路径文本的最大字节数（细化层上限，见设计文档 §0.1）。
 pub const MAX_NS_PATH_BYTES: u64 = 64;
@@ -884,6 +889,31 @@ fn timer_destroy_call(raw_cap: u64) -> u64 {
     }
 }
 
+/// SPEC-083：把 `audit(cap)` 的摘要打包进单个机器字（回执与 xtask 断言用）。
+///
+/// 字段布局：`chain_len`(8) | `minted`(8…15) | `derived`(16…23) | `moves`(24…31) |
+/// `created`(32…39) | `destroyed`(40…47)。
+fn pack_audit(trace: &AuditTrace) -> u64 {
+    (trace.chain_len as u64)
+        | ((trace.minted as u64) << 8)
+        | ((trace.derived as u64) << 16)
+        | ((trace.moves as u64) << 24)
+        | ((trace.created as u64) << 32)
+        | ((trace.destroyed as u64) << 40)
+}
+
+/// SPEC-083 / §13.2：`audit(cap)` 只查询；目标已销毁但只要 cap 仍被持有就仍接受。
+fn audit_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    match bootstrap::audit_trace(sched::current(), cap) {
+        Ok(trace) => pack_audit(&trace),
+        Err(AuditError::InvalidCap) => encode_errno(Errno::NoEnt),
+        Err(AuditError::InvalidCaller | AuditError::NotHeld) => encode_errno(Errno::Access),
+    }
+}
+
 /// SPEC-082：ring3 Timer 回执的缓存。
 ///
 /// `user_trap_exit` 在 task 1 的根下读出回执并存入此静态；`after_resume`（已切回内核根、
@@ -902,6 +932,84 @@ pub fn cache_timer_receipts() {
         slots[5] = read_user_qword(base + TIMER_RECEIPT_CANCEL_AGAIN);
         slots[6] = read_user_qword(base + TIMER_RECEIPT_DESTROY);
     });
+}
+
+/// SPEC-083：`audit(cap)` 回执的缓存（同样必须在 task 1 的地址空间下读出）。
+static AUDIT_RECEIPTS: StaticCell<[u64; 4]> = StaticCell::new([0; 4]);
+
+/// SPEC-083：在 `user_trap_exit` 里缓存 `audit(cap)` 回执。
+///
+/// `live`/`stale` 两步由 ring3 写入 Y 页；后两项复用 SPEC-081 已写好的 `unbind`/`copy_c`
+/// 句柄（这两个 Capability 一个仍被持有、一个位置已变），作为内核侧重算的输入。
+pub fn cache_audit_receipts() {
+    AUDIT_RECEIPTS.with_mut(|slots| {
+        slots[0] = read_user_qword(USER_Y_VA + AUDIT_RECEIPT_LIVE);
+        slots[1] = read_user_qword(USER_Y_VA + AUDIT_RECEIPT_STALE);
+        slots[2] = read_user_qword(USER_Y_VA + NS_RECEIPT_UNBIND);
+        slots[3] = read_user_qword(USER_Y_VA + NS_RECEIPT_COPY_C);
+    });
+}
+
+/// SPEC-083：`audit(cap)` 见证（缓存回执 + 内核侧重算摘要比对）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditWitness {
+    pub chain_len: usize,
+    pub derived: u32,
+    pub moves: u32,
+    pub created: u32,
+    pub destroyed: u32,
+    pub stale_ok: bool,
+    pub purity_ok: bool,
+    pub evidence_ok: bool,
+}
+
+pub fn audit_witness() -> AuditWitness {
+    let receipts = AUDIT_RECEIPTS.with(|slots| *slots);
+    let before = bootstrap::audit_len();
+    let live = Handle::decode(receipts[2])
+        .ok()
+        .and_then(|cap| bootstrap::audit_trace(INIT_TASK_ID, cap).ok());
+    let stale = Handle::decode(receipts[3])
+        .ok()
+        .and_then(|cap| bootstrap::audit_trace(INIT_TASK_ID, cap).ok());
+    let purity_ok = before == bootstrap::audit_len();
+    let Some(live) = live else {
+        return AuditWitness {
+            chain_len: 0,
+            derived: 0,
+            moves: 0,
+            created: 0,
+            destroyed: 0,
+            stale_ok: false,
+            purity_ok,
+            evidence_ok: false,
+        };
+    };
+    let stale_ok = stale.is_some_and(|trace| {
+        !trace.target_live
+            && trace.created == 1
+            && trace.destroyed == 1
+            && receipts[1] == pack_audit(&trace)
+    });
+    let evidence_ok = live.chain_len == 2
+        && live.derived == 1
+        && live.moves == 2
+        && live.created == 1
+        && live.destroyed == 0
+        && live.target_live
+        && receipts[0] == pack_audit(&live)
+        && stale_ok
+        && purity_ok;
+    AuditWitness {
+        chain_len: live.chain_len,
+        derived: live.derived,
+        moves: live.moves,
+        created: live.created,
+        destroyed: live.destroyed,
+        stale_ok,
+        purity_ok,
+        evidence_ok,
+    }
 }
 
 /// SPEC-082：ring3 Timer 见证（缓存回执 + 内核侧审计计数）。
@@ -2040,6 +2148,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_AUDIT {
+        audit_call(args[0])
     } else {
         dispatch_plain(num, args)
     }

@@ -191,8 +191,13 @@ pub enum AuditEvent {
         segment: bool,
     },
     /// S2-D3：Segment 销毁（§13.1 对象生命周期；帧已归还来源池）。
+    ///
+    /// SPEC-083：与 `ObjectCreated` 对称携带 `segment` 标志——`ObjectRef` 的 id 空间按类型
+    /// 独立（image `Segment(1)` 与 init `Namespace(1)` 同 id），`audit(cap)` 按目标对象过滤
+    /// 必须用「id + 类型」双条件，否则跨类型混计。
     ObjectDestroyed {
         object_id: u32,
+        segment: bool,
     },
     /// 切片 P：Task 状态迁移（W13 要求每次迁移有事件）。
     TaskStateChanged {
@@ -365,6 +370,31 @@ impl AuditLog {
             }
         }
     }
+}
+
+/// §13.2：Capability 祖先链的最大长度（受 Capability 槽数上界约束，保证回溯必然终止）。
+pub const MAX_TRACE_CHAIN: usize = MAX_CAPABILITY_SLOTS;
+
+/// §13.2：一条 Capability 的不可变祖先链与相关事件摘要（`audit(cap)` 的返回值）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditTrace {
+    pub chain: [Handle; MAX_TRACE_CHAIN],
+    pub chain_len: usize,
+    pub minted: u32,
+    pub derived: u32,
+    pub moves: u32,
+    pub created: u32,
+    pub destroyed: u32,
+    pub target_live: bool,
+    /// 单节点实现不表示跨节点代理根（`origin = None` 恒真）。
+    pub origin_none: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditError {
+    InvalidCaller,
+    InvalidCap,
+    NotHeld,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -849,6 +879,18 @@ impl ObjectRef {
             ObjectRef::Namespace(_) => ObjectKind::Namespace,
             ObjectRef::ExcSource(_) => ObjectKind::ExcSource,
             ObjectRef::Timer(_) => ObjectKind::Timer,
+        }
+    }
+
+    /// 目标对象的 id。各类型的 id 空间**独立**（如 image `Segment(1)` 与 init
+    /// `Namespace(1)` 同为 1），故按目标过滤审计事件时必须与 [`Self::kind`] 合用。
+    pub const fn id(self) -> u32 {
+        match self {
+            Self::Segment(id)
+            | Self::Task(id)
+            | Self::Namespace(id)
+            | Self::ExcSource(id)
+            | Self::Timer(id) => id,
         }
     }
 }
@@ -2824,6 +2866,102 @@ impl BootstrapState {
             .and_then(|position| position.location.holder_id())
     }
 
+    /// §13.2 `audit(cap)`：纯查询，不改变任何状态。
+    ///
+    /// 前置只有两条：`caller` 是存活 Task，且 `cap` 当前由 `caller` 持有。**目标对象是否存活
+    /// 不参与前置**——被销毁的对象只要 Capability 仍在 caller 手中就仍可查询（§4.3 的
+    /// `live(target)` 以 `target_live` 字段表达，而非拒绝查询）。
+    pub fn audit_trace(&self, caller: u32, cap: Handle) -> Result<AuditTrace, AuditError> {
+        if !self.tasks.is_live(caller) {
+            return Err(AuditError::InvalidCaller);
+        }
+        if self.slots.check(cap) != SlotState::Live {
+            return Err(AuditError::InvalidCap);
+        }
+        let target = self.target_of(cap).ok_or(AuditError::InvalidCap)?;
+        if self.holder_of(cap) != Some(caller) {
+            return Err(AuditError::NotHeld);
+        }
+        let mut trace = AuditTrace {
+            chain: [Handle::ZERO; MAX_TRACE_CHAIN],
+            chain_len: 0,
+            minted: 0,
+            derived: 0,
+            moves: 0,
+            created: 0,
+            destroyed: 0,
+            target_live: self.target_live(target),
+            origin_none: true,
+        };
+        let mut current = cap;
+        loop {
+            // 每个 parent 都先于其 child 存在；该上界同时兜住内部状态畸形的情形。
+            if trace.chain_len == MAX_TRACE_CHAIN {
+                return Err(AuditError::InvalidCap);
+            }
+            trace.chain[trace.chain_len] = current;
+            trace.chain_len += 1;
+            // parent token 可能已被丢弃并复用了槽位；不可变的派生事件仍带着旧 handle 与其
+            // parent，故 records 查不到时回退到审计日志。
+            let parent = self
+                .records
+                .find(current)
+                .filter(|record| record.handle == current)
+                .and_then(|record| record.parent)
+                .or_else(|| {
+                    let mut found = None;
+                    self.audit.for_each(|event| {
+                        if let AuditEvent::CapabilityDerived { cap, parent, .. } = *event
+                            && cap == current
+                        {
+                            found = Some(parent);
+                        }
+                    });
+                    found
+                });
+            match parent {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        trace.chain[..trace.chain_len].reverse();
+        let is_segment = matches!(target, ObjectRef::Segment(_));
+        self.audit.for_each(|event| match *event {
+            AuditEvent::CapabilityMinted { cap: event_cap, .. }
+                if trace.chain[..trace.chain_len].contains(&event_cap) =>
+            {
+                trace.minted += 1
+            }
+            AuditEvent::CapabilityDerived { cap: event_cap, .. }
+                if trace.chain[..trace.chain_len].contains(&event_cap) =>
+            {
+                trace.derived += 1
+            }
+            AuditEvent::CapabilityMoved { cap: event_cap, .. }
+            | AuditEvent::CapabilityDropped { cap: event_cap }
+                if event_cap == cap =>
+            {
+                trace.moves += 1
+            }
+            AuditEvent::ObjectCreated { object_id, segment }
+                if object_id == target.id() && segment == is_segment =>
+            {
+                trace.created += 1
+            }
+            AuditEvent::ObjectDestroyed { object_id, segment }
+                if object_id == target.id() && segment == is_segment =>
+            {
+                trace.destroyed += 1
+            }
+            _ => {}
+        });
+        Ok(trace)
+    }
+
+    pub fn audit_len(&self) -> usize {
+        self.audit.count
+    }
+
     /// 目标对象是否存活（§4.3 `usable` 的 `live(target)` 分量）。
     pub fn target_live(&self, target: ObjectRef) -> bool {
         match target {
@@ -4162,8 +4300,10 @@ impl BootstrapState {
         }
         // 成功动作 3：从活动 Namespace 表删除。
         self.remove_namespace_object(ns);
-        self.audit
-            .append(AuditEvent::ObjectDestroyed { object_id: ns });
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: ns,
+            segment: false,
+        });
         Ok(())
     }
 
@@ -4464,8 +4604,10 @@ impl BootstrapState {
                 reason: TimerCancelReason::ByTask(caller),
             });
         }
-        self.audit
-            .append(AuditEvent::ObjectDestroyed { object_id: id });
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: id,
+            segment: false,
+        });
         self.timer_stats.destroyed += 1;
         Ok(())
     }
@@ -4550,8 +4692,10 @@ impl BootstrapState {
                         reason: TimerCancelReason::RecipientDestroyed,
                     });
                 }
-                self.audit
-                    .append(AuditEvent::ObjectDestroyed { object_id: id });
+                self.audit.append(AuditEvent::ObjectDestroyed {
+                    object_id: id,
+                    segment: false,
+                });
             }
         }
         count
@@ -6121,8 +6265,10 @@ impl BootstrapState {
             generation: segment.generation.wrapping_add(1).max(1),
             ..segment
         });
-        self.audit
-            .append(AuditEvent::ObjectDestroyed { object_id: seg_id });
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: seg_id,
+            segment: true,
+        });
         Ok(())
     }
 }
@@ -6336,6 +6482,18 @@ pub fn authority_record() -> Result<BootstrapRecord, BootstrapError> {
             None => Err(BootstrapError::InvalidAuthority),
         },
     )
+}
+
+/// SPEC-083：用户态 `audit(cap)` syscall 的只读全局入口。
+pub fn audit_trace(caller: u32, cap: Handle) -> Result<AuditTrace, AuditError> {
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.audit_trace(caller, cap),
+        None => Err(AuditError::InvalidCaller),
+    })
+}
+
+pub fn audit_len() -> Option<usize> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(BootstrapState::audit_len))
 }
 
 /// §14 步骤 8 + W13：首次调度 init——`Ready → Running` 并追加 `TaskStateChanged`。
@@ -7047,7 +7205,7 @@ pub fn exc_subscribed(caller: u32, cap: Handle, kind: ExcKind) -> Result<u32, Ex
 #[cfg(test)]
 mod tests {
     use super::{
-        AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityLocation,
+        AuditError, AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityLocation,
         CapabilityPositionError, DeriveError, DropError, EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS,
         EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, ExcResumeError, Handle, IMAGE_CAP_HANDLE,
         IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
@@ -7106,6 +7264,88 @@ mod tests {
             Some(ObjectRef::Namespace(id)) => id,
             _ => panic!("cap does not target a namespace"),
         }
+    }
+
+    #[test]
+    fn audit_trace_reconstructs_parent_and_position_without_mutating() {
+        let mut state = fresh_state();
+        let child = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("SegMapR"))
+            .expect("derive");
+        state
+            .ns_bind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("x"), child)
+            .expect("bind");
+        assert_eq!(
+            state.audit_trace(INIT_TASK_ID, child),
+            Err(AuditError::NotHeld)
+        );
+        state
+            .ns_unbind(INIT_TASK_ID, NAMESPACE_CAP_HANDLE, path("x"))
+            .expect("unbind");
+        let before = state.audit_len();
+        let trace = state.audit_trace(INIT_TASK_ID, child).expect("query");
+        assert_eq!(&trace.chain[..trace.chain_len], &[IMAGE_CAP_HANDLE, child]);
+        assert_eq!((trace.minted, trace.derived, trace.moves), (0, 1, 2));
+        assert_eq!((trace.created, trace.destroyed), (1, 0));
+        assert!(trace.target_live && trace.origin_none);
+        assert_eq!(state.audit_len(), before);
+    }
+
+    #[test]
+    fn audit_trace_follows_a_dropped_and_reused_parent_slot() {
+        let mut state = fresh_state();
+        let parent = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("Derive,SegMapR"))
+            .expect("parent");
+        let child = state
+            .derive_capability(INIT_TASK_ID, parent, rights("SegMapR"))
+            .expect("child");
+        state
+            .drop_capability(INIT_TASK_ID, parent)
+            .expect("drop parent");
+        let replacement = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("SegMapR"))
+            .expect("reuse slot");
+        assert_eq!(parent.index(), replacement.index());
+        assert_ne!(parent, replacement);
+        let trace = state.audit_trace(INIT_TASK_ID, child).expect("query child");
+        assert_eq!(
+            &trace.chain[..trace.chain_len],
+            &[IMAGE_CAP_HANDLE, parent, child]
+        );
+        assert_eq!(trace.derived, 2);
+    }
+
+    #[test]
+    fn audit_trace_accepts_a_held_capability_with_dead_target() {
+        let mut state = fresh_state();
+        let ns = state.ns_create(INIT_TASK_ID).expect("create");
+        state.ns_destroy(INIT_TASK_ID, ns).expect("destroy");
+        let trace = state
+            .audit_trace(INIT_TASK_ID, ns)
+            .expect("dead target is queryable");
+        assert_eq!(&trace.chain[..trace.chain_len], &[ns]);
+        assert_eq!(trace.minted, 1);
+        assert_eq!((trace.created, trace.destroyed), (1, 1));
+        assert!(!trace.target_live);
+    }
+
+    #[test]
+    fn audit_trace_rejects_invalid_caller_cap_and_foreign_holder() {
+        let mut state = fresh_state();
+        assert_eq!(
+            state.audit_trace(99, IMAGE_CAP_HANDLE),
+            Err(AuditError::InvalidCaller)
+        );
+        assert_eq!(
+            state.audit_trace(INIT_TASK_ID, Handle::ZERO),
+            Err(AuditError::InvalidCap)
+        );
+        state.create_task(2).expect("task");
+        assert_eq!(
+            state.audit_trace(2, IMAGE_CAP_HANDLE),
+            Err(AuditError::NotHeld)
+        );
     }
 
     #[test]
@@ -7470,7 +7710,7 @@ mod tests {
         assert_eq!(state.holder_of(keeper), Some(INIT_TASK_ID));
         assert!(state.audit.any(|event| matches!(
             event,
-            AuditEvent::ObjectDestroyed { object_id } if *object_id == a_ns
+            AuditEvent::ObjectDestroyed { object_id, .. } if *object_id == a_ns
         )));
     }
 
@@ -7744,6 +7984,28 @@ mod tests {
                 .iter()
                 .flatten()
                 .any(|timer| timer.state.recipient() == INIT_TASK_ID)
+        );
+    }
+
+    #[test]
+    fn destroying_one_recipient_preserves_other_recipients_timers() {
+        let mut state = fresh_state();
+        state.create_task(2).expect("second recipient");
+        let _first = state.timer_set(INIT_TASK_ID, 3).expect("first timer");
+        let second = state.timer_set(2, 7).expect("second timer");
+        assert_eq!(state.destroy_timers_of_recipient(INIT_TASK_ID), 1);
+        assert_eq!(state.timers.count, 1);
+        assert!(
+            state
+                .timers
+                .find(2)
+                .is_some_and(|timer| timer.state.recipient() == 2 && timer.state.is_pending())
+        );
+        assert_eq!(state.target_of(second), Some(ObjectRef::Timer(2)));
+        assert!(
+            !state
+                .audit
+                .any(|event| matches!(event, AuditEvent::ObjectDestroyed { object_id: 2, .. }))
         );
     }
 

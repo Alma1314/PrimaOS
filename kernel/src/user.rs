@@ -32,18 +32,19 @@ use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::syscall::{
-    ACCESS_R_BITS, AUTHORIZE_CAP, BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN,
-    COPY_PTR, EXC_KIND_PAGEFAULT, EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP,
-    FAST_ARG, IPC_DIRECT_PAYLOAD, IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE,
-    MEMSEG_PATTERN, MEMSEG_RW_BITS, NS_BIND_RIGHTS_BITS, NS_PATH_DATA_OFFSET, NS_PATH_DATA_VA,
-    NS_PATH_ILLEGAL_OFF, NS_PATH_LIB_OFF, NS_PATH_MNT_OFF, NS_PATH_MNTSUB_OFF, NS_PATH_SUB_OFF,
-    NS_PATH_X_OFF, NS_PATH_Y_OFF, NS_RECEIPT_BAD_PATH, NS_RECEIPT_BIND, NS_RECEIPT_BIND_OVERLAP,
+    ACCESS_R_BITS, AUDIT_RECEIPT_LIVE, AUDIT_RECEIPT_STALE, AUTHORIZE_CAP, BAD_PTR,
+    CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT,
+    EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, IPC_DIRECT_PAYLOAD,
+    IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN, MEMSEG_RW_BITS,
+    NS_BIND_RIGHTS_BITS, NS_PATH_DATA_OFFSET, NS_PATH_DATA_VA, NS_PATH_ILLEGAL_OFF,
+    NS_PATH_LIB_OFF, NS_PATH_MNT_OFF, NS_PATH_MNTSUB_OFF, NS_PATH_SUB_OFF, NS_PATH_X_OFF,
+    NS_PATH_Y_OFF, NS_RECEIPT_BAD_PATH, NS_RECEIPT_BIND, NS_RECEIPT_BIND_OVERLAP,
     NS_RECEIPT_BIND_SUB, NS_RECEIPT_COPY_B, NS_RECEIPT_COPY_C, NS_RECEIPT_CREATE_A,
     NS_RECEIPT_CREATE_B, NS_RECEIPT_CREATE_C, NS_RECEIPT_DERIVE1, NS_RECEIPT_DERIVE2,
     NS_RECEIPT_DESTROY, NS_RECEIPT_MOUNT_A_B, NS_RECEIPT_MOUNT_CYCLE, NS_RECEIPT_MOUNT_INIT_C,
     NS_RECEIPT_RESOLVE_LIB, NS_RECEIPT_RESOLVE_SUB, NS_RECEIPT_UNBIND, NS_RECEIPT_UNMOUNT,
     NS_ROOT_RIGHTS_BITS, RIGHT_DERIVE, RIGHT_SEGMAPR, RIGHT_SEGMAPW, RIGHTS_DERIVE_BITS,
-    RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUTHORIZE, SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP,
+    RIGHTS_SEGMAPW_BITS, SUM_ARGS, SYS_AUDIT, SYS_AUTHORIZE, SYS_BAD, SYS_CAP_DERIVE, SYS_CAP_DROP,
     SYS_COPY_IN, SYS_ECHO, SYS_ECHO_ARG, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT,
     SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
     SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
@@ -241,7 +242,17 @@ const fn put_imm64<const N: usize>(
     put(code, at + 2, &imm.to_le_bytes());
 }
 
-/// `mov [rcx+disp32], rax`（6 字节）——把 syscall 返回值写入 Y 回执页。
+/// `mov eax, imm32`（5 字节）——写入 syscall 调用号。
+///
+/// 32 位写入会清零 `rax` 高 32 位；调用号都 ≤ `u32::MAX`，故语义不变，但比
+/// `mov rax, imm64` 省 5 字节（代码页已接近单页上限，SPEC-083 起采用）。
+const fn put_syscall<const N: usize>(code: &mut [u8; N], at: usize, number: u64) {
+    assert!(number <= u32::MAX as u64);
+    code[at] = 0xB8;
+    put(code, at + 1, &(number as u32).to_le_bytes());
+}
+
+/// `mov [rcx+disp32], rax`（7 字节）——把 syscall 返回值写入 Y 回执页。
 const fn put_store_rax<const N: usize>(code: &mut [u8; N], at: usize, disp: u32) {
     put(code, at, &[0x48, 0x89, 0x81]);
     put(code, at + 3, &disp.to_le_bytes());
@@ -1015,8 +1026,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         NS_RECEIPT_CREATE_B as u32,
     );
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_MOUNT);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_A_B as u32);
@@ -1037,8 +1048,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         NS_RECEIPT_CREATE_A as u32,
     );
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_MOUNT);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_CYCLE as u32);
@@ -1053,8 +1064,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE1 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_BIND);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_BIND as u32);
@@ -1068,8 +1079,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE2 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_BIND);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_BIND_OVERLAP as u32);
@@ -1090,8 +1101,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_DERIVE2 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_BIND);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_BIND_SUB as u32);
@@ -1106,8 +1117,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xBA, 1 << 1); // r10 = {SegMapR}（父项 child1 的合法子集）
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_RESOLVE);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_RESOLVE);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_RESOLVE_LIB as u32);
@@ -1122,8 +1133,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_load_reg(&mut code, at, 0x4C, NS_MODRM_R10, NS_RECEIPT_COPY_C as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_MOUNT);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_MOUNT);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_MOUNT_INIT_C as u32);
@@ -1144,8 +1155,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xBA, 1 << 1); // r10 = {SegMapR}
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_RESOLVE);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_RESOLVE);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_RESOLVE_SUB as u32);
@@ -1166,8 +1177,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xBA, TASK_CAP_HANDLE.encode());
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_BIND);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_BIND);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_BAD_PATH as u32);
@@ -1180,8 +1191,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, 3);
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_UNBIND);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_UNBIND);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_UNBIND as u32);
@@ -1193,8 +1204,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, 3);
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_UNMOUNT);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_UNMOUNT);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_UNMOUNT as u32);
@@ -1203,8 +1214,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // destroy(c_copy)：清空 c 的条目、从活动表删除对象（c_copy 变 stale token）。
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, NS_RECEIPT_COPY_C as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_NS_DESTROY);
-    at += 10;
+    put_syscall(&mut code, at, SYS_NS_DESTROY);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_DESTROY as u32);
@@ -1213,8 +1224,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // ---- SPEC-082：§10 Timer（切片 AK）----
     // `now` 在 ring3 阶段恒为 0（§10.3 的推进由 CPL3 抢占 tick 驱动），但这里仍经
     // `SYS_TIME_NOW` 读取并按相对偏移构造 deadline——不把「now 恰好是 0」写死进机码。
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIME_NOW);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIME_NOW);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_NOW as u32);
@@ -1224,8 +1235,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 7;
     put_add_rdi(&mut code, at, 2);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_SET);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_T1 as u32);
@@ -1233,8 +1244,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // t2 = timer_set(0)：deadline ≤ now ⇒ 同一原子操作内 Fired（S3-D4）。
     put_imm64(&mut code, at, 0x48, 0xBF, 0);
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_SET);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_T2 as u32);
@@ -1244,8 +1255,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 7;
     put_add_rdi(&mut code, at, 1);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_SET);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_SET);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_T3 as u32);
@@ -1253,16 +1264,16 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // timer_cancel(t3) → 0（Cancelled）；再次 → 2（AlreadyCancelled，状态返回）。
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T3 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_CANCEL);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_CANCEL);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_CANCEL as u32);
     at += 7;
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T3 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_CANCEL);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_CANCEL);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_CANCEL_AGAIN as u32);
@@ -1270,11 +1281,30 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // timer_destroy(t2)：Fired 的已排队通知不撤回。
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, TIMER_RECEIPT_T2 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_TIMER_DESTROY);
-    at += 10;
+    put_syscall(&mut code, at, SYS_TIMER_DESTROY);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, TIMER_RECEIPT_DESTROY as u32);
+    at += 7;
+
+    // §13.2 `audit(cap)`：只查询、不改状态。复用 Namespace 块取回的 child1（仍被 init 持有，
+    // 派生自镜像根），以及位置已变、目标已销毁但仍被持有的 c_copy；两条回执交给内核侧重算比对。
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, NS_RECEIPT_UNBIND as u32);
+    at += 7;
+    put_syscall(&mut code, at, SYS_AUDIT);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, AUDIT_RECEIPT_LIVE as u32);
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, NS_RECEIPT_COPY_C as u32);
+    at += 7;
+    put_syscall(&mut code, at, SYS_AUDIT);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, AUDIT_RECEIPT_STALE as u32);
     at += 7;
 
     // Stage 4 S4-D5：接收 Rust ring3 客户端随 IPC 移交的共享 Segment，映射到 init 并核验
@@ -1305,8 +1335,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB9, ACCESS_R_BITS);
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xB8, SYS_MEMSEG_MAP);
-    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put_store_rax(&mut code, at, 736);

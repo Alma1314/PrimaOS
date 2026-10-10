@@ -300,6 +300,28 @@ pub(crate) fn timer_ready(witness: &kernel::syscall::TimerWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-083 / §13.2：`audit(cap)` 纯查询的判决性见证。
+pub(crate) fn audit_ready(witness: &kernel::syscall::AuditWitness) {
+    write_prefix("audit_ready", "ok");
+    serial::write_bytes(b"|data=chain_len=");
+    write_u64(witness.chain_len as u64);
+    serial::write_bytes(b";derived=");
+    write_u32(witness.derived);
+    serial::write_bytes(b";moves=");
+    write_u32(witness.moves);
+    serial::write_bytes(b";created=");
+    write_u32(witness.created);
+    serial::write_bytes(b";destroyed=");
+    write_u32(witness.destroyed);
+    serial::write_bytes(b";stale_ok=");
+    write_u32(witness.stale_ok as u32);
+    serial::write_bytes(b";purity_ok=");
+    write_u32(witness.purity_ok as u32);
+    serial::write_bytes(b";evidence_ok=");
+    write_u32(witness.evidence_ok as u32);
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn panic_event() {
     write_event("panic", "error");
 }

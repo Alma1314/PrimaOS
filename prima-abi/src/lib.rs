@@ -39,4 +39,5 @@ pub mod syscall {
     pub const SYS_TIMER_SET: u64 = 29;
     pub const SYS_TIMER_CANCEL: u64 = 30;
     pub const SYS_TIMER_DESTROY: u64 = 31;
+    pub const SYS_AUDIT: u64 = 32;
 }

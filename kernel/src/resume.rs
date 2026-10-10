@@ -59,6 +59,8 @@ extern "C" fn after_resume() -> ! {
 
     // SPEC-082：Timer 见证——采集点必须在抢占阶段**之后**（`t1` 依赖 PIT tick 推进到期）。
     protocol::timer_ready(&kernel::syscall::timer_witness());
+    // SPEC-083：§13.2 `audit(cap)` 纯查询见证（缓存回执 + 内核侧重算比对）。
+    protocol::audit_ready(&kernel::syscall::audit_witness());
     protocol::exc_resume_ready(r12, r13, resumed as u32, rsp_ok as u32, flags_ok as u32);
     // 切片 R：平台 bring-up 区域对象化见证（真实 Segment 对象 + 内核持有的可授权根 Capability）。
     match kernel::bootstrap::platform_segments_record() {
@@ -153,6 +155,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     // SPEC-082：Timer 的 ring3 回执在此**缓存**——`after_resume` 已切回内核根，`USER_Y_VA`
     // 不再映射，故回执必须在 task 1 的地址空间下读出。
     kernel::syscall::cache_timer_receipts();
+    // SPEC-083：`audit(cap)` 回执同样必须在 task 1 的地址空间下缓存（上面两条查询）。
+    kernel::syscall::cache_audit_receipts();
     // 切片 O：进入 PIT 时钟抢占阶段（两任务被时钟轮转，永不由用户 `yield` 结束）。
     kernel::preempt::set_finish_handler(preempt_finish);
     kernel::preempt::run()
