@@ -760,10 +760,13 @@ unsafe extern "C" fn syscall_entry() -> ! {
 /// 与 `int 0x80` 路径的关键差异：`syscall` **不换栈、不压帧**，只把返回 RIP 写入
 /// `rcx`、RFLAGS 写入 `r11`，并清 FMASK 位。故入口自行：
 /// 1. 把用户 `rsp` 存入 [`USER_RSP`]，切到专用 [`SYSCALL_STACK`]；
-/// 2. 保存 `rcx`（用户返回 RIP）与 `r11`（用户 RFLAGS）到栈上，再保存 15 个 GPR；
-/// 3. 组装 8-qword ABI 帧并交给注册的 [`SyscallHandler`]（`cs` 槽填用户 `CS`，由上层经
+/// 2. 在 15 个 GPR 之下压入 `ss/rsp/rflags/cs/rip`，**模拟**中断路径的 5-qword 硬件帧，
+///    使保存块与 `int 0x80` 逐槽一致（`SaveBlock::to_sret_frame` 因而在快路径上也有效）；
+/// 3. 保存 `rcx`（用户返回 RIP）与 `r11`（用户 RFLAGS）到栈上，再保存 15 个 GPR，并把
+///    保存块基址存入 [`CONTEXT_BASE`]（与 `int 0x80` 一致，供阻塞/让出读回上下文）；
+/// 4. 组装 8-qword ABI 帧并交给注册的 [`SyscallHandler`]（`cs` 槽填用户 `CS`，由上层经
 ///    [`set_fast_syscall_cs`] 提供——`syscall` 不压 CS）；
-/// 4. 返回值写回保存的 `rax` 槽，恢复 GPR、`r11`、`rcx`、用户 `rsp`，`sysretq` 回 CPL3。
+/// 5. 返回值写回保存的 `rax` 槽，恢复 GPR、`r11`、`rcx`、用户 `rsp`，`sysretq` 回 CPL3。
 ///
 /// # Safety
 ///
@@ -777,6 +780,15 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         "mov qword ptr [rip + {user_rsp}], rsp",
         "lea rsp, [rip + {stack}]",
         "add rsp, {size}",
+        // 1b) 模拟 `int 0x80` 的硬件帧（`syscall` 不压帧）：在 15 个 GPR 之下压入
+        //     ss/rsp/rflags/cs/rip，使保存块的 0x78..0x98 与中断路径逐槽一致。否则
+        //     `SaveBlock::to_sret_frame` 会对快路径读出垃圾 rip/rsp/cs/ss，任何经
+        //     `current_context()` 的阻塞/让出都会把坏上下文存入调度帧。
+        "push qword ptr [rip + {user_ss}]",
+        "push qword ptr [rip + {user_rsp}]",
+        "push r11",
+        "push qword ptr [rip + {user_cs}]",
+        "push rcx",
         // 2) 保存全部 15 个 GPR：rax 最后压、位于最低地址。注意 rcx（用户返回 RIP）与
         //    r11（用户 RFLAGS）由 syscall 写入，也在其中被保存，sysretq 前据以恢复。
         "push r15",
@@ -795,7 +807,11 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         "push rbx",
         "push rax",
         // 3) 以 rbp 为保存块基址，组装 8-qword ABI 现场帧。
+        //    与 `int 0x80` 入口一致：把保存块基址存入 `CONTEXT_BASE`，否则快路径上的
+        //    阻塞/让出 syscall（`SYS_RECV`/`SYS_YIELD` 等）经 `current_context()` 读到的
+        //    是**上一次 `int 0x80` 的陈旧现场**，会把外来上下文存入本任务的调度帧。
         "mov rbp, rsp",
+        "mov qword ptr [rip + {ctx}], rbp",
         "and rsp, -16",
         "sub rsp, 64",
         "mov r10, qword ptr [rbp + 0x00]",
@@ -841,15 +857,25 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         user_rsp = sym USER_RSP,
         handle = sym FAST_SYSCALL_HANDLER,
         user_cs = sym FAST_SYSCALL_CS,
+        user_ss = sym FAST_SYSCALL_SS,
+        ctx = sym CONTEXT_BASE,
     )
 }
 
 /// 快路径 ABI 帧中填入的用户 `CS`（`syscall` 不压 CS）。
 static FAST_SYSCALL_CS: AtomicU64 = AtomicU64::new(0);
 
+/// 快路径保存块硬件帧中填入的用户 `SS`（`syscall` 不压 SS）。
+static FAST_SYSCALL_SS: AtomicU64 = AtomicU64::new(0);
+
 /// 设置快路径 ABI 帧的 `CS` 槽值（应为用户代码段选择子）。**必须在启用 `syscall` 前调用。**
 pub fn set_fast_syscall_cs(cs: u64) {
     FAST_SYSCALL_CS.store(cs, Ordering::Relaxed);
+}
+
+/// 设置快路径保存块硬件帧的 `SS` 槽值（应为用户数据段选择子）。
+pub fn set_fast_syscall_ss(ss: u64) {
+    FAST_SYSCALL_SS.store(ss, Ordering::Relaxed);
 }
 
 /// IRQ0（vector 32）裸入口。

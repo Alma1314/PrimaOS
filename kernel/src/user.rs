@@ -95,6 +95,11 @@ pub const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
 
 /// 用户代码页（只读、可执行、user）。
 pub const USER_CODE_VA: u64 = USER_BASE_VA;
+/// SPEC-087：task 1 的第二张代码页（用户代码页 4096→8192 B）。
+///
+/// `USER_STACK_VA` 紧贴 `USER_CODE_VA`（+0x1000），故第二页不连续，落在空闲槽 +0x5000；
+/// 尾部追加的代码经 `jmp rel32` 从 `USER_CODE_VA + 4030` 跳到这里执行。
+pub const USER_CODE2_VA: u64 = USER_BASE_VA + 0x9000;
 /// 用户栈页（可写、user）。
 pub const USER_STACK_VA: u64 = USER_BASE_VA + 0x1000;
 /// COW 数据页 X（**只读**、user），写它触发用户态写保护 #PF。
@@ -103,6 +108,22 @@ pub const USER_X_VA: u64 = USER_BASE_VA + 0x2000;
 pub const USER_Y_VA: u64 = USER_BASE_VA + 0x3000;
 /// Stage 4：Rust 用户客户端将 PRIM Hello 放入共享 Segment；init 经 IPC 收到 cap 后映射到此页。
 pub const USER_HELLO_VA: u64 = USER_BASE_VA + 0x7000;
+/// SPEC-087：第二个（存活的）Rust 客户端递交给 init 的共享 Segment 在 **init 根**内的映射 VA。
+///
+/// 与 `USER_HELLO_VA`（SPEC-085 首个客户端的段）分开，避免第二次 `memseg_map` 撞 `Overlap`。
+pub const USER_HELLO2_VA: u64 = USER_BASE_VA + 0x8000;
+/// SPEC-087：第二个客户端的 `recv` 出缓冲（避开 `TASK_RECV_BUF` 的 24 B）。
+pub const CLIENT_RECV_BUF: u64 = USER_Y_VA + 0x340;
+/// SPEC-087：双向握手各步的 Y 页回执偏移。
+pub const CLIENT_RECEIPT_MGR: u64 = 744;
+pub const CLIENT_RECEIPT_STACK: u64 = 752;
+pub const CLIENT_RECEIPT_RECV: u64 = 760;
+pub const CLIENT_RECEIPT_MAP: u64 = 800;
+pub const CLIENT_RECEIPT_REPLY: u64 = 808;
+/// SPEC-087：客户端把收到的应答 payload 写回共享段内的偏移。
+pub const SERVICE_REPLY_OFFSET: u64 = 64;
+/// SPEC-087：init 的应答字——`"PONG"`(低 32) ‖ 应答 opcode `0x8001`(32..48) ‖ 回显 request_id `3`(48..64)。
+pub const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
 
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
@@ -213,7 +234,9 @@ pub const RUNTIME_APP_ENTRY_OFFSET: u64 = elf_word(PRIMA_SMOKE_ELF, 24);
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
 /// 用户代码占据一个 4 KiB 页；路径文本放在独立的 Y 页。
-pub const USER_CODE_LEN: usize = 4096;
+pub const USER_CODE_LEN: usize = 8192;
+/// SPEC-087：task 1 代码占用的页数（页 0 在 `USER_CODE_VA`、页 1 在 `USER_CODE2_VA`）。
+pub const USER_CODE_PAGES: usize = USER_CODE_LEN / FRAME_SIZE as usize;
 
 const NS_PATH_BYTES: &[u8] = b"lib\0sub\0mnt\0mnt/sub\0/lib\0x\0y\0";
 
@@ -275,6 +298,8 @@ const fn put_load_reg<const N: usize>(
 
 /// `mov rdi, [rcx+disp32]` 的 `modrm`。
 const NS_MODRM_RDI: u8 = 0xB9;
+/// `mov rsi, [rcx+disp32]`（mod=10, reg=rsi, rm=rcx）。
+const NS_MODRM_RSI: u8 = 0xB1;
 
 /// `add rdi, imm8`（4 字节）——SPEC-082 用来把 `time_now` 的结果加上相对偏移。
 const fn put_add_rdi<const N: usize>(code: &mut [u8; N], at: usize, imm: u8) {
@@ -1342,8 +1367,195 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, 736);
     at += 7;
 
-    // int3（收尾）：代码不能越过其单页映射。
-    assert!(at < USER_CODE_LEN, "用户代码越过单页映射");
+    // SPEC-087：代码页扩到 2 页（`USER_CODE_LEN = 8192`）。页 0 在 `USER_CODE_VA`（与
+    // `USER_STACK_VA` 相邻），页 1 落在空闲槽 `USER_CODE2_VA`（+0x5000），故从页 0 尾部
+    // `jmp rel32` 跳过去执行追加块；两页之间的空隙保持为 0。
+    let rel = USER_CODE2_VA - (USER_CODE_VA + at as u64 + 5);
+    code[at] = 0xE9;
+    put(&mut code, at + 1, &(rel as u32).to_le_bytes());
+    let mut at = USER_CODE_LEN / 2;
+
+    // ===== SPEC-087：第二个（**存活**）Rust 客户端任务 + init 双向握手 =====
+    // rcx = Y（回执页），rdx = 请求块（用户栈页内，可写）。
+    put_imm64(&mut code, at, 0x48, 0xB9, USER_Y_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA);
+    at += 10;
+    // 改写请求块：复用 task 3 的其余字段，只改 entry（Rust ELF 入口）与 initial_cap0。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::CLIENT_SEND_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
+    at += 4;
+    // create：第三个 Rust 任务（存活，不再销毁）。
+    put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
+    at += 3;
+    put_syscall(&mut code, at, SYS_TASK_CREATE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_MGR as u32);
+    at += 7;
+    // 把栈段映射进客户端根：memseg_map(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        crate::syscall::TASK_RECEIPT_STACK_SEG as u32,
+    );
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, CLIENT_RECEIPT_MGR as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_STACK as u32);
+    at += 7;
+    // 让出两次：第一次排空已 Ready 的 task 2、第二次轮到客户端。**必须先让客户端跑完发送**——
+    // 内核在接收者处于 `BlockedRecv` 时对带 cap 的消息返回 `EINVAL`（`syscall.rs:1435`），
+    // 故 init 不能在客户端发送前阻塞在 RECV 上。
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // recv 客户端的 Hello（payload = 客户端 id；cap0 = 其共享段）。
+    //
+    // 队列里可能残留此前无 cap 的消息（task 2 的唤醒回执等），故循环 recv 直到取到
+    // `cap_count != 0` 的那条（客户端的 Hello 恰带 1 条 Segment cap）；队列空时 recv 会
+    // 阻塞并切到客户端，故不会死等。
+    let recv_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, CLIENT_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_RECV as u32);
+    at += 7;
+    put(&mut code, at, &[0x48, 0x83, 0xB9]); // cmp qword [rcx+disp32], 0（cap_count）
+    put(
+        &mut code,
+        at + 3,
+        &((CLIENT_RECV_BUF - USER_Y_VA + 16) as u32).to_le_bytes(),
+    );
+    code[at + 7] = 0x00;
+    at += 8;
+    let back = recv_loop as i64 - (at as i64 + 6);
+    put(&mut code, at, &[0x0F, 0x84]); // je recv_loop
+    put(&mut code, at + 2, &(back as i32).to_le_bytes());
+    at += 6;
+    // 把共享段映射进 **init 根**：memseg_map(段 cap, 平台 task1 cap, 0, USER_HELLO2_VA, 1, R)
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
+    );
+    at += 7;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBE,
+        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx
+    at += 2;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER_HELLO2_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, ACCESS_R_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_MAP as u32);
+    at += 7;
+    // 应答客户端：send(客户端 id, mgr 凭据, SERVICE_REPLY_WORD, 0, 0, 0)
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        CLIENT_RECEIPT_RECV as u32,
+    );
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, CLIENT_RECEIPT_MGR as u32);
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, SERVICE_REPLY_WORD);
+    at += 10;
+    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
+    at += 3;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_REPLY as u32);
+    at += 7;
+    // 让出一次，等客户端收下应答并把 payload 写进共享段（它随后自行让回）。
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // 收尾的抢占阶段需要 Ready 任务可轮转：本块的两次让出已把 task 2 排空成 `BlockedRecv`
+    // （同 S2-D4 块末尾的情形），故末尾再做一次直投唤醒 `send(2, TASK2_SEND_CAP,
+    // TASK2_WAKE_PAYLOAD, 0, 0, 0)`，使 task 2 在 int3 时重新为 Ready。
+    put_imm64(&mut code, at, 0x48, 0xBF, TASK2_ID as u64);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, TASK2_SEND_CAP);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, TASK2_WAKE_PAYLOAD);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, 0);
+    at += 10;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+
+    // int3（收尾）：追加块不得越过第二页。
+    assert!(at < USER_CODE_LEN, "SPEC-087 追加块越过第二页");
     code[at] = 0xCC;
     code
 }
@@ -1401,6 +1613,45 @@ pub fn runtime_hello_witness() -> RuntimeHelloWitness {
         features: read_qword(USER_HELLO_VA + 24),
         required_features: read_qword(USER_HELLO_VA + 32),
         max_message_size: max_word as u32,
+    }
+}
+
+/// SPEC-087：init ↔ **存活** ring3 客户端 双向握手的回执（原始值）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceReplyWitness {
+    /// 第三次 `task_create` 返回的 manager cap（非零 = 客户端已建）。
+    pub client: u64,
+    /// 把栈段映射进客户端根的回执（应 0）。
+    pub stack: u64,
+    /// `recv` 到的客户端 id（非零）。
+    pub recv: u64,
+    /// 把客户端共享段映射进 **init 根**的回执（应 0）。
+    pub map: u64,
+    /// init 应答 `SYS_SEND` 的回执（应 0）。
+    pub reply: u64,
+    /// 客户端写回的应答 payload（判决性：应为 `SERVICE_REPLY_WORD`）。
+    pub echo: u64,
+}
+
+impl ServiceReplyWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.client != 0
+            && self.stack == 0
+            && self.recv != 0
+            && self.map == 0
+            && self.reply == 0
+            && self.echo == SERVICE_REPLY_WORD
+    }
+}
+
+pub fn service_reply_witness() -> ServiceReplyWitness {
+    ServiceReplyWitness {
+        client: read_qword(USER_Y_VA + CLIENT_RECEIPT_MGR),
+        stack: read_qword(USER_Y_VA + CLIENT_RECEIPT_STACK),
+        recv: read_qword(USER_Y_VA + CLIENT_RECEIPT_RECV),
+        map: read_qword(USER_Y_VA + CLIENT_RECEIPT_MAP),
+        reply: read_qword(USER_Y_VA + CLIENT_RECEIPT_REPLY),
+        echo: read_qword(USER_HELLO2_VA + SERVICE_REPLY_OFFSET),
     }
 }
 
@@ -1724,7 +1975,17 @@ fn create_region(
     access: Rights,
     offset: u64,
 ) -> Result<(Handle, SegmentFrames), VspaceError> {
-    crate::bootstrap::platform_create_segment(id, 1, access, offset)
+    create_region_pages(id, 1, access, offset)
+}
+
+/// SPEC-087：多页平台段（task 1 的代码段为 2 页）。
+fn create_region_pages(
+    id: u32,
+    pages: usize,
+    access: Rights,
+    offset: u64,
+) -> Result<(Handle, SegmentFrames), VspaceError> {
+    crate::bootstrap::platform_create_segment(id, pages, access, offset)
         .map_err(|_| VspaceError::NoFrame)
 }
 
@@ -1737,13 +1998,37 @@ fn map_region(
     root_phys: u64,
     offset: u64,
 ) -> Result<(), VspaceError> {
-    crate::bootstrap::memseg_map(
-        crate::bootstrap::KERNEL_ACTOR,
+    map_region_pages(
         seg_cap,
         task_cap,
         0,
         target_base,
         1,
+        access,
+        root_phys,
+        offset,
+    )
+}
+
+/// SPEC-087：从段内 `seg_offset` 起映射 `pages` 页到 `target_base`（可指定非零段偏移与非连续 VA）。
+#[allow(clippy::too_many_arguments)]
+fn map_region_pages(
+    seg_cap: Handle,
+    task_cap: Handle,
+    seg_offset: u64,
+    target_base: u64,
+    pages: usize,
+    access: Rights,
+    root_phys: u64,
+    offset: u64,
+) -> Result<(), VspaceError> {
+    crate::bootstrap::memseg_map(
+        crate::bootstrap::KERNEL_ACTOR,
+        seg_cap,
+        task_cap,
+        seg_offset,
+        target_base,
+        pages,
         access,
         root_phys,
         offset,
@@ -1892,7 +2177,14 @@ fn build_task_root(offset: u64) -> Result<u64, VspaceError> {
 pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     let map = |phys: u64| phys_to_virt(phys, offset);
     let task_root = build_task_root(offset)?;
-    for va in [USER_CODE_VA, USER_STACK_VA, USER_X_VA, USER_Y_VA] {
+    for va in [
+        USER_CODE_VA,
+        USER_CODE2_VA,
+        USER_STACK_VA,
+        USER_X_VA,
+        USER_Y_VA,
+        USER_HELLO2_VA,
+    ] {
         if !vspace::slot_free(task_root, va, map) {
             return Err(VspaceError::SlotOccupied);
         }
@@ -1905,18 +2197,22 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     let stack_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
     let x_access = Rights::from_rights(&[Right::SegMapR]);
     let y_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
-    let (code_cap, code_frames) = create_region(frames::SEG_TASK1_CODE, code_access, offset)?;
+    let (code_cap, code_frames) =
+        create_region_pages(frames::SEG_TASK1_CODE, USER_CODE_PAGES, code_access, offset)?;
     let (stack_cap, stack_frames) = create_region(frames::SEG_TASK1_STACK, stack_access, offset)?;
     let (x_cap, x_frames) = create_region(frames::SEG_TASK1_X, x_access, offset)?;
     let (y_cap, y_frames) = create_region(frames::SEG_TASK1_Y, y_access, offset)?;
-    let code = region_frame(&code_frames)?;
     let stack = region_frame(&stack_frames)?;
     let x = region_frame(&x_frames)?;
     let y = region_frame(&y_frames)?;
 
+    // SPEC-087：代码跨 2 页（页 0 → `USER_CODE_VA`，页 1 → `USER_CODE2_VA`）。
     let code_bytes = user_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
-        prima_ostd::mm::write_u8_at(map(code), index as u64, byte);
+        let frame = code_frames
+            .frame_at(index / FRAME_SIZE as usize)
+            .ok_or(VspaceError::NoFrame)?;
+        prima_ostd::mm::write_u8_at(map(frame), (index % FRAME_SIZE as usize) as u64, byte);
     }
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(x) + index * 8, crate::cow::pattern(index));
@@ -1937,6 +2233,17 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
         code_cap,
         task_cap,
         USER_CODE_VA,
+        code_access,
+        task_root,
+        offset,
+    )?;
+    // SPEC-087：代码段页 1 → `USER_CODE2_VA`（不连续，避开紧邻 `USER_CODE_VA` 的用户栈）。
+    map_region_pages(
+        code_cap,
+        task_cap,
+        1,
+        USER_CODE2_VA,
+        1,
         code_access,
         task_root,
         offset,
@@ -2473,7 +2780,7 @@ mod tests {
     #[test]
     fn user_code_bytes_are_fixed() {
         let code = user_code();
-        assert_eq!(USER_CODE_LEN, FRAME_SIZE as usize);
+        assert_eq!(USER_CODE_LEN, USER_CODE_PAGES * FRAME_SIZE as usize);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
         assert_eq!(&code[2..10], &USER_X_VA.to_le_bytes());

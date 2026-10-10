@@ -68,7 +68,13 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 pub const MAX_CAPABILITY_SLOTS: usize = 64;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
-const MAX_TASKS: usize = 8;
+/// 任务表容量（含已保留槽位与已销毁记录）。
+///
+/// SPEC-087：普通 id 空间 `2..8` 被保留的 Dead（3/4）与 Faulted（5/6/7）记录占满，
+/// `next_free_id` 返回 `None`，故上调至 12 使存活的 Rust 客户端拿到 id 8。
+/// 注意 `user::USER_TASK_KSTACK_COUNT` 只覆盖 id 3..8；若将来分配 id ≥ 9，
+/// `register_created_task` 会确定性失败（`NoSpace`）而非带着空内核栈调度。
+const MAX_TASKS: usize = 12;
 /// Audit 容量。
 ///
 /// SPEC-071（`ISSUE-TASK-003`）：§13.1/W13 要求**每次** Task 状态迁移都追加 `TaskStateChanged`。
@@ -114,7 +120,7 @@ pub const EXC_SOURCE_RIGHTS: Rights =
 /// 切片 L：预定义 `page_fault_source` 的 ID。
 pub const PAGE_FAULT_SOURCE_ID: u32 = 1;
 
-/// SPEC-070：`Faulted` 见证 Task 的**保留槽位** id（`MAX_TASKS = 8`，普通 id 从 2 起分配）。
+/// SPEC-070：`Faulted` 见证 Task 的**保留槽位** id（普通 id 从 2 起分配）。
 ///
 /// 用保留槽位而非 `next_free_id`，使该 Task 不占用普通 id——既有 `child=3`/`grandchild=4`
 /// 等 id 证据不发生顺移。
@@ -527,6 +533,10 @@ impl TaskTable {
                     pending_exc: None,
                     pending: None,
                 }),
+                None,
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -1816,6 +1826,12 @@ pub const TASK_CREATE_SEND_CAP_HANDLE: Handle =
 pub const TASK4_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 4;
 /// task 4 持有、授权 `SYS_SEND` 给 task 1 的凭据（经第二次 create 的 `initial_cap0` 移入）。
 pub const TASK4_SEND_CAP_HANDLE: Handle = cap_handle(TASK4_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-087：第二个（**存活**）Rust 客户端的回发凭据槽。
+///
+/// task 3/task 4 的凭据都随其销毁被撤销，故存活客户端必须另铸一条。
+pub const CLIENT_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 5;
+/// SPEC-087：经第三次 create 的 `initial_cap0` 移入存活客户端的 `Task(1)`+`TaskSend`。
+pub const CLIENT_SEND_CAP_HANDLE: Handle = cap_handle(CLIENT_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -5954,6 +5970,14 @@ impl BootstrapState {
         self.mint_root_capability_at(
             CapabilityLocation::HeldByTask(INIT_TASK_ID),
             TASK4_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
+        // SPEC-087：存活客户端的回发凭据（task 3/4 的已随其销毁撤销）。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            CLIENT_SEND_CAP_SLOT,
             Rights::from_rights(&[Right::TaskSend]),
             ObjectRef::Task(INIT_TASK_ID),
         )

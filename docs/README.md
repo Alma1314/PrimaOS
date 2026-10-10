@@ -38,6 +38,8 @@
 
 按日期倒序排列；同日切片按主题列出。
 
+- [2026-10-10 — 阶段 4 init ↔ 存活 ring3 客户端双向握手](superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md)
+- [2026-10-10 — 阶段 4 独立 ring3 客户端与 IPC Hello 握手](superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md)
 - [2026-09-25 — 阶段 4 原生运行时 API 与版本规则（探索）](superpowers/specs/2026-09-25-stage4-runtime-api-design.md)
 - [2026-09-25 — 阶段 3 审计追踪](superpowers/specs/2026-09-25-stage3-audit-trace-design.md)
 - [2026-09-25 — 阶段 3 Namespace](superpowers/specs/2026-09-25-stage3-namespace-design.md)
@@ -80,6 +82,10 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-10 — 阶段 4 init ↔ 存活 ring3 客户端双向握手](superpowers/reports/2026-10-10-stage4-init-client-handshake-report.md)
+- [2026-10-10 — 阶段 4 内的 mm/vspace 修复批次](superpowers/reports/2026-10-10-stage4-mm-vspace-fixes-report.md)
+- [2026-10-10 — 阶段 4 独立 ring3 客户端与 IPC Hello 握手](superpowers/reports/2026-10-10-stage4-ring3-runtime-hello-report.md)
+- [2026-10-10 — 阶段 3 `audit(cap)` 实现恢复](superpowers/reports/2026-10-10-stage3-audit-trace-restore-report.md)
 - [2026-09-25 — 阶段 4 原生运行时 API 初始实现](superpowers/reports/2026-09-25-stage4-runtime-api-prototype-report.md)
 - [2026-09-25 — 阶段 3 审计追踪](superpowers/reports/2026-09-25-stage3-audit-trace-report.md)
 - [2026-09-25 — 阶段 3 Namespace](superpowers/reports/2026-09-25-stage3-namespace-report.md)

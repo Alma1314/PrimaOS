@@ -1728,9 +1728,9 @@ fn task_create_call(req_ptr: u64) -> u64 {
     };
     match bootstrap::task_create(caller, &req, boot_root, offset) {
         Ok(outcome) => {
-            // 该分支在结构上不可达：`next_free_id` 只返回 `2..MAX_TASKS(=8)`，而内核栈数组覆盖
-            // id 3..8。保留为防御分支，不静默吞掉（若将来放宽 MAX_TASKS 而未同步数组，这里报错
-            // 而不是让新任务带着空内核栈被调度）。
+            // 防御分支：`next_free_id` 返回 `2..MAX_TASKS(=12)`，而内核栈数组只覆盖 id 3..8
+            // （`user::USER_TASK_KSTACK_COUNT`）。保留为防御分支，不静默吞掉——若将来分配
+            // id ≥ 9，这里报错而不是让新任务带着空内核栈被调度。
             if crate::user::register_created_task(
                 outcome.task_id,
                 outcome.root_phys,
@@ -1744,9 +1744,12 @@ fn task_create_call(req_ptr: u64) -> u64 {
                 return encode_errno(Errno::NoSpace);
             }
             TASK_STATE.with_mut(|state| {
+                // 只记前两次 create：`child`（task 3）与 `grandchild`（task 4，自毁载体）。
+                // SPEC-087 之后 init 还会 create 一个存活的 Rust 客户端（第 3 次），若继续
+                // 覆盖 `grandchild`，`task4_recv`/`root4_cleared` 会去核验错误的 task。
                 if state.create_count == 0 {
                     state.child = outcome.task_id;
-                } else {
+                } else if state.create_count == 1 {
                     state.grandchild = outcome.task_id;
                 }
                 state.create_count += 1;
@@ -2216,8 +2219,10 @@ pub fn configure_fast_path() {
     let efer = crate::msr::rdmsr(crate::msr::IA32_EFER);
     crate::msr::wrmsr(crate::msr::IA32_EFER, crate::msr::efer_with_sce(efer));
     crate::msr::wrmsr(crate::msr::IA32_STAR, crate::msr::STAR_VALUE);
-    // 快路径入口不压 CS，故先把用户 CS 告知框架（写入 ABI 帧的 CS 槽）。
+    // 快路径入口不压 CS/SS，故先把用户 CS/SS 告知框架（写入 ABI 帧的 CS 槽与保存块
+    // 硬件帧的 SS 槽）。
     prima_ostd::entry::set_fast_syscall_cs(USER_CS as u64);
+    prima_ostd::entry::set_fast_syscall_ss(crate::gdt::USER_DS as u64);
     crate::msr::wrmsr(
         crate::msr::IA32_LSTAR,
         prima_ostd::entry::syscall_fast_entry_addr(),

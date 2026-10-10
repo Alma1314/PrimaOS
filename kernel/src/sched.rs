@@ -14,7 +14,7 @@ use crate::exc::SretFrame;
 use prima_ostd::sync::StaticCell;
 
 /// 调度器支持的任务数上限（与 `bootstrap::MAX_TASKS` 一致）。
-const MAX_TASKS: usize = 8;
+const MAX_TASKS: usize = 12;
 
 /// 当前运行的 Task id（进入用户态前初始化；初值 1 与 Bootstrap init Task 一致）。
 static CURRENT: AtomicU32 = AtomicU32::new(1);

@@ -917,6 +917,24 @@ pub(crate) fn runtime_hello_ready(witness: &kernel::user::RuntimeHelloWitness) {
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-087：init 与**存活** ring3 客户端双向握手的协议回执。
+pub(crate) fn service_reply_ready(witness: &kernel::user::ServiceReplyWitness) {
+    write_prefix("service_reply_ready", "ok");
+    serial::write_bytes(b"|data=client=");
+    write_hex_u64(witness.client);
+    serial::write_bytes(b";stack=");
+    write_hex_u64(witness.stack);
+    serial::write_bytes(b";recv=");
+    write_hex_u64(witness.recv);
+    serial::write_bytes(b";map=");
+    write_hex_u64(witness.map);
+    serial::write_bytes(b";reply=");
+    write_hex_u64(witness.reply);
+    serial::write_bytes(b";echo=");
+    write_hex_u64(witness.echo);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

@@ -149,6 +149,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::task_ready(&task);
     // Stage 4：在 task 1 的地址空间内核对 Rust 客户端共享 Segment 中的真实 wire 消息。
     protocol::runtime_hello_ready(&kernel::user::runtime_hello_witness());
+    // SPEC-087：init 与**存活**客户端的双向握手（请求 → 应答 → 客户端写回执）。
+    protocol::service_reply_ready(&kernel::user::service_reply_witness());
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);

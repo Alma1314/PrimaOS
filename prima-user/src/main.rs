@@ -9,6 +9,8 @@ use prima_runtime::{
 };
 
 const USER_HELLO_VA: u64 = 0x0000_0A00_0000_7000;
+/// SPEC-087：把 init 应答 payload 写回共享段内的偏移（与内核 `SERVICE_REPLY_OFFSET` 一致）。
+const SERVICE_REPLY_OFFSET: u64 = 64;
 const HELLO_OPCODE: u16 = 1;
 const HELLO_REQUEST_ID: u32 = 3;
 const HELLO_FEATURES: u64 = 1;
@@ -57,6 +59,22 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, _initial_cap1_raw
                     id.as_raw() as u64,
                     &[segment],
                 );
+                // SPEC-087：只有**存活的**新客户端（非 SPEC-085 的历史见证载体 task 3）等 init
+                // 的应答，并把应答 payload 写回共享段供内核核验。task 3 的行为保持不变，
+                // 以冻结既有证据（它在发完 Hello 后即被 init 销毁）。
+                if id.as_raw() != 3 {
+                    if let Ok(reply) = runtime.receive() {
+                        let _ = runtime.write_user_bytes(
+                            USER_HELLO_VA + SERVICE_REPLY_OFFSET,
+                            &reply.payload.to_le_bytes(),
+                        );
+                    }
+                    // 握手完成后**阻塞等待**（不再 Ready）：抢占阶段只轮转 task 1/2，
+                    // 一个持续 Ready 的客户端会被 `pick_next` 选中并打乱轮转。
+                    loop {
+                        let _ = runtime.receive();
+                    }
+                }
             }
         }
     }
