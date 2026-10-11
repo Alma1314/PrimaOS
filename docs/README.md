@@ -84,6 +84,7 @@
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
 - [2026-10-11 — 基座库栈走查与扫雷审查记录](superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)
+- [2026-10-11 — 阶段 4 畸形句柄越界修复（ISSUE-CAP-001）](superpowers/reports/2026-10-11-stage4-malformed-handle-bounds-report.md)
 - [2026-10-10 — 阶段 4 init ↔ 存活 ring3 客户端双向握手](superpowers/reports/2026-10-10-stage4-init-client-handshake-report.md)
 - [2026-10-10 — 阶段 4 内的 mm/vspace 修复批次](superpowers/reports/2026-10-10-stage4-mm-vspace-fixes-report.md)
 - [2026-10-10 — 阶段 4 独立 ring3 客户端与 IPC Hello 握手](superpowers/reports/2026-10-10-stage4-ring3-runtime-hello-report.md)

@@ -1130,8 +1130,12 @@ impl CapabilityRecordTable {
         }
     }
 
+    /// 按槽索引查找。**越界索引返回 `None` 而非 panic**——`Handle` 只是编码，槽索引上界由本表
+    /// 决定；对不可信 ring3 传入的畸形句柄（如 `0xffff_ffff_ffff_ffea`），此路径必须安全失败。
     pub fn find(&self, handle: Handle) -> Option<&CapabilityRecord> {
-        self.entries[handle.index() as usize].as_ref()
+        self.entries
+            .get(handle.index() as usize)
+            .and_then(Option::as_ref)
     }
 
     pub fn insert(
@@ -1142,10 +1146,14 @@ impl CapabilityRecordTable {
         rights: Rights,
         target: ObjectRef,
     ) -> Result<(), DeriveError> {
-        if self.entries[handle.index() as usize].is_some() {
+        let index = handle.index() as usize;
+        if index >= MAX_CAPABILITY_SLOTS {
+            return Err(DeriveError::MalformedHandle);
+        }
+        if self.entries[index].is_some() {
             return Err(DeriveError::CapacityExceeded);
         }
-        self.entries[handle.index() as usize] = Some(CapabilityRecord {
+        self.entries[index] = Some(CapabilityRecord {
             handle,
             parent,
             holder,
@@ -1157,7 +1165,11 @@ impl CapabilityRecordTable {
     }
 
     fn remove(&mut self, handle: Handle) -> bool {
-        let slot = &mut self.entries[handle.index() as usize];
+        let index = handle.index() as usize;
+        if index >= MAX_CAPABILITY_SLOTS {
+            return false;
+        }
+        let slot = &mut self.entries[index];
         if slot.is_some() {
             *slot = None;
             self.count -= 1;
@@ -1592,12 +1604,17 @@ impl CapabilityPositionTable {
         table
     }
 
+    /// 按槽索引查找。**越界索引返回 `None` 而非 panic**（见 [`CapabilityRecordTable::find`]）。
     pub fn find(&self, handle: Handle) -> Option<&CapabilityPosition> {
-        self.entries[handle.index() as usize].as_ref()
+        self.entries
+            .get(handle.index() as usize)
+            .and_then(Option::as_ref)
     }
 
     fn find_mut(&mut self, handle: Handle) -> Option<&mut CapabilityPosition> {
-        self.entries[handle.index() as usize].as_mut()
+        self.entries
+            .get_mut(handle.index() as usize)
+            .and_then(Option::as_mut)
     }
 
     pub fn register(&mut self, handle: Handle, holder: u32) -> Result<(), CapabilityPositionError> {
@@ -1610,13 +1627,17 @@ impl CapabilityPositionTable {
         handle: Handle,
         location: CapabilityLocation,
     ) -> Result<(), CapabilityPositionError> {
-        if self.entries[handle.index() as usize].is_some() {
+        let index = handle.index() as usize;
+        if index >= MAX_CAPABILITY_POSITIONS {
+            return Err(CapabilityPositionError::MalformedHandle);
+        }
+        if self.entries[index].is_some() {
             return Err(CapabilityPositionError::DuplicateCapability);
         }
         if self.count == MAX_CAPABILITY_POSITIONS {
             return Err(CapabilityPositionError::CapacityExceeded);
         }
-        self.entries[handle.index() as usize] = Some(CapabilityPosition { handle, location });
+        self.entries[index] = Some(CapabilityPosition { handle, location });
         self.count += 1;
         Ok(())
     }
@@ -1661,7 +1682,11 @@ impl CapabilityPositionTable {
     }
 
     pub fn remove(&mut self, handle: Handle) -> bool {
-        let slot = &mut self.entries[handle.index() as usize];
+        let index = handle.index() as usize;
+        if index >= MAX_CAPABILITY_POSITIONS {
+            return false;
+        }
+        let slot = &mut self.entries[index];
         if slot.is_some() {
             *slot = None;
             self.count -= 1;
@@ -3233,8 +3258,15 @@ impl BootstrapState {
     }
 
     /// 解码 syscall/协议传入的裸 `u64` 句柄（`Malformed` → [`AuthError::MalformedHandle`]）。
+    ///
+    /// 除格式外还校验**槽索引上界**：`Handle` 只是编码，任何 `index ≥ MAX_CAPABILITY_SLOTS` 的
+    /// 句柄都不可能是本表铸造的，在此即拒为 `MalformedHandle`，杜绝畸形句柄进入模型后触发越界。
     pub fn decode_handle(&self, raw: u64) -> Result<Handle, AuthError> {
-        Handle::decode(raw).map_err(|_| AuthError::MalformedHandle)
+        let handle = Handle::decode(raw).map_err(|_| AuthError::MalformedHandle)?;
+        if handle.index() as usize >= MAX_CAPABILITY_SLOTS {
+            return Err(AuthError::MalformedHandle);
+        }
+        Ok(handle)
     }
 
     /// S2-D2：`cap_drop`（§4.5）。目标对象已销毁不构成失败；结构性根被保护。
@@ -7289,6 +7321,36 @@ mod tests {
 
     fn fresh_state() -> super::BootstrapState {
         create_state(0x4000_0000, 0x3000, 0x4000_0100, &inventory()).unwrap()
+    }
+
+    /// ISSUE-CAP-001 反例：不可信 ring3 可构造**格式合法但槽索引越界**的句柄
+    /// （`0xffff_ffff_ffff_ffea`：index `0xffffffea` ≥ `MAX_CAPABILITY_SLOTS`、generation 非零）。
+    /// 此类句柄在解码边界即被拒，且三张按槽直索引的表一律安全失败（`None`/`false`），不得 panic。
+    #[test]
+    fn malformed_out_of_range_handles_fail_safety_not_panic() {
+        let mut state = fresh_state();
+        let bad = Handle::decode(0xffff_ffff_ffff_ffea).expect("format-valid, range-invalid");
+        assert!(bad.index() as usize >= MAX_CAPABILITY_SLOTS);
+        let before = state;
+
+        // 解码边界（syscall/协议入口）拒绝越界索引。
+        assert_eq!(
+            state.decode_handle(0xffff_ffff_ffff_ffea),
+            Err(AuthError::MalformedHandle)
+        );
+        // 记录 / 位置 / 槽三张表的按槽访问都安全失败。
+        assert!(state.records.find(bad).is_none());
+        assert!(state.positions.find(bad).is_none());
+        assert!(state.holder_of(bad).is_none());
+        assert!(state.rights_of(bad).is_none());
+        assert!(state.target_of(bad).is_none());
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, bad, Right::SegMapR),
+            Err(AuthError::NoSuchCapability)
+        );
+        assert!(!state.positions.remove(bad));
+        // 全部为纯查询/拒绝，状态逐字段不变。
+        assert_eq!(state, before);
     }
 
     // -----------------------------------------------------------------------
