@@ -10,5 +10,12 @@ path = "src/main.rs"
 test = false
 bench = false
 
+# SPEC-093：第二个服务端点的独立二进制映像（`BETA` 端点）。
+[[bin]]
+name = "prima-beta"
+path = "src/beta.rs"
+test = false
+bench = false
+
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }

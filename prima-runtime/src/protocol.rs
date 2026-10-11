@@ -16,6 +16,15 @@ pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
 pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
 /// SPEC-090：名字未注册时的解析结果（服务管理器据此拒绝转发）。
 pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
+/// SPEC-088：`ALPHA` 行为的服务端 offer。`max_message_size` 取 2048，与客户端 4096 取交后
+/// 得到 `max=2048`——「结果只可能来自服务端」的判决性字段。
+pub const SERVICE_OFFER_ALPHA: ProtocolOffer = ProtocolOffer {
+    major: 1,
+    minor: 0,
+    features: 0b101,
+    required_features: 0b001,
+    max_message_size: 2048,
+};
 /// SPEC-090：`BETA` 行为的服务端 offer。`max_message_size` 取 1024 而非 2048，使协商结果
 /// （`max=1024`）**只可能来自被按名选中的 BETA 行为**，构成路由的判决性字段。
 pub const SERVICE_OFFER_BETA: ProtocolOffer = ProtocolOffer {
@@ -25,6 +34,67 @@ pub const SERVICE_OFFER_BETA: ProtocolOffer = ProtocolOffer {
     required_features: 0b001,
     max_message_size: 1024,
 };
+
+/// SPEC-093：服务管理器路由到的行为码 → 服务端 offer。`ALPHA` 用 [`SERVICE_OFFER_ALPHA`]、
+/// `BETA` 用 [`SERVICE_OFFER_BETA`]，使协商结果**承载路由决策**。
+pub const fn service_offer(behavior: u64) -> ProtocolOffer {
+    if behavior == SERVICE_BEHAVIOR_BETA {
+        SERVICE_OFFER_BETA
+    } else {
+        SERVICE_OFFER_ALPHA
+    }
+}
+
+/// SPEC-088：把协商结果打包成一个字（`major<<48 | minor<<32 | max<<16 | features 低 16 位`）。
+pub const fn pack_negotiated(negotiated: NegotiatedProtocol) -> u64 {
+    ((negotiated.major as u64) << 48)
+        | ((negotiated.minor as u64) << 32)
+        | ((negotiated.max_message_size as u64) << 16)
+        | (negotiated.features & 0xffff)
+}
+
+/// SPEC-088：解析对端 Hello 并用给定服务端 offer 协商；成功返回打包结果，失败返回 0。
+pub fn negotiation_word(
+    header_bytes: &[u8; MESSAGE_HEADER_LEN],
+    offer_bytes: &[u8; OFFER_LEN],
+    server_offer: ProtocolOffer,
+) -> u64 {
+    if MessageHeader::decode(*header_bytes).is_err() {
+        return 0;
+    }
+    let Ok(offer) = ProtocolOffer::decode(*offer_bytes) else {
+        return 0;
+    };
+    match negotiate(offer, server_offer) {
+        Ok(negotiated) => pack_negotiated(negotiated),
+        Err(_) => 0,
+    }
+}
+
+/// SPEC-088：两个负例——`major` 不匹配的协商与魔数错误的解码；命中给显式码，否则给 `0xffff`
+/// 哨兵（使「逻辑没跑」不可能伪装成成功）。
+pub fn negotiation_negatives() -> u64 {
+    let client = ProtocolOffer {
+        major: 1,
+        minor: 0,
+        features: 1,
+        required_features: 1,
+        max_message_size: 4096,
+    };
+    let mismatched = ProtocolOffer {
+        major: 2,
+        ..SERVICE_OFFER_ALPHA
+    };
+    let major_mismatch = match negotiate(client, mismatched) {
+        Err(NegotiationError::MajorMismatch) => 1u64,
+        _ => 0xffff,
+    };
+    let bad_magic = match MessageHeader::decode([0u8; MESSAGE_HEADER_LEN]) {
+        Err(CodecError::BadMagic) => 0u64,
+        _ => 0xffff,
+    };
+    (major_mismatch << 32) | bad_magic
+}
 
 /// 单条服务消息的 wire header。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

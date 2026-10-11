@@ -121,7 +121,7 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap
 /// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
 /// manager/self/root-ns 共 5 条（49 → 54）。
-const TASK_READY_LIVE_CAPS: usize = 60;
+const TASK_READY_LIVE_CAPS: usize = 62;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -3330,6 +3330,9 @@ const SERVICE_SELECTED_NEGOTIATED_B: u64 = 0x0001_0000_0400_0001;
 /// 而非 SPEC-090 的「单宿主多行为」。
 const SERVICE_SELECTED_ALPHA_EP: u64 = 9;
 const SERVICE_SELECTED_BETA_EP: u64 = 10;
+/// SPEC-093：两个端点映像的**二进制标记**（编译进各自 ELF；相异即证明「不同程序」）。
+const SERVICE_SELECTED_ALPHA_MARKER: u64 = 0x414C_5048_4100_0001;
+const SERVICE_SELECTED_BETA_MARKER: u64 = 0x4245_5441_0000_0002;
 
 /// SPEC-090：init（服务管理器）按名字解析并二次路由的期望字段。
 fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
@@ -3342,6 +3345,10 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     let mut alpha_ep = None;
     let mut beta_ep = None;
     let mut beta_self = None;
+    let mut alpha_marker = None;
+    let mut beta_marker = None;
+    let mut alpha_stack_seg = None;
+    let mut beta_stack_seg = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3355,6 +3362,10 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
             "alpha_ep" => alpha_ep = Some(parse_addr(value)?),
             "beta_ep" => beta_ep = Some(parse_addr(value)?),
             "beta_self" => beta_self = Some(parse_addr(value)?),
+            "alpha_marker" => alpha_marker = Some(parse_addr(value)?),
+            "beta_marker" => beta_marker = Some(parse_addr(value)?),
+            "alpha_stack_seg" => alpha_stack_seg = Some(parse_addr(value)?),
+            "beta_stack_seg" => beta_stack_seg = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3367,6 +3378,10 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     let alpha_ep = alpha_ep.ok_or_else(|| missing("alpha_ep"))?;
     let beta_ep = beta_ep.ok_or_else(|| missing("beta_ep"))?;
     let beta_self = beta_self.ok_or_else(|| missing("beta_self"))?;
+    let alpha_marker = alpha_marker.ok_or_else(|| missing("alpha_marker"))?;
+    let beta_marker = beta_marker.ok_or_else(|| missing("beta_marker"))?;
+    let alpha_stack_seg = alpha_stack_seg.ok_or_else(|| missing("alpha_stack_seg"))?;
+    let beta_stack_seg = beta_stack_seg.ok_or_else(|| missing("beta_stack_seg"))?;
     if name != SERVICE_SELECTED_NAME {
         return Err(format!(
             "service_selected_ready name (0x{name:x}) must be {SERVICE_SELECTED_NAME} — the manager must read the requested service name from the shared Segment"
@@ -3410,6 +3425,31 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     if alpha_ep == beta_ep {
         return Err(
             "service_selected_ready alpha_ep and beta_ep must differ — two names must resolve to two distinct endpoint tasks".to_owned(),
+        );
+    }
+    if alpha_marker != SERVICE_SELECTED_ALPHA_MARKER {
+        return Err(format!(
+            "service_selected_ready alpha_marker (0x{alpha_marker:x}) must be 0x{SERVICE_SELECTED_ALPHA_MARKER:x} — the ALPHA endpoint must run the prima-smoke image"
+        ));
+    }
+    if beta_marker != SERVICE_SELECTED_BETA_MARKER {
+        return Err(format!(
+            "service_selected_ready beta_marker (0x{beta_marker:x}) must be 0x{SERVICE_SELECTED_BETA_MARKER:x} — the BETA endpoint must run the *second, distinct* image (prima-beta), not the ALPHA host image"
+        ));
+    }
+    if alpha_marker == beta_marker {
+        return Err(
+            "service_selected_ready alpha_marker and beta_marker must differ — the two endpoints must be created from two distinct binaries".to_owned(),
+        );
+    }
+    if alpha_stack_seg == 0 || beta_stack_seg == 0 {
+        return Err(format!(
+            "service_selected_ready stack segments (0x{alpha_stack_seg:x}/0x{beta_stack_seg:x}) must be non-zero — both endpoints must have a mapped stack at USER3_STACK_VA"
+        ));
+    }
+    if alpha_stack_seg == beta_stack_seg {
+        return Err(
+            "service_selected_ready alpha_stack_seg and beta_stack_seg must differ — the two endpoints must own independent physical stack frames, not share one Segment".to_owned(),
         );
     }
     Ok(())
@@ -3764,11 +3804,11 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=8;direct=9;blocks=12\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=6;caps=60;root_cleared=1;grandchild=4;tasks_after=6;caps_after=60;root4_cleared=1\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=6;caps=62;root_cleared=1;grandchild=4;tasks_after=6;caps_after=62;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11\n",
         "PRIMA|v=1|seq=29|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=30|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=31|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -3878,7 +3918,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=60;root_cleared", ";caps=56;root_cleared");
+        let output = VALID.replace(";caps=62;root_cleared", ";caps=58;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4054,6 +4094,32 @@ mod tests {
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must route BETA to the endpoint it collected"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_selected_when_both_endpoints_run_the_same_binary() {
+        // SPEC-093：把 `BETA` 端点标记换成 `ALPHA` 的——即两个端点由**同一二进制**创建
+        //（SPEC-092 的简化）；必须拒绝。
+        let output = VALID.replace(
+            "beta_marker=0x4245544100000002",
+            "beta_marker=0x414c504841000001",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("second, distinct* image"), "{error}");
+    }
+
+    #[test]
+    fn rejects_service_selected_when_the_two_endpoints_share_a_stack_segment() {
+        // SPEC-093：两个端点的栈段 id 相同——即共享**物理栈帧**（SPEC-092 的简化）；必须拒绝。
+        let output = VALID.replace(
+            ";alpha_stack_seg=0x12;beta_stack_seg=0x11",
+            ";alpha_stack_seg=0x11;beta_stack_seg=0x11",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("independent physical stack frames"),
             "{error}"
         );
     }

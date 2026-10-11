@@ -62,6 +62,8 @@ use prima_ostd::sync::StaticCell;
 
 /// 独立 Rust ring3 程序构建产物（ELF）。装载路径由 `prepare_runtime_app` 解析。
 pub const PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
+/// SPEC-093：**第二个**服务端点的独立二进制映像（`BETA` 端点），与上者是不同的 ELF。
+pub const PRIMA_BETA_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"));
 
 const fn elf_word(bytes: &[u8], at: usize) -> u64 {
     let mut value = 0u64;
@@ -185,6 +187,16 @@ pub const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 pub const SERVICE_ENDPOINT_ALPHA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET;
 /// SPEC-092：`BETA` 端点（第二个服务任务）自报 id 的共享段偏移。
 pub const SERVICE_ENDPOINT_BETA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET + 8;
+/// SPEC-093：服务端点写入**自身二进制标记**的共享段偏移（`176 + (behavior-1)*8`；与 `prima-user` 一致）。
+pub const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
+/// SPEC-093：`ALPHA` 端点映像（`prima-smoke`）的二进制标记（与 `prima-user/src/main.rs` 一致）。
+pub const SERVICE_ALPHA_BINARY_MARKER: u64 = 0x414C_5048_4100_0001;
+/// SPEC-093：`BETA` 端点映像（`prima-beta`）的二进制标记（与 `prima-user/src/beta.rs` 一致）。
+pub const SERVICE_BETA_BINARY_MARKER: u64 = 0x4245_5441_0000_0002;
+/// SPEC-093：`ALPHA` 端点标记的共享段偏移。
+pub const SERVICE_ALPHA_MARKER_OFFSET: u64 = SERVICE_BINARY_MARKER_OFFSET;
+/// SPEC-093：`BETA` 端点标记的共享段偏移。
+pub const SERVICE_BETA_MARKER_OFFSET: u64 = SERVICE_BINARY_MARKER_OFFSET + 8;
 
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
@@ -295,6 +307,10 @@ pub const TASK4_CODE_LEN: usize = 109;
 pub const RUNTIME_APP_CODE_PAGES: usize = runtime_app_pages(PRIMA_SMOKE_ELF);
 /// 当前 PIE 用户映像入口相对装载基址的偏移；启动时由 ELF 头核验。
 pub const RUNTIME_APP_ENTRY_OFFSET: u64 = elf_word(PRIMA_SMOKE_ELF, 24);
+/// SPEC-093：第二个服务端点映像（`prima-beta`）PT_LOAD 覆盖的页数。
+pub const RUNTIME_APP2_CODE_PAGES: usize = runtime_app_pages(PRIMA_BETA_ELF);
+/// SPEC-093：第二个服务端点映像的入口相对装载基址的偏移。
+pub const RUNTIME_APP2_ENTRY_OFFSET: u64 = elf_word(PRIMA_BETA_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
@@ -1826,32 +1842,36 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, SVC_RECEIPT_DONE as u32);
     at += 7;
 
-    // ===== SPEC-092：第二个独立服务端点（同一 ELF、独立任务与独立根）=====
-    // (a) 派生 tokenB 并第 5 次 create，建第二个服务任务（id 10）。
+    // ===== SPEC-092/093：第二个独立服务端点（**不同二进制映像**、独立任务/根/**物理栈段**）=====
+    // (a) 第 5 次 create，建第二个服务任务（id 10）。SPEC-093 起它的代码来自**第二个**代码段
+    //（`prima-beta` 的 ELF），栈来自**第二个**栈段，均与端点 A 相互独立。
     put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
     at += 10;
+    // code_seg_cap = 第二个端点的**独立代码段**根 cap（承载不同二进制映像）。
     put_imm64(
         &mut code,
         at,
         0x48,
-        0xBF,
-        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+        0xB8,
+        crate::bootstrap::SERVICE2_CODE_CAP_HANDLE.encode(),
     );
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_R_BITS);
+    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
     at += 10;
-    put_syscall(&mut code, at, SYS_CAP_DERIVE);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]); // mov [rdx+0x48], rax（tokenB）
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP2_CODE_PAGES as u64); // code_pages
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
     at += 4;
     put_imm64(
         &mut code,
         at,
         0x48,
         0xB8,
-        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+        USER3_CODE_VA + RUNTIME_APP2_ENTRY_OFFSET,
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
@@ -1866,6 +1886,23 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
+    // initial_cap1 = tokenB：从**第二个**代码段根 cap 派生 `{SegMapR}`，非零 = 服务端点角色。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBF,
+        crate::bootstrap::SERVICE2_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_R_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_CAP_DERIVE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]); // mov [rdx+0x48], rax（initial_cap1）
+    at += 4;
     put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
     at += 3;
     put_syscall(&mut code, at, SYS_TASK_CREATE);
@@ -1874,15 +1911,16 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SVC_RECEIPT_MGR2 as u32);
     at += 7;
-    // 把栈段映射进 B 的根：memseg_map(栈段, mgr2, 0, USER3_STACK_VA, 1, R|W)。
-    put_load_reg(
+    // 把**第二个**栈段映射进 B 的根：memseg_map(stack2, mgr2, 0, USER3_STACK_VA, 1, R|W)。
+    // SPEC-093：与 A 不再共享同一栈段——B 映射的是独立代码段旁那条独立栈段。
+    put_imm64(
         &mut code,
         at,
         0x48,
-        NS_MODRM_RDI,
-        crate::syscall::TASK_RECEIPT_STACK_SEG as u32,
+        0xBF,
+        crate::bootstrap::SERVICE2_STACK_CAP_HANDLE.encode(),
     );
-    at += 7;
+    at += 10;
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR2 as u32);
     at += 7;
     put_imm64(&mut code, at, 0x48, 0xBA, 0);
@@ -2272,6 +2310,15 @@ pub struct ServiceSelectedWitness {
     /// SPEC-092：init 从第二个 `SERVICE_ID_TAG` 收集到的端点 id——须等于 `beta_ep`（否则
     /// BETA 请求没送到被记录的那个端点）。
     pub beta_self: u64,
+    /// SPEC-093：`ALPHA` 端点映像（`prima-smoke`）写入共享段 offset 176 的**二进制标记**。
+    pub alpha_marker: u64,
+    /// SPEC-093：`BETA` 端点映像（`prima-beta`）写入共享段 offset 184 的**二进制标记**——
+    /// 两标记相异即证明两个端点由**不同二进制**承载，而非同一映像的两次实例。
+    pub beta_marker: u64,
+    /// SPEC-093：`ALPHA` 端点栈在 `USER3_STACK_VA` 处映射所属的 Segment id。
+    pub alpha_stack_seg: u64,
+    /// SPEC-093：`BETA` 端点栈的 Segment id——须与 `alpha_stack_seg` 相异（独立**物理栈帧**）。
+    pub beta_stack_seg: u64,
 }
 
 impl ServiceSelectedWitness {
@@ -2284,19 +2331,33 @@ impl ServiceSelectedWitness {
             && self.beta_ep != 0
             && self.beta_ep == self.beta_self
             && self.alpha_ep != self.beta_ep
+            && self.alpha_marker == SERVICE_ALPHA_BINARY_MARKER
+            && self.beta_marker == SERVICE_BETA_BINARY_MARKER
+            && self.alpha_marker != self.beta_marker
+            && self.alpha_stack_seg != 0
+            && self.beta_stack_seg != 0
+            && self.alpha_stack_seg != self.beta_stack_seg
     }
 }
 
 pub fn service_selected_witness() -> ServiceSelectedWitness {
+    let alpha_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET);
+    let beta_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_BETA_OFFSET);
     ServiceSelectedWitness {
         name: read_qword(USER_Y_VA + SVC_RECEIPT_NAME),
         resolved: read_qword(USER_Y_VA + SVC_RECEIPT_RESOLVED),
         unknown: read_qword(USER_Y_VA + SVC_RECEIPT_UNKNOWN),
         done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE_B),
         negotiated_beta: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_B_OFFSET),
-        alpha_ep: read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET),
-        beta_ep: read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_BETA_OFFSET),
+        alpha_ep,
+        beta_ep,
         beta_self: read_qword(USER_Y_VA + SVC_RECEIPT_ID2),
+        alpha_marker: read_qword(USER_HELLO2_VA + SERVICE_ALPHA_MARKER_OFFSET),
+        beta_marker: read_qword(USER_HELLO2_VA + SERVICE_BETA_MARKER_OFFSET),
+        alpha_stack_seg: crate::bootstrap::mapped_segment_at(alpha_ep as u32, USER3_STACK_VA)
+            .unwrap_or(0) as u64,
+        beta_stack_seg: crate::bootstrap::mapped_segment_at(beta_ep as u32, USER3_STACK_VA)
+            .unwrap_or(0) as u64,
     }
 }
 
@@ -3029,10 +3090,30 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 /// 必须在既有 bring-up 取帧序列（`prepare`/`prepare_task2`/`prepare_spin`）**之后**调用，
 /// 否则会平移切片 E/F/G/O 的物理帧序列与既有金标地址。
 pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
-    let frames = crate::bootstrap::prepare_task_create_caps(RUNTIME_APP_CODE_PAGES, offset)
-        .map_err(|_| VspaceError::NoFrame)?;
-    load_runtime_elf(PRIMA_SMOKE_ELF, &frames, offset, USER3_CODE_VA)?;
-    let frame = frames.frame_at(0).ok_or(VspaceError::NoFrame)?;
+    let images = crate::bootstrap::prepare_task_create_caps(
+        RUNTIME_APP_CODE_PAGES,
+        RUNTIME_APP2_CODE_PAGES,
+        offset,
+    )
+    .map_err(|_| VspaceError::NoFrame)?;
+    load_runtime_elf(
+        PRIMA_SMOKE_ELF,
+        &images.code,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP_CODE_PAGES,
+        RUNTIME_APP_ENTRY_OFFSET,
+    )?;
+    // SPEC-093：把**第二个二进制映像**装进第二个代码段（`BETA` 端点用自己的映像装载）。
+    load_runtime_elf(
+        PRIMA_BETA_ELF,
+        &images.code2,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP2_CODE_PAGES,
+        RUNTIME_APP2_ENTRY_OFFSET,
+    )?;
+    let frame = images.code.frame_at(0).ok_or(VspaceError::NoFrame)?;
     // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
     write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
     Ok(())
@@ -3165,11 +3246,13 @@ fn load_runtime_elf(
     frames: &SegmentFrames,
     offset: u64,
     load_base: u64,
+    expected_pages: usize,
+    expected_entry: u64,
 ) -> Result<(), VspaceError> {
     let layout = elf_layout(bytes)?;
     if layout.pages != frames.frame_count()
-        || layout.entry != RUNTIME_APP_ENTRY_OFFSET
-        || layout.pages != RUNTIME_APP_CODE_PAGES
+        || layout.entry != expected_entry
+        || layout.pages != expected_pages
     {
         return Err(VspaceError::InvalidImage);
     }

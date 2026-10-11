@@ -1868,6 +1868,16 @@ pub const SERVICE2_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 7;
 /// SPEC-092：经第五次 create 的 `initial_cap0` 移入第二个服务端点的凭据。
 pub const SERVICE2_SEND_CAP_HANDLE: Handle =
     cap_handle(SERVICE2_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-093：**第二个**服务端点**独立代码段**的根 Capability 槽（承载独立的二进制映像）。
+pub const SERVICE2_CODE_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 8;
+/// SPEC-093：第二个端点代码段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapX, SegDestroy}`）。
+pub const SERVICE2_CODE_CAP_HANDLE: Handle =
+    cap_handle(SERVICE2_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-093：**第二个**服务端点**独立栈段**的根 Capability 槽（独立**物理栈帧**，不再与 A 共享）。
+pub const SERVICE2_STACK_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 9;
+/// SPEC-093：第二个端点栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
+pub const SERVICE2_STACK_CAP_HANDLE: Handle =
+    cap_handle(SERVICE2_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -1989,6 +1999,17 @@ impl SegmentFrames {
             }
         }
     }
+}
+
+/// SPEC-093：`prepare_task_create_caps` 返回的两个代码段帧向量。
+///
+/// 第一段（`code`）给 `ALPHA` 端点（`prima-smoke`），第二段（`code2`）给 `BETA` 端点
+/// （`prima-beta`）——两者是**不同 ELF**，各占一个 Segment（`MAX_SEGMENT_FRAMES=16` 容不下
+/// 10+8 页，故不能合段）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskCreateImages {
+    pub code: SegmentFrames,
+    pub code2: SegmentFrames,
 }
 
 /// §5.1：Segment 对象（阶段 2：image / 平台 bring-up / 用户创建三类共用）。
@@ -6068,9 +6089,14 @@ impl BootstrapState {
     pub fn prepare_task_create_caps(
         &mut self,
         code_pages: usize,
+        code2_pages: usize,
         phys_offset: u64,
-    ) -> Result<SegmentFrames, MemsegError> {
-        if code_pages == 0 || code_pages > MAX_SEGMENT_FRAMES {
+    ) -> Result<TaskCreateImages, MemsegError> {
+        if code_pages == 0
+            || code_pages > MAX_SEGMENT_FRAMES
+            || code2_pages == 0
+            || code2_pages > MAX_SEGMENT_FRAMES
+        {
             return Err(MemsegError::OutOfBounds);
         }
         let (_, frames) = self.create_segment_object(
@@ -6082,6 +6108,37 @@ impl BootstrapState {
             Some((
                 CapabilityLocation::HeldByTask(INIT_TASK_ID),
                 TASK_CREATE_CODE_CAP_SLOT,
+            )),
+        )?;
+        // SPEC-093：第二个服务端点的**独立代码段**（承载不同的二进制映像）。
+        let code2_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, code2) = self.create_segment_object(
+            code2_id,
+            KERNEL_ACTOR,
+            code2_pages,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                SERVICE2_CODE_CAP_SLOT,
+            )),
+        )?;
+        // SPEC-093：第二个服务端点的**独立栈段**（独立**物理栈帧**，不再与 A 共享）。
+        let stack2_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let stack2_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+        self.create_segment_object(
+            stack2_id,
+            KERNEL_ACTOR,
+            1,
+            stack2_access,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                SERVICE2_STACK_CAP_SLOT,
             )),
         )?;
         self.mint_root_capability_at(
@@ -6123,7 +6180,10 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        Ok(frames)
+        Ok(TaskCreateImages {
+            code: frames,
+            code2,
+        })
     }
 
     /// 一条平台根 Capability 的属主：满足全部结构性条件时返回其 holder id。
@@ -6885,13 +6945,26 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
 }
 
 /// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段帧向量。
+///
+/// SPEC-093：额外建第二个端点（`BETA`）的**独立代码段**与**独立栈段**，返回两个代码段向量。
 pub fn prepare_task_create_caps(
     code_pages: usize,
+    code2_pages: usize,
     phys_offset: u64,
-) -> Result<SegmentFrames, MemsegError> {
+) -> Result<TaskCreateImages, MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => state.prepare_task_create_caps(code_pages, phys_offset),
+        Some(state) => state.prepare_task_create_caps(code_pages, code2_pages, phys_offset),
         None => Err(MemsegError::TargetDead),
+    })
+}
+
+/// SPEC-093：查询 `task_id` 在虚拟地址 `va` 处映射所属的 Segment id（无映射返回 `None`）。
+///
+/// 用于见证两个端点的**栈段相异**（独立物理栈帧），而非仅凭「共享同一段的句柄」推断。
+pub fn mapped_segment_at(task_id: u32, va: u64) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|state| state.vspace.find(task_id, va).map(|entry| entry.seg_id))
     })
 }
 
