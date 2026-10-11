@@ -1863,6 +1863,11 @@ pub const SERVICE_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 6;
 /// SPEC-088：经第四次 create 的 `initial_cap0` 移入服务任务的 `Task(1)`+`TaskSend`。
 pub const SERVICE_SEND_CAP_HANDLE: Handle =
     cap_handle(SERVICE_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-092：**第二个**独立服务端点的回发凭据槽（每个任务各需一条 `Task(1)`+`TaskSend`）。
+pub const SERVICE2_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 7;
+/// SPEC-092：经第五次 create 的 `initial_cap0` 移入第二个服务端点的凭据。
+pub const SERVICE2_SEND_CAP_HANDLE: Handle =
+    cap_handle(SERVICE2_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -6106,6 +6111,14 @@ impl BootstrapState {
         self.mint_root_capability_at(
             CapabilityLocation::HeldByTask(INIT_TASK_ID),
             SERVICE_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
+        // SPEC-092：第二个独立服务端点的回发凭据（每个服务任务各持一条，凭据随任务销毁撤销）。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            SERVICE2_SEND_CAP_SLOT,
             Rights::from_rights(&[Right::TaskSend]),
             ObjectRef::Task(INIT_TASK_ID),
         )

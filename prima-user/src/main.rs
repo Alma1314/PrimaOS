@@ -19,6 +19,9 @@ const SERVICE_REPLY_OFFSET: u64 = 64;
 const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
 /// SPEC-088：服务端点把两个负例码写回共享段内的偏移。
 const SERVICE_NEGATIVES_OFFSET: u64 = 136;
+/// SPEC-092：服务端点把**自己的 task id** 写回共享段内的偏移（`160 + (behavior-1)*8`）——
+/// 使「哪个端点产出了该协商结果」成为可核验的绑定，而非仅凭行为码。
+const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 /// SPEC-088：服务端点自报 task id 的消息 tag（高 16 位；低 16 位为 id）。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
 /// SPEC-088：服务端点完成协商的消息 tag。
@@ -155,6 +158,12 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
                     let word_off = SERVICE_NEGOTIATED_OFFSET + (behavior - 1) * 16;
                     let _ = runtime
                         .write_user_bytes(USER_HELLO_VA + word_off, &negotiated.to_le_bytes());
+                    // SPEC-092：把自己的 task id 写在结果旁——判决性见证据此把结果绑定到**端点身份**。
+                    let ep_off = SERVICE_ENDPOINT_OFFSET + (behavior - 1) * 8;
+                    let _ = runtime.write_user_bytes(
+                        USER_HELLO_VA + ep_off,
+                        &(id.as_raw() as u64).to_le_bytes(),
+                    );
                     let _ = runtime.write_user_bytes(
                         USER_HELLO_VA + SERVICE_NEGATIVES_OFFSET,
                         &negatives.to_le_bytes(),

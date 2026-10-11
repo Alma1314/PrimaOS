@@ -40,6 +40,7 @@
 
 - [2026-10-11 — 基座库栈技术规格 v1.1（阶段 5/6 候选规格，外部输入未评审）](superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md)
 - [2026-10-11 — 阶段 4 逻辑 vspace 存储移出 BootstrapState（arena 化）](superpowers/specs/2026-10-11-stage4-vspace-arena-design.md)
+- [2026-10-11 — 阶段 4 独立第二服务端点（init 按名路由到不同任务）](superpowers/specs/2026-10-11-stage4-multi-endpoint-service-design.md)
 - [2026-10-11 — 阶段 4 服务管理器（init 按名解析并路由）](superpowers/specs/2026-10-11-stage4-service-manager-design.md)
 - [2026-10-10 — 阶段 4 init ↔ 存活 ring3 客户端双向握手](superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md)
 - [2026-10-10 — 阶段 4 独立 ring3 客户端与 IPC Hello 握手](superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md)
@@ -87,6 +88,7 @@
 
 - [2026-10-11 — 基座库栈走查与扫雷审查记录](superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)
 - [2026-10-11 — 阶段 4 逻辑 vspace 存储移出 BootstrapState（arena 化）](superpowers/reports/2026-10-11-stage4-vspace-arena-report.md)
+- [2026-10-11 — 阶段 4 独立第二服务端点（init 按名路由到不同任务）](superpowers/reports/2026-10-11-stage4-multi-endpoint-service-report.md)
 - [2026-10-11 — 阶段 4 服务管理器（S4-D2 前置）](superpowers/reports/2026-10-11-stage4-service-manager-report.md)
 - [2026-10-11 — 阶段 4 畸形句柄越界修复（ISSUE-CAP-001）](superpowers/reports/2026-10-11-stage4-malformed-handle-bounds-report.md)
 - [2026-10-10 — 阶段 4 init ↔ 存活 ring3 客户端双向握手](superpowers/reports/2026-10-10-stage4-init-client-handshake-report.md)

@@ -970,6 +970,12 @@ pub(crate) fn service_selected_ready(witness: &kernel::user::ServiceSelectedWitn
     write_hex_u64(witness.done);
     serial::write_bytes(b";negotiated_beta=");
     write_hex_u64(witness.negotiated_beta);
+    serial::write_bytes(b";alpha_ep=");
+    write_hex_u64(witness.alpha_ep);
+    serial::write_bytes(b";beta_ep=");
+    write_hex_u64(witness.beta_ep);
+    serial::write_bytes(b";beta_self=");
+    write_hex_u64(witness.beta_self);
     serial::write_bytes(b"\r\n");
 }
 

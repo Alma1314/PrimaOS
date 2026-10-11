@@ -157,6 +157,8 @@ pub const ACCESS_R_BITS: u64 = 1 << (Right::SegMapR as u32);
 pub const ACCESS_W_BITS: u64 = 1 << (Right::SegMapW as u32);
 /// `R|W` 段权限。
 pub const MEMSEG_RW_BITS: u64 = ACCESS_R_BITS | ACCESS_W_BITS;
+/// `Derive` 位（SPEC-092：`memseg_map` 前置要求段 cap 含 `Derive`，故共享端点 cap 须带上）。
+pub const ACCESS_DERIVE_BITS: u64 = 1 << (Right::Derive as u32);
 /// 用户代码写入新映射页的模式值（证明真实 PTE 可写）。
 pub const MEMSEG_PATTERN: u64 = 0xDEC0_DE00_1234_5678;
 /// 第一次 `memseg_create` 铸出的根 Capability（槽 6 的第 3 代——能力生命周期已释放两次）。
@@ -1333,8 +1335,6 @@ fn memseg_map_call(
         Err(error) => encode_errno(memseg_errno(error)),
     }
 }
-
-/// S2-D3：`memseg_unmap` 服务（切片 S：根同样由 task cap 目标派生）。
 fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
     let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
         return encode_errno(Errno::Invalid);
