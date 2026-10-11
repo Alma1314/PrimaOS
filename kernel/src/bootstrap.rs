@@ -2009,8 +2009,7 @@ impl SegmentObject {
 /// 每个 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护；`StillMapped` 与重叠判定的依据）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VspaceEntry {
-    /// SPEC-088：Task id 恒非零，用 `NonZeroU32` 为 `Option<VspaceEntry>` 提供 niche，
-    /// 使每槽 40 B；容量 40 时结构体仍在 13 KiB 守卫内（否则须放宽守卫或改存储）。
+    /// SPEC-088：Task id 恒非零，用 `NonZeroU32` 为 `Option<VspaceEntry>` 提供 niche。
     pub task_id: NonZeroU32,
     pub va: u64,
     pub seg_id: u32,
@@ -2018,56 +2017,137 @@ pub struct VspaceEntry {
     pub access: Rights,
 }
 
-pub const MAX_VSPACE_ENTRIES: usize = 44;
+/// SPEC-091：逻辑 vspace 视图的容量。
+///
+/// 存储已移出 `BootstrapState`（见 [`VSPACE_ARENA`]），故该值**不占结构体空间**——可自由扩容而
+/// 不破 13 KiB 软守卫。取值与 `MAX_CAPABILITY_SLOTS` 对齐；当前 boot 实测占用 41。
+pub const MAX_VSPACE_ENTRIES: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
+#[cfg(not(test))]
+const VSPACE_REGIONS: usize = 1;
+#[cfg(test)]
+const VSPACE_REGIONS: usize = 512;
+
+/// SPEC-091：vspace 条目存储——与 `BootstrapState` 解耦。
+///
+/// 移出理由同 SPEC-074（审计）/ SPEC-081（Namespace）：`BootstrapState` 已贴 13 KiB 软守卫
+/// （余量仅 72 B），而内联的 `[Option<VspaceEntry>; 44]` = 1408 B 是其中较大一块。移入静态 arena
+/// 后结构体缩小，且容量不再占结构体空间——多端点服务切片据此把上限提到 64。
+static VSPACE_ARENA: crate::arena::Arena<VspaceEntry, MAX_VSPACE_ENTRIES, VSPACE_REGIONS> =
+    crate::arena::Arena::new();
+
+/// S2-D3：每 Task 的逻辑 vspace 视图。条目内容在 [`VSPACE_ARENA`] 里按实例分段，结构体内只留
+/// 区段句柄与计数。
+#[derive(Clone, Copy)]
 pub struct TaskVspaceTable {
-    pub entries: [Option<VspaceEntry>; MAX_VSPACE_ENTRIES],
-    pub count: usize,
+    slice: crate::arena::ArenaSlice,
+    count: usize,
 }
 
+impl core::fmt::Debug for TaskVspaceTable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TaskVspaceTable")
+            .field("region", &self.slice.region())
+            .field("count", &self.count)
+            .finish()
+    }
+}
+
+impl PartialEq for TaskVspaceTable {
+    fn eq(&self, other: &Self) -> bool {
+        self.slice == other.slice && self.count == other.count
+    }
+}
+
+impl Eq for TaskVspaceTable {}
+
 impl TaskVspaceTable {
-    const fn empty() -> Self {
+    /// 在 arena 里为本实例领一段并返回空表（段耗尽即确定性 panic，见 [`crate::arena::Arena::claim`]）。
+    fn empty() -> Self {
         Self {
-            entries: [None; MAX_VSPACE_ENTRIES],
+            slice: VSPACE_ARENA.claim(),
             count: 0,
         }
     }
 
-    fn find(&self, task_id: u32, va: u64) -> Option<&VspaceEntry> {
-        self.entries[..self.count]
-            .iter()
-            .flatten()
-            .find(|entry| entry.task_id.get() == task_id && entry.va == va)
+    /// 条目数（等价于旧的内联 `count` 字段）。
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// 第 `index` 槽的副本；越界或空槽返回 `None`。
+    fn entry(&self, index: usize) -> Option<VspaceEntry> {
+        VSPACE_ARENA.get(self.slice, index)
+    }
+
+    fn find(&self, task_id: u32, va: u64) -> Option<VspaceEntry> {
+        let mut found = None;
+        let mut index = 0;
+        while index < self.count {
+            if let Some(entry) = self
+                .entry(index)
+                .filter(|entry| entry.task_id.get() == task_id && entry.va == va)
+            {
+                found = Some(entry);
+                break;
+            }
+            index += 1;
+        }
+        found
+    }
+
+    /// 按序遍历条目（值拷贝，不借出 arena 内部）。
+    fn for_each_entry(&self, mut visit: impl FnMut(&VspaceEntry)) {
+        let mut index = 0;
+        while index < self.count {
+            if let Some(entry) = self.entry(index) {
+                visit(&entry);
+            }
+            index += 1;
+        }
     }
 
     fn insert(&mut self, entry: VspaceEntry) -> Result<(), MemsegError> {
         if self.count == MAX_VSPACE_ENTRIES {
             return Err(MemsegError::CapacityExceeded);
         }
-        self.entries[self.count] = Some(entry);
+        VSPACE_ARENA.set(self.slice, self.count, Some(entry));
         self.count += 1;
         Ok(())
     }
 
     fn remove(&mut self, task_id: u32, va: u64) -> Option<VspaceEntry> {
-        let index = self.entries[..self.count].iter().position(|entry| {
-            entry.is_some_and(|entry| entry.task_id.get() == task_id && entry.va == va)
-        })?;
-        let entry = self.entries[index].take();
-        for shift in index..self.count - 1 {
-            self.entries[shift] = self.entries[shift + 1];
+        let mut index = None;
+        let mut cursor = 0;
+        while cursor < self.count {
+            if self
+                .entry(cursor)
+                .is_some_and(|entry| entry.task_id.get() == task_id && entry.va == va)
+            {
+                index = Some(cursor);
+                break;
+            }
+            cursor += 1;
         }
-        self.entries[self.count - 1] = None;
+        let index = index?;
+        let entry = self.entry(index);
+        for shift in index..self.count - 1 {
+            VSPACE_ARENA.set(self.slice, shift, self.entry(shift + 1));
+        }
+        VSPACE_ARENA.set(self.slice, self.count - 1, None);
         self.count -= 1;
         entry
     }
 
     fn references_segment(&self, seg_id: u32) -> bool {
-        self.entries[..self.count]
-            .iter()
-            .flatten()
-            .any(|entry| entry.seg_id == seg_id)
+        let mut found = false;
+        self.for_each_entry(|entry| {
+            if entry.seg_id == seg_id {
+                found = true;
+            }
+        });
+        found
     }
 }
 
@@ -5285,12 +5365,12 @@ impl BootstrapState {
             let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
             let mut entries = [0u64; MAX_VSPACE_ENTRIES];
             let mut count = 0usize;
-            for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
+            self.vspace.for_each_entry(|entry| {
                 if entry.task_id.get() == caller && count < MAX_VSPACE_ENTRIES {
                     entries[count] = entry.va;
                     count += 1;
                 }
-            }
+            });
             for entry_va in entries[..count].iter().copied() {
                 crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                     crate::sched::defer_table_frame(frame)
@@ -5429,12 +5509,12 @@ impl BootstrapState {
         let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
         let mut entries = [0u64; MAX_VSPACE_ENTRIES];
         let mut count = 0usize;
-        for entry in self.vspace.entries[..self.vspace.count].iter().flatten() {
+        self.vspace.for_each_entry(|entry| {
             if entry.task_id.get() == task_id && count < MAX_VSPACE_ENTRIES {
                 entries[count] = entry.va;
                 count += 1;
             }
-        }
+        });
         for entry_va in entries[..count].iter().copied() {
             crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                 crate::frames::release_table_frame(frame)
@@ -6112,11 +6192,13 @@ impl BootstrapState {
                 }
             }
         }
-        record.vspace = self.vspace.entries[..self.vspace.count]
-            .iter()
-            .flatten()
-            .filter(|entry| platform_range.contains(&entry.seg_id))
-            .count() as u32;
+        let mut vspace_hits = 0u32;
+        self.vspace.for_each_entry(|entry| {
+            if platform_range.contains(&entry.seg_id) {
+                vspace_hits += 1;
+            }
+        });
+        record.vspace = vspace_hits;
         for id in platform_range {
             // 只统计真实存在的对象，与 `segments` 的口径一致。
             if self.segment(id).is_none() {
@@ -6124,11 +6206,7 @@ impl BootstrapState {
             }
             if platform_segment_is_direct(id) {
                 record.direct += 1;
-            } else if self.vspace.entries[..self.vspace.count]
-                .iter()
-                .flatten()
-                .any(|entry| entry.seg_id == id)
-            {
+            } else if self.vspace.references_segment(id) {
                 record.mapped += 1;
             }
         }
@@ -6216,7 +6294,7 @@ impl BootstrapState {
                 return Err(MemsegError::Overlap);
             }
         }
-        if self.vspace.count + page_count > MAX_VSPACE_ENTRIES {
+        if self.vspace.count() + page_count > MAX_VSPACE_ENTRIES {
             return Err(MemsegError::CapacityExceeded);
         }
         let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
