@@ -392,6 +392,8 @@ LibOS 应拆成可独立测试的职责：
 
 每项 API 都要记录：支持、部分支持、不支持、语义差异和测试证据。不得只以“能够编译”作为兼容完成标准。
 
+本阶段已有一份**候选的逐项规格**：《基础库栈（基座库）技术规格书 v1.1》（`docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`，含走查/扫雷记录 `2026-10-11-baselib-stack-walkthrough.md`）。**它是外部候选提案，不是已评审的权威约束**；其假设的内核侧前置 ABI 承诺与号段命名均未裁决（见跟踪文档 BLK-003），分解细节与风险见本文 §15 阶段 5。
+
 ### 8.3 阶段三：选定 Linux x86_64 静态 ELF
 
 目标：运行一个明确白名单内、无需修改的 Linux x86_64 静态 ELF 测试集。
@@ -843,7 +845,7 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 交付：
 
 - 冻结的 POSIX profile；
-- libc 适配；
+- libc 适配（候选分解见下）；
 - 文件描述符、路径、线程和基础网络子集；
 - 与 Linux 的差分测试矩阵。
 
@@ -852,6 +854,8 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - profile 内每项 API 都有语义映射和测试；
 - 明确列出 partial / unsupported；
 - 选定开源程序可重新编译并通过功能测试。
+
+**候选分解（《基础库栈技术规格书 v1.1》，提案，需评审）**：三层为共享 crate 集合（`abi` + IDL 生成器、`ipc`、`libsys-rs`）、自家 libc（musl 五个边界替换点 + crt/`__libc_start_main` + `ld.so` + `fd↔capability` + 线程/TLS）、Rust `core`/`std` 移植；P0 另含信号 ABI、`fork`/`execve`/`wait4`、tty/console 通路，以及 persona 字段、符号版本脚本、`compat-state.md`、符号↔syscall 追溯表、`NT_RUXOS_ABI` 版本握手等“第一天即存在”的预留位。**上游前置**：该分解假设内核提供一批本阶段尚不存在的 ABI 语义（直接 IPC 快路径、futex/wait_multi、基础信号、`fork`/`execve`、tty 通路、匿名页池与 `mmap` flag、W^X 强制），属阶段 4/5 的内核侧承诺，须先经评审并解除跟踪文档阻塞项（BLK-003）后方可开发；其自带出口判据（如“公开符号 100% 有符号↔syscall 追溯行与 `compat-state.md` 说明”）以提案口径登记，**不并入本阶段退出条件**。另注：该规格把 `ld.so` 最小动态链接列为 P0（随本阶段交付），而本文档把“动态链接”列为阶段 7 候选，阶段归属须一并裁决。
 
 ### 阶段 6 — Linux x86_64 静态 ELF
 

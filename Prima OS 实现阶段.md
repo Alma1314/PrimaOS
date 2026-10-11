@@ -66,6 +66,7 @@
 | ID | 类型 | 工件或命令 | 日期 | 结果 | 支持的检查项 |
 |---|---|---|---|---|---|
 | DOC-001 | 架构文档 | [[Prima OS]] | 2026-07-30 | 已形成决策型架构白皮书；不代表实现完成 | S0-D3 |
+| DOC-002 | 下游规格（外部候选） | `docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`（走查/扫雷记录：`docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md`） | 2026-10-11 | 阶段 5/6 基座库栈的候选逐项规格（三层：共享 crate / 自家 libc / Rust core+std）+ 走查扫雷记录。**外部输入、提案、未经内核侧评审、非权威约束**；其内核侧前置 ABI 承诺与 `0x0xx` 号段/`NT_RUXOS_ABI` 命名均未与 `prima-abi` 对齐（BLK-003）；文内相对引用指其原项目 | S5-D2、S5-D6、S5-D7、BLK-003 |
 | SPEC-001 | 抽象规范 | [[COSIR 原语规范]] | 2026-08-16 | 已定义对象能力状态机（11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移，共 12 项；16 个不变式）；尚无机器证明 | S0-D1、S0-D2 |
 | IMPL-001 | 实现工件 | `Cargo.toml`、`kernel/`、`xtask/`、`Cargo.lock` | 2026-08-05 | 固定 nightly-2026-07-30 与 bootloader 0.11.17；生成 BIOS/UEFI 镜像 | S1-D1、S1-D2 |
 | TEST-001 | QEMU 集成测试 | `cargo xtask test` | 2026-08-05 | QEMU 11.0.50；固定 BIOS profile 连续启动两次，结构化串口序列和退出码均通过 | S1-D1、S1-D2、S1-X1 |
@@ -249,6 +250,7 @@
 |---|---|---|---|---|
 | BLK-001 | 0 | 尚未选择并建立形式化模型工件 | 明确工具、入口文件和可执行状态迁移 | Closed |
 | BLK-002 | 0 | 草案已放宽——已覆盖 MemorySegment 页表↔vspace 细化 | 定义 MachineState、抽象函数和至少 Bootstrap（及 MemorySegment）细化对应 | 草案已成 |
+| BLK-003 | 5 前置 | 基座库栈（DOC-002，阶段 5 候选规格）假设的内核侧 ABI 承诺未评审确认：直接 IPC 快路径（D-09）、futex/wait_multi（D-02）、基础信号、`fork`/`execve`/`wait4`、tty/console 通路、匿名页池与 `mmap` flag/W^X；且其 `0x0xx` 号段 + `NT_RUXOS_ABI` + `x86_64-ruxos-none` 命名与 `prima-abi` 现有 `SYS_*` 编号未对齐（本仓库号段“只追加、空洞不复用”为红线） | 逐项经内核侧评审确认归属与号段（见阶段 5「上游前置（内核侧 ABI 承诺）」表）；未经确认不得进入阶段 5 开发 | Open |
 
 ## 决策日志
 
@@ -302,6 +304,8 @@
 | 2026-10-10 | **阶段 4 期内的 mm/vspace 修复批次登记（SPEC-086）**：六个此前无理由记录的 `fix`/`perf` 提交（分支 `codex/optimize-frame-allocation`，经 `7b49d1a` 与 stage4 一并合入）据代码与单测**回溯登记**——帧归还原子性、启动内存区溢出/反向区间拒绝、`leaf_phys_or_none` 的大页 PAT 与页内偏移、4 KiB 走表拒大页、仅当前根刷 TLB、分配器区间游标 | ①前四项是**正确性修复**（可导致状态分叉 / `u64::MAX` 回绕 / 误把大页当页表走 / 重叠误判），合并时无提交说明；不登记则"master 存在无理由的正确性改动"，违反维护规则 5 的可追溯要求；②第五项是**正确性敏感的性能优化**——跳过非当前根的 `invlpg` 只在「活跃 CR3 的唯一写点是 `sched::resume`」这一不变量下成立，该不变量此前**未被任何文档显式声明**，故本片**显式登记为复核项**（将来若新增 CR3 写入路径、或经 `memseg_map` 映射进 boot 根，它会静默产生陈旧翻译）| 新增 `SPEC-086`/`TEST-030`；**未重建 pre-merge 事件流 diff**（分支与 stage4 的镜像变化纠缠，方法边界如实登记），当前 39 条事件基线为冻结真值；`leaf_phys_or_none` 的返回值语义变更登记；不勾选任何交付项或退出条件 |
 | 2026-10-10 | **阶段 4 S4-D2 前置：init ↔ 存活 ring3 客户端双向握手（SPEC-087）**：SPEC-085 的单向 Hello 之后，init 建一个**存活的** ring3 Rust 客户端并完成「应答 → 客户端写回执 → init 读回」；同时定位并修复 **`syscall` 快路径保存块缺陷** | ①单向握手的未决项（init 未解析/未回复）需要一个真实双向往返才构成可复查证据，而它要求 init 先让出——这一步暴露了快路径缺陷；②`syscall` 指令不压硬件帧，入口原先既不写 `CONTEXT_BASE` 也没模拟 5-qword 帧，`SaveBlock::to_sret_frame` 因而不成立：**任何经快路径的阻塞/让出都会把外来上下文存进调度帧**，恢复时 `iretq` 落到未映射地址触发 `#PF` 死循环（这是**帧 ABI 契约的破口**，非本片引入，之前无快路径任务阻塞故潜伏）；③让出会排空 task 2（S2-D4 块末尾早已有同一处直投唤醒，本片如实复现）；④存活客户端若持续 Ready 会被 `pick_next` 选进收尾抢占轮转，故握手完成后改为**阻塞等待** | `prima-ostd`（TCB）新增：快路径压入 `ss/rsp/rflags/cs/rip` 模拟硬件帧 + 写 `CONTEXT_BASE`、`set_fast_syscall_ss`；`kernel/src/user.rs`：代码页 4096→8192（页 1 `USER_CODE2_VA`）、`CLIENT_SEND_CAP`、客户端建栈/映射/循环 `SYS_RECV`/应答/再唤醒 task 2、`ServiceReplyWitness`，且 `task_create` 见证只记前两次 create（第 3 次不再覆盖 `grandchild`）；`prima-user`：非 id 3 客户端 `receive()` 后写回共享段并阻塞；`MAX_TASKS` 8→12；新增 `service_reply_ready`（**seq 26**，`EXPECTED_EVENTS` 39→40）并同步 `validate_service_reply_data` + 反例 + 常量；回归面逐条登记（`task_ready` 3/44→4/49、`ipc_ready` 3/3/3→4/5/6、`platform_segments_ready` `vspace` 12→13 与 `frames[4]` 1→2、布局字段）；`cargo xtask tcb` ⇒ 1262/19934 行、5.95%、unsafe 56/0；**S4-D2 与阶段 4 交付项/退出条件一律不勾选** |
 | 2026-10-10 | **阶段 4 S4-D2 前置：服务端解析与协商（SPEC-088）**：新增独立 ring3 Rust 服务端点，真实解析客户端 Hello 的 `MessageHeader`+`ProtocolOffer`、调用 `prima_runtime::protocol::negotiate`，把协商结果与两个负例（`MajorMismatch`/`BadMagic`）写回共享帧，内核从 init 同一物理帧读回 | ①SPEC-085 报告 §6.1 明写「init 尚未解析该 Hello；服务端解析、`minor`/feature 协商与端点选择留后续切片」——本片把这一条落为可复查证据；②capability 模型下 sibling 任务无法互相寻址（`SYS_SEND` 要求 `send_cap` 目标恰为 receiver，且新 id 由 `next_free_id` 动态分配），故 **init 必须作为 broker 中转**，正是 S4-D2「服务管理器」的本意；③解析/协商必须在 ring3 Rust 做（复用 `negotiate`），不能放进内核（策略入核 + 见证非 ring3 侧）| `prima-runtime`：`read_user_bytes`/`read_user_u64`；`prima-user`：`_start` 第 3 参数（= `initial_caps[1]`，派生自代码段根的只读端点令牌）非零=服务端点角色，零=客户端（既有行为不变）；`kernel/src/user.rs`：页面 1 broker 块（派生令牌 → 第 4 次 `SYS_TASK_CREATE` → 无 cap 唤醒 + 带 cap 转发 → 收完成）+ `ServiceNegotiatedWitness`；`kernel/src/bootstrap.rs`：`SERVICE_SEND_CAP`、`MAX_VSPACE_ENTRIES` 32→44、`VspaceEntry.task_id: NonZeroU32`（niche，每槽 40→32 B，容量 44 时仍在 13 KiB 守卫内）；`USER_TASK_KSTACK_COUNT` 6→7（id 9）；新增 `service_negotiated_ready`（**seq 27**，`EXPECTED_EVENTS` 40→41）并同步 `validate_service_negotiated_data` + 2 反例 + 常量；回归面逐条登记（`task_ready` 4/49→5/54、`ipc_ready` 4/5/6→6/7/9、布局字段）；**定位并修复两处**：①内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息（SPEC-087 已注明的约束），故 init 先发**无 cap** 唤醒再带 cap 转发、服务端 `receive` 循环跳过无 cap 消息；②S2-D4 负例 1 的硬编码坏入口 `+0x9000` 在嵌入 ELF 增长到 **10 页**（`code_end=+0xA000`）后落入代码段内，负例改由后置 `initial_cap` 检查以 `EACCES` 拒绝——改成**代码段末尾**（one-past-end），`bad_entry` 恢复 `EINVAL`；**新登记未修问题 `ISSUE-CAP-001`**：畸形句柄（槽索引 ≥64）经 `Handle::decode` 格式检查后直达 `CapabilityRecordTable::find` 的 `entries[index]` → 越界 panic（对不可信 ring3 输入可达）；`cargo xtask tcb` ⇒ 1262/20219 行、5.87%、unsafe 56/0；**S4-D2 与阶段 4 交付项/退出条件一律不勾选** |
+| 2026-10-11 | **登记阶段 5/6 的候选逐项规格《基础库栈（基座库）技术规格书 v1.1》**（DOC-002，含其走查/扫雷记录），把其 M01–M12 模块、M1–M9 里程碑与 §11 十条验收口径作为阶段 5「POSIX 源码兼容」S5-D2 的候选交付分解；同时登记其“上游前置（内核侧 ABI 承诺）”表与 RED/YELLOW/GREEN 三级风险清单 | ①白皮书阶段 5 原文只有 4 条抽象交付（“libc 适配”等），无可验收分解；该规格提供逐模块/逐 syscall/逐符号的可执行口径，且自带验收标准，可直接充当候选计划；②规格的“18 项待决策 + RED/YELLOW/GREEN”与本仓库决策日志/阻塞项结构同构，宜逐项登记而非另立体系；③规格用 `0x0xx` 号段 + `NT_RUXOS_ABI`，与 `prima-abi` 现有 `SYS_*` 编号冲突，而号段“只追加、空洞不复用”是本仓库红线——故对齐方式构成决策，不得静默改写；④规格为 AI 生成、其 §4 号表/位域与 §21 推荐值自称“提案，需内核侧评审确认”，故按**外部候选**登记、不赋权威 | 白皮书 §8.2、§15 阶段 5 同步补注候选分解与上游前置；新增跟踪项 S5-D6（Rust core/std）、S5-D7（兼容性护栏）、证据索引 DOC-002、阻塞项 BLK-003；**阶段 4/5/6 的勾选状态一律不动** |
+| 2026-10-11 | 把 DOC-002 的 6 项 🔴 待决策登记为**跨册决策**：D-01 代号、D-02 futex/wait_multi 内核化、D-06 错误码复用 Linux errno、D-09 直接 IPC、D-13 多线程 `fork` 返 `EAGAIN`、D-18 W^X 强制 | ①这 6 项在规格侧标为“开发前必须拍板”，但实现面落在本仓库（内核），故须在跟踪文档可见、不能只留在下游册；②D-09/D-02 依赖本仓库内核排期，已并入 BLK-003 的解除路径；③D-06 与本仓库 2026-09-13 既定的“负 errno 二补码”约定一致，登记以防重复裁决；④D-18 不能与在册的“image 段 `{R,X}` 与可写 `.data`/`.bss` 冲突”并行拍板，须与“链接脚本级段切分”一并评估 | 记录为待用户裁决策项；**不影响任何阶段勾选状态** |
 
 
 ## 阶段 0 — 语义基线
@@ -472,17 +476,43 @@
 - [ ] S4-X3：大数据路径可使用共享 Segment，且有取消和错误恢复测试。
 - [ ] S4-X4：故障服务不能直接破坏无关应用域。
 
+**下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
+
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：未开始**
+**状态：未开始；候选逐项规格见 DOC-002（`docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`，外部输入、提案、未经内核侧评审、非权威约束）**
 
 ### 交付检查
 
 - [ ] S5-D1：冻结且版本化的 POSIX profile。
-- [ ] S5-D2：libc 适配。
+- [ ] S5-D2：libc 适配（候选分解 M01–M12：`abi`+IDL 生成器、`ipc`、桩层双模板、crt/`__libc_start_main`、musl 五个边界替换点、`ld.so`、`fd↔capability`、线程/TLS、信号、`fork`/`execve`/`wait4`、tty/console）。
 - [ ] S5-D3：文件描述符、路径、线程和基础网络子集。
 - [ ] S5-D4：逐 API 语义映射矩阵。
 - [ ] S5-D5：与参考 Linux 的差分测试矩阵。
+- [ ] S5-D6：Rust 目标与 `core`/`std` 移植（候选规格 §5.10 / 里程碑 M7）。
+- [ ] S5-D7：兼容性护栏——persona 字段、符号版本脚本、`compat-state.md`、符号↔syscall 追溯表、`NT_RUXOS_ABI` 版本握手（候选规格称“第一天即启用”）。
+
+### 上游前置（内核侧 ABI 承诺，须先评审确认 —— 见 BLK-003）
+
+下表把候选规格消费的内核语义映射到本仓库现状。**这些不是阶段 4 的交付项**，但进入阶段 5 前必须逐项确认归属；其中号段/命名对齐构成决策，不得静默改写（本仓库号段“只追加、空洞不复用”）。
+
+| 前置 | 候选规格要求 | 本仓库现状 | 归属 |
+|---|---|---|---|
+| 直接 IPC 快路径 | 小消息往返 ≤250 ns 依赖直接 IPC（决策 D-09） | 未实现；现有排队 + `BlockedRecv` 直投两条路径 | 阶段 4/5 |
+| futex / wait_multi 内核化 | 决策 D-02 | 未实现 | 阶段 4/5 |
+| 基础信号 | 规格 §4.5.1 结构 + 号段 `0x03A–0x03D`（`sigaction`/`kill`/`sigreturn`/`abort`） | 抽象层已有 `exc_subscribe`/`exc_unsubscribe`（COSIR §12）与 `exc_resume`；用户可调仅 `SYS_TRAP`/`SYS_EXC_WAIT`（SPEC-052） | 阶段 5 |
+| `fork`/`execve`/`wait4` | 规格 §5.11（V1 仅单线程 fork，多线程返 `EAGAIN`，决策 D-13） | 未实现 | 阶段 5 |
+| tty / console 通路 | 规格 §5.12 | 未实现 | 阶段 4/5 |
+| 匿名页池与 `mmap` flag、W^X | 规格 §4.14（W^X，决策 D-18） | 未实现；在册“image 段 `{R,X}` 与可写 `.data`/`.bss` 冲突”仍待链接脚本级段切分 | 阶段 4/5 |
+| 号段 / 命名对齐 | `0x0xx` 号段、`NT_RUXOS_ABI`、`x86_64-ruxos-none` | `prima-abi` 的 `SYS_*` 编号（21–32 已占用） | 决策 |
+
+**候选里程碑（规格 §19，提案，未纳入本仓库排期）**：M1 ABI 基座 → M2 裸通路 → M3 IPC 通路 → M4 libc 主体 → M5 动态链接 → M6 线程/TLS/基础信号 → M7 Rust 基座 → M8 韧性 → M9 出口；M1/M3/M4 可三线并行、M5/M6 须串行；规格侧估算约 22 周 / 26 人周。
+
+### 候选规格的待确认风险（来自其走查/扫雷记录，随本阶段一并跟踪）
+
+- RED（规格内已回写闭环，落地仍需本仓库评审）：符号↔syscall 追溯表、匿名页池/W^X、ABI 握手、信号结构冻结、`fork`/`exec`、tty 通路、libm 归类。
+- YELLOW（规格待确认）：时延目标按 `(qemu, qemu-cpu, hostcpu)` 三元组记 `PROVISIONAL`、`getrandom` 非阻塞语义、`poll/select` 退化实现标 PARTIAL、`sys_features` 位图、`dtable.cookie`、CI 时长、静态链接的 ABI 校验、错误码有损映射（`RUX_KERR_VERBOSE`）。
+- GREEN（规格明确推迟 V2）：`dlmopen`、`DT_RELR`/IFUNC、静态 PIE、locale/宽字符、aarch64/riscv、多 itss 热备、LTP/PISA、形式化验证。
 
 ### 退出条件
 
@@ -508,6 +538,8 @@
 - [ ] S6-X2：支持的 syscall 与参考 Linux 通过差分测试。
 - [ ] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。
 - [ ] S6-X4：未支持 syscall 得到确定且可审计的失败。
+
+> 注：候选规格（DOC-002）把 `ld.so` 最小动态链接闭环列为 P0、随阶段 5 交付，而白皮书把“动态链接”列为阶段 7 候选。两者的阶段归属须一并裁决，不得两处各写一套。
 
 ## 阶段 7 — 扩展与硬化
 
