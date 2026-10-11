@@ -153,6 +153,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::service_reply_ready(&kernel::user::service_reply_witness());
     // SPEC-088：init（broker）把客户端 Hello 转发给 ring3 Rust 服务端点，服务解析+协商。
     protocol::service_negotiated_ready(&kernel::user::service_negotiated_witness());
+    // SPEC-090：init（服务管理器）按客户端写入共享段的服务名解析端点并二次路由 + 未知名拒绝。
+    protocol::service_selected_ready(&kernel::user::service_selected_witness());
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);

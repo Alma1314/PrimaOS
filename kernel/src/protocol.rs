@@ -957,6 +957,22 @@ pub(crate) fn service_negotiated_ready(witness: &kernel::user::ServiceNegotiated
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-090：init（服务管理器）按名字解析端点并二次路由的协议回执。
+pub(crate) fn service_selected_ready(witness: &kernel::user::ServiceSelectedWitness) {
+    write_prefix("service_selected_ready", "ok");
+    serial::write_bytes(b"|data=name=");
+    write_hex_u64(witness.name);
+    serial::write_bytes(b";resolved=");
+    write_hex_u64(witness.resolved);
+    serial::write_bytes(b";unknown=");
+    write_hex_u64(witness.unknown);
+    serial::write_bytes(b";done=");
+    write_hex_u64(witness.done);
+    serial::write_bytes(b";negotiated_beta=");
+    write_hex_u64(witness.negotiated_beta);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

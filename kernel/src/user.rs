@@ -155,6 +155,25 @@ pub const SVC_RECEIPT_DONE: u64 = 904;
 pub const SVC_RECEIPT_PREPARE: u64 = 920;
 pub const SVC_RECV_BUF: u64 = USER_Y_VA + 936;
 
+/// SPEC-090：客户端把**请求服务名**写入共享段的偏移（`init` 经 `USER_HELLO2_VA` 读回）。
+pub const HELLO_SERVICE_NAME_OFFSET: u64 = 48;
+/// SPEC-090：服务管理器**服务注册表**里的名字与行为码（与 `prima-runtime::protocol` 一致）。
+pub const SERVICE_NAME_BETA: u64 = 2;
+pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
+pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
+pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
+/// SPEC-090：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
+pub const SERVICE_NAME_UNKNOWN: u64 = 0xDEAD;
+/// SPEC-090：`BETA` 行为的协商结果写在 `128 + (behavior-1)*16` = 144；判决性在 `max=1024`
+/// （只可能来自被按名选中的 `BETA` offer，`ALPHA` 是 2048）。
+pub const SERVICE_NEGOTIATED_B_OFFSET: u64 = 144;
+pub const SERVICE_EXPECTED_NEGOTIATED_B: u64 = 0x0001_0000_0400_0001;
+/// SPEC-090：解析与二次路由的 Y 页回执（紧接 SPEC-088 的 `936..959`，`< NS_PATH_DATA_OFFSET`）。
+pub const SVC_RECEIPT_NAME: u64 = 960;
+pub const SVC_RECEIPT_RESOLVED: u64 = 968;
+pub const SVC_RECEIPT_UNKNOWN: u64 = 976;
+pub const SVC_RECEIPT_DONE_B: u64 = 984;
+
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
 pub const USER2_BASE_VA: u64 = 0x0000_0A80_0000_0000;
@@ -1691,7 +1710,14 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 7;
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xBA, SERVICE_PREPARE_TAG);
+    // SPEC-090：`prepare` 的 payload 低 8 位携带服务管理器路由到的行为码；首次转发 = `ALPHA`。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBA,
+        SERVICE_PREPARE_TAG | SERVICE_BEHAVIOR_ALPHA,
+    );
     at += 10;
     put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
     at += 3;
@@ -1761,6 +1787,135 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 6;
     put_store_rax(&mut code, at, SVC_RECEIPT_DONE as u32);
     at += 7;
+
+    // ===== SPEC-090：服务管理器按名字解析并二次路由 =====
+    // 见设计 `docs/superpowers/specs/2026-10-11-stage4-service-manager-design.md`。
+    // 首次转发（行为 `ALPHA`）已产生既有 `service_negotiated_ready`；此处证明 init 持有
+    // **服务注册表**并按客户端写入共享段的名字解析端点：`BETA`→行为 2、未注册名→拒绝。
+    // 8) 读请求服务名：rax = *(USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET) → Y[SVC_RECEIPT_NAME]。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET,
+    ); // mov rax, &name
+    at += 10;
+    put(&mut code, at, &[0x48, 0x8B, 0x00]); // mov rax, [rax]
+    at += 3;
+    put_store_rax(&mut code, at, SVC_RECEIPT_NAME as u32);
+    at += 7;
+    // 9) 解析请求名：r8 = (name == BETA) ? BETA : NONE；→ Y[SVC_RECEIPT_RESOLVED]。
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x3D]); // cmp rax, imm32
+    put(&mut code, at + 2, &(SERVICE_NAME_BETA as u32).to_le_bytes());
+    at += 6;
+    let name_jne = at;
+    put(&mut code, at, &[0x0F, 0x85]); // jne（跳过赋值）
+    at += 6;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA); // mov r8, 2
+    at += 10;
+    let name_skip = at;
+    put(
+        &mut code,
+        name_jne + 2,
+        &((name_skip as i64 - (name_jne as i64 + 6)) as i32).to_le_bytes(),
+    );
+    put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
+    at += 3;
+    put_store_rax(&mut code, at, SVC_RECEIPT_RESOLVED as u32);
+    at += 7;
+    // 10) 未注册名负例：解析 `SERVICE_NAME_UNKNOWN` 应得 NONE → Y[SVC_RECEIPT_UNKNOWN]。
+    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_NAME_UNKNOWN); // mov rax, 0xDEAD
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x3D]); // cmp rax, imm32
+    put(&mut code, at + 2, &(SERVICE_NAME_BETA as u32).to_le_bytes());
+    at += 6;
+    let unk_jne = at;
+    put(&mut code, at, &[0x0F, 0x85]); // jne（跳过赋值）
+    at += 6;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA); // mov r8, 2
+    at += 10;
+    let unk_skip = at;
+    put(
+        &mut code,
+        unk_jne + 2,
+        &((unk_skip as i64 - (unk_jne as i64 + 6)) as i32).to_le_bytes(),
+    );
+    put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
+    at += 3;
+    put_store_rax(&mut code, at, SVC_RECEIPT_UNKNOWN as u32);
+    at += 7;
+    // 11) 若请求名解析到行为（非 NONE），二次转发：prepare(behavior) → 等 done。
+    put_load_reg(
+        &mut code,
+        at,
+        0x4C,
+        NS_MODRM_R8,
+        SVC_RECEIPT_RESOLVED as u32,
+    ); // mov r8, [rcx+RESOLVED]
+    at += 7;
+    put(&mut code, at, &[0x4D, 0x85, 0xC0]); // test r8, r8
+    at += 3;
+    let fwd_je = at;
+    put(&mut code, at, &[0x0F, 0x84]); // je（解析为 NONE 则拒绝转发）
+    at += 6;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID as u32);
+    at += 7;
+    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
+    at += 7;
+    put(&mut code, at, &[0x4C, 0x89, 0xC2]); // mov rdx, r8（行为码）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_PREPARE_TAG); // mov rax, TAG
+    at += 10;
+    put(&mut code, at, &[0x48, 0x09, 0xC2]); // or rdx, rax → payload = TAG | behavior
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
+    at += 3;
+    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
+    at += 3;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    let done_b_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
+    at += 3;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
+    at += 4;
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC2
+    put(
+        &mut code,
+        at + 2,
+        &((SERVICE_DONE_TAG >> 48) as u32).to_le_bytes(),
+    );
+    at += 6;
+    put(&mut code, at, &[0x0F, 0x85]); // jne done_b_loop
+    put(
+        &mut code,
+        at + 2,
+        &((done_b_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
+    );
+    at += 6;
+    put_store_rax(&mut code, at, SVC_RECEIPT_DONE_B as u32);
+    at += 7;
+    let fwd_skip = at;
+    put(
+        &mut code,
+        fwd_je + 2,
+        &((fwd_skip as i64 - (fwd_je as i64 + 6)) as i32).to_le_bytes(),
+    );
 
     // 收尾的抢占阶段需要 Ready 任务可轮转：本块的两次让出已把 task 2 排空成 `BlockedRecv`
     // （同 S2-D4 块末尾的情形），故末尾再做一次直投唤醒 `send(2, TASK2_SEND_CAP,
@@ -1927,6 +2082,42 @@ pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
         done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE),
         negotiated: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_OFFSET),
         negatives: read_qword(USER_HELLO2_VA + SERVICE_NEGATIVES_OFFSET),
+    }
+}
+
+/// SPEC-090：服务管理器（init）**按名字解析并二次路由**的回执。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceSelectedWitness {
+    /// 从共享段读回的请求服务名（判决性：应 `SERVICE_NAME_BETA`；未写入则为 0）。
+    pub name: u64,
+    /// 名字解析结果（判决性：应 `SERVICE_BEHAVIOR_BETA`——与 `name` 绑定，硬编码会脱钩）。
+    pub resolved: u64,
+    /// 未注册名的解析结果（负例：应 `SERVICE_BEHAVIOR_NONE`，即拒绝）。
+    pub unknown: u64,
+    /// 二次转发的服务回执（应 `SERVICE_DONE_TAG`）。
+    pub done: u64,
+    /// `BETA` 行为写入共享段 offset 144 的协商结果（判决性：应 `SERVICE_EXPECTED_NEGOTIATED_B`；
+    /// `max=1024` 只可能来自被按名选中的 `BETA` offer）。
+    pub negotiated_beta: u64,
+}
+
+impl ServiceSelectedWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.name == SERVICE_NAME_BETA
+            && self.resolved == SERVICE_BEHAVIOR_BETA
+            && self.unknown == SERVICE_BEHAVIOR_NONE
+            && self.done == SERVICE_DONE_TAG
+            && self.negotiated_beta == SERVICE_EXPECTED_NEGOTIATED_B
+    }
+}
+
+pub fn service_selected_witness() -> ServiceSelectedWitness {
+    ServiceSelectedWitness {
+        name: read_qword(USER_Y_VA + SVC_RECEIPT_NAME),
+        resolved: read_qword(USER_Y_VA + SVC_RECEIPT_RESOLVED),
+        unknown: read_qword(USER_Y_VA + SVC_RECEIPT_UNKNOWN),
+        done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE_B),
+        negotiated_beta: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_B_OFFSET),
     }
 }
 

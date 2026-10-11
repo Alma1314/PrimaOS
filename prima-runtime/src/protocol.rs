@@ -6,6 +6,26 @@ pub const MESSAGE_HEADER_LEN: usize = 20;
 pub const OFFER_LEN: usize = 24;
 const MAGIC: [u8; 4] = *b"PRIM";
 
+/// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
+/// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
+pub const SERVICE_NAME_OFFSET: u64 = 48;
+/// SPEC-090：注册的服务名。`BETA` 被服务管理器解析为行为码 2；未注册名解析为 0（拒绝）。
+pub const SERVICE_NAME_BETA: u64 = 2;
+/// SPEC-090：服务管理器可路由的行为码。`ALPHA`（默认，max 2048）与 `BETA`（max 1024）。
+pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
+pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
+/// SPEC-090：名字未注册时的解析结果（服务管理器据此拒绝转发）。
+pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
+/// SPEC-090：`BETA` 行为的服务端 offer。`max_message_size` 取 1024 而非 2048，使协商结果
+/// （`max=1024`）**只可能来自被按名选中的 BETA 行为**，构成路由的判决性字段。
+pub const SERVICE_OFFER_BETA: ProtocolOffer = ProtocolOffer {
+    major: 1,
+    minor: 0,
+    features: 0b101,
+    required_features: 0b001,
+    max_message_size: 1024,
+};
+
 /// 单条服务消息的 wire header。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MessageHeader {

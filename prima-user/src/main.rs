@@ -7,7 +7,8 @@ use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
         CodecError, MESSAGE_HEADER_LEN, MessageHeader, NegotiatedProtocol, NegotiationError,
-        OFFER_LEN, ProtocolOffer, negotiate,
+        OFFER_LEN, ProtocolOffer, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_NONE, SERVICE_NAME_BETA,
+        SERVICE_NAME_OFFSET, SERVICE_OFFER_BETA, negotiate,
     },
 };
 
@@ -28,8 +29,8 @@ const HELLO_FEATURES: u64 = 1;
 const HELLO_MAX_MESSAGE_SIZE: u32 = 4096;
 const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 
-/// SPEC-088：服务端点自己的协议 offer。与客户端 offer 取交后 `max` 由 4096 降到 2048，
-/// 是「结果只可能来自服务端」的判决性字段。
+/// SPEC-088：服务端点 **`ALPHA` 行为** 的协议 offer。与客户端 offer 取交后 `max` 由 4096
+/// 降到 2048，是「结果只可能来自服务端」的判决性字段。
 const SERVICE_OFFER: ProtocolOffer = ProtocolOffer {
     major: 1,
     minor: 0,
@@ -46,15 +47,22 @@ fn pack_negotiated(negotiated: NegotiatedProtocol) -> u64 {
         | (negotiated.features & 0xffff)
 }
 
-/// SPEC-088：解析对端 Hello 并协商；成功返回打包结果，失败返回 0。
-fn negotiation_word(header_bytes: &[u8; MESSAGE_HEADER_LEN], offer_bytes: &[u8; OFFER_LEN]) -> u64 {
+/// SPEC-088/090：解析对端 Hello 并用给定服务端 offer 协商；成功返回打包结果，失败返回 0。
+///
+/// SPEC-090：`server_offer` 由服务管理器路由到的行为码决定（`ALPHA` 用 `SERVICE_OFFER`、
+/// `BETA` 用 `SERVICE_OFFER_BETA`），使协商结果**承载路由决策**。
+fn negotiation_word(
+    header_bytes: &[u8; MESSAGE_HEADER_LEN],
+    offer_bytes: &[u8; OFFER_LEN],
+    server_offer: ProtocolOffer,
+) -> u64 {
     if MessageHeader::decode(*header_bytes).is_err() {
         return 0;
     }
     let Ok(offer) = ProtocolOffer::decode(*offer_bytes) else {
         return 0;
     };
-    match negotiate(offer, SERVICE_OFFER) {
+    match negotiate(offer, server_offer) {
         Ok(negotiated) => pack_negotiated(negotiated),
         Err(_) => 0,
     }
@@ -93,9 +101,10 @@ fn negotiation_negatives() -> u64 {
 pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw: u64) -> ! {
     let runtime = Runtime::x86_64();
     if initial_cap1_raw != 0 {
-        // ===== SPEC-088：Rust 服务端点 =====
-        // 自报 id → 等 init 转发的协商请求（带客户端共享段 cap）→ 映射 → 解析 Hello →
-        // 协商 → 写结果与负例码 → 回执 init → 阻塞。
+        // ===== SPEC-088/090：Rust 服务端点 =====
+        // 自报 id → 循环：解析 init 每条路由消息。SPEC-090 的服务管理器把**路由到的行为码**
+        // 编码进无 cap 的 `prepare` payload 低 8 位，故本端按行为码选择自己的 offer
+        // （`ALPHA`→max 2048、`BETA`→max 1024），把协商结果写到 `128 + (behavior-1)*16`。
         if let (Ok(self_cap), Ok(send_cap), Ok(id)) = (
             Capability::from_raw(self_cap_raw),
             Capability::from_raw(send_cap_raw),
@@ -107,25 +116,26 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
                 SERVICE_ID_TAG | id.as_raw() as u64,
                 &[],
             );
-            // SPEC-088：init 先发一条无 cap 唤醒（内核拒绝向 `BlockedRecv` 接收者投递带 cap
-            // 消息），故循环跳过无 cap 消息，直到取到带共享 Segment cap 的协商请求。
-            let mut request_segment = None;
-            for _ in 0..8 {
-                match runtime.receive() {
-                    Ok(message) => {
-                        if let Some(segment) = message.capabilities[0] {
-                            request_segment = Some(segment);
-                            break;
-                        }
+            let mut segment_mapped = false;
+            let mut behavior = SERVICE_BEHAVIOR_NONE;
+            for _ in 0..6 {
+                let Ok(message) = runtime.receive() else {
+                    break;
+                };
+                if let Some(segment) = message.capabilities[0] {
+                    if runtime
+                        .memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS)
+                        .is_ok()
+                    {
+                        segment_mapped = true;
                     }
-                    Err(_) => break,
+                } else {
+                    // SPEC-090：`prepare` 的 payload 低 8 位是管理器路由到的行为码。
+                    behavior = message.payload & 0xff;
                 }
-            }
-            if let Some(segment) = request_segment
-                && runtime
-                    .memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS)
-                    .is_ok()
-            {
+                if !segment_mapped || behavior == SERVICE_BEHAVIOR_NONE {
+                    continue;
+                }
                 let mut header_bytes = [0u8; MESSAGE_HEADER_LEN];
                 let mut offer_bytes = [0u8; OFFER_LEN];
                 let header_ok = runtime
@@ -135,19 +145,24 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
                     .read_user_bytes(USER_HELLO_VA + MESSAGE_HEADER_LEN as u64, &mut offer_bytes)
                     .is_ok();
                 if header_ok && offer_ok {
-                    let negotiated = negotiation_word(&header_bytes, &offer_bytes);
+                    let server_offer = if behavior == SERVICE_BEHAVIOR_BETA {
+                        SERVICE_OFFER_BETA
+                    } else {
+                        SERVICE_OFFER
+                    };
+                    let negotiated = negotiation_word(&header_bytes, &offer_bytes, server_offer);
                     let negatives = negotiation_negatives();
-                    let _ = runtime.write_user_bytes(
-                        USER_HELLO_VA + SERVICE_NEGOTIATED_OFFSET,
-                        &negotiated.to_le_bytes(),
-                    );
+                    let word_off = SERVICE_NEGOTIATED_OFFSET + (behavior - 1) * 16;
+                    let _ = runtime
+                        .write_user_bytes(USER_HELLO_VA + word_off, &negotiated.to_le_bytes());
                     let _ = runtime.write_user_bytes(
                         USER_HELLO_VA + SERVICE_NEGATIVES_OFFSET,
                         &negatives.to_le_bytes(),
                     );
+                    let _ = runtime.send(TaskId::from_raw(1), send_cap, SERVICE_DONE_TAG, &[]);
                 }
+                behavior = SERVICE_BEHAVIOR_NONE;
             }
-            let _ = runtime.send(TaskId::from_raw(1), send_cap, SERVICE_DONE_TAG, &[]);
         }
         loop {
             let _ = runtime.receive();
@@ -185,6 +200,11 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
             let mapped =
                 runtime.memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS);
             if mapped.is_ok() && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok() {
+                // SPEC-090：把**请求服务名**写入共享段（`BETA`），供服务管理器按名解析端点。
+                let _ = runtime.write_user_bytes(
+                    USER_HELLO_VA + SERVICE_NAME_OFFSET,
+                    &SERVICE_NAME_BETA.to_le_bytes(),
+                );
                 let _ = runtime.send(
                     TaskId::from_raw(1),
                     send_cap,

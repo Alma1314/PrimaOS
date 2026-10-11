@@ -27,6 +27,7 @@ enum EventKind {
     RuntimeHelloReady,
     ServiceReplyReady,
     ServiceNegotiatedReady,
+    ServiceSelectedReady,
     NamespaceReady,
     PreemptReady,
     TimerReady,
@@ -217,7 +218,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 41] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 42] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -245,20 +246,21 @@ const EXPECTED_EVENTS: [(u32, EventKind); 41] = [
     (25, EventKind::RuntimeHelloReady),
     (26, EventKind::ServiceReplyReady),
     (27, EventKind::ServiceNegotiatedReady),
-    (28, EventKind::NamespaceReady),
-    (29, EventKind::PreemptReady),
-    (30, EventKind::TimerReady),
-    (31, EventKind::AuditReady),
-    (32, EventKind::ExcResumeReady),
-    (33, EventKind::PlatformSegmentsReady),
-    (34, EventKind::AuthorityReady),
-    (35, EventKind::FramesReady),
-    (36, EventKind::SelfRootReady),
-    (37, EventKind::FaultReady),
-    (38, EventKind::StateAuditReady),
-    (39, EventKind::ReclaimReady),
-    (40, EventKind::ResumeReady),
-    (41, EventKind::BootComplete),
+    (28, EventKind::ServiceSelectedReady),
+    (29, EventKind::NamespaceReady),
+    (30, EventKind::PreemptReady),
+    (31, EventKind::TimerReady),
+    (32, EventKind::AuditReady),
+    (33, EventKind::ExcResumeReady),
+    (34, EventKind::PlatformSegmentsReady),
+    (35, EventKind::AuthorityReady),
+    (36, EventKind::FramesReady),
+    (37, EventKind::SelfRootReady),
+    (38, EventKind::FaultReady),
+    (39, EventKind::StateAuditReady),
+    (40, EventKind::ReclaimReady),
+    (41, EventKind::ResumeReady),
+    (42, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -491,6 +493,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::ServiceNegotiatedReady)
     {
         validate_service_negotiated_data(negotiated.data.as_deref())?;
+    }
+
+    if let Some(selected) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ServiceSelectedReady)
+    {
+        validate_service_selected_data(selected.data.as_deref())?;
     }
 
     if let Some(audit) = events
@@ -2349,9 +2358,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 6 || direct != 7 || blocks != 9 {
+    if queued != 6 || direct != 9 || blocks != 11 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 6/7/9 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), and SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 6/9/11 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, and SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs"
         ));
     }
     Ok(())
@@ -3307,6 +3316,70 @@ fn validate_service_reply_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// SPEC-090：`service_selected_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
+const SERVICE_SELECTED_NAME: u64 = 2;
+const SERVICE_SELECTED_RESOLVED: u64 = 2;
+const SERVICE_SELECTED_UNKNOWN: u64 = 0;
+/// `BETA` 行为 offer `{features 0b101, required 0b001, max 1024}` 协商得
+/// `{major 1, minor 0, features 1, max 1024}`；`max=1024` 只可能来自被按名选中的 `BETA` offer
+/// （`ALPHA` 是 2048），是「管理器真按名路由」的判决性字段。
+const SERVICE_SELECTED_NEGOTIATED_B: u64 = 0x0001_0000_0400_0001;
+
+/// SPEC-090：init（服务管理器）按名字解析并二次路由的期望字段。
+fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "service_selected_ready is missing data".to_owned())?;
+    let mut name = None;
+    let mut resolved = None;
+    let mut unknown = None;
+    let mut done = None;
+    let mut negotiated_beta = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "name" => name = Some(parse_addr(value)?),
+            "resolved" => resolved = Some(parse_addr(value)?),
+            "unknown" => unknown = Some(parse_addr(value)?),
+            "done" => done = Some(parse_addr(value)?),
+            "negotiated_beta" => negotiated_beta = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in service_selected_ready data");
+    let name = name.ok_or_else(|| missing("name"))?;
+    let resolved = resolved.ok_or_else(|| missing("resolved"))?;
+    let unknown = unknown.ok_or_else(|| missing("unknown"))?;
+    let done = done.ok_or_else(|| missing("done"))?;
+    let negotiated_beta = negotiated_beta.ok_or_else(|| missing("negotiated_beta"))?;
+    if name != SERVICE_SELECTED_NAME {
+        return Err(format!(
+            "service_selected_ready name (0x{name:x}) must be {SERVICE_SELECTED_NAME} — the manager must read the requested service name from the shared Segment"
+        ));
+    }
+    if resolved != SERVICE_SELECTED_RESOLVED {
+        return Err(format!(
+            "service_selected_ready resolved (0x{resolved:x}) must be {SERVICE_SELECTED_RESOLVED} — the requested name must resolve to the BETA behavior"
+        ));
+    }
+    if unknown != SERVICE_SELECTED_UNKNOWN {
+        return Err(format!(
+            "service_selected_ready unknown (0x{unknown:x}) must be {SERVICE_SELECTED_UNKNOWN} — an unregistered name must resolve to NONE (refused)"
+        ));
+    }
+    if done != SERVICE_DONE_TAG {
+        return Err(format!(
+            "service_selected_ready done (0x{done:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}"
+        ));
+    }
+    if negotiated_beta != SERVICE_SELECTED_NEGOTIATED_B {
+        return Err(format!(
+            "service_selected_ready negotiated_beta (0x{negotiated_beta:x}) must be 0x{SERVICE_SELECTED_NEGOTIATED_B:x} — the routed BETA behavior must yield max=1024, not ALPHA's 2048"
+        ));
+    }
+    Ok(())
+}
+
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_001c;
 const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_001d;
@@ -3503,6 +3576,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("runtime_hello_ready", "ok") => EventKind::RuntimeHelloReady,
         ("service_reply_ready", "ok") => EventKind::ServiceReplyReady,
         ("service_negotiated_ready", "ok") => EventKind::ServiceNegotiatedReady,
+        ("service_selected_ready", "ok") => EventKind::ServiceSelectedReady,
         ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("timer_ready", "ok") => EventKind::TimerReady,
@@ -3553,6 +3627,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::RuntimeHelloReady
             | EventKind::ServiceReplyReady
             | EventKind::ServiceNegotiatedReady
+            | EventKind::ServiceSelectedReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3596,6 +3671,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::RuntimeHelloReady
             | EventKind::ServiceReplyReady
             | EventKind::ServiceNegotiatedReady
+            | EventKind::ServiceSelectedReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3652,25 +3728,26 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=6;direct=7;blocks=9\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=6;direct=9;blocks=11\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=5;caps=54;root_cleared=1;grandchild=4;tasks_after=5;caps_after=54;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=29|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=30|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=31|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=32|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=33|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=34|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=35|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=36|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=37|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=38|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
-        "PRIMA|v=1|seq=39|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=40|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=41|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001\n",
+        "PRIMA|v=1|seq=29|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=30|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=31|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=32|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=33|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=34|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=35|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=36|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=37|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=38|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=39|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=40|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=41|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=42|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3857,9 +3934,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=7;", ";direct=0;");
+        let output = VALID.replace(";direct=9;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 6/7/9"), "{error}");
+        assert!(error.contains("expected 6/9/11"), "{error}");
     }
 
     #[test]
@@ -3880,6 +3957,44 @@ mod tests {
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("MajorMismatch (1) and BadMagic (0)"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_selected_when_routed_to_wrong_behavior() {
+        // 把 `BETA` 的协商结果换成 `ALPHA` 的值（max=2048）：若服务管理器没按名路由到 `BETA`
+        // 行为（而是走默认 `ALPHA`），就会得到这个值——判决性检查必须拒绝。
+        let output = VALID.replace(
+            "negotiated_beta=0x1000004000001",
+            "negotiated_beta=0x1000008000001",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("routed BETA behavior must yield max=1024"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_selected_when_name_is_hardcoded() {
+        // 把解析结果与读回的服务名脱钩（resolved=RESOLVED 但 name 为空）：若管理器硬编码行为
+        // 而不读共享段里的名字，名字就不会等于客户端写入的 `BETA`——必须拒绝。
+        let output = VALID.replace("data=name=0x2;resolved=0x2", "data=name=0x0;resolved=0x2");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("must read the requested service name"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_selected_when_unknown_name_is_not_refused() {
+        // 未注册名解析结果非 NONE：若管理器对任何名字都解析成功（无注册表），必须拒绝。
+        let output = VALID.replace(";unknown=0x0;", ";unknown=0x2;");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("unregistered name must resolve to NONE"),
             "{error}"
         );
     }
