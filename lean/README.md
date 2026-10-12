@@ -31,6 +31,7 @@
 | （**不建模**，Lean `State` 无 `tasks` 字段） | `state::Task.root_ns_cap : CapId` | §5.2/§14 步骤 7 结构性根 Namespace Capability（W5）；Lean 侧只以三条根 Cap 的 `owner/obj` 隐含表示归属，**无该字段**（cosir-only） |
 | （**不建模**，Lean 无 MachineState） | `machine::MachineState.image_frames`/`image_virtual_base` | §14 步骤 4 image 逐页 `vspace` 的投影输入；**cosir-only** |
 | （**不建模**，Lean `State` 无 `audit`/`now`/`next_event`） | `state::AuditEvent{id,at,actor,kind}`、`state::Actor`、`state::State.now`/`next_event` | §13.1 事件信封与 §4 时间/序号、§6.1 `Actor`；**cosir-only**（Lean 不建模 Audit） |
+| （**不建模**，`Capability` 无 `parent`/`origin`/位置表） | （无对应字段） | §4.2 根性（`parent = None`）、§4.6 `HeldBy` 位置、W3/W4/W13 的 `created_at → 铸造事件` **均不可表示**；注释/报告称 bootstrap 三条根 Cap「无父根」仅为 §14 语义描述，**非模型可表示字段**（cosir/Lean 共同边界） |
 | `WellFormed : Prop := True` | （模型最小锚） | 良构谓词,本切片恒真 |
 
 ## 对拍机制
@@ -49,4 +50,5 @@
 - `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。cosir 的 `now` 无推进源（不建模 `time_advance`/Timer），`at` 恒为 0（规范 §20.4 已登记）。
+- **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
 - 以上内容在本切片**仅登记为待办**，不标为已完成。

@@ -285,6 +285,17 @@ pub enum AuditKind {
         frame_offset: usize,
         rip: VirtAddr,
     },
+    /// §14 步骤 9 / §13.1 `Bootstrapped`：bootstrap 成功（唯一允许无 Task Actor 的内部迁移，
+    /// 故 `actor = Kernel`）。
+    Bootstrapped,
+    /// §14 步骤 2/3 + §13.1：对象创建（W13「每个活动对象都有创建事件」）。`segment` 标志区分
+    /// `ObjectRef` 的 id 空间（image `Segment(1)` 与 init `Namespace(1)` 同 id），形态镜像真实
+    /// 内核 `AuditEvent::ObjectCreated`（`kernel/src/bootstrap.rs`）。
+    ObjectCreated { object_id: u32, segment: bool },
+    /// §14 步骤 4/8 + §13.1：init Task 创建（初始状态 `Ready`）。§13.1 的**创建**事件是
+    /// `TaskCreated`——`TaskStateChanged` 仅用于状态**迁移**（创建非迁移），故 bootstrap 的
+    /// init Task 用本变体而非 `TaskStateChanged`。
+    TaskCreated { task: TaskId, status: TaskStatus },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

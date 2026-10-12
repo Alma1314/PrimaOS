@@ -5,7 +5,7 @@ use crate::cow_refine::{
 use crate::ops;
 use crate::state::{
     ACCESS_R, ACCESS_W, ACCESS_X, CAP_EXC_SUBSCRIBE, CAP_SEG_DESTROY, CAP_SEG_MAP_R, CAP_SEG_MAP_W,
-    CAP_SEG_MAP_X, CAP_TASK_MANAGE_VSPACE, CapObject, Capability, ExceptionKind,
+    CAP_SEG_MAP_X, CAP_TASK_MANAGE_VSPACE, CapId, CapObject, Capability, ExceptionKind,
     PageMappingBacking, PendingException, TaskStatus,
 };
 use crate::tlb_refine::{AccessKind, has_tlb, invalidate_va, translate as tlb_translate};
@@ -1470,4 +1470,47 @@ fn destroy_segment_requires_authority_and_is_atomic_while_mapped() {
     let cap = slice.create_segment(PARENT, 1, ACCESS_R).unwrap();
     slice.destroy_segment(PARENT, cap).unwrap();
     assert_eq!(slice.check_invariants(), Ok(()));
+}
+
+#[test]
+fn authorize_mapping_rejects_namespace_object_caps() {
+    // 复核 minor：新增的 `CapObject::Namespace` 拒绝臂必须被实际走到（match 穷尽不构成覆盖）。
+    let mut slice = CowSliceState::new_cow_fixture();
+    const NS_CAP: CapId = 90;
+    slice.ops.capabilities.insert(
+        NS_CAP,
+        Capability {
+            owner: CHILD,
+            object: CapObject::Namespace(1),
+            rights: CAP_SEG_MAP_W | CAP_TASK_MANAGE_VSPACE,
+            active: true,
+        },
+    );
+    // 作为段 cap：对象类型不符，立即拒绝。
+    assert_eq!(
+        authorize_mapping(
+            &slice.ops,
+            &slice.memory,
+            CHILD,
+            NS_CAP,
+            CHILD_SELF_TASK_CAP,
+            ACCESS_W
+        ),
+        Err(CowError::CapabilityObjectMismatch)
+    );
+    // 作为任务 cap：先给一个合法段 cap，再让任务 cap 落为 Namespace 对象。
+    const SEG_CAP: CapId = 91;
+    slice.ops.capabilities.insert(
+        SEG_CAP,
+        Capability {
+            owner: CHILD,
+            object: CapObject::Segment(CODE_SEG),
+            rights: CAP_SEG_MAP_W,
+            active: true,
+        },
+    );
+    assert_eq!(
+        authorize_mapping(&slice.ops, &slice.memory, CHILD, SEG_CAP, NS_CAP, ACCESS_W),
+        Err(CowError::CapabilityObjectMismatch)
+    );
 }

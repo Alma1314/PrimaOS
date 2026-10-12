@@ -168,8 +168,12 @@ fn main() {
     let st_after = bootstrap(&m).expect("bootstrap should succeed");
     assert!(st_after.booted);
     assert!(st_after.tasks.contains_key(&abstract_ops::init_task_id()));
+    // §14 步骤 9 / §13.1：第一组 Audit 事件（Bootstrapped + 2×ObjectCreated + TaskCreated）。
+    assert_eq!(st_after.audit.len(), 4, "§14 步骤 9 第一组 Audit");
+    assert_eq!(st_after.next_event, 4, "W13：EventId 严格递增");
     println!("PASS cosir bootstrap abstract");
     println!("PASS cosir bootstrap alpha projection");
+    println!("PASS cosir bootstrap initial audit");
 
     // MemorySegment 页表↔vspace 细化冒烟：create→map→unmap→destroy + α 校验
     {
@@ -807,6 +811,34 @@ mod tests {
         resume_ok(&mut st);
         assert_eq!(st.tasks[&1].status, TaskStatus::Ready);
         assert!(!st.pending_exc.contains_key(&1));
+    }
+
+    #[test]
+    fn exc_resume_rejects_namespace_object_caps() {
+        // 复核 minor：新增的 `CapObject::Namespace` 拒绝臂必须被实际走到（match 穷尽不构成覆盖）。
+        let mut st = build_state();
+        const NS_CAP: CapId = 20;
+        st.capabilities.insert(
+            NS_CAP,
+            state::Capability {
+                owner: CALLER,
+                object: state::CapObject::Namespace(1),
+                rights: state::CAP_EXC_SUBSCRIBE | state::CAP_SEG_MAP_W,
+                active: true,
+            },
+        );
+        let before = st.clone();
+        // 作为异常源 cap：对象类型不符。
+        assert_eq!(
+            exc_resume(&mut st, CALLER, NS_CAP, FRAME_CAP, FRAME_OFF).unwrap_err(),
+            ResumeError::InvalidExcSource
+        );
+        // 作为帧段 cap：对象类型不符。
+        assert_eq!(
+            exc_resume(&mut st, CALLER, SOURCE_CAP, NS_CAP, FRAME_OFF).unwrap_err(),
+            ResumeError::InvalidFrameAddr
+        );
+        assert_eq!(st, before, "拒绝路径必须原子不变");
     }
 
     #[test]

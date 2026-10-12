@@ -70,7 +70,20 @@ fn bootstrap_parity_lean() {
         booted.capabilities[&2].object,
         CapObject::Namespace(1)
     ));
+    assert_eq!(
+        booted.capabilities[&2].rights,
+        CAP_NS_RESOLVE
+            | CAP_NS_BIND
+            | CAP_NS_UNBIND
+            | CAP_NS_MOUNT
+            | CAP_NS_UNMOUNT
+            | CAP_NS_DESTROY
+    );
     assert!(matches!(booted.capabilities[&3].object, CapObject::Task(1)));
+    assert_eq!(
+        booted.capabilities[&3].rights,
+        CAP_DERIVE | CAP_TASK_SEND | CAP_TASK_MANAGE_VSPACE | CAP_TASK_DESTROY
+    );
 
     // §14 步骤 4/7：image 逐页 vspace 与结构性根。Lean `State` 无 `tasks` 字段、
     // 未建模这两项（见 lean/README.md「已知不覆盖」）；此处**钉住 cosir 侧现状**，

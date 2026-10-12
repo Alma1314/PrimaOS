@@ -1,10 +1,11 @@
 use crate::machine::MachineState;
 use crate::pagewalk::PAGE_SIZE;
 use crate::state::{
-    ACCESS_R, ACCESS_X, CAP_DERIVE, CAP_NS_BIND, CAP_NS_DESTROY, CAP_NS_MOUNT, CAP_NS_RESOLVE,
-    CAP_NS_UNBIND, CAP_NS_UNMOUNT, CAP_SEG_DESTROY, CAP_SEG_MAP_R, CAP_SEG_MAP_X, CAP_TASK_DESTROY,
-    CAP_TASK_MANAGE_VSPACE, CAP_TASK_SEND, CapId, CapObject, Capability, Namespace, NsId,
-    PageMapping, PageMappingBacking, SegId, Segment, State, Task, TaskId, TaskStatus,
+    ACCESS_R, ACCESS_X, Actor, AuditKind, CAP_DERIVE, CAP_NS_BIND, CAP_NS_DESTROY, CAP_NS_MOUNT,
+    CAP_NS_RESOLVE, CAP_NS_UNBIND, CAP_NS_UNMOUNT, CAP_SEG_DESTROY, CAP_SEG_MAP_R, CAP_SEG_MAP_X,
+    CAP_TASK_DESTROY, CAP_TASK_MANAGE_VSPACE, CAP_TASK_SEND, CapId, CapObject, Capability,
+    Namespace, NsId, PageMapping, PageMappingBacking, SegId, Segment, State, Task, TaskId,
+    TaskStatus,
 };
 
 /// bootstrap 迁移的错误类型（最小集）。
@@ -109,6 +110,34 @@ pub fn abstract_state(m: &MachineState) -> State {
                 active: true,
             },
         );
+        // §14 步骤 9 / §13.1：写入第一组 Audit 事件（`KernelActor`，bootstrap 无 Task 调用者）。
+        // 顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）：`Bootstrapped` → 两个
+        // `ObjectCreated`（image Segment、init Namespace；`segment` 标志区分同 id 的两种对象）
+        // → init Task 创建。§14 步骤 5/6 的三条根 Capability **不**补发 `CapMinted`——§13.1 的
+        // `CapMinted` 用于「随对象创建铸造」的**运行时**路径（如 `ns_create`），bootstrap 根由
+        // §14 步骤 5/6 表示，内核亦不发（见 `kernel/src/bootstrap.rs` 的 `CapabilityMinted` 注释）。
+        s.push_audit(Actor::Kernel, AuditKind::Bootstrapped);
+        s.push_audit(
+            Actor::Kernel,
+            AuditKind::ObjectCreated {
+                object_id: IMAGE_SEG,
+                segment: true,
+            },
+        );
+        s.push_audit(
+            Actor::Kernel,
+            AuditKind::ObjectCreated {
+                object_id: INIT_NS,
+                segment: false,
+            },
+        );
+        s.push_audit(
+            Actor::Kernel,
+            AuditKind::TaskCreated {
+                task: init,
+                status: TaskStatus::Ready,
+            },
+        );
     }
     s
 }
@@ -134,11 +163,21 @@ mod tests {
     };
     use crate::pagewalk::PAGE_SIZE;
     use crate::state::{
-        ACCESS_R, ACCESS_X, CAP_DERIVE, CAP_NS_BIND, CAP_NS_DESTROY, CAP_NS_MOUNT, CAP_NS_RESOLVE,
-        CAP_NS_UNBIND, CAP_NS_UNMOUNT, CAP_SEG_DESTROY, CAP_SEG_MAP_R, CAP_SEG_MAP_X,
-        CAP_TASK_DESTROY, CAP_TASK_MANAGE_VSPACE, CAP_TASK_SEND, CapObject, Capability,
-        PageMappingBacking, TaskStatus,
+        ACCESS_R, ACCESS_X, Actor, AuditEvent, AuditKind, CAP_DERIVE, CAP_NS_BIND, CAP_NS_DESTROY,
+        CAP_NS_MOUNT, CAP_NS_RESOLVE, CAP_NS_UNBIND, CAP_NS_UNMOUNT, CAP_SEG_DESTROY,
+        CAP_SEG_MAP_R, CAP_SEG_MAP_X, CAP_TASK_DESTROY, CAP_TASK_MANAGE_VSPACE, CAP_TASK_SEND,
+        CapObject, Capability, PageMappingBacking, TaskStatus,
     };
+
+    /// 构造带 §13.1 信封的事件（bootstrap 无 `time_advance`，`State.now` 恒 0 ⇒ `at = 0`）。
+    fn ev(id: u64, kind: AuditKind) -> AuditEvent {
+        AuditEvent {
+            id,
+            at: 0,
+            actor: Actor::Kernel,
+            kind,
+        }
+    }
 
     fn pre_boot_machine() -> MachineState {
         MachineState {
@@ -173,6 +212,9 @@ mod tests {
         let s = abstract_state(&m);
         assert!(!s.booted);
         assert!(s.tasks.is_empty());
+        // §14 步骤 9：第一组 Audit 只在 booted 态写入；pre-boot 态无事件。
+        assert!(s.audit.is_empty(), "pre-boot 态无 Audit");
+        assert_eq!(s.next_event, 0);
     }
 
     #[test]
@@ -240,6 +282,37 @@ mod tests {
                 active: true,
             }
         );
+
+        // §14 步骤 9 / §13.1：第一组 Audit 事件（`KernelActor`），顺序与真实内核一致。
+        // init Task 以 `TaskCreated` 记录（§13.1 的创建事件是 `TaskCreated`，创建非迁移）。
+        assert_eq!(
+            s.audit,
+            vec![
+                ev(0, AuditKind::Bootstrapped),
+                ev(
+                    1,
+                    AuditKind::ObjectCreated {
+                        object_id: 1,
+                        segment: true,
+                    }
+                ),
+                ev(
+                    2,
+                    AuditKind::ObjectCreated {
+                        object_id: 1,
+                        segment: false,
+                    }
+                ),
+                ev(
+                    3,
+                    AuditKind::TaskCreated {
+                        task: init_task_id(),
+                        status: TaskStatus::Ready,
+                    }
+                ),
+            ]
+        );
+        assert_eq!(s.next_event, 4, "W13：EventId 严格递增");
     }
 
     #[test]

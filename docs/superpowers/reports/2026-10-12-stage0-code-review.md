@@ -68,3 +68,10 @@
 - `main.rs` 三条断言改钉**完整信封**（`id` 全局递增、`actor`、`at`），并断言 `next_event` 推进（W13「EventId 严格递增」抓手）。
 - **时间边界（如实登记，非伪造）**：`MachineState` 无时钟来源，α 取 `now = 0`，且本探针不建模 `time_now`/`time_advance`/Timer，故运行时 `at` 恒为 0；已同步登记于规范 §20.4。
 - cosir-only（Lean 无 `audit`）；不触碰内核非测试代码，QEMU 事件流不变。门禁：`cargo test -p cosir` 全绿（41 + 2）。
+
+### 续（2026-10-13）：对抗性复核与 `ISSUE-EXC-009` 闭合
+
+- **复核方式（独立性边界）**：`requesting-code-review` 派**只读** senior code-reviewer 子 agent（新上下文、不共享本会话结论），范围 = 阶段 0 三个提交 `3def543..70e1ce7`。结论：**Critical 无**，Important 1（§14 步骤 9 bootstrap 初始 Audit 未建模且未登记），Minor 5，另列 Declined-to-judge 若干。**本轮仍为 harness 内复核，不等价于组织级第三方审查**；不改变阶段 0「进行中」与 S0-X1 未勾选。评审发现的 spec 引用（§14 L1612 步骤 9、§13.1 L1546-1553、W13 L1985）已由本人逐条核对属实。
+- **`ISSUE-EXC-009`（Important）闭合**：`abstract_ops::abstract_state(booted)` 现写入 §14 步骤 9 的第一组 Audit——`Bootstrapped` → `ObjectCreated`(image Segment, `segment=true`) → `ObjectCreated`(init Namespace, `segment=false`) → `TaskCreated`(init, `Ready`)；`AuditKind` 新增 `Bootstrapped`/`ObjectCreated{object_id,segment}`/`TaskCreated{task,status}` 三变体。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs:6718-6731`）；**init Task 用 §13.1 的 `TaskCreated`** 而非 `TaskStateChanged`（创建非迁移；与内核事件种类为**有意分歧**，已如实登记）。三条根 Cap **不发 `CapMinted`**（镜像内核 `bootstrap.rs:230-233`）。新增断言：`bootstrap_produces_booted_state_with_init_task` 钉住四条事件 + `next_event=4`，`alpha_pre_bootstrap_projects_to_empty_state` 钉住 pre-boot 无 Audit。
+- **Minor 处置**：②`lean_backtrace.rs` 补 CapId 2/3 的 rights 断言（对齐 `lean/README.md` 原声明）→ 已修；③新增反例测试 `exc_resume_rejects_namespace_object_caps`（覆盖 `ops.rs:138/162`）与 `authorize_mapping_rejects_namespace_object_caps`（覆盖 `cow_refine.rs:107/141`）→ 已修；⑤`lean/README.md` 映照表登记「`Capability` 无 `parent`/`origin`/位置表 ⇒ §4.2 根性、§4.6 `HeldBy`、W3/W4 不可表示」边界 → 已登记。Minor ④（`abstract_ops.rs:60` 的 `user: true` 未断言/未标 cosir-only）与 ⑥（`ops.rs:182` 缺 Task 时错误码 `InvalidExcSource`，前次评审遗留）**未改**，留复核者裁定。
+- **门禁**：`cargo test -p cosir` ⇒ **146（lib）+ 42（bin）+ 2（对拍）全绿**；`lake build` 成功；`cargo fmt --check`/`clippy --all-targets -D warnings` 干净。**不触碰内核非测试代码，QEMU 事件流不变。**
