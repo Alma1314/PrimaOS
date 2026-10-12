@@ -2224,10 +2224,13 @@ MachineState {
     boot_info:       BootInfoHandle   // 交接的 BootInfo 抽象（内存区域）
     idt_ready:       Bool             // IDT 是否已装载（交接点通常尚未）
     interrupt_state: InterruptState   // masked / unmasked
+    image_frames:       List<PhysAddr> // §14 bootstrap 输入：init 镜像的物理帧序列（每页一帧，顺序即页序）
+    image_virtual_base: VirtAddr       // §14 bootstrap 输入：镜像虚拟基址
     booted:          Bool             // 细化层可见：bootstrap 是否已执行（W14 唯一性）
 }
 ```
 
+- `image_frames`/`image_virtual_base` 是 §14 `bootstrap` 的输入在细化域的载体：交接点已确定 init 镜像的物理帧与其虚拟基址，抽象函数 α 据此投影 §14 步骤 4 的 image 逐页 `vspace` 映射。二者不新增 POSIR 可见机制（§20 章节边界）。
 - 页表用简化 `MapEntry` 视图（`(vaddr, size, access)`），**不建模真实多级 PML4 遍历**——真实遍历属于阶段 1 页表/trap 框架工作（S1-D4）。
 - 不建模 GPR 全集；只建模对 Bootstrap 有意义的状态（rip/rsp/表/地址空间）。真实寄存器保存/恢复属于异常帧细化（§18.0 边界清单 #1）。
 - `MapEntry.access` 复用本规范的 R/W/X 访问位域并在探针中沿用 `cosir::state` 常量。
@@ -2261,6 +2264,8 @@ abstract : MachineState → POSIRState
 
 - **W14 唯一性细化**：`MachineState.booted` 与 POSIR `booted` 一一对应，交错不违背唯一性；
 - **初始 Authority 单调**：α 投影后 init Task 的能力集恰好等于 §14 定义的初始 Authority，无多余对象（对 S1-X2 的 α 层承接）；
+- **image vspace 投影**：α 由 `image_frames`/`image_virtual_base` 对每个镜像页 `i` 生成 `vspace[image_virtual_base + i] = {segment = image_segment, offset = i, access = {R,X}}`（§14 步骤 4），映射 backing 的 segment/offset/frame 与镜像帧一一对应；
+- **结构性根投影**：α 把 init Namespace Capability 写入 init Task 的 `root_ns_cap`（§14 步骤 7，W5）；
 - **投影保真**：`α(booted) ≠ α(pre_bootstrap)`，即 bootstrap 确改变抽象态。
 
 ### 20.4 范围边界与证伪

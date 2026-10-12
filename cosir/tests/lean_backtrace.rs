@@ -31,6 +31,8 @@ fn pre_boot_machine() -> MachineState {
         },
         idt_ready: false,
         interrupt_state: InterruptState::Masked,
+        image_frames: vec![0x1000, 0x2000],
+        image_virtual_base: 0x4000_0000,
         booted: false,
     }
 }
@@ -47,6 +49,37 @@ fn bootstrap_parity_lean() {
         "init task present"
     );
     assert_ne!(before.booted, booted.booted, "α 投影保真");
+
+    // §14 步骤 5/6 + §20.3：两侧均铸三条无父根 Capability（cosir 侧逐条钉死，
+    // 与 Lean `bootedState` / `bootstrap_empty_mints_{image,namespace,task}_cap` 对应）。
+    assert_eq!(
+        booted.capabilities.len(),
+        3,
+        "init mints exactly three root capabilities"
+    );
+    assert_eq!(booted.capabilities[&1].owner, init_task_id());
+    assert!(matches!(
+        booted.capabilities[&1].object,
+        CapObject::Segment(1)
+    ));
+    assert_eq!(
+        booted.capabilities[&1].rights,
+        CAP_DERIVE | CAP_SEG_MAP_R | CAP_SEG_MAP_X | CAP_SEG_DESTROY
+    );
+    assert!(matches!(
+        booted.capabilities[&2].object,
+        CapObject::Namespace(1)
+    ));
+    assert!(matches!(booted.capabilities[&3].object, CapObject::Task(1)));
+
+    // §14 步骤 4/7：image 逐页 vspace 与结构性根。Lean `State` 无 `tasks` 字段、
+    // 未建模这两项（见 lean/README.md「已知不覆盖」）；此处**钉住 cosir 侧现状**，
+    // 防静默改动掩盖该投影。
+    let init = &booted.tasks[&init_task_id()];
+    assert_eq!(init.vspace.len(), 2, "one mapping per image page");
+    assert_eq!(init.vspace[0].base, 0x4000_0000);
+    assert_eq!(init.vspace[1].base, 0x4000_1000);
+    assert_eq!(init.root_ns_cap, 2, "structural root = init Namespace cap");
 }
 
 #[test]

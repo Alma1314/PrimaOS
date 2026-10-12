@@ -99,6 +99,7 @@ fn build_state() -> State {
                 backing: None,
             },
         ],
+        root_ns_cap: 0,
         kernel_resume_frame: None,
     };
     st.tasks.insert(1, t);
@@ -133,6 +134,8 @@ fn build_boot_machine() -> machine::MachineState {
         },
         idt_ready: false,
         interrupt_state: machine::InterruptState::Masked,
+        image_frames: vec![0x1000],
+        image_virtual_base: 0x4000_0000,
         booted: false,
     }
 }
@@ -686,17 +689,6 @@ mod tests {
             ExceptionKind::GeneralProtectionFault;
         assert_resume_failure_unchanged(kind, ResumeError::InvalidExcSource);
 
-        let mut field_kind = resumable_state();
-        field_kind
-            .exc_sources
-            .get_mut(&SOURCE)
-            .unwrap()
-            .supported_kind = ExceptionKind::PageFault {
-            page_present: true,
-            writable_fault: true,
-        };
-        assert_resume_failure_unchanged(field_kind, ResumeError::InvalidExcSource);
-
         let mut double_fault = resumable_state();
         double_fault.pending_exc.get_mut(&CALLER).unwrap().kind = ExceptionKind::DoubleFault;
         double_fault
@@ -709,6 +701,19 @@ mod tests {
         let mut status = resumable_state();
         status.tasks.get_mut(&CALLER).unwrap().status = TaskStatus::Ready;
         assert_resume_failure_unchanged(status, ResumeError::NoPendingException);
+    }
+
+    #[test]
+    fn exc_resume_accepts_same_kind_different_cause() {
+        // §12.3：source 的 `kind` 是「类型签名」，异因同类（cause 位不同）的 PageFault
+        // 属同一类型签名，应当匹配并成功恢复（ISSUE-EXC-007）。
+        let mut st = resumable_state();
+        st.exc_sources.get_mut(&SOURCE).unwrap().supported_kind = ExceptionKind::PageFault {
+            page_present: true,
+            writable_fault: false,
+        };
+        resume_ok(&mut st);
+        assert_eq!(st.tasks[&CALLER].status, TaskStatus::Ready);
     }
 
     #[test]

@@ -5,11 +5,19 @@ namespace Formal
 /-- α 投影：把 State 投影为其 `booted` 标志（对齐 cosir `abstract_ops::abstract_state` 的 booted 段）。 -/
 def alpha (s : State) : Bool := s.booted
 
-/-- 初始能力表：init Task 持有对自身 Object.task 的主权（初始 Authority 的最小表示）。
-    仅在 CapId=1 处有记录，其余处为空——与 cosir 空状态/初始 Authority 对应。 -/
+/-- 初始 Authority（§14 步骤 5/6）：三条无父根 Capability——
+    CapId=1 image Segment `{Derive,SegMapR,SegMapX,SegDestroy}`、
+    CapId=2 init Namespace 全集、CapId=3 init Task `{Derive,TaskSend,TaskManageVSpace,TaskDestroy}`。
+    位值与 cosir `state::CAP_*` 一致；与 `abstract_ops::abstract_state(booted=true)` 的
+    capabilities 表逐条对应。 -/
 private def initCaps : Nat → Option Capability :=
-  fun id => if id = 1 then
-      some { owner := 1, obj := Object.task 1, rights := 0b0010_0000, active := true }
+  fun id =>
+    if id = 1 then
+      some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true }
+    else if id = 2 then
+      some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true }
+    else if id = 3 then
+      some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true }
     else none
 
 /-- 空态：无能力、未 booted（对齐 cosir 交接点 EmptyState）。 -/
@@ -32,8 +40,17 @@ theorem bootstrap_empty_succeeds :
     alpha (bootstrap emptyState).get! = true := by
   rfl
 
-theorem bootstrap_empty_mints_init_cap :
-    (bootstrap emptyState).get!.caps 1 = some { owner := 1, obj := Object.task 1, rights := 0b0010_0000, active := true } := by
+/-- §14 步骤 5/6：空态 bootstrap 铸三条无父根 Capability（初始 Authority）。 -/
+theorem bootstrap_empty_mints_image_cap :
+    (bootstrap emptyState).get!.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true } := by
+  rfl
+
+theorem bootstrap_empty_mints_namespace_cap :
+    (bootstrap emptyState).get!.caps 2 = some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true } := by
+  rfl
+
+theorem bootstrap_empty_mints_task_cap :
+    (bootstrap emptyState).get!.caps 3 = some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true } := by
   rfl
 
 /-- 幂等唯一性：对已 booted 态再次 bootstrap 返回 none（不再重复铸造）。 -/
@@ -46,9 +63,10 @@ theorem alpha_projection_distinguishes_boot :
     alpha emptyState != alpha bootedState := by
   rfl
 
-/-- 成功结果 WellFormed：bootstrap 成功态满足良构（最小模型恒真）。 -/
-theorem bootstrap_new_wellformed (m : State)
-    (h : bootstrap m = some bootedState) : WellFormed bootedState := by
+/-- 成功结果 WellFormed：bootstrap 成功态满足良构（最小模型恒真）。
+    前置下划线：前提 `_h` 未被证明体引用（`WellFormed` 恒真），显式登记该事实。 -/
+theorem bootstrap_new_wellformed (_m : State)
+    (_h : bootstrap _m = some bootedState) : WellFormed bootedState := by
   trivial
 
 end Formal

@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 pub type TaskId = u32;
 pub type ExcSourceId = u32;
 pub type SegId = u32;
+pub type NsId = u32;
 pub type CapId = u32;
 pub type VirtAddr = u64;
 
@@ -10,13 +11,26 @@ pub type VirtAddr = u64;
 pub const ACCESS_R: u8 = 0b001;
 pub const ACCESS_W: u8 = 0b010;
 pub const ACCESS_X: u8 = 0b100;
-pub const CAP_EXC_SUBSCRIBE: u8 = 0b0000_0001;
-pub const CAP_SEG_MAP_R: u8 = 0b0000_0010;
-pub const CAP_SEG_MAP_W: u8 = 0b0000_0100;
-pub const CAP_SEG_MAP_X: u8 = 0b0000_1000;
+
+// Capability 权限位域（§4.1 `Right`）。位序与既有探针兼容（bit0..bit5 不变），
+// 为 §14 初始 Authority 扩到 bit14。`Right` 全集中 Timer*/Node*/ExcSourceDestroy
+// 等本探针无消费者的权限**未列**（待有消费者再加）。
+pub const CAP_EXC_SUBSCRIBE: u16 = 0b0000_0000_0000_0001;
+pub const CAP_SEG_MAP_R: u16 = 0b0000_0000_0000_0010;
+pub const CAP_SEG_MAP_W: u16 = 0b0000_0000_0000_0100;
+pub const CAP_SEG_MAP_X: u16 = 0b0000_0000_0000_1000;
 #[allow(dead_code)] // Task 6 consumes segment-destroy authority; Task 2 tests its disjoint bit.
-pub const CAP_SEG_DESTROY: u8 = 0b0001_0000;
-pub const CAP_TASK_MANAGE_VSPACE: u8 = 0b0010_0000;
+pub const CAP_SEG_DESTROY: u16 = 0b0000_0000_0001_0000;
+pub const CAP_TASK_MANAGE_VSPACE: u16 = 0b0000_0000_0010_0000;
+pub const CAP_DERIVE: u16 = 0b0000_0000_0100_0000;
+pub const CAP_TASK_SEND: u16 = 0b0000_0000_1000_0000;
+pub const CAP_TASK_DESTROY: u16 = 0b0000_0001_0000_0000;
+pub const CAP_NS_RESOLVE: u16 = 0b0000_0010_0000_0000;
+pub const CAP_NS_BIND: u16 = 0b0000_0100_0000_0000;
+pub const CAP_NS_UNBIND: u16 = 0b0000_1000_0000_0000;
+pub const CAP_NS_MOUNT: u16 = 0b0001_0000_0000_0000;
+pub const CAP_NS_UNMOUNT: u16 = 0b0010_0000_0000_0000;
+pub const CAP_NS_DESTROY: u16 = 0b0100_0000_0000_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageMappingBacking {
@@ -50,13 +64,14 @@ pub enum CapObject {
     ExceptionSource(ExcSourceId),
     Segment(SegId),
     Task(TaskId),
+    Namespace(NsId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capability {
     pub owner: TaskId,
     pub object: CapObject,
-    pub rights: u8,
+    pub rights: u16,
     pub active: bool,
 }
 
@@ -154,9 +169,10 @@ impl SretFrame {
     }
 }
 
-// 以下模型类型（TaskStatus 的 BlockedRecv、ExceptionKind 的若干可恢复变体、
-// PendingException.save_frame、Task.id）在本探针中不被构造/读取，但它们是
-// §12.10/§12.9 细化域的完整模型表面，保留以维护规范保真度。
+// 以下模型类型（TaskStatus::BlockedRecv、ExceptionKind 的若干可恢复变体、
+// PendingException.save_frame、Task.id）保留以维护 §12.10/§12.9 细化域的完整模型表面，
+// 但它们不参与本探针的判别路径：save_frame 为**只写**字段（raise 写入、无人读取——
+// 实际恢复帧取自用户 Segment，见 ops.rs），BlockedRecv 等为前向状态锚。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // BlockedRecv
 pub enum TaskStatus {
@@ -172,6 +188,12 @@ pub struct Segment {
     pub kernel_readable: bool,
 }
 
+/// §5.4 Namespace。本切片只物化 bootstrap 的**空** init Namespace 对象，
+/// 使 §14 步骤 3/5 的 Namespace 根 Capability 有目标；`entries : Path ⇀ NsEntry`
+/// 与 §11 的 `ns_*` 操作未建模（本探针无消费者）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Namespace;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // GPF/DivideError/InvalidOpcode 为可恢复类型锚，留待后续探针
 pub enum ExceptionKind {
@@ -183,7 +205,7 @@ pub enum ExceptionKind {
     DivideError,
     InvalidOpcode,
     DoubleFault,
-    // SyscallTrap / ExternalInterrupt / TaskExit 本探针不建模恢复，仅枚举保留未来扩展
+    // SyscallTrap / ExternalInterrupt / TaskExit 未建模：本探针只覆盖可恢复的硬件执行异常
 }
 
 impl ExceptionKind {
@@ -200,7 +222,7 @@ impl ExceptionKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExceptionSource {
-    pub supported_kind: ExceptionKind, // 简化：单一可支持类型锚
+    pub supported_kind: ExceptionKind, // 简化：§12.3「类型签名」以单一 ExceptionKind 值作锚
     pub active: bool,
 }
 
@@ -234,6 +256,10 @@ pub struct Task {
     pub id: TaskId,
     pub status: TaskStatus,
     pub vspace: Vec<PageMapping>,
+    /// §5.2/§14 步骤 7：结构性根 Namespace Capability（W5：由 Task 持有、指向活动 Namespace、
+    /// 至少 `NsResolve`）。本探针只在 bootstrap 的 init Task 上物化该字段；其余手工 fixture
+    /// 以 `0` 表示"未建模"（这些 fixture 本就不满足 W5 全部门槛，如无 Namespace 对象）。
+    pub root_ns_cap: CapId,
     pub kernel_resume_frame: Option<SretFrame>,
 }
 
@@ -243,6 +269,7 @@ pub struct State {
     pub exc_sources: HashMap<ExcSourceId, ExceptionSource>,
     pub pending_exc: HashMap<TaskId, PendingException>,
     pub segments: HashMap<SegId, Segment>,
+    pub namespaces: HashMap<NsId, Namespace>,
     pub capabilities: HashMap<CapId, Capability>,
     pub subscriptions: HashSet<(TaskId, ExcSourceId)>,
     pub audit: Vec<AuditEvent>,

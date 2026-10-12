@@ -8,18 +8,19 @@ import Init.Core
 
 namespace Formal
 
-/-- 对象引用：SegId/TaskId/ExcSourceId 三类（对齐 cosir `CapObject`）。 -/
+/-- 对象引用：Segment/Task/ExcSource/Namespace 四类（对齐 cosir `CapObject`）。 -/
 inductive Object where
   | segment (id : Nat)
   | task (id : Nat)
   | excSource (id : Nat)
+  | namespace (id : Nat)
 deriving DecidableEq, Repr
 
 /-- 能力（对齐 cosir `Capability` 的 owner/object/rights/active）。 -/
 structure Capability where
   owner : Nat
   obj : Object
-  rights : UInt8
+  rights : UInt16
   active : Bool
 deriving DecidableEq, Repr
 
@@ -40,7 +41,8 @@ instance : Repr State where
 /-- 初始 init Task 的恒定量 ID（对齐 cosir `abstract_ops::init_task_id()` = 1）。 -/
 def initTaskId : Nat := 1
 
-/-- 世界良构：capabilities 域有限。本谓词在最小模型里恒真，作为 WellFormed 的锚。 -/
-def WellFormed (s : State) : Prop := True
+/-- 世界良构：capabilities 域有限。本谓词在最小模型里恒真，作为 WellFormed 的锚。
+    `_s` 前置下划线：该谓词当前不引用状态（恒真），显式表明此事实而非漏用变量。 -/
+def WellFormed (_s : State) : Prop := True
 
 end Formal

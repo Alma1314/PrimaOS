@@ -63,6 +63,9 @@ pub fn raise_exception(
 /// 对应规范 §12.10 "canonical 用户地址"。与 `pagewalk::is_canonical_vaddr`
 /// (接受内核高半区 canonical) 不同；此处刻意拒绝高半区，防止 exc_resume
 /// 恢复到内核地址，是安全边界而非定义矛盾。
+///
+/// 边界假设：硬编码 4 级分页的 48 位 canonical（bit 63..48 符号扩展）；LA57/5 级
+/// 分页下用户地址上界可达 `0x00ff_ffff_ffff_ffff`，此处会把合法用户地址误判为非 canonical。
 fn is_user_canonical(addr: u64) -> bool {
     addr <= 0x0000_7fff_ffff_ffff
 }
@@ -109,7 +112,9 @@ pub fn exc_resume(
         .ok_or(ResumeError::InvalidExcSource)?;
     let source_id = match source_cap.object {
         CapObject::ExceptionSource(source_id) => source_id,
-        CapObject::Segment(_) | CapObject::Task(_) => return Err(ResumeError::InvalidExcSource),
+        CapObject::Segment(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
+            return Err(ResumeError::InvalidExcSource);
+        }
     };
     if source_cap.rights & CAP_EXC_SUBSCRIBE == 0 {
         return Err(ResumeError::MissingRight);
@@ -131,7 +136,7 @@ pub fn exc_resume(
         .ok_or(ResumeError::InvalidFrameAddr)?;
     let frame_seg_id = match frame_cap.object {
         CapObject::Segment(seg_id) => seg_id,
-        CapObject::ExceptionSource(_) | CapObject::Task(_) => {
+        CapObject::ExceptionSource(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
             return Err(ResumeError::InvalidFrameAddr);
         }
     };
@@ -159,7 +164,12 @@ pub fn exc_resume(
         .pending_exc
         .get(&caller)
         .ok_or(ResumeError::NoPendingException)?;
-    if pending.source_id != source_id || pending.kind != supported_kind {
+    // §12.3：source 的 `kind` 是「类型签名」（约束此源可产生的异常**类别**，非具体实例），
+    // 故按变体比较而非整值——异因同类（如 `page_present`/`writable_fault` 位不同）的
+    // `PageFault` 属同一类型签名，应当匹配。
+    if pending.source_id != source_id
+        || std::mem::discriminant(&pending.kind) != std::mem::discriminant(&supported_kind)
+    {
         return Err(ResumeError::InvalidExcSource);
     }
     if !pending.kind.is_recoverable() {

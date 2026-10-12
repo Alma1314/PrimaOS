@@ -29,10 +29,11 @@ theorem exc_resume_success_returns_some :
     (excResume bootedState 1 1).isSome = true := by
   rfl
 
-/-- 成功不吞掉能力：结果态在 CapId=1 的 caps 查找仍命中原值（投影断言，避免 funext）。 -/
+/-- 成功不吞掉能力：结果态在 CapId=1（image Segment 根 Cap）的 caps 查找仍命中原值
+    （投影断言，避免 funext）。 -/
 theorem exc_resume_success_keeps_source_cap :
     let s' := (excResume bootedState 1 1).get!
-    s'.caps 1 = some { owner := 1, obj := Object.task 1, rights := 0b0010_0000, active := true } := by
+    s'.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true } := by
   rfl
 
 end Formal

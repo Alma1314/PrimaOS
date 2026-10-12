@@ -33,6 +33,7 @@ fn two_task_state() -> (RefineState, State, TlbState) {
                 id,
                 status: TaskStatus::Ready,
                 vspace: Vec::new(),
+                root_ns_cap: 0,
                 kernel_resume_frame: None,
             },
         );
@@ -50,6 +51,7 @@ fn live_task_fixture() -> (RefineState, State) {
             id: T1,
             status: TaskStatus::Ready,
             vspace: Vec::new(),
+            root_ns_cap: 0,
             kernel_resume_frame: None,
         },
     );

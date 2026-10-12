@@ -104,7 +104,7 @@ pub(crate) fn authorize_mapping(
     }
     let seg_id = match segment_cap.object {
         CapObject::Segment(seg_id) => seg_id,
-        CapObject::ExceptionSource(_) | CapObject::Task(_) => {
+        CapObject::ExceptionSource(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
             return Err(CowError::CapabilityObjectMismatch);
         }
     };
@@ -138,7 +138,7 @@ pub(crate) fn authorize_mapping(
     }
     let task_id = match task_capability.object {
         CapObject::Task(task_id) => task_id,
-        CapObject::ExceptionSource(_) | CapObject::Segment(_) => {
+        CapObject::ExceptionSource(_) | CapObject::Segment(_) | CapObject::Namespace(_) => {
             return Err(CowError::CapabilityObjectMismatch);
         }
     };
@@ -396,10 +396,12 @@ impl CowSliceState {
                     && (!self.ops.tasks.contains_key(&cap.owner)
                         || match cap.object {
                             CapObject::Task(task) => !self.ops.tasks.contains_key(&task),
-                            // Segment/source liveness is enforced by the operation that
+                            // Segment/source/namespace liveness is enforced by the operation that
                             // consumes the capability; their resource tables are separate
                             // from Task lifetime. Task capabilities cannot outlive targets.
-                            CapObject::Segment(_) | CapObject::ExceptionSource(_) => false,
+                            CapObject::Segment(_)
+                            | CapObject::ExceptionSource(_)
+                            | CapObject::Namespace(_) => false,
                         })
             })
             || self.ops.subscriptions.iter().any(|(task, source)| {
@@ -1137,6 +1139,7 @@ pub fn base_exc() -> State {
                     backing: None,
                 },
             ],
+            root_ns_cap: 0,
             kernel_resume_frame: None,
         },
     );
@@ -1168,6 +1171,7 @@ pub fn base_exc() -> State {
                     backing: None,
                 },
             ],
+            root_ns_cap: 0,
             kernel_resume_frame: None,
         },
     );

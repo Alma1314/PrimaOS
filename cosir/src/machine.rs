@@ -1,8 +1,9 @@
 #![allow(dead_code)]
 
+use crate::pagewalk::PhysAddr;
 use crate::state::VirtAddr;
 
-// 本模块为 BLK-002 细化域起点：这些机器态类型在 Task 4 的 abstract.rs 中被构造/读取。
+// 本模块为 BLK-002 细化域起点：这些机器态类型在 Task 4 的 abstract_ops.rs 中被构造/读取。
 // 在此之前它们保持未在探针中实体化，故整体 allow(dead_code) 以保留规范保真度
 // （与 state.rs 中对 TaskStatus::BlockedRecv、ExceptionKind 等前向模型字段的处理一致）。
 
@@ -56,6 +57,10 @@ pub struct MachineState {
     pub boot_info: BootInfoHandle,
     pub idt_ready: bool,
     pub interrupt_state: InterruptState,
+    /// §14 bootstrap 输入在细化域的载体：init 镜像的物理帧序列（每页一帧，顺序即页序）
+    /// 与镜像虚拟基址。抽象函数 α 据此投影 §14 步骤 4 的 image 逐页 `vspace` 映射。
+    pub image_frames: Vec<PhysAddr>,
+    pub image_virtual_base: VirtAddr,
     /// 细化层可见：bootstrap 是否已执行（W14 唯一性）。
     pub booted: bool,
 }
