@@ -236,9 +236,26 @@ pub struct PendingException {
     pub save_frame: SretFrame,
 }
 
+// 本探针只以简化 tagged struct 表达事件的 kind 载荷；§13.1 的
+// `{id : EventId, at : Instant, actor : Actor}` 信封**未建模**——模型无时钟/时间
+// 语义（§18.0 边界清单 #5 把 `time_now`/Audit 观察列为待证义务），不加伪造时钟。
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(dead_code)] // AuditEvent 字段仅由模型测试与完整状态比较读取
 pub enum AuditEvent {
+    /// §12.5 成功动作 1：异常发生时由 `KernelActor` 追加，早于状态迁移。
+    /// `fault_va` 为页故障的 `faulting_vaddr`，非寻址异常记 `None`（§12.2/§13.1）。
+    ExceptionRaised {
+        source_id: ExcSourceId,
+        kind: ExceptionKind,
+        fault_va: Option<VirtAddr>,
+    },
+    /// §13.1：每次 Task 状态迁移追加。本探针覆盖 `Running→Faulted`（§12.5 动作 3）；
+    /// `Faulted→Ready` 按 §13.1 唯一例外以 `TaskResumed` 记录。
+    TaskStateChanged {
+        task: TaskId,
+        from: TaskStatus,
+        to: TaskStatus,
+    },
     TaskResumed {
         actor: TaskId,
         source_id: ExcSourceId,

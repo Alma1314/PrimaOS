@@ -755,6 +755,22 @@ mod tests {
         );
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
         assert!(st.pending_exc.contains_key(&1));
+        // §12.5 动作 1/3：先 ExceptionRaised，后 TaskStateChanged（顺序可观察）。
+        assert_eq!(
+            st.audit,
+            vec![
+                AuditEvent::ExceptionRaised {
+                    source_id: 1,
+                    kind: page_fault(),
+                    fault_va: Some(0x5000_0000),
+                },
+                AuditEvent::TaskStateChanged {
+                    task: 1,
+                    from: TaskStatus::Running,
+                    to: TaskStatus::Faulted,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -808,17 +824,30 @@ mod tests {
             st.segments[&FRAME_SEG].bytes[frame_end..],
             before[frame_end..]
         );
+        // raise（§12.5 动作 1/3）两条在最前，其后是 exc_resume 的 TaskResumed（§12.10 动作 4）。
         assert_eq!(
             st.audit,
-            vec![AuditEvent::TaskResumed {
-                actor: CALLER,
-                source_id: SOURCE,
-                source_cap: SOURCE_CAP,
-                frame_cap: FRAME_CAP,
-                frame_seg_id: FRAME_SEG,
-                frame_offset: OFFSET,
-                rip: frame.rip,
-            }]
+            vec![
+                AuditEvent::ExceptionRaised {
+                    source_id: SOURCE,
+                    kind: page_fault(),
+                    fault_va: Some(0x5000_0000),
+                },
+                AuditEvent::TaskStateChanged {
+                    task: CALLER,
+                    from: TaskStatus::Running,
+                    to: TaskStatus::Faulted,
+                },
+                AuditEvent::TaskResumed {
+                    actor: CALLER,
+                    source_id: SOURCE,
+                    source_cap: SOURCE_CAP,
+                    frame_cap: FRAME_CAP,
+                    frame_seg_id: FRAME_SEG,
+                    frame_offset: OFFSET,
+                    rip: frame.rip,
+                },
+            ]
         );
     }
 
@@ -847,7 +876,22 @@ mod tests {
             Err(ResumeError::InvalidFrame)
         );
         assert_eq!(st, before);
-        assert!(st.audit.is_empty());
+        // 失败的 exc_resume 不追加 Audit：日志仍只含 raise 的 §12.5 动作 1/3 两条。
+        assert_eq!(
+            st.audit,
+            vec![
+                AuditEvent::ExceptionRaised {
+                    source_id: SOURCE,
+                    kind: page_fault(),
+                    fault_va: Some(0x5000_0000),
+                },
+                AuditEvent::TaskStateChanged {
+                    task: CALLER,
+                    from: TaskStatus::Running,
+                    to: TaskStatus::Faulted,
+                },
+            ]
+        );
     }
 
     #[test]

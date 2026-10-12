@@ -20,11 +20,11 @@ pub enum ResumeError {
 /// 探针构造级不变量（§12.10 raise 侧）：Task 必须存在且处于 Running。无合法失败路径，
 /// 以 assert 表达而非错误码，避免复用 exc_resume 的 `ResumeError` 域污染错误域。
 ///
-/// 模型范围边界：本函数只建模同步侧（Faulted + `pending_exc` 绑定 + 现场帧保存）。
-/// 规范 §9.12/§17.7 定义的"订阅者经 `enqueue_or_deliver` 收到通知"这条异步投递语义
-/// (subscriptions 集合存在、但异常路径上不被读取以生成投递) **未在 host MODEL-TEST
-/// 建模**，与整个 Send/Recv 消息机制未建模一致。这是一个文档化的模型范围边界，
-/// 不得据此未来在无实现的情况下宣称"通知递送已模型化/已验证"。
+/// 模型范围边界：本函数只建模同步侧（Faulted + `pending_exc` 绑定 + 现场帧保存 +
+/// §12.5 动作 1/3 的两条 Audit）。规范 §9.12/§17.7 定义的"订阅者经 `enqueue_or_deliver`
+/// 收到通知"这条异步投递语义（§12.5 动作 2）(subscriptions 集合存在、但异常路径上不被
+/// 读取以生成投递) **未在 host MODEL-TEST 建模**，与整个 Send/Recv 消息机制未建模一致。
+/// 这是一个文档化的模型范围边界，不得据此未来在无实现的情况下宣称"通知递送已模型化/已验证"。
 pub fn raise_exception(
     st: &mut State,
     faulting_task: TaskId,
@@ -38,16 +38,28 @@ pub fn raise_exception(
         fault_va.is_some(),
         "raise_exception: PageFault must carry a fault VA and other exceptions must not"
     );
-    let task = st
-        .tasks
+    {
+        let task = st
+            .tasks
+            .get(&faulting_task)
+            .expect("raise_exception: task must exist");
+        assert_eq!(
+            task.status,
+            TaskStatus::Running,
+            "raise_exception: task must be Running"
+        );
+    }
+    // §12.5 成功动作 1：先追加 `ExceptionRaised`（早于状态迁移）。
+    st.audit.push(AuditEvent::ExceptionRaised {
+        source_id,
+        kind,
+        fault_va,
+    });
+    // §12.5 成功动作 3：置 Faulted、写唯一 `pending_exc`，再追加 `TaskStateChanged`。
+    st.tasks
         .get_mut(&faulting_task)
-        .expect("raise_exception: task must exist");
-    assert_eq!(
-        task.status,
-        TaskStatus::Running,
-        "raise_exception: task must be Running"
-    );
-    task.status = TaskStatus::Faulted;
+        .expect("raise_exception: task must exist")
+        .status = TaskStatus::Faulted;
     st.pending_exc.insert(
         faulting_task,
         PendingException {
@@ -57,6 +69,11 @@ pub fn raise_exception(
             save_frame,
         },
     );
+    st.audit.push(AuditEvent::TaskStateChanged {
+        task: faulting_task,
+        from: TaskStatus::Running,
+        to: TaskStatus::Faulted,
+    });
 }
 
 /// 用户态 canonical 检验：地址必须落入用户低半区 (`≤ 0x0000_7fff_ffff_ffff`)，

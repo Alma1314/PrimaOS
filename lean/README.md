@@ -47,5 +47,5 @@
 - `memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图（见 cosir `memseg_refine.rs`，Lean 建模留待后续切片）。
 - `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
-- **`raise_exception` 的 Audit（§12.5/§13.1）**：cosir `ops::raise_exception` 完成 `Running→Faulted` 却**不追加任何 Audit**，而 §13.1 要求每次 Task 状态迁移追加 `TaskStateChanged`（§12.5 还要求 `ExceptionRaised`）；`AuditEvent` 目前只建模 §12.10 的 `TaskResumed`。
+- **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised{source_id,kind,fault_va}`（§12.5 动作 1）与 `TaskStateChanged{task,from,to}`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加（先 `ExceptionRaised` 后 `TaskStateChanged`）。**Lean 侧不建模 `audit`**（`State` 无该字段），故无对拍项、此分歧为 cosir-only。**仍未建模**：§13.1 每条事件的 `{id, at, actor}` 信封（模型无时间语义，§18.0 #5），cosir 既有 `TaskResumed` 亦然。
 - 以上内容在本切片**仅登记为待办**，不标为已完成。

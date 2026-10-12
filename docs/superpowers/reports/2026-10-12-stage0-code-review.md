@@ -35,7 +35,7 @@
 
 ## 遗留（待复核者裁定）
 
-- `ISSUE-EXC-006`（raise 路径 Audit）：**host 模型缺口**，需决定「补实现」还是「显式降级为范围边界」（本轮未动）。
+- `ISSUE-EXC-006`（raise 路径 Audit）：**host 模型缺口**，需决定「补实现」还是「显式降级为范围边界」——**已于同日补实现**，见下。
 - `ops.rs:162` 的 `kind` 比较（`ISSUE-EXC-007`）：**已于同日修复**，见下。
 
 ## 后续处置（2026-10-12，同日）
@@ -52,3 +52,11 @@
 - 取**扩展模型**而非在 §20.3 降级不变量（与既有「不变量不放宽」取齐）；规范 §20.1/§20.3 同步。
 - `bootstrap_parity_lean` 增断言钉住 cosir 侧 `vspace` 条数/基址与 `root_ns_cap == 2`；Lean 侧不建模这两项（无 `tasks`/MachineState），已在 `lean/README.md` 映照契约表与「已知不覆盖」如实标注为 cosir-only。
 - 门禁：`cargo test -p cosir` 全绿（含新增断言）、`lake build` 成功；两侧一致性不升级为 refinement 结论。
+
+### 续（2026-10-12）：`ISSUE-EXC-006` 闭合（raise 路径 Audit）
+
+- **扩模型**：`AuditEvent` 新增 `ExceptionRaised{source_id, kind, fault_va}`（§12.5 动作 1）与 `TaskStateChanged{task, from, to}`（§13.1）；`ops::raise_exception` 在置 `Faulted`/写 `pending_exc` 前后**按 §12.5 顺序**追加两条 Audit（先 `ExceptionRaised` 后 `TaskStateChanged`，日志顺序可观察）。
+- 取**补实现**而非把该项降级为范围边界（与既有「不变量不放宽」取齐；§12.5/§13.1 已要求这两条事件，属实现补齐，规范无需改动）。
+- `main.rs` 三条测试钉住：raise 的两条事件及其顺序、`exc_resume` 的全序列（raise 两条 + `TaskResumed`）、失败 `exc_resume` 不追加（原 `assert!(st.audit.is_empty())` 改为钉住「日志仍只含 raise 两条」）。
+- **未建模（如实登记，非本次引入）**：§13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor}` 信封——模型无时间语义（§18.0 边界清单 #5 把 `time_now`/Audit 观察列为待证义务），既有 `TaskResumed` 同样未含。**不伪造时钟**。
+- cosir-only：Lean `State` 不建模 `audit`，`bootstrap_parity_lean` 与 QEMU 事件流均不受影响。门禁：`cargo test --workspace` 全绿（约 779 passed / 0 failed）、`cargo fmt -p cosir --check` 与 `cargo clippy -p cosir --all-targets -D warnings` 干净。
