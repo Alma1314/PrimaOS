@@ -1675,15 +1675,16 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SVC_RECEIPT_MGR as u32);
     at += 7;
-    // 3) 把栈段映射进服务根：memseg_map(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)。
-    put_load_reg(
+    // 3) 把**端点 A 的独立栈段**映射进服务根（SPEC-094）：此前用 `Y[368]`（与客户端共享同一
+    // 物理栈帧），现改用 bring-up 另建的 `SERVICE_STACK_CAP`；`memseg_map(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)`。
+    put_imm64(
         &mut code,
         at,
         0x48,
-        NS_MODRM_RDI,
-        crate::syscall::TASK_RECEIPT_STACK_SEG as u32,
+        0xBF,
+        crate::bootstrap::SERVICE_STACK_CAP_HANDLE.encode(),
     );
-    at += 7;
+    at += 10;
     put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
     at += 7;
     put_imm64(&mut code, at, 0x48, 0xBA, 0);
@@ -2319,6 +2320,11 @@ pub struct ServiceSelectedWitness {
     pub alpha_stack_seg: u64,
     /// SPEC-093：`BETA` 端点栈的 Segment id——须与 `alpha_stack_seg` 相异（独立**物理栈帧**）。
     pub beta_stack_seg: u64,
+    /// SPEC-094：存活客户端（task 8）自报的 task id（init 从 Hello 收到的 payload）。
+    pub client_ep: u64,
+    /// SPEC-094：客户端栈在 `USER3_STACK_VA` 处映射所属的 Segment id——须与 `alpha_stack_seg`
+    /// 相异，证明 `ALPHA` 端点不再沿用客户端 `Y[368]` 的那条**共享物理栈帧**。
+    pub client_stack_seg: u64,
 }
 
 impl ServiceSelectedWitness {
@@ -2337,12 +2343,17 @@ impl ServiceSelectedWitness {
             && self.alpha_stack_seg != 0
             && self.beta_stack_seg != 0
             && self.alpha_stack_seg != self.beta_stack_seg
+            && self.client_ep != 0
+            && self.client_stack_seg != 0
+            && self.client_stack_seg != self.alpha_stack_seg
+            && self.client_stack_seg != self.beta_stack_seg
     }
 }
 
 pub fn service_selected_witness() -> ServiceSelectedWitness {
     let alpha_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET);
     let beta_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_BETA_OFFSET);
+    let client_ep = read_qword(USER_Y_VA + CLIENT_RECEIPT_RECV);
     ServiceSelectedWitness {
         name: read_qword(USER_Y_VA + SVC_RECEIPT_NAME),
         resolved: read_qword(USER_Y_VA + SVC_RECEIPT_RESOLVED),
@@ -2357,6 +2368,9 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
         alpha_stack_seg: crate::bootstrap::mapped_segment_at(alpha_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
         beta_stack_seg: crate::bootstrap::mapped_segment_at(beta_ep as u32, USER3_STACK_VA)
+            .unwrap_or(0) as u64,
+        client_ep,
+        client_stack_seg: crate::bootstrap::mapped_segment_at(client_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
     }
 }

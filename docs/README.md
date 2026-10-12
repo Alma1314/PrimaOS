@@ -38,6 +38,7 @@
 
 按日期倒序排列；同日切片按主题列出。
 
+- [2026-10-12 — 阶段 4 `ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）](superpowers/specs/2026-10-12-stage4-alpha-independent-stack-design.md)
 - [2026-10-11 — 基座库栈技术规格 v1.1（阶段 5/6 候选规格，外部输入未评审）](superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md)
 - [2026-10-11 — 阶段 4 逻辑 vspace 存储移出 BootstrapState（arena 化）](superpowers/specs/2026-10-11-stage4-vspace-arena-design.md)
 - [2026-10-11 — 阶段 4 独立第二服务端点（独立二进制映像 + 独立物理栈段）](superpowers/specs/2026-10-11-stage4-independent-service-images-design.md)
@@ -87,6 +88,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-12 — 阶段 4 `ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）](superpowers/reports/2026-10-12-stage4-alpha-independent-stack-report.md)
 - [2026-10-11 — 基座库栈走查与扫雷审查记录](superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)
 - [2026-10-11 — 阶段 4 逻辑 vspace 存储移出 BootstrapState（arena 化）](superpowers/reports/2026-10-11-stage4-vspace-arena-report.md)
 - [2026-10-11 — 阶段 4 独立第二服务端点（独立二进制映像 + 独立物理栈段）](superpowers/reports/2026-10-11-stage4-independent-service-images-report.md)

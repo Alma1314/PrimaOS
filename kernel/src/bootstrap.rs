@@ -66,7 +66,14 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 ///
 /// 槽位会被复用（释放时 generation 递增），故该值是**同时存活**的 Capability 上限，
 /// 不是历史累计数。
-pub const MAX_CAPABILITY_SLOTS: usize = 64;
+///
+/// SPEC-094：boot 期峰值已达 **62**，`task_create` 前置（`live_count + 3 + initial_count
+/// ≤ MAX`）在给 `ALPHA` 端点加一条独立栈段 cap 后需要 ≥ 68 的余量——原值 64 会令 boot 自测的
+/// `task_create` 失败，调度器随后在 init 的 `SYS_YIELD` 上 `pick_next` 无 Ready 任务而 panic
+/// （实测 `syscall.rs` `yield_call`）。按项目既有先例（SPEC-074 审计、SPEC-091 vspace：容量墙
+/// → 扩展并**照实重测结构体守卫**）把上限提到 **72**。守卫（≤13 KiB）不变，见
+/// `bootstrap_state_stays_within_the_stack_budget`。
+pub const MAX_CAPABILITY_SLOTS: usize = 72;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 /// 任务表容量（含已保留槽位与已销毁记录）。
@@ -1878,6 +1885,21 @@ pub const SERVICE2_STACK_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 9;
 /// SPEC-093：第二个端点栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
 pub const SERVICE2_STACK_CAP_HANDLE: Handle =
     cap_handle(SERVICE2_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-094：**第一个**服务端点（`ALPHA`）的**独立栈段**根 Capability 槽。
+///
+/// SPEC-093 之前该端点沿用客户端（task 8）经 `SYS_MEMSEG_CREATE` 建的那条栈段 `Y[368]`——
+/// 两个任务映射**同一物理栈帧**。本槽另建独立栈段，闭合该共享。
+///
+/// **为何是 61 而非 `USER_IPC_CAP_SLOT_BASE + 10`（=57）**：`ns_create`（SPEC-081）把
+/// Namespace 根 cap 铸在**固定预留区间** [`NS_ROOT_CAP_SLOT_BASE`=52, +[`MAX_NAMESPACE_OBJECTS`]=8)
+/// = 52..59；而 `USER_IPC_CAP_SLOT_BASE`=47 的 usercap 已占到 47..56，与该区间**重叠**，
+/// 令 `ns_create` 实际只剩 57/58/59 三槽（恰好够 boot 的 3 次 `ns_create`）。任何落在
+/// 57..59 的新 cap 都会让第 3 次 `ns_create` 无槽（ENOSPC）并级联。故本槽置于区间**之外**：
+/// 61 = `NS_ROOT_CAP_SLOT_BASE + MAX_NAMESPACE_OBJECTS + 1`（60 是 `UNSET_CAP` 哨兵，不可占用）。
+pub const SERVICE_STACK_CAP_SLOT: u32 = 61;
+/// SPEC-094：第一个端点栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
+pub const SERVICE_STACK_CAP_HANDLE: Handle =
+    cap_handle(SERVICE_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// 代码段根 Capability 权限：只给 `{R, X}` 映射权 + `Derive`（供 `memseg_map` 的授权检查）+ 销毁权。
 pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -6139,6 +6161,22 @@ impl BootstrapState {
             Some((
                 CapabilityLocation::HeldByTask(INIT_TASK_ID),
                 SERVICE2_STACK_CAP_SLOT,
+            )),
+        )?;
+        // SPEC-094：**第一个**服务端点（`ALPHA`）的独立栈段——此前它与客户端共享 `Y[368]`。
+        let stack1_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let stack1_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+        self.create_segment_object(
+            stack1_id,
+            KERNEL_ACTOR,
+            1,
+            stack1_access,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                SERVICE_STACK_CAP_SLOT,
             )),
         )?;
         self.mint_root_capability_at(

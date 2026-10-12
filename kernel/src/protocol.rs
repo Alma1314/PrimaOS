@@ -984,6 +984,10 @@ pub(crate) fn service_selected_ready(witness: &kernel::user::ServiceSelectedWitn
     write_hex_u64(witness.alpha_stack_seg);
     serial::write_bytes(b";beta_stack_seg=");
     write_hex_u64(witness.beta_stack_seg);
+    serial::write_bytes(b";client_ep=");
+    write_hex_u64(witness.client_ep);
+    serial::write_bytes(b";client_stack_seg=");
+    write_hex_u64(witness.client_stack_seg);
     serial::write_bytes(b"\r\n");
 }
 
