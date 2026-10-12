@@ -1890,12 +1890,9 @@ pub const SERVICE2_STACK_CAP_HANDLE: Handle =
 /// SPEC-093 之前该端点沿用客户端（task 8）经 `SYS_MEMSEG_CREATE` 建的那条栈段 `Y[368]`——
 /// 两个任务映射**同一物理栈帧**。本槽另建独立栈段，闭合该共享。
 ///
-/// **为何是 61 而非 `USER_IPC_CAP_SLOT_BASE + 10`（=57）**：`ns_create`（SPEC-081）把
-/// Namespace 根 cap 铸在**固定预留区间** [`NS_ROOT_CAP_SLOT_BASE`=52, +[`MAX_NAMESPACE_OBJECTS`]=8)
-/// = 52..59；而 `USER_IPC_CAP_SLOT_BASE`=47 的 usercap 已占到 47..56，与该区间**重叠**，
-/// 令 `ns_create` 实际只剩 57/58/59 三槽（恰好够 boot 的 3 次 `ns_create`）。任何落在
-/// 57..59 的新 cap 都会让第 3 次 `ns_create` 无槽（ENOSPC）并级联。故本槽置于区间**之外**：
-/// 61 = `NS_ROOT_CAP_SLOT_BASE + MAX_NAMESPACE_OBJECTS + 1`（60 是 `UNSET_CAP` 哨兵，不可占用）。
+/// **为何是 61**：本槽须避开两侧的固定预留区间与哨兵。ISSUE-CAP-002 修复后，usercap 占
+/// 47..56、Namespace 根 cap 占槽位顶端 64..71（见 [`NS_ROOT_CAP_SLOT_BASE`]），故 61
+/// （`>` `UNSET_CAP`(60) 且 `<` 64）落在两段预留区间之间的空档，结构上不与任何固定区间重叠。
 pub const SERVICE_STACK_CAP_SLOT: u32 = 61;
 /// SPEC-094：第一个端点栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
 pub const SERVICE_STACK_CAP_HANDLE: Handle =
@@ -2731,12 +2728,20 @@ pub const MAX_SEGMENT_OBJECTS: usize = 32;
 /// `NamespaceObject` 只有 16 B，内联增量约 96 B，远在 13 KiB 守卫余量（约 3.2 KiB）内。
 pub const MAX_NAMESPACE_OBJECTS: usize = 8;
 
-/// SPEC-081：`ns_create` 铸造的根 Capability 预留槽位基址。
+/// SPEC-081：`ns_create` 铸造的根 Capability 预留槽位基址（**槽位空间顶端**的
+/// `MAX_NAMESPACE_OBJECTS` 个槽：`[MAX_CAPABILITY_SLOTS - MAX_NAMESPACE_OBJECTS, MAX_CAPABILITY_SLOTS)`）。
 ///
 /// ring3 见证程序以 const fn 拼装机码，句柄必须编译期可知——故仿 SPEC-066 的
-/// `PLATFORM_SEGMENT_CAP_SLOT_BASE` 用显式高位区间，而非「最低空闲槽」（后者会被
+/// `PLATFORM_SEGMENT_CAP_SLOT_BASE` 用显式预留区间，而非「最低空闲槽」（后者会被
 /// `cap_derive`/`memseg_create` 的动态分配抢占，且位置取决于此前执行过的全部 syscall）。
-pub const NS_ROOT_CAP_SLOT_BASE: u32 = 52;
+///
+/// **ISSUE-CAP-002 修复（2026-10-12）**：原基址 52 使区间 52..59 与 usercap 47..56
+/// **重叠**，`ns_create` 实际只剩 57/58/59 三槽（恰够 boot 的 3 次；任何落在该区的新 cap
+/// 都会令第 3 次 `ns_create` `ENOSPC` 并级联）。改为**顶端对齐**后，区间 64..71 与
+/// usercap(47..56)、`UNSET_CAP`(60)、`SERVICE_STACK_CAP_SLOT`(61) 结构上**不相交**；
+/// 以 `MAX_CAPABILITY_SLOTS - MAX_NAMESPACE_OBJECTS` 表达，使 `MAX_CAPABILITY_SLOTS`
+/// 扩容时自动保持顶端对齐且不重叠（无需再平移任何 usercap——它们内嵌在 ring3 机码里）。
+pub const NS_ROOT_CAP_SLOT_BASE: u32 = (MAX_CAPABILITY_SLOTS - MAX_NAMESPACE_OBJECTS) as u32;
 /// SPEC-081：单个 Namespace 的条目上限（§5.4 的细化层容量约束）。
 pub const MAX_NS_ENTRIES: usize = 16;
 
@@ -7484,16 +7489,16 @@ mod tests {
         EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, ExcResumeError, Handle, IMAGE_CAP_HANDLE,
         IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
         INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR, MAX_CAPABILITY_SLOTS,
-        MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS,
-        NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
+        MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE,
+        NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
         PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT, PLATFORM_SEGMENT_ID_FIRST,
         PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
-        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SYSCALL_TRAP_SOURCE_ID,
-        SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE,
-        TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskStatus, TimerCancelOutcome,
-        TimerCancelReason, TimerError, TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST,
-        VspaceEntry, create_snapshot, create_state, entry_in_image, platform_segment_cap_handle,
-        platform_segment_cap_slot, platform_segment_is_direct,
+        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT,
+        SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
+        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskStatus,
+        TimerCancelOutcome, TimerCancelReason, TimerError, TimerState, USER_IPC_CAP_SLOT_BASE,
+        USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state, entry_in_image,
+        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{ObjectKind, Right, Rights};
@@ -7675,6 +7680,31 @@ mod tests {
                 segment: false
             }
         )));
+    }
+
+    /// ISSUE-CAP-002：Namespace 根 cap 预留区间必须与 usercap 固定块、`UNSET_CAP` 哨兵
+    /// 与服务栈槽**结构上不相交**——这是原 52..59 基址与 usercap 47..56 重叠致
+    /// `ns_create` 只剩 3 槽的回归守卫。
+    #[test]
+    fn ns_reserved_range_is_disjoint_from_fixed_cap_slots() {
+        const UNSET_CAP_SLOT: u32 = 60;
+        let ns_start = NS_ROOT_CAP_SLOT_BASE;
+        let ns_end = ns_start + MAX_NAMESPACE_OBJECTS as u32;
+        // usercap 固定块 = [USER_IPC_CAP_SLOT_BASE, USER_IPC_CAP_SLOT_BASE + 10)（+0/+1 切片 S，
+        // +2/+3 task_create，+4 task4，+5 client，+6 service，+7..+9 service2）。
+        let usercap_end = USER_IPC_CAP_SLOT_BASE + 10;
+        assert!(
+            ns_end <= MAX_CAPABILITY_SLOTS as u32,
+            "NS 预留区间必须落在槽位空间内"
+        );
+        assert!(
+            usercap_end <= ns_start,
+            "usercap 固定块必须整体位于 NS 预留区间之下（原重叠缺陷）"
+        );
+        assert!(
+            SERVICE_STACK_CAP_SLOT < ns_start && SERVICE_STACK_CAP_SLOT > UNSET_CAP_SLOT,
+            "服务栈槽须避开 UNSET_CAP 哨兵并落在 NS 区间之下"
+        );
     }
 
     #[test]
