@@ -29,6 +29,10 @@ const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
 const BINARY_MARKER: u64 = 0x414C_5048_4100_0001;
 /// SPEC-088：服务端点自报 task id 的消息 tag（高 16 位；低 16 位为 id）。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
+/// SPEC-095：本端点**自注册的服务名**（编译进二进制；init 从自报消息的 16..31 位读出，
+/// 建成 `name → task id` 的运行期注册表，按名扫描解析——替代内联常量 `cmp`）。
+/// `prima-smoke`（`ALPHA` 端点）注册名 `1`；`prima-beta`（`BETA` 端点）注册名 `2`。
+const SERVICE_SELF_NAME: u64 = 1;
 /// SPEC-088：服务端点完成协商的消息 tag。
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 const HELLO_OPCODE: u16 = 1;
@@ -57,7 +61,9 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
             let _ = runtime.send(
                 TaskId::from_raw(1),
                 send_cap,
-                SERVICE_ID_TAG | id.as_raw() as u64,
+                // SPEC-095：自报 payload = tag ‖ 注册名(16..31) ‖ task id(0..15)——
+                // init 据此建立 `name → id` 注册表并按名扫描解析。
+                SERVICE_ID_TAG | (SERVICE_SELF_NAME << 16) | id.as_raw() as u64,
                 &[],
             );
             let mut segment_mapped = false;

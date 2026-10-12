@@ -181,6 +181,13 @@ pub const SVC_RECEIPT_MGR2: u64 = 992;
 pub const SVC_RECEIPT_ID2: u64 = 1000;
 pub const SVC_RECEIPT_STACK2: u64 = 1008;
 pub const SVC_RECEIPT_SEG_B: u64 = 1016;
+/// SPEC-095：运行期服务注册表的 Y 页槽——两个端点**自报的注册名**（取自自报消息的 16..31 位）。
+///
+/// init 在收集端点自报时记下 `(name, id)`，解析请求名时**按名扫描**这两条（替代内联常量
+/// `cmp`）。槽位取 Y 页空隙 `768/776`（`CLIENT_RECEIPT_RECV=760` 与 `CLIENT_RECEIPT_MAP=800`
+/// 之间，无任何见证读取），避开 `runtime_hello` 的 `map_result`（`Y+736`）等既有回执。
+pub const SVC_RECEIPT_REG_A_NAME: u64 = 768;
+pub const SVC_RECEIPT_REG_B_NAME: u64 = 776;
 /// SPEC-092：服务端点把自己的 task id 写入共享段的偏移（`160 + (behavior-1)*8`；与 `prima-user` 一致）。
 pub const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 /// SPEC-092：`ALPHA` 端点（第一个服务任务）自报 id 的共享段偏移。
@@ -1729,10 +1736,22 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, at, &[0x0F, 0x85]); // jne svc_id_loop
     put(&mut code, at + 2, &(back as i32).to_le_bytes());
     at += 6;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存整个自报 payload）
+    at += 3;
     put(&mut code, at, &[0x25]); // and eax, 0xffff → svc_id
     put(&mut code, at + 1, &(0xFFFFu32).to_le_bytes());
     at += 5;
     put_store_rax(&mut code, at, SVC_RECEIPT_ID as u32);
+    at += 7;
+    // SPEC-095：自报 payload 的 16..31 位是**自注册服务名** → Y[SVC_RECEIPT_REG_A_NAME]（注册表项 A）。
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x10]); // shr rdx, 16
+    at += 4;
+    put(&mut code, at, &[0x81, 0xE2]); // and edx, 0xffff
+    put(&mut code, at + 2, &(0xFFFFu32).to_le_bytes());
+    at += 6;
+    put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
+    at += 3;
+    put_store_rax(&mut code, at, SVC_RECEIPT_REG_A_NAME as u32);
     at += 7;
     // 5b) 先发一条**无 cap** 唤醒：内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息
     //（SPEC-087 注释同款约束），故服务此刻仍阻塞在 recv，必须先直投唤醒再发带 cap 请求。
@@ -1969,10 +1988,22 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         &((svc2_id_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
     );
     at += 6;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存 payload）
+    at += 3;
     put(&mut code, at, &[0x25]); // and eax, 0xffff → id2
     put(&mut code, at + 1, &(0xFFFFu32).to_le_bytes());
     at += 5;
     put_store_rax(&mut code, at, SVC_RECEIPT_ID2 as u32);
+    at += 7;
+    // SPEC-095：自报 payload 的 16..31 位是 B 端点的**自注册服务名** → Y[SVC_RECEIPT_REG_B_NAME]。
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x10]); // shr rdx, 16
+    at += 4;
+    put(&mut code, at, &[0x81, 0xE2]); // and edx, 0xffff
+    put(&mut code, at + 2, &(0xFFFFu32).to_le_bytes());
+    at += 6;
+    put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
+    at += 3;
+    put_store_rax(&mut code, at, SVC_RECEIPT_REG_B_NAME as u32);
     at += 7;
 
     // ===== SPEC-090：服务管理器按名字解析并二次路由 =====
@@ -1992,46 +2023,76 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 3;
     put_store_rax(&mut code, at, SVC_RECEIPT_NAME as u32);
     at += 7;
-    // 9) 解析请求名：r8 = (name == BETA) ? BETA : NONE；→ Y[SVC_RECEIPT_RESOLVED]。
+    // 9) SPEC-095：**按名扫描运行期注册表**（替代 SPEC-090 的内联常量 `cmp`）。
+    //    r8 = 0；若 rax == 注册表 B 名 → r8 = 2（`BETA`）；若 rax == 注册表 A 名 → r8 = 1（`ALPHA`）。
+    //    → Y[SVC_RECEIPT_RESOLVED]。两张表项由端点**自报**（见上文收集步）。
     put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
     at += 10;
-    put(&mut code, at, &[0x48, 0x3D]); // cmp rax, imm32
-    put(&mut code, at + 2, &(SERVICE_NAME_BETA as u32).to_le_bytes());
-    at += 6;
-    let name_jne = at;
-    put(&mut code, at, &[0x0F, 0x85]); // jne（跳过赋值）
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        SVC_RECEIPT_REG_B_NAME as u32,
+    ); // rdx = 注册名 B
+    at += 7;
+    put(&mut code, at, &[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    at += 3;
+    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]); // jne +10（跳过赋值）
     at += 6;
     put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA); // mov r8, 2
     at += 10;
-    let name_skip = at;
-    put(
+    put_load_reg(
         &mut code,
-        name_jne + 2,
-        &((name_skip as i64 - (name_jne as i64 + 6)) as i32).to_le_bytes(),
-    );
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        SVC_RECEIPT_REG_A_NAME as u32,
+    ); // rdx = 注册名 A
+    at += 7;
+    put(&mut code, at, &[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    at += 3;
+    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]); // jne +10（跳过赋值）
+    at += 6;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_ALPHA); // mov r8, 1
+    at += 10;
     put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
     at += 3;
     put_store_rax(&mut code, at, SVC_RECEIPT_RESOLVED as u32);
     at += 7;
-    // 10) 未注册名负例：解析 `SERVICE_NAME_UNKNOWN` 应得 NONE → Y[SVC_RECEIPT_UNKNOWN]。
+    // 10) 未注册名负例：同一扫描对 `SERVICE_NAME_UNKNOWN` 应得 NONE → Y[SVC_RECEIPT_UNKNOWN]。
     put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_NAME_UNKNOWN); // mov rax, 0xDEAD
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
     at += 10;
-    put(&mut code, at, &[0x48, 0x3D]); // cmp rax, imm32
-    put(&mut code, at + 2, &(SERVICE_NAME_BETA as u32).to_le_bytes());
-    at += 6;
-    let unk_jne = at;
-    put(&mut code, at, &[0x0F, 0x85]); // jne（跳过赋值）
-    at += 6;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA); // mov r8, 2
-    at += 10;
-    let unk_skip = at;
-    put(
+    put_load_reg(
         &mut code,
-        unk_jne + 2,
-        &((unk_skip as i64 - (unk_jne as i64 + 6)) as i32).to_le_bytes(),
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        SVC_RECEIPT_REG_B_NAME as u32,
     );
+    at += 7;
+    put(&mut code, at, &[0x48, 0x39, 0xD0]);
+    at += 3;
+    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]);
+    at += 6;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA);
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        SVC_RECEIPT_REG_A_NAME as u32,
+    );
+    at += 7;
+    put(&mut code, at, &[0x48, 0x39, 0xD0]);
+    at += 3;
+    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]);
+    at += 6;
+    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_ALPHA);
+    at += 10;
     put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
     at += 3;
     put_store_rax(&mut code, at, SVC_RECEIPT_UNKNOWN as u32);
@@ -2325,6 +2386,10 @@ pub struct ServiceSelectedWitness {
     /// SPEC-094：客户端栈在 `USER3_STACK_VA` 处映射所属的 Segment id——须与 `alpha_stack_seg`
     /// 相异，证明 `ALPHA` 端点不再沿用客户端 `Y[368]` 的那条**共享物理栈帧**。
     pub client_stack_seg: u64,
+    /// SPEC-095：运行期服务注册表——`ALPHA` 端点**自报的注册名**（应 = `SERVICE_BEHAVIOR_ALPHA`）。
+    pub reg_a_name: u64,
+    /// SPEC-095：运行期服务注册表——`BETA` 端点**自报的注册名**（应 = `SERVICE_BEHAVIOR_BETA`）。
+    pub reg_b_name: u64,
 }
 
 impl ServiceSelectedWitness {
@@ -2347,6 +2412,8 @@ impl ServiceSelectedWitness {
             && self.client_stack_seg != 0
             && self.client_stack_seg != self.alpha_stack_seg
             && self.client_stack_seg != self.beta_stack_seg
+            && self.reg_a_name == SERVICE_BEHAVIOR_ALPHA
+            && self.reg_b_name == SERVICE_BEHAVIOR_BETA
     }
 }
 
@@ -2372,6 +2439,8 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
         client_ep,
         client_stack_seg: crate::bootstrap::mapped_segment_at(client_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
+        reg_a_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_A_NAME),
+        reg_b_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_B_NAME),
     }
 }
 

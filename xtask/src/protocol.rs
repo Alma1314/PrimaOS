@@ -3332,6 +3332,9 @@ const SERVICE_SELECTED_ALPHA_EP: u64 = 9;
 const SERVICE_SELECTED_BETA_EP: u64 = 10;
 /// SPEC-094：存活客户端（task 8）的 task id。
 const SERVICE_SELECTED_CLIENT_EP: u64 = 8;
+/// SPEC-095：运行期服务注册表里两个端点**自报的注册名**（应与 `ALPHA`/`BETA` 行为码一致）。
+const SERVICE_SELECTED_REG_A_NAME: u64 = 1;
+const SERVICE_SELECTED_REG_B_NAME: u64 = 2;
 /// SPEC-093：两个端点映像的**二进制标记**（编译进各自 ELF；相异即证明「不同程序」）。
 const SERVICE_SELECTED_ALPHA_MARKER: u64 = 0x414C_5048_4100_0001;
 const SERVICE_SELECTED_BETA_MARKER: u64 = 0x4245_5441_0000_0002;
@@ -3353,6 +3356,8 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     let mut beta_stack_seg = None;
     let mut client_ep = None;
     let mut client_stack_seg = None;
+    let mut reg_a_name = None;
+    let mut reg_b_name = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3372,6 +3377,8 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
             "beta_stack_seg" => beta_stack_seg = Some(parse_addr(value)?),
             "client_ep" => client_ep = Some(parse_addr(value)?),
             "client_stack_seg" => client_stack_seg = Some(parse_addr(value)?),
+            "reg_a_name" => reg_a_name = Some(parse_addr(value)?),
+            "reg_b_name" => reg_b_name = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3390,6 +3397,8 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     let beta_stack_seg = beta_stack_seg.ok_or_else(|| missing("beta_stack_seg"))?;
     let client_ep = client_ep.ok_or_else(|| missing("client_ep"))?;
     let client_stack_seg = client_stack_seg.ok_or_else(|| missing("client_stack_seg"))?;
+    let reg_a_name = reg_a_name.ok_or_else(|| missing("reg_a_name"))?;
+    let reg_b_name = reg_b_name.ok_or_else(|| missing("reg_b_name"))?;
     if name != SERVICE_SELECTED_NAME {
         return Err(format!(
             "service_selected_ready name (0x{name:x}) must be {SERVICE_SELECTED_NAME} — the manager must read the requested service name from the shared Segment"
@@ -3479,6 +3488,11 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
         return Err(
             "service_selected_ready client_stack_seg and beta_stack_seg must differ — the client, ALPHA and BETA must all own independent physical stack frames".to_owned(),
         );
+    }
+    if reg_a_name != SERVICE_SELECTED_REG_A_NAME || reg_b_name != SERVICE_SELECTED_REG_B_NAME {
+        return Err(format!(
+            "service_selected_ready registry names (reg_a_name={reg_a_name}, reg_b_name={reg_b_name}) must be {SERVICE_SELECTED_REG_A_NAME}/{SERVICE_SELECTED_REG_B_NAME} — the manager must build the name registry from the endpoints' self-reports, not from a compile-time constant"
+        ));
     }
     Ok(())
 }
@@ -3836,7 +3850,7 @@ mod tests {
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10;reg_a_name=0x1;reg_b_name=0x2\n",
         "PRIMA|v=1|seq=29|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=30|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=31|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4163,6 +4177,21 @@ mod tests {
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("not the client's shared Y[368] Segment"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_selected_when_the_registry_is_not_built_from_self_reports() {
+        // SPEC-095：注册表项 B 的名字与端点自报不符——即解析用的注册表不是运行期自报所建
+        //（退化回编译期常量）；必须拒绝。
+        let output = VALID.replace(
+            ";reg_a_name=0x1;reg_b_name=0x2",
+            ";reg_a_name=0x1;reg_b_name=0x9",
+        );
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("build the name registry from the endpoints' self-reports"),
             "{error}"
         );
     }

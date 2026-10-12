@@ -31,6 +31,9 @@ const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
 const BINARY_MARKER: u64 = 0x4245_5441_0000_0002;
 /// SPEC-088：服务端点自报 task id 的消息 tag（高 16 位；低 16 位为 id）。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
+/// SPEC-095：本端点**自注册的服务名**（编译进二进制；init 建成 `name → task id` 注册表）。
+/// `prima-beta`（`BETA` 端点）注册名 `2`；`prima-smoke`（`ALPHA` 端点）注册名 `1`。
+const SERVICE_SELF_NAME: u64 = 2;
 /// SPEC-088：服务端点完成协商的消息 tag。
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
@@ -45,11 +48,11 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, _initial_cap1_raw
         Capability::from_raw(send_cap_raw),
         runtime.task_id(),
     ) {
-        // 自报 id：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 id。
+        // 自报 id + **注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
         let _ = runtime.send(
             TaskId::from_raw(1),
             send_cap,
-            SERVICE_ID_TAG | id.as_raw() as u64,
+            SERVICE_ID_TAG | (SERVICE_SELF_NAME << 16) | id.as_raw() as u64,
             &[],
         );
         let mut segment_mapped = false;
