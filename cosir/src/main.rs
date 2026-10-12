@@ -283,7 +283,7 @@ fn main() {
 mod tests {
     use super::*;
     use ops::ResumeError;
-    use state::{AuditEvent, CapId, PageMapping, SegId};
+    use state::{Actor, AuditEvent, AuditKind, CapId, PageMapping, SegId};
 
     const CALLER: state::TaskId = 1;
     const SOURCE: state::ExcSourceId = 1;
@@ -291,6 +291,16 @@ mod tests {
     const FRAME_SEG: SegId = 1;
     const FRAME_CAP: CapId = 11;
     const FRAME_OFF: usize = 0;
+
+    /// 构造带 §13.1 信封的事件。本探针未建模 `time_advance`，`State.now` 恒为 0，故 `at = 0`。
+    fn ev(id: u64, actor: Actor, kind: AuditKind) -> AuditEvent {
+        AuditEvent {
+            id,
+            at: 0,
+            actor,
+            kind,
+        }
+    }
 
     fn resume_ok(st: &mut State) {
         exc_resume(st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF).expect("resume should succeed");
@@ -755,22 +765,32 @@ mod tests {
         );
         assert_eq!(st.tasks[&1].status, TaskStatus::Faulted);
         assert!(st.pending_exc.contains_key(&1));
-        // §12.5 动作 1/3：先 ExceptionRaised，后 TaskStateChanged（顺序可观察）。
+        // §13.1 信封 {id, at, actor} + §12.5 动作 1/3 的 kind（顺序可观察）。
         assert_eq!(
             st.audit,
             vec![
-                AuditEvent::ExceptionRaised {
-                    source_id: 1,
-                    kind: page_fault(),
-                    fault_va: Some(0x5000_0000),
-                },
-                AuditEvent::TaskStateChanged {
-                    task: 1,
-                    from: TaskStatus::Running,
-                    to: TaskStatus::Faulted,
-                },
+                ev(
+                    0,
+                    Actor::Kernel,
+                    AuditKind::ExceptionRaised {
+                        source_id: 1,
+                        kind: page_fault(),
+                        fault_va: Some(0x5000_0000),
+                    }
+                ),
+                ev(
+                    1,
+                    Actor::Kernel,
+                    AuditKind::TaskStateChanged {
+                        task: 1,
+                        from: TaskStatus::Running,
+                        to: TaskStatus::Faulted,
+                    }
+                ),
             ]
         );
+        // W13：EventId 严格递增，且 next_event 已推进。
+        assert_eq!(st.next_event, 2);
     }
 
     #[test]
@@ -825,28 +845,40 @@ mod tests {
             before[frame_end..]
         );
         // raise（§12.5 动作 1/3）两条在最前，其后是 exc_resume 的 TaskResumed（§12.10 动作 4）。
+        // 信封 actor：raise 为 Kernel，exc_resume 为 Task(调用者)；id 全局严格递增。
         assert_eq!(
             st.audit,
             vec![
-                AuditEvent::ExceptionRaised {
-                    source_id: SOURCE,
-                    kind: page_fault(),
-                    fault_va: Some(0x5000_0000),
-                },
-                AuditEvent::TaskStateChanged {
-                    task: CALLER,
-                    from: TaskStatus::Running,
-                    to: TaskStatus::Faulted,
-                },
-                AuditEvent::TaskResumed {
-                    actor: CALLER,
-                    source_id: SOURCE,
-                    source_cap: SOURCE_CAP,
-                    frame_cap: FRAME_CAP,
-                    frame_seg_id: FRAME_SEG,
-                    frame_offset: OFFSET,
-                    rip: frame.rip,
-                },
+                ev(
+                    0,
+                    Actor::Kernel,
+                    AuditKind::ExceptionRaised {
+                        source_id: SOURCE,
+                        kind: page_fault(),
+                        fault_va: Some(0x5000_0000),
+                    }
+                ),
+                ev(
+                    1,
+                    Actor::Kernel,
+                    AuditKind::TaskStateChanged {
+                        task: CALLER,
+                        from: TaskStatus::Running,
+                        to: TaskStatus::Faulted,
+                    }
+                ),
+                ev(
+                    2,
+                    Actor::Task(CALLER),
+                    AuditKind::TaskResumed {
+                        source_id: SOURCE,
+                        source_cap: SOURCE_CAP,
+                        frame_cap: FRAME_CAP,
+                        frame_seg_id: FRAME_SEG,
+                        frame_offset: OFFSET,
+                        rip: frame.rip,
+                    }
+                ),
             ]
         );
     }
@@ -880,16 +912,24 @@ mod tests {
         assert_eq!(
             st.audit,
             vec![
-                AuditEvent::ExceptionRaised {
-                    source_id: SOURCE,
-                    kind: page_fault(),
-                    fault_va: Some(0x5000_0000),
-                },
-                AuditEvent::TaskStateChanged {
-                    task: CALLER,
-                    from: TaskStatus::Running,
-                    to: TaskStatus::Faulted,
-                },
+                ev(
+                    0,
+                    Actor::Kernel,
+                    AuditKind::ExceptionRaised {
+                        source_id: SOURCE,
+                        kind: page_fault(),
+                        fault_va: Some(0x5000_0000),
+                    }
+                ),
+                ev(
+                    1,
+                    Actor::Kernel,
+                    AuditKind::TaskStateChanged {
+                        task: CALLER,
+                        from: TaskStatus::Running,
+                        to: TaskStatus::Faulted,
+                    }
+                ),
             ]
         );
     }

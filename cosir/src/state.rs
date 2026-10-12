@@ -6,6 +6,9 @@ pub type SegId = u32;
 pub type NsId = u32;
 pub type CapId = u32;
 pub type VirtAddr = u64;
+/// §4 类型：Audit 事件序号与逻辑时间（均 `Nat`）。
+pub type EventId = u64;
+pub type Instant = u64;
 
 // access 位域：bit0=R, bit1=W, bit2=X
 pub const ACCESS_R: u8 = 0b001;
@@ -236,12 +239,29 @@ pub struct PendingException {
     pub save_frame: SretFrame,
 }
 
-// 本探针只以简化 tagged struct 表达事件的 kind 载荷；§13.1 的
-// `{id : EventId, at : Instant, actor : Actor}` 信封**未建模**——模型无时钟/时间
-// 语义（§18.0 边界清单 #5 把 `time_now`/Audit 观察列为待证义务），不加伪造时钟。
+/// §6.1 `Actor`。用户可调用操作为 `Task(t)`；`bootstrap`/调度/时间推进/Timer 到期/
+/// `raise_exception` 等内部迁移为 `Kernel`（用户输入不能构造 `Kernel`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Actor {
+    Task(TaskId),
+    Kernel,
+}
+
+/// §13.1：每条事件至少包含 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}`。
+/// `kind` 由 `AuditKind` 承载（记录操作涉及的对象/Capability ID）；信封由 `State::push_audit`
+/// 统一填入。
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // AuditEvent 字段仅由模型测试与完整状态比较读取
-pub enum AuditEvent {
+#[allow(dead_code)] // 字段仅由模型测试与完整状态比较读取
+pub struct AuditEvent {
+    pub id: EventId,
+    pub at: Instant,
+    pub actor: Actor,
+    pub kind: AuditKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AuditKind {
     /// §12.5 成功动作 1：异常发生时由 `KernelActor` 追加，早于状态迁移。
     /// `fault_va` 为页故障的 `faulting_vaddr`，非寻址异常记 `None`（§12.2/§13.1）。
     ExceptionRaised {
@@ -256,8 +276,8 @@ pub enum AuditEvent {
         from: TaskStatus,
         to: TaskStatus,
     },
+    /// §12.10 成功动作 4。§12.10 要求的「记录 actor」由信封的 `actor` 承载（= `Task(调用者)`）。
     TaskResumed {
-        actor: TaskId,
         source_id: ExcSourceId,
         source_cap: CapId,
         frame_cap: CapId,
@@ -290,6 +310,26 @@ pub struct State {
     pub capabilities: HashMap<CapId, Capability>,
     pub subscriptions: HashSet<(TaskId, ExcSourceId)>,
     pub audit: Vec<AuditEvent>,
+    /// §4 `State.now`：逻辑当前时间。由 `time_advance`（KernelActor）推进；本探针
+    /// 未建模 Timer/`time_advance`，故恒为初始 `0`（事件 `at` 因此恒为 0，见 §20.4）。
+    pub now: Instant,
+    /// §4 `State.next_event`：下一个 Audit `EventId`（W13：严格递增）。
+    pub next_event: EventId,
     /// POSIR 状态的 bootstrap 标志（真实部分）；默认 false
     pub booted: bool,
+}
+
+impl State {
+    /// §13.1：追加一条事件并填入信封（`id = next_event` 且自增，`at = now`）。
+    /// W13：`EventId` 严格递增、日志只追加不改写。
+    pub fn push_audit(&mut self, actor: Actor, kind: AuditKind) {
+        let id = self.next_event;
+        self.next_event += 1;
+        self.audit.push(AuditEvent {
+            id,
+            at: self.now,
+            actor,
+            kind,
+        });
+    }
 }

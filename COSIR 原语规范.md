@@ -2272,6 +2272,8 @@ abstract : MachineState → POSIRState
 
 本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
 
+**时间与 Audit 细化边界**：`cosir` 的 POSIR 状态已建模 §4 的 `now`/`next_event`，以及 §13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}` 信封（不含伪造时钟：字段即规范既有定义）。但 `MachineState` 无时钟来源，α 取 `now = 0`，且本探针**未建模** `time_now`/`time_advance`/Timer 推进，故运行时 `at` 恒为 0（`EventId` 仍随事件严格递增，W13）。真实时间语义属 §18.0 边界清单 #5 的待证义务。
+
 ### 20.5 MemorySegment host 四级索引树 ↔ vspace refinement design
 
 本小节给出细化层设计：把 MemorySegment 的 host 四级索引树与 vspace 的对应关系显式化（对应 §18.0 边界清单 #5/#6）。不新增对 POSIR 可见的一等原语；`pagewalk` 与 `memseg_refine` 是 host 可执行模型中的 `REFINEMENT-DESIGN` 探针，为阶段 1 页表/trap（S1-D4）与 vspace 管理（S2）提供候选蓝本，不是真实 x86_64 CR3 页表实现。

@@ -58,5 +58,13 @@
 - **扩模型**：`AuditEvent` 新增 `ExceptionRaised{source_id, kind, fault_va}`（§12.5 动作 1）与 `TaskStateChanged{task, from, to}`（§13.1）；`ops::raise_exception` 在置 `Faulted`/写 `pending_exc` 前后**按 §12.5 顺序**追加两条 Audit（先 `ExceptionRaised` 后 `TaskStateChanged`，日志顺序可观察）。
 - 取**补实现**而非把该项降级为范围边界（与既有「不变量不放宽」取齐；§12.5/§13.1 已要求这两条事件，属实现补齐，规范无需改动）。
 - `main.rs` 三条测试钉住：raise 的两条事件及其顺序、`exc_resume` 的全序列（raise 两条 + `TaskResumed`）、失败 `exc_resume` 不追加（原 `assert!(st.audit.is_empty())` 改为钉住「日志仍只含 raise 两条」）。
-- **未建模（如实登记，非本次引入）**：§13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor}` 信封——模型无时间语义（§18.0 边界清单 #5 把 `time_now`/Audit 观察列为待证义务），既有 `TaskResumed` 同样未含。**不伪造时钟**。
+- **信封问题（`ISSUE-EXC-008`）**：本片当时登记「§13.1 的 `{id, at, actor}` 信封未建模」——**已于同日续片补上**，见下。
 - cosir-only：Lean `State` 不建模 `audit`，`bootstrap_parity_lean` 与 QEMU 事件流均不受影响。门禁：`cargo test --workspace` 全绿（约 779 passed / 0 failed）、`cargo fmt -p cosir --check` 与 `cargo clippy -p cosir --all-targets -D warnings` 干净。
+
+### 续（2026-10-12）：`ISSUE-EXC-008` 闭合（§13.1 事件信封）
+
+- **补信封**：`State` 新增 §4 的 `now: Instant`/`next_event: EventId`；`AuditEvent` 由裸枚举重构为**信封 + 载荷**——`AuditEvent { id, at, actor, kind }`（§13.1），载荷移入 `AuditKind`（`ExceptionRaised`/`TaskStateChanged`/`TaskResumed`）；新增 §6.1 `Actor{Task(TaskId), Kernel}` 与 `State::push_audit`（统一填 `id = next_event` 并自增、`at = now`）。
+- `actor`：raise 为 `Kernel`（§12.5「由 `KernelActor` 触发」），`exc_resume` 为 `Task(调用者)`（§6.1）；§12.10「记录 actor」由信封承载，载荷不再重复该字段。
+- `main.rs` 三条断言改钉**完整信封**（`id` 全局递增、`actor`、`at`），并断言 `next_event` 推进（W13「EventId 严格递增」抓手）。
+- **时间边界（如实登记，非伪造）**：`MachineState` 无时钟来源，α 取 `now = 0`，且本探针不建模 `time_now`/`time_advance`/Timer，故运行时 `at` 恒为 0；已同步登记于规范 §20.4。
+- cosir-only（Lean 无 `audit`）；不触碰内核非测试代码，QEMU 事件流不变。门禁：`cargo test -p cosir` 全绿（41 + 2）。

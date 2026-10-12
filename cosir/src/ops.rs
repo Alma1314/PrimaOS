@@ -1,5 +1,5 @@
 use crate::state::{
-    ACCESS_W, ACCESS_X, AuditEvent, CAP_EXC_SUBSCRIBE, CAP_SEG_MAP_W, CapId, CapObject,
+    ACCESS_W, ACCESS_X, Actor, AuditKind, CAP_EXC_SUBSCRIBE, CAP_SEG_MAP_W, CapId, CapObject,
     ExcSourceId, ExceptionKind, PendingException, SRET_FRAME_ALIGN, SRET_FRAME_LEN, SretFrame,
     State, Task, TaskId, TaskStatus, USER_CS, USER_SS,
 };
@@ -49,12 +49,15 @@ pub fn raise_exception(
             "raise_exception: task must be Running"
         );
     }
-    // §12.5 成功动作 1：先追加 `ExceptionRaised`（早于状态迁移）。
-    st.audit.push(AuditEvent::ExceptionRaised {
-        source_id,
-        kind,
-        fault_va,
-    });
+    // §12.5 成功动作 1：先追加 `ExceptionRaised`（`KernelActor`，早于状态迁移）。
+    st.push_audit(
+        Actor::Kernel,
+        AuditKind::ExceptionRaised {
+            source_id,
+            kind,
+            fault_va,
+        },
+    );
     // §12.5 成功动作 3：置 Faulted、写唯一 `pending_exc`，再追加 `TaskStateChanged`。
     st.tasks
         .get_mut(&faulting_task)
@@ -69,11 +72,14 @@ pub fn raise_exception(
             save_frame,
         },
     );
-    st.audit.push(AuditEvent::TaskStateChanged {
-        task: faulting_task,
-        from: TaskStatus::Running,
-        to: TaskStatus::Faulted,
-    });
+    st.push_audit(
+        Actor::Kernel,
+        AuditKind::TaskStateChanged {
+            task: faulting_task,
+            from: TaskStatus::Running,
+            to: TaskStatus::Faulted,
+        },
+    );
 }
 
 /// 用户态 canonical 检验：地址必须落入用户低半区 (`≤ 0x0000_7fff_ffff_ffff`)，
@@ -223,15 +229,17 @@ pub fn exc_resume(
         .get_mut(&caller)
         .expect("validated task must still exist")
         .kernel_resume_frame = Some(frame);
-    st.audit.push(AuditEvent::TaskResumed {
-        actor: caller,
-        source_id,
-        source_cap: exc_source_cap,
-        frame_cap: sret_frame_seg_cap,
-        frame_seg_id,
-        frame_offset,
-        rip: frame.rip,
-    });
+    st.push_audit(
+        Actor::Task(caller),
+        AuditKind::TaskResumed {
+            source_id,
+            source_cap: exc_source_cap,
+            frame_cap: sret_frame_seg_cap,
+            frame_seg_id,
+            frame_offset,
+            rip: frame.rip,
+        },
+    );
     st.tasks
         .get_mut(&caller)
         .expect("validated task must still exist")
