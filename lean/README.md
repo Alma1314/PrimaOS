@@ -11,7 +11,8 @@
 - `Formal.Bootstrap`（`Formal/Bootstrap.lean`）：`alpha`/`emptyState`/`bootedState`/`bootstrap` + 8 条定理（其中 `bootedState_wellformed` 为**非平凡**证明）。
 - `Formal.ExcResume`（`Formal/ExcResume.lean`）：`excResume` + 5 条定理（含**非平凡** `exc_resume_preserves_wellformed`）。
 - `Formal.Derive`（`Formal/Derive.lean`）：§4.4 `cap_derive` 对应物 `derive` + `derive_preserves_wellformed`（**非平凡**）+ `no_self_parent`（CDT 无自环）+ 5 条 `native_decide` 可执行锚。
-- `Formal.lean`（入口）：`import` 上述四个模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
+- `Formal.Forest`（`Formal/Forest.lean`）：`parentOf`/`ancestry` + **`ancestry_lt`（森林性/无环：父链 `k ≥ 1` 步严格递减，§4.2 头号结论）**（**非平凡**）+ `ancestry_no_cycle` + 3 条 `native_decide` 可执行锚。
+- `Formal.lean`（入口）：`import` 上述五个模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 证据边界
 
@@ -44,8 +45,8 @@
   - `bootstrap_parity_lean`：α 投影保真（`α(booted) ≠ α(pre_bootstrap)`）、init task 存在，**逐条断言 §14 三条根 Capability**（数量=3、CapId 1/2/3 的对象与 rights，对应 Lean `bootstrap_empty_mints_{image,namespace,task}_cap`），并**钉住 cosir 侧的 §14 步骤 4/7 投影**（image 逐页 `vspace` 的基址/条数、`Task.root_ns_cap == 2`）——这两项 Lean 未建模，见下表与「已知不覆盖」。
   - `exc_resume_failure_parity_lean`：caller 无源能力 → `Err(InvalidExcSource)` 且状态完全不变，对应 Lean `excResume … = none` 的失败原子性。
 - 两端一致即本轮 `MODEL-TEST` 通过；一致性不升级为 refinement 结论。
-- **定理性质（如实声明）**：Lean 侧现有 3 条**实质证明**（**非** `by rfl`/`trivial`，`WellFormed` 亦**非恒真**）——`bootedState_wellformed`（逐 CapId 展开 `initCaps` 三分支证三条根 Cap 满足 CDT 不变量）、`exc_resume_preserves_wellformed`（成功返回原状态、失败返回 `none`）、`derive_preserves_wellformed`（§4.4 派生保持良构，按「新槽位 / 旧槽位」两路，用到 `parent < newId` 与空槽前提）；`no_self_parent` 为其直接推论。其余定理（§14 三条根 Cap 具体值、`bootstrap` 幂等、投影保真、`exc_resume` 失败各路径、`derive` 的 5 条 `native_decide` 锚）仍是**具体实例的定义展开或求值**——它们钉住可执行语义，但不单独构成普适不变量。Lean `State` 仍是**最小可表达能力子集**（**无 `tasks` 字段**，init 以三条指向 Segment/Namespace/Task 的根 Capability 表示），`excResume` 只建模授权检查、**不建模 §12.10 的成功提交段**；`derive` 只建模 §4.4 的单步派生、**不建模 §4.5 撤销与在途消息**。
-- **CDT 覆盖边界**：`WellFormed` 现表达 §4.2 的「父 `<` 子（无环）、父存在/活动、父子同对象」三条；**未**表达「子权限 ⊆ 父权限」（该性质作为 `derive` 的前置条件，在保持性定理中携带，见 `Formal/Derive.lean` 注释），亦未表达 §4.6 `HeldBy` 位置与 W3 唯一位置。
+- **定理性质（如实声明）**：Lean 侧现有 5 条**实质证明**（**非** `by rfl`/`trivial`，`WellFormed` 亦**非恒真**）——`bootedState_wellformed`（逐 CapId 展开 `initCaps` 三分支证三条根 Cap 满足 CDT 不变量）、`exc_resume_preserves_wellformed`（成功返回原状态、失败返回 `none`）、`derive_preserves_wellformed`（§4.4 派生保持良构，按「新槽位 / 旧槽位」两路，用到 `parent < newId` 与空槽前提）、`parentOf_lt`（§4.2 单步下降）、**`ancestry_lt`（森林性：沿父链 `k ≥ 1` 步 CapId 严格递减 ⇒ 无环，§4.2 头号结论，对 `k` 归纳）**；`no_self_parent`/`ancestry_no_cycle` 为其直接推论。其余定理（§14 三条根 Cap 具体值、`bootstrap` 幂等、投影保真、`exc_resume` 失败各路径、`derive` 的 5 条 `native_decide` 锚）仍是**具体实例的定义展开或求值**——它们钉住可执行语义，但不单独构成普适不变量。Lean `State` 仍是**最小可表达能力子集**（**无 `tasks` 字段**，init 以三条指向 Segment/Namespace/Task 的根 Capability 表示），`excResume` 只建模授权检查、**不建模 §12.10 的成功提交段**；`derive` 只建模 §4.4 的单步派生、**不建模 §4.5 撤销与在途消息**。
+- **CDT 覆盖边界**：`WellFormed` 现表达 §4.2 的「父 `<` 子、父存在/活动、父子同对象」三条，且**无环性已由 `ancestry_lt` 独立证成**（不止于不变量中的局部「父 `<` 子」）；**未**表达「子权限 ⊆ 父权限」（该性质作为 `derive` 的前置条件，在保持性定理中携带，见 `Formal/Derive.lean` 注释），亦未表达 §4.6 `HeldBy` 位置与 W3 唯一位置。§4.5 `cap_drop` 与 §4.7 撤销边界（**规范第一版无 `cap_revoke`**）留待后续切片。
 
 ## 已知不覆盖（后续切片）
 
