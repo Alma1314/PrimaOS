@@ -5455,12 +5455,18 @@ impl BootstrapState {
             .find(task_id)
             .is_some_and(|task| task.pending.is_some());
         let mut dropped = 0usize;
+        let mut dropped_caps = 0usize;
         for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
             if message.sender == task_id || message.receiver == task_id {
                 dropped += 1;
+                dropped_caps += message.capability_count;
             }
         }
-        dropped + usize::from(pending) + 1 + self.timers_of_recipient_audit_cost(task_id)
+        dropped
+            + dropped_caps
+            + usize::from(pending)
+            + 1
+            + self.timers_of_recipient_audit_cost(task_id)
     }
 
     /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
@@ -5603,15 +5609,29 @@ impl BootstrapState {
         let pending_message = self.tasks.find(task_id).and_then(|task| task.pending);
         let mut dropped_message_ids = [0u32; MAX_MESSAGES];
         let mut dropped_count = 0;
+        // §8.2 步骤 2/3：同时收集被丢弃的消息与其携带的 Capability（后者位置删除需丢弃事件）。
+        let mut dropped_caps = [Handle::ZERO; MAX_MESSAGES * MAX_MESSAGE_CAPABILITIES];
+        let mut dropped_cap_count = 0;
         for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
-            if (message.sender == task_id || message.receiver == task_id)
-                && dropped_count < MAX_MESSAGES
-            {
+            if message.sender != task_id && message.receiver != task_id {
+                continue;
+            }
+            if dropped_count < MAX_MESSAGES {
                 dropped_message_ids[dropped_count] = message.id;
                 dropped_count += 1;
             }
+            for cap in message.capabilities[..message.capability_count]
+                .iter()
+                .copied()
+            {
+                if dropped_cap_count < dropped_caps.len() {
+                    dropped_caps[dropped_cap_count] = cap;
+                    dropped_cap_count += 1;
+                }
+            }
         }
         let audit_events = dropped_count
+            + dropped_cap_count
             + if pending_message.is_some() { 1 } else { 0 }
             + 1
             + self.timers_of_recipient_audit_cost(task_id);
@@ -5624,24 +5644,11 @@ impl BootstrapState {
         }
         self.revoke_task_capabilities(task_id)
             .map_err(|_| TaskError::NoSuchTask)?;
-        let mut dropped_caps = [Handle::ZERO; MAX_MESSAGES * MAX_MESSAGE_CAPABILITIES];
-        let mut dropped_cap_count = 0;
-        for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
-            if message.sender == task_id || message.receiver == task_id {
-                for cap in message.capabilities[..message.capability_count]
-                    .iter()
-                    .copied()
-                {
-                    if dropped_cap_count < dropped_caps.len() {
-                        dropped_caps[dropped_cap_count] = cap;
-                        dropped_cap_count += 1;
-                    }
-                }
-            }
-        }
         for cap in dropped_caps[..dropped_cap_count].iter().copied() {
             if !cap.is_zero() {
                 self.retire_capability(cap);
+                // §8.2 步骤 3/9：消息内 Capability 的位置被删除 → 追加丢弃事件。
+                self.audit.append(AuditEvent::CapabilityDropped { cap });
             }
         }
         // §8.2 步骤 5：清理以该 Task 为 recipient 的全部 Timer（`Pending` 先记
@@ -5714,7 +5721,9 @@ impl BootstrapState {
         if !direct_delivery && self.ipc.count == MAX_MESSAGES {
             return Err(IpcError::QueueFull);
         }
-        let audit_events = if direct_delivery { 2 } else { 1 };
+        // §13.1：每个携带的 Capability 都发生一次位置变化（→ `InMessage` 或 `HeldBy(receiver)`），
+        // 各追加一条 `CapabilityMoved`。
+        let audit_events = (if direct_delivery { 2 } else { 1 }) + capability_ids.len();
         if !self.audit.can_append(audit_events) {
             return Err(IpcError::AuditFull);
         }
@@ -5728,9 +5737,18 @@ impl BootstrapState {
         };
         if direct_delivery {
             for cap in capabilities[..capability_ids.len()].iter().copied() {
+                let from = self.positions.find(cap).map(|position| position.location);
                 self.positions
                     .move_to_task(cap, sender, receiver)
                     .map_err(|_| IpcError::CapabilityHolderMismatch)?;
+                // §13.1：位置变化必须追加 `CapabilityMoved`（直投：`HeldBy(sender)` → `HeldBy(receiver)`）。
+                if let Some(from) = from {
+                    self.audit.append(AuditEvent::CapabilityMoved {
+                        cap,
+                        from,
+                        to: CapabilityLocation::HeldByTask(receiver),
+                    });
+                }
             }
             self.set_pending_task(receiver, message)
                 .map_err(|_| IpcError::NoSuchTask)?;
@@ -5745,9 +5763,18 @@ impl BootstrapState {
             });
         } else {
             for cap in capabilities[..capability_ids.len()].iter().copied() {
+                let from = self.positions.find(cap).map(|position| position.location);
                 self.positions
                     .move_to_message(cap, sender, message.id)
                     .map_err(|_| IpcError::CapabilityHolderMismatch)?;
+                // §13.1：位置变化必须追加 `CapabilityMoved`（排队：`HeldBy(sender)` → `InMessage`）。
+                if let Some(from) = from {
+                    self.audit.append(AuditEvent::CapabilityMoved {
+                        cap,
+                        from,
+                        to: CapabilityLocation::InMessage(message.id),
+                    });
+                }
             }
             self.ipc.send(message)?;
             self.audit.append(AuditEvent::MessageSent {
@@ -5766,7 +5793,7 @@ impl BootstrapState {
         if let Some(message) = self.tasks.take_pending(receiver) {
             return Ok(message);
         }
-        if !self.audit.can_append(1) {
+        if !self.audit.can_append(1 + MAX_MESSAGE_CAPABILITIES) {
             return Err(IpcError::AuditFull);
         }
         match self.ipc.receive(receiver) {
@@ -5775,9 +5802,18 @@ impl BootstrapState {
                     .iter()
                     .copied()
                 {
+                    let from = self.positions.find(cap).map(|position| position.location);
                     self.positions
                         .move_from_message(cap, message.id, receiver)
                         .map_err(|_| IpcError::InvalidCapability)?;
+                    // §13.1：位置变化必须追加 `CapabilityMoved`（接收：`InMessage` → `HeldBy(receiver)`）。
+                    if let Some(from) = from {
+                        self.audit.append(AuditEvent::CapabilityMoved {
+                            cap,
+                            from,
+                            to: CapabilityLocation::HeldByTask(receiver),
+                        });
+                    }
                 }
                 self.audit.append(AuditEvent::MessageReceived {
                     message_id: message.id,
@@ -8902,8 +8938,17 @@ mod tests {
             .unwrap();
         assert_eq!(state.ipc.count, 0);
         // 前 5 条是 SPEC-061 的初始 Authority 审计；随后是 SPEC-071 的 Task 状态迁移
-        // （`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞与投递唤醒）与消息事件。
-        assert_eq!(state.audit.count, 9);
+        // （`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞与投递唤醒）、§13.1 的
+        // 携带 Capability 位置变化（直投：`HeldBy(init)` → `HeldBy(2)`）与消息事件。
+        assert_eq!(state.audit.count, 10);
+        assert_eq!(
+            state.audit.entry(state.audit.len() - 4),
+            Some(AuditEvent::CapabilityMoved {
+                cap: IMAGE_CAP_HANDLE,
+                from: CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                to: CapabilityLocation::HeldByTask(2),
+            })
+        );
         assert!(matches!(
             state.audit.entry(state.audit.len() - 2),
             Some(AuditEvent::MessageSent { message_id: 1, .. })
