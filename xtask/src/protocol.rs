@@ -3317,8 +3317,9 @@ fn validate_service_reply_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// SPEC-090：`service_selected_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
-const SERVICE_SELECTED_NAME: u64 = 2;
+/// SPEC-090/101：`service_selected_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
+/// SPEC-101 起服务名是 ASCII 令牌打包值：`name` = `"beta"`（`0x6174_6562`）。
+const SERVICE_SELECTED_NAME: u64 = 0x6174_6562;
 const SERVICE_SELECTED_RESOLVED: u64 = 2;
 const SERVICE_SELECTED_UNKNOWN: u64 = 0;
 /// `BETA` 行为 offer `{features 0b101, required 0b001, max 1024}` 协商得
@@ -3332,9 +3333,10 @@ const SERVICE_SELECTED_ALPHA_EP: u64 = 9;
 const SERVICE_SELECTED_BETA_EP: u64 = 10;
 /// SPEC-094：存活客户端（task 8）的 task id。
 const SERVICE_SELECTED_CLIENT_EP: u64 = 8;
-/// SPEC-095：运行期服务注册表里两个端点**自报的注册名**（应与 `ALPHA`/`BETA` 行为码一致）。
-const SERVICE_SELECTED_REG_A_NAME: u64 = 1;
-const SERVICE_SELECTED_REG_B_NAME: u64 = 2;
+/// SPEC-095/101：运行期服务注册表里两个端点回报的注册名（ASCII 令牌 `"alpha"`/`"beta"`；
+/// 由服务管理器在创建时运行期指派，端点二进制无名字字面量）。
+const SERVICE_SELECTED_REG_A_NAME: u64 = 0x0061_6870_6c61;
+const SERVICE_SELECTED_REG_B_NAME: u64 = 0x6174_6562;
 /// SPEC-093：两个端点映像的**二进制标记**（编译进各自 ELF；相异即证明「不同程序」）。
 const SERVICE_SELECTED_ALPHA_MARKER: u64 = 0x414C_5048_4100_0001;
 const SERVICE_SELECTED_BETA_MARKER: u64 = 0x4245_5441_0000_0002;
@@ -3850,7 +3852,7 @@ mod tests {
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x2;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10;reg_a_name=0x1;reg_b_name=0x2\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
         "PRIMA|v=1|seq=29|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=30|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=31|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4097,7 +4099,10 @@ mod tests {
     fn rejects_service_selected_when_name_is_hardcoded() {
         // 把解析结果与读回的服务名脱钩（resolved=RESOLVED 但 name 为空）：若管理器硬编码行为
         // 而不读共享段里的名字，名字就不会等于客户端写入的 `BETA`——必须拒绝。
-        let output = VALID.replace("data=name=0x2;resolved=0x2", "data=name=0x0;resolved=0x2");
+        let output = VALID.replace(
+            "data=name=0x61746562;resolved=0x2",
+            "data=name=0x0;resolved=0x2",
+        );
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must read the requested service name"),
@@ -4183,11 +4188,11 @@ mod tests {
 
     #[test]
     fn rejects_service_selected_when_the_registry_is_not_built_from_self_reports() {
-        // SPEC-095：注册表项 B 的名字与端点自报不符——即解析用的注册表不是运行期自报所建
+        // SPEC-095/101：注册表项 B 的名字与端点回报不符——即解析用的注册表不是端点回报所建
         //（退化回编译期常量）；必须拒绝。
         let output = VALID.replace(
-            ";reg_a_name=0x1;reg_b_name=0x2",
-            ";reg_a_name=0x1;reg_b_name=0x9",
+            ";reg_a_name=0x6168706c61;reg_b_name=0x61746562",
+            ";reg_a_name=0x6168706c61;reg_b_name=0x9",
         );
         let error = validate_output(&output).unwrap_err();
         assert!(

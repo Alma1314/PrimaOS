@@ -501,6 +501,10 @@ pub struct TaskCreateRequest {
     pub parent_ns_cap: Handle,
     pub root_rights: Rights,
     pub initial_caps: [Handle; MAX_TASK_INITIAL_CAPS],
+    /// SPEC-101：细化层字段——服务管理器在创建时**运行期指派**给新 Task 的服务名（0 = 不指派）。
+    /// 抽象模型 §5.2 的 Task 无此字段；细化层把它按值写入新任务初始帧 `rcx`（第 4 个入口参数），
+    /// 使端点的身份是运行期数据而非编译进二进制的常量。
+    pub name: u64,
 }
 
 /// §8.1 的 `initial_caps` 在本细化层固定为至多 2 条（与消息携带 cap 同容量）。
@@ -9679,6 +9683,7 @@ mod tests {
             parent_ns_cap: NAMESPACE_CAP_HANDLE,
             root_rights: Rights::from_rights(&[Right::NsResolve]),
             initial_caps: [Handle::ZERO; super::MAX_TASK_INITIAL_CAPS],
+            name: 0,
         }
     }
 

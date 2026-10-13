@@ -14,7 +14,8 @@ use core::panic::PanicInfo;
 use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
-        MESSAGE_HEADER_LEN, OFFER_LEN, negotiation_negatives, negotiation_word, service_offer,
+        MESSAGE_HEADER_LEN, OFFER_LEN, SERVICE_NAME_MASK, negotiation_negatives, negotiation_word,
+        service_offer,
     },
 };
 
@@ -29,30 +30,34 @@ const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
 /// SPEC-093：`prima-beta`（`BETA` 端点）的二进制标记。**必须与 `prima-smoke` 的相异**。
 const BINARY_MARKER: u64 = 0x4245_5441_0000_0002;
-/// SPEC-088：服务端点自报 task id 的消息 tag（高 16 位；低 16 位为 id）。
+/// SPEC-088/101：端点自报的消息 tag（高 16 位）；payload 布局 `tag(48..63) | name(8..47) | id(0..7)`。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
-/// SPEC-095：本端点**自注册的服务名**（编译进二进制；init 建成 `name → task id` 注册表）。
-/// `prima-beta`（`BETA` 端点）注册名 `2`；`prima-smoke`（`ALPHA` 端点）注册名 `1`。
-const SERVICE_SELF_NAME: u64 = 2;
 /// SPEC-088：服务端点完成协商的消息 tag。
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 
 /// `BETA` 服务端点入口。装载器提供 ring3 栈；入口参数由 ABI 保留。
+///
+/// SPEC-101：第 4 参数（`rcx`）是服务管理器在创建时**运行期指派**的注册名；本映像不含名字字面量。
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
-pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, _initial_cap1_raw: u64) -> ! {
+pub extern "C" fn _start(
+    self_cap_raw: u64,
+    send_cap_raw: u64,
+    _initial_cap1_raw: u64,
+    name_raw: u64,
+) -> ! {
     let runtime = Runtime::x86_64();
     if let (Ok(self_cap), Ok(send_cap), Ok(id)) = (
         Capability::from_raw(self_cap_raw),
         Capability::from_raw(send_cap_raw),
         runtime.task_id(),
     ) {
-        // 自报 id + **注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
+        // 自报 id + **运行期指派的注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
         let _ = runtime.send(
             TaskId::from_raw(1),
             send_cap,
-            SERVICE_ID_TAG | (SERVICE_SELF_NAME << 16) | id.as_raw() as u64,
+            SERVICE_ID_TAG | ((name_raw & SERVICE_NAME_MASK) << 8) | (id.as_raw() as u64 & 0xff),
             &[],
         );
         let mut segment_mapped = false;

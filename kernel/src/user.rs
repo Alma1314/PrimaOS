@@ -159,13 +159,35 @@ pub const SVC_RECV_BUF: u64 = USER_Y_VA + 936;
 
 /// SPEC-090：客户端把**请求服务名**写入共享段的偏移（`init` 经 `USER_HELLO2_VA` 读回）。
 pub const HELLO_SERVICE_NAME_OFFSET: u64 = 48;
-/// SPEC-090：服务管理器**服务注册表**里的名字与行为码（与 `prima-runtime::protocol` 一致）。
-pub const SERVICE_NAME_BETA: u64 = 2;
+/// SPEC-101：服务名 = 最多 5 字节 ASCII 令牌，按 little-endian 打包进 u64 的低 40 位（与
+/// `prima-runtime::protocol::pack_service_name` 同款）。取代 SPEC-095 的 64 位数字码。
+pub const SERVICE_NAME_MAX: usize = 5;
+pub const SERVICE_NAME_MASK: u64 = 0x0000_00ff_ffff_ffff;
+
+/// SPEC-101：把 ASCII 令牌打包为服务名（超过 5 字节截断）。
+pub const fn service_name(bytes: &[u8]) -> u64 {
+    let mut packed = 0u64;
+    let mut index = 0;
+    while index < bytes.len() && index < SERVICE_NAME_MAX {
+        packed |= (bytes[index] as u64) << (8 * index);
+        index += 1;
+    }
+    packed
+}
+
+/// SPEC-090/101：服务管理器**服务注册表**里的行为码（与 `prima-runtime::protocol` 一致）。
 pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
 pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
 pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
-/// SPEC-090：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
-pub const SERVICE_NAME_UNKNOWN: u64 = 0xDEAD;
+/// SPEC-101：两个端点的服务名（ASCII 令牌 `"alpha"`/`"beta"`），由服务管理器在创建时**运行期
+/// 指派**（写入新任务初始帧 `rcx`），端点二进制不含名字字面量。
+pub const SERVICE_NAME_ALPHA: u64 = service_name(b"alpha");
+pub const SERVICE_NAME_BETA: u64 = service_name(b"beta");
+/// SPEC-090/101：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
+pub const SERVICE_NAME_UNKNOWN: u64 = service_name(b"ghost");
+/// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
+/// （≤ 255，取低 8 位）。
+pub const SERVICE_ID_MASK: u64 = 0xff;
 /// SPEC-090：`BETA` 行为的协商结果写在 `128 + (behavior-1)*16` = 144；判决性在 `max=1024`
 /// （只可能来自被按名选中的 `BETA` offer，`ALPHA` 是 2048）。
 pub const SERVICE_NEGOTIATED_B_OFFSET: u64 = 144;
@@ -181,7 +203,8 @@ pub const SVC_RECEIPT_MGR2: u64 = 992;
 pub const SVC_RECEIPT_ID2: u64 = 1000;
 pub const SVC_RECEIPT_STACK2: u64 = 1008;
 pub const SVC_RECEIPT_SEG_B: u64 = 1016;
-/// SPEC-095：运行期服务注册表的 Y 页槽——两个端点**自报的注册名**（取自自报消息的 16..31 位）。
+/// SPEC-095/101：运行期服务注册表的 Y 页槽——两个端点回报的注册名（取自自报消息的 8..47 位，
+/// 即端点从创建指派处 `rcx` 读得的 ASCII 令牌）。
 ///
 /// init 在收集端点自报时记下 `(name, id)`，解析请求名时**按名扫描**这两条（替代内联常量
 /// `cmp`）。槽位取 Y 页空隙 `768/776`（`CLIENT_RECEIPT_RECV=760` 与 `CLIENT_RECEIPT_MAP=800`
@@ -1673,6 +1696,11 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
+    // SPEC-101：把服务管理器**运行期指派**给端点 A 的名字 `"alpha"` 写入请求块 `[rdx+0x50]`。
+    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_NAME_ALPHA);
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x50]); // mov [rdx+0x50], rax（name）
+    at += 4;
     // 2) 第 4 次 create：Rust 服务端点。
     put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
     at += 3;
@@ -1738,17 +1766,20 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 6;
     put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存整个自报 payload）
     at += 3;
-    put(&mut code, at, &[0x25]); // and eax, 0xffff → svc_id
-    put(&mut code, at + 1, &(0xFFFFu32).to_le_bytes());
+    put(&mut code, at, &[0x25]); // and eax, 0xff → svc_id
+    put(&mut code, at + 1, &(SERVICE_ID_MASK as u32).to_le_bytes());
     at += 5;
     put_store_rax(&mut code, at, SVC_RECEIPT_ID as u32);
     at += 7;
-    // SPEC-095：自报 payload 的 16..31 位是**自注册服务名** → Y[SVC_RECEIPT_REG_A_NAME]（注册表项 A）。
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x10]); // shr rdx, 16
+    // SPEC-101：自报 payload 的 8..47 位是端点**从创建指派处读得并回报的**服务名 →
+    // Y[SVC_RECEIPT_REG_A_NAME]（注册表项 A）。名字 40 位：`shr 8` 后 `shl/shr 24` 掩出低 40 位
+    //（不用掩码寄存器，避免占用 rcx = Y 页基址）。
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x08]); // shr rdx, 8
     at += 4;
-    put(&mut code, at, &[0x81, 0xE2]); // and edx, 0xffff
-    put(&mut code, at + 2, &(0xFFFFu32).to_le_bytes());
-    at += 6;
+    put(&mut code, at, &[0x48, 0xC1, 0xE2, 0x18]); // shl rdx, 24
+    at += 4;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x18]); // shr rdx, 24
+    at += 4;
     put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
     at += 3;
     put_store_rax(&mut code, at, SVC_RECEIPT_REG_A_NAME as u32);
@@ -1906,6 +1937,11 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
+    // SPEC-101：把服务管理器**运行期指派**给端点 B 的名字 `"beta"` 写入请求块 `[rdx+0x50]`。
+    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_NAME_BETA);
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x50]); // mov [rdx+0x50], rax（name）
+    at += 4;
     // initial_cap1 = tokenB：从**第二个**代码段根 cap 派生 `{SegMapR}`，非零 = 服务端点角色。
     put_imm64(
         &mut code,
@@ -1990,17 +2026,18 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 6;
     put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存 payload）
     at += 3;
-    put(&mut code, at, &[0x25]); // and eax, 0xffff → id2
-    put(&mut code, at + 1, &(0xFFFFu32).to_le_bytes());
+    put(&mut code, at, &[0x25]); // and eax, 0xff → id2
+    put(&mut code, at + 1, &(SERVICE_ID_MASK as u32).to_le_bytes());
     at += 5;
     put_store_rax(&mut code, at, SVC_RECEIPT_ID2 as u32);
     at += 7;
-    // SPEC-095：自报 payload 的 16..31 位是 B 端点的**自注册服务名** → Y[SVC_RECEIPT_REG_B_NAME]。
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x10]); // shr rdx, 16
+    // SPEC-101：自报 payload 的 8..47 位是 B 端点回报的**运行期指派名** → Y[SVC_RECEIPT_REG_B_NAME]。
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x08]); // shr rdx, 8
     at += 4;
-    put(&mut code, at, &[0x81, 0xE2]); // and edx, 0xffff
-    put(&mut code, at + 2, &(0xFFFFu32).to_le_bytes());
-    at += 6;
+    put(&mut code, at, &[0x48, 0xC1, 0xE2, 0x18]); // shl rdx, 24
+    at += 4;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x18]); // shr rdx, 24
+    at += 4;
     put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
     at += 3;
     put_store_rax(&mut code, at, SVC_RECEIPT_REG_B_NAME as u32);
@@ -2386,9 +2423,10 @@ pub struct ServiceSelectedWitness {
     /// SPEC-094：客户端栈在 `USER3_STACK_VA` 处映射所属的 Segment id——须与 `alpha_stack_seg`
     /// 相异，证明 `ALPHA` 端点不再沿用客户端 `Y[368]` 的那条**共享物理栈帧**。
     pub client_stack_seg: u64,
-    /// SPEC-095：运行期服务注册表——`ALPHA` 端点**自报的注册名**（应 = `SERVICE_BEHAVIOR_ALPHA`）。
+    /// SPEC-095/101：运行期服务注册表——`ALPHA` 端点**自报的注册名**（ASCII 令牌 `"alpha"`，
+    /// 由服务管理器在创建时运行期指派，端点二进制无此字面量）。
     pub reg_a_name: u64,
-    /// SPEC-095：运行期服务注册表——`BETA` 端点**自报的注册名**（应 = `SERVICE_BEHAVIOR_BETA`）。
+    /// SPEC-095/101：运行期服务注册表——`BETA` 端点**自报的注册名**（ASCII 令牌 `"beta"`）。
     pub reg_b_name: u64,
 }
 
@@ -2412,8 +2450,8 @@ impl ServiceSelectedWitness {
             && self.client_stack_seg != 0
             && self.client_stack_seg != self.alpha_stack_seg
             && self.client_stack_seg != self.beta_stack_seg
-            && self.reg_a_name == SERVICE_BEHAVIOR_ALPHA
-            && self.reg_b_name == SERVICE_BEHAVIOR_BETA
+            && self.reg_a_name == SERVICE_NAME_ALPHA
+            && self.reg_b_name == SERVICE_NAME_BETA
     }
 }
 
@@ -3496,6 +3534,7 @@ pub fn register_created_task(
     stack_top: u64,
     self_cap: u64,
     initial_caps: [u64; 2],
+    name: u64,
 ) -> Result<(), VspaceError> {
     let kstack = task_kstack_top(task_id).ok_or(VspaceError::BadRoot)?;
     let mut frame = SretFrame::ZERO;
@@ -3507,6 +3546,9 @@ pub fn register_created_task(
     frame.rdi = self_cap;
     frame.rsi = initial_caps[0];
     frame.rdx = initial_caps[1];
+    // SPEC-101：服务名的运行期指派——写入初始帧 `rcx`（第 4 个入口参数）。端点在编译期不含
+    // 任何服务名字面量，名字由服务管理器在 `task_create` 时给出，故同一映像可按名重用/改名。
+    frame.rcx = name;
     frame.cs = USER_CS as u64;
     frame.ss = USER_DS as u64;
     frame.rflags = 0x2 | (1 << 9); // bit1 固定 + IF=1
@@ -3567,6 +3609,19 @@ mod tests {
     use super::*;
     use crate::bootstrap::{NAMESPACE_CAP_HANDLE, TASK_CREATE_ROOT_NS_RIGHTS};
     use crate::syscall::{TASK_CODE_CAP, TASK_REQ_VA, TASK_SEND_CAP};
+
+    /// SPEC-101：服务名是 ASCII 令牌打包进 u64 低 40 位——钉住钉死值，并证明截断/相异性。
+    #[test]
+    fn service_names_pack_ascii_tokens() {
+        assert_eq!(SERVICE_NAME_ALPHA, 0x0000_0061_6870_6c61); // "alpha"
+        assert_eq!(SERVICE_NAME_BETA, 0x0000_0000_6174_6562); // "beta"
+        assert_eq!(SERVICE_NAME_UNKNOWN, 0x0000_0074_736f_6867); // "ghost"
+        assert_eq!(&SERVICE_NAME_BETA.to_le_bytes()[..4], b"beta");
+        assert_ne!(SERVICE_NAME_ALPHA, SERVICE_NAME_BETA);
+        // 超过 5 字节截断，尾部补 0。
+        assert_eq!(service_name(b"abcdefgh"), service_name(b"abcde"));
+        assert_eq!(service_name(b"") & SERVICE_NAME_MASK, 0);
+    }
 
     /// 便于构造成功证据。
     fn valid() -> UserWitness {

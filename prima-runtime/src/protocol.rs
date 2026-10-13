@@ -9,8 +9,28 @@ const MAGIC: [u8; 4] = *b"PRIM";
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
 pub const SERVICE_NAME_OFFSET: u64 = 48;
-/// SPEC-090：注册的服务名。`BETA` 被服务管理器解析为行为码 2；未注册名解析为 0（拒绝）。
-pub const SERVICE_NAME_BETA: u64 = 2;
+/// SPEC-101：服务名是**最多 5 字节的 ASCII 令牌**，按 little-endian 打包进一个 u64 的低 40 位
+/// （尾部补 `0`）。取代 SPEC-095 的 64 位数字码——名字从此是字符串而非魔数。
+pub const SERVICE_NAME_MAX: usize = 5;
+/// SPEC-101：有效名字位掩码（低 40 位）。
+pub const SERVICE_NAME_MASK: u64 = 0x0000_00ff_ffff_ffff;
+
+/// SPEC-101：把 ASCII 令牌打包为服务名（超过 5 字节截断）。与内核 `user::service_name` 同款。
+pub const fn pack_service_name(bytes: &[u8]) -> u64 {
+    let mut packed = 0u64;
+    let mut index = 0;
+    while index < bytes.len() && index < SERVICE_NAME_MAX {
+        packed |= (bytes[index] as u64) << (8 * index);
+        index += 1;
+    }
+    packed
+}
+
+/// SPEC-101：`ALPHA` 端点的服务名 `"alpha"`（打包值 `0x6168_706c_61`）。
+pub const SERVICE_NAME_ALPHA: u64 = pack_service_name(b"alpha");
+/// SPEC-101：`BETA` 端点的服务名 `"beta"`（打包值 `0x6174_6562`）。被服务管理器解析为行为码 2；
+/// 未注册名解析为 0（拒绝）。
+pub const SERVICE_NAME_BETA: u64 = pack_service_name(b"beta");
 /// SPEC-090：服务管理器可路由的行为码。`ALPHA`（默认，max 2048）与 `BETA`（max 1024）。
 pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
 pub const SERVICE_BEHAVIOR_BETA: u64 = 2;

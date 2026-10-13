@@ -7,8 +7,8 @@ use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
         MESSAGE_HEADER_LEN, MessageHeader, OFFER_LEN, ProtocolOffer, SERVICE_BEHAVIOR_NONE,
-        SERVICE_NAME_BETA, SERVICE_NAME_OFFSET, negotiation_negatives, negotiation_word,
-        service_offer,
+        SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, negotiation_negatives,
+        negotiation_word, service_offer,
     },
 };
 
@@ -27,12 +27,8 @@ const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
 /// SPEC-093：`prima-smoke`（`ALPHA` 端点）的二进制标记。`prima-beta` 用**不同**常量。
 const BINARY_MARKER: u64 = 0x414C_5048_4100_0001;
-/// SPEC-088：服务端点自报 task id 的消息 tag（高 16 位；低 16 位为 id）。
+/// SPEC-088/101：端点自报的消息 tag（高 16 位）；payload 布局 `tag(48..63) | name(8..47) | id(0..7)`。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
-/// SPEC-095：本端点**自注册的服务名**（编译进二进制；init 从自报消息的 16..31 位读出，
-/// 建成 `name → task id` 的运行期注册表，按名扫描解析——替代内联常量 `cmp`）。
-/// `prima-smoke`（`ALPHA` 端点）注册名 `1`；`prima-beta`（`BETA` 端点）注册名 `2`。
-const SERVICE_SELF_NAME: u64 = 1;
 /// SPEC-088：服务端点完成协商的消息 tag。
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 const HELLO_OPCODE: u16 = 1;
@@ -44,9 +40,16 @@ const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// Rust 用户映像入口。装载器将提供 ring3 栈，入口参数由 ABI 保留。
 ///
 /// SPEC-088：第 3 参数（`rdx` = `initial_caps[1]`）**非零 = 服务端点角色**，零 = 客户端角色。
+/// SPEC-101：第 4 参数（`rcx` = 服务名）由服务管理器在 `task_create` 时**运行期指派**——端点
+/// 角色用它作自注册名（客户端角色忽略它：客户端用众所周知的常量 `"beta"` 请求服务名）。
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
-pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw: u64) -> ! {
+pub extern "C" fn _start(
+    self_cap_raw: u64,
+    send_cap_raw: u64,
+    initial_cap1_raw: u64,
+    name_raw: u64,
+) -> ! {
     let runtime = Runtime::x86_64();
     if initial_cap1_raw != 0 {
         // ===== SPEC-088/090：Rust 服务端点 =====
@@ -61,9 +64,11 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
             let _ = runtime.send(
                 TaskId::from_raw(1),
                 send_cap,
-                // SPEC-095：自报 payload = tag ‖ 注册名(16..31) ‖ task id(0..15)——
-                // init 据此建立 `name → id` 注册表并按名扫描解析。
-                SERVICE_ID_TAG | (SERVICE_SELF_NAME << 16) | id.as_raw() as u64,
+                // SPEC-101：自报 payload = tag(48..63) ‖ 运行期指派的注册名(8..47) ‖ task id(0..7)
+                // ——init 据此建立 `name → id` 注册表并按名扫描解析。名字来自入口 `rcx`，非字面量。
+                SERVICE_ID_TAG
+                    | ((name_raw & SERVICE_NAME_MASK) << 8)
+                    | (id.as_raw() as u64 & 0xff),
                 &[],
             );
             let mut segment_mapped = false;
@@ -157,7 +162,9 @@ pub extern "C" fn _start(self_cap_raw: u64, send_cap_raw: u64, initial_cap1_raw:
             let mapped =
                 runtime.memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS);
             if mapped.is_ok() && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok() {
-                // SPEC-090：把**请求服务名**写入共享段（`BETA`），供服务管理器按名解析端点。
+                // SPEC-090：把**请求服务名**写入共享段（众所周知的常量 `"beta"`），供服务管理器
+                // 按名解析端点。客户端是**请求方**，用固定名寻址是常态；运行期指派的是**端点**的
+                // 注册名（见下）。
                 let _ = runtime.write_user_bytes(
                     USER_HELLO_VA + SERVICE_NAME_OFFSET,
                     &SERVICE_NAME_BETA.to_le_bytes(),

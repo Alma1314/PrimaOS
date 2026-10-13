@@ -111,8 +111,9 @@ pub const NS_RECEIPT_UNBIND: u64 = 640;
 pub const NS_RECEIPT_UNMOUNT: u64 = 648;
 pub const NS_RECEIPT_DESTROY: u64 = 656;
 
-/// S2-D4：`task_create` 请求块的 qword 个数与字节长度。
-pub const TASK_CREATE_REQ_QWORDS: usize = 10;
+/// S2-D4：`task_create` 请求块的 qword 个数与字节长度。SPEC-101 增第 11 个 qword（运行期指派的
+/// 服务名）。
+pub const TASK_CREATE_REQ_QWORDS: usize = 11;
 /// S2-D4：`task_create` 请求块的字节长度。
 pub const TASK_CREATE_REQ_LEN: u64 = (TASK_CREATE_REQ_QWORDS * 8) as u64;
 /// S2-D4：请求块在 task 1 用户栈页内的 VA（可写、user）。
@@ -1653,6 +1654,8 @@ fn read_task_req(ptr: u64) -> Result<bootstrap::TaskCreateRequest, Errno> {
             decode_optional_handle(words[8])?,
             decode_optional_handle(words[9])?,
         ],
+        // SPEC-101：运行期指派的服务名（0 = 不指派）。
+        name: words[10],
     })
 }
 
@@ -1738,6 +1741,7 @@ fn task_create_call(req_ptr: u64) -> u64 {
                 req.stack_top,
                 outcome.self_cap.encode(),
                 req.initial_caps.map(Handle::encode),
+                req.name,
             )
             .is_err()
             {
@@ -3099,9 +3103,10 @@ mod tests {
         assert_eq!(task_req_bounds(TASK_REQ_VA), Ok(()));
         assert_eq!(task_req_bounds(0x1000), Ok(()));
         assert_eq!(task_req_bounds(0x1004), Err(Errno::Fault)); // 未 8 对齐
-        // 80 字节跨页：0xfc0 + 80 > 0x1000。
+        // SPEC-101 起请求块 88 字节（11 qword）：0xfc0 + 88 > 0x1000 跨页；0xfa8 + 88 = 0x1000 恰好不跨页。
         assert_eq!(task_req_bounds(0xfc0), Err(Errno::Fault));
-        assert_eq!(task_req_bounds(0xfb0), Ok(())); // 恰好不跨页
+        assert_eq!(task_req_bounds(0xfb0), Err(Errno::Fault));
+        assert_eq!(task_req_bounds(0xfa8), Ok(())); // 恰好不跨页
     }
 
     #[test]
