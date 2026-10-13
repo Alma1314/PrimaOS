@@ -6725,9 +6725,10 @@ pub fn create_state(
         object_id: INIT_NAMESPACE_ID,
         segment: false,
     });
-    state.audit.append(AuditEvent::TaskStateChanged {
+    // W13「每个活动对象都有创建事件」+ §13.1：init Task 是**创建**（非状态迁移），
+    // 故与 `task_create`（成功动作 8）一致用 `TaskCreated`，不误用 `TaskStateChanged`。
+    state.audit.append(AuditEvent::TaskCreated {
         task_id: INIT_TASK_ID,
-        status: TaskStatus::Ready,
     });
     state
         .validate_authority()

@@ -3861,7 +3861,7 @@ mod tests {
         "PRIMA|v=1|seq=36|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
         "PRIMA|v=1|seq=37|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
         "PRIMA|v=1|seq=38|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=39|event=state_audit_ready|status=ok|data=total=52;to_running=22;to_ready=22;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=39|event=state_audit_ready|status=ok|data=total=51;to_running=22;to_ready=21;to_blocked=5;to_faulted=3;used=131;cap=170\n",
         "PRIMA|v=1|seq=40|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=41|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=42|event=boot_complete|status=ok\r\n",
@@ -4301,7 +4301,7 @@ mod tests {
     /// 切片 Z：`total` 必须等于分项之和。
     #[test]
     fn rejects_state_audit_with_inconsistent_total() {
-        let output = VALID.replace("total=52;", "total=53;");
+        let output = VALID.replace("total=51;", "total=52;");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must equal the per-status sum"), "{error}");
     }
