@@ -42,6 +42,10 @@ const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// SPEC-088：第 3 参数（`rdx` = `initial_caps[1]`）**非零 = 服务端点角色**，零 = 客户端角色。
 /// SPEC-101：第 4 参数（`rcx` = 服务名）由服务管理器在 `task_create` 时**运行期指派**——端点
 /// 角色用它作自注册名（客户端角色忽略它：客户端用众所周知的常量 `"beta"` 请求服务名）。
+///
+/// SPEC-104：第 5 参数（`r8` = 对端 task id）同样由 `task_create` **运行期指派**——它是
+/// `initial_caps[0]`（发送凭据）所指向的 task id。`send` 的接收者必须等于凭据目标
+/// （`kernel/src/syscall.rs::send_call`），故本映像据此寻址其设计对端，而非硬编码 task 1。
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
 pub extern "C" fn _start(
@@ -49,8 +53,10 @@ pub extern "C" fn _start(
     send_cap_raw: u64,
     initial_cap1_raw: u64,
     name_raw: u64,
+    peer_raw: u64,
 ) -> ! {
     let runtime = Runtime::x86_64();
+    let peer = TaskId::from_raw(peer_raw as u32);
     if initial_cap1_raw != 0 {
         // ===== SPEC-088/090：Rust 服务端点 =====
         // 自报 id → 循环：解析 init 每条路由消息。SPEC-090 的服务管理器把**路由到的行为码**
@@ -62,7 +68,7 @@ pub extern "C" fn _start(
             runtime.task_id(),
         ) {
             let _ = runtime.send(
-                TaskId::from_raw(1),
+                peer,
                 send_cap,
                 // SPEC-101：自报 payload = tag(48..63) ‖ 运行期指派的注册名(8..47) ‖ task id(0..7)
                 // ——init 据此建立 `name → id` 注册表并按名扫描解析。名字来自入口 `rcx`，非字面量。
@@ -121,7 +127,7 @@ pub extern "C" fn _start(
                         USER_HELLO_VA + SERVICE_NEGATIVES_OFFSET,
                         &negatives.to_le_bytes(),
                     );
-                    let _ = runtime.send(TaskId::from_raw(1), send_cap, SERVICE_DONE_TAG, &[]);
+                    let _ = runtime.send(peer, send_cap, SERVICE_DONE_TAG, &[]);
                 }
                 behavior = SERVICE_BEHAVIOR_NONE;
             }
@@ -169,12 +175,7 @@ pub extern "C" fn _start(
                     USER_HELLO_VA + SERVICE_NAME_OFFSET,
                     &SERVICE_NAME_BETA.to_le_bytes(),
                 );
-                let _ = runtime.send(
-                    TaskId::from_raw(1),
-                    send_cap,
-                    id.as_raw() as u64,
-                    &[segment],
-                );
+                let _ = runtime.send(peer, send_cap, id.as_raw() as u64, &[segment]);
                 // SPEC-087：只有**存活的**新客户端（非 SPEC-085 的历史见证载体 task 3）等 init
                 // 的应答，并把应答 payload 写回共享段供内核核验。task 3 的行为保持不变，
                 // 以冻结既有证据（它在发完 Hello 后即被 init 销毁）。

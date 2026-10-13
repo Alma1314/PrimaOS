@@ -39,6 +39,9 @@ const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// `BETA` 服务端点入口。装载器提供 ring3 栈；入口参数由 ABI 保留。
 ///
 /// SPEC-101：第 4 参数（`rcx`）是服务管理器在创建时**运行期指派**的注册名；本映像不含名字字面量。
+///
+/// SPEC-104：第 5 参数（`r8`）是 `initial_caps[0]`（发送凭据）所指向的**对端 task id**，
+/// 由 `task_create` 运行期指派——`send` 的接收者必须等于凭据目标，故据此寻址而非硬编码 task 1。
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
 pub extern "C" fn _start(
@@ -46,8 +49,10 @@ pub extern "C" fn _start(
     send_cap_raw: u64,
     _initial_cap1_raw: u64,
     name_raw: u64,
+    peer_raw: u64,
 ) -> ! {
     let runtime = Runtime::x86_64();
+    let peer = TaskId::from_raw(peer_raw as u32);
     if let (Ok(self_cap), Ok(send_cap), Ok(id)) = (
         Capability::from_raw(self_cap_raw),
         Capability::from_raw(send_cap_raw),
@@ -55,7 +60,7 @@ pub extern "C" fn _start(
     ) {
         // 自报 id + **运行期指派的注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
         let _ = runtime.send(
-            TaskId::from_raw(1),
+            peer,
             send_cap,
             SERVICE_ID_TAG | ((name_raw & SERVICE_NAME_MASK) << 8) | (id.as_raw() as u64 & 0xff),
             &[],
@@ -105,7 +110,7 @@ pub extern "C" fn _start(
                     USER_HELLO_VA + SERVICE_NEGATIVES_OFFSET,
                     &negatives.to_le_bytes(),
                 );
-                let _ = runtime.send(TaskId::from_raw(1), send_cap, SERVICE_DONE_TAG, &[]);
+                let _ = runtime.send(peer, send_cap, SERVICE_DONE_TAG, &[]);
             }
             behavior = 0;
         }

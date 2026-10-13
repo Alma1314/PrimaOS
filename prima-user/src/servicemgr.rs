@@ -17,7 +17,8 @@ use prima_runtime::{Capability, Runtime, TaskId, protocol::SERVICEMGR_HELLO_TAG}
 /// 服务管理器入口。装载器提供 ring3 栈；入口参数由 ABI 保留。
 ///
 /// 第 2 参数（`rsi` = `initial_caps[0]`）是 `init` 移交的**回发凭据**（目标 task 1 + `TaskSend`），
-/// 服务管理器用它向 init 自报存活。
+/// 服务管理器用它向 init 自报存活。SPEC-104：第 5 参数（`r8`）是该凭据所指向的**对端 task id**
+/// （由 `task_create` 运行期指派），自报接收者据此而非硬编码 task 1。
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
 pub extern "C" fn _start(
@@ -25,12 +26,13 @@ pub extern "C" fn _start(
     send_cap_raw: u64,
     _initial_cap1_raw: u64,
     _name_raw: u64,
+    peer_raw: u64,
 ) -> ! {
     let runtime = Runtime::x86_64();
     if let (Ok(send_cap), Ok(id)) = (Capability::from_raw(send_cap_raw), runtime.task_id()) {
         // 自报存活：payload = `SERVICEMGR_HELLO_TAG` 高 16 位 ‖ 自身 task id 低 8 位。
         let _ = runtime.send(
-            TaskId::from_raw(1),
+            TaskId::from_raw(peer_raw as u32),
             send_cap,
             SERVICEMGR_HELLO_TAG | (id.as_raw() as u64 & 0xff),
             &[],

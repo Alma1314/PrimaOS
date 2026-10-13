@@ -3734,6 +3734,15 @@ pub fn register_created_task(
     // SPEC-101：服务名的运行期指派——写入初始帧 `rcx`（第 4 个入口参数）。端点在编译期不含
     // 任何服务名字面量，名字由服务管理器在 `task_create` 时给出，故同一映像可按名重用/改名。
     frame.rcx = name;
+    // SPEC-104：**对端 id 的运行期指派**——写入初始帧 `r8`（第 5 个入口参数）：`initial_caps[0]`
+    // 所指向的 task id（若它不是 Task cap 则为 0）。`send` 的接收者须等于发送凭据的目标
+    //（`syscall::send_call`），故持有发送凭据的子任务据此才能**寻址**其设计对端——`init` 建
+    // 任务时凭据指向谁，子任务的入口 `r8` 就是谁。SPEC-104 前 `initial_caps[0]` 皆指向 task 1，
+    // 故本片不改变任何行为（事件逐字节冻结）。
+    frame.r8 = crate::bootstrap::decode_handle(initial_caps[0])
+        .ok()
+        .and_then(crate::bootstrap::task_of_cap)
+        .map_or(0, |id| id as u64);
     frame.cs = USER_CS as u64;
     frame.ss = USER_DS as u64;
     frame.rflags = 0x2 | (1 << 9); // bit1 固定 + IF=1
