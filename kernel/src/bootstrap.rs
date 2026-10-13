@@ -3523,6 +3523,55 @@ impl BootstrapState {
         Ok((source_id, cap))
     }
 
+    /// §12.6 `exc_source_destroy`：清空订阅者、从活动表删除源、追加销毁事件。
+    ///
+    /// 指向该源的 Capability 变为 stale token——细化层以 `target_live` 表达（源不在表中，
+    /// 任何经它的授权都失败），与 `memseg_destroy`/`ns_destroy` 同口径：**不回收槽位**
+    /// （异常源 cap 本就不入 `positions`，其槽由 `MAX_CAPABILITY_SLOTS` 兜住，登记为泄漏）。
+    /// 成功动作 5 的「stale」在此不表现为 `SlotState::Stale`，而是目标不活。
+    ///
+    /// `ExcSourceId` **不复用**（`count` 保持，§3；`next_id` 因此仍单调）。
+    /// 已 `Faulted` 且 `pending_exc.source_id` 指向本源的 Task **不受影响**（§12.6：源销毁
+    /// 不改变其状态、不产生通知；它只能经 §8.2 的内核回收路径处置）。
+    pub fn exc_source_destroy(&mut self, caller: u32, cap: Handle) -> Result<(), ExcError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ExcError::NoSuchTask);
+        }
+        if self.slots.check(cap) != SlotState::Live {
+            return Err(ExcError::NoSuchSource);
+        }
+        let source_id = self
+            .exc_sources
+            .find_by_cap(cap)
+            .ok_or(ExcError::NoSuchSource)?
+            .id;
+        let record = self.records.find(cap).ok_or(ExcError::NoSuchSource)?;
+        if record.holder != caller {
+            return Err(ExcError::NotHolder);
+        }
+        if !record.rights.contains(Right::ExcSourceDestroy) {
+            return Err(ExcError::MissingRight);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ExcError::AuditFull);
+        }
+        // 成功动作 1/2/3：订阅集合随源对象一同消失；源从活动表移除（`count` 不减，
+        // 故 `next_id` 不回头、`ExcSourceId` 不复用）。
+        if let Some(index) = self.exc_sources.entries[..self.exc_sources.count]
+            .iter()
+            .position(|entry| entry.is_some_and(|source| source.id == source_id))
+        {
+            self.exc_sources.entries[index] = None;
+        }
+        // 成功动作 4：追加销毁事件。与 Timer/Namespace 共用 `segment: false` 形态
+        // （`ObjectRef` 的 id 空间按类型独立，见 SPEC-083）。
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: source_id,
+            segment: false,
+        });
+        Ok(())
+    }
+
     /// 切片 L：`caller` 用持有的 `cap_id` 订阅 `kind`（§12.4）。
     ///
     /// 成功返回 source_id；失败不修改任何状态、不追加 Audit。
@@ -9131,6 +9180,51 @@ mod tests {
             0
         );
         assert_eq!(state.exc_audit_counts().unsubscribed, 1);
+    }
+
+    #[test]
+    fn exc_source_destroy_removes_the_source_and_stales_its_cap() {
+        let mut state = exc_state();
+        state.create_task(2).unwrap();
+        let page_cap = EXC_PAGE_FAULT_HANDLE;
+        state
+            .exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault)
+            .unwrap();
+        assert_eq!(
+            state.exc_sources.find(PAGE_FAULT_SOURCE_ID).unwrap().count,
+            1
+        );
+
+        // 成功：源离开活动表、订阅集合随之消失、cap 的目标不再存活、其余源不受影响。
+        assert_eq!(state.exc_source_destroy(INIT_TASK_ID, page_cap), Ok(()));
+        assert!(state.exc_sources.find(PAGE_FAULT_SOURCE_ID).is_none());
+        assert!(!state.target_live(ObjectRef::ExcSource(PAGE_FAULT_SOURCE_ID)));
+        assert!(state.exc_sources.find(SYSCALL_TRAP_SOURCE_ID).is_some());
+        assert!(state.validate_authority().is_ok());
+
+        // 失败路径：同一 cap 再销毁（源已不在）、未知句柄、非持有者、缺 `ExcSourceDestroy`。
+        assert_eq!(
+            state.exc_source_destroy(INIT_TASK_ID, page_cap),
+            Err(ExcError::NoSuchSource)
+        );
+        assert_eq!(
+            state.exc_source_destroy(INIT_TASK_ID, Handle::new(61, 1).unwrap()),
+            Err(ExcError::NoSuchSource)
+        );
+        assert_eq!(
+            state.exc_source_destroy(2, EXC_SYSCALL_TRAP_HANDLE),
+            Err(ExcError::NotHolder)
+        );
+        state.records.entries[EXC_SYSCALL_TRAP_HANDLE.index() as usize]
+            .as_mut()
+            .unwrap()
+            .rights = Rights::from_rights(&[Right::ExcSubscribe]);
+        assert_eq!(
+            state.exc_source_destroy(INIT_TASK_ID, EXC_SYSCALL_TRAP_HANDLE),
+            Err(ExcError::MissingRight)
+        );
+        // 失败路径不改变状态。
+        assert!(state.exc_sources.find(SYSCALL_TRAP_SOURCE_ID).is_some());
     }
 
     #[test]
