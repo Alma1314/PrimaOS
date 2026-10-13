@@ -94,7 +94,9 @@ const MAX_TASKS: usize = 12;
 /// 后续任何进一步存储增长都**必须先做审计存储重构**（把 `AuditLog` 移出 `BootstrapState`），
 /// 登记为已知瓶颈。
 /// SPEC-074：容量不再受 `BootstrapState` 守卫约束（存储已移出结构体），故提到 256 以留足余量。
-const MAX_AUDIT_EVENTS: usize = 256;
+/// 2026-10-13：256 在 boot 期已贴上限（实测补事件即 `AuditFull` 级联），提到 512 为
+/// `ISSUE-EXC-011` 的 Task Capability 审计补事件留出余量（仍不占 `BootstrapState`）。
+const MAX_AUDIT_EVENTS: usize = 512;
 
 /// SPEC-074：审计 arena 按**实例**划分的区段数。
 ///
@@ -5315,8 +5317,16 @@ impl BootstrapState {
             rollback(&fresh_tables, fresh_count);
             return Err(TaskCreateError::CapacityExceeded);
         };
+        // §8.1 动作 8 + §13.1：铸造即追加 `CapabilityMinted`（`mint_root_capability` 只
+        // `can_append(1)` 预留额度、由调用者补发——与 `ns_create` 同模式）。
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: manager_cap,
+            holder: caller,
+        });
+        // §8.1 动作 4：self Cap 从 manager Cap **派生**（`parent = manager_cap`、权限相同），
+        // 非独立铸造；`derive_capability_to_holder` 内部追加 `CapabilityDerived`（W2 溯源链）。
         let Ok(self_cap) =
-            self.mint_root_capability(new_id, MANAGER_TASK_RIGHTS, ObjectRef::Task(new_id))
+            self.derive_capability_to_holder(caller, manager_cap, MANAGER_TASK_RIGHTS, new_id)
         else {
             self.retire_capability(manager_cap);
             self.tasks.remove(new_id);
