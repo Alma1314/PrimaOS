@@ -1,6 +1,7 @@
 import Formal.State
 import Formal.Bootstrap
 import Formal.ExcResume
+import Formal.Derive
 
 -- BLK-001 入口：声明模型目标清单；import 各模型模块使 lake build 覆盖 Formal.*。
 

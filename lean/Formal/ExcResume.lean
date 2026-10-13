@@ -33,7 +33,19 @@ theorem exc_resume_success_returns_some :
     （投影断言，避免 funext）。 -/
 theorem exc_resume_success_keeps_source_cap :
     let s' := (excResume bootedState 1 1).get!
-    s'.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true } := by
+    s'.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true, parent := none } := by
   rfl
+
+/-- 保持性（非平凡锚）：`excResume` 成功时返回**原状态** `s`（`some s`），故良构不变。
+    失败返回 `none`，状态不变由返回类型承载。 -/
+theorem exc_resume_preserves_wellformed (s s' : State) (caller srcCap : Nat)
+    (hwf : WellFormed s) (h : excResume s caller srcCap = some s') : WellFormed s' := by
+  unfold excResume at h
+  split at h
+  · simp at h
+  · split at h
+    · simp at h
+    · cases h
+      exact hwf
 
 end Formal

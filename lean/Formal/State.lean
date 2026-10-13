@@ -16,12 +16,19 @@ inductive Object where
   | namespace (id : Nat)
 deriving DecidableEq, Repr
 
-/-- 能力（对齐 cosir `Capability` 的 owner/object/rights/active）。 -/
+/-- §4.2/§4.4 派生树（seL4 CDT 对应物）：父 CapId 恒小于子 CapId，故本节点内派生天然无环。 -/
+def capDerive : UInt16 := 0b0000_0000_0100_0000
+
+/-- 能力（对齐 cosir `Capability` 的 owner/object/rights/active）。
+    `parent`：§4.2 派生树的父 CapId，`none` = 随对象创建铸造的**根**。
+    内核侧对应 `CapRecord.parent : Option<Handle>`（`kernel/src/bootstrap.rs:1095`）；
+    cosir 侧**尚未建模该字段**（登记为映照契约的 Lean-ahead 分歧）。 -/
 structure Capability where
   owner : Nat
   obj : Object
   rights : UInt16
   active : Bool
+  parent : Option Nat
 deriving DecidableEq, Repr
 
 /-- 状态（对齐 cosir `State` 的最小子集：capabilities + booted）。 -/
@@ -41,8 +48,18 @@ instance : Repr State where
 /-- 初始 init Task 的恒定量 ID（对齐 cosir `abstract_ops::init_task_id()` = 1）。 -/
 def initTaskId : Nat := 1
 
-/-- 世界良构：capabilities 域有限。本谓词在最小模型里恒真，作为 WellFormed 的锚。
-    `_s` 前置下划线：该谓词当前不引用状态（恒真），显式表明此事实而非漏用变量。 -/
-def WellFormed (_s : State) : Prop := True
+/-- 世界良构：**能力派生树不变量**（seL4 CDT well-formedness 的对应物，非恒真）。
+    对每条存在的能力 `cap`（CapId `c`）：
+    - 若 `cap` 是派生能力（`parent = some p`），则 `p < c`（§4.2「父 CapId 必须小于子 CapId」，
+      本节点内派生天然无环——这是 seL4 CDT 森林性的具体化）；
+      且父 `p` 存在、活动、与子**指向同一对象**（§4.2「子 Capability 必须与父 Capability
+      指向同一对象」）。
+
+    子权限 ⊆ 父权限（§4.2 第三条）不在此谓词内：它需要 `derive` 时该性质已成立，作为
+    `derive` 的前置条件在其保持性定理中携带（见 `Formal/Derive.lean`）。 -/
+def WellFormed (s : State) : Prop :=
+  ∀ (c : Nat) (cap : Capability), s.caps c = some cap →
+    ∀ p, cap.parent = some p →
+      p < c ∧ ∃ pcap, s.caps p = some pcap ∧ pcap.active = true ∧ pcap.obj = cap.obj
 
 end Formal

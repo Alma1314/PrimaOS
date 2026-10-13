@@ -13,11 +13,11 @@ def alpha (s : State) : Bool := s.booted
 private def initCaps : Nat → Option Capability :=
   fun id =>
     if id = 1 then
-      some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true }
+      some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true, parent := none }
     else if id = 2 then
-      some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true }
+      some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true, parent := none }
     else if id = 3 then
-      some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true }
+      some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true, parent := none }
     else none
 
 /-- 空态：无能力、未 booted（对齐 cosir 交接点 EmptyState）。 -/
@@ -42,15 +42,15 @@ theorem bootstrap_empty_succeeds :
 
 /-- §14 步骤 5/6：空态 bootstrap 铸三条无父根 Capability（初始 Authority）。 -/
 theorem bootstrap_empty_mints_image_cap :
-    (bootstrap emptyState).get!.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true } := by
+    (bootstrap emptyState).get!.caps 1 = some { owner := 1, obj := Object.segment 1, rights := 0b0000_0000_0101_1010, active := true, parent := none } := by
   rfl
 
 theorem bootstrap_empty_mints_namespace_cap :
-    (bootstrap emptyState).get!.caps 2 = some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true } := by
+    (bootstrap emptyState).get!.caps 2 = some { owner := 1, obj := Object.namespace 1, rights := 0b0111_1110_0000_0000, active := true, parent := none } := by
   rfl
 
 theorem bootstrap_empty_mints_task_cap :
-    (bootstrap emptyState).get!.caps 3 = some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true } := by
+    (bootstrap emptyState).get!.caps 3 = some { owner := 1, obj := Object.task 1, rights := 0b0000_0001_1110_0000, active := true, parent := none } := by
   rfl
 
 /-- 幂等唯一性：对已 booted 态再次 bootstrap 返回 none（不再重复铸造）。 -/
@@ -63,10 +63,30 @@ theorem alpha_projection_distinguishes_boot :
     alpha emptyState != alpha bootedState := by
   rfl
 
-/-- 成功结果 WellFormed：bootstrap 成功态满足良构（最小模型恒真）。
-    前置下划线：前提 `_h` 未被证明体引用（`WellFormed` 恒真），显式登记该事实。 -/
+/-- §14 步骤 5/6：booted 态是良构的派生森林——三条根 Capability 的 `parent = none`，
+    故 CDT 不变量在根上空洞成立（**非平凡**：需逐 CapId 展开 `initCaps` 的三分支）。 -/
+theorem bootedState_wellformed : WellFormed bootedState := by
+  intro c cap hc p hp
+  have hn : cap.parent = none := by
+    simp only [bootedState] at hc
+    unfold initCaps at hc
+    by_cases h1 : c = 1
+    · simp only [h1, if_true] at hc; cases hc; rfl
+    · simp only [h1, if_false] at hc
+      by_cases h2 : c = 2
+      · simp only [h2, if_true] at hc; cases hc; rfl
+      · simp only [h2, if_false] at hc
+        by_cases h3 : c = 3
+        · simp only [h3, if_true] at hc; cases hc; rfl
+        · simp only [h3, if_false] at hc
+          simp at hc
+  rw [hn] at hp
+  simp at hp
+
+/-- 成功结果 WellFormed：bootstrap 成功态满足良构（由 `bootedState_wellformed` 承载）。
+    `bootstrap m = some s'` 强制 `s' = bootedState`，故良构由该等式传递。 -/
 theorem bootstrap_new_wellformed (_m : State)
-    (_h : bootstrap _m = some bootedState) : WellFormed bootedState := by
-  trivial
+    (_h : bootstrap _m = some bootedState) : WellFormed bootedState :=
+  bootedState_wellformed
 
 end Formal
