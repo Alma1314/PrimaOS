@@ -64,6 +64,9 @@ use prima_ostd::sync::StaticCell;
 pub const PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
 /// SPEC-093：**第二个**服务端点的独立二进制映像（`BETA` 端点），与上者是不同的 ELF。
 pub const PRIMA_BETA_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"));
+/// SPEC-103：**ring3 服务管理器**的独立二进制映像（服务机制的收敛目标）。
+pub const PRIMA_SERVICEMGR_ELF: &[u8] =
+    include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"));
 
 const fn elf_word(bytes: &[u8], at: usize) -> u64 {
     let mut value = 0u64;
@@ -211,6 +214,13 @@ pub const SVC_RECEIPT_SEG_B: u64 = 1016;
 /// 之间，无任何见证读取），避开 `runtime_hello` 的 `map_result`（`Y+736`）等既有回执。
 pub const SVC_RECEIPT_REG_A_NAME: u64 = 768;
 pub const SVC_RECEIPT_REG_B_NAME: u64 = 776;
+/// SPEC-103：ring3 服务管理器向 init 自报存活的 tag（高 16 位；与 `prima-runtime::protocol` 一致）。
+pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
+/// SPEC-103：init 收到的服务管理器回执在 Y 页的偏移——`784`＝创建返回的 task id、`792`＝自报
+/// payload（`TAG ‖ id 低 8 位`）。取 Y 页空隙 `784/792`（`SVC_RECEIPT_REG_B_NAME=776` 与
+/// `CLIENT_RECEIPT_MAP=800` 之间，无任何既有见证读取）。
+pub const SERVICEMGR_RECEIPT_MGR: u64 = 784;
+pub const SERVICEMGR_RECEIPT_HELLO: u64 = 792;
 /// SPEC-092：服务端点把自己的 task id 写入共享段的偏移（`160 + (behavior-1)*8`；与 `prima-user` 一致）。
 pub const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 /// SPEC-092：`ALPHA` 端点（第一个服务任务）自报 id 的共享段偏移。
@@ -287,7 +297,8 @@ pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_
 /// SPEC-088：SPEC-087 的存活客户端已占 id 8，本片第 4 次 create 的 Rust 服务端点拿到 id 9，
 /// 故 6→7 把覆盖范围扩到 id 3..9（BSS +16 KiB，布局字段随之变化，逐条登记）。
 /// SPEC-092：第 5 次 create 的**第二个**服务端点拿到 id 10，故 7→8 扩到 id 3..10。
-pub const USER_TASK_KSTACK_COUNT: usize = 8;
+/// SPEC-103：第 6 次 create 的 ring3 服务管理器拿到 id 11，故 8→9 扩到 id 3..11。
+pub const USER_TASK_KSTACK_COUNT: usize = 9;
 
 pub static KSTACK_TASKS: StaticCell<[KStack; USER_TASK_KSTACK_COUNT]> =
     StaticCell::new([const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT]);
@@ -341,6 +352,10 @@ pub const RUNTIME_APP_ENTRY_OFFSET: u64 = elf_word(PRIMA_SMOKE_ELF, 24);
 pub const RUNTIME_APP2_CODE_PAGES: usize = runtime_app_pages(PRIMA_BETA_ELF);
 /// SPEC-093：第二个服务端点映像的入口相对装载基址的偏移。
 pub const RUNTIME_APP2_ENTRY_OFFSET: u64 = elf_word(PRIMA_BETA_ELF, 24);
+/// SPEC-103：ring3 服务管理器映像（`prima-servicemgr`）PT_LOAD 覆盖的页数。
+pub const RUNTIME_APP3_CODE_PAGES: usize = runtime_app_pages(PRIMA_SERVICEMGR_ELF);
+/// SPEC-103：服务管理器映像的入口相对装载基址的偏移。
+pub const RUNTIME_APP3_ENTRY_OFFSET: u64 = elf_word(PRIMA_SERVICEMGR_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
@@ -2219,6 +2234,130 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         &((fwd_skip as i64 - (fwd_je as i64 + 6)) as i32).to_le_bytes(),
     );
 
+    // ===== SPEC-103：ring3 服务管理器任务（独立二进制映像 `prima-servicemgr`）=====
+    // 决策见设计 `docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md`。
+    // 本片先证明「服务管理器是一个被 init 建起的**独立 ring3 任务**、并收到 init 的移交」；
+    // 注册表/按名解析/请求转发的迁移留 SPEC-104。与端点 B 一样，请求块在此**自足**写入
+    // （code_seg_cap/offset/pages/entry/initial_cap0/initial_cap1/name）。
+    put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
+    at += 10;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::SERVICE3_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP3_CODE_PAGES as u64); // code_pages
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP3_ENTRY_OFFSET,
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::SERVICEMGR_SEND_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // initial_cap1 = 0（非服务端点角色）
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // name = 0（服务管理器无服务名）
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x50]);
+    at += 4;
+    put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
+    at += 3;
+    put_syscall(&mut code, at, SYS_TASK_CREATE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
+    at += 7;
+    // 把服务管理器的**独立栈段**映射进其根：memseg_map(stack3, mgr, 0, USER3_STACK_VA, 1, R|W)。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBF,
+        crate::bootstrap::SERVICE3_STACK_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RSI,
+        SERVICEMGR_RECEIPT_MGR as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // 让出：服务管理器运行、自报存活后阻塞在 recv。
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // recv 循环直到 payload 高 16 位 == SERVICEMGR_HELLO_TAG 高 16 位（0x5E56）。
+    let mgr_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
+    at += 3;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
+    at += 4;
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5E56
+    put(
+        &mut code,
+        at + 2,
+        &((SERVICEMGR_HELLO_TAG >> 48) as u32).to_le_bytes(),
+    );
+    at += 6;
+    put(&mut code, at, &[0x0F, 0x85]); // jne mgr_loop
+    put(
+        &mut code,
+        at + 2,
+        &((mgr_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
+    );
+    at += 6;
+    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_HELLO as u32);
+    at += 7;
+
     // 收尾的抢占阶段需要 Ready 任务可轮转：本块的两次让出已把 task 2 排空成 `BlockedRecv`
     // （同 S2-D4 块末尾的情形），故末尾再做一次直投唤醒 `send(2, TASK2_SEND_CAP,
     // TASK2_WAKE_PAYLOAD, 0, 0, 0)`，使 task 2 在 int3 时重新为 Ready。
@@ -2479,6 +2618,42 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
             .unwrap_or(0) as u64,
         reg_a_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_A_NAME),
         reg_b_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_B_NAME),
+    }
+}
+
+/// SPEC-103：ring3 服务管理器任务的判决性见证。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServicemgrWitness {
+    /// 从第六次 `SYS_TASK_CREATE` 返回的**管理 cap** 解出的新任务 id（0 = 未能解出）。
+    pub task_id: u64,
+    /// 服务管理器自报存活的 payload（`SERVICEMGR_HELLO_TAG ‖ 自身 task id 低 8 位`）。
+    pub hello: u64,
+}
+
+impl ServicemgrWitness {
+    /// 判决性：任务 id 是一个**真实的子任务**（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8
+    /// 位与从管理 cap 解出的 id 相符——证明「存活自报来自 init 建起的那**同一个**独立 ring3 任务」，
+    /// 而非任何编译期常量（反例：任一不符即拒绝）。
+    pub fn evidence_ok(&self) -> bool {
+        self.task_id > 1
+            && (self.hello & 0xffff_0000_0000_0000) == SERVICEMGR_HELLO_TAG
+            && (self.hello & 0xff) == (self.task_id & 0xff)
+    }
+}
+
+/// SPEC-103：收集 ring3 服务管理器见证（在 task 1 的 `int3` 收尾回调中调用）。
+///
+/// Y[`SERVICEMGR_RECEIPT_MGR`] 存的是 `SYS_TASK_CREATE` 的返回（新任务的**管理 cap**），经
+/// [`crate::bootstrap::task_of_cap`] 解出其目标 task id，与自报 payload 的低 8 位交叉核对。
+pub fn servicemgr_witness() -> ServicemgrWitness {
+    let manager_cap = read_qword(USER_Y_VA + SERVICEMGR_RECEIPT_MGR);
+    let task_id = crate::bootstrap::decode_handle(manager_cap)
+        .ok()
+        .and_then(crate::bootstrap::task_of_cap)
+        .map_or(0, |id| id as u64);
+    ServicemgrWitness {
+        task_id,
+        hello: read_qword(USER_Y_VA + SERVICEMGR_RECEIPT_HELLO),
     }
 }
 
@@ -3214,6 +3389,7 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     let images = crate::bootstrap::prepare_task_create_caps(
         RUNTIME_APP_CODE_PAGES,
         RUNTIME_APP2_CODE_PAGES,
+        RUNTIME_APP3_CODE_PAGES,
         offset,
     )
     .map_err(|_| VspaceError::NoFrame)?;
@@ -3233,6 +3409,15 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
         USER3_CODE_VA,
         RUNTIME_APP2_CODE_PAGES,
         RUNTIME_APP2_ENTRY_OFFSET,
+    )?;
+    // SPEC-103：把**ring3 服务管理器映像**装进第三个代码段。
+    load_runtime_elf(
+        PRIMA_SERVICEMGR_ELF,
+        &images.code3,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP3_CODE_PAGES,
+        RUNTIME_APP3_ENTRY_OFFSET,
     )?;
     let frame = images.code.frame_at(0).ok_or(VspaceError::NoFrame)?;
     // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。

@@ -6,6 +6,10 @@ pub const MESSAGE_HEADER_LEN: usize = 20;
 pub const OFFER_LEN: usize = 24;
 const MAGIC: [u8; 4] = *b"PRIM";
 
+/// SPEC-103：ring3 服务管理器向 init **自报存活**的消息 tag（高 16 位）；低 8 位为自身 task id。
+/// 与内核 `user::SERVICEMGR_HELLO_TAG` 同款。
+pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
+
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
 pub const SERVICE_NAME_OFFSET: u64 = 48;

@@ -28,6 +28,7 @@ enum EventKind {
     ServiceReplyReady,
     ServiceNegotiatedReady,
     ServiceSelectedReady,
+    ServicemgrReady,
     NamespaceReady,
     PreemptReady,
     TimerReady,
@@ -121,7 +122,7 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap
 /// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
 /// manager/self/root-ns 共 5 条（49 → 54）。
-const TASK_READY_LIVE_CAPS: usize = 63;
+const TASK_READY_LIVE_CAPS: usize = 69;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -218,7 +219,7 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 42] = [
+const EXPECTED_EVENTS: [(u32, EventKind); 43] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -247,20 +248,21 @@ const EXPECTED_EVENTS: [(u32, EventKind); 42] = [
     (26, EventKind::ServiceReplyReady),
     (27, EventKind::ServiceNegotiatedReady),
     (28, EventKind::ServiceSelectedReady),
-    (29, EventKind::NamespaceReady),
-    (30, EventKind::PreemptReady),
-    (31, EventKind::TimerReady),
-    (32, EventKind::AuditReady),
-    (33, EventKind::ExcResumeReady),
-    (34, EventKind::PlatformSegmentsReady),
-    (35, EventKind::AuthorityReady),
-    (36, EventKind::FramesReady),
-    (37, EventKind::SelfRootReady),
-    (38, EventKind::FaultReady),
-    (39, EventKind::StateAuditReady),
-    (40, EventKind::ReclaimReady),
-    (41, EventKind::ResumeReady),
-    (42, EventKind::BootComplete),
+    (29, EventKind::ServicemgrReady),
+    (30, EventKind::NamespaceReady),
+    (31, EventKind::PreemptReady),
+    (32, EventKind::TimerReady),
+    (33, EventKind::AuditReady),
+    (34, EventKind::ExcResumeReady),
+    (35, EventKind::PlatformSegmentsReady),
+    (36, EventKind::AuthorityReady),
+    (37, EventKind::FramesReady),
+    (38, EventKind::SelfRootReady),
+    (39, EventKind::FaultReady),
+    (40, EventKind::StateAuditReady),
+    (41, EventKind::ReclaimReady),
+    (42, EventKind::ResumeReady),
+    (43, EventKind::BootComplete),
 ];
 
 const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
@@ -500,6 +502,13 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .find(|event| event.kind == EventKind::ServiceSelectedReady)
     {
         validate_service_selected_data(selected.data.as_deref())?;
+    }
+
+    if let Some(servicemgr) = events
+        .iter()
+        .find(|event| event.kind == EventKind::ServicemgrReady)
+    {
+        validate_servicemgr_data(servicemgr.data.as_deref())?;
     }
 
     if let Some(audit) = events
@@ -2358,9 +2367,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 8 || direct != 9 || blocks != 12 {
+    if queued != 9 || direct != 9 || blocks != 13 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 8/9/12 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, and SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 9/9/13 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, and SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv"
         ));
     }
     Ok(())
@@ -2537,9 +2546,10 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     // SPEC-087：再加 **存活的 Rust 客户端**（id 8，握手后阻塞等待）。
     // SPEC-088：再加 **Rust 服务端点**（id 9，自报 id 后阻塞等待协商请求）。
     // SPEC-092：再加**第二个独立服务端点**（id 10，各自独立任务与独立根）。
-    if tasks != 6 {
+    // SPEC-103：再加 ring3 **服务管理器**任务（id 11）。
+    if tasks != 7 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 6 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 7 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints + the ring3 servicemgr) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2573,9 +2583,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 6 {
+    if tasks_after != 7 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 6 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 7 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints + the ring3 servicemgr) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -3499,6 +3509,49 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// SPEC-103：`servicemgr_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
+const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
+
+/// SPEC-103：ring3 服务管理器任务的存活见证。判决性：`task_id` 是一个真实的 ring3 子任务
+/// （`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id` 相符——
+/// 证明存活自报来自 init 建起的**同一个**独立 ring3 任务，而非任何编译期常量。
+fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
+    let data = data.ok_or_else(|| "servicemgr_ready is missing data".to_owned())?;
+    let mut task_id = None;
+    let mut hello = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
+        match key {
+            "task_id" => task_id = Some(parse_addr(value)?),
+            "hello" => hello = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown data key: {key}")),
+        }
+    }
+    let missing = |key: &str| format!("missing {key} in servicemgr_ready data");
+    let task_id = task_id.ok_or_else(|| missing("task_id"))?;
+    let hello = hello.ok_or_else(|| missing("hello"))?;
+    if task_id <= 1 {
+        return Err(format!(
+            "servicemgr_ready task_id ({task_id}) must be a real ring3 child task (> 1, not init)"
+        ));
+    }
+    if hello & 0xffff_0000_0000_0000 != SERVICEMGR_HELLO_TAG {
+        return Err(format!(
+            "servicemgr_ready hello (0x{hello:x}) must carry the SERVICEMGR_HELLO_TAG tag 0x{SERVICEMGR_HELLO_TAG:x}"
+        ));
+    }
+    if hello & 0xff != task_id & 0xff {
+        return Err(format!(
+            "servicemgr_ready hello low byte ({:#x}) must equal the task id decoded from the manager cap ({:#x}) — the liveness report must come from the very task init created",
+            hello & 0xff,
+            task_id & 0xff
+        ));
+    }
+    Ok(())
+}
+
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_001c;
 const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_001d;
@@ -3696,6 +3749,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("service_reply_ready", "ok") => EventKind::ServiceReplyReady,
         ("service_negotiated_ready", "ok") => EventKind::ServiceNegotiatedReady,
         ("service_selected_ready", "ok") => EventKind::ServiceSelectedReady,
+        ("servicemgr_ready", "ok") => EventKind::ServicemgrReady,
         ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("timer_ready", "ok") => EventKind::TimerReady,
@@ -3747,6 +3801,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ServiceReplyReady
             | EventKind::ServiceNegotiatedReady
             | EventKind::ServiceSelectedReady
+            | EventKind::ServicemgrReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3791,6 +3846,7 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::ServiceReplyReady
             | EventKind::ServiceNegotiatedReady
             | EventKind::ServiceSelectedReady
+            | EventKind::ServicemgrReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -3847,26 +3903,27 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=8;direct=9;blocks=12\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=6;caps=63;root_cleared=1;grandchild=4;tasks_after=6;caps_after=63;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=9;direct=9;blocks=13\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=7;caps=69;root_cleared=1;grandchild=4;tasks_after=7;caps_after=69;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
         "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=30|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
-        "PRIMA|v=1|seq=31|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=32|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=33|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
-        "PRIMA|v=1|seq=34|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
-        "PRIMA|v=1|seq=35|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=36|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=37|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
-        "PRIMA|v=1|seq=38|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=39|event=state_audit_ready|status=ok|data=total=51;to_running=22;to_ready=21;to_blocked=5;to_faulted=3;used=131;cap=170\n",
-        "PRIMA|v=1|seq=40|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=41|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=42|event=boot_complete|status=ok\r\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0xb;hello=0x5e5600000000000b\n",
+        "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=33|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=34|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
+        "PRIMA|v=1|seq=35|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
+        "PRIMA|v=1|seq=36|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
+        "PRIMA|v=1|seq=37|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=38|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=39|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
+        "PRIMA|v=1|seq=40|event=state_audit_ready|status=ok|data=total=51;to_running=22;to_ready=21;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=41|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=42|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=43|event=boot_complete|status=ok\r\n",
     );
 
     #[test]
@@ -3877,6 +3934,26 @@ mod tests {
             error.contains("runtime_hello_ready wire data differs"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn rejects_servicemgr_when_the_liveness_report_is_not_from_the_created_task() {
+        // 自报 payload 的 id 低 8 位与从管理 cap 解出的 task id 不符（0x0b vs 0x0c）——
+        // 「存活自报来自 init 建起的那个任务」被证伪，必须拒绝。
+        let output = VALID.replace("hello=0x5e5600000000000b", "hello=0x5e5600000000000c");
+        let error = validate_output(&output).unwrap_err();
+        assert!(
+            error.contains("must come from the very task init created"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_servicemgr_when_the_task_id_is_init() {
+        // task_id 为 init(1)：存活自报不可能来自 init 自身。
+        let output = VALID.replace("task_id=0xb", "task_id=0x1");
+        let error = validate_output(&output).unwrap_err();
+        assert!(error.contains("must be a real ring3 child task"), "{error}");
     }
 
     #[test]
@@ -3940,9 +4017,10 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
-        // SPEC-070/072/073 + SPEC-087 + SPEC-088 + SPEC-092：合法值为 6（init + task 2 + 保留
-        // 槽位的 Faulted 见证任务 + 存活的 Rust 客户端 + **两个**独立 Rust 服务端点）；7 表示子任务未清除。
-        let output = VALID.replace(";tasks=6;", ";tasks=7;");
+        // SPEC-070/072/073 + SPEC-087 + SPEC-088 + SPEC-092 + SPEC-103：合法值为 7（init + task 2 +
+        // 保留槽位的 Faulted 见证任务 + 存活的 Rust 客户端 + **两个**独立 Rust 服务端点 + ring3
+        // 服务管理器）；8 表示子任务未清除。
+        let output = VALID.replace(";tasks=7;", ";tasks=8;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -3962,7 +4040,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=63;root_cleared", ";caps=59;root_cleared");
+        let output = VALID.replace(";caps=69;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4055,7 +4133,7 @@ mod tests {
     fn rejects_ipc_ready_without_the_direct_wake_path() {
         let output = VALID.replace(";direct=9;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 8/9/12"), "{error}");
+        assert!(error.contains("expected 9/9/13"), "{error}");
     }
 
     #[test]

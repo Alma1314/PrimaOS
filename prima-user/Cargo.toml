@@ -17,5 +17,12 @@ path = "src/beta.rs"
 test = false
 bench = false
 
+# SPEC-103：ring3 服务管理器的独立二进制映像（服务机制的收敛目标）。
+[[bin]]
+name = "prima-servicemgr"
+path = "src/servicemgr.rs"
+test = false
+bench = false
+
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }

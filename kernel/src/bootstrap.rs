@@ -1891,6 +1891,21 @@ pub const SERVICE2_STACK_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 9;
 /// SPEC-093：第二个端点栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
 pub const SERVICE2_STACK_CAP_HANDLE: Handle =
     cap_handle(SERVICE2_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-103：ring3 **服务管理器**独立代码段的根 Capability 槽（承载独立二进制 `prima-servicemgr`）。
+pub const SERVICE3_CODE_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 10;
+/// SPEC-103：服务管理器代码段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapX, SegDestroy}`）。
+pub const SERVICE3_CODE_CAP_HANDLE: Handle =
+    cap_handle(SERVICE3_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-103：ring3 **服务管理器**独立栈段的根 Capability 槽（独立物理栈帧）。
+pub const SERVICE3_STACK_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 11;
+/// SPEC-103：服务管理器栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
+pub const SERVICE3_STACK_CAP_HANDLE: Handle =
+    cap_handle(SERVICE3_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-103：服务管理器的回发凭据槽（目标 `Task(1)` + `TaskSend`，经 `initial_cap0` 移入其自身）。
+pub const SERVICEMGR_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 12;
+/// SPEC-103：经第六次 create 的 `initial_cap0` 移入服务管理器的凭据。
+pub const SERVICEMGR_SEND_CAP_HANDLE: Handle =
+    cap_handle(SERVICEMGR_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// SPEC-094：**第一个**服务端点（`ALPHA`）的**独立栈段**根 Capability 槽。
 ///
 /// SPEC-093 之前该端点沿用客户端（task 8）经 `SYS_MEMSEG_CREATE` 建的那条栈段 `Y[368]`——
@@ -2035,6 +2050,8 @@ impl SegmentFrames {
 pub struct TaskCreateImages {
     pub code: SegmentFrames,
     pub code2: SegmentFrames,
+    /// SPEC-103：ring3 服务管理器（`prima-servicemgr`）的独立代码段。
+    pub code3: SegmentFrames,
 }
 
 /// §5.1：Segment 对象（阶段 2：image / 平台 bring-up / 用户创建三类共用）。
@@ -6216,12 +6233,15 @@ impl BootstrapState {
         &mut self,
         code_pages: usize,
         code2_pages: usize,
+        code3_pages: usize,
         phys_offset: u64,
     ) -> Result<TaskCreateImages, MemsegError> {
         if code_pages == 0
             || code_pages > MAX_SEGMENT_FRAMES
             || code2_pages == 0
             || code2_pages > MAX_SEGMENT_FRAMES
+            || code3_pages == 0
+            || code3_pages > MAX_SEGMENT_FRAMES
         {
             return Err(MemsegError::OutOfBounds);
         }
@@ -6283,6 +6303,37 @@ impl BootstrapState {
                 SERVICE_STACK_CAP_SLOT,
             )),
         )?;
+        // SPEC-103：ring3 服务管理器的**独立代码段**（承载 `prima-servicemgr` 映像）。
+        let code3_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, code3) = self.create_segment_object(
+            code3_id,
+            KERNEL_ACTOR,
+            code3_pages,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                SERVICE3_CODE_CAP_SLOT,
+            )),
+        )?;
+        // SPEC-103：服务管理器的**独立栈段**（独立物理栈帧）。
+        let stack3_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let stack3_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+        self.create_segment_object(
+            stack3_id,
+            KERNEL_ACTOR,
+            1,
+            stack3_access,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                SERVICE3_STACK_CAP_SLOT,
+            )),
+        )?;
         self.mint_root_capability_at(
             CapabilityLocation::HeldByTask(INIT_TASK_ID),
             TASK_CREATE_SEND_CAP_SLOT,
@@ -6322,9 +6373,18 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
+        // SPEC-103：ring3 服务管理器的回发凭据（目标 `Task(1)` + `TaskSend`）。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            SERVICEMGR_SEND_CAP_SLOT,
+            Rights::from_rights(&[Right::TaskSend]),
+            ObjectRef::Task(INIT_TASK_ID),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
         Ok(TaskCreateImages {
             code: frames,
             code2,
+            code3,
         })
     }
 
@@ -7093,10 +7153,13 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
 pub fn prepare_task_create_caps(
     code_pages: usize,
     code2_pages: usize,
+    code3_pages: usize,
     phys_offset: u64,
 ) -> Result<TaskCreateImages, MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => state.prepare_task_create_caps(code_pages, code2_pages, phys_offset),
+        Some(state) => {
+            state.prepare_task_create_caps(code_pages, code2_pages, code3_pages, phys_offset)
+        }
         None => Err(MemsegError::TargetDead),
     })
 }
@@ -7790,9 +7853,9 @@ mod tests {
         const UNSET_CAP_SLOT: u32 = 60;
         let ns_start = NS_ROOT_CAP_SLOT_BASE;
         let ns_end = ns_start + MAX_NAMESPACE_OBJECTS as u32;
-        // usercap 固定块 = [USER_IPC_CAP_SLOT_BASE, USER_IPC_CAP_SLOT_BASE + 10)（+0/+1 切片 S，
-        // +2/+3 task_create，+4 task4，+5 client，+6 service，+7..+9 service2）。
-        let usercap_end = USER_IPC_CAP_SLOT_BASE + 10;
+        // usercap 固定块 = [USER_IPC_CAP_SLOT_BASE, USER_IPC_CAP_SLOT_BASE + 13)（+0/+1 切片 S，
+        // +2/+3 task_create，+4 task4，+5 client，+6 service，+7..+9 service2，+10..+12 servicemgr）。
+        let usercap_end = USER_IPC_CAP_SLOT_BASE + 13;
         assert!(
             ns_end <= MAX_CAPABILITY_SLOTS as u32,
             "NS 预留区间必须落在槽位空间内"

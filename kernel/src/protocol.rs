@@ -995,6 +995,23 @@ pub(crate) fn service_selected_ready(witness: &kernel::user::ServiceSelectedWitn
     serial::write_bytes(b"\r\n");
 }
 
+/// SPEC-103：ring3 服务管理器任务的存活见证（独立二进制映像 `prima-servicemgr`、id 非 init）。
+pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
+    write_prefix(
+        "servicemgr_ready",
+        if witness.evidence_ok() {
+            "ok"
+        } else {
+            "mismatch"
+        },
+    );
+    serial::write_bytes(b"|data=task_id=");
+    write_hex_u64(witness.task_id);
+    serial::write_bytes(b";hello=");
+    write_hex_u64(witness.hello);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。
 pub(crate) fn preempt_ready(witness: &kernel::preempt::PreemptWitness) {
     write_prefix("preempt_ready", "ok");

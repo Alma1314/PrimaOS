@@ -155,6 +155,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::service_negotiated_ready(&kernel::user::service_negotiated_witness());
     // SPEC-090：init（服务管理器）按客户端写入共享段的服务名解析端点并二次路由 + 未知名拒绝。
     protocol::service_selected_ready(&kernel::user::service_selected_witness());
+    // SPEC-103：ring3 服务管理器任务被 init 建起并自报存活（独立二进制映像、id 非 init）。
+    protocol::servicemgr_ready(&kernel::user::servicemgr_witness());
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);
