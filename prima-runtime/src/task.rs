@@ -29,6 +29,30 @@ pub struct TaskSpec {
     pub parent_namespace: Option<Capability>,
     pub root_rights: Rights,
     pub initial_capabilities: [Option<Capability>; 2],
+    /// SPEC-102：运行期指派给新 Task 的**服务名/身份令牌**，按值写入其初始帧 `rcx`（第 4 个入口
+    /// 参数）。与内核 `TaskCreateRequest::name`（SPEC-101 的第 11 个 qword）对应。
+    pub name: u64,
+}
+
+/// SPEC-102：`task_create` 请求块的字数。必须与内核 `syscall::TASK_CREATE_REQ_QWORDS` 一致
+/// （SPEC-101 起为 11：第 11 个 qword 是 [`TaskSpec::name`]）。
+pub const TASK_CREATE_WORDS: usize = 11;
+
+/// 按内核 `TaskCreateRequest` 的固定顺序把 [`TaskSpec`] 编成请求块字数组。
+fn task_create_words(spec: &TaskSpec) -> [u64; TASK_CREATE_WORDS] {
+    [
+        spec.code_segment.as_raw(),
+        spec.code_offset,
+        spec.code_pages,
+        spec.load_base,
+        spec.entry,
+        spec.stack_top,
+        spec.parent_namespace.map_or(0, Capability::as_raw),
+        spec.root_rights.bits() as u64,
+        spec.initial_capabilities[0].map_or(0, Capability::as_raw),
+        spec.initial_capabilities[1].map_or(0, Capability::as_raw),
+        spec.name,
+    ]
 }
 
 impl<T: SyscallTransport> Runtime<T> {
@@ -43,18 +67,7 @@ impl<T: SyscallTransport> Runtime<T> {
     ///
     /// 成功时 `initial_capabilities` 中的 token 转移给新 Task；调用失败时不发生部分转移。
     pub fn task_create(&self, spec: &TaskSpec) -> Result<Capability> {
-        let words = [
-            spec.code_segment.as_raw(),
-            spec.code_offset,
-            spec.code_pages,
-            spec.load_base,
-            spec.entry,
-            spec.stack_top,
-            spec.parent_namespace.map_or(0, Capability::as_raw),
-            spec.root_rights.bits() as u64,
-            spec.initial_capabilities[0].map_or(0, Capability::as_raw),
-            spec.initial_capabilities[1].map_or(0, Capability::as_raw),
-        ];
+        let words = task_create_words(spec);
         let raw = self.call(
             syscall::TASK_CREATE,
             [words.as_ptr() as usize as u64, 0, 0, 0, 0, 0],
@@ -65,5 +78,38 @@ impl<T: SyscallTransport> Runtime<T> {
     /// 销毁持有 Capability 所指向的 Task。
     pub fn task_destroy(&self, task: Capability) -> Result<()> {
         self.call_unit(syscall::TASK_DESTROY, [task.as_raw(), 0, 0, 0, 0, 0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TASK_CREATE_WORDS, TaskSpec, task_create_words};
+    use crate::{Capability, Rights};
+
+    #[test]
+    fn task_create_request_carries_name_as_the_last_word() {
+        let spec = TaskSpec {
+            code_segment: Capability::from_raw(0x0000_0001_0000_002d).unwrap(),
+            code_offset: 3,
+            code_pages: 2,
+            load_base: 0x1000,
+            entry: 0x1234,
+            stack_top: 0x9000,
+            parent_namespace: None,
+            root_rights: Rights::from_bits(0),
+            initial_capabilities: [None, None],
+            name: 0x0000_0000_6174_6562, // "beta"
+        };
+        let words = task_create_words(&spec);
+        // 块长必须与内核 `TASK_CREATE_REQ_QWORDS` 一致（SPEC-102 修越界缺口）。
+        assert_eq!(words.len(), TASK_CREATE_WORDS);
+        assert_eq!(words.len(), 11);
+        // 第 11 个 word 必须是 `name`（SPEC-101 起内核在此读名字）。
+        assert_eq!(words[10], 0x0000_0000_6174_6562);
+        // 相邻字段不得错位。
+        assert_eq!(words[1], 3);
+        assert_eq!(words[2], 2);
+        assert_eq!(words[5], 0x9000);
+        assert_eq!(words[9], 0);
     }
 }
