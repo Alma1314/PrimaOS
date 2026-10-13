@@ -1059,6 +1059,7 @@ fn authority_rejects_stale_segment_target() {
             object: CapObject::Segment(999),
             rights: CAP_SEG_MAP_R,
             active: true,
+            parent: None,
         },
     );
     assert_authority_rejects(
@@ -1484,6 +1485,7 @@ fn authorize_mapping_rejects_namespace_object_caps() {
             object: CapObject::Namespace(1),
             rights: CAP_SEG_MAP_W | CAP_TASK_MANAGE_VSPACE,
             active: true,
+            parent: None,
         },
     );
     // 作为段 cap：对象类型不符，立即拒绝。
@@ -1507,6 +1509,7 @@ fn authorize_mapping_rejects_namespace_object_caps() {
             object: CapObject::Segment(CODE_SEG),
             rights: CAP_SEG_MAP_W,
             active: true,
+            parent: None,
         },
     );
     assert_eq!(

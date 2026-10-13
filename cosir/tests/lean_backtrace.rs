@@ -4,7 +4,9 @@
 //! 注意：抽象函数在 Rust 侧名为 `abstract_state`（abstract_ops.rs），对应 Lean `alpha`；
 //! Rust 侧返回 `cosir::state::State`（含 `booted`/`tasks`），Lean `alpha` 返回 `s.booted`。
 
-use cosir::abstract_ops::{abstract_state, bootstrap, init_task_id};
+use cosir::abstract_ops::{
+    DeriveError, abstract_state, bootstrap, derive_capability, init_task_id, well_formed,
+};
 use cosir::machine::{BootInfoHandle, Cr3, GdtTable, InterruptState, MachineState, MapEntry, Tss};
 use cosir::ops::exc_resume;
 use cosir::state::*;
@@ -93,6 +95,67 @@ fn bootstrap_parity_lean() {
     assert_eq!(init.vspace[0].base, 0x4000_0000);
     assert_eq!(init.vspace[1].base, 0x4000_1000);
     assert_eq!(init.root_ns_cap, 2, "structural root = init Namespace cap");
+}
+
+/// CDT 对拍（关 ISSUE-FORMAL-001）：cosir 侧 §4.2/§4.4 ↔ Lean `Formal.Derive`/`Formal.Forest`。
+#[test]
+fn cdt_parity_lean() {
+    let booted = bootstrap(&pre_boot_machine()).expect("bootstrapped");
+
+    // §14 步骤 5/6：三条根 Capability 无父（对应 Lean `bootedState` 的 `parent := none`）
+    for id in [1u32, 2, 3] {
+        assert_eq!(
+            booted.capabilities[&id].parent, None,
+            "root cap {id} has no parent"
+        );
+    }
+    // §4.2 不变量成立（对应 Lean 定理 `bootedState_wellformed`）
+    assert!(
+        well_formed(&booted),
+        "booted state satisfies the CDT invariant"
+    );
+
+    // §4.4 派生：CapId 1（image 根，含 CapDerive）→ 空槽 4（对应 Lean `derive bootedState 1 4`）
+    let mut s = booted.clone();
+    derive_capability(&mut s, 1, 4).expect("derive from root cap 1");
+    assert_eq!(s.capabilities[&4].parent, Some(1), "child points at parent");
+    assert_eq!(
+        s.capabilities[&4].object, s.capabilities[&1].object,
+        "child and parent share the object"
+    );
+    // 保持性（对应 Lean `derive_preserves_wellformed`）
+    assert!(well_formed(&s), "derive preserves the CDT invariant");
+
+    // 森林性/无环：沿父链必严格递减并终止于根（对应 Lean `ancestry_lt` / `ancestry_no_cycle`）
+    let (mut c, mut steps) = (4u32, 0u32);
+    while let Some(p) = s.capabilities[&c].parent {
+        assert!(p < c, "parent chain strictly decreases");
+        c = p;
+        steps += 1;
+        assert!(steps < 8, "parent chain is acyclic");
+    }
+    assert_eq!((c, steps), (1, 1), "chain terminates at root cap 1");
+
+    // 失败锚（对应 Lean `derive` 的 4 条 `native_decide` 锚），且失败原子不变
+    let mut s2 = booted.clone();
+    let before = s2.clone();
+    assert_eq!(
+        derive_capability(&mut s2, 1, 1),
+        Err(DeriveError::OrderViolation)
+    ); // 违反父 < 子
+    assert_eq!(
+        derive_capability(&mut s2, 99, 100),
+        Err(DeriveError::NoSuchParent)
+    ); // 无父
+    assert_eq!(
+        derive_capability(&mut s2, 2, 4),
+        Err(DeriveError::NoDeriveRight)
+    ); // CapId 2 无 CapDerive
+    assert_eq!(
+        derive_capability(&mut s2, 1, 3),
+        Err(DeriveError::SlotOccupied)
+    ); // 槽已占
+    assert_eq!(s2, before, "失败路径必须原子不变");
 }
 
 #[test]

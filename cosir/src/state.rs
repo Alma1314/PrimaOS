@@ -76,6 +76,10 @@ pub struct Capability {
     pub object: CapObject,
     pub rights: u16,
     pub active: bool,
+    /// §4.2 派生树父指针：`None` = 铸造根（§14 三条根 Capability、`create_segment` 的随对象
+    /// 铸造）；`Some(p)` = 由 CapId `p` 派生（§4.4）。镜像内核 `CapRecord.parent` 与 Lean
+    /// `Formal.Capability.parent`；`tests/lean_backtrace.rs` 的 CDT 对拍读取本字段。
+    pub parent: Option<CapId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

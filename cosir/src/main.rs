@@ -61,6 +61,7 @@ fn build_state() -> State {
             object: state::CapObject::ExceptionSource(1),
             rights: state::CAP_EXC_SUBSCRIBE,
             active: true,
+            parent: None,
         },
     );
     st.capabilities.insert(
@@ -70,6 +71,7 @@ fn build_state() -> State {
             object: state::CapObject::Segment(1),
             rights: state::CAP_SEG_MAP_W,
             active: true,
+            parent: None,
         },
     );
     st.subscriptions.insert((1, 1));
@@ -825,6 +827,7 @@ mod tests {
                 object: state::CapObject::Namespace(1),
                 rights: state::CAP_EXC_SUBSCRIBE | state::CAP_SEG_MAP_W,
                 active: true,
+                parent: None,
             },
         );
         let before = st.clone();

@@ -85,6 +85,7 @@ pub fn abstract_state(m: &MachineState) -> State {
                 object: CapObject::Segment(IMAGE_SEG),
                 rights: CAP_DERIVE | CAP_SEG_MAP_R | CAP_SEG_MAP_X | CAP_SEG_DESTROY,
                 active: true,
+                parent: None,
             },
         );
         s.capabilities.insert(
@@ -99,6 +100,7 @@ pub fn abstract_state(m: &MachineState) -> State {
                     | CAP_NS_UNMOUNT
                     | CAP_NS_DESTROY,
                 active: true,
+                parent: None,
             },
         );
         s.capabilities.insert(
@@ -108,6 +110,7 @@ pub fn abstract_state(m: &MachineState) -> State {
                 object: CapObject::Task(init),
                 rights: CAP_DERIVE | CAP_TASK_SEND | CAP_TASK_MANAGE_VSPACE | CAP_TASK_DESTROY,
                 active: true,
+                parent: None,
             },
         );
         // §14 步骤 9 / §13.1：写入第一组 Audit 事件（`KernelActor`，bootstrap 无 Task 调用者）。
@@ -140,6 +143,65 @@ pub fn abstract_state(m: &MachineState) -> State {
         );
     }
     s
+}
+
+/// §4.2 能力派生树不变量（镜像 Lean `Formal.WellFormed`）：每条带父的能力满足
+/// `parent < c`，且父存在、活动、同对象。**非恒真**——`derive_capability` 保持它。
+pub fn well_formed(s: &State) -> bool {
+    s.capabilities.iter().all(|(&c, cap)| match cap.parent {
+        None => true,
+        Some(p) => {
+            p < c
+                && s.capabilities
+                    .get(&p)
+                    .is_some_and(|pcap| pcap.active && pcap.object == cap.object)
+        }
+    })
+}
+
+/// §4.4 `cap_derive` 的失败原因（镜像 Lean `derive` 合取守卫的各分支）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeriveError {
+    /// 父 CapId 无能力记录。
+    NoSuchParent,
+    /// 父能力非活动。
+    ParentInactive,
+    /// 父能力缺 `CapDerive`（§4.4 前置）。
+    NoDeriveRight,
+    /// 违反 §4.2「父 CapId < 子 CapId」。
+    OrderViolation,
+    /// 目标槽已有能力。
+    SlotOccupied,
+}
+
+/// §4.4 `cap_derive` 对应物（镜像 Lean `Formal.derive`）：由 `parent` 派生到空槽 `new_id`，
+/// 子能力与父同对象、同权限、同拥有者，父指针置 `Some(parent)`。失败原子（状态不变）。
+pub fn derive_capability(s: &mut State, parent: CapId, new_id: CapId) -> Result<(), DeriveError> {
+    let pcap = s
+        .capabilities
+        .get(&parent)
+        .cloned()
+        .ok_or(DeriveError::NoSuchParent)?;
+    if !pcap.active {
+        return Err(DeriveError::ParentInactive);
+    }
+    if pcap.rights & CAP_DERIVE == 0 {
+        return Err(DeriveError::NoDeriveRight);
+    }
+    if parent >= new_id {
+        return Err(DeriveError::OrderViolation);
+    }
+    if s.capabilities.contains_key(&new_id) {
+        return Err(DeriveError::SlotOccupied);
+    }
+    s.capabilities.insert(
+        new_id,
+        Capability {
+            parent: Some(parent),
+            ..pcap
+        },
+    );
+    Ok(())
 }
 
 /// bootstrap 迁移：空态 → 含 init Task 的 booted 态。
@@ -257,6 +319,7 @@ mod tests {
                 object: CapObject::Segment(1),
                 rights: CAP_DERIVE | CAP_SEG_MAP_R | CAP_SEG_MAP_X | CAP_SEG_DESTROY,
                 active: true,
+                parent: None,
             }
         );
         assert_eq!(
@@ -271,6 +334,7 @@ mod tests {
                     | CAP_NS_UNMOUNT
                     | CAP_NS_DESTROY,
                 active: true,
+                parent: None,
             }
         );
         assert_eq!(
@@ -280,6 +344,7 @@ mod tests {
                 object: CapObject::Task(1),
                 rights: CAP_DERIVE | CAP_TASK_SEND | CAP_TASK_MANAGE_VSPACE | CAP_TASK_DESTROY,
                 active: true,
+                parent: None,
             }
         );
 

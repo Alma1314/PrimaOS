@@ -229,6 +229,7 @@ impl CowSliceState {
                 object: CapObject::Segment(1),
                 rights: CAP_SEG_MAP_R | CAP_SEG_MAP_W | CAP_SEG_DESTROY,
                 active: true,
+                parent: None,
             },
         );
         ops.capabilities.insert(
@@ -238,6 +239,7 @@ impl CowSliceState {
                 object: CapObject::Task(CHILD),
                 rights: CAP_TASK_MANAGE_VSPACE,
                 active: true,
+                parent: None,
             },
         );
         ops.capabilities.insert(
@@ -247,6 +249,7 @@ impl CowSliceState {
                 object: CapObject::Task(CHILD),
                 rights: CAP_TASK_MANAGE_VSPACE,
                 active: true,
+                parent: None,
             },
         );
         ops.capabilities.insert(
@@ -256,6 +259,7 @@ impl CowSliceState {
                 object: CapObject::Task(PARENT),
                 rights: CAP_TASK_MANAGE_VSPACE,
                 active: true,
+                parent: None,
             },
         );
         ops.capabilities.insert(
@@ -265,6 +269,7 @@ impl CowSliceState {
                 object: CapObject::ExceptionSource(page_fault_source_id()),
                 rights: CAP_EXC_SUBSCRIBE,
                 active: true,
+                parent: None,
             },
         );
         ops.capabilities.insert(
@@ -274,6 +279,7 @@ impl CowSliceState {
                 object: CapObject::Segment(CODE_SEG),
                 rights: CAP_SEG_MAP_W,
                 active: true,
+                parent: None,
             },
         );
         for (task_id, task) in &mut ops.tasks {
@@ -709,6 +715,7 @@ impl CowSliceState {
                 object: CapObject::Segment(seg_id),
                 rights,
                 active: true,
+                parent: None,
             },
         );
         pending.check_invariants()?;
@@ -1084,6 +1091,7 @@ pub fn base_exc() -> State {
             object: CapObject::ExceptionSource(page_fault_source_id()),
             rights: CAP_EXC_SUBSCRIBE,
             active: true,
+            parent: None,
         },
     );
     // frame 载体段 = 代码段 CODE_SEG；C 有写权
@@ -1094,6 +1102,7 @@ pub fn base_exc() -> State {
             object: CapObject::Segment(CODE_SEG),
             rights: CAP_SEG_MAP_W,
             active: true,
+            parent: None,
         },
     );
     // 同时给 P 一个指向 / 无 frame 权（P 不参与 exc_resume，仅保持订阅）
