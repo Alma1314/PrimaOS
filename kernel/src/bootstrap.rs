@@ -71,9 +71,16 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 /// ≤ MAX`）在给 `ALPHA` 端点加一条独立栈段 cap 后需要 ≥ 68 的余量——原值 64 会令 boot 自测的
 /// `task_create` 失败，调度器随后在 init 的 `SYS_YIELD` 上 `pick_next` 无 Ready 任务而 panic
 /// （实测 `syscall.rs` `yield_call`）。按项目既有先例（SPEC-074 审计、SPEC-091 vspace：容量墙
-/// → 扩展并**照实重测结构体守卫**）把上限提到 **72**。守卫（≤13 KiB）不变，见
-/// `bootstrap_state_stays_within_the_stack_budget`。
-pub const MAX_CAPABILITY_SLOTS: usize = 72;
+/// → 扩展并**照实重测结构体守卫**）把上限提到 **72**。
+///
+/// SPEC-104：服务管理器迁移后端点/客户端改为以 `servicemgr` 为对端——init 从管理器的管理 cap
+/// **运行期派生**三条发送凭据作 `initial_cap0`（原 bootstrap 发送凭据仍铸留、不再移动），客户端
+/// Hello 与两端点自报各多携一条自管理 cap，`servicemgr` 另派生三份段 cap（RW×2 给端点、R 给
+/// init）。峰值越过 72，故照 SPEC-094 先例扩到 **80**。
+///
+/// 守卫（`BootstrapState` ≤ 13 KiB）**未放宽**，见
+/// `bootstrap_state_stays_within_the_stack_budget`（SPEC-104 照实重测）。
+pub const MAX_CAPABILITY_SLOTS: usize = 80;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 /// 任务表容量（含已保留槽位与已销毁记录）。

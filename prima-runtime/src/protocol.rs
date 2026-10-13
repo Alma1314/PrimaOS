@@ -10,6 +10,13 @@ const MAGIC: [u8; 4] = *b"PRIM";
 /// 与内核 `user::SERVICEMGR_HELLO_TAG` 同款。
 pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 
+/// SPEC-104：端点/客户端向服务管理器发送**带 cap 消息之前**先发的**无 cap 唤醒** tag。
+///
+/// 内核拒绝向处于 `BlockedRecv` 的接收者投递带 cap 消息（`kernel/src/syscall.rs::send_call`），
+/// 而服务管理器常态阻塞在 `recv`，故发送方先发一条无 cap 消息直投唤醒它，再发带 cap 消息。
+/// 该 tag 不被任何接收分支匹配，接收方忽略之。
+pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
+
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
 pub const SERVICE_NAME_OFFSET: u64 = 48;

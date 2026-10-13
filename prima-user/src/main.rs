@@ -7,8 +7,8 @@ use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
         MESSAGE_HEADER_LEN, MessageHeader, OFFER_LEN, ProtocolOffer, SERVICE_BEHAVIOR_NONE,
-        SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, negotiation_negatives,
-        negotiation_word, service_offer,
+        SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, SERVICE_WAKE_TAG,
+        negotiation_negatives, negotiation_word, service_offer,
     },
 };
 
@@ -36,6 +36,10 @@ const HELLO_REQUEST_ID: u32 = 3;
 const HELLO_FEATURES: u64 = 1;
 const HELLO_MAX_MESSAGE_SIZE: u32 = 4096;
 const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
+/// SPEC-104：移交给服务管理器的发送权（仅 `TaskSend`）——派生副本，端点自己保留 self cap。
+const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
+/// SPEC-104：引导任务（init）的 task id。对端是它时**不**发无 cap 唤醒（其握手块按单条消息接收）。
+const BOOTSTRAP_TASK: u32 = 1;
 
 /// Rust 用户映像入口。装载器将提供 ring3 栈，入口参数由 ABI 保留。
 ///
@@ -67,16 +71,26 @@ pub extern "C" fn _start(
             Capability::from_raw(send_cap_raw),
             runtime.task_id(),
         ) {
-            let _ = runtime.send(
-                peer,
-                send_cap,
-                // SPEC-101：自报 payload = tag(48..63) ‖ 运行期指派的注册名(8..47) ‖ task id(0..7)
-                // ——init 据此建立 `name → id` 注册表并按名扫描解析。名字来自入口 `rcx`，非字面量。
-                SERVICE_ID_TAG
-                    | ((name_raw & SERVICE_NAME_MASK) << 8)
-                    | (id.as_raw() as u64 & 0xff),
-                &[],
-            );
+            // SPEC-104：向管理器移交**自身自管理凭据的派生副本**（仅 `TaskSend`）——端点自己仍须
+            // 持有原 self cap（随后 `memseg_map` 需要它），故不能直接移交原 cap。
+            if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
+                // 仅当对端是**服务管理器**（id ≠ 引导任务 1、常态阻塞在 `recv`）时先发无 cap 唤醒：
+                // 内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息。对引导任务（id 1）其握手块按**单条**
+                // 消息接收，不预期额外唤醒，故直发。
+                if peer.as_raw() != BOOTSTRAP_TASK {
+                    let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
+                }
+                let _ = runtime.send(
+                    peer,
+                    send_cap,
+                    // SPEC-101：自报 payload = tag(48..63) ‖ 运行期指派的注册名(8..47) ‖ task id(0..7)
+                    // ——管理器据此建立 `name → id` 注册表并按名扫描解析。名字来自入口 `rcx`，非字面量。
+                    SERVICE_ID_TAG
+                        | ((name_raw & SERVICE_NAME_MASK) << 8)
+                        | (id.as_raw() as u64 & 0xff),
+                    &[authority],
+                );
+            }
             let mut segment_mapped = false;
             let mut behavior = SERVICE_BEHAVIOR_NONE;
             for _ in 0..6 {
@@ -175,7 +189,17 @@ pub extern "C" fn _start(
                     USER_HELLO_VA + SERVICE_NAME_OFFSET,
                     &SERVICE_NAME_BETA.to_le_bytes(),
                 );
-                let _ = runtime.send(peer, send_cap, id.as_raw() as u64, &[segment]);
+                // SPEC-104：把 Hello 随消息移交给**服务管理器**：payload = 客户端 id，cap = 共享段 +
+                // **自管理凭据的派生副本**（仅 `TaskSend`，供管理器回送 `PONG`）。对端 = 入口 `r8`
+                // （发送凭据所指 task id）。仅对**服务管理器**（id ≠ 引导任务 1）先发无 cap 唤醒——
+                // 它常态阻塞在 `recv`，而内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息；对引导任务
+                // 其握手块按**单条**消息接收，故直发。
+                if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
+                    if peer.as_raw() != BOOTSTRAP_TASK {
+                        let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
+                    }
+                    let _ = runtime.send(peer, send_cap, id.as_raw() as u64, &[segment, authority]);
+                }
                 // SPEC-087：只有**存活的**新客户端（非 SPEC-085 的历史见证载体 task 3）等 init
                 // 的应答，并把应答 payload 写回共享段供内核核验。task 3 的行为保持不变，
                 // 以冻结既有证据（它在发完 Hello 后即被 init 销毁）。

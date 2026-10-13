@@ -14,8 +14,8 @@ use core::panic::PanicInfo;
 use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
-        MESSAGE_HEADER_LEN, OFFER_LEN, SERVICE_NAME_MASK, negotiation_negatives, negotiation_word,
-        service_offer,
+        MESSAGE_HEADER_LEN, OFFER_LEN, SERVICE_NAME_MASK, SERVICE_WAKE_TAG, negotiation_negatives,
+        negotiation_word, service_offer,
     },
 };
 
@@ -35,6 +35,10 @@ const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
 /// SPEC-088：服务端点完成协商的消息 tag。
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 const HELLO_RW_ACCESS: Rights = Rights::from_bits((1 << 1) | (1 << 2));
+/// SPEC-104：移交给服务管理器的发送权（仅 `TaskSend`）——派生副本，端点自己保留 self cap。
+const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
+/// SPEC-104：引导任务（init）的 task id。对端是它时**不**发无 cap 唤醒。
+const BOOTSTRAP_TASK: u32 = 1;
 
 /// `BETA` 服务端点入口。装载器提供 ring3 栈；入口参数由 ABI 保留。
 ///
@@ -58,13 +62,23 @@ pub extern "C" fn _start(
         Capability::from_raw(send_cap_raw),
         runtime.task_id(),
     ) {
-        // 自报 id + **运行期指派的注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
-        let _ = runtime.send(
-            peer,
-            send_cap,
-            SERVICE_ID_TAG | ((name_raw & SERVICE_NAME_MASK) << 8) | (id.as_raw() as u64 & 0xff),
-            &[],
-        );
+        // SPEC-104：向管理器移交**自身自管理凭据的派生副本**（仅 `TaskSend`）——端点自己仍须
+        // 持有原 self cap（随后 `memseg_map` 需要它）。先发**无 cap 唤醒**（管理器常态阻塞在
+        // `recv`，内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息）。
+        if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
+            if peer.as_raw() != BOOTSTRAP_TASK {
+                let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
+            }
+            // 自报 id + **运行期指派的注册名**：manager 用第二个 `SERVICE_ID_TAG` 收集本端点 (name, id)。
+            let _ = runtime.send(
+                peer,
+                send_cap,
+                SERVICE_ID_TAG
+                    | ((name_raw & SERVICE_NAME_MASK) << 8)
+                    | (id.as_raw() as u64 & 0xff),
+                &[authority],
+            );
+        }
         let mut segment_mapped = false;
         let mut behavior = 0u64;
         for _ in 0..6 {

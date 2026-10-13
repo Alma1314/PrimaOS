@@ -122,7 +122,7 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap
 /// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
 /// manager/self/root-ns 共 5 条（49 → 54）。
-const TASK_READY_LIVE_CAPS: usize = 69;
+const TASK_READY_LIVE_CAPS: usize = 77;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -2367,9 +2367,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 9 || direct != 9 || blocks != 13 {
+    if queued != 10 || direct != 14 || blocks != 18 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 9/9/13 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, and SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 10/14/18 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, and SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init"
         ));
     }
     Ok(())
@@ -3249,8 +3249,8 @@ const RUNTIME_HELLO_DATA: &str = "map=0x0;magic=0x14d495250;opcode=0x300000001;l
 
 /// SPEC-087：`service_reply_ready` 的镜像常量，与 `kernel/src/{user,syscall}.rs` 一致
 /// （跨 crate 需人工同步）。
-const SERVICE_REPLY_CLIENT_CAP: u64 = 0x0000_0001_0000_0018;
-const SERVICE_REPLY_CLIENT_ID: u64 = 8;
+const SERVICE_REPLY_CLIENT_CAP: u64 = 0x0000_0001_0000_001c;
+const SERVICE_REPLY_CLIENT_ID: u64 = 9;
 const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
 
 fn validate_runtime_hello_data(data: Option<&str>) -> Result<(), String> {
@@ -3339,10 +3339,10 @@ const SERVICE_SELECTED_NEGOTIATED_B: u64 = 0x0001_0000_0400_0001;
 /// SPEC-092：两个**独立服务端点**的 task id（客户端 = 8、`ALPHA` 端点 = 9、`BETA` 端点 = 10）。
 /// 判决性：`beta_ep` 必须是被按名路由到的**第二个**任务，且与 `alpha_ep` 相异——即多端点，
 /// 而非 SPEC-090 的「单宿主多行为」。
-const SERVICE_SELECTED_ALPHA_EP: u64 = 9;
-const SERVICE_SELECTED_BETA_EP: u64 = 10;
+const SERVICE_SELECTED_ALPHA_EP: u64 = 10;
+const SERVICE_SELECTED_BETA_EP: u64 = 11;
 /// SPEC-094：存活客户端（task 8）的 task id。
-const SERVICE_SELECTED_CLIENT_EP: u64 = 8;
+const SERVICE_SELECTED_CLIENT_EP: u64 = 9;
 /// SPEC-095/101：运行期服务注册表里两个端点回报的注册名（ASCII 令牌 `"alpha"`/`"beta"`；
 /// 由服务管理器在创建时运行期指派，端点二进制无名字字面量）。
 const SERVICE_SELECTED_REG_A_NAME: u64 = 0x0061_6870_6c61;
@@ -3509,16 +3509,22 @@ fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// SPEC-103：`servicemgr_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
+/// SPEC-103/104：`servicemgr_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
+/// SPEC-104：`prima-servicemgr` 映像写回共享段的**二进制标记**（与 `prima-user/src/servicemgr.rs`
+/// 及 `kernel/src/user.rs` 一致）——证明注册表/解析结果由独立 ring3 映像产出。
+const SERVICEMGR_BINARY_MARKER: u64 = 0x5345_5256_4D47_5203;
 
-/// SPEC-103：ring3 服务管理器任务的存活见证。判决性：`task_id` 是一个真实的 ring3 子任务
-/// （`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id` 相符——
-/// 证明存活自报来自 init 建起的**同一个**独立 ring3 任务，而非任何编译期常量。
+/// SPEC-103/104：ring3 服务管理器任务的存活 + 产出方见证。判决性：`task_id` 是一个真实的 ring3
+/// 子任务（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id`
+/// 相符；共享段里的 `self_id`/`marker` 与 `task_id`/映像标记一致——证明存活自报与注册表/解析结果
+/// 都来自 init 建起的**同一个**独立 ring3 映像，而非任何编译期常量。
 fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let data = data.ok_or_else(|| "servicemgr_ready is missing data".to_owned())?;
     let mut task_id = None;
     let mut hello = None;
+    let mut self_id = None;
+    let mut marker = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3526,12 +3532,16 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
         match key {
             "task_id" => task_id = Some(parse_addr(value)?),
             "hello" => hello = Some(parse_addr(value)?),
+            "self_id" => self_id = Some(parse_addr(value)?),
+            "marker" => marker = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
     let missing = |key: &str| format!("missing {key} in servicemgr_ready data");
     let task_id = task_id.ok_or_else(|| missing("task_id"))?;
     let hello = hello.ok_or_else(|| missing("hello"))?;
+    let self_id = self_id.ok_or_else(|| missing("self_id"))?;
+    let marker = marker.ok_or_else(|| missing("marker"))?;
     if task_id <= 1 {
         return Err(format!(
             "servicemgr_ready task_id ({task_id}) must be a real ring3 child task (> 1, not init)"
@@ -3549,13 +3559,23 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             task_id & 0xff
         ));
     }
+    if self_id != task_id {
+        return Err(format!(
+            "servicemgr_ready self_id ({self_id}) must equal the task id decoded from the manager cap ({task_id}) — the registry/resolution results in the shared Segment must come from the very task init created"
+        ));
+    }
+    if marker != SERVICEMGR_BINARY_MARKER {
+        return Err(format!(
+            "servicemgr_ready marker (0x{marker:x}) must be the prima-servicemgr binary marker 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image, not init's hand-written code"
+        ));
+    }
     Ok(())
 }
 
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
-const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_001c;
-const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_001d;
-const SERVICE_NEGOTIATED_ID: u64 = 9;
+const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0002_0000_0033;
+const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_003e;
+const SERVICE_NEGOTIATED_ID: u64 = 10;
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 /// `major<<48 | minor<<32 | max<<16 | features` —— 客户端 offer 与服务端 offer
 /// `{features 0b101, required 0b001, max 2048}` 协商得 `{major 1, minor 0, features 1, max 2048}`。
@@ -3903,13 +3923,13 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=9;direct=9;blocks=13\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=7;caps=69;root_cleared=1;grandchild=4;tasks_after=7;caps_after=69;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=10;direct=14;blocks=18\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=7;caps=77;root_cleared=1;grandchild=4;tasks_after=7;caps_after=77;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
-        "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x100000018;stack=0x0;recv=0x8;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
-        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000001c;service=0x10000001d;stack=0x0;svc_id=0x9;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0x9;beta_ep=0xa;beta_self=0xa;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0xb;hello=0x5e5600000000000b\n",
+        "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
+        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x10000003e;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -3940,7 +3960,7 @@ mod tests {
     fn rejects_servicemgr_when_the_liveness_report_is_not_from_the_created_task() {
         // 自报 payload 的 id 低 8 位与从管理 cap 解出的 task id 不符（0x0b vs 0x0c）——
         // 「存活自报来自 init 建起的那个任务」被证伪，必须拒绝。
-        let output = VALID.replace("hello=0x5e5600000000000b", "hello=0x5e5600000000000c");
+        let output = VALID.replace("hello=0x5e56000000000008", "hello=0x5e5600000000000c");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must come from the very task init created"),
@@ -3951,7 +3971,7 @@ mod tests {
     #[test]
     fn rejects_servicemgr_when_the_task_id_is_init() {
         // task_id 为 init(1)：存活自报不可能来自 init 自身。
-        let output = VALID.replace("task_id=0xb", "task_id=0x1");
+        let output = VALID.replace("task_id=0x8", "task_id=0x1");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must be a real ring3 child task"), "{error}");
     }
@@ -4040,7 +4060,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=69;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=77;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4131,9 +4151,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=9;", ";direct=0;");
+        let output = VALID.replace(";direct=14;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 9/9/13"), "{error}");
+        assert!(error.contains("expected 10/14/18"), "{error}");
     }
 
     #[test]
@@ -4203,7 +4223,7 @@ mod tests {
     fn rejects_service_selected_when_beta_ep_is_not_the_second_task() {
         // SPEC-092：把 `BETA` 端点 id 改成 `ALPHA` 端点（9）——即单宿主多行为（SPEC-090 的简化）
         // 而非独立第二端点；判决性检查必须拒绝。
-        let output = VALID.replace(";alpha_ep=0x9;beta_ep=0xa;", ";alpha_ep=0x9;beta_ep=0x9;");
+        let output = VALID.replace(";alpha_ep=0xa;beta_ep=0xb;", ";alpha_ep=0xa;beta_ep=0xa;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be routed to a *second, independent* service task"),
@@ -4215,7 +4235,7 @@ mod tests {
     fn rejects_service_selected_when_beta_self_is_not_the_routed_endpoint() {
         // SPEC-092：被记录的端点 id（第二个 `SERVICE_ID_TAG`）与写回结果的端点脱钩——即请求
         // 没送到 init 记录的那个端点；必须拒绝。
-        let output = VALID.replace(";beta_ep=0xa;beta_self=0xa", ";beta_ep=0xa;beta_self=0x9");
+        let output = VALID.replace(";beta_ep=0xb;beta_self=0xb", ";beta_ep=0xb;beta_self=0xa");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must route BETA to the endpoint it collected"),
@@ -4254,8 +4274,8 @@ mod tests {
         // SPEC-094：`ALPHA` 端点的栈段 id 等于客户端（task 8）的——即它仍沿用客户端 `Y[368]`
         // 的那条**共享物理栈帧**（SPEC-093 §5.1 的登记残留）；必须拒绝。
         let output = VALID.replace(
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x10",
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x8;client_stack_seg=0x12",
+            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x10",
+            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x12",
         );
         let error = validate_output(&output).unwrap_err();
         assert!(

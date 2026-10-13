@@ -22,8 +22,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
     IMAGE_CAP_HANDLE, INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE,
-    PLATFORM_TASK2_CAP_HANDLE, SERVICE_SEND_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE,
-    TASK_CREATE_CODE_CAP_HANDLE,
+    PLATFORM_TASK2_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE, TASK_CREATE_CODE_CAP_HANDLE,
 };
 use crate::exc::SretFrame;
 use crate::frames;
@@ -33,8 +32,8 @@ use crate::mem::{FRAME_SIZE, phys_to_virt};
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::syscall::{
-    ACCESS_DERIVE_BITS, ACCESS_R_BITS, AUDIT_RECEIPT_LIVE, AUDIT_RECEIPT_STALE, AUTHORIZE_CAP,
-    BAD_PTR, CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT,
+    ACCESS_R_BITS, AUDIT_RECEIPT_LIVE, AUDIT_RECEIPT_STALE, AUTHORIZE_CAP, BAD_PTR,
+    CAP_CHILD1_HANDLE, CAP_CHILD2_HANDLE, COPY_LEN, COPY_PTR, EXC_KIND_PAGEFAULT,
     EXC_KIND_SYSCALLTRAP, EXC_PAGE_FAULT_CAP, EXC_SYSCALL_TRAP_CAP, FAST_ARG, IPC_DIRECT_PAYLOAD,
     IPC_SHARED_MAGIC, MEMSEG_CAP1_HANDLE, MEMSEG_CAP2_HANDLE, MEMSEG_PATTERN, MEMSEG_RW_BITS,
     NS_BIND_RIGHTS_BITS, NS_PATH_DATA_OFFSET, NS_PATH_DATA_VA, NS_PATH_ILLEGAL_OFF,
@@ -221,6 +220,33 @@ pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 /// `CLIENT_RECEIPT_MAP=800` 之间，无任何既有见证读取）。
 pub const SERVICEMGR_RECEIPT_MGR: u64 = 784;
 pub const SERVICEMGR_RECEIPT_HELLO: u64 = 792;
+
+/// SPEC-104：管理器 → init 的三段控制消息 tag（唤醒 / 交回共享段只读副本 / finish）。
+///
+/// 与 `prima-user/src/servicemgr.rs` 一致。三段**连发**（中间不让出）确保唤醒先于带 cap 消息。
+pub const SERVICEMGR_WAKE_TAG: u64 = 0x5E57_0000_0000_0000;
+pub const SERVICEMGR_SEG_TAG: u64 = 0x5E58_0000_0000_0000;
+pub const SERVICEMGR_FINISH_TAG: u64 = 0x5E59_0000_0000_0000;
+/// SPEC-104：管理器写回客户端共享段的固定偏移（与 `prima-user/src/servicemgr.rs` 一致）。
+///
+/// 内核见证改从这些偏移读回「由管理器产出」的注册表/解析结果；值本身沿用既有语义，
+/// 故事件除**产出方与 task id** 外逐字段不变。
+pub const SERVICEMGR_SELF_ID_OFFSET: u64 = 192;
+pub const SERVICEMGR_MARKER_OFFSET: u64 = 200;
+pub const SERVICE_RESOLVED_OFFSET: u64 = 208;
+pub const SERVICE_UNKNOWN_OFFSET: u64 = 216;
+pub const SERVICE_DONE_BETA_OFFSET: u64 = 224;
+pub const SERVICE_REG_A_NAME_OFFSET: u64 = 232;
+pub const SERVICE_REG_B_NAME_OFFSET: u64 = 240;
+pub const SERVICE_BETA_SELF_OFFSET: u64 = 248;
+pub const SERVICE_DONE_ALPHA_OFFSET: u64 = 256;
+pub const SERVICE_CLIENT_ID_OFFSET: u64 = 264;
+/// SPEC-104：`prima-servicemgr` 映像写回共享段的**二进制标记**（与 `prima-user/src/servicemgr.rs`
+/// 一致）——见证据此证明上述结果来自**独立 ring3 映像**，而非 init 的手写块。
+pub const SERVICEMGR_BINARY_MARKER: u64 = 0x5345_5256_4D47_5203;
+/// SPEC-104：`TaskSend` 权限位（`Right::TaskSend` 为枚举第 5 项）——init 从管理器的管理 cap
+/// 派生出指向管理器的发送凭据（移交端点/客户端作 `initial_cap0`）。
+const ACCESS_TASKSEND_BITS: u64 = 1 << 5;
 /// SPEC-092：服务端点把自己的 task id 写入共享段的偏移（`160 + (behavior-1)*8`；与 `prima-user` 一致）。
 pub const SERVICE_ENDPOINT_OFFSET: u64 = 160;
 /// SPEC-092：`ALPHA` 端点（第一个服务任务）自报 id 的共享段偏移。
@@ -435,8 +461,6 @@ const fn put_add_rdi<const N: usize>(code: &mut [u8; N], at: usize, imm: u8) {
 const NS_MODRM_R10: u8 = 0x91;
 /// SPEC-088：`mov rdx, [rcx+disp32]` 的 `modrm`（配合 REX.W = 0x48）。
 const NS_MODRM_RDX: u8 = 0x91;
-/// SPEC-088：`mov r8, [rcx+disp32]` 的 `modrm`（配合 REX.WR = 0x4C）。
-const NS_MODRM_R8: u8 = 0x81;
 
 /// 组装用户代码机器码：
 /// `mov rdx, X; mov rax, VAL; mov [rdx], rax;`（COW 故障点）
@@ -1513,13 +1537,162 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, at + 1, &(rel as u32).to_le_bytes());
     let mut at = USER_CODE_LEN / 2;
 
+    // ===== SPEC-104：ring3 服务管理器（**最先建**——端点/客户端以它为对端）=====
+    // 决策见设计 `docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md`。
+    // 管理器的**运行期注册表/按名解析/路由转发**由 `prima-servicemgr` 承载（本块之后的手写块
+    // 不再解析/转发）。init 只负责建它、派生**指向它的发送凭据**（移交端点/客户端作
+    // `initial_cap0`），并在最后收下它交回的共享段只读副本（内核见证据此读回解析结果）。
+    // 请求块在此**自足**写入（code_seg_cap/offset/pages/entry/initial_cap0/initial_cap1/name）。
+    // 本块位于代码页 1 的**最前**，故须自行建立 Y 页基址（`rcx`）——后续各块的 `[rcx+disp]`
+    // 回执依赖它。
+    put_imm64(&mut code, at, 0x48, 0xB9, USER_Y_VA); // rcx = Y（回执页）
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
+    at += 10;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::SERVICE3_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP3_CODE_PAGES as u64); // code_pages
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        USER3_CODE_VA + RUNTIME_APP3_ENTRY_OFFSET,
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
+    at += 4;
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::SERVICEMGR_SEND_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0：→init 回发凭据）
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // initial_cap1 = 0（非服务端点角色）
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // name = 0（服务管理器无服务名）
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x50]);
+    at += 4;
+    put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
+    at += 3;
+    put_syscall(&mut code, at, SYS_TASK_CREATE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
+    at += 7;
+    // 映射管理器的**独立栈段**：memseg_map(stack3, mgr, 0, USER3_STACK_VA, 1, R|W)。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xBF,
+        crate::bootstrap::SERVICE3_STACK_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RSI,
+        SERVICEMGR_RECEIPT_MGR as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBA, 0);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
+    at += 10;
+    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // 让出：管理器运行、自报存活后阻塞在 recv。
+    put_syscall(&mut code, at, SYS_YIELD);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // recv 循环直到 payload 高 16 位 == SERVICEMGR_HELLO_TAG 高 16 位（0x5E56）。
+    let mgr_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+    at += 10;
+    put_syscall(&mut code, at, SYS_RECV);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
+    at += 3;
+    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
+    at += 4;
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5E56
+    put(
+        &mut code,
+        at + 2,
+        &((SERVICEMGR_HELLO_TAG >> 48) as u32).to_le_bytes(),
+    );
+    at += 6;
+    put(&mut code, at, &[0x0F, 0x85]); // jne mgr_loop
+    put(
+        &mut code,
+        at + 2,
+        &((mgr_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
+    );
+    at += 6;
+    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_HELLO as u32);
+    at += 7;
+
     // ===== SPEC-087：第二个（**存活**）Rust 客户端任务 + init 双向握手 =====
     // rcx = Y（回执页），rdx = 请求块（用户栈页内，可写）。
     put_imm64(&mut code, at, 0x48, 0xB9, USER_Y_VA);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA);
     at += 10;
-    // 改写请求块：复用 task 3 的其余字段，只改 entry（Rust ELF 入口）与 initial_cap0。
+    // SPEC-104：页 1 起始处的服务管理器块已改写共享请求块，故此处**显式**写回本客户端
+    // （`prima-smoke` 映像）的代码段字段，避免误用管理器的代码段。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64); // code_pages
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
+    at += 4;
+    // 改写请求块：其余字段（load_base/stack_top/parent_ns/root_rights）沿用 task 3 的。
     put_imm64(
         &mut code,
         at,
@@ -1530,14 +1703,23 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
     at += 4;
-    put_imm64(
+    // SPEC-104：initial_cap0 = **指向 servicemgr 的发送凭据**（从管理器的管理 cap 派生
+    // `{TaskSend}`）。派生紧邻使用：`initial_caps` 在 `task_create` 中**移动**进新任务，
+    // 故每次 create 前各派生一份。
+    put_load_reg(
         &mut code,
         at,
         0x48,
-        0xB8,
-        crate::bootstrap::CLIENT_SEND_CAP_HANDLE.encode(),
+        NS_MODRM_RDI,
+        SERVICEMGR_RECEIPT_MGR as u32,
     );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_TASKSEND_BITS);
     at += 10;
+    put_syscall(&mut code, at, SYS_CAP_DERIVE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
     // create：第三个 Rust 任务（存活，不再销毁）。
@@ -1574,100 +1756,10 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, CLIENT_RECEIPT_STACK as u32);
     at += 7;
-    // 让出两次：第一次排空已 Ready 的 task 2、第二次轮到客户端。**必须先让客户端跑完发送**——
-    // 内核在接收者处于 `BlockedRecv` 时对带 cap 的消息返回 `EINVAL`（`syscall.rs:1435`），
-    // 故 init 不能在客户端发送前阻塞在 RECV 上。
-    put_syscall(&mut code, at, SYS_YIELD);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_syscall(&mut code, at, SYS_YIELD);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    // recv 客户端的 Hello（payload = 客户端 id；cap0 = 其共享段）。
-    //
-    // 队列里可能残留此前无 cap 的消息（task 2 的唤醒回执等），故循环 recv 直到取到
-    // `cap_count != 0` 的那条（客户端的 Hello 恰带 1 条 Segment cap）；队列空时 recv 会
-    // 阻塞并切到客户端，故不会死等。
-    let recv_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, CLIENT_RECV_BUF);
-    at += 10;
-    put_syscall(&mut code, at, SYS_RECV);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, CLIENT_RECEIPT_RECV as u32);
-    at += 7;
-    put(&mut code, at, &[0x48, 0x83, 0xB9]); // cmp qword [rcx+disp32], 0（cap_count）
-    put(
-        &mut code,
-        at + 3,
-        &((CLIENT_RECV_BUF - USER_Y_VA + 16) as u32).to_le_bytes(),
-    );
-    code[at + 7] = 0x00;
-    at += 8;
-    let back = recv_loop as i64 - (at as i64 + 6);
-    put(&mut code, at, &[0x0F, 0x84]); // je recv_loop
-    put(&mut code, at + 2, &(back as i32).to_le_bytes());
-    at += 6;
-    // 把共享段映射进 **init 根**：memseg_map(段 cap, 平台 task1 cap, 0, USER_HELLO2_VA, 1, R)
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDI,
-        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
-    );
-    at += 7;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xBE,
-        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
-    );
-    at += 10;
-    put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx
-    at += 2;
-    put_imm64(&mut code, at, 0x49, 0xBA, USER_HELLO2_VA);
-    at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB8, 1);
-    at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB9, ACCESS_R_BITS);
-    at += 10;
-    put_syscall(&mut code, at, SYS_MEMSEG_MAP);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, CLIENT_RECEIPT_MAP as u32);
-    at += 7;
-    // 应答客户端：send(客户端 id, mgr 凭据, SERVICE_REPLY_WORD, 0, 0, 0)
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDI,
-        CLIENT_RECEIPT_RECV as u32,
-    );
-    at += 7;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, CLIENT_RECEIPT_MGR as u32);
-    at += 7;
-    put_imm64(&mut code, at, 0x48, 0xBA, SERVICE_REPLY_WORD);
-    at += 10;
-    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
-    at += 3;
-    put_syscall(&mut code, at, SYS_SEND);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, CLIENT_RECEIPT_REPLY as u32);
-    at += 7;
-    // 让出一次，等客户端收下应答并把 payload 写进共享段（它随后自行让回）。
+    // 让出一次：客户端（刚创建、处于 Ready）运行并向 **servicemgr** 发送 Hello（携带共享段 cap
+    // + 自管理凭据），随后阻塞等待 `PONG`——init 不再参与该握手；共享段映射与应答都由管理器
+    // 完成，结果经管理器交回的只读副本在收尾由内核读回。**只让出一次**：此刻只有刚建起的客户端
+    // 必然 Ready，第二次让出会落到「无 Ready 任务」而使内核 panic。
     put_syscall(&mut code, at, SYS_YIELD);
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
@@ -1678,6 +1770,25 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     // 1) 派生端点令牌：从代码段根 cap 派生只读 `{SegMapR}` cap（不含 X/销毁）。
     put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
     at += 10;
+    // SPEC-104：显式写回端点 A（`prima-smoke` 映像）的代码段字段（共享请求块已被管理器块改写）。
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+    );
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
+    at += 3;
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
+    at += 4;
+    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64); // code_pages
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
+    at += 4;
     put_imm64(
         &mut code,
         at,
@@ -1707,8 +1818,22 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_SEND_CAP_HANDLE.encode());
+    // SPEC-104：initial_cap0 = 指向 servicemgr 的发送凭据（派生 `{TaskSend}`）——端点自报/done
+    // 直达管理器，不再回 init。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        SERVICEMGR_RECEIPT_MGR as u32,
+    );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_TASKSEND_BITS);
     at += 10;
+    put_syscall(&mut code, at, SYS_CAP_DERIVE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
     // SPEC-101：把服务管理器**运行期指派**给端点 A 的名字 `"alpha"` 写入请求块 `[rdx+0x50]`。
@@ -1751,162 +1876,12 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SVC_RECEIPT_STACK as u32);
     at += 7;
-    // 4) 让出：服务运行、自报 id 后阻塞在 recv。
+    // SPEC-104：端点以 servicemgr 为对端——init 在此**不再**收集自报/转发/等 done；自报
+    //（含自管理凭据）直达管理器，`prepare` 与共享段 cap 由管理器转发。让出一次令端点运行。
     put_syscall(&mut code, at, SYS_YIELD);
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
-    // 5) recv 循环直到 payload 高 16 位 == SERVICE_ID_TAG 高 16 位（0x5EC1）。
-    let svc_id_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
-    at += 10;
-    put_syscall(&mut code, at, SYS_RECV);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
-    at += 3;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
-    at += 4;
-    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC1
-    put(
-        &mut code,
-        at + 2,
-        &((SERVICE_ID_TAG >> 48) as u32).to_le_bytes(),
-    );
-    at += 6;
-    let back = svc_id_loop as i64 - (at as i64 + 6);
-    put(&mut code, at, &[0x0F, 0x85]); // jne svc_id_loop
-    put(&mut code, at + 2, &(back as i32).to_le_bytes());
-    at += 6;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存整个自报 payload）
-    at += 3;
-    put(&mut code, at, &[0x25]); // and eax, 0xff → svc_id
-    put(&mut code, at + 1, &(SERVICE_ID_MASK as u32).to_le_bytes());
-    at += 5;
-    put_store_rax(&mut code, at, SVC_RECEIPT_ID as u32);
-    at += 7;
-    // SPEC-101：自报 payload 的 8..47 位是端点**从创建指派处读得并回报的**服务名 →
-    // Y[SVC_RECEIPT_REG_A_NAME]（注册表项 A）。名字 40 位：`shr 8` 后 `shl/shr 24` 掩出低 40 位
-    //（不用掩码寄存器，避免占用 rcx = Y 页基址）。
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x08]); // shr rdx, 8
-    at += 4;
-    put(&mut code, at, &[0x48, 0xC1, 0xE2, 0x18]); // shl rdx, 24
-    at += 4;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x18]); // shr rdx, 24
-    at += 4;
-    put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
-    at += 3;
-    put_store_rax(&mut code, at, SVC_RECEIPT_REG_A_NAME as u32);
-    at += 7;
-    // 5b) 先发一条**无 cap** 唤醒：内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息
-    //（SPEC-087 注释同款约束），故服务此刻仍阻塞在 recv，必须先直投唤醒再发带 cap 请求。
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID as u32);
-    at += 7;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
-    at += 7;
-    // SPEC-090：`prepare` 的 payload 低 8 位携带服务管理器路由到的行为码；首次转发 = `ALPHA`。
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xBA,
-        SERVICE_PREPARE_TAG | SERVICE_BEHAVIOR_ALPHA,
-    );
-    at += 10;
-    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
-    at += 3;
-    put_syscall(&mut code, at, SYS_SEND);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, SVC_RECEIPT_PREPARE as u32);
-    at += 7;
-    // SPEC-092：在把原始段 cap **移动**给端点 A **之前**，先派生前缀一条 R|W+Derive 子集 cap
-    // 供第二个端点使用——`memseg_map` 前置要求段 cap 含 `Derive`（`bootstrap::memseg_map`），
-    // 且移动后 init 不再持有原始 cap，故必须在本次转发前派生。
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDI,
-        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
-    );
-    at += 7;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xBE,
-        MEMSEG_RW_BITS | ACCESS_DERIVE_BITS,
-    );
-    at += 10;
-    put_syscall(&mut code, at, SYS_CAP_DERIVE);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, SVC_RECEIPT_SEG_B as u32);
-    at += 7;
-    // 6) 转发客户端 Hello 段 cap 给服务：send(svc_id, mgr, client_id, 1, seg_cap, 0)。
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID as u32);
-    at += 7;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR as u32);
-    at += 7;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDX,
-        CLIENT_RECEIPT_RECV as u32,
-    );
-    at += 7;
-    put_imm64(&mut code, at, 0x49, 0xBA, 1);
-    at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x4C,
-        NS_MODRM_R8,
-        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
-    );
-    at += 7;
-    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
-    at += 3;
-    put_syscall(&mut code, at, SYS_SEND);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, SVC_RECEIPT_FORWARD as u32);
-    at += 7;
-    // 7) recv 循环直到 payload 高 16 位 == SERVICE_DONE_TAG 高 16 位（0x5EC2）。
-    let svc_done_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
-    at += 10;
-    put_syscall(&mut code, at, SYS_RECV);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
-    at += 3;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
-    at += 4;
-    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC2
-    put(
-        &mut code,
-        at + 2,
-        &((SERVICE_DONE_TAG >> 48) as u32).to_le_bytes(),
-    );
-    at += 6;
-    let back2 = svc_done_loop as i64 - (at as i64 + 6);
-    put(&mut code, at, &[0x0F, 0x85]); // jne svc_done_loop
-    put(&mut code, at + 2, &(back2 as i32).to_le_bytes());
-    at += 6;
-    put_store_rax(&mut code, at, SVC_RECEIPT_DONE as u32);
-    at += 7;
 
     // ===== SPEC-092/093：第二个独立服务端点（**不同二进制映像**、独立任务/根/**物理栈段**）=====
     // (a) 第 5 次 create，建第二个服务任务（id 10）。SPEC-093 起它的代码来自**第二个**代码段
@@ -1942,14 +1917,21 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
     at += 4;
-    put_imm64(
+    // SPEC-104：initial_cap0 = 指向 servicemgr 的发送凭据（派生 `{TaskSend}`）。
+    put_load_reg(
         &mut code,
         at,
         0x48,
-        0xB8,
-        crate::bootstrap::SERVICE2_SEND_CAP_HANDLE.encode(),
+        NS_MODRM_RDI,
+        SERVICEMGR_RECEIPT_MGR as u32,
     );
+    at += 7;
+    put_imm64(&mut code, at, 0x48, 0xBE, ACCESS_TASKSEND_BITS);
     at += 10;
+    put_syscall(&mut code, at, SYS_CAP_DERIVE);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
     at += 4;
     // SPEC-101：把服务管理器**运行期指派**给端点 B 的名字 `"beta"` 写入请求块 `[rdx+0x50]`。
@@ -2008,344 +1990,92 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SVC_RECEIPT_STACK2 as u32);
     at += 7;
-    // (b) 让 B 运行、自报 id 后阻塞在 recv。
+    // (b) SPEC-104：让 B 运行——它向 servicemgr 自报（含自管理凭据）后阻塞在 recv；init
+    // 不再收集自报（注册表由管理器建立）。
     put_syscall(&mut code, at, SYS_YIELD);
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
-    // (c) 收集 B 自报的 id（第二个 `SERVICE_ID_TAG`）→ Y[SVC_RECEIPT_ID2]。
-    let svc2_id_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
+
+    // ===== SPEC-104：收下服务管理器交回的共享段只读副本（内核见证由此读回）=====
+    // 管理器在完成注册表收集、按名解析与两轮转发后，把客户端共享段的只读副本**三段连发**交回：
+    // 先无 cap 唤醒、再带 cap、最后 finish。init 循环 recv：收到带 cap 的消息即映射到
+    // `USER_HELLO2_VA`（内核随后按此 VA 读回协商/解析结果）；收到 finish tag 即退出。三段连发
+    // 中间不让出，故唤醒先于带 cap 消息，宿主的 `BlockedRecv` 约束不会触发（`syscall.rs::send_call`）。
+    let mgr_loop = at;
+    put_imm64(&mut code, at, 0x48, 0xBF, CLIENT_RECV_BUF);
     at += 10;
     put_syscall(&mut code, at, SYS_RECV);
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
-    at += 3;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
-    at += 4;
-    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC1
+    // 保存 payload（`rax`），供映射后判断 finish tag（映射会把 `rax` 覆盖成回执）。
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_RECV as u32);
+    at += 7;
+    put(&mut code, at, &[0x48, 0x83, 0xB9]); // cmp qword [rcx+disp32], 0（cap_count）
     put(
         &mut code,
-        at + 2,
-        &((SERVICE_ID_TAG >> 48) as u32).to_le_bytes(),
+        at + 3,
+        &((CLIENT_RECV_BUF - USER_Y_VA + 16) as u32).to_le_bytes(),
     );
+    code[at + 7] = 0x00;
+    at += 8;
+    let je_nocap = at;
+    put(&mut code, at, &[0x0F, 0x84]); // je no_cap
     at += 6;
-    put(&mut code, at, &[0x0F, 0x85]); // jne svc2_id_loop
-    put(
+    // 把收到的段 cap（cap0）映射进 **init 根**：memseg_map(段 cap, 平台 task1 cap, 0, USER_HELLO2_VA, 1, R)。
+    put_load_reg(
         &mut code,
-        at + 2,
-        &((svc2_id_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
+        at,
+        0x48,
+        NS_MODRM_RDI,
+        (CLIENT_RECV_BUF - USER_Y_VA) as u32,
     );
-    at += 6;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax（保存 payload）
-    at += 3;
-    put(&mut code, at, &[0x25]); // and eax, 0xff → id2
-    put(&mut code, at + 1, &(SERVICE_ID_MASK as u32).to_le_bytes());
-    at += 5;
-    put_store_rax(&mut code, at, SVC_RECEIPT_ID2 as u32);
     at += 7;
-    // SPEC-101：自报 payload 的 8..47 位是 B 端点回报的**运行期指派名** → Y[SVC_RECEIPT_REG_B_NAME]。
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x08]); // shr rdx, 8
-    at += 4;
-    put(&mut code, at, &[0x48, 0xC1, 0xE2, 0x18]); // shl rdx, 24
-    at += 4;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x18]); // shr rdx, 24
-    at += 4;
-    put(&mut code, at, &[0x48, 0x89, 0xD0]); // mov rax, rdx
-    at += 3;
-    put_store_rax(&mut code, at, SVC_RECEIPT_REG_B_NAME as u32);
-    at += 7;
-
-    // ===== SPEC-090：服务管理器按名字解析并二次路由 =====
-    // 见设计 `docs/superpowers/specs/2026-10-11-stage4-service-manager-design.md`。
-    // 首次转发（行为 `ALPHA`）已产生既有 `service_negotiated_ready`；此处证明 init 持有
-    // **服务注册表**并按客户端写入共享段的名字解析端点：`BETA`→行为 2、未注册名→拒绝。
-    // 8) 读请求服务名：rax = *(USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET) → Y[SVC_RECEIPT_NAME]。
     put_imm64(
         &mut code,
         at,
         0x48,
-        0xB8,
-        USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET,
-    ); // mov rax, &name
-    at += 10;
-    put(&mut code, at, &[0x48, 0x8B, 0x00]); // mov rax, [rax]
-    at += 3;
-    put_store_rax(&mut code, at, SVC_RECEIPT_NAME as u32);
-    at += 7;
-    // 9) SPEC-095：**按名扫描运行期注册表**（替代 SPEC-090 的内联常量 `cmp`）。
-    //    r8 = 0；若 rax == 注册表 B 名 → r8 = 2（`BETA`）；若 rax == 注册表 A 名 → r8 = 1（`ALPHA`）。
-    //    → Y[SVC_RECEIPT_RESOLVED]。两张表项由端点**自报**（见上文收集步）。
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
-    at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDX,
-        SVC_RECEIPT_REG_B_NAME as u32,
-    ); // rdx = 注册名 B
-    at += 7;
-    put(&mut code, at, &[0x48, 0x39, 0xD0]); // cmp rax, rdx
-    at += 3;
-    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]); // jne +10（跳过赋值）
-    at += 6;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA); // mov r8, 2
-    at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDX,
-        SVC_RECEIPT_REG_A_NAME as u32,
-    ); // rdx = 注册名 A
-    at += 7;
-    put(&mut code, at, &[0x48, 0x39, 0xD0]); // cmp rax, rdx
-    at += 3;
-    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]); // jne +10（跳过赋值）
-    at += 6;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_ALPHA); // mov r8, 1
-    at += 10;
-    put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
-    at += 3;
-    put_store_rax(&mut code, at, SVC_RECEIPT_RESOLVED as u32);
-    at += 7;
-    // 10) 未注册名负例：同一扫描对 `SERVICE_NAME_UNKNOWN` 应得 NONE → Y[SVC_RECEIPT_UNKNOWN]。
-    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_NAME_UNKNOWN); // mov rax, 0xDEAD
-    at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_NONE); // mov r8, 0
-    at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDX,
-        SVC_RECEIPT_REG_B_NAME as u32,
+        0xBE,
+        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
     );
-    at += 7;
-    put(&mut code, at, &[0x48, 0x39, 0xD0]);
-    at += 3;
-    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]);
-    at += 6;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_BETA);
     at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RDX,
-        SVC_RECEIPT_REG_A_NAME as u32,
-    );
-    at += 7;
-    put(&mut code, at, &[0x48, 0x39, 0xD0]);
-    at += 3;
-    put(&mut code, at, &[0x0F, 0x85, 10, 0, 0, 0]);
-    at += 6;
-    put_imm64(&mut code, at, 0x49, 0xB8, SERVICE_BEHAVIOR_ALPHA);
-    at += 10;
-    put(&mut code, at, &[0x4C, 0x89, 0xC0]); // mov rax, r8
-    at += 3;
-    put_store_rax(&mut code, at, SVC_RECEIPT_UNKNOWN as u32);
-    at += 7;
-    // 11) 若请求名解析到行为（非 NONE），二次转发：prepare(behavior) → 等 done。
-    put_load_reg(
-        &mut code,
-        at,
-        0x4C,
-        NS_MODRM_R8,
-        SVC_RECEIPT_RESOLVED as u32,
-    ); // mov r8, [rcx+RESOLVED]
-    at += 7;
-    put(&mut code, at, &[0x4D, 0x85, 0xC0]); // test r8, r8
-    at += 3;
-    let fwd_je = at;
-    put(&mut code, at, &[0x0F, 0x84]); // je（解析为 NONE 则拒绝转发）
-    at += 6;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID2 as u32);
-    at += 7;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR2 as u32);
-    at += 7;
-    put(&mut code, at, &[0x4C, 0x89, 0xC2]); // mov rdx, r8（行为码）
-    at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, SERVICE_PREPARE_TAG); // mov rax, TAG
-    at += 10;
-    put(&mut code, at, &[0x48, 0x09, 0xC2]); // or rdx, rax → payload = TAG | behavior
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xD2]); // xor r10d, r10d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC0]); // xor r8d, r8d
-    at += 3;
-    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
-    at += 3;
-    put_syscall(&mut code, at, SYS_SEND);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
+    put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx
     at += 2;
-    // 11b) 把**已派生**的 capB（R|W 子集，见本块开头）转发给 B：send(idB, mgrB, 0, 1, capB, 0)。
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RDI, SVC_RECEIPT_ID2 as u32);
-    at += 7;
-    put_load_reg(&mut code, at, 0x48, NS_MODRM_RSI, SVC_RECEIPT_MGR2 as u32);
-    at += 7;
-    put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx（payload 任意；服务按 cap 判定）
-    at += 2;
-    put_imm64(&mut code, at, 0x49, 0xBA, 1);
-    at += 10;
-    put_load_reg(&mut code, at, 0x4C, NS_MODRM_R8, SVC_RECEIPT_SEG_B as u32);
-    at += 7;
-    put(&mut code, at, &[0x45, 0x31, 0xC9]); // xor r9d, r9d
-    at += 3;
-    put_syscall(&mut code, at, SYS_SEND);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    let done_b_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
-    at += 10;
-    put_syscall(&mut code, at, SYS_RECV);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
-    at += 3;
-    put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
-    at += 4;
-    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5EC2
-    put(
-        &mut code,
-        at + 2,
-        &((SERVICE_DONE_TAG >> 48) as u32).to_le_bytes(),
-    );
-    at += 6;
-    put(&mut code, at, &[0x0F, 0x85]); // jne done_b_loop
-    put(
-        &mut code,
-        at + 2,
-        &((done_b_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
-    );
-    at += 6;
-    put_store_rax(&mut code, at, SVC_RECEIPT_DONE_B as u32);
-    at += 7;
-    let fwd_skip = at;
-    put(
-        &mut code,
-        fwd_je + 2,
-        &((fwd_skip as i64 - (fwd_je as i64 + 6)) as i32).to_le_bytes(),
-    );
-
-    // ===== SPEC-103：ring3 服务管理器任务（独立二进制映像 `prima-servicemgr`）=====
-    // 决策见设计 `docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md`。
-    // 本片先证明「服务管理器是一个被 init 建起的**独立 ring3 任务**、并收到 init 的移交」；
-    // 注册表/按名解析/请求转发的迁移留 SPEC-104。与端点 B 一样，请求块在此**自足**写入
-    // （code_seg_cap/offset/pages/entry/initial_cap0/initial_cap1/name）。
-    put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
-    at += 10;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICE3_CODE_CAP_HANDLE.encode(),
-    );
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
-    at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
-    at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP3_CODE_PAGES as u64); // code_pages
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
-    at += 4;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xB8,
-        USER3_CODE_VA + RUNTIME_APP3_ENTRY_OFFSET,
-    );
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
-    at += 4;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICEMGR_SEND_CAP_HANDLE.encode(),
-    );
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
-    at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // initial_cap1 = 0（非服务端点角色）
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]);
-    at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // name = 0（服务管理器无服务名）
-    at += 10;
-    put(&mut code, at, &[0x48, 0x89, 0x42, 0x50]);
-    at += 4;
-    put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
-    at += 3;
-    put_syscall(&mut code, at, SYS_TASK_CREATE);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
-    at += 7;
-    // 把服务管理器的**独立栈段**映射进其根：memseg_map(stack3, mgr, 0, USER3_STACK_VA, 1, R|W)。
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xBF,
-        crate::bootstrap::SERVICE3_STACK_CAP_HANDLE.encode(),
-    );
-    at += 10;
-    put_load_reg(
-        &mut code,
-        at,
-        0x48,
-        NS_MODRM_RSI,
-        SERVICEMGR_RECEIPT_MGR as u32,
-    );
-    at += 7;
-    put_imm64(&mut code, at, 0x48, 0xBA, 0);
-    at += 10;
-    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    put_imm64(&mut code, at, 0x49, 0xBA, USER_HELLO2_VA);
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB8, 1);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
+    put_imm64(&mut code, at, 0x49, 0xB9, ACCESS_R_BITS);
     at += 10;
     put_syscall(&mut code, at, SYS_MEMSEG_MAP);
     at += 5;
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
-    // 让出：服务管理器运行、自报存活后阻塞在 recv。
-    put_syscall(&mut code, at, SYS_YIELD);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    // recv 循环直到 payload 高 16 位 == SERVICEMGR_HELLO_TAG 高 16 位（0x5E56）。
-    let mgr_loop = at;
-    put_imm64(&mut code, at, 0x48, 0xBF, SVC_RECV_BUF);
-    at += 10;
-    put_syscall(&mut code, at, SYS_RECV);
-    at += 5;
-    put(&mut code, at, &[0xCD, 0x80]);
-    at += 2;
-    put(&mut code, at, &[0x48, 0x89, 0xC2]); // mov rdx, rax
-    at += 3;
+    put_store_rax(&mut code, at, CLIENT_RECEIPT_MAP as u32);
+    at += 7;
+    let no_cap = at;
+    put(
+        &mut code,
+        je_nocap + 2,
+        &((no_cap as i64 - (je_nocap as i64 + 6)) as i32).to_le_bytes(),
+    );
+    // 取出保存的 payload：高 16 位 == SERVICEMGR_FINISH_TAG 高 16 位（0x5E59）即退出。
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RDX,
+        CLIENT_RECEIPT_RECV as u32,
+    ); // mov rdx, [rcx+RECV]
+    at += 7;
     put(&mut code, at, &[0x48, 0xC1, 0xEA, 0x30]); // shr rdx, 48
     at += 4;
-    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5E56
+    put(&mut code, at, &[0x81, 0xFA]); // cmp edx, 0x5E59
     put(
         &mut code,
         at + 2,
-        &((SERVICEMGR_HELLO_TAG >> 48) as u32).to_le_bytes(),
+        &((SERVICEMGR_FINISH_TAG >> 48) as u32).to_le_bytes(),
     );
     at += 6;
     put(&mut code, at, &[0x0F, 0x85]); // jne mgr_loop
@@ -2355,8 +2085,6 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         &((mgr_loop as i64 - (at as i64 + 6)) as i32).to_le_bytes(),
     );
     at += 6;
-    put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_HELLO as u32);
-    at += 7;
 
     // 收尾的抢占阶段需要 Ready 任务可轮转：本块的两次让出已把 task 2 排空成 `BlockedRecv`
     // （同 S2-D4 块末尾的情形），故末尾再做一次直投唤醒 `send(2, TASK2_SEND_CAP,
@@ -2472,8 +2200,10 @@ pub fn service_reply_witness() -> ServiceReplyWitness {
     ServiceReplyWitness {
         client: read_qword(USER_Y_VA + CLIENT_RECEIPT_MGR),
         stack: read_qword(USER_Y_VA + CLIENT_RECEIPT_STACK),
-        recv: read_qword(USER_Y_VA + CLIENT_RECEIPT_RECV),
+        // SPEC-104：客户端 id 由**管理器**从 Hello payload 收集后写回共享段（init 不再 recv）。
+        recv: read_qword(USER_HELLO2_VA + SERVICE_CLIENT_ID_OFFSET),
         map: read_qword(USER_Y_VA + CLIENT_RECEIPT_MAP),
+        // SPEC-104：`PONG` 由管理器发送，init 不再持有该回执槽（保持 0）。
         reply: read_qword(USER_Y_VA + CLIENT_RECEIPT_REPLY),
         echo: read_qword(USER_HELLO2_VA + SERVICE_REPLY_OFFSET),
     }
@@ -2518,9 +2248,12 @@ pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
         token: read_qword(USER_Y_VA + SVC_RECEIPT_TOKEN),
         service: read_qword(USER_Y_VA + SVC_RECEIPT_MGR),
         stack: read_qword(USER_Y_VA + SVC_RECEIPT_STACK),
-        service_id: read_qword(USER_Y_VA + SVC_RECEIPT_ID),
+        // SPEC-104：`ALPHA` 端点 id 由端点自己写入共享段（init 不再收集自报）。
+        service_id: read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET),
+        // SPEC-104：转发由管理器完成，init 不再持有该回执槽（保持 0）。
         forward: read_qword(USER_Y_VA + SVC_RECEIPT_FORWARD),
-        done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE),
+        // SPEC-104：`ALPHA` 的 done 由管理器接收后写回共享段。
+        done: read_qword(USER_HELLO2_VA + SERVICE_DONE_ALPHA_OFFSET),
         negotiated: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_OFFSET),
         negatives: read_qword(USER_HELLO2_VA + SERVICE_NEGATIVES_OFFSET),
     }
@@ -2597,16 +2330,17 @@ impl ServiceSelectedWitness {
 pub fn service_selected_witness() -> ServiceSelectedWitness {
     let alpha_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET);
     let beta_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_BETA_OFFSET);
-    let client_ep = read_qword(USER_Y_VA + CLIENT_RECEIPT_RECV);
+    let client_ep = read_qword(USER_HELLO2_VA + SERVICE_CLIENT_ID_OFFSET);
     ServiceSelectedWitness {
-        name: read_qword(USER_Y_VA + SVC_RECEIPT_NAME),
-        resolved: read_qword(USER_Y_VA + SVC_RECEIPT_RESOLVED),
-        unknown: read_qword(USER_Y_VA + SVC_RECEIPT_UNKNOWN),
-        done: read_qword(USER_Y_VA + SVC_RECEIPT_DONE_B),
+        // SPEC-104：以下「由管理器产出」的值均从共享段的固定偏移读回。
+        name: read_qword(USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET),
+        resolved: read_qword(USER_HELLO2_VA + SERVICE_RESOLVED_OFFSET),
+        unknown: read_qword(USER_HELLO2_VA + SERVICE_UNKNOWN_OFFSET),
+        done: read_qword(USER_HELLO2_VA + SERVICE_DONE_BETA_OFFSET),
         negotiated_beta: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_B_OFFSET),
         alpha_ep,
         beta_ep,
-        beta_self: read_qword(USER_Y_VA + SVC_RECEIPT_ID2),
+        beta_self: read_qword(USER_HELLO2_VA + SERVICE_BETA_SELF_OFFSET),
         alpha_marker: read_qword(USER_HELLO2_VA + SERVICE_ALPHA_MARKER_OFFSET),
         beta_marker: read_qword(USER_HELLO2_VA + SERVICE_BETA_MARKER_OFFSET),
         alpha_stack_seg: crate::bootstrap::mapped_segment_at(alpha_ep as u32, USER3_STACK_VA)
@@ -2616,28 +2350,36 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
         client_ep,
         client_stack_seg: crate::bootstrap::mapped_segment_at(client_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
-        reg_a_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_A_NAME),
-        reg_b_name: read_qword(USER_Y_VA + SVC_RECEIPT_REG_B_NAME),
+        reg_a_name: read_qword(USER_HELLO2_VA + SERVICE_REG_A_NAME_OFFSET),
+        reg_b_name: read_qword(USER_HELLO2_VA + SERVICE_REG_B_NAME_OFFSET),
     }
 }
 
 /// SPEC-103：ring3 服务管理器任务的判决性见证。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServicemgrWitness {
-    /// 从第六次 `SYS_TASK_CREATE` 返回的**管理 cap** 解出的新任务 id（0 = 未能解出）。
+    /// 从 `SYS_TASK_CREATE` 返回的**管理 cap** 解出的新任务 id（0 = 未能解出）。
     pub task_id: u64,
     /// 服务管理器自报存活的 payload（`SERVICEMGR_HELLO_TAG ‖ 自身 task id 低 8 位`）。
     pub hello: u64,
+    /// SPEC-104：管理器写入共享段的**自身 task id**——须等于从管理 cap 解出的 id（把注册表/
+    /// 解析结果的产出方绑定到 init 建起的那**同一个**任务）。
+    pub self_id: u64,
+    /// SPEC-104：管理器写入共享段的**自身二进制标记**——须等于 [`SERVICEMGR_BINARY_MARKER`]，
+    /// 证明注册表/解析由 `prima-servicemgr` 这一**独立 ring3 映像**产出，而非 init 手写块或常量。
+    pub marker: u64,
 }
 
 impl ServicemgrWitness {
     /// 判决性：任务 id 是一个**真实的子任务**（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8
-    /// 位与从管理 cap 解出的 id 相符——证明「存活自报来自 init 建起的那**同一个**独立 ring3 任务」，
-    /// 而非任何编译期常量（反例：任一不符即拒绝）。
+    /// 位与从管理 cap 解出的 id 相符；共享段里的自身 id/标记与之一致——证明「存活自报与注册表/
+    /// 解析结果都来自 init 建起的那**同一个**独立 ring3 映像」，而非任何编译期常量。
     pub fn evidence_ok(&self) -> bool {
         self.task_id > 1
             && (self.hello & 0xffff_0000_0000_0000) == SERVICEMGR_HELLO_TAG
             && (self.hello & 0xff) == (self.task_id & 0xff)
+            && self.self_id == self.task_id
+            && self.marker == SERVICEMGR_BINARY_MARKER
     }
 }
 
@@ -2654,6 +2396,8 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
     ServicemgrWitness {
         task_id,
         hello: read_qword(USER_Y_VA + SERVICEMGR_RECEIPT_HELLO),
+        self_id: read_qword(USER_HELLO2_VA + SERVICEMGR_SELF_ID_OFFSET),
+        marker: read_qword(USER_HELLO2_VA + SERVICEMGR_MARKER_OFFSET),
     }
 }
 
