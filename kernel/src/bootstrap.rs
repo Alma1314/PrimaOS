@@ -1956,6 +1956,22 @@ pub const NS_STACK_CAP_HANDLE: Handle = cap_handle(NS_STACK_CAP_SLOT, INITIAL_CA
 pub const STORE_CODE_CAP_HANDLE: Handle = cap_handle(STORE_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// SPEC-106：基础存储服务栈段的根 Capability。
 pub const STORE_STACK_CAP_HANDLE: Handle = cap_handle(STORE_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+
+/// SPEC-109：**服务映像段**的根 Capability 槽（`init` 持）——用于把各服务代码子区间
+/// 映射进各自任务根（客户端/端点/servicemgr 均取自同一段的页偏移）。
+pub const SERVICE_IMAGE_CAP_SLOT: u32 = 62;
+/// SPEC-109：服务映像段的**移交**用根 Capability 槽（`init` 持）——作为 `prima-servicemgr` 的
+/// `initial_cap1` **移动**进管理器；管理器据此读段尾目录并派生端点代码只读令牌。
+///
+/// 与 [`SERVICE_IMAGE_CAP_SLOT`] 指向**同一段**：`init` 需要一条自留（在管理器创建之后仍要
+/// 映射客户端代码），管理器需要一条被移走的。
+pub const SERVICE_IMAGE_MGR_CAP_SLOT: u32 = 63;
+/// SPEC-109：服务映像段的 `init` 自留根 Capability。
+pub const SERVICE_IMAGE_CAP_HANDLE: Handle =
+    cap_handle(SERVICE_IMAGE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-109：服务映像段移交给 `prima-servicemgr` 的根 Capability（作 `initial_cap1`）。
+pub const SERVICE_IMAGE_MGR_CAP_HANDLE: Handle =
+    cap_handle(SERVICE_IMAGE_MGR_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// SPEC-094：**第一个**服务端点（`ALPHA`）的**独立栈段**根 Capability 槽。
 ///
 /// SPEC-093 之前该端点沿用客户端（task 8）经 `SYS_MEMSEG_CREATE` 建的那条栈段 `Y[368]`——
@@ -2035,7 +2051,10 @@ pub struct PlatformSegmentsRecord {
 }
 
 /// 单个 Segment 的帧向量容量（`memseg_create` 的页数上限）。
-pub const MAX_SEGMENT_FRAMES: usize = 16;
+///
+/// SPEC-109：服务映像段把 6 个独立 ELF + 1 个目录页打包为**单段**（`IMAGE_TOTAL_PAGES`=43），
+/// 故上限须 ≥ 43。
+pub const MAX_SEGMENT_FRAMES: usize = 48;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -2052,6 +2071,9 @@ pub const SEGMENT_ROOT_RIGHTS: Rights = SEGMENT_ACCESS_RIGHTS;
 /// [`MAX_SEGMENT_OBJECTS`] 注释），故向量物化在帧注册表 `frames::image_frame_*` 中，
 /// 此处持有其长度。`frame_at` 对 `Image` 逐帧委托注册表——与 `Vector` 同为 §5.1 的
 /// `Vector<FrameId>`，不再是 `(base, count)` 区间表达（ISSUE-FRAME-001）。
+// `Vector` 内联 48 帧（SPEC-109 服务映像段需 43 页），远大于 `Image`——本 crate 无堆，
+// 帧向量必须内联在静态段对象表里，此处刻意不 Box。
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentFrames {
     Vector {
@@ -2098,14 +2120,11 @@ impl SegmentFrames {
 /// 10+8 页，故不能合段）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskCreateImages {
-    pub code: SegmentFrames,
-    pub code2: SegmentFrames,
-    /// SPEC-103：ring3 服务管理器（`prima-servicemgr`）的独立代码段。
-    pub code3: SegmentFrames,
-    /// SPEC-106（S4-D3）：三个基础服务端点各自的独立代码段（`prima-log`/`prima-ns`/`prima-store`）。
-    pub code_log: SegmentFrames,
-    pub code_ns: SegmentFrames,
-    pub code_store: SegmentFrames,
+    /// SPEC-109：**单一服务映像段**——6 个独立 ELF 页对齐打包 + 段尾目录页。
+    ///
+    /// 取代 SPEC-093/103/106 的 6 个独立代码段（`code`/`code2`/`code3`/`code_log`/`code_ns`/
+    /// `code_store`）：加服务不再需要新段与新 cap 槽。
+    pub image: SegmentFrames,
 }
 
 /// §5.1：Segment 对象（阶段 2：image / 平台 bring-up / 用户创建三类共用）。
@@ -6330,66 +6349,32 @@ impl BootstrapState {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_task_create_caps(
         &mut self,
-        code_pages: usize,
-        code2_pages: usize,
-        code3_pages: usize,
-        log_pages: usize,
-        ns_pages: usize,
-        store_pages: usize,
+        image_pages: usize,
         phys_offset: u64,
     ) -> Result<TaskCreateImages, MemsegError> {
-        let pages = [
-            code_pages,
-            code2_pages,
-            code3_pages,
-            log_pages,
-            ns_pages,
-            store_pages,
-        ];
-        if pages.iter().any(|&p| p == 0 || p > MAX_SEGMENT_FRAMES) {
+        if image_pages == 0 || image_pages > MAX_SEGMENT_FRAMES {
             return Err(MemsegError::OutOfBounds);
         }
-        let (_, frames) = self.create_segment_object(
+        // SPEC-109：**单一服务映像段**——6 个独立 ELF 页对齐打包 + 段尾目录页。
+        let (_, image) = self.create_segment_object(
             USER_SEGMENT_ID_FIRST,
             KERNEL_ACTOR,
-            code_pages,
+            image_pages,
             TASK_CREATE_CODE_ACCESS,
             phys_offset,
             Some((
                 CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                TASK_CREATE_CODE_CAP_SLOT,
+                SERVICE_IMAGE_CAP_SLOT,
             )),
         )?;
-        // SPEC-093：第二个服务端点的**独立代码段**（承载不同的二进制映像）。
-        let code2_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let (_, code2) = self.create_segment_object(
-            code2_id,
-            KERNEL_ACTOR,
-            code2_pages,
-            TASK_CREATE_CODE_ACCESS,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                SERVICE2_CODE_CAP_SLOT,
-            )),
-        )?;
-        // SPEC-103：ring3 服务管理器的**独立代码段**（承载 `prima-servicemgr` 映像）。
-        let code3_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let (_, code3) = self.create_segment_object(
-            code3_id,
-            KERNEL_ACTOR,
-            code3_pages,
-            TASK_CREATE_CODE_ACCESS,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                SERVICE3_CODE_CAP_SLOT,
-            )),
-        )?;
+        // 同段第二条根 cap：作 `prima-servicemgr` 的 `initial_cap1`，创建该任务时**移动**过去。
+        self.mint_root_capability_at(
+            CapabilityLocation::HeldByTask(INIT_TASK_ID),
+            SERVICE_IMAGE_MGR_CAP_SLOT,
+            TASK_CREATE_CODE_RIGHTS,
+            ObjectRef::Segment(USER_SEGMENT_ID_FIRST),
+        )
+        .map_err(|_| MemsegError::CapacityExceeded)?;
         // SPEC-103：服务管理器的**独立栈段**（独立物理栈帧）。
         let stack3_id = self
             .alloc_segment_slot()
@@ -6453,57 +6438,7 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        // SPEC-106（S4-D3）：三个基础服务端点的独立代码段（各承载不同二进制）。
-        let code_log_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let (_, code_log) = self.create_segment_object(
-            code_log_id,
-            KERNEL_ACTOR,
-            log_pages,
-            TASK_CREATE_CODE_ACCESS,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                LOG_CODE_CAP_SLOT,
-            )),
-        )?;
-        let code_ns_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let (_, code_ns) = self.create_segment_object(
-            code_ns_id,
-            KERNEL_ACTOR,
-            ns_pages,
-            TASK_CREATE_CODE_ACCESS,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                NS_CODE_CAP_SLOT,
-            )),
-        )?;
-        let code_store_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let (_, code_store) = self.create_segment_object(
-            code_store_id,
-            KERNEL_ACTOR,
-            store_pages,
-            TASK_CREATE_CODE_ACCESS,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                STORE_CODE_CAP_SLOT,
-            )),
-        )?;
-        Ok(TaskCreateImages {
-            code: frames,
-            code2,
-            code3,
-            code_log,
-            code_ns,
-            code_store,
-        })
+        Ok(TaskCreateImages { image })
     }
 
     /// 一条平台根 Capability 的属主：满足全部结构性条件时返回其 holder id。
@@ -7285,24 +7220,11 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
 /// SPEC-093：额外建第二个端点（`BETA`）的**独立代码段**与**独立栈段**，返回两个代码段向量。
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_task_create_caps(
-    code_pages: usize,
-    code2_pages: usize,
-    code3_pages: usize,
-    log_pages: usize,
-    ns_pages: usize,
-    store_pages: usize,
+    image_pages: usize,
     phys_offset: u64,
 ) -> Result<TaskCreateImages, MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => state.prepare_task_create_caps(
-            code_pages,
-            code2_pages,
-            code3_pages,
-            log_pages,
-            ns_pages,
-            store_pages,
-            phys_offset,
-        ),
+        Some(state) => state.prepare_task_create_caps(image_pages, phys_offset),
         None => Err(MemsegError::TargetDead),
     })
 }

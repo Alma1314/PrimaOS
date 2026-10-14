@@ -35,11 +35,12 @@ use prima_runtime::{
     protocol::{
         ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA,
         SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE,
-        SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_KIND_SHIFT,
+        SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE, SERVICE_IMAGE_DIR_HEADER,
+        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_CODE_TAG,
-        SERVICE_SETUP_TAG, SERVICEMGR_HELLO_TAG, pack_service_name,
+        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICEMGR_HELLO_TAG, pack_service_name,
     },
     task::TaskSpec,
 };
@@ -131,6 +132,7 @@ struct Endpoint {
 #[derive(Clone, Copy)]
 struct Pending {
     code: Capability,
+    offset_pages: u64,
     pages: u64,
     name: u64,
 }
@@ -167,7 +169,7 @@ fn behavior_for(name: u64) -> u64 {
 pub extern "C" fn _start(
     self_cap_raw: u64,
     init_cap_raw: u64,
-    _initial_cap1_raw: u64,
+    image_cap_raw: u64,
     _name_raw: u64,
     peer_raw: u64,
 ) -> ! {
@@ -176,6 +178,10 @@ pub extern "C" fn _start(
         Capability::from_raw(self_cap_raw),
         Capability::from_raw(init_cap_raw),
     ) else {
+        idle();
+    };
+    // SPEC-109：`initial_cap1` 是内核打包的**单一服务映像段**（零 IPC 移交）。
+    let Ok(image_cap) = Capability::from_raw(image_cap_raw) else {
         idle();
     };
     let init_id = TaskId::from_raw(peer_raw as u32);
@@ -201,6 +207,8 @@ pub extern "C" fn _start(
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
+    // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
+    let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending);
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
     // SPEC-106：三个基础服务的存在标记与路由探针应答。
@@ -213,23 +221,7 @@ pub extern "C" fn _start(
         let Ok(message) = runtime.receive() else {
             continue;
         };
-        if message.payload >> 48 == SERVICE_SETUP_CODE_TAG >> 48 {
-            // ⓪ SPEC-108：init 移交某服务的**代码段** cap（**单 cap**）；name/pages 在 payload。
-            // 栈段由本管理器自建（见 [`create_service`]）。
-            if let Some(cap0) = message.capabilities[0] {
-                let name = message.payload & SERVICE_NAME_MASK;
-                let pages = (message.payload >> 40) & 0xff;
-                if let Some(slot) = table_slot(name)
-                    && pending[slot].is_none()
-                {
-                    pending[slot] = Some(Pending {
-                        code: cap0,
-                        pages,
-                        name,
-                    });
-                }
-            }
-        } else if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
+        if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
             // ⓪' SPEC-105：init 移交父 Namespace（单 cap，payload 仅 tag）。
             if let Some(cap0) = message.capabilities[0]
                 && ns.is_none()
@@ -455,6 +447,48 @@ pub extern "C" fn _start(
     }
 }
 
+/// SPEC-109：映射映像段**首页目录**（只读）读出服务表——名字 → 段内页偏移/页数。
+///
+/// 目录布局（little-endian u64）：`magic | count | [name | offset_pages | page_count] × count`。
+/// 读毕即卸载探测映射。目录非法或无匹配时静默跳过（服务缺失由后续见证暴露）。
+fn read_image_directory(
+    runtime: &Runtime<impl SyscallTransport>,
+    self_cap: &Capability,
+    image: Capability,
+    pending: &mut [Option<Pending>; SERVICES],
+) -> Result<(), ()> {
+    runtime
+        .memseg_map(image, *self_cap, 0, ENDPOINT_CODE_PROBE_VA, 1, R_ONLY)
+        .map_err(|_| ())?;
+    let magic = runtime.read_user_u64(ENDPOINT_CODE_PROBE_VA).unwrap_or(0);
+    let count = runtime
+        .read_user_u64(ENDPOINT_CODE_PROBE_VA + 8)
+        .unwrap_or(0);
+    if magic == SERVICE_IMAGE_MAGIC {
+        let mut index = 0u64;
+        while index < count && index < SERVICES as u64 {
+            let at =
+                ENDPOINT_CODE_PROBE_VA + SERVICE_IMAGE_DIR_HEADER + index * SERVICE_IMAGE_ENTRY_LEN;
+            let name = runtime.read_user_u64(at).unwrap_or(0);
+            let offset_pages = runtime.read_user_u64(at + 8).unwrap_or(0);
+            let pages = runtime.read_user_u64(at + 16).unwrap_or(0);
+            if pages != 0
+                && let Some(slot) = table_slot(name)
+            {
+                pending[slot] = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name,
+                });
+            }
+            index += 1;
+        }
+    }
+    let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, 1);
+    Ok(())
+}
+
 /// SPEC-105/106：名字对应的服务表下标（未注册 → `None`）。
 fn table_slot(name: u64) -> Option<usize> {
     let mut index = 0;
@@ -511,7 +545,7 @@ fn create_service(
     let Ok(()) = runtime.memseg_map(
         spec.code,
         *self_cap,
-        0,
+        spec.offset_pages,
         ENDPOINT_CODE_PROBE_VA,
         spec.pages,
         R_ONLY,
@@ -532,7 +566,7 @@ fn create_service(
     let entry = ENDPOINT_CODE_VA + e_entry;
     let Ok(manager) = runtime.task_create(&TaskSpec {
         code_segment: spec.code,
-        code_offset: 0,
+        code_offset: spec.offset_pages,
         code_pages: spec.pages,
         load_base: ENDPOINT_CODE_VA,
         entry,

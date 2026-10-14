@@ -213,8 +213,8 @@ pub const TASK2_SELF_CAP: u64 = bootstrap::TASK2_SELF_CAP_HANDLE.encode();
 pub const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// S2-D4：`task_create` 选定的新 Task id（init 与 task 2 之后的最小空闲 id）。
 pub const TASK_CREATE_CHILD_ID: u32 = 3;
-/// S2-D4：新 Task 代码段 Capability 的句柄（bring-up 铸在预留槽 49）。
-pub const TASK_CODE_CAP: u64 = bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode();
+/// SPEC-109：新 Task 代码段 Capability 的句柄（bring-up 铸在预留槽 62，指向**单一服务映像段**）。
+pub const TASK_CODE_CAP: u64 = bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode();
 /// S2-D4：作为 `initial_cap0` 移入新 Task 的发送凭证（预留槽 50）。
 pub const TASK_SEND_CAP: u64 = bootstrap::TASK_CREATE_SEND_CAP_HANDLE.encode();
 

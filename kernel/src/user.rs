@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
     IMAGE_CAP_HANDLE, INIT_TASK_ID, NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE,
-    PLATFORM_TASK2_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE, TASK_CREATE_CODE_CAP_HANDLE,
+    PLATFORM_TASK2_CAP_HANDLE, SERVICE_IMAGE_MGR_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE,
 };
 use crate::exc::SretFrame;
 use crate::frames;
@@ -445,6 +445,21 @@ pub const RUNTIME_APP_NS_ENTRY_OFFSET: u64 = elf_word(PRIMA_NS_ELF, 24);
 pub const RUNTIME_APP_STORE_ENTRY_OFFSET: u64 = elf_word(PRIMA_STORE_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
+
+// ===== SPEC-109：单一服务映像段布局（首页目录 + 6 个 ELF 页对齐打包）=====
+/// 目录页固定在**段首页**：`prima-servicemgr` 只需映射 1 页即可读目录，且加服务不改此偏移。
+pub const IMAGE_DIR_PAGES_OFF: usize = 0;
+/// 各映像在段内的页偏移（按序、页对齐）。
+pub const IMAGE_ALPHA_PAGES_OFF: usize = IMAGE_DIR_PAGES_OFF + 1;
+pub const IMAGE_BETA_PAGES_OFF: usize = IMAGE_ALPHA_PAGES_OFF + RUNTIME_APP_CODE_PAGES;
+pub const IMAGE_SERVICEMGR_PAGES_OFF: usize = IMAGE_BETA_PAGES_OFF + RUNTIME_APP2_CODE_PAGES;
+pub const IMAGE_LOG_PAGES_OFF: usize = IMAGE_SERVICEMGR_PAGES_OFF + RUNTIME_APP3_CODE_PAGES;
+pub const IMAGE_NS_PAGES_OFF: usize = IMAGE_LOG_PAGES_OFF + RUNTIME_APP_LOG_CODE_PAGES;
+pub const IMAGE_STORE_PAGES_OFF: usize = IMAGE_NS_PAGES_OFF + RUNTIME_APP_NS_CODE_PAGES;
+/// 映像段总页数（1 目录页 + 6 个映像）。
+pub const IMAGE_TOTAL_PAGES: usize = IMAGE_STORE_PAGES_OFF + RUNTIME_APP_STORE_CODE_PAGES;
+/// SPEC-109：服务映像段目录页魔数（与 `prima-runtime::protocol::SERVICE_IMAGE_MAGIC` 同款）。
+pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
 
 /// 用户代码占据一个 4 KiB 页；路径文本放在独立的 Y 页。
 pub const USER_CODE_LEN: usize = 8192;
@@ -931,10 +946,10 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         1814,
         0x48,
         0xB8,
-        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
     );
     put(&mut code, 1824, &[0x48, 0x89, 0x02]);
-    put_imm64(&mut code, 1827, 0x48, 0xB8, 0);
+    put_imm64(&mut code, 1827, 0x48, 0xB8, IMAGE_ALPHA_PAGES_OFF as u64);
     put(&mut code, 1837, &[0x48, 0x89, 0x42, 0x08]);
     put_imm64(&mut code, 1841, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64);
     put(&mut code, 1851, &[0x48, 0x89, 0x42, 0x10]);
@@ -1016,7 +1031,7 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         2096,
         0x48,
         0xB8,
-        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
     );
     put(&mut code, 2106, &[0x48, 0x89, 0x02]);
     // 栈映射进**子任务**根：SYS_MEMSEG_MAP(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)
@@ -1634,12 +1649,12 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         at,
         0x48,
         0xB8,
-        crate::bootstrap::SERVICE3_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    put_imm64(&mut code, at, 0x48, 0xB8, IMAGE_SERVICEMGR_PAGES_OFF as u64); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
@@ -1667,7 +1682,13 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0：→init 回发凭据）
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // initial_cap1 = 0（非服务端点角色）
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        SERVICE_IMAGE_MGR_CAP_HANDLE.encode(),
+    ); // initial_cap1 = 服务映像段（移动进管理器，供其读目录 + 派生端点代码）
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]);
     at += 4;
@@ -1759,12 +1780,12 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         at,
         0x48,
         0xB8,
-        crate::bootstrap::TASK_CREATE_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, 0); // code_offset = 0
+    put_imm64(&mut code, at, 0x48, 0xB8, IMAGE_ALPHA_PAGES_OFF as u64); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
@@ -1801,6 +1822,12 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     put(&mut code, at, &[0xCD, 0x80]);
     at += 2;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0）
+    at += 4;
+    // SPEC-109：请求块在页 1 被服务管理器块改用，`[rdx+0x48]` 已被写入映像段 cap（移交后失效）。
+    // 客户端只带 initial_cap0，故显式清零 initial_cap1，避免复用一个已移动走的句柄。
+    put_imm64(&mut code, at, 0x48, 0xB8, 0); // initial_cap1 = 0
+    at += 10;
+    put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]); // mov [rdx+0x48], rax
     at += 4;
     // create：第三个 Rust 任务（存活，不再销毁）。
     put(&mut code, at, &[0x48, 0x89, 0xD7]); // mov rdi, rdx
@@ -1870,55 +1897,8 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         SERVICEMGR_RECEIPT_MGR as u32,
     );
     at += 7;
-    // 1) ALPHA：payload = SETUP_CODE | (code_pages<<40) | name；cap0 = 代码段（**单 cap**）。
-    // SPEC-108：服务**栈段**不再由 `init` 移交——由管理器 `SYS_MEMSEG_CREATE` 自建。
-    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
-        &mut code,
-        at,
-        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_CODE_PAGES as u64) << 40) | SERVICE_NAME_ALPHA,
-        1,
-        TASK_CREATE_CODE_CAP_HANDLE.encode(),
-        0,
-    );
-    // 2) BETA：第二个独立代码段。
-    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
-        &mut code,
-        at,
-        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP2_CODE_PAGES as u64) << 40) | SERVICE_NAME_BETA,
-        1,
-        crate::bootstrap::SERVICE2_CODE_CAP_HANDLE.encode(),
-        0,
-    );
-    // 3) SPEC-106（S4-D3）：三个基础服务——日志 / Namespace / 基础存储，各一个独立代码段。
-    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
-        &mut code,
-        at,
-        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_LOG_CODE_PAGES as u64) << 40) | SERVICE_NAME_LOG,
-        1,
-        crate::bootstrap::LOG_CODE_CAP_HANDLE.encode(),
-        0,
-    );
-    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
-        &mut code,
-        at,
-        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_NS_CODE_PAGES as u64) << 40) | SERVICE_NAME_NS,
-        1,
-        crate::bootstrap::NS_CODE_CAP_HANDLE.encode(),
-        0,
-    );
-    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
-        &mut code,
-        at,
-        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_STORE_CODE_PAGES as u64) << 40) | SERVICE_NAME_STORE,
-        1,
-        crate::bootstrap::STORE_CODE_CAP_HANDLE.encode(),
-        0,
-    );
+    // SPEC-109：服务代码段不再由 `init` 逐条移交——**单一服务映像段**随管理器的 `initial_cap1`
+    // 零 IPC 移交，管理器读段首目录按表建端点（见 `prima-servicemgr`）。此处只余父 Namespace。
     // 4) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
@@ -3123,46 +3103,40 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 /// 必须在既有 bring-up 取帧序列（`prepare`/`prepare_task2`/`prepare_spin`）**之后**调用，
 /// 否则会平移切片 E/F/G/O 的物理帧序列与既有金标地址。
 pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
-    let images = crate::bootstrap::prepare_task_create_caps(
-        RUNTIME_APP_CODE_PAGES,
-        RUNTIME_APP2_CODE_PAGES,
-        RUNTIME_APP3_CODE_PAGES,
-        RUNTIME_APP_LOG_CODE_PAGES,
-        RUNTIME_APP_NS_CODE_PAGES,
-        RUNTIME_APP_STORE_CODE_PAGES,
-        offset,
-    )
-    .map_err(|_| VspaceError::NoFrame)?;
+    let images = crate::bootstrap::prepare_task_create_caps(IMAGE_TOTAL_PAGES, offset)
+        .map_err(|_| VspaceError::NoFrame)?;
+    // SPEC-109：6 个独立 ELF 按页偏移装进**单一映像段**（`page_base` 定位各映像起点）。
     load_runtime_elf(
         PRIMA_SMOKE_ELF,
-        &images.code,
+        &images.image,
+        IMAGE_ALPHA_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP_CODE_PAGES,
         RUNTIME_APP_ENTRY_OFFSET,
     )?;
-    // SPEC-093：把**第二个二进制映像**装进第二个代码段（`BETA` 端点用自己的映像装载）。
     load_runtime_elf(
         PRIMA_BETA_ELF,
-        &images.code2,
+        &images.image,
+        IMAGE_BETA_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP2_CODE_PAGES,
         RUNTIME_APP2_ENTRY_OFFSET,
     )?;
-    // SPEC-103：把**ring3 服务管理器映像**装进第三个代码段。
     load_runtime_elf(
         PRIMA_SERVICEMGR_ELF,
-        &images.code3,
+        &images.image,
+        IMAGE_SERVICEMGR_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP3_CODE_PAGES,
         RUNTIME_APP3_ENTRY_OFFSET,
     )?;
-    // SPEC-106（S4-D3）：把三个基础服务映像装进各自的独立代码段。
     load_runtime_elf(
         PRIMA_LOG_ELF,
-        &images.code_log,
+        &images.image,
+        IMAGE_LOG_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP_LOG_CODE_PAGES,
@@ -3170,7 +3144,8 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     )?;
     load_runtime_elf(
         PRIMA_NS_ELF,
-        &images.code_ns,
+        &images.image,
+        IMAGE_NS_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP_NS_CODE_PAGES,
@@ -3178,13 +3153,19 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     )?;
     load_runtime_elf(
         PRIMA_STORE_ELF,
-        &images.code_store,
+        &images.image,
+        IMAGE_STORE_PAGES_OFF,
         offset,
         USER3_CODE_VA,
         RUNTIME_APP_STORE_CODE_PAGES,
         RUNTIME_APP_STORE_ENTRY_OFFSET,
     )?;
-    let frame = images.code.frame_at(0).ok_or(VspaceError::NoFrame)?;
+    // 段首页写入服务目录（服务管理器据此按名拿各服务的页偏移/页数）。
+    write_image_directory(&images.image, offset)?;
+    let frame = images
+        .image
+        .frame_at(IMAGE_ALPHA_PAGES_OFF)
+        .ok_or(VspaceError::NoFrame)?;
     // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
     write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
     Ok(())
@@ -3315,13 +3296,14 @@ fn elf_segment(bytes: &[u8], phoff: usize, index: usize) -> Result<ElfSegment, V
 fn load_runtime_elf(
     bytes: &[u8],
     frames: &SegmentFrames,
+    page_base: usize,
     offset: u64,
     load_base: u64,
     expected_pages: usize,
     expected_entry: u64,
 ) -> Result<(), VspaceError> {
     let layout = elf_layout(bytes)?;
-    if layout.pages != frames.frame_count()
+    if page_base + layout.pages > frames.frame_count()
         || layout.entry != expected_entry
         || layout.pages != expected_pages
     {
@@ -3329,7 +3311,9 @@ fn load_runtime_elf(
     }
     let map = |phys| phys_to_virt(phys, offset);
     for index in 0..layout.pages {
-        let frame = frames.frame_at(index).ok_or(VspaceError::NoFrame)?;
+        let frame = frames
+            .frame_at(page_base + index)
+            .ok_or(VspaceError::NoFrame)?;
         for byte in 0..FRAME_SIZE {
             prima_ostd::mm::write_u8_at(map(frame), byte, 0);
         }
@@ -3345,6 +3329,7 @@ fn load_runtime_elf(
                 let address = segment.vaddr + index;
                 write_image_byte(
                     frames,
+                    page_base,
                     map,
                     address,
                     *bytes.get(source).ok_or(VspaceError::InvalidImage)?,
@@ -3354,17 +3339,76 @@ fn load_runtime_elf(
             dynamic = Some(segment);
         }
     }
-    apply_relative_relocations(bytes, frames, map, dynamic, layout, load_base)?;
+    apply_relative_relocations(bytes, frames, page_base, map, dynamic, layout, load_base)?;
     Ok(())
+}
+
+/// SPEC-109：把服务目录写进映像段首页。布局（little-endian u64）：
+/// `magic(0..8) | count(8..16) | [name(0..8) | offset_pages(8..16) | page_count(16..24)] × count`。
+fn write_image_directory(frames: &SegmentFrames, offset: u64) -> Result<(), VspaceError> {
+    let map = |phys| phys_to_virt(phys, offset);
+    let dir_frame = frames
+        .frame_at(IMAGE_DIR_PAGES_OFF)
+        .ok_or(VspaceError::NoFrame)?;
+    let base = map(dir_frame);
+    for byte in 0..FRAME_SIZE {
+        prima_ostd::mm::write_u8_at(base, byte, 0);
+    }
+    let entries: [(u64, usize, usize); 5] = [
+        (
+            SERVICE_NAME_ALPHA,
+            IMAGE_ALPHA_PAGES_OFF,
+            RUNTIME_APP_CODE_PAGES,
+        ),
+        (
+            SERVICE_NAME_BETA,
+            IMAGE_BETA_PAGES_OFF,
+            RUNTIME_APP2_CODE_PAGES,
+        ),
+        (
+            SERVICE_NAME_LOG,
+            IMAGE_LOG_PAGES_OFF,
+            RUNTIME_APP_LOG_CODE_PAGES,
+        ),
+        (
+            SERVICE_NAME_NS,
+            IMAGE_NS_PAGES_OFF,
+            RUNTIME_APP_NS_CODE_PAGES,
+        ),
+        (
+            SERVICE_NAME_STORE,
+            IMAGE_STORE_PAGES_OFF,
+            RUNTIME_APP_STORE_CODE_PAGES,
+        ),
+    ];
+    let mut at = 0usize;
+    write_dir_u64(base, &mut at, SERVICE_IMAGE_MAGIC);
+    write_dir_u64(base, &mut at, entries.len() as u64);
+    for (name, pages_off, count) in entries {
+        write_dir_u64(base, &mut at, name);
+        write_dir_u64(base, &mut at, pages_off as u64);
+        write_dir_u64(base, &mut at, count as u64);
+    }
+    Ok(())
+}
+
+/// SPEC-109：目录页内写一个 little-endian u64 并推进游标。
+fn write_dir_u64(base: u64, at: &mut usize, value: u64) {
+    for (index, byte) in value.to_le_bytes().into_iter().enumerate() {
+        prima_ostd::mm::write_u8_at(base, (*at + index) as u64, byte);
+    }
+    *at += 8;
 }
 
 fn write_image_byte(
     frames: &SegmentFrames,
+    page_base: usize,
     map: impl Fn(u64) -> u64,
     address: u64,
     value: u8,
 ) -> Result<(), VspaceError> {
-    let page = usize::try_from(address / FRAME_SIZE).map_err(|_| VspaceError::InvalidImage)?;
+    let page =
+        page_base + usize::try_from(address / FRAME_SIZE).map_err(|_| VspaceError::InvalidImage)?;
     let frame = frames.frame_at(page).ok_or(VspaceError::InvalidImage)?;
     prima_ostd::mm::write_u8_at(map(frame), address % FRAME_SIZE, value);
     Ok(())
@@ -3372,6 +3416,7 @@ fn write_image_byte(
 
 fn write_image_u64(
     frames: &SegmentFrames,
+    page_base: usize,
     map: impl Fn(u64) -> u64,
     address: u64,
     value: u64,
@@ -3380,7 +3425,7 @@ fn write_image_u64(
         return Err(VspaceError::InvalidImage);
     }
     for (index, byte) in value.to_le_bytes().into_iter().enumerate() {
-        write_image_byte(frames, &map, address + index as u64, byte)?;
+        write_image_byte(frames, page_base, &map, address + index as u64, byte)?;
     }
     Ok(())
 }
@@ -3388,6 +3433,7 @@ fn write_image_u64(
 fn apply_relative_relocations(
     bytes: &[u8],
     frames: &SegmentFrames,
+    page_base: usize,
     map: impl Fn(u64) -> u64,
     dynamic: Option<ElfSegment>,
     layout: ElfLayout,
@@ -3460,7 +3506,7 @@ fn apply_relative_relocations(
         if target >= layout.pages as u64 * FRAME_SIZE {
             return Err(VspaceError::InvalidImage);
         }
-        write_image_u64(frames, &map, target, value)?;
+        write_image_u64(frames, page_base, &map, target, value)?;
     }
     Ok(())
 }
