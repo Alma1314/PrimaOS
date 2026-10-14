@@ -78,9 +78,17 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 /// Hello 与两端点自报各多携一条自管理 cap，`servicemgr` 另派生三份段 cap（RW×2 给端点、R 给
 /// init）。峰值越过 72，故照 SPEC-094 先例扩到 **80**。
 ///
+/// SPEC-106（S4-D3）：服务表从 2 项扩到 5 项（日志/Namespace/基础存储三个基础服务各为独立任务），
+/// 每个服务需一条独立代码段 cap、一条独立栈段 cap（`init` 持有、随建端点移交给管理器），另加
+/// 服务任务自身与运行期派生的 cap；活动峰值实测已达 **95**，故照 SPEC-094/104 先例扩到 **144**。
+/// 该扩容把 [`NS_ROOT_CAP_SLOT_BASE`] 推到 136，槽 62..67 用于六个服务的段 cap。
+///
+/// 为在同一结构体里容纳该扩容，Segment 对象表已**移入静态 arena**（[`SEGMENT_ARENA`]），
+/// 腾出 5.3 KiB；守卫仍为 13 KiB。
+///
 /// 守卫（`BootstrapState` ≤ 13 KiB）**未放宽**，见
-/// `bootstrap_state_stays_within_the_stack_budget`（SPEC-104 照实重测）。
-pub const MAX_CAPABILITY_SLOTS: usize = 80;
+/// `bootstrap_state_stays_within_the_stack_budget`（SPEC-104 照实重测；SPEC-106 再次照实重测）。
+pub const MAX_CAPABILITY_SLOTS: usize = 144;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 /// 任务表容量（含已保留槽位与已销毁记录）。
@@ -89,7 +97,9 @@ const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 /// `next_free_id` 返回 `None`，故上调至 12 使存活的 Rust 客户端拿到 id 8。
 /// SPEC-088：`user::USER_TASK_KSTACK_COUNT` 覆盖 id 3..9；若将来分配 id ≥ 10，
 /// `register_created_task` 会确定性失败（`NoSpace`）而非带着空内核栈调度。
-const MAX_TASKS: usize = 12;
+/// SPEC-106：S4-D3 的服务表扩到 5 项——`servicemgr`8 + 客户端 9 + 五个服务端点 10..14，故上限
+/// 12→**16**（须与 `sched::MAX_TASKS`、`user::USER_TASK_KSTACK_COUNT` 同步）。
+const MAX_TASKS: usize = 16;
 /// Audit 容量。
 ///
 /// SPEC-071（`ISSUE-TASK-003`）：§13.1/W13 要求**每次** Task 状态迁移都追加 `TaskStateChanged`。
@@ -565,6 +575,10 @@ impl TaskTable {
                 None,
                 None,
                 None,
+                None,
+                None,
+                None,
+                None,
             ],
             count: 1,
         }
@@ -765,7 +779,12 @@ impl TaskTable {
     }
 }
 
-const MAX_MESSAGES: usize = 8;
+/// IPC 队列容量（跨全部任务共享的 pending 消息槽）。
+///
+/// SPEC-106：`init` 进入 ring3 后**连续不让出**地发 12 条建端点移交消息（6 条无 cap 唤醒 +
+/// 6 条带 cap 的「代码段 + 栈段」），8 槽会在收件人尚未被调度时丢尾（父 Namespace 恰在其列，
+/// 使服务表里五条全部建不出来）。提到 **32** 留足余量。
+const MAX_MESSAGES: usize = 32;
 pub const MAX_MESSAGE_CAPABILITIES: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1913,6 +1932,30 @@ pub const SERVICEMGR_SEND_CAP_SLOT: u32 = USER_IPC_CAP_SLOT_BASE + 12;
 /// SPEC-103：经第六次 create 的 `initial_cap0` 移入服务管理器的凭据。
 pub const SERVICEMGR_SEND_CAP_HANDLE: Handle =
     cap_handle(SERVICEMGR_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106（S4-D3）：三个基础服务（日志 `prima-log`、Namespace `prima-nsvc`、基础存储
+/// `prima-store`）的**独立代码段**与**独立栈段**根 Capability 槽。
+///
+/// 落在 `SERVICE_STACK_CAP_SLOT`(61) 与 `NS_ROOT_CAP_SLOT_BASE`（SPEC-106 起 96-8=88）之间的
+/// 空档（62..67），与既有固定预留区间结构上不相交。六条 cap 的持有者均为 task 1（`init`），
+/// 由 `init` 在建端点移交里交给 `prima-servicemgr`。
+pub const LOG_CODE_CAP_SLOT: u32 = 62;
+pub const LOG_STACK_CAP_SLOT: u32 = 63;
+pub const NS_CODE_CAP_SLOT: u32 = 64;
+pub const NS_STACK_CAP_SLOT: u32 = 65;
+pub const STORE_CODE_CAP_SLOT: u32 = 66;
+pub const STORE_STACK_CAP_SLOT: u32 = 67;
+/// SPEC-106：日志服务代码段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapX, SegDestroy}`）。
+pub const LOG_CODE_CAP_HANDLE: Handle = cap_handle(LOG_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106：日志服务栈段的根 Capability（持有者 task 1，`{Derive, SegMapR, SegMapW, SegDestroy}`）。
+pub const LOG_STACK_CAP_HANDLE: Handle = cap_handle(LOG_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106：Namespace 服务代码段的根 Capability。
+pub const NS_CODE_CAP_HANDLE: Handle = cap_handle(NS_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106：Namespace 服务栈段的根 Capability。
+pub const NS_STACK_CAP_HANDLE: Handle = cap_handle(NS_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106：基础存储服务代码段的根 Capability。
+pub const STORE_CODE_CAP_HANDLE: Handle = cap_handle(STORE_CODE_CAP_SLOT, INITIAL_CAP_GENERATION);
+/// SPEC-106：基础存储服务栈段的根 Capability。
+pub const STORE_STACK_CAP_HANDLE: Handle = cap_handle(STORE_STACK_CAP_SLOT, INITIAL_CAP_GENERATION);
 /// SPEC-094：**第一个**服务端点（`ALPHA`）的**独立栈段**根 Capability 槽。
 ///
 /// SPEC-093 之前该端点沿用客户端（task 8）经 `SYS_MEMSEG_CREATE` 建的那条栈段 `Y[368]`——
@@ -2059,6 +2102,10 @@ pub struct TaskCreateImages {
     pub code2: SegmentFrames,
     /// SPEC-103：ring3 服务管理器（`prima-servicemgr`）的独立代码段。
     pub code3: SegmentFrames,
+    /// SPEC-106（S4-D3）：三个基础服务端点各自的独立代码段（`prima-log`/`prima-ns`/`prima-store`）。
+    pub code_log: SegmentFrames,
+    pub code_ns: SegmentFrames,
+    pub code_store: SegmentFrames,
 }
 
 /// §5.1：Segment 对象（阶段 2：image / 平台 bring-up / 用户创建三类共用）。
@@ -2100,7 +2147,12 @@ pub struct VspaceEntry {
 /// **SPEC-105 扩容 64 → 80**：ring3 服务管理器表驱动创建端点后，boot 末段的逻辑映射条目数达到
 /// 旧上限 64，使 `init` 收下共享段只读副本的 `memseg_map` 以 `CapacityExceeded` 失败。按本常量
 /// 的设计意图（可自由扩容、与 `MAX_CAPABILITY_SLOTS` 对齐）扩到 80。
-pub const MAX_VSPACE_ENTRIES: usize = 80;
+///
+/// **SPEC-106 扩容 80 → 192**：S4-D3 的服务表扩到 5 项后，每个服务端点各贡献「代码 + 栈」两条
+/// 映射，加上转发共享段与探测映射，80 条再次触顶——`BETA` 收到转发后 `memseg_map` 以
+/// `CapacityExceeded` 失败，协商与 `done` 均不产出，管理器停在等 `beta_done`。仍按同一设计意图
+/// 扩到与 `MAX_CAPABILITY_SLOTS` 同量级（192），不占结构体空间。
+pub const MAX_VSPACE_ENTRIES: usize = 96;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
@@ -2752,10 +2804,19 @@ pub struct BootstrapRecord {
 
 /// §5.1/§5.4 对象表容量：image(1) + 平台 bring-up 13 个(2..14) + 用户创建 Segment(15..)。
 ///
-/// 取 32 是因为 `memseg_destroy` **不回收槽位**（只置 `active = false`），故每次
-/// `memseg_create` 都消耗一个新槽。上限受 `bootstrap_state_stays_within_the_stack_budget`
-/// 的 16 KiB 结构体守卫约束：32 槽时约 15 KiB，**不得再向 `BootstrapState` 增加存储字段**。
-pub const MAX_SEGMENT_OBJECTS: usize = 32;
+/// `memseg_destroy` **不回收槽位**（只置 `active = false`），故每次 `memseg_create` 都消耗一个
+/// 新槽。SPEC-106 起该表移入静态 arena（[`SEGMENT_ARENA`]），**不再占用 `BootstrapState` 空间**，
+/// 故可自由扩容——从 32 提到 **48**，为 S4-D3 的三个基础服务端点（各代码段 + 栈段）腾槽。
+pub const MAX_SEGMENT_OBJECTS: usize = 48;
+/// SPEC-106：Segment arena 的区段数（内核只构造一个 state ⇒ 1 段；host 单测并行构造多个 state，
+/// 每实例领一段，故与 [`VSPACE_REGIONS`] 同款留足）。
+#[cfg(not(test))]
+const SEGMENT_REGIONS: usize = 1;
+#[cfg(test)]
+const SEGMENT_REGIONS: usize = 512;
+/// SPEC-106：Segment 对象表的静态 arena（内容在此，`BootstrapState` 只留 8 B 句柄）。
+static SEGMENT_ARENA: crate::arena::Arena<SegmentObject, MAX_SEGMENT_OBJECTS, SEGMENT_REGIONS> =
+    crate::arena::Arena::new();
 /// SPEC-081：Namespace 对象上限（init + `ns_create` 创建的）。
 ///
 /// 原为 2（只物化 init）。切片 AJ 把它提到 8 以便 `ns_mount` 有环检测的真实对象可挂；
@@ -2826,8 +2887,10 @@ pub struct BootstrapState {
     pub exc_sources: ExcSourceTable,
     /// 切片 L：平台初始化期间 pending 递送的留证。
     pub exc_boot: Option<ExcBootRecord>,
-    /// §5.1：Segment 对象表（image + 平台 bring-up + 用户创建）。
-    pub segments: [Option<SegmentObject>; MAX_SEGMENT_OBJECTS],
+    /// §5.1：Segment 对象表（image + 平台 bring-up + 用户创建）。**内容在静态 arena**
+    /// [`SEGMENT_ARENA`]，本字段只是一个区段句柄（SPEC-106：`BootstrapState` 贴 13 KiB 守卫，
+    /// 内联的 `[Option<SegmentObject>; N]` 是最大一块，且 S4-D3 的服务端点需要更多段槽）。
+    pub segments: crate::arena::ArenaSlice,
     pub segment_count: usize,
     /// 切片 P：§14 步骤 3 物化的 init Namespace。
     pub namespaces: [Option<NamespaceObject>; MAX_NAMESPACE_OBJECTS],
@@ -2992,11 +3055,7 @@ impl BootstrapState {
         }
 
         // §14 步骤 2/3：image Segment 与 init Namespace 必须物化。
-        if self
-            .segments
-            .iter()
-            .flatten()
-            .all(|segment| segment.id != IMAGE_SEGMENT_ID || !segment.active)
+        if self.segment(IMAGE_SEGMENT_ID).is_none()
             || self.namespaces[..self.namespace_count]
                 .iter()
                 .flatten()
@@ -3181,11 +3240,7 @@ impl BootstrapState {
     /// 目标对象是否存活（§4.3 `usable` 的 `live(target)` 分量）。
     pub fn target_live(&self, target: ObjectRef) -> bool {
         match target {
-            ObjectRef::Segment(id) => self
-                .segments
-                .iter()
-                .flatten()
-                .any(|segment| segment.id == id && segment.active),
+            ObjectRef::Segment(id) => self.segment(id).is_some(),
             ObjectRef::Task(id) => self.tasks.is_live(id),
             ObjectRef::Namespace(id) => self.namespaces[..self.namespace_count]
                 .iter()
@@ -5933,19 +5988,41 @@ impl BootstrapState {
             .and_then(|segment| segment.frames.frame_at(index))
     }
 
-    fn segment(&self, id: u32) -> Option<&SegmentObject> {
-        self.segments
-            .iter()
-            .flatten()
-            .find(|segment| segment.id == id && segment.active)
+    /// SPEC-106：Segment 表的第 `index` 槽副本（内容在 [`SEGMENT_ARENA`]）。
+    fn segment_at(&self, index: usize) -> Option<SegmentObject> {
+        SEGMENT_ARENA.get(self.segments, index)
+    }
+
+    /// SPEC-106：写 Segment 表的第 `index` 槽。
+    fn set_segment_at(&self, index: usize, value: Option<SegmentObject>) {
+        SEGMENT_ARENA.set(self.segments, index, value);
+    }
+
+    fn segment(&self, id: u32) -> Option<SegmentObject> {
+        let mut index = 0;
+        while index < MAX_SEGMENT_OBJECTS {
+            if let Some(segment) = self.segment_at(index)
+                && segment.id == id
+                && segment.active
+            {
+                return Some(segment);
+            }
+            index += 1;
+        }
+        None
     }
 
     fn segment_slot_free(&self, id: u32) -> bool {
-        !self
-            .segments
-            .iter()
-            .flatten()
-            .any(|segment| segment.id == id)
+        let mut index = 0;
+        while index < MAX_SEGMENT_OBJECTS {
+            if let Some(segment) = self.segment_at(index)
+                && segment.id == id
+            {
+                return false;
+            }
+            index += 1;
+        }
+        true
     }
 
     /// 选一个空闲 Segment 槽（id 1 = image，2..14 = 平台 bring-up 区域，用户从 15 起）。
@@ -6027,15 +6104,18 @@ impl BootstrapState {
             }
         };
         let segment_frames = SegmentFrames::Vector { frames, count };
-        self.segments[self.segment_count] = Some(SegmentObject {
-            id,
-            generation: INITIAL_CAP_GENERATION,
-            creator,
-            pool: crate::frames::Pool::Cpu,
-            frames: segment_frames,
-            allowed_access,
-            active: true,
-        });
+        self.set_segment_at(
+            self.segment_count,
+            Some(SegmentObject {
+                id,
+                generation: INITIAL_CAP_GENERATION,
+                creator,
+                pool: crate::frames::Pool::Cpu,
+                frames: segment_frames,
+                allowed_access,
+                active: true,
+            }),
+        );
         self.segment_count += 1;
         self.audit.append(AuditEvent::ObjectCreated {
             object_id: id,
@@ -6134,24 +6214,30 @@ impl BootstrapState {
     /// 帧仍经唯一取帧入口 `frames::allocate_for_segment(id)` 取得，故 W6 归属与守恒不变；
     /// 追加失败时释放刚取的帧，不留无归属帧。
     pub fn platform_append_frame(&mut self, id: u32) -> Result<u64, MemsegError> {
-        let Some(index) = self
-            .segments
-            .iter()
-            .position(|entry| entry.is_some_and(|segment| segment.id == id && segment.active))
-        else {
+        let mut found = None;
+        let mut index = 0;
+        while index < MAX_SEGMENT_OBJECTS {
+            if let Some(segment) = self.segment_at(index)
+                && segment.id == id
+                && segment.active
+            {
+                found = Some(index);
+                break;
+            }
+            index += 1;
+        }
+        let Some(index) = found else {
             return Err(MemsegError::TargetDead);
         };
-        if self.segments[index].is_some_and(|segment| {
-            !matches!(segment.frames, SegmentFrames::Vector { .. })
-                || segment.frame_count() >= MAX_SEGMENT_FRAMES
-        }) {
+        let Some(mut segment) = self.segment_at(index) else {
+            return Err(MemsegError::TargetDead);
+        };
+        if !matches!(segment.frames, SegmentFrames::Vector { .. })
+            || segment.frame_count() >= MAX_SEGMENT_FRAMES
+        {
             return Err(MemsegError::CapacityExceeded);
         }
         let frame = crate::frames::allocate_for_segment(id).map_err(|_| MemsegError::NoMemory)?;
-        let Some(segment) = self.segments[index].as_mut() else {
-            let _ = crate::frames::release_frame(id, frame);
-            return Err(MemsegError::TargetDead);
-        };
         match &mut segment.frames {
             SegmentFrames::Vector { frames, count } => {
                 frames[*count] = frame;
@@ -6162,6 +6248,7 @@ impl BootstrapState {
                 return Err(MemsegError::CapacityExceeded);
             }
         }
+        self.set_segment_at(index, Some(segment));
         Ok(frame)
     }
 
@@ -6240,20 +6327,26 @@ impl BootstrapState {
     ///
     /// 必须在 `platform_prepare_task_caps` 之后调用（两条 cap 的目标 Task(1) 已存活），且在
     /// 既有 bring-up 取帧序列**之后**调用（避免平移切片 E/F/G/O 的物理帧序列）。
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_task_create_caps(
         &mut self,
         code_pages: usize,
         code2_pages: usize,
         code3_pages: usize,
+        log_pages: usize,
+        ns_pages: usize,
+        store_pages: usize,
         phys_offset: u64,
     ) -> Result<TaskCreateImages, MemsegError> {
-        if code_pages == 0
-            || code_pages > MAX_SEGMENT_FRAMES
-            || code2_pages == 0
-            || code2_pages > MAX_SEGMENT_FRAMES
-            || code3_pages == 0
-            || code3_pages > MAX_SEGMENT_FRAMES
-        {
+        let pages = [
+            code_pages,
+            code2_pages,
+            code3_pages,
+            log_pages,
+            ns_pages,
+            store_pages,
+        ];
+        if pages.iter().any(|&p| p == 0 || p > MAX_SEGMENT_FRAMES) {
             return Err(MemsegError::OutOfBounds);
         }
         let (_, frames) = self.create_segment_object(
@@ -6392,10 +6485,72 @@ impl BootstrapState {
             ObjectRef::Task(INIT_TASK_ID),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
+        // SPEC-106（S4-D3）：三个基础服务端点的独立代码段（各承载不同二进制）。
+        let code_log_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, code_log) = self.create_segment_object(
+            code_log_id,
+            KERNEL_ACTOR,
+            log_pages,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                LOG_CODE_CAP_SLOT,
+            )),
+        )?;
+        let code_ns_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, code_ns) = self.create_segment_object(
+            code_ns_id,
+            KERNEL_ACTOR,
+            ns_pages,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                NS_CODE_CAP_SLOT,
+            )),
+        )?;
+        let code_store_id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, code_store) = self.create_segment_object(
+            code_store_id,
+            KERNEL_ACTOR,
+            store_pages,
+            TASK_CREATE_CODE_ACCESS,
+            phys_offset,
+            Some((
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                STORE_CODE_CAP_SLOT,
+            )),
+        )?;
+        // SPEC-106：三个基础服务端点的独立栈段（独立物理栈帧）。`alloc_segment_slot` 是 `&self`
+        // （不预留），故必须**在循环内逐个分配**——否则三次连续调用会返回同一个空闲 id。
+        for slot in [LOG_STACK_CAP_SLOT, NS_STACK_CAP_SLOT, STORE_STACK_CAP_SLOT] {
+            let id = self
+                .alloc_segment_slot()
+                .ok_or(MemsegError::CapacityExceeded)?;
+            let access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+            self.create_segment_object(
+                id,
+                KERNEL_ACTOR,
+                1,
+                access,
+                phys_offset,
+                Some((CapabilityLocation::HeldByTask(INIT_TASK_ID), slot)),
+            )?;
+        }
         Ok(TaskCreateImages {
             code: frames,
             code2,
             code3,
+            code_log,
+            code_ns,
+            code_store,
         })
     }
 
@@ -6681,14 +6836,22 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(MemsegError::AuditFull);
         }
-        let Some(index) = self
-            .segments
-            .iter()
-            .position(|entry| entry.is_some_and(|segment| segment.id == seg_id && segment.active))
-        else {
+        let mut found = None;
+        let mut search = 0;
+        while search < MAX_SEGMENT_OBJECTS {
+            if let Some(segment) = self.segment_at(search)
+                && segment.id == seg_id
+                && segment.active
+            {
+                found = Some(search);
+                break;
+            }
+            search += 1;
+        }
+        let Some(index) = found else {
             return Err(MemsegError::TargetDead);
         };
-        let segment = self.segments[index].ok_or(MemsegError::TargetDead)?;
+        let segment = self.segment_at(index).ok_or(MemsegError::TargetDead)?;
         let count = segment.frame_count();
         for page in 0..count {
             if let Some(frame) = segment.frames.frame_at(page) {
@@ -6696,11 +6859,14 @@ impl BootstrapState {
             }
         }
         let _ = crate::frames::close_segment(seg_id);
-        self.segments[index] = Some(SegmentObject {
-            active: false,
-            generation: segment.generation.wrapping_add(1).max(1),
-            ..segment
-        });
+        self.set_segment_at(
+            index,
+            Some(SegmentObject {
+                active: false,
+                generation: segment.generation.wrapping_add(1).max(1),
+                ..segment
+            }),
+        );
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: seg_id,
             segment: true,
@@ -6817,18 +6983,22 @@ pub fn create_state(
 
     // §14 步骤 2：以 image_frames 建只允许 {R,X} 的 image Segment（pool=CPU）。
     // SPEC-068：帧集合是真实逐帧向量（物化在帧注册表），此处记其长度。
-    let mut segments = [None; MAX_SEGMENT_OBJECTS];
-    segments[0] = Some(SegmentObject {
-        id: IMAGE_SEGMENT_ID,
-        generation: INITIAL_CAP_GENERATION,
-        creator: INIT_TASK_ID,
-        pool: crate::frames::Pool::Cpu,
-        frames: SegmentFrames::Image {
-            count: inventory.image_frames,
-        },
-        allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
-        active: true,
-    });
+    let segments = SEGMENT_ARENA.claim();
+    SEGMENT_ARENA.set(
+        segments,
+        0,
+        Some(SegmentObject {
+            id: IMAGE_SEGMENT_ID,
+            generation: INITIAL_CAP_GENERATION,
+            creator: INIT_TASK_ID,
+            pool: crate::frames::Pool::Cpu,
+            frames: SegmentFrames::Image {
+                count: inventory.image_frames,
+            },
+            allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
+            active: true,
+        }),
+    );
     // §14 步骤 3：建空 init Namespace。
     let mut namespaces = [None; MAX_NAMESPACE_OBJECTS];
     namespaces[0] = Some(NamespaceObject {
@@ -7161,16 +7331,26 @@ pub fn decode_handle(raw: u64) -> Result<Handle, AuthError> {
 /// S2-D4：全局 bring-up——建新 Task 的代码段并铸两条 Capability，返回代码段帧向量。
 ///
 /// SPEC-093：额外建第二个端点（`BETA`）的**独立代码段**与**独立栈段**，返回两个代码段向量。
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_task_create_caps(
     code_pages: usize,
     code2_pages: usize,
     code3_pages: usize,
+    log_pages: usize,
+    ns_pages: usize,
+    store_pages: usize,
     phys_offset: u64,
 ) -> Result<TaskCreateImages, MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => {
-            state.prepare_task_create_caps(code_pages, code2_pages, code3_pages, phys_offset)
-        }
+        Some(state) => state.prepare_task_create_caps(
+            code_pages,
+            code2_pages,
+            code3_pages,
+            log_pages,
+            ns_pages,
+            store_pages,
+            phys_offset,
+        ),
         None => Err(MemsegError::TargetDead),
     })
 }
@@ -9426,15 +9606,18 @@ mod tests {
         let mut frames = [0u64; MAX_SEGMENT_FRAMES];
         frames[0] = 0x20_0000;
         frames[1] = 0x21_0000;
-        state.segments[state.segment_count] = Some(SegmentObject {
-            id: crate::frames::SEG_VSPACE,
-            generation: INITIAL_CAP_GENERATION,
-            creator: KERNEL_ACTOR,
-            pool: crate::frames::Pool::Cpu,
-            frames: SegmentFrames::Vector { frames, count: 2 },
-            allowed_access: Rights::EMPTY,
-            active: true,
-        });
+        state.set_segment_at(
+            state.segment_count,
+            Some(SegmentObject {
+                id: crate::frames::SEG_VSPACE,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector { frames, count: 2 },
+                allowed_access: Rights::EMPTY,
+                active: true,
+            }),
+        );
         state.segment_count += 1;
 
         let handle = state
@@ -9498,15 +9681,18 @@ mod tests {
             } else {
                 1
             };
-            state.segments[state.segment_count] = Some(SegmentObject {
-                id,
-                generation: INITIAL_CAP_GENERATION,
-                creator: KERNEL_ACTOR,
-                pool: crate::frames::Pool::Cpu,
-                frames: SegmentFrames::Vector { frames, count },
-                allowed_access: allowed,
-                active: true,
-            });
+            state.set_segment_at(
+                state.segment_count,
+                Some(SegmentObject {
+                    id,
+                    generation: INITIAL_CAP_GENERATION,
+                    creator: KERNEL_ACTOR,
+                    pool: crate::frames::Pool::Cpu,
+                    frames: SegmentFrames::Vector { frames, count },
+                    allowed_access: allowed,
+                    active: true,
+                }),
+            );
             state.segment_count += 1;
             state
                 .mint_root_capability_at(
@@ -9566,15 +9752,18 @@ mod tests {
         for id in PLATFORM_SEGMENT_ID_FIRST..=PLATFORM_SEGMENT_ID_LAST {
             let mut frames = [0u64; MAX_SEGMENT_FRAMES];
             frames[0] = 0x30_0000 + id as u64 * 0x1000;
-            state.segments[state.segment_count] = Some(SegmentObject {
-                id,
-                generation: INITIAL_CAP_GENERATION,
-                creator: KERNEL_ACTOR,
-                pool: crate::frames::Pool::Cpu,
-                frames: SegmentFrames::Vector { frames, count: 1 },
-                allowed_access: SEGMENT_ROOT_RIGHTS,
-                active: true,
-            });
+            state.set_segment_at(
+                state.segment_count,
+                Some(SegmentObject {
+                    id,
+                    generation: INITIAL_CAP_GENERATION,
+                    creator: KERNEL_ACTOR,
+                    pool: crate::frames::Pool::Cpu,
+                    frames: SegmentFrames::Vector { frames, count: 1 },
+                    allowed_access: SEGMENT_ROOT_RIGHTS,
+                    active: true,
+                }),
+            );
             state.segment_count += 1;
             state
                 .mint_root_capability_at(
@@ -9653,18 +9842,21 @@ mod tests {
         let mut state = fresh_state();
         assert_eq!(state.alloc_segment_slot(), Some(USER_SEGMENT_ID_FIRST));
         for id in PLATFORM_SEGMENT_ID_FIRST..=PLATFORM_SEGMENT_ID_LAST {
-            state.segments[state.segment_count] = Some(SegmentObject {
-                id,
-                generation: INITIAL_CAP_GENERATION,
-                creator: KERNEL_ACTOR,
-                pool: crate::frames::Pool::Cpu,
-                frames: SegmentFrames::Vector {
-                    frames: [0; MAX_SEGMENT_FRAMES],
-                    count: 0,
-                },
-                allowed_access: Rights::EMPTY,
-                active: true,
-            });
+            state.set_segment_at(
+                state.segment_count,
+                Some(SegmentObject {
+                    id,
+                    generation: INITIAL_CAP_GENERATION,
+                    creator: KERNEL_ACTOR,
+                    pool: crate::frames::Pool::Cpu,
+                    frames: SegmentFrames::Vector {
+                        frames: [0; MAX_SEGMENT_FRAMES],
+                        count: 0,
+                    },
+                    allowed_access: Rights::EMPTY,
+                    active: true,
+                }),
+            );
             state.segment_count += 1;
         }
         assert_eq!(state.alloc_segment_slot(), Some(USER_SEGMENT_ID_FIRST));
@@ -9709,18 +9901,21 @@ mod tests {
     fn task_state() -> (super::BootstrapState, Handle, Handle) {
         let mut state = fresh_state();
         state.create_task(2).unwrap();
-        state.segments[0] = Some(SegmentObject {
-            id: crate::frames::SEG_TASK1_CODE,
-            generation: INITIAL_CAP_GENERATION,
-            creator: KERNEL_ACTOR,
-            pool: crate::frames::Pool::Cpu,
-            frames: SegmentFrames::Vector {
-                frames: [0x1000; MAX_SEGMENT_FRAMES],
-                count: 2,
-            },
-            allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
-            active: true,
-        });
+        state.set_segment_at(
+            0,
+            Some(SegmentObject {
+                id: crate::frames::SEG_TASK1_CODE,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector {
+                    frames: [0x1000; MAX_SEGMENT_FRAMES],
+                    count: 2,
+                },
+                allowed_access: Rights::from_rights(&[Right::SegMapR, Right::SegMapX]),
+                active: true,
+            }),
+        );
         state.segment_count = 1;
         let segment = ObjectRef::Segment(crate::frames::SEG_TASK1_CODE);
         let code_cap = state

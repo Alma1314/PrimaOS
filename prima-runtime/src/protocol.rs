@@ -63,9 +63,53 @@ pub const SERVICE_NAME_ALPHA: u64 = pack_service_name(b"alpha");
 /// SPEC-101：`BETA` 端点的服务名 `"beta"`（打包值 `0x6174_6562`）。被服务管理器解析为行为码 2；
 /// 未注册名解析为 0（拒绝）。
 pub const SERVICE_NAME_BETA: u64 = pack_service_name(b"beta");
+/// SPEC-106（S4-D3）：三个基础服务的注册名——`"log"`/`"nsvc"`/`"store"`（各 ≤5 字节，打包进 u64 低 40 位）。
+pub const SERVICE_NAME_LOG: u64 = pack_service_name(b"log");
+pub const SERVICE_NAME_NS: u64 = pack_service_name(b"nsvc");
+pub const SERVICE_NAME_STORE: u64 = pack_service_name(b"store");
+
+/// SPEC-106：基础服务向服务管理器自报**编译进二进制的存在标记**的消息 tag。
+///
+/// payload 布局：`tag(48..63) | kind(40..47) | marker(0..39)`。`kind` 是服务的行为码
+/// （[`SERVICE_BEHAVIOR_LOG`]/[`SERVICE_BEHAVIOR_NS`]/[`SERVICE_BEHAVIOR_STORE`]），供管理器把
+/// 标记归到正确的注册表槽；`marker` 是**每个二进制相异**的 40 位常量（[`SERVICE_MARKER_LOG`] 等）。
+/// 内核据此逐字段核验「三个服务各由**不同二进制**运行」。
+pub const SERVICE_MARKER_TAG: u64 = 0x5EC6_0000_0000_0000;
+/// SPEC-106：marker 字段的位掩码（低 40 位）。
+pub const SERVICE_MARKER_MASK: u64 = 0x0000_00ff_ffff_ffff;
+/// SPEC-106：`kind` 字段在 marker 消息 payload 中的左移位数。
+pub const SERVICE_MARKER_KIND_SHIFT: u64 = 40;
+/// SPEC-106：三个基础服务的 40 位存在标记（互异，且与 `ALPHA`/`BETA` 的 64 位标记风格不相交）。
+pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
+pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
+pub const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
+
+/// SPEC-106：把存在标记打包成 marker 消息 payload。
+pub const fn pack_service_marker(kind: u64, marker: u64) -> u64 {
+    SERVICE_MARKER_TAG
+        | ((kind & 0xff) << SERVICE_MARKER_KIND_SHIFT)
+        | (marker & SERVICE_MARKER_MASK)
+}
+
+/// SPEC-106：服务管理器向基础服务发**路由探针**的消息 tag（与 `SERVICE_WAKE_TAG`(0x5ECA) 不相交）。
+pub const SERVICE_SERVE_TAG: u64 = 0x5EC9_0000_0000_0000;
+/// SPEC-106：探针参数（管理器发给每个基础服务的同一入参）。
+pub const SERVICE_SERVE_PROBE: u64 = 0x11;
+/// SPEC-106：基础服务应答里 `kind` 字段的左移位数——应答 = `SERVICE_SERVE_TAG | kind<<32 | arg`。
+/// 各服务应答的 `kind` 相异，构成「请求经服务表路由到了**正确的**服务二进制」的判决性字段。
+pub const SERVICE_REPLY_KIND_SHIFT: u64 = 32;
+/// SPEC-106：把服务应答打包（`kind` 为服务的行为码，`arg` 为低 32 位结果）。
+pub const fn pack_service_reply(kind: u64, arg: u64) -> u64 {
+    SERVICE_SERVE_TAG | ((kind & 0xff) << SERVICE_REPLY_KIND_SHIFT) | (arg & 0xffff_ffff)
+}
 /// SPEC-090：服务管理器可路由的行为码。`ALPHA`（默认，max 2048）与 `BETA`（max 1024）。
 pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
 pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
+/// SPEC-106（S4-D3）：三个**基础服务**端点——日志、Namespace、基础存储。与 `ALPHA`/`BETA`
+/// 共用同一服务表/注册表/创建路径，只是不参与 wire 协商，而是自报**二进制标记**作存在证据。
+pub const SERVICE_BEHAVIOR_LOG: u64 = 3;
+pub const SERVICE_BEHAVIOR_NS: u64 = 4;
+pub const SERVICE_BEHAVIOR_STORE: u64 = 5;
 /// SPEC-090：名字未注册时的解析结果（服务管理器据此拒绝转发）。
 pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
 /// SPEC-088：`ALPHA` 行为的服务端 offer。`max_message_size` 取 2048，与客户端 4096 取交后

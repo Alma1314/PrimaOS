@@ -66,6 +66,10 @@ pub const PRIMA_BETA_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER
 /// SPEC-103：**ring3 服务管理器**的独立二进制映像（服务机制的收敛目标）。
 pub const PRIMA_SERVICEMGR_ELF: &[u8] =
     include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"));
+/// SPEC-106（S4-D3）：三个**基础服务端点**的独立二进制映像（日志 / Namespace / 基础存储）。
+pub const PRIMA_LOG_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-log"));
+pub const PRIMA_NS_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-ns"));
+pub const PRIMA_STORE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"));
 
 const fn elf_word(bytes: &[u8], at: usize) -> u64 {
     let mut value = 0u64;
@@ -193,6 +197,10 @@ pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
 /// 指派**（写入新任务初始帧 `rcx`），端点二进制不含名字字面量。
 pub const SERVICE_NAME_ALPHA: u64 = service_name(b"alpha");
 pub const SERVICE_NAME_BETA: u64 = service_name(b"beta");
+/// SPEC-106（S4-D3）：三个基础服务的注册名（与 `prima-runtime::protocol` 的打包一致）。
+pub const SERVICE_NAME_LOG: u64 = service_name(b"log");
+pub const SERVICE_NAME_NS: u64 = service_name(b"nsvc");
+pub const SERVICE_NAME_STORE: u64 = service_name(b"store");
 /// SPEC-090/101：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
 pub const SERVICE_NAME_UNKNOWN: u64 = service_name(b"ghost");
 /// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
@@ -248,6 +256,26 @@ pub const SERVICEMGR_TOKEN_OFFSET: u64 = 280;
 pub const SERVICEMGR_MANAGER_OFFSET: u64 = 288;
 pub const SERVICEMGR_ENTRY_A_OFFSET: u64 = 304;
 pub const SERVICEMGR_ENTRY_B_OFFSET: u64 = 312;
+/// SPEC-106（S4-D3）：三个基础服务（日志/Namespace/存储）写回共享段的 (id, 存在标记, 探针应答)
+/// 及其计数——见证据此证明三服务由 ring3 管理器按表建立、且**请求路由到了正确的服务二进制**。
+pub const SERVICEMGR_LOG_ID_OFFSET: u64 = 320;
+pub const SERVICEMGR_LOG_MARK_OFFSET: u64 = 328;
+pub const SERVICEMGR_NS_ID_OFFSET: u64 = 336;
+pub const SERVICEMGR_NS_MARK_OFFSET: u64 = 344;
+pub const SERVICEMGR_STORE_ID_OFFSET: u64 = 352;
+pub const SERVICEMGR_STORE_MARK_OFFSET: u64 = 360;
+pub const SERVICEMGR_SERVICES_OFFSET: u64 = 368;
+pub const SERVICEMGR_LOG_REPLY_OFFSET: u64 = 376;
+pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 384;
+pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 392;
+/// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
+pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
+pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
+pub const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
+/// SPEC-106：三个基础服务的路由探针应答（`SERVICE_SERVE_TAG | kind<<32 | 0x11`）——各 `kind` 相异。
+pub const SERVICE_REPLY_LOG: u64 = 0x5EC9_0003_0000_0011;
+pub const SERVICE_REPLY_NS: u64 = 0x5EC9_0004_0000_0011;
+pub const SERVICE_REPLY_STORE: u64 = 0x5EC9_0005_0000_0011;
 pub const SERVICE_RESOLVED_OFFSET: u64 = 208;
 pub const SERVICE_UNKNOWN_OFFSET: u64 = 216;
 pub const SERVICE_DONE_BETA_OFFSET: u64 = 224;
@@ -320,7 +348,11 @@ pub const SPIN_DATA_VA: u64 = USER_BASE_VA + 0x41_0000;
 pub const SPIN_CODE_LEN: usize = 19;
 
 /// 每任务内核栈大小（叶子单元页，直接映射在各自 PML4 克隆出的内核高半区）。
-pub const KSTACK_SIZE: usize = 16 * 1024;
+/// SPEC-106：每任务内核栈大小。从 16 KiB 提到 **32 KiB**——S4-D3 让 `SYS_TASK_DESTROY` 的栈帧
+/// 增大（其 `[0u64; MAX_VSPACE_ENTRIES]` 快照数组随 `MAX_VSPACE_ENTRIES` 扩容），16 KiB 栈**向下
+/// 溢出**并覆写了相邻 BSS（实测把 `KERNEL_ROOT`/`KERNEL_IMAGE` 清零，使 `self_root_ready` 报
+/// `None` → `panic` 事件）。与 `config.rs` 里启动栈 80→256 KiB 的既有取向一致。
+pub const KSTACK_SIZE: usize = 32 * 1024;
 
 /// 内核栈数组（只经地址使用，字段从不按元素读）。
 #[repr(align(16))]
@@ -339,7 +371,8 @@ pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_
 /// 故 6→7 把覆盖范围扩到 id 3..9（BSS +16 KiB，布局字段随之变化，逐条登记）。
 /// SPEC-092：第 5 次 create 的**第二个**服务端点拿到 id 10，故 7→8 扩到 id 3..10。
 /// SPEC-103：第 6 次 create 的 ring3 服务管理器拿到 id 11，故 8→9 扩到 id 3..11。
-pub const USER_TASK_KSTACK_COUNT: usize = 9;
+/// SPEC-106：S4-D3 的五个服务端点占 id 10..14，故 9→**16** 扩到 id 3..18（留 4 个余量）。
+pub const USER_TASK_KSTACK_COUNT: usize = 16;
 
 pub static KSTACK_TASKS: StaticCell<[KStack; USER_TASK_KSTACK_COUNT]> =
     StaticCell::new([const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT]);
@@ -397,6 +430,14 @@ pub const RUNTIME_APP2_ENTRY_OFFSET: u64 = elf_word(PRIMA_BETA_ELF, 24);
 pub const RUNTIME_APP3_CODE_PAGES: usize = runtime_app_pages(PRIMA_SERVICEMGR_ELF);
 /// SPEC-103：服务管理器映像的入口相对装载基址的偏移。
 pub const RUNTIME_APP3_ENTRY_OFFSET: u64 = elf_word(PRIMA_SERVICEMGR_ELF, 24);
+/// SPEC-106（S4-D3）：三个基础服务端点映像（`prima-log`/`prima-ns`/`prima-store`）PT_LOAD 覆盖页数。
+pub const RUNTIME_APP_LOG_CODE_PAGES: usize = runtime_app_pages(PRIMA_LOG_ELF);
+pub const RUNTIME_APP_NS_CODE_PAGES: usize = runtime_app_pages(PRIMA_NS_ELF);
+pub const RUNTIME_APP_STORE_CODE_PAGES: usize = runtime_app_pages(PRIMA_STORE_ELF);
+/// SPEC-106：三个基础服务端点映像的入口相对装载基址的偏移。
+pub const RUNTIME_APP_LOG_ENTRY_OFFSET: u64 = elf_word(PRIMA_LOG_ELF, 24);
+pub const RUNTIME_APP_NS_ENTRY_OFFSET: u64 = elf_word(PRIMA_NS_ELF, 24);
+pub const RUNTIME_APP_STORE_ENTRY_OFFSET: u64 = elf_word(PRIMA_STORE_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
@@ -1844,7 +1885,35 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         crate::bootstrap::SERVICE2_CODE_CAP_HANDLE.encode(),
         crate::bootstrap::SERVICE2_STACK_CAP_HANDLE.encode(),
     );
-    // 3) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
+    // 3) SPEC-106（S4-D3）：三个基础服务——日志 / Namespace / 基础存储，各一对「代码段 + 栈段」。
+    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
+    at = emit_send(
+        &mut code,
+        at,
+        SERVICE_SETUP_TAG | ((RUNTIME_APP_LOG_CODE_PAGES as u64) << 40) | SERVICE_NAME_LOG,
+        2,
+        crate::bootstrap::LOG_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::LOG_STACK_CAP_HANDLE.encode(),
+    );
+    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
+    at = emit_send(
+        &mut code,
+        at,
+        SERVICE_SETUP_TAG | ((RUNTIME_APP_NS_CODE_PAGES as u64) << 40) | SERVICE_NAME_NS,
+        2,
+        crate::bootstrap::NS_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::NS_STACK_CAP_HANDLE.encode(),
+    );
+    at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
+    at = emit_send(
+        &mut code,
+        at,
+        SERVICE_SETUP_TAG | ((RUNTIME_APP_STORE_CODE_PAGES as u64) << 40) | SERVICE_NAME_STORE,
+        2,
+        crate::bootstrap::STORE_CODE_CAP_HANDLE.encode(),
+        crate::bootstrap::STORE_STACK_CAP_HANDLE.encode(),
+    );
+    // 4) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
@@ -2233,26 +2302,58 @@ pub struct ServicemgrWitness {
     /// SPEC-104：管理器写入共享段的**自身二进制标记**——须等于 [`SERVICEMGR_BINARY_MARKER`]，
     /// 证明注册表/解析由 `prima-servicemgr` 这一**独立 ring3 映像**产出，而非 init 手写块或常量。
     pub marker: u64,
-    /// SPEC-105：管理器**已创建的端点数**（应 2）——证明端点任务确由本管理器建立。
+    /// SPEC-105/106：管理器**已创建的服务端点数**（服务表 5 项 ⇒ 应 5）——证明端点任务确由本
+    /// 管理器按表建立。
     pub created: u64,
     /// SPEC-105：两个端点**由管理器自解 ELF 头**得到的入口偏移（非零）。
     pub entry_a: u64,
     pub entry_b: u64,
+    /// SPEC-106：已回探针的三个基础服务数（应 3）。
+    pub services: u64,
+    /// SPEC-106：三个基础服务自报的 task id（各 `> 1` 且互异）。
+    pub log_id: u64,
+    pub ns_id: u64,
+    pub store_id: u64,
+    /// SPEC-106：三个基础服务自报的**存在标记**（各等于对应二进制的常量）。
+    pub log_mark: u64,
+    pub ns_mark: u64,
+    pub store_mark: u64,
+    /// SPEC-106：三个基础服务的**路由探针应答**（各 `kind` 相异 ⇒ 路由到了正确的服务）。
+    pub log_reply: u64,
+    pub ns_reply: u64,
+    pub store_reply: u64,
 }
 
 impl ServicemgrWitness {
     /// 判决性：任务 id 是一个**真实的子任务**（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8
     /// 位与从管理 cap 解出的 id 相符；共享段里的自身 id/标记与之一致——证明「存活自报与注册表/
     /// 解析结果都来自 init 建起的那**同一个**独立 ring3 映像」，而非任何编译期常量。
+    ///
+    /// SPEC-106：另核验服务表 5 项全部建立、三个基础服务各由**不同二进制**运行（互异的存在标记与
+    /// task id），且路由探针应答的 `kind` 各归其位。
     pub fn evidence_ok(&self) -> bool {
+        let ids_distinct = self.log_id > 1
+            && self.ns_id > 1
+            && self.store_id > 1
+            && self.log_id != self.ns_id
+            && self.ns_id != self.store_id
+            && self.log_id != self.store_id;
         self.task_id > 1
             && (self.hello & 0xffff_0000_0000_0000) == SERVICEMGR_HELLO_TAG
             && (self.hello & 0xff) == (self.task_id & 0xff)
             && self.self_id == self.task_id
             && self.marker == SERVICEMGR_BINARY_MARKER
-            && self.created == 2
+            && self.created == 5
             && self.entry_a != 0
             && self.entry_b != 0
+            && self.services == 3
+            && ids_distinct
+            && self.log_mark == SERVICE_MARKER_LOG
+            && self.ns_mark == SERVICE_MARKER_NS
+            && self.store_mark == SERVICE_MARKER_STORE
+            && self.log_reply == SERVICE_REPLY_LOG
+            && self.ns_reply == SERVICE_REPLY_NS
+            && self.store_reply == SERVICE_REPLY_STORE
     }
 }
 
@@ -2274,6 +2375,16 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
         created: read_qword(USER_HELLO2_VA + SERVICEMGR_CREATED_OFFSET),
         entry_a: read_qword(USER_HELLO2_VA + SERVICEMGR_ENTRY_A_OFFSET),
         entry_b: read_qword(USER_HELLO2_VA + SERVICEMGR_ENTRY_B_OFFSET),
+        services: read_qword(USER_HELLO2_VA + SERVICEMGR_SERVICES_OFFSET),
+        log_id: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_ID_OFFSET),
+        ns_id: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_ID_OFFSET),
+        store_id: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_ID_OFFSET),
+        log_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_MARK_OFFSET),
+        ns_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_MARK_OFFSET),
+        store_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_MARK_OFFSET),
+        log_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_REPLY_OFFSET),
+        ns_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
+        store_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
     }
 }
 
@@ -3010,6 +3121,9 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
         RUNTIME_APP_CODE_PAGES,
         RUNTIME_APP2_CODE_PAGES,
         RUNTIME_APP3_CODE_PAGES,
+        RUNTIME_APP_LOG_CODE_PAGES,
+        RUNTIME_APP_NS_CODE_PAGES,
+        RUNTIME_APP_STORE_CODE_PAGES,
         offset,
     )
     .map_err(|_| VspaceError::NoFrame)?;
@@ -3038,6 +3152,31 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
         USER3_CODE_VA,
         RUNTIME_APP3_CODE_PAGES,
         RUNTIME_APP3_ENTRY_OFFSET,
+    )?;
+    // SPEC-106（S4-D3）：把三个基础服务映像装进各自的独立代码段。
+    load_runtime_elf(
+        PRIMA_LOG_ELF,
+        &images.code_log,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP_LOG_CODE_PAGES,
+        RUNTIME_APP_LOG_ENTRY_OFFSET,
+    )?;
+    load_runtime_elf(
+        PRIMA_NS_ELF,
+        &images.code_ns,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP_NS_CODE_PAGES,
+        RUNTIME_APP_NS_ENTRY_OFFSET,
+    )?;
+    load_runtime_elf(
+        PRIMA_STORE_ELF,
+        &images.code_store,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP_STORE_CODE_PAGES,
+        RUNTIME_APP_STORE_ENTRY_OFFSET,
     )?;
     let frame = images.code.frame_at(0).ok_or(VspaceError::NoFrame)?;
     // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。

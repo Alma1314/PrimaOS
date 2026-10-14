@@ -1019,6 +1019,27 @@ pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
     write_hex_u64(witness.entry_a);
     serial::write_bytes(b";entry_b=");
     write_hex_u64(witness.entry_b);
+    // SPEC-106（S4-D3）：三个基础服务的见证。
+    serial::write_bytes(b";services=");
+    write_hex_u64(witness.services);
+    serial::write_bytes(b";log_id=");
+    write_hex_u64(witness.log_id);
+    serial::write_bytes(b";ns_id=");
+    write_hex_u64(witness.ns_id);
+    serial::write_bytes(b";store_id=");
+    write_hex_u64(witness.store_id);
+    serial::write_bytes(b";log_mark=");
+    write_hex_u64(witness.log_mark);
+    serial::write_bytes(b";ns_mark=");
+    write_hex_u64(witness.ns_mark);
+    serial::write_bytes(b";store_mark=");
+    write_hex_u64(witness.store_mark);
+    serial::write_bytes(b";log_reply=");
+    write_hex_u64(witness.log_reply);
+    serial::write_bytes(b";ns_reply=");
+    write_hex_u64(witness.ns_reply);
+    serial::write_bytes(b";store_reply=");
+    write_hex_u64(witness.store_reply);
     serial::write_bytes(b"\r\n");
 }
 

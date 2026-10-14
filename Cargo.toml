@@ -8,3 +8,13 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
+
+# SPEC-106（S4-D3）：ring3 用户二进制（`prima-user` 的各个 bin）连同其依赖 `prima-runtime` 被
+# `include_bytes!` 嵌进内核映像，其 debug 信息对内核毫无用处却使每个 bin ≈0.9 MiB、并把内核映像
+# 推过引导器给内核预留的区间（0x194f000），使 `build_inventory` 报 `InvalidImageRange`。
+# 这两个包不参与内核自身符号化（内核不依赖它们），故仅对它们关闭 debug 信息。
+[profile.dev.package.prima-user]
+debug = false
+
+[profile.dev.package.prima-runtime]
+debug = false

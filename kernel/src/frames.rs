@@ -42,9 +42,17 @@ pub const SEG_SPIN2_CODE: u32 = 13;
 pub const SEG_SPIN2_DATA: u32 = 14;
 
 /// 保留页表帧的容量上限（自建页表规模远小于此）。
-pub const MAX_TABLE_FRAMES: usize = 128;
+///
+/// SPEC-106：从 128 提到 **256**——S4-D3 的服务表扩到 5 项后，每个任务根各有一套页表结点，
+/// `BETA` 收到转发的共享段做 `memseg_map` 时 `allocate_table_frame` 返回 `Err`，`memseg_map`
+/// 以 `NoMemory` 失败，协商与 `done` 均不产出。该表是全局帧注册表的一块静态数组，不占
+/// `BootstrapState` 空间。
+pub const MAX_TABLE_FRAMES: usize = 256;
 /// 活动 Segment 的容量上限（image + 平台 bring-up 各区域 + 用户创建 Segment）。
-pub const MAX_SEGMENTS: usize = 32;
+///
+/// SPEC-106：从 32 提到 **48**，与 `bootstrap::MAX_SEGMENT_OBJECTS` 对齐——S4-D3 的三个基础
+/// 服务端点各占一个代码段与一个栈段，段表在 32 时触顶使后续 `memseg_create` 失败。
+pub const MAX_SEGMENTS: usize = 48;
 /// 非 image 数据帧的逐帧归属条目上限（S2-D3 的 frame → owner 查询）。
 pub const MAX_FRAME_OWNERS: usize = 192;
 /// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
@@ -608,16 +616,16 @@ mod tests {
 
     #[test]
     fn table_frame_capacity_is_enforced() {
-        // 构造一个帧数远超 MAX_TABLE_FRAMES 的 universe，验证容量上限先于取帧耗尽触发。
+        // 构造一个帧数 ≥ MAX_TABLE_FRAMES 的 universe，验证容量上限先于取帧耗尽触发。
         let regions = [MemoryRegion {
             start: 0x10_0000,
-            end: 0x10_0000 + 0x1000 * 200,
+            end: 0x10_0000 + 0x1000 * MAX_TABLE_FRAMES as u64,
             kind: MemoryRegionKind::Usable,
         }];
         let inventory = FrameInventory {
-            usable_frames: 200,
+            usable_frames: MAX_TABLE_FRAMES,
             image_frames: 1,
-            free_frames: 200,
+            free_frames: MAX_TABLE_FRAMES,
             usable_regions: 1,
             kernel_phys_start: 0x40_0000,
             kernel_phys_end: 0x40_1000,

@@ -24,5 +24,24 @@ path = "src/servicemgr.rs"
 test = false
 bench = false
 
+# SPEC-106（S4-D3）：三个基础服务端点的独立二进制映像（日志 / Namespace / 基础存储）。
+[[bin]]
+name = "prima-log"
+path = "src/log.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "prima-ns"
+path = "src/ns.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "prima-store"
+path = "src/store.rs"
+test = false
+bench = false
+
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }

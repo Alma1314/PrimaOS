@@ -122,7 +122,7 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// `task_ready` 时刻的活动 cap 槽位数：既有 43 个，加上 Rust 客户端移交的共享 Segment cap
 /// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
 /// manager/self/root-ns 共 5 条（49 → 54）。
-const TASK_READY_LIVE_CAPS: usize = 77;
+const TASK_READY_LIVE_CAPS: usize = 101;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -2367,9 +2367,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 16 || direct != 14 || blocks != 18 {
+    if queued != 28 || direct != 23 || blocks != 30 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 16/14/18 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 28/23/30 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged)"
         ));
     }
     Ok(())
@@ -2547,9 +2547,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     // SPEC-088：再加 **Rust 服务端点**（id 9，自报 id 后阻塞等待协商请求）。
     // SPEC-092：再加**第二个独立服务端点**（id 10，各自独立任务与独立根）。
     // SPEC-103：再加 ring3 **服务管理器**任务（id 11）。
-    if tasks != 7 {
+    if tasks != 10 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 7 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints + the ring3 servicemgr) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 10 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the five service-table endpoints: alpha/beta/log/ns/store) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2583,9 +2583,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 7 {
+    if tasks_after != 10 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 7 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + two independent Rust service endpoints + the ring3 servicemgr) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 10 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the five service-table endpoints: alpha/beta/log/ns/store) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -3514,6 +3514,14 @@ const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 /// SPEC-104：`prima-servicemgr` 映像写回共享段的**二进制标记**（与 `prima-user/src/servicemgr.rs`
 /// 及 `kernel/src/user.rs` 一致）——证明注册表/解析结果由独立 ring3 映像产出。
 const SERVICEMGR_BINARY_MARKER: u64 = 0x5345_5256_4D47_5203;
+/// SPEC-106（S4-D3）：三个基础服务（日志/Namespace/存储）的 40 位存在标记与路由探针应答，与
+/// `kernel/src/user.rs` 及 `prima-runtime::protocol` 一致。
+const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
+const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
+const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
+const SERVICE_REPLY_LOG: u64 = 0x5EC9_0003_0000_0011;
+const SERVICE_REPLY_NS: u64 = 0x5EC9_0004_0000_0011;
+const SERVICE_REPLY_STORE: u64 = 0x5EC9_0005_0000_0011;
 
 /// SPEC-103/104：ring3 服务管理器任务的存活 + 产出方见证。判决性：`task_id` 是一个真实的 ring3
 /// 子任务（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id`
@@ -3528,6 +3536,16 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let mut created = None;
     let mut entry_a = None;
     let mut entry_b = None;
+    let mut services = None;
+    let mut log_id = None;
+    let mut ns_id = None;
+    let mut store_id = None;
+    let mut log_mark = None;
+    let mut ns_mark = None;
+    let mut store_mark = None;
+    let mut log_reply = None;
+    let mut ns_reply = None;
+    let mut store_reply = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3540,6 +3558,16 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "created" => created = Some(parse_addr(value)?),
             "entry_a" => entry_a = Some(parse_addr(value)?),
             "entry_b" => entry_b = Some(parse_addr(value)?),
+            "services" => services = Some(parse_addr(value)?),
+            "log_id" => log_id = Some(parse_addr(value)?),
+            "ns_id" => ns_id = Some(parse_addr(value)?),
+            "store_id" => store_id = Some(parse_addr(value)?),
+            "log_mark" => log_mark = Some(parse_addr(value)?),
+            "ns_mark" => ns_mark = Some(parse_addr(value)?),
+            "store_mark" => store_mark = Some(parse_addr(value)?),
+            "log_reply" => log_reply = Some(parse_addr(value)?),
+            "ns_reply" => ns_reply = Some(parse_addr(value)?),
+            "store_reply" => store_reply = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3578,14 +3606,55 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "servicemgr_ready marker (0x{marker:x}) must be the prima-servicemgr binary marker 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image, not init's hand-written code"
         ));
     }
-    if created != 2 {
+    if created != 5 {
         return Err(format!(
-            "servicemgr_ready created ({created}) must be 2 — SPEC-105: both service endpoints must be created by the ring3 manager, not by init's hand-written code"
+            "servicemgr_ready created ({created}) must be 5 — SPEC-105/106: all five service-table entries (alpha/beta + log/ns/store) must be created by the ring3 manager, not by init's hand-written code"
         ));
     }
     if entry_a == 0 || entry_b == 0 {
         return Err(format!(
             "servicemgr_ready entry_a/entry_b (0x{entry_a:x}/0x{entry_b:x}) must be nonzero — SPEC-105: the manager must derive each endpoint's ELF entry itself (e_entry at file offset 24)"
+        ));
+    }
+    let services = services.ok_or_else(|| missing("services"))?;
+    let log_id = log_id.ok_or_else(|| missing("log_id"))?;
+    let ns_id = ns_id.ok_or_else(|| missing("ns_id"))?;
+    let store_id = store_id.ok_or_else(|| missing("store_id"))?;
+    let log_mark = log_mark.ok_or_else(|| missing("log_mark"))?;
+    let ns_mark = ns_mark.ok_or_else(|| missing("ns_mark"))?;
+    let store_mark = store_mark.ok_or_else(|| missing("store_mark"))?;
+    let log_reply = log_reply.ok_or_else(|| missing("log_reply"))?;
+    let ns_reply = ns_reply.ok_or_else(|| missing("ns_reply"))?;
+    let store_reply = store_reply.ok_or_else(|| missing("store_reply"))?;
+    if services != 3 {
+        return Err(format!(
+            "servicemgr_ready services ({services}) must be 3 — SPEC-106: the three base services (log/ns/store) must all answer the routed probe"
+        ));
+    }
+    if log_id <= 1 || ns_id <= 1 || store_id <= 1 {
+        return Err(format!(
+            "servicemgr_ready log_id/ns_id/store_id ({log_id}/{ns_id}/{store_id}) must each be a real ring3 child task (> 1) — SPEC-106: each base service must run as its own task"
+        ));
+    }
+    if log_id == ns_id || ns_id == store_id || log_id == store_id {
+        return Err(format!(
+            "servicemgr_ready base service ids ({log_id}/{ns_id}/{store_id}) must be pairwise distinct — SPEC-106: the three services must be three separate tasks"
+        ));
+    }
+    if log_mark != SERVICE_MARKER_LOG
+        || ns_mark != SERVICE_MARKER_NS
+        || store_mark != SERVICE_MARKER_STORE
+    {
+        return Err(format!(
+            "servicemgr_ready log/ns/store markers (0x{log_mark:x}/0x{ns_mark:x}/0x{store_mark:x}) must be 0x{SERVICE_MARKER_LOG:x}/0x{SERVICE_MARKER_NS:x}/0x{SERVICE_MARKER_STORE:x} — SPEC-106: each base service must run from its own distinct binary"
+        ));
+    }
+    if log_reply != SERVICE_REPLY_LOG
+        || ns_reply != SERVICE_REPLY_NS
+        || store_reply != SERVICE_REPLY_STORE
+    {
+        return Err(format!(
+            "servicemgr_ready log/ns/store replies (0x{log_reply:x}/0x{ns_reply:x}/0x{store_reply:x}) must carry the kind of the routed service (0x{SERVICE_REPLY_LOG:x}/0x{SERVICE_REPLY_NS:x}/0x{SERVICE_REPLY_STORE:x}) — SPEC-106: the manager must route each probe to the correct service binary"
         ));
     }
     Ok(())
@@ -3594,7 +3663,7 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 /// SPEC-105：端点令牌由 **ring3 服务管理器**从代码段派生（不再是 init 自建回执，故句柄值改变）。
 const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_003c;
-const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_003e;
+const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_0044;
 const SERVICE_NEGOTIATED_ID: u64 = 10;
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 /// `major<<48 | minor<<32 | max<<16 | features` —— 客户端 offer 与服务端 offer
@@ -3921,17 +3990,17 @@ mod tests {
 
     const VALID: &str = concat!(
         "SeaBIOS boot text\r\n",
-        "PRIMA|v=1|seq=1|event=boot_start|status=ok\r\n",
+        "PRIMA|v=1|seq=1|event=boot_start|status=ok\n",
         "PRIMA|v=1|seq=2|event=serial_ready|status=ok\n",
-        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=16;image=1;free=16;regions=1;kstart=0x200000;kend=0x300000\r\n",
-        "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0xffff800000000000;va=0xffff800000001000\r\n",
-        "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x200000\r\n",
+        "PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=30236;image=1122;free=30236;regions=3;kstart=0x1000000;kend=0x1462000\n",
+        "PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x28000000000;va=0x28000000000\n",
+        "PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000\n",
         "PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok\n",
         "PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3\n",
         "PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present\n",
-        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x200000;image_len=1048576;image_frames=1;free_frames=16;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\r\n",
+        "PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=4592456;image_frames=1122;free_frames=30236;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy\n",
         "PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection\n",
-        "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
+        "PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000\n",
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
         "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
         "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
@@ -3943,24 +4012,24 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=16;direct=14;blocks=18\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=7;caps=77;root_cleared=1;grandchild=4;tasks_after=7;caps_after=77;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=28;direct=23;blocks=30\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=10;caps=101;root_cleared=1;grandchild=4;tasks_after=10;caps_after=101;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
-        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000003c;service=0x10000003e;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x2;entry_a=0x4a50;entry_b=0x2640\n",
+        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000003c;service=0x100000044;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
+        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x5;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_reply=0x5ec9000300000011;ns_reply=0x5ec9000400000011;store_reply=0x5ec9000500000011\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
-        "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
+        "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=33|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=34|event=exc_resume_ready|status=ok|data=sentinel=0x123456789abcdef0;sentinel2=0xfedcba987654321;resumed=1;rsp_ok=1;flags_ok=1\n",
         "PRIMA|v=1|seq=35|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
         "PRIMA|v=1|seq=36|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
-        "PRIMA|v=1|seq=37|event=frames_ready|status=ok|data=universe=9;free=4;segment=2;table=1;image=2;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=38|event=self_root_ready|status=ok|data=root=0x5b000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=165;translated=0x200000\n",
+        "PRIMA|v=1|seq=37|event=frames_ready|status=ok|data=universe=31358;free=30036;segment=69;table=131;image=1122;conserved=1;disjoint=1\n",
+        "PRIMA|v=1|seq=38|event=self_root_ready|status=ok|data=root=0x5c000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=406;translated=0x1000000\n",
         "PRIMA|v=1|seq=39|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
-        "PRIMA|v=1|seq=40|event=state_audit_ready|status=ok|data=total=51;to_running=22;to_ready=21;to_blocked=5;to_faulted=3;used=131;cap=170\n",
+        "PRIMA|v=1|seq=40|event=state_audit_ready|status=ok|data=total=135;to_running=54;to_ready=45;to_blocked=32;to_faulted=4;used=475;cap=512\n",
         "PRIMA|v=1|seq=41|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=42|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=43|event=boot_complete|status=ok\r\n",
@@ -4060,7 +4129,7 @@ mod tests {
         // SPEC-070/072/073 + SPEC-087 + SPEC-088 + SPEC-092 + SPEC-103：合法值为 7（init + task 2 +
         // 保留槽位的 Faulted 见证任务 + 存活的 Rust 客户端 + **两个**独立 Rust 服务端点 + ring3
         // 服务管理器）；8 表示子任务未清除。
-        let output = VALID.replace(";tasks=7;", ";tasks=8;");
+        let output = VALID.replace(";tasks=10;", ";tasks=8;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -4080,7 +4149,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=77;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=101;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4171,9 +4240,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=14;", ";direct=0;");
+        let output = VALID.replace(";direct=23;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 16/14/18"), "{error}");
+        assert!(error.contains("expected 28/23/30"), "{error}");
     }
 
     #[test]
@@ -4294,7 +4363,7 @@ mod tests {
         // SPEC-094：`ALPHA` 端点的栈段 id 等于客户端（task 8）的——即它仍沿用客户端 `Y[368]`
         // 的那条**共享物理栈帧**（SPEC-093 §5.1 的登记残留）；必须拒绝。
         let output = VALID.replace(
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x10",
+            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e",
             ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x12",
         );
         let error = validate_output(&output).unwrap_err();
@@ -4408,7 +4477,7 @@ mod tests {
     /// 切片 Z：任一迁移路径缺事件（分项为 0）即拒绝。
     #[test]
     fn rejects_state_audit_with_a_missing_transition_path() {
-        let output = VALID.replace("to_blocked=5", "to_blocked=0");
+        let output = VALID.replace("to_blocked=32", "to_blocked=0");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must be non-zero"), "{error}");
     }
@@ -4416,7 +4485,7 @@ mod tests {
     /// 切片 Z：审计日志被打满（`used > cap`）即拒绝——余量枯竭会让后续受审计操作失败。
     #[test]
     fn rejects_state_audit_with_an_overflowed_log() {
-        let output = VALID.replace("used=131;cap=170", "used=171;cap=170");
+        let output = VALID.replace("used=475;cap=512", "used=171;cap=170");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("overflowed"), "{error}");
     }
@@ -4424,7 +4493,7 @@ mod tests {
     /// 切片 Z：`total` 必须等于分项之和。
     #[test]
     fn rejects_state_audit_with_inconsistent_total() {
-        let output = VALID.replace("total=51;", "total=52;");
+        let output = VALID.replace("total=135;", "total=52;");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("must equal the per-status sum"), "{error}");
     }
@@ -4486,7 +4555,7 @@ mod tests {
     #[test]
     fn rejects_self_root_translating_to_a_different_physical_base() {
         let output = VALID.replace(
-            "pages=165;translated=0x200000",
+            "pages=406;translated=0x1000000",
             "pages=165;translated=0x300000",
         );
         let error = validate_output(&output).unwrap_err();
@@ -4499,7 +4568,7 @@ mod tests {
     /// 切片 X：必须报告非零的已物化镜像页数（全零等于什么都没映射）。
     #[test]
     fn rejects_self_root_with_no_materialized_image_pages() {
-        let output = VALID.replace("owned=1;pages=165", "owned=1;pages=0");
+        let output = VALID.replace("owned=1;pages=406", "owned=1;pages=0");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("non-zero materialized image page count"),
@@ -4510,7 +4579,7 @@ mod tests {
     /// 切片 X：自建根帧必须是 4 KiB 对齐的非零物理帧。
     #[test]
     fn rejects_self_root_with_misaligned_root_frame() {
-        let output = VALID.replace("root=0x5b000;", "root=0x5b008;");
+        let output = VALID.replace("root=0x5c000;", "root=0x5b008;");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("4KiB-aligned"), "{error}");
     }
@@ -4518,7 +4587,7 @@ mod tests {
     #[test]
     fn rejects_frames_ready_that_violates_w6_conservation() {
         let output = VALID.replace(
-            "universe=9;free=4;segment=2;table=1;image=2;conserved=1",
+            "universe=31358;free=30036;segment=69;table=131;image=1122;conserved=1",
             "universe=9;free=5;segment=2;table=1;image=2;conserved=1",
         );
         let error = validate_output(&output).unwrap_err();
@@ -4527,7 +4596,7 @@ mod tests {
 
     #[test]
     fn rejects_frames_ready_without_conserved_flag() {
-        let output = VALID.replace("image=2;conserved=1", "image=2;conserved=0");
+        let output = VALID.replace("image=1122;conserved=1", "image=2;conserved=0");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("conserved must be 1"), "{error}");
     }
@@ -4542,7 +4611,7 @@ mod tests {
     #[test]
     fn rejects_frames_ready_without_page_table_ownership() {
         let output = VALID.replace(
-            "universe=9;free=4;segment=2;table=1;image=2;conserved=1",
+            "universe=31358;free=30036;segment=69;table=131;image=1122;conserved=1",
             "universe=7;free=4;segment=2;table=0;image=1;conserved=1",
         );
         let error = validate_output(&output).unwrap_err();
@@ -4997,13 +5066,13 @@ mod tests {
     }
 
     /// 切片 F 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const COW_DATA: &str = "va=0x80000000000;shared=0x6000;private=0xb000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000";
+    const COW_DATA: &str = "va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000";
 
     #[test]
     fn rejects_cow_alias_frame() {
         let output = VALID.replace(
             COW_DATA,
-            &COW_DATA.replace("private=0xb000", "private=0x6000"),
+            &COW_DATA.replace("private=0x9000", "private=0x5000"),
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("private must differ from shared"), "{error}");

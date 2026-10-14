@@ -1,4 +1,4 @@
-//! SPEC-104/105：**ring3 服务管理器**——运行期注册表、按名解析、请求路由/转发，以及
+//! SPEC-104/105/106：**ring3 服务管理器**——运行期注册表、按名解析、请求路由/转发，以及
 //! **表驱动的端点创建**的宿主。
 //!
 //! 决策见 `docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md`：把服务发现、
@@ -9,15 +9,21 @@
 //!
 //! **SPEC-105**：端点不再由 `init` 的手写汇编创建。`init` 只把建端点所需的 cap 移交本管理器
 //! （父 Namespace + 每服务的代码段/栈段），本管理器按 [`SERVICE_TABLE`] 表驱动地
-//! `task_create` + 映射栈；入口地址由本管理器**自行解析代码段 ELF 头的 `e_entry`** 得到，故
-//! 加一个服务 = 表里一行 + 一个二进制。
+//! `task_create` + 映射栈；入口地址由本管理器**自行解析代码段 ELF 头的 `e_entry`** 得到。
+//!
+//! **SPEC-106（S4-D3）**：服务表从 2 项泛化为 [`SERVICES`] 项，新增三个**基础服务**端点
+//! （日志 / Namespace / 基础存储，各为独立二进制 `prima-log`/`prima-ns`/`prima-store`）。三者与
+//! `ALPHA`/`BETA` 走同一条表驱动创建路径，但不参与 wire 协商：各自向本管理器自报**存在标记**
+//! （`kind` 归槽 + 每二进制相异的 40 位值），随后本管理器向三者各发一条**路由探针**并收回应答。
+//! 注册名、存在标记与探针应答写回共享段，构成「三服务由本管理器按表建立、且请求路由到了正确的
+//! 服务二进制」的逐字段见证。
 //!
 //! 与本映像一起构成判决性见证的，是本管理器写回**客户端共享段**固定偏移的自证字段（自身 task
 //! id + 二进制标记）与解析结果——内核见证按共享段偏移读回，故「注册表/解析由独立 ring3 映像
 //! 产出」是逐字节可核验的，而非仅凭 init 的回执。
 //!
-//! 消息处理是**顺序无关的事件循环**：客户端的 Hello 与两端点自报、done、以及 `init` 的建端点
-//! 移交可按任意次序到达，状态齐全时才推进下一阶段。
+//! 消息处理是**顺序无关的事件循环**：客户端的 Hello 与各端点自报、done、标记与探针应答、以及
+//! `init` 的建端点移交可按任意次序到达，状态齐全时才推进下一阶段。
 
 #![no_std]
 #![no_main]
@@ -28,8 +34,11 @@ use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
         ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA,
-        SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_NONE, SERVICE_NAME_ALPHA,
-        SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, SERVICE_SETUP_TAG,
+        SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE,
+        SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_KIND_SHIFT,
+        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
+        SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
+        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICEMGR_HELLO_TAG, pack_service_name,
     },
     task::TaskSpec,
@@ -91,6 +100,22 @@ const OFF_MGR_MANAGER: u64 = 288;
 /// SPEC-105：两个端点自解出的 ELF 入口（load_base 相对值），证明入口来自**本管理器的解析**。
 const OFF_MGR_ENTRY_A: u64 = 304;
 const OFF_MGR_ENTRY_B: u64 = 312;
+/// SPEC-106：三个基础服务的 (id, 存在标记, 探针应答)，各占 8 B；以及已应答的基础服务数。
+const OFF_LOG_ID: u64 = 320;
+const OFF_LOG_MARK: u64 = 328;
+const OFF_NS_ID: u64 = 336;
+const OFF_NS_MARK: u64 = 344;
+const OFF_STORE_ID: u64 = 352;
+const OFF_STORE_MARK: u64 = 360;
+const OFF_SERVICES: u64 = 368;
+const OFF_LOG_REPLY: u64 = 376;
+const OFF_NS_REPLY: u64 = 384;
+const OFF_STORE_REPLY: u64 = 392;
+
+/// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务）。
+const SERVICES: usize = 5;
+/// 三个基础服务的表下标起点（`SERVICE_BEHAVIOR_LOG` = 3 ⇒ 下标 2）。
+const BASE_FIRST: usize = 2;
 
 /// 注册表条目：端点名 → 行为码、task id、发送凭据。
 #[derive(Clone, Copy)]
@@ -109,17 +134,20 @@ struct Pending {
     name: u64,
 }
 
-/// SPEC-105：**服务表**——名字 → 行为码。加一个服务 = 表里一行 + 一个二进制 + init 移交一条
-/// cap（本片尚未做到「init 零改动」，见报告登记）。
-const SERVICE_TABLE: [(u64, u64); 2] = [
+/// SPEC-105/106：**服务表**——名字 → 行为码。加一个服务 = 表里一行 + 一个二进制 + init 移交一对
+/// cap（「init 零改动」尚未做到，见报告登记）。
+const SERVICE_TABLE: [(u64, u64); SERVICES] = [
     (SERVICE_NAME_ALPHA, SERVICE_BEHAVIOR_ALPHA),
     (SERVICE_NAME_BETA, SERVICE_BEHAVIOR_BETA),
+    (SERVICE_NAME_LOG, SERVICE_BEHAVIOR_LOG),
+    (SERVICE_NAME_NS, SERVICE_BEHAVIOR_NS),
+    (SERVICE_NAME_STORE, SERVICE_BEHAVIOR_STORE),
 ];
 
 /// 名字 → 行为码（未注册 → `NONE`）。表驱动：SPEC-105 起扫描 [`SERVICE_TABLE`]。
 fn behavior_for(name: u64) -> u64 {
     let mut index = 0;
-    while index < SERVICE_TABLE.len() {
+    while index < SERVICES {
         if SERVICE_TABLE[index].0 == name {
             return SERVICE_TABLE[index].1;
         }
@@ -163,25 +191,29 @@ pub extern "C" fn _start(
     let mut segment: Option<Capability> = None;
     let mut client: Option<Capability> = None;
     let mut client_id = 0u64;
-    let mut registry: [Option<Endpoint>; 2] = [None, None];
-    let mut collected = 0usize;
+    let mut registry: [Option<Endpoint>; SERVICES] = [None; SERVICES];
     let mut alpha_forwarded = false;
     let mut alpha_done = false;
     let mut beta_forwarded = false;
     let mut beta_done = false;
     let mut finished = false;
-    // SPEC-105：建端点状态。
+    // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
-    let mut pending: [Option<Pending>; 2] = [None, None];
+    let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
     let mut created = 0u64;
-    let mut created_slot: [bool; 2] = [false, false];
+    let mut created_slot: [bool; SERVICES] = [false; SERVICES];
+    // SPEC-106：三个基础服务的存在标记与路由探针应答。
+    let mut marker: [u64; SERVICES] = [0; SERVICES];
+    let mut probe_sent = false;
+    let mut reply: [u64; SERVICES] = [0; SERVICES];
+    let mut replied = 0u64;
 
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
         };
         if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
-            // ⓪ SPEC-105：init 移交建端点所需的 cap/参数。
+            // ⓪ SPEC-105/106：init 移交建端点所需的 cap/参数。
             if let Some(cap0) = message.capabilities[0] {
                 if let Some(cap1) = message.capabilities[1] {
                     // 一条服务：cap0 = 代码段、cap1 = 栈段；参数在 payload 里。
@@ -224,13 +256,13 @@ pub extern "C" fn _start(
                 client = Some(client_cap);
             }
         } else if message.payload >> 48 == SERVICE_ID_TAG >> 48 {
-            // ② 端点自报（cap0 = 端点自管理凭据，管理器据此回送转发）。
+            // ② 端点/服务自报（cap0 = 自管理凭据，管理器据此回送转发/路由探针）。
             let name = (message.payload >> 8) & SERVICE_NAME_MASK;
             let behavior = behavior_for(name);
-            let slot = (behavior.wrapping_sub(1)) as usize;
+            let slot = behavior.wrapping_sub(1) as usize;
             if let Some(authority) = message.capabilities[0]
                 && behavior != SERVICE_BEHAVIOR_NONE
-                && slot < 2
+                && slot < SERVICES
                 && registry[slot].is_none()
             {
                 let id = message.payload & 0xff;
@@ -239,22 +271,24 @@ pub extern "C" fn _start(
                     authority,
                     behavior,
                 });
-                let name_offset = if behavior == SERVICE_BEHAVIOR_BETA {
-                    OFF_REG_B_NAME
-                } else {
-                    OFF_REG_A_NAME
-                };
                 if let Some(seg) = segment {
-                    let _ =
-                        runtime.write_user_bytes(USER_SEG_VA + name_offset, &name.to_le_bytes());
-                    if behavior == SERVICE_BEHAVIOR_BETA {
+                    if behavior == SERVICE_BEHAVIOR_ALPHA {
+                        let _ = runtime
+                            .write_user_bytes(USER_SEG_VA + OFF_REG_A_NAME, &name.to_le_bytes());
+                    } else if behavior == SERVICE_BEHAVIOR_BETA {
+                        let _ = runtime
+                            .write_user_bytes(USER_SEG_VA + OFF_REG_B_NAME, &name.to_le_bytes());
                         // 把**管理器收集到的**端点 id 写回，与管理器收到的注册名同源。
                         let _ = runtime
                             .write_user_bytes(USER_SEG_VA + OFF_BETA_SELF, &id.to_le_bytes());
+                    } else {
+                        let _ = runtime.write_user_bytes(
+                            USER_SEG_VA + base_id_offset(slot),
+                            &id.to_le_bytes(),
+                        );
                     }
                     let _ = seg;
                 }
-                collected += 1;
             }
         } else if message.payload >> 48 == SERVICE_DONE_TAG >> 48 {
             // ③ 端点完成协商。先转发的是 `ALPHA`，故首个 done 属 `ALPHA`。
@@ -275,13 +309,42 @@ pub extern "C" fn _start(
                     );
                 }
             }
+        } else if message.payload >> 48 == SERVICE_MARKER_TAG >> 48 {
+            // ③' SPEC-106：基础服务自报存在标记（kind 归槽 + 每二进制相异的 marker）。
+            let kind = (message.payload >> SERVICE_MARKER_KIND_SHIFT) & 0xff;
+            let slot = kind.wrapping_sub(1) as usize;
+            if (BASE_FIRST..SERVICES).contains(&slot) && marker[slot] == 0 {
+                marker[slot] = message.payload & SERVICE_MARKER_MASK;
+                if segment.is_some() {
+                    let _ = runtime.write_user_bytes(
+                        USER_SEG_VA + base_mark_offset(slot),
+                        &marker[slot].to_le_bytes(),
+                    );
+                }
+            }
+        } else if message.payload >> 48 == SERVICE_SERVE_TAG >> 48 {
+            // ③'' SPEC-106：基础服务的路由探针应答（kind 归槽，证明请求路由到了正确的服务）。
+            let kind = (message.payload >> 32) & 0xff;
+            let slot = kind.wrapping_sub(1) as usize;
+            if (BASE_FIRST..SERVICES).contains(&slot) && reply[slot] == 0 {
+                reply[slot] = message.payload;
+                replied += 1;
+                if segment.is_some() {
+                    let _ = runtime.write_user_bytes(
+                        USER_SEG_VA + base_reply_offset(slot),
+                        &reply[slot].to_le_bytes(),
+                    );
+                    let _ = runtime
+                        .write_user_bytes(USER_SEG_VA + OFF_SERVICES, &replied.to_le_bytes());
+                }
+            }
         }
 
-        // ⓪' SPEC-105：cap、参数与共享段齐全即创建端点（表驱动）——建端点证据写回共享段，故
+        // ⓪' SPEC-105/106：cap、参数与共享段齐全即创建端点（表驱动）——建端点证据写回共享段，故
         // 须待客户端 Hello 把段映射进本根之后。
         if let (Some(ns_cap), Some(_)) = (ns, segment) {
             let mut slot = 0;
-            while slot < 2 {
+            while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
                     && create_service(&runtime, &self_cap, ns_cap, &spec, slot, &mut created_slot)
@@ -298,8 +361,9 @@ pub extern "C" fn _start(
             continue;
         };
 
-        // ④ 首次转发：`ALPHA` 行为（既有 `service_negotiated` 见证的产出方）。
-        if collected == 2 && !alpha_forwarded {
+        // ④ 首次转发：`ALPHA` 行为（既有 `service_negotiated` 见证的产出方）。以注册表就绪为准，
+        // 与基础服务的注册互不耦合。
+        if registry[0].is_some() && registry[1].is_some() && !alpha_forwarded {
             if let Some(alpha) = registry[0]
                 && let Ok(copy) = runtime.cap_derive(seg, RW_DERIVE)
             {
@@ -321,7 +385,7 @@ pub extern "C" fn _start(
             );
             let slot = resolved.wrapping_sub(1) as usize;
             if resolved != SERVICE_BEHAVIOR_NONE
-                && slot < 2
+                && slot < SERVICES
                 && let Some(endpoint) = registry[slot]
                 && let Ok(copy) = runtime.cap_derive(seg, RW_DERIVE)
             {
@@ -333,8 +397,30 @@ pub extern "C" fn _start(
             beta_forwarded = true;
         }
 
-        // ⑥ 两轮转发都完成：应答客户端（`PONG`），并把共享段只读副本交回 init。
+        // ⑤' SPEC-106：三个基础服务都已注册即各发一条**路由探针**（只发一次）。
+        if !probe_sent
+            && registry[BASE_FIRST].is_some()
+            && registry[BASE_FIRST + 1].is_some()
+            && registry[BASE_FIRST + 2].is_some()
+        {
+            let mut slot = BASE_FIRST;
+            while slot < SERVICES {
+                if let Some(endpoint) = registry[slot] {
+                    let _ = runtime.send(
+                        TaskId::from_raw(endpoint.id as u32),
+                        endpoint.authority,
+                        SERVICE_SERVE_TAG | SERVICE_SERVE_PROBE,
+                        &[],
+                    );
+                }
+                slot += 1;
+            }
+            probe_sent = true;
+        }
+
+        // ⑥ 两轮转发及三个基础服务探针都完成：应答客户端（`PONG`），并把共享段只读副本交回 init。
         if beta_done
+            && replied == (SERVICES - BASE_FIRST) as u64
             && !finished
             && let Some(client_cap) = client
         {
@@ -367,16 +453,31 @@ pub extern "C" fn _start(
     }
 }
 
-/// SPEC-105：名字对应的服务表下标（未注册 → `None`）。
+/// SPEC-105/106：名字对应的服务表下标（未注册 → `None`）。
 fn table_slot(name: u64) -> Option<usize> {
     let mut index = 0;
-    while index < SERVICE_TABLE.len() {
+    while index < SERVICES {
         if SERVICE_TABLE[index].0 == name {
             return Some(index);
         }
         index += 1;
     }
     None
+}
+
+/// SPEC-106：基础服务（下标 ≥ [`BASE_FIRST`]）在共享段内的 id 见证偏移。
+fn base_id_offset(slot: usize) -> u64 {
+    [OFF_LOG_ID, OFF_NS_ID, OFF_STORE_ID][slot - BASE_FIRST]
+}
+
+/// SPEC-106：基础服务在共享段内的存在标记见证偏移。
+fn base_mark_offset(slot: usize) -> u64 {
+    [OFF_LOG_MARK, OFF_NS_MARK, OFF_STORE_MARK][slot - BASE_FIRST]
+}
+
+/// SPEC-106：基础服务在共享段内的路由探针应答见证偏移。
+fn base_reply_offset(slot: usize) -> u64 {
+    [OFF_LOG_REPLY, OFF_NS_REPLY, OFF_STORE_REPLY][slot - BASE_FIRST]
 }
 
 /// SPEC-105：表驱动地创建一个端点——自解 ELF 入口 → `task_create` → 映射独立栈段。
@@ -390,7 +491,7 @@ fn create_service(
     ns_cap: Capability,
     spec: &Pending,
     slot: usize,
-    created_slot: &mut [bool; 2],
+    created_slot: &mut [bool; SERVICES],
 ) -> bool {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
@@ -448,17 +549,17 @@ fn write_created_witness(
     token: Capability,
     manager: Capability,
 ) {
-    let entry_offset_field = if slot == 0 {
-        OFF_MGR_ENTRY_A
-    } else {
-        OFF_MGR_ENTRY_B
+    // 入口只记 `ALPHA`(槽 0)/`BETA`(槽 1) 的——基础服务不写该字段，避免覆盖既有见证。
+    let entry_offset_field = match slot {
+        0 => Some(OFF_MGR_ENTRY_A),
+        1 => Some(OFF_MGR_ENTRY_B),
+        _ => None,
     };
-    let _ = runtime.write_user_bytes(
-        USER_SEG_VA + entry_offset_field,
-        &entry_offset.to_le_bytes(),
-    );
+    if let Some(field) = entry_offset_field {
+        let _ = runtime.write_user_bytes(USER_SEG_VA + field, &entry_offset.to_le_bytes());
+    }
     // 令牌/管理 cap 只记 **ALPHA**（槽 0）的——内核 `service_negotiated_ready` 讲的是 ALPHA 的
-    // 协商，而后建的 BETA 会覆盖同一偏移。
+    // 协商，而后建的端点/服务会覆盖同一偏移。
     if slot == 0 {
         let _ =
             runtime.write_user_bytes(USER_SEG_VA + OFF_MGR_TOKEN, &token.as_raw().to_le_bytes());
