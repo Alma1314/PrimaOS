@@ -10,17 +10,29 @@
 //! 并入**自身内部状态**，`QUERY` 只读回当前状态。应答带 `kind`（相异 ⇒ 路由到了正确的服务），
 //! 且携带的是**状态**而非入参的回显——纯回声端点无法通过定序「推进/推进/查询」的判决。
 //!
-//! 服务的最小权限：初始只持两条 cap——服务管理器从自身派生的 `TaskSend`（`initial_cap0`，指向
-//! 管理器）与非零角色令牌（`initial_cap1`，由代码段派生）。无段/无 Namespace 权限。
+//! 服务的最小权限：初始持两条 cap——服务管理器从自身派生的 `TaskSend`（`initial_cap0`，指向
+//! 管理器）与非零角色令牌（`initial_cap1`，由代码段派生）。**SPEC-111**：三个服务里只有 Namespace
+//! 服务另经 [`SERVICE_NS_CAP_TAG`] 收到一份 `NsResolve` 只读 Namespace 副本（管理器从自身父
+//! Namespace 派生，最小权限），据此代理 `SYS_NS_RESOLVE`；其余两个服务始终无 Namespace 权限。
 
 use prima_runtime::{
-    Capability, Rights, Runtime, TaskId,
+    Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_MASK, SERVICE_NAME_MASK,
-        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG,
-        pack_service_marker, pack_service_reply,
+        SERVICE_NS_CAP_TAG, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_RESOLVE,
+        SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG, pack_service_marker,
+        pack_service_reply,
     },
 };
+
+/// SPEC-111：Namespace 服务代理解析的编译期路径（内核根 Namespace 里由 `init` 绑定，供
+/// `SYS_NS_RESOLVE` 命中）。
+const SERVICE_RESOLVE_PATH: &str = "svc";
+/// SPEC-111：`SYS_NS_RESOLVE` **请求**的权限（`SegMapR`）——须是父项 `svc` 所绑 Capability
+/// 权限的子集（`init` 绑定时用 `{Derive, SegMapR}`）；请求超出父项会得 `MissingRight`。
+const NS_RESOLVE_REQUESTED: Rights = Rights::from_bits(1 << 1);
+/// SPEC-111：代理不可用/失败时的哨兵（高位置 1，与任何合法 Capability 句柄不相交）。
+const NS_RESOLVE_FAILED: u64 = u64::MAX;
 
 /// 端点/服务自报的消息 tag（高 16 位；与 `prima-runtime::protocol`/内核/`beta.rs` 同款）。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
@@ -29,7 +41,7 @@ const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
 /// 引导任务（init）的 task id。对端是它时**不**发无 cap 唤醒。
 const BOOTSTRAP_TASK: u32 = 1;
 
-/// 基础服务主体：自报注册名/存在标记，随后应答路由探针。
+/// 基础服务主体：自报注册名/存在标记，随后应答请求（状态推进/查询，或 Namespace 代理解析）。
 pub fn run(
     name: u64,
     kind: u64,
@@ -71,18 +83,47 @@ pub fn run(
     // SPEC-110：服务内部状态——`op=ADVANCE` 请求按 `kind` 语义并入 `arg`，`op=QUERY`（或未知 op）
     // 只读回。三服务的转移语义各异，故同一请求序列得到三个互异的状态值。
     let mut state: u64 = 0;
+    // SPEC-111：Namespace 服务管理器**运行期移交**的 `NsResolve` 副本（仅 Namespace 服务会收到；
+    // 其余服务永远为 `None`，`op=RESOLVE` 时返回哨兵）。
+    let mut ns_cap: Option<Capability> = None;
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
         };
-        if message.payload >> 48 == SERVICE_SERVE_TAG >> 48 {
-            let op = (message.payload >> SERVICE_SERVE_OP_SHIFT) & 0xff;
-            if op == SERVICE_SERVE_OP_ADVANCE {
-                state = advance(kind, state, message.payload & 0xffff_ffff);
+        let tag = message.payload >> 48;
+        if tag == SERVICE_NS_CAP_TAG >> 48 {
+            // SPEC-111：接管移交的只读 Namespace 副本（带 cap 消息）。
+            if let Some(cap) = message.capabilities[0] {
+                ns_cap = Some(cap);
             }
-            let _ = runtime.send(peer, send_cap, pack_service_reply(kind, state), &[]);
+        } else if tag == SERVICE_SERVE_TAG >> 48 {
+            let op = (message.payload >> SERVICE_SERVE_OP_SHIFT) & 0xff;
+            let result = if op == SERVICE_SERVE_OP_ADVANCE {
+                state = advance(kind, state, message.payload & 0xffff_ffff);
+                state
+            } else if op == SERVICE_SERVE_OP_RESOLVE {
+                // SPEC-111：代理一次内核 Namespace 解析——结果由**内核命名空间树**决定，非本服务的
+                // 任何编译期常量。未收到 `NsResolve` 副本的服务返回哨兵（回声端点亦不可能产生句柄）。
+                ns_cap.map_or(NS_RESOLVE_FAILED, |cap| resolve_namespace(&runtime, cap))
+            } else {
+                state
+            };
+            let _ = runtime.send(peer, send_cap, pack_service_reply(kind, result), &[]);
         }
     }
+}
+
+/// SPEC-111：把编译期路径拷到本任务**栈上**（可读用户内存），调内核 `SYS_NS_RESOLVE`。
+fn resolve_namespace<T: SyscallTransport>(runtime: &Runtime<T>, ns_cap: Capability) -> u64 {
+    let path = SERVICE_RESOLVE_PATH.as_bytes();
+    let mut buf = [0u8; 16];
+    buf[..path.len()].copy_from_slice(path);
+    let Ok(text) = core::str::from_utf8(&buf[..path.len()]) else {
+        return NS_RESOLVE_FAILED;
+    };
+    runtime
+        .namespace_resolve(ns_cap, text, NS_RESOLVE_REQUESTED)
+        .map_or(NS_RESOLVE_FAILED, |cap| cap.as_raw())
 }
 
 /// SPEC-110：各基础服务的状态转移——**语义各异**（同一请求序列 → 三个互异的状态值）。

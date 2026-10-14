@@ -39,8 +39,9 @@ use prima_runtime::{
         SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
-        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
+        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE,
+        SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG, SERVICE_WAKE_TAG,
         SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
@@ -114,11 +115,25 @@ const OFF_SERVICES: u64 = 368;
 const OFF_LOG_REPLY: u64 = 376;
 const OFF_NS_REPLY: u64 = 400;
 const OFF_STORE_REPLY: u64 = 424;
+/// SPEC-111：Namespace 服务**代理解析**的内核返回句柄（第 4 条应答，单独一槽）。
+const OFF_NS_RESOLVED: u64 = 448;
 
 /// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务）。
 const SERVICES: usize = 5;
 /// 三个基础服务的表下标起点（`SERVICE_BEHAVIOR_LOG` = 3 ⇒ 下标 2）。
 const BASE_FIRST: usize = 2;
+/// SPEC-111：Namespace 服务的表下标（`SERVICE_BEHAVIOR_NS` = 4 ⇒ 下标 3）——三个基础服务里唯一
+/// 代理内核机制者，故比其余两个**多一条**代理解析请求。
+const NS_SLOT: usize = 3;
+
+/// SPEC-111：某服务的定序请求条数（Namespace 服务多一条 `RESOLVE`）。
+const fn probes_for(slot: usize) -> u64 {
+    if slot == NS_SLOT {
+        SERVICE_SERVE_PROBES + 1
+    } else {
+        SERVICE_SERVE_PROBES
+    }
+}
 
 /// 注册表条目：端点名 → 行为码、task id、发送凭据。
 #[derive(Clone, Copy)]
@@ -324,16 +339,21 @@ pub extern "C" fn _start(
             // 0/1/2 槽——同一发送者到同一服务保序，故推进 A、推进 B、查询的应答依序落位）。
             let kind = (message.payload >> 32) & 0xff;
             let slot = kind.wrapping_sub(1) as usize;
-            if (BASE_FIRST..SERVICES).contains(&slot) && reply_count[slot] < SERVICE_SERVE_PROBES {
+            let wanted = probes_for(slot);
+            if (BASE_FIRST..SERVICES).contains(&slot) && reply_count[slot] < wanted {
                 let index = reply_count[slot];
                 reply_count[slot] += 1;
                 if segment.is_some() {
-                    let _ = runtime.write_user_bytes(
-                        USER_SEG_VA + base_reply_offset(slot) + index * 8,
-                        &message.payload.to_le_bytes(),
-                    );
-                    // 该服务三条定序应答齐 ⇒ 服务数 +1（`services` 语义不变）。
-                    if reply_count[slot] == SERVICE_SERVE_PROBES {
+                    // 前 `SERVICE_SERVE_PROBES` 条落状态槽；Namespace 服务的第 4 条落代理解析槽。
+                    let offset = if index < SERVICE_SERVE_PROBES {
+                        base_reply_offset(slot) + index * 8
+                    } else {
+                        OFF_NS_RESOLVED
+                    };
+                    let _ = runtime
+                        .write_user_bytes(USER_SEG_VA + offset, &message.payload.to_le_bytes());
+                    // 该服务的全部定序应答齐 ⇒ 服务数 +1（`services` 语义不变）。
+                    if reply_count[slot] == wanted {
                         served += 1;
                         let _ = runtime
                             .write_user_bytes(USER_SEG_VA + OFF_SERVICES, &served.to_le_bytes());
@@ -406,6 +426,26 @@ pub extern "C" fn _start(
             && registry[BASE_FIRST + 1].is_some()
             && registry[BASE_FIRST + 2].is_some()
         {
+            // SPEC-111：把客户端共享段的**只读派生副本**绑定到专用路径 `svc`，供 Namespace 服务
+            // 代理解析——绑定是**纯 ring3 行为**（管理器持带 `NsBind` 的父 Namespace）。用派生副本
+            // 而非原段：`bind` 会把 cap 移入 Namespace，原段仍须交回 init。
+            if let Some(ns_cap) = ns
+                && let Some(seg) = segment
+                && let Ok(entry) = runtime.cap_derive(seg, RW_DERIVE)
+            {
+                let _ = runtime.namespace_bind(ns_cap, "svc", entry);
+            }
+            // SPEC-111：先给 Namespace 服务**运行期移交**一份 `NsResolve` 只读 Namespace 副本——
+            // 无 cap 唤醒（接收方可能阻塞在 recv，内核拒绝向 BlockedRecv 投带 cap 消息）+ 带 cap
+            // 消息，两条连续发送；只有该服务收到，故 log/store 始终无 Namespace 权限（最小权限）。
+            if let Some(ns_cap) = ns
+                && let Some(ns_ep) = registry[NS_SLOT]
+                && let Ok(copy) = runtime.cap_derive(ns_cap, NS_RESOLVE_RIGHTS)
+            {
+                let task = TaskId::from_raw(ns_ep.id as u32);
+                let _ = runtime.send(task, ns_ep.authority, SERVICE_WAKE_TAG, &[]);
+                let _ = runtime.send(task, ns_ep.authority, SERVICE_NS_CAP_TAG, &[copy]);
+            }
             let mut slot = BASE_FIRST;
             while slot < SERVICES {
                 if let Some(endpoint) = registry[slot] {
@@ -428,6 +468,16 @@ pub extern "C" fn _start(
                         pack_service_request(SERVICE_SERVE_OP_QUERY, 0),
                         &[],
                     );
+                    // SPEC-111：Namespace 服务多一条**代理解析**请求——它持有内核给的 `NsResolve`
+                    // 结构性根，据此调 `SYS_NS_RESOLVE` 返回内核命名空间树的句柄。
+                    if slot == NS_SLOT {
+                        let _ = runtime.send(
+                            task,
+                            endpoint.authority,
+                            pack_service_request(SERVICE_SERVE_OP_RESOLVE, 0),
+                            &[],
+                        );
+                    }
                 }
                 slot += 1;
             }

@@ -787,12 +787,14 @@ impl NsWitness {
             && self.unbind == self.derive1
             && self.unmount == 0
             && self.destroy == 0
-            // 审计侧：三次成功挂载/绑定各留一条事件，三类拒绝各计一次。
-            && self.audit.binds == 2
+            // 审计侧：每类成功操作各留一条事件，三类拒绝各计一次。
+            // SPEC-111：`binds` 2→3、`resolves` 2→3——服务管理器把共享段副本绑到 `svc`（+1 bind），
+            // Namespace 服务据此代理解析一次（+1 resolve），两者都是 ring3 真实触发的内核操作。
+            && self.audit.binds == 3
             && self.audit.unbinds == 1
             && self.audit.mounts == 2
             && self.audit.unmounts == 1
-            && self.audit.resolves == 2
+            && self.audit.resolves == 3
             && self.audit.cycles_rejected == 1
             && self.audit.overlaps_rejected == 1
             && self.audit.invalid_path_rejected == 1

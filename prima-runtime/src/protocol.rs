@@ -117,6 +117,13 @@ pub const SERVICE_SERVE_OP_SHIFT: u64 = 40;
 pub const SERVICE_SERVE_OP_ADVANCE: u64 = 0;
 /// SPEC-110：`op=1` 只读回当前状态（不改）。
 pub const SERVICE_SERVE_OP_QUERY: u64 = 1;
+/// SPEC-111：`op=2` 让 **Namespace 服务**代理一次内核 `SYS_NS_RESOLVE`（`arg` 选编译期路径），
+/// 应答低 32 位是内核解析出的 Capability 句柄（失败为 errno）。只有持有 `NsResolve` 根的任务
+/// （`root_ns_cap`，见内核入口第 6 参数）能真正执行；无权限者拿到 errno。
+pub const SERVICE_SERVE_OP_RESOLVE: u64 = 2;
+/// SPEC-111：服务管理器向 Namespace 服务**移交**一份 `NsResolve` 只读 Namespace 副本的消息 tag
+/// （带 cap；前置一条无 cap 唤醒）。最小权限：仅 `NsResolve` 位，服务据此代理 `SYS_NS_RESOLVE`。
+pub const SERVICE_NS_CAP_TAG: u64 = 0x5ECB_0000_0000_0000;
 /// SPEC-110：定序请求的两个推进入参（5 → 3）。三个基础服务的状态转移语义**各异**（日志累加 /
 /// 存储移位追加 / Namespace 滚动指纹），故两次推进后查询返回的**三个值互异**——判决「请求经服务
 /// 表路由到了各自的**有状态**服务二进制，而非任一无状态回声端点」。

@@ -2052,9 +2052,11 @@ pub struct PlatformSegmentsRecord {
 
 /// 单个 Segment 的帧向量容量（`memseg_create` 的页数上限）。
 ///
-/// SPEC-109：服务映像段把 6 个独立 ELF + 1 个目录页打包为**单段**（`IMAGE_TOTAL_PAGES`=43），
-/// 故上限须 ≥ 43。
-pub const MAX_SEGMENT_FRAMES: usize = 48;
+/// SPEC-109：服务映像段把 6 个独立 ELF + 1 个目录页打包为**单段**，故上限须 ≥ `IMAGE_TOTAL_PAGES`。
+/// SPEC-111：该段随服务二进制增长——`service.rs` 各服务共用、任何改动都会放大全部 ELF，本次即由
+/// 43 涨到 50 页并**静默越界**（`SegmentFrames::Vector` 内联向量写穿 → boot 早期 #PF）。现提高到
+/// 64 留余量，并以 `kernel/src/user.rs` 的编译期断言把「映像段 ≤ 本上限」钉死，杜绝再次静默越界。
+pub const MAX_SEGMENT_FRAMES: usize = 64;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =

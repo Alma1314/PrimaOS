@@ -1,6 +1,10 @@
 //! SPEC-106（S4-D3）：**Namespace 服务端点**的独立二进制映像（`prima-ns`）。
 //!
 //! 与 `prima-log`/`prima-store` 共用 [`service`] 骨架，仅注册名/行为码/存在标记相异。
+//!
+//! SPEC-111（S4-D3 收口）：本服务是三者中**唯一**代理内核机制者——服务管理器经 `SERVICE_NS_CAP_TAG`
+//! 向它**移交**一份 `NsResolve` 只读 Namespace 副本；`op=RESOLVE` 请求据此调 `SYS_NS_RESOLVE`，
+//! 返回**内核命名空间树**的解析句柄。`log`/`store` 永不收到该副本，无任何 Namespace 权限。
 
 #![no_std]
 #![no_main]

@@ -274,6 +274,8 @@ pub const SERVICEMGR_SERVICES_OFFSET: u64 = 368;
 pub const SERVICEMGR_LOG_REPLY_OFFSET: u64 = 376;
 pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 400;
 pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 424;
+/// SPEC-111：Namespace 服务**代理解析**返回的内核句柄（内核命名空间树的 `SYS_NS_RESOLVE` 结果）。
+pub const SERVICEMGR_NS_RESOLVED_OFFSET: u64 = 448;
 /// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
 pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
@@ -468,6 +470,14 @@ pub const IMAGE_NS_PAGES_OFF: usize = IMAGE_LOG_PAGES_OFF + RUNTIME_APP_LOG_CODE
 pub const IMAGE_STORE_PAGES_OFF: usize = IMAGE_NS_PAGES_OFF + RUNTIME_APP_NS_CODE_PAGES;
 /// 映像段总页数（1 目录页 + 6 个映像）。
 pub const IMAGE_TOTAL_PAGES: usize = IMAGE_STORE_PAGES_OFF + RUNTIME_APP_STORE_CODE_PAGES;
+
+/// SPEC-111 编译期护栏：服务映像段必须放得进**单段内联帧向量**（[`crate::bootstrap::MAX_SEGMENT_FRAMES`]），
+/// 否则 boot 时 `SegmentFrames::Vector` 写穿相邻字段 → 早期 #PF。此前该约束**只写在注释里**，
+/// 服务二进制一长大（43→50 页）即静默越界；此断言把它钉成编译期错误。
+const _: () = assert!(
+    IMAGE_TOTAL_PAGES <= crate::bootstrap::MAX_SEGMENT_FRAMES,
+    "service image segment exceeds MAX_SEGMENT_FRAMES: raise that cap or shrink the embedded ELFs"
+);
 /// SPEC-109：服务映像段目录页魔数（与 `prima-runtime::protocol::SERVICE_IMAGE_MAGIC` 同款）。
 pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
 
@@ -2319,6 +2329,8 @@ pub struct ServicemgrWitness {
     pub log_state: [u64; 3],
     pub ns_state: [u64; 3],
     pub store_state: [u64; 3],
+    /// SPEC-111：Namespace 服务代理解析返回的**内核**句柄（非零、非 errno = 内核真的解析了 `/lib`）。
+    pub ns_resolved: u64,
 }
 
 impl ServicemgrWitness {
@@ -2365,6 +2377,10 @@ impl ServicemgrWitness {
                     SERVICE_REPLY_STORE_1,
                     SERVICE_REPLY_STORE_2,
                 ]
+            // SPEC-111：代理解析返回的是内核派生的 Capability 句柄（正数、非 errno 负编码、非哨兵）；
+            // 内核侧另以 `namespace_ready.resolves` 计数增长交叉证明它真调了 `SYS_NS_RESOLVE`。
+            && self.ns_resolved != 0
+            && self.ns_resolved < (1 << 63)
     }
 }
 
@@ -2396,6 +2412,7 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
         log_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_LOG_REPLY_OFFSET),
         ns_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
         store_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
+        ns_resolved: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_RESOLVED_OFFSET),
     }
 }
 
