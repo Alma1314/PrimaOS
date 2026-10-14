@@ -81,6 +81,8 @@ pub const SERVICE_NAME_BETA: u64 = pack_service_name(b"beta");
 pub const SERVICE_NAME_LOG: u64 = pack_service_name(b"log");
 pub const SERVICE_NAME_NS: u64 = pack_service_name(b"nsvc");
 pub const SERVICE_NAME_STORE: u64 = pack_service_name(b"store");
+/// SPEC-114：第一个 ring3 **用户态驱动**的注册名 `"ioprt"`（≤5 字节）。
+pub const SERVICE_NAME_DRIVER: u64 = pack_service_name(b"ioprt");
 
 /// SPEC-106：基础服务向服务管理器自报**编译进二进制的存在标记**的消息 tag。
 ///
@@ -97,6 +99,8 @@ pub const SERVICE_MARKER_KIND_SHIFT: u64 = 40;
 pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
 pub const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
+/// SPEC-114：用户态驱动的 40 位存在标记。
+pub const SERVICE_MARKER_DRIVER: u64 = 0x0000_0049_4f50_0004;
 
 /// SPEC-106：把存在标记打包成 marker 消息 payload。
 pub const fn pack_service_marker(kind: u64, marker: u64) -> u64 {
@@ -158,6 +162,28 @@ pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
 pub const SERVICE_BEHAVIOR_LOG: u64 = 3;
 pub const SERVICE_BEHAVIOR_NS: u64 = 4;
 pub const SERVICE_BEHAVIOR_STORE: u64 = 5;
+/// SPEC-114（S4-D4）：**用户态驱动**端点——不参与 §15 的定序状态探针，而是收到一个内核
+/// `Device(IOPortRange)` Capability 后经受控端口路径做一次 I/O（见 [`SERVICE_SERVE_OP_IOPORT_RW`]）。
+pub const SERVICE_BEHAVIOR_DRIVER: u64 = 6;
+
+/// SPEC-114 / §15.5：服务管理器向**用户态驱动**移交内核 `Device(IOPortRange)` Capability 的消息
+/// tag（带 cap；前置一条无 cap 唤醒）。cap 由管理器 `SYS_DEV_IOPORT_CREATE` 铸出，驱动据此走
+/// **受控端口路径**读/写端口——端口落在区间内才被内核放行。
+pub const SERVICE_DEV_CAP_TAG: u64 = 0x5ECF_0000_0000_0000;
+/// SPEC-114：`op=3` 受控端口往返——驱动在授权区间内的 Scratch 寄存器写一个魔数再读回，
+/// 应答低 32 位是**读回的字节**（等于魔数即证明设备往返成立）。
+pub const SERVICE_SERVE_OP_IOPORT_RW: u64 = 3;
+/// SPEC-114：`op=4` 越界端口探测——驱动尝试写一个**区间外**端口；内核须拒绝（应答低 32 位 = 0
+/// 表示被拒，= 1 表示竟被放行，即受控路径失效）。
+pub const SERVICE_SERVE_OP_IOPORT_OOR: u64 = 4;
+/// SPEC-114：驱动的授权端口区间（COM1，`0x3F8..0x400`）与其中的 Scratch 寄存器（offset 7）。
+pub const IOPORT_BASE: u16 = 0x3F8;
+pub const IOPORT_COUNT: u16 = 8;
+pub const IOPORT_SCRATCH: u16 = 0x3FF;
+/// SPEC-114：区间**外**的探测端口（COM2 数据口，未被委派）。
+pub const IOPORT_OUT_OF_RANGE: u16 = 0x2F8;
+/// SPEC-114：写入 Scratch 再读回的魔数（16550 SCR 按字节存，任意非零值均可往返）。
+pub const IOPORT_MAGIC: u8 = 0x5A;
 /// SPEC-090：名字未注册时的解析结果（服务管理器据此拒绝转发）。
 pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
 /// SPEC-088：`ALPHA` 行为的服务端 offer。`max_message_size` 取 2048，与客户端 4096 取交后

@@ -43,5 +43,12 @@ path = "src/store.rs"
 test = false
 bench = false
 
+# SPEC-114（S4-D4）：第一个 ring3 用户态驱动（持 `Device(IOPortRange)` cap 走受控端口路径）。
+[[bin]]
+name = "prima-driver"
+path = "src/driver.rs"
+test = false
+bench = false
+
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }

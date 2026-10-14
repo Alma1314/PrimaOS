@@ -70,6 +70,8 @@ pub const PRIMA_SERVICEMGR_ELF: &[u8] =
 pub const PRIMA_LOG_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-log"));
 pub const PRIMA_NS_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-ns"));
 pub const PRIMA_STORE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"));
+/// SPEC-114（S4-D4）：第一个 ring3 用户态驱动的独立二进制映像（`prima-driver`）。
+pub const PRIMA_DRIVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-driver"));
 
 const fn elf_word(bytes: &[u8], at: usize) -> u64 {
     let mut value = 0u64;
@@ -206,6 +208,8 @@ pub const SERVICE_NAME_BETA: u64 = service_name(b"beta");
 pub const SERVICE_NAME_LOG: u64 = service_name(b"log");
 pub const SERVICE_NAME_NS: u64 = service_name(b"nsvc");
 pub const SERVICE_NAME_STORE: u64 = service_name(b"store");
+/// SPEC-114：用户态驱动的注册名 `"ioprt"`（与 `prima-runtime::protocol` 一致）。
+pub const SERVICE_NAME_DRIVER: u64 = service_name(b"ioprt");
 /// SPEC-090/101：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
 pub const SERVICE_NAME_UNKNOWN: u64 = service_name(b"ghost");
 /// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
@@ -280,6 +284,15 @@ pub const SERVICEMGR_NS_RESOLVED_OFFSET: u64 = 448;
 /// 运行期移交服务）。内核据此证明两服务各持有**真实的内核 Segment 对象**，而非仅内部状态。
 pub const SERVICEMGR_LOG_SEG_OFFSET: u64 = 456;
 pub const SERVICEMGR_STORE_SEG_OFFSET: u64 = 464;
+/// SPEC-114（S4-D4）：用户态驱动的 (id, 存在标记, 内核设备句柄)；受控端口的两条应答各占 8 B。
+pub const SERVICEMGR_DRIVER_ID_OFFSET: u64 = 472;
+pub const SERVICEMGR_DRIVER_MARK_OFFSET: u64 = 480;
+pub const SERVICEMGR_DRIVER_DEV_OFFSET: u64 = 488;
+pub const SERVICEMGR_DRIVER_REPLY_OFFSET: u64 = 496;
+/// SPEC-114：驱动 40 位存在标记（与 `prima-runtime::protocol` 一致）。
+pub const SERVICE_MARKER_DRIVER: u64 = 0x0000_0049_4f50_0004;
+/// SPEC-114：受控端口往返的期望读回值（写入 Scratch 寄存器再读回的魔数）。
+pub const IOPORT_MAGIC_READBACK: u64 = 0x5A;
 /// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
 pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
@@ -459,6 +472,9 @@ pub const RUNTIME_APP_STORE_CODE_PAGES: usize = runtime_app_pages(PRIMA_STORE_EL
 pub const RUNTIME_APP_LOG_ENTRY_OFFSET: u64 = elf_word(PRIMA_LOG_ELF, 24);
 pub const RUNTIME_APP_NS_ENTRY_OFFSET: u64 = elf_word(PRIMA_NS_ELF, 24);
 pub const RUNTIME_APP_STORE_ENTRY_OFFSET: u64 = elf_word(PRIMA_STORE_ELF, 24);
+/// SPEC-114：用户态驱动映像（`prima-driver`）PT_LOAD 覆盖的页数与入口偏移。
+pub const RUNTIME_APP_DRIVER_CODE_PAGES: usize = runtime_app_pages(PRIMA_DRIVER_ELF);
+pub const RUNTIME_APP_DRIVER_ENTRY_OFFSET: u64 = elf_word(PRIMA_DRIVER_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
@@ -472,8 +488,10 @@ pub const IMAGE_SERVICEMGR_PAGES_OFF: usize = IMAGE_BETA_PAGES_OFF + RUNTIME_APP
 pub const IMAGE_LOG_PAGES_OFF: usize = IMAGE_SERVICEMGR_PAGES_OFF + RUNTIME_APP3_CODE_PAGES;
 pub const IMAGE_NS_PAGES_OFF: usize = IMAGE_LOG_PAGES_OFF + RUNTIME_APP_LOG_CODE_PAGES;
 pub const IMAGE_STORE_PAGES_OFF: usize = IMAGE_NS_PAGES_OFF + RUNTIME_APP_NS_CODE_PAGES;
-/// 映像段总页数（1 目录页 + 6 个映像）。
-pub const IMAGE_TOTAL_PAGES: usize = IMAGE_STORE_PAGES_OFF + RUNTIME_APP_STORE_CODE_PAGES;
+/// SPEC-114：用户态驱动映像在段内的页偏移。
+pub const IMAGE_DRIVER_PAGES_OFF: usize = IMAGE_STORE_PAGES_OFF + RUNTIME_APP_STORE_CODE_PAGES;
+/// 映像段总页数（1 目录页 + 6 个基础/驱动映像，不含由 init 单独移交的 servicemgr）。
+pub const IMAGE_TOTAL_PAGES: usize = IMAGE_DRIVER_PAGES_OFF + RUNTIME_APP_DRIVER_CODE_PAGES;
 
 /// SPEC-111 编译期护栏：服务映像段必须放得进**单段内联帧向量**（[`crate::bootstrap::MAX_SEGMENT_FRAMES`]），
 /// 否则 boot 时 `SegmentFrames::Vector` 写穿相邻字段 → 早期 #PF。此前该约束**只写在注释里**，
@@ -2312,8 +2330,8 @@ pub struct ServicemgrWitness {
     /// SPEC-104：管理器写入共享段的**自身二进制标记**——须等于 [`SERVICEMGR_BINARY_MARKER`]，
     /// 证明注册表/解析由 `prima-servicemgr` 这一**独立 ring3 映像**产出，而非 init 手写块或常量。
     pub marker: u64,
-    /// SPEC-105/106：管理器**已创建的服务端点数**（服务表 5 项 ⇒ 应 5）——证明端点任务确由本
-    /// 管理器按表建立。
+    /// SPEC-105/106/114：管理器**已创建的服务端点数**（服务表 6 项 ⇒ 应 6：`ALPHA`/`BETA` +
+    /// 日志/Namespace/存储三个基础服务 + 用户态驱动）——证明端点任务确由本管理器按表建立。
     pub created: u64,
     /// SPEC-105：两个端点**由管理器自解 ELF 头**得到的入口偏移（非零）。
     pub entry_a: u64,
@@ -2339,6 +2357,17 @@ pub struct ServicemgrWitness {
     /// [`crate::bootstrap::segment_of_cap`] 核验），且两者互异。纯寄存器实现的服务产生不出该句柄。
     pub log_seg: u64,
     pub store_seg: u64,
+    /// SPEC-114：用户态驱动自报的 task id（`> 1` 且与三个基础服务互异）。
+    pub driver_id: u64,
+    /// SPEC-114：驱动自报的存在标记（须等于 [`SERVICE_MARKER_DRIVER`]）。
+    pub driver_mark: u64,
+    /// SPEC-114：驱动持有的**内核 `Device(IOPortRange)` 句柄**——须是活的内核设备对象
+    /// （经 [`crate::bootstrap::device_of_cap`] 核验）。其端口区间由内核另行核验：`driver_io[0]`
+    /// 的区间内往返只有在该区间**确实覆盖** `0x3FF` 时才会被 `authorize_ioport` 放行。
+    pub driver_dev: u64,
+    /// SPEC-114：驱动两条受控端口应答——`[0]` 区间内往返的读回值（须等于写入的魔数），
+    /// `[1]` 区间外探测的结果（`0` = 内核拒绝，`1` = 竟被放行 = 受控路径失效）。
+    pub driver_io: [u64; 2],
 }
 
 impl ServicemgrWitness {
@@ -2346,12 +2375,16 @@ impl ServicemgrWitness {
     /// 位与从管理 cap 解出的 id 相符；共享段里的自身 id/标记与之一致——证明「存活自报与注册表/
     /// 解析结果都来自 init 建起的那**同一个**独立 ring3 映像」，而非任何编译期常量。
     ///
-    /// SPEC-106：另核验服务表 5 项全部建立、三个基础服务各由**不同二进制**运行（互异的存在标记与
+    /// SPEC-106：另核验服务表各项全部建立、三个基础服务各由**不同二进制**运行（互异的存在标记与
     /// task id）。
     ///
     /// SPEC-110：再核验三个基础服务的**定序状态应答**逐一等于各自的期望序列（推进 5 / 推进 3 /
     /// 查询 的终值）——`kind` 各归其位且携带的是**跨请求保留的状态**，三者终值互异。这判决路由到
     /// 了各自的有状态服务二进制，**无状态回声端点**（回 5/3/0）无法通过。
+    ///
+    /// SPEC-114：最后核验第 6 个服务项——**用户态驱动**由本管理器按表建立（`created == 6`）、自报
+    /// 独立二进制的存在标记、持有**活的内核 `Device` 对象**，且两条受控端口应答证明「区间内可往返、
+    /// 区间外被内核拒绝」。
     pub fn evidence_ok(&self) -> bool {
         let ids_distinct = self.log_id > 1
             && self.ns_id > 1
@@ -2364,7 +2397,7 @@ impl ServicemgrWitness {
             && (self.hello & 0xff) == (self.task_id & 0xff)
             && self.self_id == self.task_id
             && self.marker == SERVICEMGR_BINARY_MARKER
-            && self.created == 5
+            && self.created == 6
             && self.entry_a != 0
             && self.entry_b != 0
             && self.services == 3
@@ -2394,6 +2427,17 @@ impl ServicemgrWitness {
             && is_live_segment(self.log_seg)
             && is_live_segment(self.store_seg)
             && self.log_seg != self.store_seg
+            // SPEC-114：用户态驱动——真实子任务、独立二进制标记、持有**活的内核设备对象**；两条
+            // 受控端口应答证明「区间内可往返、区间外被内核拒绝」。纯状态机/无设备权限者产生不出。
+            && self.driver_id > 1
+            && ids_distinct
+            && self.driver_id != self.log_id
+            && self.driver_id != self.ns_id
+            && self.driver_id != self.store_id
+            && self.driver_mark == SERVICE_MARKER_DRIVER
+            && is_live_device(self.driver_dev)
+            && (self.driver_io[0] & 0xffff_ffff) == IOPORT_MAGIC_READBACK
+            && (self.driver_io[1] & 0xffff_ffff) == 0
     }
 }
 
@@ -2428,6 +2472,13 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
         ns_resolved: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_RESOLVED_OFFSET),
         log_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_SEG_OFFSET),
         store_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_SEG_OFFSET),
+        driver_id: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_ID_OFFSET),
+        driver_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_MARK_OFFSET),
+        driver_dev: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_DEV_OFFSET),
+        driver_io: [
+            read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_REPLY_OFFSET),
+            read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_REPLY_OFFSET + 8),
+        ],
     }
 }
 
@@ -2438,6 +2489,16 @@ fn is_live_segment(raw: u64) -> bool {
         && crate::bootstrap::decode_handle(raw)
             .ok()
             .and_then(crate::bootstrap::segment_of_cap)
+            .is_some()
+}
+
+/// SPEC-114：给定内核句柄（正数、非哨兵）是否指向一个**活的** `Device` 对象。
+fn is_live_device(raw: u64) -> bool {
+    raw != 0
+        && raw < (1 << 63)
+        && crate::bootstrap::decode_handle(raw)
+            .ok()
+            .and_then(crate::bootstrap::device_of_cap)
             .is_some()
 }
 
@@ -3236,6 +3297,15 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
         RUNTIME_APP_STORE_CODE_PAGES,
         RUNTIME_APP_STORE_ENTRY_OFFSET,
     )?;
+    load_runtime_elf(
+        PRIMA_DRIVER_ELF,
+        &images.image,
+        IMAGE_DRIVER_PAGES_OFF,
+        offset,
+        USER3_CODE_VA,
+        RUNTIME_APP_DRIVER_CODE_PAGES,
+        RUNTIME_APP_DRIVER_ENTRY_OFFSET,
+    )?;
     // 段首页写入服务目录（服务管理器据此按名拿各服务的页偏移/页数）。
     write_image_directory(&images.image, offset)?;
     let frame = images
@@ -3430,7 +3500,7 @@ fn write_image_directory(frames: &SegmentFrames, offset: u64) -> Result<(), Vspa
     for byte in 0..FRAME_SIZE {
         prima_ostd::mm::write_u8_at(base, byte, 0);
     }
-    let entries: [(u64, usize, usize); 5] = [
+    let entries: [(u64, usize, usize); 6] = [
         (
             SERVICE_NAME_ALPHA,
             IMAGE_ALPHA_PAGES_OFF,
@@ -3455,6 +3525,11 @@ fn write_image_directory(frames: &SegmentFrames, offset: u64) -> Result<(), Vspa
             SERVICE_NAME_STORE,
             IMAGE_STORE_PAGES_OFF,
             RUNTIME_APP_STORE_CODE_PAGES,
+        ),
+        (
+            SERVICE_NAME_DRIVER,
+            IMAGE_DRIVER_PAGES_OFF,
+            RUNTIME_APP_DRIVER_CODE_PAGES,
         ),
     ];
     let mut at = 0usize;

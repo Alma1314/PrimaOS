@@ -1061,6 +1061,17 @@ pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
     write_hex_u64(witness.log_seg);
     serial::write_bytes(b";store_seg=");
     write_hex_u64(witness.store_seg);
+    // SPEC-114：用户态驱动（id / 存在标记 / 内核设备句柄 / 两条受控端口应答）。
+    serial::write_bytes(b";driver_id=");
+    write_hex_u64(witness.driver_id);
+    serial::write_bytes(b";driver_mark=");
+    write_hex_u64(witness.driver_mark);
+    serial::write_bytes(b";driver_dev=");
+    write_hex_u64(witness.driver_dev);
+    serial::write_bytes(b";driver_io0=");
+    write_hex_u64(witness.driver_io[0]);
+    serial::write_bytes(b";driver_io1=");
+    write_hex_u64(witness.driver_io[1]);
     serial::write_bytes(b"\r\n");
 }
 

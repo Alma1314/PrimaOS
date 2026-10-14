@@ -113,7 +113,12 @@ const MAX_TASKS: usize = 16;
 /// SPEC-074：容量不再受 `BootstrapState` 守卫约束（存储已移出结构体），故提到 256 以留足余量。
 /// 2026-10-13：256 在 boot 期已贴上限（实测补事件即 `AuditFull` 级联），提到 512 为
 /// `ISSUE-EXC-011` 的 Task Capability 审计补事件留出余量（仍不占 `BootstrapState`）。
-const MAX_AUDIT_EVENTS: usize = 512;
+/// 2026-10-15（SPEC-114）：512 在 boot 期已**贴上限**——加入第 6 个服务（用户态驱动）后，
+/// 它自身两次被调度（`Ready→Running→BlockedRecv`）**并**令服务管理器多出若干 `Running↔BlockedRecv`
+/// 往返，迁移事件净增 36 条；实测峰值 `used=530`（512 下首个抢占 tick 即 `AuditFull`，经
+/// `sched::switch_to` 的 `expect` 变成 panic）。提到 **768** 留 ~45% 余量。
+/// 该容量不占 `BootstrapState`（存储已在 [`AUDIT_ARENA`] 静态），故不受 16 KiB 守卫约束。
+const MAX_AUDIT_EVENTS: usize = 768;
 
 /// SPEC-074：审计 arena 按**实例**划分的区段数。
 ///
@@ -2173,11 +2178,17 @@ pub struct VspaceEntry {
 /// 旧上限 64，使 `init` 收下共享段只读副本的 `memseg_map` 以 `CapacityExceeded` 失败。按本常量
 /// 的设计意图（可自由扩容、与 `MAX_CAPABILITY_SLOTS` 对齐）扩到 80。
 ///
-/// **SPEC-106 扩容 80 → 192**：S4-D3 的服务表扩到 5 项后，每个服务端点各贡献「代码 + 栈」两条
+/// **SPEC-106 扩容 80 → 96**：S4-D3 的服务表扩到 5 项后，每个服务端点各贡献「代码 + 栈」两条
 /// 映射，加上转发共享段与探测映射，80 条再次触顶——`BETA` 收到转发后 `memseg_map` 以
 /// `CapacityExceeded` 失败，协商与 `done` 均不产出，管理器停在等 `beta_done`。仍按同一设计意图
-/// 扩到与 `MAX_CAPABILITY_SLOTS` 同量级（192），不占结构体空间。
-pub const MAX_VSPACE_ENTRIES: usize = 96;
+/// 扩容，不占结构体空间。
+///
+/// **SPEC-114 扩容 96 → 128**：S4-D4 加入第 6 个服务（用户态驱动）后，boot 末段的逻辑映射条目
+/// 实测达 **98**（临时探针打印 `vspace.count`），越过旧上限 96 → 第 7 个任务起的 `memseg_map`
+/// 以 `CapacityExceeded` 失败，症状是内核按 `USER_HELLO2_VA` 读共享段**全部读成「地址」**、
+/// `service_reply_ready.map` 变 `ENOENT`。该计数是**真实增长而非泄漏**（`teardown_vspace` 确有
+/// `vspace.remove`），故仍按其设计意图扩容到 128。
+pub const MAX_VSPACE_ENTRIES: usize = 128;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
@@ -6216,6 +6227,14 @@ impl BootstrapState {
             _ => None,
         }
     }
+
+    /// SPEC-114：一句柄是否指向一个**活的** `Device` 对象（内核侧核验驱动持有的端口环）。
+    pub fn device_of_cap(&self, cap: Handle) -> Option<u32> {
+        match self.target_of(cap) {
+            Some(ObjectRef::Device(id)) if self.devices.find(id).is_some() => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// 单核无 PCID：只有当前 Task 的页表根可能在本核缓存了用户页翻译。
@@ -7839,6 +7858,14 @@ pub fn task_of_cap(cap: Handle) -> Option<u32> {
 pub fn segment_of_cap(cap: Handle) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
         Some(state) => state.segment_of_cap(cap),
+        None => None,
+    })
+}
+
+/// SPEC-114：句柄是否指向一个**活的** `Device` 对象（供内核见证核验驱动持有的端口环）。
+pub fn device_of_cap(cap: Handle) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.device_of_cap(cap),
         None => None,
     })
 }

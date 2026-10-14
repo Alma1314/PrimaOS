@@ -22,6 +22,13 @@
 //! 一份 `NsResolve` 只读副本（代理 `SYS_NS_RESOLVE`）；日志/存储服务各收到一个 `SYS_MEMSEG_CREATE`
 //! 铸出的**持久化 MemorySegment**（落日志/落数据）。两者的句柄写回共享段，供内核侧逐字段核验。
 //!
+//! **SPEC-114（S4-D4）**：服务表新增第 6 项——**用户态驱动** `prima-driver`（注册名 `ioprt`）。
+//! 它与三个基础服务走同一条表驱动创建路径，但不参与 §15 的定序状态探针：本管理器
+//! `SYS_DEV_IOPORT_CREATE` 铸出一个覆盖 COM1 的 `Device(IOPortRange)` Capability，经
+//! `SERVICE_DEV_CAP_TAG` **运行期移交**该驱动，随后发两条受控端口请求（区间内往返 / 区间外探测），
+//! 应答写回共享段供内核逐字段核验。驱动的 id 最大（末位创建）而在最小 id 优先的调度器上优先级
+//! 最低，故收尾条件必须等待它的应答（见下方 ⑥ 的说明），否则它永不被调度。
+//!
 //! 与本映像一起构成判决性见证的，是本管理器写回**客户端共享段**固定偏移的自证字段（自身 task
 //! id + 二进制标记）与解析结果——内核见证按共享段偏移读回，故「注册表/解析由独立 ring3 映像
 //! 产出」是逐字节可核验的，而非仅凭 init 的回执。
@@ -37,16 +44,18 @@ use core::panic::PanicInfo;
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
-        ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA,
-        SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE,
-        SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE, SERVICE_IMAGE_DIR_HEADER,
-        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
-        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
-        SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A,
-        SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_QUERY,
-        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
+        ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA, IOPORT_BASE,
+        IOPORT_COUNT, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_DRIVER,
+        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE,
+        SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
+        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
+        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG,
+        SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE,
+        SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
+        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW,
+        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG,
+        SERVICE_SETUP_TAG, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name,
+        pack_service_request,
     },
     task::TaskSpec,
 };
@@ -125,18 +134,32 @@ const OFF_NS_RESOLVED: u64 = 448;
 /// 运行期移交服务）。内核侧据此核验「确为活的内核 Segment 对象」。
 const OFF_LOG_SEG: u64 = 456;
 const OFF_STORE_SEG: u64 = 464;
+/// SPEC-114（S4-D4）：用户态驱动的 (id, 存在标记, 内核设备句柄)；受控端口的两条应答各占 8 B。
+const OFF_DRIVER_ID: u64 = 472;
+const OFF_DRIVER_MARK: u64 = 480;
+const OFF_DRIVER_DEV: u64 = 488;
+const OFF_DRIVER_REPLY: u64 = 496;
 
-/// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务）。
-const SERVICES: usize = 5;
-/// 三个基础服务的表下标起点（`SERVICE_BEHAVIOR_LOG` = 3 ⇒ 下标 2）。
+/// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务 + SPEC-114 的用户态驱动）。
+const SERVICES: usize = 6;
+/// 基础服务的表下标起点（`SERVICE_BEHAVIOR_LOG` = 3 ⇒ 下标 2）。
 const BASE_FIRST: usize = 2;
+/// SPEC-114：**基础服务**（日志/Namespace/存储）的表项数——§15 的定序状态探针**只打这三个**，
+/// 用户态驱动走自己的受控端口握手。
+const BASE_COUNT: usize = 3;
 /// SPEC-111：Namespace 服务的表下标（`SERVICE_BEHAVIOR_NS` = 4 ⇒ 下标 3）——三个基础服务里唯一
 /// 代理内核机制者，故比其余两个**多一条**代理解析请求。
 const NS_SLOT: usize = 3;
+/// SPEC-114：用户态驱动的表下标（`SERVICE_BEHAVIOR_DRIVER` = 6 ⇒ 下标 5）。
+const DRIVER_SLOT: usize = 5;
+/// SPEC-114：驱动的受控端口请求条数（区间内往返 + 区间外探测）。
+const DRIVER_PROBES: u64 = 2;
 
-/// SPEC-111：某服务的定序请求条数（Namespace 服务多一条 `RESOLVE`）。
+/// SPEC-111/114：某端点收到的**应答**条数（Namespace 服务多一条 `RESOLVE`；驱动两条端口探测）。
 const fn probes_for(slot: usize) -> u64 {
-    if slot == NS_SLOT {
+    if slot == DRIVER_SLOT {
+        DRIVER_PROBES
+    } else if slot == NS_SLOT {
         SERVICE_SERVE_PROBES + 1
     } else {
         SERVICE_SERVE_PROBES
@@ -170,6 +193,7 @@ const SERVICE_TABLE: [(u64, u64); SERVICES] = [
     (SERVICE_NAME_LOG, SERVICE_BEHAVIOR_LOG),
     (SERVICE_NAME_NS, SERVICE_BEHAVIOR_NS),
     (SERVICE_NAME_STORE, SERVICE_BEHAVIOR_STORE),
+    (SERVICE_NAME_DRIVER, SERVICE_BEHAVIOR_DRIVER),
 ];
 
 /// 名字 → 行为码（未注册 → `NONE`）。表驱动：SPEC-105 起扫描 [`SERVICE_TABLE`]。
@@ -239,6 +263,8 @@ pub extern "C" fn _start(
     // SPEC-106：三个基础服务的存在标记与路由探针应答。
     let mut marker: [u64; SERVICES] = [0; SERVICES];
     let mut probe_sent = false;
+    // SPEC-114：用户态驱动的受控 I/O 握手是否已发起。
+    let mut driver_sent = false;
     // SPEC-110：每个基础服务已收到的应答条数（0..3）与**已答完 3 条**的服务数。
     let mut reply_count: [u64; SERVICES] = [0; SERVICES];
     let mut served = 0u64;
@@ -360,8 +386,9 @@ pub extern "C" fn _start(
                     };
                     let _ = runtime
                         .write_user_bytes(USER_SEG_VA + offset, &message.payload.to_le_bytes());
-                    // 该服务的全部定序应答齐 ⇒ 服务数 +1（`services` 语义不变）。
-                    if reply_count[slot] == wanted {
+                    // 三个**基础服务**的定序应答齐 ⇒ 服务数 +1（`services` 语义不变，SPEC-114 的
+                    // 用户态驱动走自己的受控端口握手，不并入该计数）。
+                    if reply_count[slot] == wanted && slot < BASE_FIRST + BASE_COUNT {
                         served += 1;
                         let _ = runtime
                             .write_user_bytes(USER_SEG_VA + OFF_SERVICES, &served.to_le_bytes());
@@ -459,7 +486,7 @@ pub extern "C" fn _start(
             // 「无 cap 唤醒 + 带 cap 消息」两条连发移交（接收方可能阻塞在 recv）。Namespace 服务
             // 不持段（最小权限）。移交先于下面的定序请求——同一发送者保序，故服务必先收到段。
             let mut slot = BASE_FIRST;
-            while slot < SERVICES {
+            while slot < BASE_FIRST + BASE_COUNT {
                 if slot != NS_SLOT
                     && let Some(endpoint) = registry[slot]
                     && let Ok(storage) = runtime.memseg_create(1, RW)
@@ -478,7 +505,7 @@ pub extern "C" fn _start(
                 slot += 1;
             }
             let mut slot = BASE_FIRST;
-            while slot < SERVICES {
+            while slot < BASE_FIRST + BASE_COUNT {
                 if let Some(endpoint) = registry[slot] {
                     let task = TaskId::from_raw(endpoint.id as u32);
                     let _ = runtime.send(
@@ -515,9 +542,52 @@ pub extern "C" fn _start(
             probe_sent = true;
         }
 
-        // ⑥ 两轮转发及三个基础服务探针都完成：应答客户端（`PONG`），并把共享段只读副本交回 init。
+        // ⑤'' SPEC-114：**用户态驱动**的受控 I/O 握手。独立于上面的一次性基础服务探针块：那个块由
+        // 「三个基础服务已注册」触发，而驱动不属于它们（`served` 也不计入驱动）。管理器
+        // `SYS_DEV_IOPORT_CREATE` 铸一个覆盖 COM1 的 `Device(IOPortRange)`，句柄写回共享段（内核侧
+        // 核验其为活的内核 `Device`），再运行期移交给驱动；随后两条受控端口请求。
+        if !driver_sent
+            && registry[DRIVER_SLOT].is_some()
+            && segment.is_some()
+            && let Some(driver) = registry[DRIVER_SLOT]
+            && let Ok(dev) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT)
+        {
+            if let Some(seg) = segment {
+                let _ = runtime
+                    .write_user_bytes(USER_SEG_VA + OFF_DRIVER_DEV, &dev.as_raw().to_le_bytes());
+                let _ = seg;
+            }
+            let task = TaskId::from_raw(driver.id as u32);
+            let _ = runtime.send(task, driver.authority, SERVICE_WAKE_TAG, &[]);
+            let _ = runtime.send(task, driver.authority, SERVICE_DEV_CAP_TAG, &[dev]);
+            let _ = runtime.send(
+                task,
+                driver.authority,
+                pack_service_request(SERVICE_SERVE_OP_IOPORT_RW, 0),
+                &[],
+            );
+            let _ = runtime.send(
+                task,
+                driver.authority,
+                pack_service_request(SERVICE_SERVE_OP_IOPORT_OOR, 0),
+                &[],
+            );
+            driver_sent = true;
+        }
+
+        // ⑥ 两轮转发、三个基础服务探针与**用户态驱动的两条受控端口应答**都完成：应答客户端
+        // （`PONG`），并把共享段只读副本交回 init。
+        //
+        // SPEC-114：驱动的**两条受控端口应答**必须并入收尾条件——这是调度层面的硬要求。调度器
+        // `sched::pick_next` 取**最小 Ready id**，而驱动的 id 最大（服务表末位创建），只有在其余
+        // 任务全部阻塞时才轮得到它。管理器每条消息处理完都会跑一遍本循环的尾部；若这里不等待驱动
+        // 应答，管理器会**在同一轮迭代内**接着把 `PONG`/`FINISH` 发完并阻塞，之后 init（id 1）成为
+        // 最小 Ready 任务，驱动再不被选中（实测：`task_status(15)` 恒为 `Ready`、`driver_io0/io1`
+        // 恒为 0——这正是本片第一版的行为）。把驱动应答并入本条件后，管理器在等待期间只是阻塞在
+        // `receive`，驱动因而成为唯一 Ready 任务而被调度。
         if beta_done
-            && served == (SERVICES - BASE_FIRST) as u64
+            && served == BASE_COUNT as u64
+            && reply_count[DRIVER_SLOT] >= DRIVER_PROBES
             && !finished
             && let Some(client_cap) = client
         {
@@ -604,19 +674,24 @@ fn table_slot(name: u64) -> Option<usize> {
     None
 }
 
-/// SPEC-106：基础服务（下标 ≥ [`BASE_FIRST`]）在共享段内的 id 见证偏移。
+/// SPEC-106/114：基础服务与用户态驱动（下标 ≥ [`BASE_FIRST`]）在共享段内的 id 见证偏移。
 fn base_id_offset(slot: usize) -> u64 {
-    [OFF_LOG_ID, OFF_NS_ID, OFF_STORE_ID][slot - BASE_FIRST]
+    [OFF_LOG_ID, OFF_NS_ID, OFF_STORE_ID, OFF_DRIVER_ID][slot - BASE_FIRST]
 }
 
-/// SPEC-106：基础服务在共享段内的存在标记见证偏移。
+/// SPEC-106/114：基础服务与驱动在共享段内的存在标记见证偏移。
 fn base_mark_offset(slot: usize) -> u64 {
-    [OFF_LOG_MARK, OFF_NS_MARK, OFF_STORE_MARK][slot - BASE_FIRST]
+    [OFF_LOG_MARK, OFF_NS_MARK, OFF_STORE_MARK, OFF_DRIVER_MARK][slot - BASE_FIRST]
 }
 
-/// SPEC-106/110：基础服务在共享段内的**定序状态见证起始**偏移（第 `index` 条读 `+ index*8`）。
+/// SPEC-106/110/114：基础服务与驱动在共享段内的**应答见证起始**偏移（第 `index` 条读 `+ index*8`）。
 fn base_reply_offset(slot: usize) -> u64 {
-    [OFF_LOG_REPLY, OFF_NS_REPLY, OFF_STORE_REPLY][slot - BASE_FIRST]
+    [
+        OFF_LOG_REPLY,
+        OFF_NS_REPLY,
+        OFF_STORE_REPLY,
+        OFF_DRIVER_REPLY,
+    ][slot - BASE_FIRST]
 }
 
 /// SPEC-112：日志/存储服务的**持久化段句柄**在共享段内的见证偏移（Namespace 服务不持段，槽位空）。

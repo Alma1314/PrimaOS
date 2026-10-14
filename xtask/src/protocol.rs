@@ -123,8 +123,10 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// 与 SPEC-087 存活的客户端持有的 4 条 cap，以及 SPEC-088 服务端点的端点令牌/回发凭据/
 /// manager/self/root-ns 共 5 条（49 → 54）；SPEC-111 再计入管理器为 Namespace 服务派生的只读
 /// Namespace 副本与 `svc` 绑定的段副本（+3）；SPEC-112 再计入管理器为日志/存储服务各铸出的
-/// 一个持久化 Segment 根 cap（+2）。
-const TASK_READY_LIVE_CAPS: usize = 102;
+/// 一个持久化 Segment 根 cap（+2）；SPEC-114 再计入用户态驱动的两条初始 cap（自管理凭据派生
+/// 副本 + 代码段只读令牌）、其自建栈段根 cap、任务自管理/结构性根 cap，以及驱动两次运行时各
+/// 派生的一条 `TaskSend` 凭据（+8）。
+const TASK_READY_LIVE_CAPS: usize = 110;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -2371,9 +2373,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 38 || direct != 23 || blocks != 30 {
+    if queued != 44 || direct != 26 || blocks != 34 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 38/23/30 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged; SPEC-109: one service image segment replaces the six per-service code segments and is handed to the manager as its initial_cap1, dropping 5 no-cap wakes + 5 cap messages (queued 10→18); SPEC-110: each base service's ordered probe grows from 1 to 3 requests (advance/advance/query), adding 2 requests + 2 replies per service × 3 services (queued 18→30, direct/blocks unchanged); SPEC-111: the manager hands a NsResolve Namespace copy to the namespace service (no-cap wake + cap message) and that service proxies one SYS_NS_RESOLVE (+2 sends +2 replies, queued 30→34, direct/blocks unchanged); SPEC-112: the manager creates a storage segment per log/store service and hands it over (no-cap wake + cap message each: +4 sends, queued 34→38, direct/blocks unchanged)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 44/26/34 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged; SPEC-109: one service image segment replaces the six per-service code segments and is handed to the manager as its initial_cap1, dropping 5 no-cap wakes + 5 cap messages (queued 10→18); SPEC-110: each base service's ordered probe grows from 1 to 3 requests (advance/advance/query), adding 2 requests + 2 replies per service × 3 services (queued 18→30, direct/blocks unchanged); SPEC-111: the manager hands a NsResolve Namespace copy to the namespace service (no-cap wake + cap message) and that service proxies one SYS_NS_RESOLVE (+2 sends +2 replies, queued 30→34, direct/blocks unchanged); SPEC-112: the manager creates a storage segment per log/store service and hands it over (no-cap wake + cap message each: +4 sends, queued 34→38, direct/blocks unchanged); SPEC-114: the user-mode driver self-reports (no-cap wake = direct, id report + existence marker = queued) and then runs a second time for the controlled-port handshake (manager's no-cap wake + device cap + two port requests = direct + 3 queued; the driver's two port replies = direct + queued), plus the two extra driver blocking recvs and the manager's own blocking recv while it waits for the driver: queued 38→44, direct 23→26, blocks 30→34)"
         ));
     }
     Ok(())
@@ -2551,9 +2553,10 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     // SPEC-088：再加 **Rust 服务端点**（id 9，自报 id 后阻塞等待协商请求）。
     // SPEC-092：再加**第二个独立服务端点**（id 10，各自独立任务与独立根）。
     // SPEC-103：再加 ring3 **服务管理器**任务（id 11）。
-    if tasks != 10 {
+    // SPEC-114：再加 **ring3 用户态驱动**（`ioprt`）。
+    if tasks != 11 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 10 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the five service-table endpoints: alpha/beta/log/ns/store) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 11 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -2587,9 +2590,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 10 {
+    if tasks_after != 11 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 10 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the five service-table endpoints: alpha/beta/log/ns/store) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 11 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -3534,6 +3537,12 @@ const SERVICE_REPLY_NS_2: u64 = 0x5EC9_0004_0000_0053;
 const SERVICE_REPLY_STORE_0: u64 = 0x5EC9_0005_0000_0005;
 const SERVICE_REPLY_STORE_1: u64 = 0x5EC9_0005_0000_0503;
 const SERVICE_REPLY_STORE_2: u64 = 0x5EC9_0005_0000_0503;
+/// SPEC-114：用户态驱动（`ioprt`）的 40 位存在标记与被授权端口区间的**区间内往返读回值**，与
+/// `kernel/src/user.rs` 及 `prima-runtime::protocol` 一致。驱动在授权区间内的 Scratch 寄存器
+/// （`0x3FF`）写 `IOPORT_MAGIC` 再读回；读回值等于魔数即证明设备往返成立——仅有 `TaskSend`
+/// 与角色令牌、**没有** `Device(IOPortRange)` 权限的端点产生不出该值。
+const SERVICE_MARKER_DRIVER: u64 = 0x0000_0049_4f50_0004;
+const IOPORT_MAGIC_READBACK: u64 = 0x5A;
 
 /// SPEC-103/104：ring3 服务管理器任务的存活 + 产出方见证。判决性：`task_id` 是一个真实的 ring3
 /// 子任务（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id`
@@ -3558,6 +3567,10 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let mut ns_resolved = None;
     let mut log_seg = None;
     let mut store_seg = None;
+    let mut driver_id = None;
+    let mut driver_mark = None;
+    let mut driver_dev = None;
+    let mut driver_io = [None; 2];
     let mut log_state = [None; 3];
     let mut ns_state = [None; 3];
     let mut store_state = [None; 3];
@@ -3592,6 +3605,11 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "ns_resolved" => ns_resolved = Some(parse_addr(value)?),
             "log_seg" => log_seg = Some(parse_addr(value)?),
             "store_seg" => store_seg = Some(parse_addr(value)?),
+            "driver_id" => driver_id = Some(parse_addr(value)?),
+            "driver_mark" => driver_mark = Some(parse_addr(value)?),
+            "driver_dev" => driver_dev = Some(parse_addr(value)?),
+            "driver_io0" => driver_io[0] = Some(parse_addr(value)?),
+            "driver_io1" => driver_io[1] = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3630,9 +3648,9 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "servicemgr_ready marker (0x{marker:x}) must be the prima-servicemgr binary marker 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image, not init's hand-written code"
         ));
     }
-    if created != 5 {
+    if created != 6 {
         return Err(format!(
-            "servicemgr_ready created ({created}) must be 5 — SPEC-105/106: all five service-table entries (alpha/beta + log/ns/store) must be created by the ring3 manager, not by init's hand-written code"
+            "servicemgr_ready created ({created}) must be 6 — SPEC-105/106/114: all six service-table entries (alpha/beta + log/ns/store + the ioprt user-mode driver) must be created by the ring3 manager, not by init's hand-written code"
         ));
     }
     if entry_a == 0 || entry_b == 0 {
@@ -3735,6 +3753,50 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     if log_seg == store_seg {
         return Err(format!(
             "servicemgr_ready log_seg == store_seg (0x{log_seg:x}) — SPEC-112: the log and store services must each hold a distinct kernel MemorySegment"
+        ));
+    }
+    // SPEC-114：用户态驱动——真实 ring3 子任务、独立二进制存在标记、持有管理器 `SYS_DEV_IOPORT_CREATE`
+    // 铸出的内核 `Device(IOPortRange)` 句柄，且两条受控端口应答证明「区间内可往返、区间外被内核拒绝」。
+    // 具体句柄值随分配而变，故只钉形状；硬证据在内核侧（`ServicemgrWitness::evidence_ok` 以
+    // `bootstrap::device_of_cap` 认其为 **live** Device）。
+    let driver_id = driver_id.ok_or_else(|| missing("driver_id"))?;
+    let driver_mark = driver_mark.ok_or_else(|| missing("driver_mark"))?;
+    let driver_dev = driver_dev.ok_or_else(|| missing("driver_dev"))?;
+    let driver_io0 = driver_io[0].ok_or_else(|| missing("driver_io0"))?;
+    let driver_io1 = driver_io[1].ok_or_else(|| missing("driver_io1"))?;
+    if driver_id <= 1 {
+        return Err(format!(
+            "servicemgr_ready driver_id ({driver_id}) must be a real ring3 child task (> 1) — SPEC-114: the user-mode driver must run as its own task"
+        ));
+    }
+    if driver_id == log_id || driver_id == ns_id || driver_id == store_id {
+        return Err(format!(
+            "servicemgr_ready driver_id ({driver_id}) collides with a base service id ({log_id}/{ns_id}/{store_id}) — SPEC-114: the driver must be a separate task from log/ns/store"
+        ));
+    }
+    if driver_mark != SERVICE_MARKER_DRIVER {
+        return Err(format!(
+            "servicemgr_ready driver_mark (0x{driver_mark:x}) must be 0x{SERVICE_MARKER_DRIVER:x} — SPEC-114: the driver must run from its own distinct binary"
+        ));
+    }
+    if driver_dev == 0 || driver_dev >= (1u64 << 63) {
+        return Err(format!(
+            "servicemgr_ready driver_dev (0x{driver_dev:x}) must be a live kernel Device handle from SYS_DEV_IOPORT_CREATE, not zero/an errno/a sentinel — SPEC-114: the driver must really hold an IOPortRange device capability"
+        ));
+    }
+    if driver_dev == log_seg || driver_dev == store_seg {
+        return Err(format!(
+            "servicemgr_ready driver_dev (0x{driver_dev:x}) must be a Device, not one of the MemorySegment handles — SPEC-114: the minted object must be the typed IOPortRange device"
+        ));
+    }
+    if driver_io0 & 0xffff_ffff != IOPORT_MAGIC_READBACK {
+        return Err(format!(
+            "servicemgr_ready driver_io0 (0x{driver_io0:x}) low word must be the scratch-register read-back 0x{IOPORT_MAGIC_READBACK:x} — SPEC-114: the driver must complete a real write→read round trip inside its authorized IOPortRange"
+        ));
+    }
+    if driver_io1 & 0xffff_ffff != 0 {
+        return Err(format!(
+            "servicemgr_ready driver_io1 (0x{driver_io1:x}) low word must be 0 — SPEC-114: the out-of-range port write must be rejected by the kernel (1 would mean the controlled port path is broken)"
         ));
     }
     Ok(())
@@ -4092,13 +4154,13 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=38;direct=23;blocks=30\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=10;caps=102;root_cleared=1;grandchild=4;tasks_after=10;caps_after=102;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=44;direct=26;blocks=34\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=110;root_cleared=1;grandchild=4;tasks_after=11;caps_after=110;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x100000038;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
         "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x5;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_state0=0x5ec9000300000005;log_state1=0x5ec9000300000008;log_state2=0x5ec9000300000008;ns_state0=0x5ec9000400000005;ns_state1=0x5ec9000400000053;ns_state2=0x5ec9000400000053;store_state0=0x5ec9000500000005;store_state1=0x5ec9000500000503;store_state2=0x5ec9000500000503;ns_resolved=0x5ec9000400000062;log_seg=0x100000060;store_seg=0x100000061\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x6;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_state0=0x5ec9000300000005;log_state1=0x5ec9000300000008;log_state2=0x5ec9000300000008;ns_state0=0x5ec9000400000005;ns_state1=0x5ec9000400000053;ns_state2=0x5ec9000400000053;store_state0=0x5ec9000500000005;store_state1=0x5ec9000500000503;store_state2=0x5ec9000500000503;ns_resolved=0x5ec9000400000062;log_seg=0x100000060;store_seg=0x100000061;driver_id=0xf;driver_mark=0x494f500004;driver_dev=0x10000006a;driver_io0=0x5ec900060000005a;driver_io1=0x5ec9000600000000\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=2;binds=3;unbinds=1;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4208,8 +4270,8 @@ mod tests {
     fn rejects_task_ready_when_the_child_stays_in_the_task_table() {
         // SPEC-070/072/073 + SPEC-087 + SPEC-088 + SPEC-092 + SPEC-103：合法值为 7（init + task 2 +
         // 保留槽位的 Faulted 见证任务 + 存活的 Rust 客户端 + **两个**独立 Rust 服务端点 + ring3
-        // 服务管理器）；8 表示子任务未清除。
-        let output = VALID.replace(";tasks=10;", ";tasks=8;");
+        // 服务管理器）；9 表示子任务未清除。
+        let output = VALID.replace(";tasks=11;", ";tasks=9;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -4229,7 +4291,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=102;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=110;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4320,9 +4382,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=23;", ";direct=0;");
+        let output = VALID.replace(";direct=26;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 38/23/30"), "{error}");
+        assert!(error.contains("expected 44/26/34"), "{error}");
     }
 
     #[test]
