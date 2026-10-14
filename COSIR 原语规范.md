@@ -3,9 +3,11 @@
 
 > 状态：抽象语义规范
 >
-> 修订日期：2026-08-26
+> 修订日期：2026-10-14
+>
+> 本版正式采纳 §21 WaitObject/定向 upcall 与 §7.4 `memseg_protect`；§22 为双人格缺口与未采纳候选的信息性附录。
 
-本文按 **11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 12 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“11 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
+本文按 **12 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 13 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“12 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
 ## 1. 文档定位
 
@@ -34,8 +36,10 @@ Capability 的派生、丢弃以及对象生命周期操作可以作为独立操
 4. Capability 的创建、派生和移动具有完整溯源；
 5. 未经授权的 Task 不能修改其他 Task 的地址空间或生命周期；
 6. 跨 Task 的消息传递、共享内存建立和 Capability 获取都有显式授权路径；
-7. 对象、引用、消息、映射、Timer 和 Namespace 的生命周期保持一致；
-8. 每个失败操作保持抽象状态不变。
+7. 对象、引用、消息、映射、Timer、WaitObject 和 Namespace 的生命周期保持一致；
+8. 每个失败操作保持抽象状态不变；
+9. 等待/唤醒、超时、可警报中断与对象销毁不会丢失唤醒或产生重复等待结果；
+10. 定向 upcall 不可伪造，且只能由持有 `TaskSend` 的调用者向活动 CPU Task 投递。
 
 ### 2.2 明确不在本规范中证明
 
@@ -55,7 +59,7 @@ Capability 的派生、丢弃以及对象生命周期操作可以作为独立操
 所有 ID 都是内核分配的 opaque 自然数。每类 ID 单调递增且永久不复用：
 
 ```text
-SegId, TaskId, NsId, TimerId, CapId, MsgId, EventId : Nat
+SegId, TaskId, NsId, TimerId, WaitObjectId, CapId, MsgId, EventId : Nat
 FrameId, VirtPage, PageOffset, VirtAddr, Instant     : Nat
 Byte                                                   = Fin 256
 Bytes                                                  = List<Byte>
@@ -79,6 +83,7 @@ ObjectRef = Segment(SegId)
           | Timer(TimerId)
           | ExcSource(ExcSourceId)   // 见 §12.2
           | Device(DevId)            // 见 §15.2
+          | WaitObject(WaitObjectId) // 见 §5.6
 ```
 
 本文使用：
@@ -127,6 +132,8 @@ Right = Derive
 
       | TimerCancel | TimerDestroy
 
+      | WaitWait | WaitSignal | WaitDestroy
+
       | ExcSubscribe | ExcSourceDestroy
 
       | NodeConnect | NodeDestroy
@@ -140,6 +147,7 @@ Right = Derive
 | Task | `TaskSend`, `TaskManageVSpace`, `TaskDestroy` |
 | Namespace | `NsResolve`, `NsBind`, `NsUnbind`, `NsMount`, `NsUnmount`, `NsDestroy` |
 | Timer | `TimerCancel`, `TimerDestroy` |
+| WaitObject | `WaitWait`, `WaitSignal`, `WaitDestroy` |
 | ExcSource | `ExcSubscribe`, `ExcSourceDestroy` |
 | Node | `NodeConnect`, `NodeDestroy` |
 
@@ -292,6 +300,7 @@ KernelState {
     tasks:        TaskId      ⇀ Task,
     namespaces:   NsId        ⇀ Namespace,
     timers:       TimerId     ⇀ Timer,
+    wait_objects: WaitObjectId ⇀ WaitObject,
     exc_sources:  ExcSourceId ⇀ ExceptionSource,
     devices:      DevId       ⇀ Device,
     nodes:        NodeId      ⇀ Node,
@@ -314,6 +323,7 @@ KernelState {
     next_task:      TaskId,
     next_ns:        NsId,
     next_timer:     TimerId,
+    next_wait_object: WaitObjectId,
     next_exc_src:   ExcSourceId,
     next_dev:       DevId,
     next_node:      NodeId,
@@ -357,12 +367,34 @@ DeviceMapping {
     access: Access,
 }
 
-TaskStatus = Ready | Running | BlockedRecv | Faulted
+TaskStatus = Ready | Running | BlockedRecv | BlockedWait | Faulted
 
 PendingExc {
     source_id: ExcSourceId,
     kind:      ExceptionKind,
 }
+
+WaitMode = WaitAny | WaitAll
+
+WaitEntry {
+    object:              WaitObjectId,
+    observed_generation: Nat,
+}
+
+WaitRequest {
+    entries:   List<WaitEntry>,
+    mode:      WaitMode,
+    alertable: Bool,
+    deadline:  Option<Instant>,
+}
+
+Upcall {
+    source: TaskId,
+    data:   Bytes,
+}
+
+TaskReturn = RecvReturn(RecvResult)
+           | WaitReturn(WaitResult)   // WaitResult 见 §5.6
 
 ComputeMedium = CPU
               | GPU(GPUArch)
@@ -385,9 +417,12 @@ Task {
     entry:         VirtAddr,                       // CPU Task：指令地址；非 CPU：kernel 句柄，语义由 COSIR 细化
     root_ns_cap:   CapId,
     mailbox:       List<MsgId>,
-    pending_return: Option<RecvResult>,
-    pending_exc:         Option<PendingExc>,     // 仅 Faulted 时非空
-    kernel_resume_frame: Option<Bytes>,          // exc_resume 成功提交的恢复现场（细化层持有）
+    pending_return:      Option<RecvResult>,       // 阻塞 recv 的待交付结果
+    wait_request:        Option<WaitRequest>,      // 仅 BlockedWait 时非空
+    pending_wait_result: Option<WaitResult>,       // 阻塞 wait_objects 的待交付结果
+    pending_upcalls:     List<Upcall>,             // 定向 upcall FIFO；task_upcall_recv 清空
+    pending_exc:         Option<PendingExc>,       // 仅 Faulted 时非空
+    kernel_resume_frame: Option<Bytes>,            // exc_resume 成功提交的恢复现场（细化层持有）
 }
 ```
 
@@ -395,7 +430,7 @@ CPU Task 拥有完整的 `vspace` 映射，`entry` 是虚拟地址。GPU/NPU/FPG
 
 `dev_vspace` 记录通过 `dev_mmio_map`（§15.4）建立的设备 MMIO 映射，与 `vspace` 的 Segment 映射分开建模；同一 `VirtPage` 不得同时出现在两张表中（W16.4）。
 
-**`Faulted` 状态。** `Faulted` 是 POSIR 可见的常规 Task 状态：同步异常（如 `PageFault`）使 Running Task 无法继续执行，内核在 `raise_exception` 完成时把该 Task 置为 `Faulted` 并写入唯一 `pending_exc`；`Faulted` 与 `Running`/`Ready`/`BlockedRecv` 互斥，调度器不会隐式恢复它或重播原始指令流。只有成功的 `exc_resume`（§12.10）执行 `Faulted → Ready`。不变量：`status = Faulted ⇔ pending_exc ≠ None`，且非 `Faulted` 的 Task 必有 `pending_exc = None`。`kernel_resume_frame` 仅在一次成功的 `exc_resume` 之后为 `Some`，直到该 Task 下次经由 `schedule` 进入 `Running` 时由细化层消费并清空；它不参与授权。不可恢复异常（如 `DoubleFault`）使 Task 永久保持 `Faulted`，只能经 §8.2 的内核回收路径（`KernelActor`，无需 `task_cap`）回收；持有 `TaskDestroy` 的其他 Task 也可在其仍能作为调用者时经 `task_destroy` 回收它。
+**`Faulted` 状态。** `Faulted` 是 POSIR 可见的常规 Task 状态：同步异常（如 `PageFault`）使 Running Task 无法继续执行，内核在 `raise_exception` 完成时把该 Task 置为 `Faulted` 并写入唯一 `pending_exc`；`Faulted` 与 `Running`/`Ready`/`BlockedRecv`/`BlockedWait` 互斥，调度器不会隐式恢复它或重播原始指令流。只有成功的 `exc_resume`（§12.10）执行 `Faulted → Ready`。不变量：`status = Faulted ⇔ pending_exc ≠ None`，且非 `Faulted` 的 Task 必有 `pending_exc = None`。`kernel_resume_frame` 仅在一次成功的 `exc_resume` 之后为 `Some`，直到该 Task 下次经由 `schedule` 进入 `Running` 时由细化层消费并清空；它不参与授权。不可恢复异常（如 `DoubleFault`）使 Task 永久保持 `Faulted`，只能经 §8.2 的内核回收路径（`KernelActor`，无需 `task_cap`）回收；持有 `TaskDestroy` 的其他 Task 也可在其仍能作为调用者时经 `task_destroy` 回收它。
 
 **SMP 扩展。** 当前 W9 要求"至多一个 Task 为 Running"。在多核系统中，此约束放松为：
 
@@ -407,7 +442,9 @@ GPU/NPU Task 的 `Running` 语义由 COSIR 细化定义——CUDA stream 上的 
 
 **物理内存池。** `frame_universe` 和 `free_frames` 仅管理 CPU 可寻址的通用内存页。GPU/NPU 显存通过 `gpu_frame_universe` 和 `gpu_free_frames` 管理，按 `GPUArch` 区分不同设备的独立显存池。所有隔离不变量（W6 物理页唯一归属、W7 虚拟映射有效）对 CPU 池和 GPU 池分别适用。
 
-`pending_return` 表示阻塞的 `recv` 已由内核完成、但 Task 尚未重新进入用户态领取的结果。
+`pending_return` 表示阻塞的 `recv` 已由内核完成、但 Task 尚未重新进入用户态领取的结果；`pending_wait_result` 表示阻塞的 `wait_objects` 已由内核完成、但 Task 尚未重新进入用户态领取的结果。二者不得同时非空。`pending_upcalls` 保存通过 `task_alert` 定向排队的 upcall；upcall 只排队，不直接改变 `vspace`/Capability 位置。
+
+**阻塞路径。** `BlockedRecv` 只等待邮箱消息；`BlockedWait` 等待 `wait_request` 中列出的一个或多个 `WaitObject`。`BlockedWait` 仅适用于 CPU Task；其邮箱仍可正常接收排队消息。`schedule` 恢复 Task 时通过 `TaskReturn` 区分 `RecvReturn` 与 `WaitReturn`（§8.4），因此阻塞 `recv` 与阻塞 `wait_objects` 共用同一调度出口但不会混淆返回值。
 
 ### 5.3 Message
 
@@ -480,11 +517,33 @@ Timer 是一次性的。`Fired` 和 `Cancelled` 都不会回到 `Pending`。
 
 每个活动 Timer 的 `recipient` 必须是活动 Task：`task_destroy` 会把该 Task 作为 `recipient` 的全部 Timer（`Pending`/`Fired`/`Cancelled`）从活动表删除，其中 `Pending` 先追加 `TimerCancelled(RecipientDestroyed)`（§8.2）。因此已交付或已排队的 `FromKernel(TimerFired(id))` 通知可能引用一个已被删除的 TimerId；通知是自包含的历史记录，接收方不得以“该 Timer 仍然存在”为前提解释它（见 W11）。
 
-### 5.6 唯一预启动状态
+### 5.6 WaitObject
+
+```text
+WaitObjectId : Nat
+
+WaitResult =
+    WaitSatisfied { objects: List<WaitObjectId> }
+  | WaitTimedOut
+  | WaitAlerted
+  | WaitTargetDead { object: WaitObjectId }
+
+WaitObject {
+    creator:    Actor,
+    generation: Nat,                 // 单调不减；signal_object 使其递增
+    waiters:    FiniteSet<TaskId>,   // 等待此对象的 BlockedWait Task
+}
+```
+
+`WaitObject` 是通用等待/唤醒对象，不解释 Mutex、Semaphore、Event、条件变量或完成端口的语义。调用者通过 `wait_object_observe` 读取 `generation`，在用户态检查自己的同步状态后，把观察到的 generation 传给 `wait_objects`；`signal_object` 递增 generation 并唤醒符合条件的等待者。该协议使“观察—检查—阻塞”之间不会丢失唤醒：若对象在观察后、阻塞前被 signal，generation 已递增，`wait_objects` 会立即返回满足。
+
+`WaitResult` 的四个构造子分别表示：任一/全部等待条件满足、超时、可警报中断、以及等待对象在阻塞期间被销毁。`WaitObject` 的 `waiters` 只包含 `BlockedWait` CPU Task，具体一致性规则见 W17。
+
+### 5.7 唯一预启动状态
 
 形式化模型的唯一起点 `EmptyState` 定义为：
 
-- 所有对象表（含 `nodes`）、`caps`、`locations`、`messages` 和 `audit` 为空；
+- 所有对象表（含 `nodes`、`wait_objects`）、`caps`、`locations`、`messages` 和 `audit` 为空；
 - `frame_universe = free_frames = ∅`；
 - `gpu_frame_universe = gpu_free_frames = empty map`；
 - `now = 0`，`booted = false`；
@@ -507,7 +566,7 @@ Actor = TaskActor(TaskId) | KernelActor
 
 ### 6.2 环境操作与原子验证
 
-以下操作是任何 Running Task 都可使用的环境机制，不要求额外 Capability：`cap_drop`（仅限自己持有的 token）、`memseg_create`、`ns_create`、`timer_set`、`time_now`、`recv` 和 `task_yield`。它们只会创建由调用者掌握的新对象、观察公开内核状态、改变调用者自身状态或放弃调用者已有资源；其中创建操作会消耗全局 ID、内存或日志空间。资源可用性、配额、拒绝服务及由此产生的观察信道明确不属于当前安全结论。除此之外，影响既有对象或其他 Task 的用户操作必须通过 Capability 授权。
+以下操作是任何 Running Task 都可使用的环境机制，不要求额外 Capability：`cap_drop`（仅限自己持有的 token）、`memseg_create`、`ns_create`、`timer_set`、`time_now`、`wait_object_create`、`recv`、`task_upcall_recv` 和 `task_yield`。它们只会创建由调用者掌握的新对象、观察公开内核状态、改变调用者自身状态或放弃调用者已有资源；其中创建操作会消耗全局 ID、内存或日志空间。资源可用性、配额、拒绝服务及由此产生的观察信道明确不属于当前安全结论。除此之外，影响既有对象或其他 Task 的用户操作必须通过 Capability 授权。
 
 每项操作先验证所有输入，再一次性提交状态变化：
 
@@ -535,7 +594,7 @@ s —[actor, op/Error(e)]→ s
 - **默认规则兜底：** 若操作小节未给出“错误：”清单，则其失败语义为——失败当且仅当该操作列出的任一前置条件不满足；失败时返回 §6.2 第 1–5 阶段中适用阶段的标准错误标识，并保持 `State` 不变；实现可返回任一适用错误。
 - **显式无失败分支：** 若操作小节声明“无失败分支”，则在 §6.1 的 Actor 约束成立且其前置条件由内核保证成立时，该操作不产生失败结果。
 
-据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain` 在首次出现的小节内就地定义。
+据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet` 在首次出现的小节内就地定义。
 
 ### 6.3 内部辅助操作 `enqueue_or_deliver`
 
@@ -642,7 +701,29 @@ memseg_unmap(task_cap, target_base, page_count) -> ()
 
 错误：`InvalidTask`、`MissingRight(TaskManageVSpace)`、`NotMapped`、`EntryMapping`、`ZeroSize`。
 
-### 7.4 `memseg_destroy`
+### 7.4 `memseg_protect`
+
+```text
+memseg_protect(task_cap, target_base, page_count, new_access) -> ()
+```
+
+前置条件：
+
+1. `task_cap` 由调用者持有、可用，并授权目标 Task 的 `TaskManageVSpace`；
+2. `page_count > 0`；
+3. `[target_base, target_base + page_count)` 在目标 Task 的 `vspace` 中全部已映射；
+4. `new_access` 非空；
+5. 对区间中每一页，`new_access ⊆ segment.allowed_access`；
+6. 对区间中每一页 `p`，令 `added = new_access \ task.vspace[p].access`。对 `added` 中每个权限 `r` 对应的 `SegMapR`/`SegMapW`/`SegMapX`，调用者必须持有至少一个指向该页 Segment 的可用 Capability，且该 Capability 包含对应权限。缩小或保持权限不要求新的 Segment 映射授权；
+7. 若目标区间包含 `page_of(task.entry)`，则 `new_access` 必须包含 `X`，以保持 W8。
+
+成功动作：对区间中每一页原子地保持 `segment` 与 `offset` 不变，仅把 `access` 置为 `new_access`，并追加 `VspaceProtChanged(task_id, target_base, page_count, new_access)` Audit 事件。
+
+该操作把 `mprotect` / `VirtualProtect` 的机制部分独立出来；权限的来源、COW 状态和共享映射语义仍由 LibOS 解释。
+
+错误：`InvalidTask`、`MissingRight(TaskManageVSpace)`、`NotMapped`、`InvalidAccess`（`new_access` 为空或超过任一页 Segment 的 `allowed_access`）、`MissingMapRight`（新增权限缺少相应 Segment 映射授权）、`ZeroSize`、`EntryMapping`（会使入口页失去 `X`）、`OutOfBounds`（地址区间溢出）。
+
+### 7.5 `memseg_destroy`
 
 ```text
 memseg_destroy(seg_cap) -> ()
@@ -701,7 +782,7 @@ task_create(
 5. 调用者或新 Task 可在创建后另行派生权限衰减的 Task Capability；
 6. 从 `parent_ns_cap` 派生 `root_rights` 子 Capability，放在 `HeldBy(new_task)` 并把该子 Capability 写入新 Task 的 `root_ns_cap` 字段；
 7. 将 `initial_caps` 从调用者移动到新 Task；
-8. 将新 Task 设为 `Ready`，邮箱为空，`pending_return = None`；追加 `TaskCreated` 以及本操作中全部 Capability 铸造/移动事件（§13.1）；
+8. 将新 Task 设为 `Ready`，邮箱为空，`pending_return = None`，`wait_request = None`，`pending_wait_result = None`，`pending_upcalls = []`；追加 `TaskCreated` 以及本操作中全部 Capability 铸造/移动事件（§13.1）；
 9. 返回调用者持有的管理 Capability。
 
 新 Task 的根 Namespace 是共享对象，不做深拷贝。创建者、所有者和授权者是不同概念：`creator` 只用于审计，所有后续操作只看 Capability。
@@ -724,9 +805,10 @@ task_destroy(task_cap) -> ()
 4. 删除该 Task 持有的全部 Capability 位置，包括根 Namespace Capability、`pending_return` 中的 Capability，以及**所有以该 Task 为 `InTransit` 源位置（`from = HeldBy(该 Task)`）的 Capability 位置**（中止在途传输，等价于丢弃并追加丢弃事件）；
 5. 对所有以该 Task 为 `recipient`（即 `creator`）的 Timer：`Pending` → 先追加 `TimerCancelled(RecipientDestroyed)`（不产生 Timer 通知）、再追加对象销毁事件；`Fired`/`Cancelled` → 追加对象销毁事件；随后**一律从活动 Timer 表删除**（已排队或已交付的 `notification` 不撤回）。删除后活动 Timer 表不再含以该 Task 为 recipient 的条目，满足 W11；
 6. 清空该 Task 的 `pending_exc` 与 `kernel_resume_frame`（覆盖 `Faulted` 与已恢复的 Task）；
-7. 从所有 ExceptionSource 的 `subscribers` 中删除 `task = 目标 Task` 的条目（对齐 §17.7 与 W15，避免对已销毁 Task 投递异常通知）；
-8. 从 `tasks` 删除目标 Task；
-9. 追加 Task 销毁、消息丢弃、Capability 丢弃和 Timer 取消/销毁事件。
+7. 从所有 WaitObject 的 `waiters` 中删除目标 Task；清空该 Task 的 `wait_request`、`pending_wait_result` 与 `pending_upcalls`，不为这些被取消的等待产生结果；
+8. 从所有 ExceptionSource 的 `subscribers` 中删除 `task = 目标 Task` 的条目（对齐 §17.7 与 W15，避免对已销毁 Task 投递异常通知）；
+9. 从 `tasks` 删除目标 Task；
+10. 追加 Task 销毁、消息丢弃、Capability 丢弃、等待取消和 Timer 取消/销毁事件。
 
 下列对象不会被隐式销毁：Segment、Namespace、其他 Task，以及已经发送到其他 Task 邮箱中的消息和 Capability。
 
@@ -734,7 +816,7 @@ task_destroy(task_cap) -> ()
 
 以该 Task 为 `InTransit` 目标位置（`to = HeldBy(该 Task)`）的在途传输，在目标确认时因目标 Task 无效而被拒绝，按 §8.5 回退到源位置（源 Task 仍活动时）或丢弃。
 
-**内核回收路径。** 对处于不可恢复终态的 `Faulted` Task，`KernelActor` 可直接执行上述成功动作 1–9 的同一清理，无需 `task_cap`，也不要求调用者持有 `TaskDestroy`。**不可恢复终态 = 依据当前 State，该 Task 不可能成功执行一次 §12.10 的 `exc_resume`**。判定只使用与具体调用者无关的状态量：源活性、`kind`、订阅集合、Task 持有的 Capability、以及是否存在可承载恢复帧的可用 Segment；帧内容由调用者提供，不参与判定。典型情形包括：`pending_exc.kind` 是不可恢复硬件异常；`pending_exc.source_id` 指向的源不再活跃；该 Task 不在该源的 active subscription 集合中；该 Task 不持有指向该源且可用的 `ExcSubscribe` Capability（已 `cap_drop`、被撤销或变为 stale）；或该 Task 不持有任何满足 §12.10 前置 2 的 Segment（无可用且内核可读的 `SegMapW` Segment 承载恢复帧）。这是 §5.2/§12.6/§12.9 所指不可恢复 `Faulted` Task 的回收出路，保证其不会成为无法回收的僵尸。
+**内核回收路径。** 对处于不可恢复终态的 `Faulted` Task，`KernelActor` 可直接执行上述成功动作 1–10 的同一清理，无需 `task_cap`，也不要求调用者持有 `TaskDestroy`。**不可恢复终态 = 依据当前 State，该 Task 不可能成功执行一次 §12.10 的 `exc_resume`**。判定只使用与具体调用者无关的状态量：源活性、`kind`、订阅集合、Task 持有的 Capability、以及是否存在可承载恢复帧的可用 Segment；帧内容由调用者提供，不参与判定。典型情形包括：`pending_exc.kind` 是不可恢复硬件异常；`pending_exc.source_id` 指向的源不再活跃；该 Task 不在该源的 active subscription 集合中；该 Task 不持有指向该源且可用的 `ExcSubscribe` Capability（已 `cap_drop`、被撤销或变为 stale）；或该 Task 不持有任何满足 §12.10 前置 2 的 Segment（无可用且内核可读的 `SegMapW` Segment 承载恢复帧）。这是 §5.2/§12.6/§12.9 所指不可恢复 `Faulted` Task 的回收出路，保证其不会成为无法回收的僵尸。
 
 指向被销毁 Task 的 Capability 变为 stale token。
 
@@ -753,7 +835,7 @@ task_yield() -> ()
 ### 8.4 `schedule`
 
 ```text
-schedule(chosen_task) -> Option<RecvResult>
+schedule(chosen_task) -> Option<TaskReturn>
 ```
 
 这是 `KernelActor` 内部迁移。前置条件：
@@ -764,7 +846,10 @@ schedule(chosen_task) -> Option<RecvResult>
 成功动作：
 
 1. 把 `chosen_task` 设为 `Running`，并追加 `TaskStateChanged(chosen_task, Ready → Running)` Audit 事件；
-2. 将其 `pending_return` 作为恢复结果交给用户上下文并清空该字段；
+2. 按以下互斥分支把恢复结果交给用户上下文：
+   - 若 `pending_wait_result = Some(w)`，返回 `WaitReturn(w)` 并清空该字段；
+   - 否则若 `pending_return = Some(r)`，返回 `RecvReturn(r)` 并清空该字段；
+   - 两者均为 `None` 时返回 `None`；
 3. 清空其 `kernel_resume_frame`（§12.10 保存的恢复现场已由细化层在进入 `Running` 前消费）。
 
 选择可以是非确定的；本规范不要求公平。任意时刻至多有一个 Running Task。
@@ -880,7 +965,7 @@ Node 对象的 `KernelState` 字段：`nodes: NodeId ⇀ Node`，`next_node: Nod
 
 **GPU 内存操作：**
 
-POSIR 的 `gpu_frame_universe` 只按 `GPUArch` 索引（§5.1）；下表 NPU/FPGA 行的池名仅作细化层说明。GPU 显存通过 `gpu_frame_universe` 管理，逻辑上与 CPU `frame_universe` 隔离。显存 Segment 的创建类似于 CPU Segment，但页帧来自对应 GPU 架构的帧池，且 `pool = GPU(arch)`；销毁同样经 `memseg_destroy`，帧归还 `gpu_free_frames[arch]`（§7.4）：
+POSIR 的 `gpu_frame_universe` 只按 `GPUArch` 索引（§5.1）；下表 NPU/FPGA 行的池名仅作细化层说明。GPU 显存通过 `gpu_frame_universe` 管理，逻辑上与 CPU `frame_universe` 隔离。显存 Segment 的创建类似于 CPU Segment，但页帧来自对应 GPU 架构的帧池，且 `pool = GPU(arch)`；销毁同样经 `memseg_destroy`，帧归还 `gpu_free_frames[arch]`（§7.5）：
 
 ```text
 gpu_memseg_create(arch, page_count, allowed_access) → CapId
@@ -1003,11 +1088,17 @@ advance_time(new_now) -> ()
 2. 找出所有 `Pending` 且 `deadline ≤ new_now` 的 Timer；
 3. 按 `(deadline, TimerId)` 的稳定顺序逐个处理；
 4. 对每个 Timer 追加唯一的 `TimerFired(timer_id, deadline, new_now)`；
-5. 通过 `enqueue_or_deliver` 发送一次内核通知、取得 `MsgId`，并让 Timer 以该 `MsgId` 作为 `notification` 进入 `Fired`。
+5. 通过 `enqueue_or_deliver` 发送一次内核通知、取得 `MsgId`，并让 Timer 以该 `MsgId` 作为 `notification` 进入 `Fired`；
+6. 找出所有 `status = BlockedWait` 且 `wait_request.deadline = Some(d)` 且 `d ≤ new_now` 的 Task，按 `(d, TaskId)` 的稳定顺序逐个处理：
+   - 将 `pending_wait_result` 置为 `WaitTimedOut`；
+   - 从该等待涉及的每个 WaitObject 的 `waiters` 中删除该 Task；
+   - 清空 `wait_request`；
+   - 将 Task 从 `BlockedWait` 原子地改为 `Ready`；
+   - 追加 `TaskStateChanged(task, BlockedWait → Ready)` 与 `WaitTimedOut` Audit 事件。
 
-迁移完成后必须满足：所有 `Pending` Timer 都有 `deadline > now`。
+迁移完成后必须满足：所有 `Pending` Timer 都有 `deadline > now`；所有 `BlockedWait` Task 的 `wait_request.deadline` 要么为 `None`，要么严格大于 `now`。
 
-错误：`InvalidTime`（`new_now < now`，违反时间单调性）。`InvalidTime` 定义为本规范中“时间参数违反 `now` 单调不减”的失败标识。失败时 `now` 与全部 Timer 状态不变。
+错误：`InvalidTime`（`new_now < now`，违反时间单调性）。`InvalidTime` 定义为本规范中“时间参数违反 `now` 单调不减”的失败标识。失败时 `now`、全部 Timer 状态与全部等待状态不变。
 
 ### 10.4 `timer_cancel`
 
@@ -1233,6 +1324,9 @@ ObjectRef = Segment(SegId)
           | Namespace(NsId)
           | Timer(TimerId)
           | ExcSource(ExcSourceId)
+          | Device(DevId)
+          | Node(NodeId)
+          | WaitObject(WaitObjectId)   // 见 §5.6
 ```
 
 ```text
@@ -1463,6 +1557,8 @@ Exception 和 Send 是两个正交的通信维度：
 - 接收方通过 `origin = FromKernel(ExceptionRaised(...))` 区分异常和普通消息；
 - 如果接收方需要快速区分异常和普通消息（而不扫描邮箱），可以通过在独立 Task 中订阅异常源实现——该 Task 只接收异常通知，通过共享 Segment 或消息向主 Task 转发元数据。
 
+定向 `task_alert`（§21.3）是第三条异步通道：它由 `TaskSend` 授权，将不透明 upcall 排入目标 Task 的 `pending_upcalls`，但不进入邮箱、不携带 Capability，并可在目标进入 `alertable` 等待时原子中断该等待。Exception 仍保持订阅式 fan-out 语义；APC、Linux signal 或运行时 upcall 的 personality 解释由 LibOS 完成。
+
 ### 12.8 COW fork 的建模示例
 
 使用 Exception 原语，COW fork 可以在 POSIR 层面被分解为以下原语组合（不需新增内核对象）：
@@ -1470,7 +1566,7 @@ Exception 和 Send 是两个正交的通信维度：
 1. **父 Task** 持有可写的私有匿名 Segment S；
 2. **子 Task** 通过 `task_create` 创建，`code_seg_cap` 等参数与 fork 语义对应；
 3. **父** 对 S 建立子 Task 只读映射（`SegMapR`）：`memseg_map(seg_cap, child_task_cap, ... access={R})`；
-4. **父** 将自己的 S 映射也改为只读（这是用户态 `memseg_unmap` + `memseg_map` 序列，不是内核 fork 一步完成）；
+4. **父** 使用 `memseg_protect` 将自己的 S 映射原子地改为只读（不是内核 fork 一步完成）；
 5. **父** 和 **子** 都订阅 `page_fault_source`（若尚未订阅）；
 6. 当任一 Task 写入被标记为只读的页时，硬件触发 page fault → `raise_exception(page_fault_source, PageFault{..., cause = PageProtectionViolation})`；
 7. 接收方 LibOS 识别到写入请求发生在 COW 页上 → LibOS 执行：
@@ -1543,7 +1639,7 @@ exc_resume(exc_source_cap, sret_frame_seg_cap, frame_offset) -> ()
 
 ### 13.1 事件模型
 
-每个成功的状态修改操作追加一个或多个具有唯一 `EventId` 的事件。**每次 Task 状态迁移都必须追加 `TaskStateChanged`**（唯一例外：§12.10 的 `Faulted → Ready` 以 `TaskResumed` 记录），覆盖 `Running↔Ready`、`Running→BlockedRecv`、`BlockedRecv→Ready`、`Running→Faulted`。**任何 Capability 位置变化都必须追加 `CapMoved`**（删除位置时为 `CapDropped`，§4.6）；`ns_bind`/`ns_unbind`/`ns_mount`/`ns_unmount` 等路径操作在其上再追加对应的 `Ns*` 事件。至少包括：
+每个成功的状态修改操作追加一个或多个具有唯一 `EventId` 的事件。**每次 Task 状态迁移都必须追加 `TaskStateChanged`**（唯一例外：§12.10 的 `Faulted → Ready` 以 `TaskResumed` 记录），覆盖 `Running↔Ready`、`Running→BlockedRecv`、`BlockedRecv→Ready`、`Running↔BlockedWait`、`Running→Faulted`。**任何 Capability 位置变化都必须追加 `CapMoved`**（删除位置时为 `CapDropped`，§4.6）；`ns_bind`/`ns_unbind`/`ns_mount`/`ns_unmount` 等路径操作在其上再追加对应的 `Ns*` 事件。至少包括：
 
 ```text
 Bootstrapped
@@ -1554,6 +1650,10 @@ TaskCreated / TaskStateChanged / TaskResumed / TaskDestroyed
 MessageSent / MessageReceived / MessageDropped
 TimerSet / TimerFired / TimerCancelled
 NsBound / NsUnbound / NsMounted / NsUnmounted / NsResolved
+WaitObjectCreated / WaitObjectDestroyed / WaitObjectSignaled
+WaitBlocked / WaitCompleted / WaitTimedOut / WaitAlerted / WaitTargetDead
+UpcallQueued / UpcallReceived
+VspaceProtChanged
 ```
 
 每条事件至少包含 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}`。`kind` 必须记录该操作涉及的对象 ID 和 Capability ID；Capability 位置变化必须记录旧位置与新位置（删除时为 `None`）；受保护操作必须记录用于授权的 Capability ID、被检查的权限和目标对象；创建类环境操作必须记录调用者；`NsResolved` 必须记录起始 Namespace Capability、规范化路径、按顺序经过的 Mount Capability、最终父 Capability和新 Capability。`MessageSent` 固定记录 MsgId、来源、目标、payload 长度和 Capability ID 列表，不记录明文 payload；内容摘要不属于抽象状态。
@@ -1604,7 +1704,7 @@ Bootstrap 是唯一允许在没有 Task Actor 时铸造初始 Authority 的内�
 1. 初始化 `frame_universe`，并设置 `free_frames = frame_universe \ image_frames`；
 2. 使用 `image_frames` 创建只允许 `{R, X}` 的 image Segment，`pool = CPU`；
 3. 创建空的 init Namespace；
-4. 创建 init Task（`node` = 本节点即 Bootstrap 所在节点），并对每个 image 页 `i` 建立 `vspace[image_virtual_base + i] = {segment = image_segment, offset = i, access = {R, X}}`；
+4. 创建 init Task（`node` = 本节点即 Bootstrap 所在节点），初始化 `pending_return = None`、`wait_request = None`、`pending_wait_result = None`、`pending_upcalls = []`，并对每个 image 页 `i` 建立 `vspace[image_virtual_base + i] = {segment = image_segment, offset = i, access = {R, X}}`；
 5. 铸造三个无父根 Capability：image Segment 权限为 `{Derive, SegMapR, SegMapX, SegDestroy}`，init Namespace 权限为完整 Namespace 权限集，init Task 权限为 `{Derive, TaskSend, TaskManageVSpace, TaskDestroy}`；
 6. 将这些 Capability 放入 `HeldBy(init)`；
 7. 把 Namespace Capability 指定为 init 的结构性根；
@@ -1643,6 +1743,7 @@ ObjectRef = Segment(SegId)
           | ExcSource(ExcSourceId)   // 见 §12.2
           | Device(DevId)            // 见 §15.2
           | Node(NodeId)             // 见 §8.5
+          | WaitObject(WaitObjectId) // 见 §5.6
 ```
 
 Node 是一等对象，定义于 §8.5；此处将其并入 ObjectRef 汇总，与 §19 总览列出的机制类别一致。`NodeId : Nat` 的定义见 §8.5。
@@ -1866,7 +1967,7 @@ KernelState {
 
 **W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源（MMIO 区域、I/O port 范围、DMA 帧、IRQ 号）两两不交，且不与通用页池或 Segment 帧重叠。
 
-**W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；销毁时必须归还其来源池（§7.4）。清零是细化层义务（§15.6），不进入 POSIR 状态。
+**W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；销毁时必须归还其来源池（§7.5）。清零是细化层义务（§15.6），不进入 POSIR 状态。
 
 **W16.3 — IRQ 事件源有效：** 每个 `InterruptLine` 的 `exc_source` 指向活动 `ExcSource`，且其 `kind` 约束为 `ExternalInterrupt`。
 
@@ -1938,19 +2039,23 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W8 — 可执行入口显式授权
 
-每个活动 Task 的 `entry` 所在虚拟页存在且映射权限含 `X`。
+每个活动 Task 的 `entry` 所在虚拟页存在且映射权限含 `X`。`memseg_protect` 不得使任何活动 Task 的入口页失去 `X`（§7.4 前置 7）。
 
 ### W9 — 调度状态一致
 
 - `Running` 的 CPU Task 数量 ≤ CPU 核数；每个 CPU 核至多运行一个 Task；
 - GPU/NPU/FPGA Task 的 `Running` 语义由 COSIR 细化定义——同一物理 GPU 上可同时有多个 kernel 在多个 stream 上执行；
-- `BlockedRecv` Task 的邮箱为空且 `pending_return = None`；非 CPU Task 不能进入 `BlockedRecv`；
-- `Faulted` Task 的 `pending_exc ≠ None`，且不是 `Running`/`Ready`/`BlockedRecv`；非 `Faulted` Task 的 `pending_exc = None`；
-- `Faulted` Task 的 `pending_return = None`；其邮箱内容不受故障影响（已排队消息保留，回收时由 `task_destroy` 一并删除）；
+- `BlockedRecv` Task 的邮箱为空、`pending_return = None`、`wait_request = None`、`pending_wait_result = None`；非 CPU Task 不能进入 `BlockedRecv`；
+- `BlockedWait` Task 必须为 CPU Task，`wait_request ≠ None`，`pending_return = None`，`pending_wait_result = None`；其邮箱内容不受等待影响；
+- `wait_request ≠ None` 当且仅当 Task 状态为 `BlockedWait`；
+- `Faulted` Task 的 `pending_exc ≠ None`，且不是 `Running`/`Ready`/`BlockedRecv`/`BlockedWait`；非 `Faulted` Task 的 `pending_exc = None`；
+- `Faulted` Task 的 `pending_return = None`、`pending_wait_result = None`、`wait_request = None`；其邮箱内容不受故障影响（已排队消息保留，回收时由 `task_destroy` 一并删除）；
 - `kernel_resume_frame ≠ None` 蕴含该 Task 曾成功执行 `exc_resume` 且自那以后尚未进入 `Running`；
-- `pending_return ≠ None` 的 Task 必须为 `Ready`；
+- `pending_return ≠ None` 的 Task 必须为 `Ready`；`pending_wait_result ≠ None` 的 Task 必须为 `Ready`；
+- 同一 Task 的 `pending_return` 与 `pending_wait_result` 不得同时非空；
 - 每个 `pending_return` 的 Capability 列表无重复，且其中每个 Capability 都位于 `HeldBy(该 Task)`；
-- `pending_return.msg_id` 不属于活动 `messages`，并恰有对应的 `MessageSent` 与 `MessageReceived` 事件，且发送事件先于接收事件。
+- `pending_return.msg_id` 不属于活动 `messages`，并恰有对应的 `MessageSent` 与 `MessageReceived` 事件，且发送事件先于接收事件；
+- `pending_wait_result = WaitSatisfied(objs)` 时，`objs` 非空、无重复且全部指向等待发生时请求中的 WaitObject；`pending_wait_result = WaitTargetDead(o)` 时，`o` 指向的 WaitObject 已销毁；等待结果不携带 Capability。
 
 ### W10 — Message 一致性
 
@@ -2005,6 +2110,18 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 - 设备销毁时，其占用的所有物理资源必须被释放（MMIO 区域移除全部 `dev_vspace` 映射、DMA 帧归还来源池、IRQ 号释放）；其中“先停 DMA/拆 IOMMU 并清零”是细化层义务（§15.6），不进入 POSIR 不变量；
 - **W16.4 — 设备映射有效：** 每个 `DeviceMapping` 指向活动 MMIORegion 设备，`offset` 位于该 region 的页范围内，`access` 非空且不超过 region 的 `allowed_access`；同一 Task 的任一 `VirtPage` 不得同时出现在 `vspace` 与 `dev_vspace` 中。
 
+### W17 — WaitObject 与等待一致性
+
+- 每个活动 `WaitObject` 的 `waiters` 中每个 `TaskId` 都指向活动 CPU Task，且该 Task 状态为 `BlockedWait`、`wait_request.entries` 包含该 WaitObject；
+- 每个 `BlockedWait` Task 的 `wait_request.entries` 非空、无重复；每一项指向活动 WaitObject，且该 WaitObject 的 `waiters` 包含此 Task；
+- `wait_request != None` 当且仅当 Task 状态为 `BlockedWait`；
+- `BlockedWait` Task 的 `pending_return = None` 且 `pending_wait_result = None`；
+- `BlockedWait` Task 的 `wait_request.deadline` 要么为 `None`，要么严格大于 `now`；
+- `pending_wait_result != None` 仅出现在 `Ready` Task；`pending_wait_result` 不携带 Capability；
+- 同一 Task 的 `pending_return` 与 `pending_wait_result` 不同时非空；
+- 每个 `Upcall.source` 要么指向活动 Task，要么指向已销毁但有创建事件的 Task；`Upcall.data` 不携带 Capability；
+- 非 CPU Task 的 `pending_upcalls` 必须为空；`task_destroy` 清空其目标 Task 的 `pending_upcalls`。
+
 ## 17. 预期安全结论与证明义务
 
 本文不附带 Lean 4 证明；形式化工作应至少覆盖以下义务。
@@ -2013,7 +2130,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 1. 初始空状态满足预启动良构条件；
 2. `bootstrap` 成功结果满足 `WellFormed`；
-3. 每个成功迁移保持 W1–W16。对不涉及 ExceptionSource 或 Device 的迁移，可以通过未修改投影保持与受影响投影保持分解证明，但成功结果仍须满足完整 WellFormed。
+3. 每个成功迁移保持 W1–W17。对不涉及 ExceptionSource、WaitObject 或 Device 的迁移，可以通过未修改投影保持与受影响投影保持分解证明，但成功结果仍须满足完整 WellFormed。
 4. 每个失败迁移保持状态完全相同。
 
 ### 17.2 Capability 安全
@@ -2028,7 +2145,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### 17.3 Task 与内存隔离
 
-**地址空间完整性：** 除 Bootstrap、新 Task 创建、目标 Task 销毁，以及持有该目标 `TaskManageVSpace` 的调用（含 `dev_mmio_map`/`dev_mmio_unmap`/`dev_destroy` 对 `dev_vspace` 的改动）外，任何迁移都不能改变目标 Task 的 `vspace` 或 `dev_vspace`。
+**地址空间完整性：** 除 Bootstrap、新 Task 创建、目标 Task 销毁，以及持有该目标 `TaskManageVSpace` 的调用（含 `memseg_map`、`memseg_unmap`、`memseg_protect`、`dev_mmio_map`/`dev_mmio_unmap`/`dev_destroy` 对 `vspace` 或 `dev_vspace` 的改动）外，任何迁移都不能改变目标 Task 的 `vspace` 或 `dev_vspace`。
 
 **映射授权：** 除 Bootstrap 与新 Task 的初始代码映射外，每个新映射同时具有 Segment 访问权限和目标 Task 地址空间管理权限的成功检查记录；初始映射分别由 Bootstrap 可信迁移和 `task_create` 的代码 Segment Capability 授权。
 
@@ -2038,15 +2155,16 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 抽象状态机承认以下显式跨 Task 通道：
 
-1. 持有目标 Task 的 `TaskSend` 后发送的消息；
-2. 经 `SegMap* + TaskManageVSpace` 建立的共享 Segment 映射；
+1. 持有目标 Task 的 `TaskSend` 后发送的消息或 `task_alert` 定向 upcall；
+2. 经 `SegMap* + TaskManageVSpace` 建立的共享 Segment 映射，以及经 `TaskManageVSpace` 进行的 `memseg_protect` 权限变更；
 3. 经 Namespace Resolve 路径获得的派生 Capability；
 4. 获授权 Capability 后执行的对象操作；
-5. 明确定义的 `time_now`、Timer 和 Audit 观察；
-6. 经 `ExcSubscribe` + 硬件事件触发的异常通知；
-7. 经 `DevInterruptSubscribe` + IRQ 路由的硬件中断通知。
+5. `WaitWait`/`WaitSignal` 授权后经 WaitObject 等待或唤醒产生的跨 Task 可观察状态；
+6. 明确定义的 `time_now`、Timer 和 Audit 观察；
+7. 经 `ExcSubscribe` + 硬件事件触发的异常通知；
+8. 经 `DevInterruptSubscribe` + IRQ 路由的硬件中断通知。
 
-应证明：在把全局 ID、内存余量、日志容量、调度与时间排除出观察后，任何改变其他 Task 局部可观察内核状态的用户迁移，都属于上述通道或持有相应管理/销毁 Capability。Task 的局部观察至少包括自身状态、地址空间、邮箱、`pending_return`、所持 Capability 及其可查询 Audit。
+应证明：在把全局 ID、内存余量、日志容量、调度与时间排除出观察后，任何改变其他 Task 局部可观察内核状态的用户迁移，都属于上述通道或持有相应管理/销毁 Capability。Task 的局部观察至少包括自身状态、地址空间、邮箱、`pending_return`、`pending_wait_result`、`pending_upcalls`、所持 Capability 及其可查询 Audit。
 
 这不是字节级非干扰定理。若要证明数据机密性，必须扩展 Segment 字节、read/write、程序执行和观察等价关系。
 
@@ -2081,6 +2199,14 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 - DMA 缓冲区页帧被隔离于通用页池——不能通过错误的 `memseg_create` 或 Segment 操作意外访问；
 - IRQ 订阅通过 ExcSource 机制保护——只有持有 `DevInterruptSubscribe` 的 Task 可通过 `exc_subscribe` 订阅对应 IRQ 源；
 - 设备销毁时，所有与该设备相关的权威资源被释放且不可被原 Capability 重新激活。
+
+### 17.9 WaitObject、定向 upcall 与权限变更安全
+
+- **无丢失唤醒：** 若 `wait_objects` 以观察到的 generation 集合进入 `BlockedWait`，则在等待期间任一被等待对象的 `signal_object` 都不会被静默遗漏：`Any` 等待会被该 signal 完成为 `WaitSatisfied`，`All` 等待会重新评估并在全部条件满足时完成；
+- **等待注册生命周期：** 等待注册不创建或移动 Capability，不改变 `HeldBy`；等待完成、超时、对象销毁或 Task 销毁时，目标 Task 必然从所有相关 WaitObject 的 `waiters` 中删除；
+- **结果唯一：** 每个阻塞 `wait_objects` 最多产生一个 `pending_wait_result`，且只有 `schedule` 消费；`WaitAlerted` 不消费 upcall，`task_upcall_recv` 只清空调用者自己的队列；
+- **定向投递不可伪造：** `Upcall.source` 由内核填写为调用 `task_alert` 的 Task；用户不能伪造 `source`，也不能把 upcall 直接塞入其他 Task 的队列；
+- **权限变更原子性：** `memseg_protect` 要么完整成功并保持 W7/W8，要么完整失败且不改变 `vspace`、Audit 或 Capability 位置。
 
 ## 18. 从抽象规范到实现的细化要求
 
@@ -2150,7 +2276,8 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 | 原语 | 涉及内容 | 可移植原因 |
 |---|---|---|
 | Capability | opaque ID 和 generation、CapRecord 链表、权限集合 | 纯数据结构；所有架构都有足够字长表达 |
-| Task (生命周期/send/recv) | TaskId、mailbox 队列、TaskStatus 状态机、pending_return | 纯数据结构 |
+| Task (生命周期/send/recv/wait/upcall) | TaskId、mailbox 队列、TaskStatus 状态机、pending_return/pending_wait_result/pending_upcalls | 纯数据结构 |
+| WaitObject | generation 计数、waiters 集合、WaitResult 值 | 纯数据结构；signal/wait 语义不依赖具体架构 |
 | Send/Recv | 消息队列、HeldBy ↔ InMessage 转移、FIFO 调度 | 纯逻辑 |
 | Namespace | Path 表和 Mount 图 | 纯数据结构 |
 | Timer (抽象层) | 绝对 Deadline 队列、定时器状态机 | 纯逻辑 |
@@ -2161,7 +2288,7 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 
 | 原语 | x86_64 细化 | ARMv8-A 细化 |
 |---|---|---|
-| MemorySegment (map/unmap) | 四级/五级页表、CR3 加载、INVLPG/INVPCID TLB invalidation、W^X 通过 NX 位 | 四级页表 (TTBR0/1)、TLBI (VA/ASID)、W^X 通过 PXN/UXN (AP[2:1])、DSB 确保页表可见 |
+| MemorySegment (map/unmap/protect) | 四级/五级页表、CR3 加载、INVLPG/INVPCID TLB invalidation、W^X 通过 NX 位 | 四级页表 (TTBR0/1)、TLBI (VA/ASID)、W^X 通过 PXN/UXN (AP[2:1])、DSB 确保页表可见 |
 | Task (执行上下文) | `iretq` 进入/离开用户态、TSS 栈切换、RSP0 | `eret` 切换异常级别、SP_EL0/SP_EL1 自动换栈 |
 | Exception (trap 入口) | IDT 注册硬件向量、`int`/`syscall` 指令、异常帧栈格式 | VBAR_EL1 异常向量表、`svc` 指令 (立即数编码 syscall 号)、ESR_EL1 解码异常原因 |
 | Exception (page fault) | CR2/FAR 取故障地址、错误码编码 (P/W/U/RSVD/I/D 位) | FAR_EL1 取故障地址、ESR_EL1 的 ISS 字段编码 (DFSC/IFSC 故障码) |
@@ -2180,7 +2307,7 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 | 指令屏障 | SFENCE/MFENCE/LFENCE | DSB (全系统) / DMB (内存域) / ISB (指令流) — 更细粒度控制 |
 
 **ARM 候选实例化预计：**
-- **7 类状态迁移候选不变**（Capability / Task 生命周期 / Send/Recv / Namespace / Timer 抽象 / Audit / Bootstrap）
+- **8 类状态迁移候选不变**（Capability / Task 生命周期 / Send/Recv / Namespace / Timer 抽象 / WaitObject / Audit / Bootstrap）
 - **4 类预计需要 COSIR 细化重写**（MemorySegment / Exception / Timer 硬件 / Device）
 - 总代码量中，逻辑无关代码是否占多数取决于数据结构代码 vs 页表代码的比例，而不是原语类别的比例
 
@@ -2188,15 +2315,16 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 
 ## 19. 原语总览
 
-本文按 **11 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 12 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“11 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
+本文按 **12 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 13 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“12 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
 | 类别            | 公开操作                                                           | 核心作用                    |
 | ------------- | -------------------------------------------------------------- | ----------------------- |
 | Capability    | `derive / drop`                                                | 权限衰减、显式共享、token 清理      |
-| MemorySegment | `create / map / unmap / destroy / gpu_memseg_create`           | 页帧对象与显式地址空间映射           |
-| Task          | `create / destroy / yield`                                     | 执行单元与生命周期               |
+| MemorySegment | `create / map / unmap / protect / destroy / gpu_memseg_create` | 页帧对象、显式地址空间映射与保护       |
+| Task          | `create / destroy / yield / task_alert / task_upcall_recv`      | 执行单元、生命周期与定向 upcall       |
 | Send          | `send`                                                         | 有授权的消息与 Capability 原子转移 |
 | Recv          | `recv`                                                         | FIFO 接收与阻塞恢复            |
+| WaitObject    | `wait_object_create / wait_object_observe / wait_objects / signal_object / wait_object_destroy` | 通用等待、超时与可警报阻塞 |
 | Timer         | `set / cancel / destroy / now`                                 | 单调绝对时间与一次性内核通知          |
 | Namespace     | `create / bind / unbind / mount / unmount / resolve / destroy` | 路径化 Capability 存储与委托    |
 | Audit         | `audit`                                                        | 纯查询的派生与移动溯源             |
@@ -2204,6 +2332,8 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 | Device        | `dev_mmio_create / dev_mmio_map / dev_mmio_unmap / dev_ioport_create / dev_dma_create / dev_irq_create / dev_destroy` | 设备 MMIO、IRQ 和 DMA 的对象能力化封装 |
 | Node          | `node_create / node_destroy`                                   | 跨节点通信节点对象              |
 | Bootstrap     | `bootstrap`                                                    | 唯一的初始 Authority 来源      |
+
+> **范围提示：** 本表统计当前冻结的 12 类常规机制。通用等待和定向 upcall 已于 2026-10-14 采纳；进程/线程共享模型、I/O 完成协议和文件/流边界仍未采纳或暂缓，见 §22（信息性附录）。
 
 ## 20. 细化层：MachineState 与抽象函数
 
@@ -2303,3 +2433,206 @@ abstract : MachineState → POSIRState
 **错误。** 沿用规范错误集（`MissingMapRight`/`RightsExceeded`/`OutOfBounds`/`Overlap`/`NotMapped`/`EntryMapping`/`StillMapped`/`ZeroSize`/`NoMemory`/`InvalidSegment`/`InvalidTask`/`MissingRight`）；页表遍历内的"路径深表缺失"等机制内部状态折叠为对应 POSIR 错误，不外泄新错误原语。
 
 **未覆盖（留后续切片）。** 当前 host 四级索引树和双视图检查不再覆盖的包括：非叶权限合成、TLB 维护、多核并发与 shootdown、真实 CR3/PTE 编码和访问，以及页表原子更新窗口。**页表页的物理身份与所有权**在细化模型中已覆盖为 `new_owned_task_table`/`map_vaddr_owned`/`unmap_vaddr_owned` 的 backing frame 分配/回收与 `check_frame_ownership`（见 SPEC-035/036），但真实内核沿现有 CR3 可达页表树的审计（SPEC-037/038）仅确认外部根页帧归属，**不证明子页表物理所有权**，故真实内核自建页表的所有权与回收仍留后续切片。大页（2MB/1GB）多粒度、task_create 入口细化（边界清单 #16）、异常/trap 递送（S1-D4）、叶 `mapping` 额外字段在真机 PTE 的落地同样未覆盖。以上边界完成前，证据保持 `REFINEMENT-DESIGN` + `MODEL-TEST`，不得称为真实 MemorySegment refinement PASS。
+
+---
+
+## 21. WaitObject 与定向 upcall（正式）
+
+本章是 2026-10-14 采纳审核后新增的冻结语义，用于解决通用等待/唤醒与定向异步投递的缺口。它保持 OS 中立：内核不解释 Mutex、Semaphore、Event、条件变量、APC、Linux 信号或完成端口的 personality 语义，只提供等待、观察、唤醒和定向队列机制。
+
+### 21.1 WaitObject 生命周期与观察
+
+#### 21.1.1 `wait_object_create`
+
+```text
+wait_object_create() -> wait_object_cap : CapId
+```
+
+前置条件：调用者是 Running Task。
+
+成功动作：
+
+1. 分配 `WaitObjectId`，创建 `WaitObject`，`creator = caller`，`generation = 0`，`waiters = ∅`；
+2. 铸造由调用者持有的根 WaitObject Capability，权限恰为 `{Derive, WaitWait, WaitSignal, WaitDestroy}`；
+3. 追加对象创建与 Capability 铸造事件。
+
+**失败语义：无失败分支。** 除 §6.1 Actor 约束与实现资源耗尽外，本操作无前置条件。WaitObject 是调用者掌握的通用机制对象，不授予对其它 Task 的额外权限。
+
+#### 21.1.2 `wait_object_observe`
+
+```text
+wait_object_observe(wait_object_cap) -> Nat
+```
+
+前置条件：
+
+1. `wait_object_cap` 由调用者持有、可用，并指向活动 `WaitObject`；
+2. `wait_object_cap` 包含 `WaitWait`。
+
+成功动作：返回 `wait_objects[object].generation`。本操作是纯查询，不改变状态。
+
+错误：`InvalidWaitObject`（Capability 不指向有效 WaitObject）、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`（目标 WaitObject 已销毁但 Capability 仍存在）。
+
+`InvalidWaitObject` 定义为本规范中“Capability 参数未指向有效 WaitObject”的失败标识。
+
+#### 21.1.3 `wait_object_destroy`
+
+```text
+wait_object_destroy(wait_object_cap) -> ()
+```
+
+前置条件：`wait_object_cap` 由调用者持有、可用，指向活动 `WaitObject`，并授权 `WaitDestroy`。
+
+成功动作：
+
+1. 对目标 `waiters` 中每个 `TaskId t`：
+   - 若 `t` 仍是活动 CPU Task、状态为 `BlockedWait` 且其 `wait_request` 包含目标对象，则把 `pending_wait_result` 置为 `WaitTargetDead(target)`，从该请求涉及的全部 WaitObject `waiters` 中删除 `t`，清空 `wait_request`，把 `t` 从 `BlockedWait` 原子地改为 `Ready`，并追加 `TaskStateChanged` 与 `WaitTargetDead` Audit 事件；
+   - 否则只从目标 `waiters` 中删除 `t`（防御性处理，不应在 W17 成立时发生）；
+2. 从 `wait_objects` 删除目标对象；
+3. 追加对象销毁事件；
+4. 所有指向该对象的 Capability 变为 stale token。
+
+错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitDestroy)`、`TargetDead`。
+
+### 21.2 等待与唤醒
+
+#### 21.2.1 `wait_objects`
+
+```text
+wait_objects(
+    wait_caps:             List<CapId>,
+    observed_generations:  List<Nat>,
+    mode:                  WaitMode,
+    alertable:             Bool,
+    timeout:               Option<Instant>
+) -> WaitResult | Blocked
+```
+
+前置条件：
+
+1. 调用者是 Running CPU Task；
+2. `wait_caps` 与 `observed_generations` 长度相同、非空；
+3. 两个列表按下标一一对应，且没有两个 `wait_caps` 指向同一个 WaitObject；
+4. 每个 Capability 由调用者持有、可用，指向活动 `WaitObject`，并包含 `WaitWait`。
+
+设输入条目为 `entry_i = { object: target(wait_caps[i]), observed_generation: observed_generations[i] }`。
+
+成功动作：
+
+1. 先做满足检查：
+   - `Any`：若存在某个 `i` 使 `wait_objects[entry_i.object].generation > entry_i.observed_generation`，返回 `WaitSatisfied([entry_i.object])`，其中 `i` 是满足条件的最小下标；
+   - `All`：若对所有 `i` 都有 `wait_objects[entry_i.object].generation > entry_i.observed_generation`，返回 `WaitSatisfied([entry_0.object, …, entry_n.object])`；
+2. 若满足检查未通过，则：
+   - 若 `alertable = true` 且调用者的 `pending_upcalls` 非空，返回 `WaitAlerted`；该返回不消费 `pending_upcalls`，调用者应通过 `task_upcall_recv` 清空后再等待；
+   - 否则若 `timeout = Some(d)` 且 `d ≤ now`，返回 `WaitTimedOut`；
+   - 否则构造 `WaitRequest{ entries = [entry_0, …, entry_n], mode, alertable, deadline = timeout }`，写入调用者的 `wait_request`，把调用者加入每个 `entry_i.object.waiters`，将调用者从 `Running` 原子地改为 `BlockedWait`，追加 `TaskStateChanged` 与 `WaitBlocked` Audit 事件，并返回 `Blocked`。
+
+若立即返回 `WaitSatisfied`、`WaitTimedOut` 或 `WaitAlerted`，调用者保持 `Running`，不写入 `pending_wait_result` 与 `wait_request`。
+
+错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`、`DuplicateWaitObject`、`EmptyWaitSet`（`wait_caps` 为空）。`DuplicateWaitObject` 定义为本规范中“一次 `wait_objects` 中重复等待同一 WaitObject”的失败标识；`EmptyWaitSet` 定义为“等待集合为空”的失败标识。
+
+#### 21.2.2 `signal_object`
+
+```text
+signal_object(wait_object_cap) -> Nat
+```
+
+前置条件：`wait_object_cap` 由调用者持有、可用，指向活动 `WaitObject`，并授权 `WaitSignal`。
+
+成功动作：
+
+1. 将目标 `wait_objects[object].generation` 原子地加一；
+2. 对目标 `waiters` 的一个快照中的每个 `TaskId t`：
+   - 若 `t` 不再是活动 CPU Task、或状态不是 `BlockedWait`、或 `wait_request = None`，只从目标 `waiters` 删除 `t`（防御性处理）；
+   - 否则令 `req = tasks[t].wait_request`：
+     - 若 `req.mode = Any` 且 `req.entries` 包含目标对象，则把 `t.pending_wait_result` 置为 `WaitSatisfied([object])`，从 `req` 涉及的全部 WaitObject `waiters` 中删除 `t`，清空 `t.wait_request`，把 `t` 从 `BlockedWait` 改为 `Ready`，追加 `TaskStateChanged` 与 `WaitCompleted` Audit 事件，并计入本次唤醒数；
+     - 若 `req.mode = All` 且对 `req.entries` 中每一项都有当前 `generation > observed_generation`，则把 `t.pending_wait_result` 置为 `WaitSatisfied([entry_0.object, …, entry_n.object])`，并从全部相关 WaitObject 的 `waiters` 中删除 `t`，清空 `wait_request`，把 `t` 从 `BlockedWait` 改为 `Ready`，追加 `TaskStateChanged` 与 `WaitCompleted` 事件，并计入本次唤醒数；
+3. 追加 `WaitObjectSignaled` Audit 事件；
+4. 返回本次直接唤醒到 `Ready` 的 Task 数量。
+
+错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitSignal)`、`TargetDead`。
+
+### 21.3 定向 upcall
+
+#### 21.3.1 `task_alert`
+
+```text
+task_alert(task_cap, data: Bytes) -> ()
+```
+
+前置条件：
+
+1. 调用者是 Running Task；
+2. `task_cap` 由调用者持有、可用，指向活动 CPU Task（`kind = ComputeTask(CPU)`），并授权 `TaskSend`；
+3. `data.length ≤ MAX_MSG_SIZE`。
+
+成功动作：
+
+1. 向目标的 `pending_upcalls` 追加 `Upcall{ source = caller, data }`；
+2. 若目标状态为 `BlockedWait` 且 `wait_request.alertable = true`：
+   - 将目标 `pending_wait_result` 置为 `WaitAlerted`；
+   - 从目标等待请求涉及的全部 WaitObject `waiters` 中删除目标；
+   - 清空目标 `wait_request`；
+   - 将目标从 `BlockedWait` 原子地改为 `Ready`；
+   - 追加 `TaskStateChanged` 与 `WaitAlerted` Audit 事件；
+3. 追加 `UpcallQueued` Audit 事件。
+
+`task_alert` 不消费 `task_cap`。`TaskSend` 同时授权普通 `send` 与定向 `task_alert`：两者都是受控的目标 Task 异步交付，区别仅在交付通道（邮箱 vs 可警报队列）。内核不解释 `data` 的内容，也不区分 kernel APC、user APC、Linux signal 或运行时 upcall；这些语义由 LibOS 在 `task_upcall_recv` 之后解释。
+
+错误：`InvalidTask`（Capability 未指向有效 Task，或目标不是 CPU Task）、`NotHeld`、`MissingRight(TaskSend)`、`MsgTooLarge`。
+
+**边界：** `task_alert` 只提供用户可见的定向队列和可警报等待中断，不建模内核态 APC 的执行时机、特权级切换或内核栈上下文；若某个 personality 需要 kernel APC，其模式判定与执行路径属于 COSIR/LibOS 细化，不在 POSIR 状态机内。
+
+#### 21.3.2 `task_upcall_recv`
+
+```text
+task_upcall_recv() -> List<Upcall>
+```
+
+前置条件：调用者是 Running CPU Task。
+
+成功动作：按 FIFO 顺序返回调用者 `pending_upcalls` 中的全部条目，并清空该列表；追加 `UpcallReceived` Audit 事件，记录返回数量。空列表不是错误。
+
+**失败语义：无失败分支。** 本操作不接受 Capability、不访问其它对象，只读取并清空调用者自身的定向 upcall 队列。
+
+### 21.4 调度、超时与销毁交互
+
+- `schedule` 通过 `TaskReturn` 区分 `RecvReturn` 与 `WaitReturn`；同一 Task 的 `pending_return` 与 `pending_wait_result` 不得同时非空（W9）；
+- `advance_time` 负责把截止时间已到的 `BlockedWait` Task 完成为 `WaitTimedOut`（§10.3）；因此任何处于 `BlockedWait` 的 `wait_request.deadline` 都严格大于 `now`，或为 `None`；
+- `task_destroy` 从所有 WaitObject `waiters` 中删除目标 Task，并清空其 `wait_request`、`pending_wait_result` 与 `pending_upcalls`（§8.2）；
+- `wait_object_destroy` 把仍在等待该对象的 Task 完成为 `WaitTargetDead`；
+- 等待注册是临时关系，不占用 Capability 位置，不移动 token，不改变 `HeldBy`。
+
+---
+
+## 22. 双人格兼容缺口与采纳状态（信息性附录）
+
+> 本章是信息性记录，不属于第 1–21 章的冻结抽象状态机。2026-10-14 的采纳审核已将通用 `WaitObject`、定向 upcall / alertable wait 与 `memseg_protect` 写入冻结语义；本章只记录仍未采纳的缺口、结论与后续设计输入。详细审核见 [[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|COSIR/POSIR 双人格扩展候选采纳审核]]。
+
+### 22.1 已采纳项
+
+| 项 | 规范位置 | 结论 |
+|---|---|---|
+| 通用 `WaitObject` + 等待/唤醒 | §5.6、§21.1–21.2、W17 | 已纳入第 12 类常规机制 |
+| 定向 upcall / 可警报等待 | §21.3，配合 `WaitObject` | 已纳入 Task 机制的异步扩展；LibOS 解释 APC/信号语义 |
+| `memseg_protect` | §7.4 | 已纳入 MemorySegment 操作 |
+
+采纳后，Bootstrap 后常规机制从 **11 类** 变为 **12 类**；加 Bootstrap 共 **13 项**。这不是新增具体 OS 对象，而是补了通用等待/唤醒机制类。
+
+### 22.2 仍未采纳或暂缓项
+
+| 候选 | 状态 | 理由 |
+|---|---|---|
+| Mutex / Semaphore / Event / ConditionVariable | 不采纳为一等对象 | 可由 `WaitObject` + LibOS 原子状态映射；避免把 personality 对象名写入 POSIR |
+| Process / Thread / ShareGroup | 暂缓 | 需要先设计 Capability holder 模型；不能破坏 W3/W4、W5、W9 或 GPU/NPU Task |
+| 内核 `CompletionQueue` | 不采纳 | 完成协议可先由 `WaitObject` + 共享 Segment 承担；`submit` 语义属于用户态服务 |
+| 标准 I/O 完成协议 | 暂缓 | 需在 `WaitObject` 落地后以共享环原型评估性能与 ABI |
+| 内核 `FileObject` | 不采纳 | 违反 OS 中立性，风险是把文件系统策略吸入 TCB；保持用户态文件系统边界 |
+| OS 中立 `Stream` / `IOSession` | 暂缓 | 若性能证据要求内核快速路径，再以独立设计审核 |
+
+### 22.3 对 H1/H3 的影响
+
+- H1 的原语类别计数已正式修订为 12 类常规机制 + Bootstrap；后续不得再以旧的 11 类计数描述当前规范。
+- `WaitObject` 的采纳说明：有限机制集不是静态数字，而是随可证明缺口和 OS 中立性评审演化的假设。
+- Process/Thread/ShareGroup 的暂缓仍是双人格 Windows 侧的主要缺口；在完成 holder 模型设计前，不应在文档中宣称双人格底座已经完备。
+- 具体同步对象、内核完成队列和 `FileObject` 的未采纳，是 H3（小型可信机制层）与 OS 中立性的主动选择，不是遗漏。

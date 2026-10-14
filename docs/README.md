@@ -89,6 +89,8 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-14 — COSIR/POSIR 双人格扩展候选采纳审核（WaitObject/upcall 与 `memseg_protect` 正式采纳）](superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)
+- [2026-10-14 — COSIR/POSIR 双人格底座差距分析（评估核验与候选扩展边界）](superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis.md)
 - [2026-10-12 — 阶段 4 运行期服务注册表（闭合 SPEC-093 §5.2）](superpowers/reports/2026-10-12-stage4-runtime-service-registry-report.md)
 - [2026-10-12 — 阶段 4 `ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）](superpowers/reports/2026-10-12-stage4-alpha-independent-stack-report.md)
 - [2026-10-11 — 基座库栈走查与扫雷审查记录](superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)
