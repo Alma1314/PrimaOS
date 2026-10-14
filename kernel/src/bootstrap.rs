@@ -2096,7 +2096,11 @@ pub struct VspaceEntry {
 ///
 /// 存储已移出 `BootstrapState`（见 [`VSPACE_ARENA`]），故该值**不占结构体空间**——可自由扩容而
 /// 不破 13 KiB 软守卫。取值与 `MAX_CAPABILITY_SLOTS` 对齐；当前 boot 实测占用 41。
-pub const MAX_VSPACE_ENTRIES: usize = 64;
+///
+/// **SPEC-105 扩容 64 → 80**：ring3 服务管理器表驱动创建端点后，boot 末段的逻辑映射条目数达到
+/// 旧上限 64，使 `init` 收下共享段只读副本的 `memseg_map` 以 `CapacityExceeded` 失败。按本常量
+/// 的设计意图（可自由扩容、与 `MAX_CAPABILITY_SLOTS` 对齐）扩到 80。
+pub const MAX_VSPACE_ENTRIES: usize = 80;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]

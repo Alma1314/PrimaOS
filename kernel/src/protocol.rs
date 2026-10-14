@@ -1013,6 +1013,12 @@ pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
     write_hex_u64(witness.self_id);
     serial::write_bytes(b";marker=");
     write_hex_u64(witness.marker);
+    serial::write_bytes(b";created=");
+    write_hex_u64(witness.created);
+    serial::write_bytes(b";entry_a=");
+    write_hex_u64(witness.entry_a);
+    serial::write_bytes(b";entry_b=");
+    write_hex_u64(witness.entry_b);
     serial::write_bytes(b"\r\n");
 }
 

@@ -2367,9 +2367,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 10 || direct != 14 || blocks != 18 {
+    if queued != 16 || direct != 14 || blocks != 18 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 10/14/18 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, and SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 16/14/18 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged)"
         ));
     }
     Ok(())
@@ -3525,6 +3525,9 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let mut hello = None;
     let mut self_id = None;
     let mut marker = None;
+    let mut created = None;
+    let mut entry_a = None;
+    let mut entry_b = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3534,6 +3537,9 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "hello" => hello = Some(parse_addr(value)?),
             "self_id" => self_id = Some(parse_addr(value)?),
             "marker" => marker = Some(parse_addr(value)?),
+            "created" => created = Some(parse_addr(value)?),
+            "entry_a" => entry_a = Some(parse_addr(value)?),
+            "entry_b" => entry_b = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3542,6 +3548,9 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let hello = hello.ok_or_else(|| missing("hello"))?;
     let self_id = self_id.ok_or_else(|| missing("self_id"))?;
     let marker = marker.ok_or_else(|| missing("marker"))?;
+    let created = created.ok_or_else(|| missing("created"))?;
+    let entry_a = entry_a.ok_or_else(|| missing("entry_a"))?;
+    let entry_b = entry_b.ok_or_else(|| missing("entry_b"))?;
     if task_id <= 1 {
         return Err(format!(
             "servicemgr_ready task_id ({task_id}) must be a real ring3 child task (> 1, not init)"
@@ -3569,11 +3578,22 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "servicemgr_ready marker (0x{marker:x}) must be the prima-servicemgr binary marker 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image, not init's hand-written code"
         ));
     }
+    if created != 2 {
+        return Err(format!(
+            "servicemgr_ready created ({created}) must be 2 — SPEC-105: both service endpoints must be created by the ring3 manager, not by init's hand-written code"
+        ));
+    }
+    if entry_a == 0 || entry_b == 0 {
+        return Err(format!(
+            "servicemgr_ready entry_a/entry_b (0x{entry_a:x}/0x{entry_b:x}) must be nonzero — SPEC-105: the manager must derive each endpoint's ELF entry itself (e_entry at file offset 24)"
+        ));
+    }
     Ok(())
 }
 
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
-const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0002_0000_0033;
+/// SPEC-105：端点令牌由 **ring3 服务管理器**从代码段派生（不再是 init 自建回执，故句柄值改变）。
+const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_003c;
 const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_003e;
 const SERVICE_NEGOTIATED_ID: u64 = 10;
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
@@ -3923,13 +3943,13 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=10;direct=14;blocks=18\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=16;direct=14;blocks=18\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=7;caps=77;root_cleared=1;grandchild=4;tasks_after=7;caps_after=77;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
-        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x10000003e;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
+        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x10000003c;service=0x10000003e;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
         "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x10;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x2;entry_a=0x4a50;entry_b=0x2640\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x1000;root2=0x2000;cr31=0x1000;cr32=0x2000;rsp1=0xffff800000010400;rsp2=0xffff800000020400;kstack1_top=0xffff800000014000;kstack2_top=0xffff800000024000;data1=0x3000;data2=0x4000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4153,7 +4173,7 @@ mod tests {
     fn rejects_ipc_ready_without_the_direct_wake_path() {
         let output = VALID.replace(";direct=14;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 10/14/18"), "{error}");
+        assert!(error.contains("expected 16/14/18"), "{error}");
     }
 
     #[test]

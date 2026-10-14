@@ -17,6 +17,27 @@ pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 /// 该 tag 不被任何接收分支匹配，接收方忽略之。
 pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
 
+/// SPEC-105：`init` 向服务管理器移交**建端点所需 cap 与参数**的消息 tag。
+///
+/// payload 布局：`tag(48..63) | payload_bits(8..47) | subtype(0..7)`；subtype 见
+/// [`SERVICE_SETUP_CODE`]/[`SERVICE_SETUP_STACK`]。与端点自报/完成 tag 不相交。
+pub const SERVICE_SETUP_TAG: u64 = 0x5ECC_0000_0000_0000;
+/// SPEC-105：subtype——本消息携带某服务的**代码段 cap**（另一条 cap 槽留给栈段前一条）。
+/// `payload_bits` 为 `code_pages`（1..=255）。
+pub const SERVICE_SETUP_CODE: u64 = 1;
+/// SPEC-105：subtype——本消息携带某服务的**栈段 cap**；`payload_bits` 为该服务**注册名**。
+pub const SERVICE_SETUP_STACK: u64 = 2;
+/// SPEC-105：端点在服务管理器根内的**代码探测 VA**：服务管理器把代码段映射到此以读 ELF 头
+/// （`e_entry` 在偏移 24..32，未被装载器覆写）取入口，随后卸载。
+pub const ENDPOINT_CODE_PROBE_VA: u64 = 0x0000_0A00_0000_8000;
+/// SPEC-105：端点的代码基址（`task_create` 的 `load_base`；入口 = 此 + `e_entry`）。
+pub const ENDPOINT_CODE_VA: u64 = 0x0000_0B00_0000_0000;
+/// SPEC-105：端点的用户栈基址（单页；`stack_top = 此 + 0x1000`）。须等于内核
+/// `user::USER3_STACK_VA`（`USER3_BASE_VA + 0x10_0000`），否则新端点的 `rsp` 落错。
+pub const ENDPOINT_STACK_VA: u64 = 0x0000_0B00_0010_0000;
+/// SPEC-105：ELF 头 `e_entry` 的偏移。
+pub const ELF_ENTRY_OFFSET: u64 = 24;
+
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
 pub const SERVICE_NAME_OFFSET: u64 = 48;
