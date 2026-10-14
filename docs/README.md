@@ -90,6 +90,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-14 — 双人格 Holder 模型 H0 评审（条件通过）](superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review.md)
 - [2026-10-14 — COSIR/POSIR 双人格扩展候选采纳审核（WaitObject/upcall 与 `memseg_protect` 正式采纳）](superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)
 - [2026-10-14 — 双人格工作流交接与上下文压缩](superpowers/reports/2026-10-14-dual-personality-handoff.md)
 - [2026-10-14 — COSIR/POSIR 双人格底座差距分析（评估核验与候选扩展边界）](superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis.md)

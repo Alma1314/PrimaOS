@@ -54,6 +54,17 @@
 
 目标不是立刻改 POSIR，而是先冻结候选模型、迁移顺序和 W3/W4/W9/W17 的影响面；该设计通过后再进入规范修订与实现切片。
 
+**H0 评审状态（2026-10-14）：** 设计草案**条件通过**，评审报告见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|Holder 模型 H0 评审报告]]。
+
+H1 前必须完成：
+
+- C1：`HeldByCapTable` + `HeldByShareGroup` 位置模型冻结；
+- C2：`CapTable`/`AddressSpace` 内部对象引用计数规则；
+- C3：`fork` 的 `cap_table_dup` 权限与 W2/Audit 论证；
+- C4：Thread/ShareGroup 生命周期、zombie/wait 状态机；
+- C5：第一版 Linux/Windows profile 映射表；
+- C6：现有 `task_create`/`task_destroy` 迁移路径。
+
 ## 5. 证据边界
 
 - 本快照只记录当前状态与入口链接，不产生新证据；

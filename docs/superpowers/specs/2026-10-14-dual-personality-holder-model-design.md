@@ -6,7 +6,7 @@
 >
 > 输入：[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|双人格扩展候选采纳审核]]、[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis|COSIR/POSIR 双人格底座差距分析]]、[[COSIR 原语规范]] §5.2/§8.1/§16/§17/§21/§22
 >
-> 状态：待评审；本草案不修改 [[COSIR 原语规范]] 的冻结语义。
+> 状态：H0 条件通过（见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|H0 评审报告]]）；本草案不修改 [[COSIR 原语规范]] 的冻结语义。
 
 ## 0. 结论先行
 
@@ -31,6 +31,17 @@ CapTable       = 独立一等对象：Capability 的持有者位置
 - `CLONE_THREAD`/`CLONE_SIGHAND` ↔ 新 `Task`/`Thread` 加入同一 `ShareGroup`。
 
 **关键结论：** 不能只给 `task_create` 加几个共享参数；必须先把 Capability holder 从 `TaskId` 一般化为 `CapTableId`（或 `ShareGroupId`），否则 W3/W4 无法表达共享句柄表。
+
+## 0.1 H0 评审结论（2026-10-14）
+
+- 总体：**条件通过**；
+- Holder 定为 `HeldByCapTable(CapTableId)`；结构性 `root_ns_cap` 额外使用 `HeldByShareGroup(ShareGroupId)`，避免 `CLONE_FILES` 意外共享根 Namespace；
+- `AddressSpace` 与 `CapTable` 是独立内部结构对象，不直接作为用户 Capability 目标；`ShareGroup` 是公开的 process 类比对象；
+- `Task.share_group` 必填；非 CPU Task 使用私有退化 ShareGroup；
+- `fork` 使用 `cap_table_dup` 显式派生新 Capability，授权来自 ShareGroup 级 `GroupFork`，细节留 H1；
+- `TaskSend`/`send` 保持 Task/Thread 定向；Process/Thread 等待用独立 `share_group_wait`，H3 再投影到 `WaitObject`；
+- 第一版 profile 仅覆盖 `fork`、`pthread_create`、`CLONE_VM`、`CLONE_FILES`、`CLONE_THREAD` 与 Windows `CreateProcess`/`CreateThread`/`TerminateProcess`/`TerminateThread`；
+- H1 启动前必须完成 H0 评审报告列出的 C1–C6 修订。
 
 ## 1. 问题定义
 
@@ -151,7 +162,7 @@ AddressSpace {
 
 CapTable {
     creator: Actor,
-    // Capability 的位置由全局 locations 表指向 HeldByTable(CapTableId)
+    // Capability 的位置由全局 locations 表指向 HeldByCapTable(CapTableId)
 }
 
 ShareGroup {
@@ -167,7 +178,7 @@ Task {   // CPU Task 同时承担 Thread 语义；非 CPU Task 保留 ComputeTas
     creator:       Actor,
     kind:          TaskKind,
     node:          NodeId,
-    share_group:   Option<ShareGroupId>,   // CPU Task 必须非 None；非 CPU 见 §7
+    share_group:   ShareGroupId,          // 必填；非 CPU Task 使用私有退化 ShareGroup（§7）
     status:        TaskStatus,
     entry:         VirtAddr,
     mailbox:       List<MsgId>,
@@ -182,6 +193,7 @@ Task {   // CPU Task 同时承担 Thread 语义；非 CPU Task 保留 ComputeTas
 
 说明：
 
+- `AddressSpace` 与 `CapTable` 是独立内部结构对象；第一版不直接向用户暴露为 Capability 目标，公开对象是 `ShareGroup`。
 - `Task` 不再直接持有 `vspace`/`dev_vspace`；对 CPU Task，映射位于 `ShareGroup.address_space`。
 - `root_ns_cap` 移到 `ShareGroup`；结构性根由同组线程共享。
 - `CapTable` 是 Capability 的 holder；一个 `CapTable` 可被多个 `Task` 通过 `ShareGroup` 共享。
@@ -191,19 +203,19 @@ Task {   // CPU Task 同时承担 Thread 语义；非 CPU Task 保留 ComputeTas
 
 ```text
 CapLocation =
-    HeldByTable(CapTableId)
+    HeldByCapTable(CapTableId)
   | InMessage(MsgId)
   | InNamespace(NsId, Path)
   | InTransit(...)
 ```
 
 - W3：每个 `CapId` 至多一个位置；
-- W4：`HeldByTable(ct)` 要求 `ct` 是活动 CapTable；容器与位置双向一致；
-- 单线程兼容：新 Task 创建时自动铸一个私有 `CapTable`，因此旧 `HeldBy(task)` 语义可投影为 `HeldByTable(cap_table_of(task))`；
-- `cap_derive`/`cap_drop`/`send`/`recv`/`ns_bind` 等操作把“调用者”解析为 `HeldByTable(caller_share_group.cap_table)`；
+- W4：`HeldByCapTable(ct)` 要求 `ct` 是活动 CapTable；容器与位置双向一致；
+- 单线程兼容：新 Task 创建时自动铸一个私有 `CapTable`，因此旧 `HeldBy(task)` 语义可投影为 `HeldByCapTable(cap_table_of(task))`；
+- `cap_derive`/`cap_drop`/`send`/`recv`/`ns_bind` 等操作把“调用者”解析为 `HeldByCapTable(caller_share_group.cap_table)`；
 - `task_create`/`thread_create` 的 `initial_caps` 从调用者所在 CapTable 移动到新 Task 的 CapTable 或共享 CapTable。
 
-**开放问题：** 是保留 `HeldBy(Task)` 作为单线程特例，还是全量迁移到 `HeldByTable`？建议正式规范采用 `HeldByTable`，实现内部可保留 Task 快捷投影。
+**H0 决策：** 正式规范全量迁移到 `HeldByCapTable`；旧的 `HeldBy(Task)` 只允许作为实现内部兼容投影，且必须在同一过渡切片中证明不会形成双位置窗口。
 
 ### 4.3 AddressSpace 一般化
 
@@ -266,7 +278,7 @@ TerminateThread  → task_destroy 的线程级变体
 
 | 不变量 | 影响 |
 |---|---|
-| W3 Capability 单一位置 | `HeldBy` 改为 `HeldByTable`；共享 CapTable 是合法 holder |
+| W3 Capability 单一位置 | `HeldBy` 改为 `HeldByCapTable`；共享 CapTable 是合法 holder |
 | W4 容器与位置一致 | 新增 CapTable 活动性约束；`InMessage`/`InNamespace` 不变 |
 | W5 结构性根 Namespace | 从 Task 移到 ShareGroup；同组线程共享 |
 | W6/W7/W8 | `vspace` 移到 AddressSpace；W7/W8 引用更新 |
@@ -277,12 +289,12 @@ TerminateThread  → task_destroy 的线程级变体
 
 ## 6. 迁移阶段
 
-### Phase H0 — 设计冻结
+### Phase H0 — 设计冻结（2026-10-14 条件通过）
 
-- 评审本文档；
-- 决定 holder 是 `HeldByTable` 还是 `HeldByShareGroup`；
-- 决定 AddressSpace 与 CapTable 是否都必须独立一等对象；
-- 冻结 `fork`/`pthread_create`/`CreateProcess`/`CreateThread` 的目标 profile。
+- 已完成评审，结论见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|H0 评审报告]]；
+- Holder 采用 `HeldByCapTable`，结构性根采用 `HeldByShareGroup`；
+- `AddressSpace` 与 `CapTable` 均为独立内部对象；
+- H1 前需完成 H0 评审报告 C1–C6。
 
 ### Phase H1 — AddressSpace / CapTable 私有化
 
@@ -318,12 +330,14 @@ TerminateThread  → task_destroy 的线程级变体
 候选方案：
 
 1. **私有退化 ShareGroup：** 为每个非 CPU Task 创建只含 AddressSpace=∅ 和私有 CapTable 的 ShareGroup；
-2. **保留直接 Capability holder：** 非 CPU Task 仍可 `HeldByTable` 指向私有 CapTable，不要求 vspace；
+2. **保留直接 Capability holder：** 非 CPU Task 仍可 `HeldByCapTable` 指向私有 CapTable，不要求 vspace；
 3. **ComputeTask 分支：** `Task.kind` 决定是否解释 `share_group`，非 CPU 只使用 `cap_table`。
 
 建议采用方案 1+2 的组合：所有 Task 都通过私有或共享 CapTable 持有 Capability；`AddressSpace` 对非 CPU Task 可以为空或仅显存映射，由细化层解释。
 
 ## 8. 开放问题
+
+> H0 已对第 1–7 项给出方向性决策，见 §0.1 与 H0 评审报告；本节保留 H1 仍需细化的开放点。
 
 1. `CapTable` 与 `ShareGroup` 的关系：CapTable 是否可脱离 ShareGroup 独立共享？推荐是，以支持 `CLONE_FILES`。
 2. `AddressSpace` 是否可脱离 ShareGroup 独立共享？推荐是，以支持 `CLONE_VM`。
@@ -334,7 +348,7 @@ TerminateThread  → task_destroy 的线程级变体
 7. `wait_objects` 是否支持等待 `ShareGroup`/`Thread` 对象？Windows waitable 包括 process/thread 句柄，需要新增 WaitObject 目标类型或映射到 WaitObject。
 8. GPU/NPU Task 是否参与 `ShareGroup`/`CapTable` 或保留私有退化物。
 9. 是否保持 `TaskId` 作为对外任务 ID，还是引入 `ThreadId`；建议先保持 `Task` 名，profile 层再暴露 `Thread`/`Process` 语义。
-10. 迁移期间 `HeldBy(Task)` 与 `HeldByTable(CapTable)` 能否共存；若共存，必须证明两者不产生双位置窗口。
+10. 迁移期间 `HeldBy(Task)` 与 `HeldByCapTable(CapTable)` 能否共存；若共存，必须证明两者不产生双位置窗口。
 
 ## 9. 证据与边界
 
