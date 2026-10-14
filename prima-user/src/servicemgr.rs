@@ -39,8 +39,9 @@ use prima_runtime::{
         SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICEMGR_HELLO_TAG, pack_service_name,
+        SERVICE_NAME_STORE, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
 };
@@ -109,9 +110,10 @@ const OFF_NS_MARK: u64 = 344;
 const OFF_STORE_ID: u64 = 352;
 const OFF_STORE_MARK: u64 = 360;
 const OFF_SERVICES: u64 = 368;
+/// SPEC-110：每个基础服务的**定序状态见证**占 3 槽（推进 A / 推进 B / 查询），共 24 B。
 const OFF_LOG_REPLY: u64 = 376;
-const OFF_NS_REPLY: u64 = 384;
-const OFF_STORE_REPLY: u64 = 392;
+const OFF_NS_REPLY: u64 = 400;
+const OFF_STORE_REPLY: u64 = 424;
 
 /// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务）。
 const SERVICES: usize = 5;
@@ -214,8 +216,9 @@ pub extern "C" fn _start(
     // SPEC-106：三个基础服务的存在标记与路由探针应答。
     let mut marker: [u64; SERVICES] = [0; SERVICES];
     let mut probe_sent = false;
-    let mut reply: [u64; SERVICES] = [0; SERVICES];
-    let mut replied = 0u64;
+    // SPEC-110：每个基础服务已收到的应答条数（0..3）与**已答完 3 条**的服务数。
+    let mut reply_count: [u64; SERVICES] = [0; SERVICES];
+    let mut served = 0u64;
 
     loop {
         let Ok(message) = runtime.receive() else {
@@ -317,19 +320,24 @@ pub extern "C" fn _start(
                 }
             }
         } else if message.payload >> 48 == SERVICE_SERVE_TAG >> 48 {
-            // ③'' SPEC-106：基础服务的路由探针应答（kind 归槽，证明请求路由到了正确的服务）。
+            // ③'' SPEC-106/110：基础服务的**定序状态应答**（kind 归槽，按到达顺序填该服务的第
+            // 0/1/2 槽——同一发送者到同一服务保序，故推进 A、推进 B、查询的应答依序落位）。
             let kind = (message.payload >> 32) & 0xff;
             let slot = kind.wrapping_sub(1) as usize;
-            if (BASE_FIRST..SERVICES).contains(&slot) && reply[slot] == 0 {
-                reply[slot] = message.payload;
-                replied += 1;
+            if (BASE_FIRST..SERVICES).contains(&slot) && reply_count[slot] < SERVICE_SERVE_PROBES {
+                let index = reply_count[slot];
+                reply_count[slot] += 1;
                 if segment.is_some() {
                     let _ = runtime.write_user_bytes(
-                        USER_SEG_VA + base_reply_offset(slot),
-                        &reply[slot].to_le_bytes(),
+                        USER_SEG_VA + base_reply_offset(slot) + index * 8,
+                        &message.payload.to_le_bytes(),
                     );
-                    let _ = runtime
-                        .write_user_bytes(USER_SEG_VA + OFF_SERVICES, &replied.to_le_bytes());
+                    // 该服务三条定序应答齐 ⇒ 服务数 +1（`services` 语义不变）。
+                    if reply_count[slot] == SERVICE_SERVE_PROBES {
+                        served += 1;
+                        let _ = runtime
+                            .write_user_bytes(USER_SEG_VA + OFF_SERVICES, &served.to_le_bytes());
+                    }
                 }
             }
         }
@@ -391,7 +399,8 @@ pub extern "C" fn _start(
             beta_forwarded = true;
         }
 
-        // ⑤' SPEC-106：三个基础服务都已注册即各发一条**路由探针**（只发一次）。
+        // ⑤' SPEC-106/110：三个基础服务都已注册即各发**定序三条**请求（推进 A、推进 B、查询，
+        // 只发一次）。同一发送者保序，故服务按推进→推进→查询处理，应答依序落位各自的状态槽。
         if !probe_sent
             && registry[BASE_FIRST].is_some()
             && registry[BASE_FIRST + 1].is_some()
@@ -400,10 +409,23 @@ pub extern "C" fn _start(
             let mut slot = BASE_FIRST;
             while slot < SERVICES {
                 if let Some(endpoint) = registry[slot] {
+                    let task = TaskId::from_raw(endpoint.id as u32);
                     let _ = runtime.send(
-                        TaskId::from_raw(endpoint.id as u32),
+                        task,
                         endpoint.authority,
-                        SERVICE_SERVE_TAG | SERVICE_SERVE_PROBE,
+                        pack_service_request(SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_ARG_A),
+                        &[],
+                    );
+                    let _ = runtime.send(
+                        task,
+                        endpoint.authority,
+                        pack_service_request(SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_ARG_B),
+                        &[],
+                    );
+                    let _ = runtime.send(
+                        task,
+                        endpoint.authority,
+                        pack_service_request(SERVICE_SERVE_OP_QUERY, 0),
                         &[],
                     );
                 }
@@ -414,7 +436,7 @@ pub extern "C" fn _start(
 
         // ⑥ 两轮转发及三个基础服务探针都完成：应答客户端（`PONG`），并把共享段只读副本交回 init。
         if beta_done
-            && replied == (SERVICES - BASE_FIRST) as u64
+            && served == (SERVICES - BASE_FIRST) as u64
             && !finished
             && let Some(client_cap) = client
         {
@@ -511,7 +533,7 @@ fn base_mark_offset(slot: usize) -> u64 {
     [OFF_LOG_MARK, OFF_NS_MARK, OFF_STORE_MARK][slot - BASE_FIRST]
 }
 
-/// SPEC-106：基础服务在共享段内的路由探针应答见证偏移。
+/// SPEC-106/110：基础服务在共享段内的**定序状态见证起始**偏移（第 `index` 条读 `+ index*8`）。
 fn base_reply_offset(slot: usize) -> u64 {
     [OFF_LOG_REPLY, OFF_NS_REPLY, OFF_STORE_REPLY][slot - BASE_FIRST]
 }

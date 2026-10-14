@@ -2367,9 +2367,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 18 || direct != 23 || blocks != 30 {
+    if queued != 30 || direct != 23 || blocks != 30 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 18/23/30 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged; SPEC-109: one service image segment replaces the six per-service code segments and is handed to the manager as its initial_cap1, dropping 5 no-cap wakes + 5 cap messages (queued 10→18)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 30/23/30 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged; SPEC-109: one service image segment replaces the six per-service code segments and is handed to the manager as its initial_cap1, dropping 5 no-cap wakes + 5 cap messages (queued 10→18); SPEC-110: each base service's ordered probe grows from 1 to 3 requests (advance/advance/query), adding 2 requests + 2 replies per service × 3 services (queued 18→30, direct/blocks unchanged)"
         ));
     }
     Ok(())
@@ -3519,9 +3519,17 @@ const SERVICEMGR_BINARY_MARKER: u64 = 0x5345_5256_4D47_5203;
 const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
 const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
-const SERVICE_REPLY_LOG: u64 = 0x5EC9_0003_0000_0011;
-const SERVICE_REPLY_NS: u64 = 0x5EC9_0004_0000_0011;
-const SERVICE_REPLY_STORE: u64 = 0x5EC9_0005_0000_0011;
+/// SPEC-110：三个基础服务的**定序状态**应答（推进 5 / 推进 3 / 查询）。各服务状态转移语义各异
+/// ⇒ 三个终值互异；纯回声端点会回 `5/3/0`，无法产生这些值。
+const SERVICE_REPLY_LOG_0: u64 = 0x5EC9_0003_0000_0005;
+const SERVICE_REPLY_LOG_1: u64 = 0x5EC9_0003_0000_0008;
+const SERVICE_REPLY_LOG_2: u64 = 0x5EC9_0003_0000_0008;
+const SERVICE_REPLY_NS_0: u64 = 0x5EC9_0004_0000_0005;
+const SERVICE_REPLY_NS_1: u64 = 0x5EC9_0004_0000_0053;
+const SERVICE_REPLY_NS_2: u64 = 0x5EC9_0004_0000_0053;
+const SERVICE_REPLY_STORE_0: u64 = 0x5EC9_0005_0000_0005;
+const SERVICE_REPLY_STORE_1: u64 = 0x5EC9_0005_0000_0503;
+const SERVICE_REPLY_STORE_2: u64 = 0x5EC9_0005_0000_0503;
 
 /// SPEC-103/104：ring3 服务管理器任务的存活 + 产出方见证。判决性：`task_id` 是一个真实的 ring3
 /// 子任务（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id`
@@ -3543,9 +3551,9 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let mut log_mark = None;
     let mut ns_mark = None;
     let mut store_mark = None;
-    let mut log_reply = None;
-    let mut ns_reply = None;
-    let mut store_reply = None;
+    let mut log_state = [None; 3];
+    let mut ns_state = [None; 3];
+    let mut store_state = [None; 3];
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -3565,9 +3573,15 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "log_mark" => log_mark = Some(parse_addr(value)?),
             "ns_mark" => ns_mark = Some(parse_addr(value)?),
             "store_mark" => store_mark = Some(parse_addr(value)?),
-            "log_reply" => log_reply = Some(parse_addr(value)?),
-            "ns_reply" => ns_reply = Some(parse_addr(value)?),
-            "store_reply" => store_reply = Some(parse_addr(value)?),
+            "log_state0" => log_state[0] = Some(parse_addr(value)?),
+            "log_state1" => log_state[1] = Some(parse_addr(value)?),
+            "log_state2" => log_state[2] = Some(parse_addr(value)?),
+            "ns_state0" => ns_state[0] = Some(parse_addr(value)?),
+            "ns_state1" => ns_state[1] = Some(parse_addr(value)?),
+            "ns_state2" => ns_state[2] = Some(parse_addr(value)?),
+            "store_state0" => store_state[0] = Some(parse_addr(value)?),
+            "store_state1" => store_state[1] = Some(parse_addr(value)?),
+            "store_state2" => store_state[2] = Some(parse_addr(value)?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -3623,9 +3637,16 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
     let log_mark = log_mark.ok_or_else(|| missing("log_mark"))?;
     let ns_mark = ns_mark.ok_or_else(|| missing("ns_mark"))?;
     let store_mark = store_mark.ok_or_else(|| missing("store_mark"))?;
-    let log_reply = log_reply.ok_or_else(|| missing("log_reply"))?;
-    let ns_reply = ns_reply.ok_or_else(|| missing("ns_reply"))?;
-    let store_reply = store_reply.ok_or_else(|| missing("store_reply"))?;
+    let unwrap_state = |state: [Option<u64>; 3], name: &str| -> Result<[u64; 3], String> {
+        Ok([
+            state[0].ok_or_else(|| missing(&format!("{name}_state0")))?,
+            state[1].ok_or_else(|| missing(&format!("{name}_state1")))?,
+            state[2].ok_or_else(|| missing(&format!("{name}_state2")))?,
+        ])
+    };
+    let log_state = unwrap_state(log_state, "log")?;
+    let ns_state = unwrap_state(ns_state, "ns")?;
+    let store_state = unwrap_state(store_state, "store")?;
     if services != 3 {
         return Err(format!(
             "servicemgr_ready services ({services}) must be 3 — SPEC-106: the three base services (log/ns/store) must all answer the routed probe"
@@ -3649,12 +3670,31 @@ fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
             "servicemgr_ready log/ns/store markers (0x{log_mark:x}/0x{ns_mark:x}/0x{store_mark:x}) must be 0x{SERVICE_MARKER_LOG:x}/0x{SERVICE_MARKER_NS:x}/0x{SERVICE_MARKER_STORE:x} — SPEC-106: each base service must run from its own distinct binary"
         ));
     }
-    if log_reply != SERVICE_REPLY_LOG
-        || ns_reply != SERVICE_REPLY_NS
-        || store_reply != SERVICE_REPLY_STORE
+    if log_state
+        != [
+            SERVICE_REPLY_LOG_0,
+            SERVICE_REPLY_LOG_1,
+            SERVICE_REPLY_LOG_2,
+        ]
     {
         return Err(format!(
-            "servicemgr_ready log/ns/store replies (0x{log_reply:x}/0x{ns_reply:x}/0x{store_reply:x}) must carry the kind of the routed service (0x{SERVICE_REPLY_LOG:x}/0x{SERVICE_REPLY_NS:x}/0x{SERVICE_REPLY_STORE:x}) — SPEC-106: the manager must route each probe to the correct service binary"
+            "servicemgr_ready log_state ({log_state:x?}) must be [{SERVICE_REPLY_LOG_0:x}/{SERVICE_REPLY_LOG_1:x}/{SERVICE_REPLY_LOG_2:x}] — SPEC-110: the log service must accumulate (5, 8, query 8), a stateless echo endpoint would reply 5/3/0"
+        ));
+    }
+    if ns_state != [SERVICE_REPLY_NS_0, SERVICE_REPLY_NS_1, SERVICE_REPLY_NS_2] {
+        return Err(format!(
+            "servicemgr_ready ns_state ({ns_state:x?}) must be [{SERVICE_REPLY_NS_0:x}/{SERVICE_REPLY_NS_1:x}/{SERVICE_REPLY_NS_2:x}] — SPEC-110: the namespace service must fold (5, 0x53, query 0x53), a distinct stateful transition from log/store"
+        ));
+    }
+    if store_state
+        != [
+            SERVICE_REPLY_STORE_0,
+            SERVICE_REPLY_STORE_1,
+            SERVICE_REPLY_STORE_2,
+        ]
+    {
+        return Err(format!(
+            "servicemgr_ready store_state ({store_state:x?}) must be [{SERVICE_REPLY_STORE_0:x}/{SERVICE_REPLY_STORE_1:x}/{SERVICE_REPLY_STORE_2:x}] — SPEC-110: the store service must shift-append (5, 0x503, query 0x503), a distinct stateful transition from log/ns"
         ));
     }
     Ok(())
@@ -4012,13 +4052,13 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=18;direct=23;blocks=30\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=30;direct=23;blocks=30\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=10;caps=97;root_cleared=1;grandchild=4;tasks_after=10;caps_after=97;root4_cleared=1\n",
         "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x100000038;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
         "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x5;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_reply=0x5ec9000300000011;ns_reply=0x5ec9000400000011;store_reply=0x5ec9000500000011\n",
+        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x5;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_state0=0x5ec9000300000005;log_state1=0x5ec9000300000008;log_state2=0x5ec9000300000008;ns_state0=0x5ec9000400000005;ns_state1=0x5ec9000400000053;ns_state2=0x5ec9000400000053;store_state0=0x5ec9000500000005;store_state1=0x5ec9000500000503;store_state2=0x5ec9000500000503\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=3;entries=1;binds=2;unbinds=1;mounts=2;unmounts=1;resolves=2;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4242,7 +4282,7 @@ mod tests {
     fn rejects_ipc_ready_without_the_direct_wake_path() {
         let output = VALID.replace(";direct=23;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 28/23/30"), "{error}");
+        assert!(error.contains("expected 30/23/30"), "{error}");
     }
 
     #[test]

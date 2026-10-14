@@ -105,14 +105,33 @@ pub const fn pack_service_marker(kind: u64, marker: u64) -> u64 {
         | (marker & SERVICE_MARKER_MASK)
 }
 
-/// SPEC-106：服务管理器向基础服务发**路由探针**的消息 tag（与 `SERVICE_WAKE_TAG`(0x5ECA) 不相交）。
+/// SPEC-106：服务管理器向基础服务发**请求**的消息 tag（与 `SERVICE_WAKE_TAG`(0x5ECA) 不相交）。
+///
+/// SPEC-110：请求 payload = `tag(48..63) | op(40..47) | arg(0..31)`。[`SERVICE_SERVE_OP_ADVANCE`] 用
+/// `arg` 推进服务的内部状态，[`SERVICE_SERVE_OP_QUERY`] 只读回当前状态（不改）。**定序**多条
+/// （推进、推进、查询）即判决服务**有状态**：纯回声端点会回显 `arg`，无法产生查询返回的状态值。
 pub const SERVICE_SERVE_TAG: u64 = 0x5EC9_0000_0000_0000;
-/// SPEC-106：探针参数（管理器发给每个基础服务的同一入参）。
-pub const SERVICE_SERVE_PROBE: u64 = 0x11;
+/// SPEC-110：请求 payload 里 `op` 字段（操作语义）的左移位数。
+pub const SERVICE_SERVE_OP_SHIFT: u64 = 40;
+/// SPEC-110：`op=0` 推进状态（服务按自身语义把 `arg` 并入内部状态）。
+pub const SERVICE_SERVE_OP_ADVANCE: u64 = 0;
+/// SPEC-110：`op=1` 只读回当前状态（不改）。
+pub const SERVICE_SERVE_OP_QUERY: u64 = 1;
+/// SPEC-110：定序请求的两个推进入参（5 → 3）。三个基础服务的状态转移语义**各异**（日志累加 /
+/// 存储移位追加 / Namespace 滚动指纹），故两次推进后查询返回的**三个值互异**——判决「请求经服务
+/// 表路由到了各自的**有状态**服务二进制，而非任一无状态回声端点」。
+pub const SERVICE_SERVE_ARG_A: u64 = 5;
+pub const SERVICE_SERVE_ARG_B: u64 = 3;
+/// SPEC-110：每个基础服务的定序请求条数（推进、推进、查询）。
+pub const SERVICE_SERVE_PROBES: u64 = 3;
+/// SPEC-110：把服务请求打包（`op` 为操作语义，`arg` 为低 32 位入参）。
+pub const fn pack_service_request(op: u64, arg: u64) -> u64 {
+    SERVICE_SERVE_TAG | ((op & 0xff) << SERVICE_SERVE_OP_SHIFT) | (arg & 0xffff_ffff)
+}
 /// SPEC-106：基础服务应答里 `kind` 字段的左移位数——应答 = `SERVICE_SERVE_TAG | kind<<32 | arg`。
 /// 各服务应答的 `kind` 相异，构成「请求经服务表路由到了**正确的**服务二进制」的判决性字段。
 pub const SERVICE_REPLY_KIND_SHIFT: u64 = 32;
-/// SPEC-106：把服务应答打包（`kind` 为服务的行为码，`arg` 为低 32 位结果）。
+/// SPEC-106/110：把服务应答打包（`kind` 为服务的行为码，`arg` 为低 32 位**当前状态**）。
 pub const fn pack_service_reply(kind: u64, arg: u64) -> u64 {
     SERVICE_SERVE_TAG | ((kind & 0xff) << SERVICE_REPLY_KIND_SHIFT) | (arg & 0xffff_ffff)
 }

@@ -1034,12 +1034,25 @@ pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
     write_hex_u64(witness.ns_mark);
     serial::write_bytes(b";store_mark=");
     write_hex_u64(witness.store_mark);
-    serial::write_bytes(b";log_reply=");
-    write_hex_u64(witness.log_reply);
-    serial::write_bytes(b";ns_reply=");
-    write_hex_u64(witness.ns_reply);
-    serial::write_bytes(b";store_reply=");
-    write_hex_u64(witness.store_reply);
+    // SPEC-110：三个基础服务的**定序状态**应答（推进 5 / 推进 3 / 查询 各一条）。
+    serial::write_bytes(b";log_state0=");
+    write_hex_u64(witness.log_state[0]);
+    serial::write_bytes(b";log_state1=");
+    write_hex_u64(witness.log_state[1]);
+    serial::write_bytes(b";log_state2=");
+    write_hex_u64(witness.log_state[2]);
+    serial::write_bytes(b";ns_state0=");
+    write_hex_u64(witness.ns_state[0]);
+    serial::write_bytes(b";ns_state1=");
+    write_hex_u64(witness.ns_state[1]);
+    serial::write_bytes(b";ns_state2=");
+    write_hex_u64(witness.ns_state[2]);
+    serial::write_bytes(b";store_state0=");
+    write_hex_u64(witness.store_state[0]);
+    serial::write_bytes(b";store_state1=");
+    write_hex_u64(witness.store_state[1]);
+    serial::write_bytes(b";store_state2=");
+    write_hex_u64(witness.store_state[2]);
     serial::write_bytes(b"\r\n");
 }
 

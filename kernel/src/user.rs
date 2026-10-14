@@ -270,17 +270,27 @@ pub const SERVICEMGR_NS_MARK_OFFSET: u64 = 344;
 pub const SERVICEMGR_STORE_ID_OFFSET: u64 = 352;
 pub const SERVICEMGR_STORE_MARK_OFFSET: u64 = 360;
 pub const SERVICEMGR_SERVICES_OFFSET: u64 = 368;
+/// SPEC-110：每个基础服务的**定序状态见证起始**偏移（占 3 槽：推进 A / 推进 B / 查询）。
 pub const SERVICEMGR_LOG_REPLY_OFFSET: u64 = 376;
-pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 384;
-pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 392;
+pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 400;
+pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 424;
 /// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
 pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
 pub const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
-/// SPEC-106：三个基础服务的路由探针应答（`SERVICE_SERVE_TAG | kind<<32 | 0x11`）——各 `kind` 相异。
-pub const SERVICE_REPLY_LOG: u64 = 0x5EC9_0003_0000_0011;
-pub const SERVICE_REPLY_NS: u64 = 0x5EC9_0004_0000_0011;
-pub const SERVICE_REPLY_STORE: u64 = 0x5EC9_0005_0000_0011;
+/// SPEC-106/110：三个基础服务的**定序状态**应答（`SERVICE_SERVE_TAG | kind<<32 | state`）。
+///
+/// 请求序列 = 推进 5、推进 3、查询；三个服务状态转移语义**各异**（日志累加 / 存储移位追加 /
+/// Namespace 滚动指纹）⇒ 三个终值互异。纯回声端点会回 `5/3/0`（`kind` 归槽），无法产生这些值。
+pub const SERVICE_REPLY_LOG_0: u64 = 0x5EC9_0003_0000_0005;
+pub const SERVICE_REPLY_LOG_1: u64 = 0x5EC9_0003_0000_0008;
+pub const SERVICE_REPLY_LOG_2: u64 = 0x5EC9_0003_0000_0008;
+pub const SERVICE_REPLY_NS_0: u64 = 0x5EC9_0004_0000_0005;
+pub const SERVICE_REPLY_NS_1: u64 = 0x5EC9_0004_0000_0053;
+pub const SERVICE_REPLY_NS_2: u64 = 0x5EC9_0004_0000_0053;
+pub const SERVICE_REPLY_STORE_0: u64 = 0x5EC9_0005_0000_0005;
+pub const SERVICE_REPLY_STORE_1: u64 = 0x5EC9_0005_0000_0503;
+pub const SERVICE_REPLY_STORE_2: u64 = 0x5EC9_0005_0000_0503;
 pub const SERVICE_RESOLVED_OFFSET: u64 = 208;
 pub const SERVICE_UNKNOWN_OFFSET: u64 = 216;
 pub const SERVICE_DONE_BETA_OFFSET: u64 = 224;
@@ -2304,10 +2314,11 @@ pub struct ServicemgrWitness {
     pub log_mark: u64,
     pub ns_mark: u64,
     pub store_mark: u64,
-    /// SPEC-106：三个基础服务的**路由探针应答**（各 `kind` 相异 ⇒ 路由到了正确的服务）。
-    pub log_reply: u64,
-    pub ns_reply: u64,
-    pub store_reply: u64,
+    /// SPEC-106/110：三个基础服务的**定序状态应答**（推进 5 / 推进 3 / 查询 各一条）。各服务状态
+    /// 转移语义各异 ⇒ 三个终值互异；纯回声端点无法产生。
+    pub log_state: [u64; 3],
+    pub ns_state: [u64; 3],
+    pub store_state: [u64; 3],
 }
 
 impl ServicemgrWitness {
@@ -2316,7 +2327,11 @@ impl ServicemgrWitness {
     /// 解析结果都来自 init 建起的那**同一个**独立 ring3 映像」，而非任何编译期常量。
     ///
     /// SPEC-106：另核验服务表 5 项全部建立、三个基础服务各由**不同二进制**运行（互异的存在标记与
-    /// task id），且路由探针应答的 `kind` 各归其位。
+    /// task id）。
+    ///
+    /// SPEC-110：再核验三个基础服务的**定序状态应答**逐一等于各自的期望序列（推进 5 / 推进 3 /
+    /// 查询 的终值）——`kind` 各归其位且携带的是**跨请求保留的状态**，三者终值互异。这判决路由到
+    /// 了各自的有状态服务二进制，**无状态回声端点**（回 5/3/0）无法通过。
     pub fn evidence_ok(&self) -> bool {
         let ids_distinct = self.log_id > 1
             && self.ns_id > 1
@@ -2337,9 +2352,19 @@ impl ServicemgrWitness {
             && self.log_mark == SERVICE_MARKER_LOG
             && self.ns_mark == SERVICE_MARKER_NS
             && self.store_mark == SERVICE_MARKER_STORE
-            && self.log_reply == SERVICE_REPLY_LOG
-            && self.ns_reply == SERVICE_REPLY_NS
-            && self.store_reply == SERVICE_REPLY_STORE
+            && self.log_state
+                == [
+                    SERVICE_REPLY_LOG_0,
+                    SERVICE_REPLY_LOG_1,
+                    SERVICE_REPLY_LOG_2,
+                ]
+            && self.ns_state == [SERVICE_REPLY_NS_0, SERVICE_REPLY_NS_1, SERVICE_REPLY_NS_2]
+            && self.store_state
+                == [
+                    SERVICE_REPLY_STORE_0,
+                    SERVICE_REPLY_STORE_1,
+                    SERVICE_REPLY_STORE_2,
+                ]
     }
 }
 
@@ -2368,10 +2393,19 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
         log_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_MARK_OFFSET),
         ns_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_MARK_OFFSET),
         store_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_MARK_OFFSET),
-        log_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_REPLY_OFFSET),
-        ns_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
-        store_reply: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
+        log_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_LOG_REPLY_OFFSET),
+        ns_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
+        store_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
     }
+}
+
+/// SPEC-110：读一个基础服务的三条定序状态应答（起始偏移 + 0/8/16）。
+fn read_reply_triple(base: u64) -> [u64; 3] {
+    [
+        read_qword(base),
+        read_qword(base + 8),
+        read_qword(base + 16),
+    ]
 }
 
 /// 组装第二任务机器码：

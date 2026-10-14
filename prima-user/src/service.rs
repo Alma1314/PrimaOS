@@ -6,8 +6,9 @@
 //! ELF 头得到），启动时向管理器自报：注册名 + 自管理凭据（供管理器回送路由）、以及**编译进自身
 //! 二进制**的 40 位存在标记（证明三个服务各由不同程序运行）。
 //!
-//! 收到管理器的**路由探针**（[`SERVICE_SERVE_TAG`]）后，各服务以 `kind` 绑定后回复——`kind` 相异
-//! 构成「请求经服务表路由到了正确的服务」的判决性字段。
+//! 收到管理器的**请求**（[`SERVICE_SERVE_TAG`]）后，各服务按 `op` 语义处理：`ADVANCE` 把 `arg`
+//! 并入**自身内部状态**，`QUERY` 只读回当前状态。应答带 `kind`（相异 ⇒ 路由到了正确的服务），
+//! 且携带的是**状态**而非入参的回显——纯回声端点无法通过定序「推进/推进/查询」的判决。
 //!
 //! 服务的最小权限：初始只持两条 cap——服务管理器从自身派生的 `TaskSend`（`initial_cap0`，指向
 //! 管理器）与非零角色令牌（`initial_cap1`，由代码段派生）。无段/无 Namespace 权限。
@@ -15,7 +16,8 @@
 use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
-        SERVICE_MARKER_MASK, SERVICE_NAME_MASK, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG,
+        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_MASK, SERVICE_NAME_MASK,
+        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG,
         pack_service_marker, pack_service_reply,
     },
 };
@@ -66,14 +68,33 @@ pub fn run(
             &[],
         );
     }
+    // SPEC-110：服务内部状态——`op=ADVANCE` 请求按 `kind` 语义并入 `arg`，`op=QUERY`（或未知 op）
+    // 只读回。三服务的转移语义各异，故同一请求序列得到三个互异的状态值。
+    let mut state: u64 = 0;
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
         };
         if message.payload >> 48 == SERVICE_SERVE_TAG >> 48 {
-            let arg = message.payload & 0xffff_ffff;
-            let _ = runtime.send(peer, send_cap, pack_service_reply(kind, arg), &[]);
+            let op = (message.payload >> SERVICE_SERVE_OP_SHIFT) & 0xff;
+            if op == SERVICE_SERVE_OP_ADVANCE {
+                state = advance(kind, state, message.payload & 0xffff_ffff);
+            }
+            let _ = runtime.send(peer, send_cap, pack_service_reply(kind, state), &[]);
         }
+    }
+}
+
+/// SPEC-110：各基础服务的状态转移——**语义各异**（同一请求序列 → 三个互异的状态值）。
+///
+/// - 日志：`state += arg`（累计写入字节数）
+/// - 存储：`state = (state << 8) | (arg & 0xff)`（追加低字节，像移位写入）
+/// - Namespace：`state = (state << 4) ^ arg`（滚动指纹）
+fn advance(kind: u64, state: u64, arg: u64) -> u64 {
+    match kind {
+        SERVICE_BEHAVIOR_LOG => state.wrapping_add(arg),
+        SERVICE_BEHAVIOR_STORE => (state << 8) | (arg & 0xff),
+        _ => (state << 4) ^ arg,
     }
 }
 
