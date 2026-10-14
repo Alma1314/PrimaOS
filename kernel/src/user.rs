@@ -276,6 +276,10 @@ pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 400;
 pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 424;
 /// SPEC-111：Namespace 服务**代理解析**返回的内核句柄（内核命名空间树的 `SYS_NS_RESOLVE` 结果）。
 pub const SERVICEMGR_NS_RESOLVED_OFFSET: u64 = 448;
+/// SPEC-112（S4-D3 收口）：日志/存储服务**持久化段**的内核句柄（管理器 `SYS_MEMSEG_CREATE` 铸出、
+/// 运行期移交服务）。内核据此证明两服务各持有**真实的内核 Segment 对象**，而非仅内部状态。
+pub const SERVICEMGR_LOG_SEG_OFFSET: u64 = 456;
+pub const SERVICEMGR_STORE_SEG_OFFSET: u64 = 464;
 /// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
 pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
 pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
@@ -2331,6 +2335,10 @@ pub struct ServicemgrWitness {
     pub store_state: [u64; 3],
     /// SPEC-111：Namespace 服务代理解析返回的**内核**句柄（非零、非 errno = 内核真的解析了 `/lib`）。
     pub ns_resolved: u64,
+    /// SPEC-112：日志/存储服务**持久化段**的内核句柄——须是**活的内核 `Segment` 对象**（经
+    /// [`crate::bootstrap::segment_of_cap`] 核验），且两者互异。纯寄存器实现的服务产生不出该句柄。
+    pub log_seg: u64,
+    pub store_seg: u64,
 }
 
 impl ServicemgrWitness {
@@ -2381,6 +2389,11 @@ impl ServicemgrWitness {
             // 内核侧另以 `namespace_ready.resolves` 计数增长交叉证明它真调了 `SYS_NS_RESOLVE`。
             && self.ns_resolved != 0
             && self.ns_resolved < (1 << 63)
+            // SPEC-112：日志/存储服务各持一个**活的内核 Segment 对象**（句柄非零、非哨兵、互异，
+            // 且内核 `segment_of_cap` 认其为 live Segment）——纯内部状态机产生不出该句柄。
+            && is_live_segment(self.log_seg)
+            && is_live_segment(self.store_seg)
+            && self.log_seg != self.store_seg
     }
 }
 
@@ -2413,7 +2426,19 @@ pub fn servicemgr_witness() -> ServicemgrWitness {
         ns_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
         store_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
         ns_resolved: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_RESOLVED_OFFSET),
+        log_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_SEG_OFFSET),
+        store_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_SEG_OFFSET),
     }
+}
+
+/// SPEC-112：给定内核句柄（正数、非哨兵）是否指向一个**活的** `Segment` 对象。
+fn is_live_segment(raw: u64) -> bool {
+    raw != 0
+        && raw < (1 << 63)
+        && crate::bootstrap::decode_handle(raw)
+            .ok()
+            .and_then(crate::bootstrap::segment_of_cap)
+            .is_some()
 }
 
 /// SPEC-110：读一个基础服务的三条定序状态应答（起始偏移 + 0/8/16）。

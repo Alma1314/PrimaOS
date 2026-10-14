@@ -14,14 +14,18 @@
 //! 管理器）与非零角色令牌（`initial_cap1`，由代码段派生）。**SPEC-111**：三个服务里只有 Namespace
 //! 服务另经 [`SERVICE_NS_CAP_TAG`] 收到一份 `NsResolve` 只读 Namespace 副本（管理器从自身父
 //! Namespace 派生，最小权限），据此代理 `SYS_NS_RESOLVE`；其余两个服务始终无 Namespace 权限。
+//!
+//! **SPEC-112（S4-D3 收口）**：日志/存储服务各自经 [`SERVICE_SEG_TAG`] 收到管理器 `SYS_MEMSEG_CREATE`
+//! 铸出、运行期移交的**持久化 MemorySegment**，映射进自身根后据此**落日志/落数据**——`ADVANCE`
+//! 把状态写进段、`QUERY` 从段读回（数据路径真正经过内核管理的内存）。Namespace 服务不持段。
 
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
-        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_MASK, SERVICE_NAME_MASK,
-        SERVICE_NS_CAP_TAG, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_RESOLVE,
-        SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG, pack_service_marker,
-        pack_service_reply,
+        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_MARKER_MASK,
+        SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG,
+        pack_service_marker, pack_service_reply,
     },
 };
 
@@ -38,6 +42,8 @@ const NS_RESOLVE_FAILED: u64 = u64::MAX;
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
 /// 派生 `TaskSend` 用（服务→管理器）。
 const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
+/// SPEC-112：持久化段的映射权（`SegMapR|SegMapW`）——服务把移交来的段映射进自身根后读写状态。
+const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// 引导任务（init）的 task id。对端是它时**不**发无 cap 唤醒。
 const BOOTSTRAP_TASK: u32 = 1;
 
@@ -86,6 +92,9 @@ pub fn run(
     // SPEC-111：Namespace 服务管理器**运行期移交**的 `NsResolve` 副本（仅 Namespace 服务会收到；
     // 其余服务永远为 `None`，`op=RESOLVE` 时返回哨兵）。
     let mut ns_cap: Option<Capability> = None;
+    // SPEC-112：管理器**运行期移交**的持久化段（仅日志/存储服务会收到）。收到后映射进自身根，
+    // 此后状态**落盘于该内核 MemorySegment**——日志服务据此落日志、存储服务据此落数据。
+    let mut data_seg: Option<Capability> = None;
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
@@ -96,17 +105,37 @@ pub fn run(
             if let Some(cap) = message.capabilities[0] {
                 ns_cap = Some(cap);
             }
+        } else if tag == SERVICE_SEG_TAG >> 48 {
+            // SPEC-112：接管移交的持久化段并映射进**自身根**（RW）。映射失败则退回纯寄存器语义
+            // （不 panic）——但那样管理器侧的内存句柄见证会落空，故失败可见。
+            if let Some(seg) = message.capabilities[0]
+                && runtime
+                    .memseg_map(seg, self_cap, 0, SERVICE_DATA_VA, 1, RW)
+                    .is_ok()
+            {
+                data_seg = Some(seg);
+            }
         } else if tag == SERVICE_SERVE_TAG >> 48 {
             let op = (message.payload >> SERVICE_SERVE_OP_SHIFT) & 0xff;
             let result = if op == SERVICE_SERVE_OP_ADVANCE {
                 state = advance(kind, state, message.payload & 0xffff_ffff);
+                // SPEC-112：落盘——推进后的状态写进移交来的段。
+                if data_seg.is_some() {
+                    let _ = runtime.write_user_bytes(SERVICE_DATA_VA, &state.to_le_bytes());
+                }
                 state
             } else if op == SERVICE_SERVE_OP_RESOLVE {
                 // SPEC-111：代理一次内核 Namespace 解析——结果由**内核命名空间树**决定，非本服务的
                 // 任何编译期常量。未收到 `NsResolve` 副本的服务返回哨兵（回声端点亦不可能产生句柄）。
                 ns_cap.map_or(NS_RESOLVE_FAILED, |cap| resolve_namespace(&runtime, cap))
             } else {
-                state
+                // SPEC-112：查询从**段**读回（而非本地寄存器）——数据路径真正经过内核管理的内存；
+                // 无段的服务（Namespace）仍读本地状态，语义不变。
+                if data_seg.is_some() {
+                    runtime.read_user_u64(SERVICE_DATA_VA).unwrap_or(state)
+                } else {
+                    state
+                }
             };
             let _ = runtime.send(peer, send_cap, pack_service_reply(kind, result), &[]);
         }

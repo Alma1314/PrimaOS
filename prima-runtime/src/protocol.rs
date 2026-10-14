@@ -124,6 +124,14 @@ pub const SERVICE_SERVE_OP_RESOLVE: u64 = 2;
 /// SPEC-111：服务管理器向 Namespace 服务**移交**一份 `NsResolve` 只读 Namespace 副本的消息 tag
 /// （带 cap；前置一条无 cap 唤醒）。最小权限：仅 `NsResolve` 位，服务据此代理 `SYS_NS_RESOLVE`。
 pub const SERVICE_NS_CAP_TAG: u64 = 0x5ECB_0000_0000_0000;
+/// SPEC-112（S4-D3 收口）：服务管理器向**日志/存储服务**移交其**持久化 MemorySegment** 的消息 tag
+/// （带 cap；前置一条无 cap 唤醒）。cap 由管理器 `SYS_MEMSEG_CREATE` 铸出、运行期移交给对应服务，
+/// 服务把它映射进自身根并作为**落盘存储**——日志服务用其落日志、存储服务用其落数据。
+/// 只有 log/store 收到；Namespace 服务不持段（最小权限）。
+pub const SERVICE_SEG_TAG: u64 = 0x5ECE_0000_0000_0000;
+/// SPEC-112：日志/存储服务把移交来的段映射到**自身根**内的 VA（RW），供随后的状态读写。
+/// 落在端点代码基址（`ENDPOINT_CODE_VA`）之上一页对齐的独立区域，不与代码/栈映射相交。
+pub const SERVICE_DATA_VA: u64 = 0x0000_0B00_0020_0000;
 /// SPEC-110：定序请求的两个推进入参（5 → 3）。三个基础服务的状态转移语义**各异**（日志累加 /
 /// 存储移位追加 / Namespace 滚动指纹），故两次推进后查询返回的**三个值互异**——判决「请求经服务
 /// 表路由到了各自的**有状态**服务二进制，而非任一无状态回声端点」。

@@ -5994,6 +5994,14 @@ impl BootstrapState {
             _ => None,
         }
     }
+
+    /// SPEC-112：一句柄是否指向一个**活的** `Segment` 对象（内核侧核验服务持有的持久化段）。
+    pub fn segment_of_cap(&self, cap: Handle) -> Option<u32> {
+        match self.target_of(cap) {
+            Some(ObjectRef::Segment(id)) if self.segment(id).is_some() => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// 单核无 PCID：只有当前 Task 的页表根可能在本核缓存了用户页翻译。
@@ -7580,6 +7588,14 @@ pub fn prepare_user_ipc_caps() -> Result<(), MemsegError> {
 pub fn task_of_cap(cap: Handle) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
         Some(state) => state.task_of_cap(cap),
+        None => None,
+    })
+}
+
+/// SPEC-112：句柄是否指向一个**活的** `Segment` 对象（供内核见证核验服务持有的持久化段）。
+pub fn segment_of_cap(cap: Handle) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.segment_of_cap(cap),
         None => None,
     })
 }

@@ -1056,6 +1056,11 @@ pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
     // SPEC-111：Namespace 服务代理解析返回的内核句柄。
     serial::write_bytes(b";ns_resolved=");
     write_hex_u64(witness.ns_resolved);
+    // SPEC-112：日志/存储服务持久化段的内核句柄（活的内核 Segment 对象，互异）。
+    serial::write_bytes(b";log_seg=");
+    write_hex_u64(witness.log_seg);
+    serial::write_bytes(b";store_seg=");
+    write_hex_u64(witness.store_seg);
     serial::write_bytes(b"\r\n");
 }
 

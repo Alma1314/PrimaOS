@@ -18,6 +18,10 @@
 //! 注册名、存在标记与探针应答写回共享段，构成「三服务由本管理器按表建立、且请求路由到了正确的
 //! 服务二进制」的逐字段见证。
 //!
+//! **SPEC-111/112（S4-D3 收口）**：本管理器另向三服务**运行期移交内核权限**——Namespace 服务收到
+//! 一份 `NsResolve` 只读副本（代理 `SYS_NS_RESOLVE`）；日志/存储服务各收到一个 `SYS_MEMSEG_CREATE`
+//! 铸出的**持久化 MemorySegment**（落日志/落数据）。两者的句柄写回共享段，供内核侧逐字段核验。
+//!
 //! 与本映像一起构成判决性见证的，是本管理器写回**客户端共享段**固定偏移的自证字段（自身 task
 //! id + 二进制标记）与解析结果——内核见证按共享段偏移读回，故「注册表/解析由独立 ring3 映像
 //! 产出」是逐字节可核验的，而非仅凭 init 的回执。
@@ -39,10 +43,10 @@ use prima_runtime::{
         SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
-        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE,
-        SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG, SERVICE_WAKE_TAG,
-        SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
+        SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A,
+        SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_QUERY,
+        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
 };
@@ -117,6 +121,10 @@ const OFF_NS_REPLY: u64 = 400;
 const OFF_STORE_REPLY: u64 = 424;
 /// SPEC-111：Namespace 服务**代理解析**的内核返回句柄（第 4 条应答，单独一槽）。
 const OFF_NS_RESOLVED: u64 = 448;
+/// SPEC-112（S4-D3 收口）：日志/存储服务的**持久化段**内核句柄（管理器 `SYS_MEMSEG_CREATE` 铸出，
+/// 运行期移交服务）。内核侧据此核验「确为活的内核 Segment 对象」。
+const OFF_LOG_SEG: u64 = 456;
+const OFF_STORE_SEG: u64 = 464;
 
 /// 服务表条目数（`ALPHA`/`BETA` + 日志/Namespace/存储三个基础服务）。
 const SERVICES: usize = 5;
@@ -446,6 +454,29 @@ pub extern "C" fn _start(
                 let _ = runtime.send(task, ns_ep.authority, SERVICE_WAKE_TAG, &[]);
                 let _ = runtime.send(task, ns_ep.authority, SERVICE_NS_CAP_TAG, &[copy]);
             }
+            // SPEC-112：为日志/存储服务各 `SYS_MEMSEG_CREATE` 一个持久化段并**运行期移交**——
+            // 服务把它映射进自身根后据此落日志/落数据。句柄先写回共享段（内核侧核验），再以
+            // 「无 cap 唤醒 + 带 cap 消息」两条连发移交（接收方可能阻塞在 recv）。Namespace 服务
+            // 不持段（最小权限）。移交先于下面的定序请求——同一发送者保序，故服务必先收到段。
+            let mut slot = BASE_FIRST;
+            while slot < SERVICES {
+                if slot != NS_SLOT
+                    && let Some(endpoint) = registry[slot]
+                    && let Ok(storage) = runtime.memseg_create(1, RW)
+                {
+                    if let Some(seg) = segment {
+                        let _ = runtime.write_user_bytes(
+                            USER_SEG_VA + base_seg_offset(slot),
+                            &storage.as_raw().to_le_bytes(),
+                        );
+                        let _ = seg;
+                    }
+                    let task = TaskId::from_raw(endpoint.id as u32);
+                    let _ = runtime.send(task, endpoint.authority, SERVICE_WAKE_TAG, &[]);
+                    let _ = runtime.send(task, endpoint.authority, SERVICE_SEG_TAG, &[storage]);
+                }
+                slot += 1;
+            }
             let mut slot = BASE_FIRST;
             while slot < SERVICES {
                 if let Some(endpoint) = registry[slot] {
@@ -586,6 +617,11 @@ fn base_mark_offset(slot: usize) -> u64 {
 /// SPEC-106/110：基础服务在共享段内的**定序状态见证起始**偏移（第 `index` 条读 `+ index*8`）。
 fn base_reply_offset(slot: usize) -> u64 {
     [OFF_LOG_REPLY, OFF_NS_REPLY, OFF_STORE_REPLY][slot - BASE_FIRST]
+}
+
+/// SPEC-112：日志/存储服务的**持久化段句柄**在共享段内的见证偏移（Namespace 服务不持段，槽位空）。
+fn base_seg_offset(slot: usize) -> u64 {
+    [OFF_LOG_SEG, 0, OFF_STORE_SEG][slot - BASE_FIRST]
 }
 
 /// SPEC-105/108：表驱动地创建一个端点——自解 ELF 入口 → **自建栈段** → `task_create` → 映射栈。
