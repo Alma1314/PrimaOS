@@ -2239,6 +2239,18 @@ impl TaskVspaceTable {
         }
     }
 
+    /// SPEC-107：该任务的**首个**映射 VA（无则 `None`）。供销毁路径「找到一个、拆一个」的滚动
+    /// 循环使用——免去 `[u64; MAX_VSPACE_ENTRIES]` 栈快照随容量常量放大内核栈占用。
+    fn first_mapping(&self, task_id: u32) -> Option<u64> {
+        let mut found = None;
+        self.for_each_entry(|entry| {
+            if found.is_none() && entry.task_id.get() == task_id {
+                found = Some(entry.va);
+            }
+        });
+        found
+    }
+
     fn insert(&mut self, entry: VspaceEntry) -> Result<(), MemsegError> {
         if self.count == MAX_VSPACE_ENTRIES {
             return Err(MemsegError::CapacityExceeded);
@@ -5562,15 +5574,10 @@ impl BootstrapState {
         }
         if let Some(root) = root_phys {
             let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
-            let mut entries = [0u64; MAX_VSPACE_ENTRIES];
-            let mut count = 0usize;
-            self.vspace.for_each_entry(|entry| {
-                if entry.task_id.get() == caller && count < MAX_VSPACE_ENTRIES {
-                    entries[count] = entry.va;
-                    count += 1;
-                }
-            });
-            for entry_va in entries[..count].iter().copied() {
+            // SPEC-107：逐个挑出该任务的映射并拆除——不复制 VA 到栈上快照，去掉「容量常量放大
+            // 即挤压内核栈」的隐式耦合（SPEC-106 §5.4 的 `SYS_TASK_DESTROY` 栈溢出）。
+            // ponytail: O(n²) 扫描（n ≤ MAX_VSPACE_ENTRIES = 96），只在内核销毁路径，可忽略。
+            while let Some(entry_va) = self.vspace.first_mapping(caller) {
                 crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                     crate::sched::defer_table_frame(frame)
                         .map_err(|_| crate::vspace::VspaceError::NoFrame)
@@ -5712,15 +5719,8 @@ impl BootstrapState {
             return Ok(());
         };
         let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
-        let mut entries = [0u64; MAX_VSPACE_ENTRIES];
-        let mut count = 0usize;
-        self.vspace.for_each_entry(|entry| {
-            if entry.task_id.get() == task_id && count < MAX_VSPACE_ENTRIES {
-                entries[count] = entry.va;
-                count += 1;
-            }
-        });
-        for entry_va in entries[..count].iter().copied() {
+        // SPEC-107：同 [`Self::task_destroy_self`]——滚动拆除，无栈上 VA 快照。
+        while let Some(entry_va) = self.vspace.first_mapping(task_id) {
             crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                 crate::frames::release_table_frame(frame)
                     .map_err(|_| crate::vspace::VspaceError::NoFrame)
