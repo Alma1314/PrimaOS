@@ -22,6 +22,12 @@ pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
 /// payload 布局：`tag(48..63) | payload_bits(8..47) | subtype(0..7)`；subtype 见
 /// [`SERVICE_SETUP_CODE`]/[`SERVICE_SETUP_STACK`]。与端点自报/完成 tag 不相交。
 pub const SERVICE_SETUP_TAG: u64 = 0x5ECC_0000_0000_0000;
+/// SPEC-108：`init` 向服务管理器移交**服务代码段**的消息 tag。
+///
+/// payload 布局与 [`SERVICE_SETUP_TAG`] 相同（`code_pages(40..47) | name(0..39)`），但带
+/// **一条** cap（cap0 = 代码段）。服务**栈段**不再移交——由管理器 `SYS_MEMSEG_CREATE` 自建。
+/// 与 [`SERVICE_SETUP_TAG`]（父 Namespace，仅 tag 无 payload 位）以高 16 位区分。
+pub const SERVICE_SETUP_CODE_TAG: u64 = 0x5ECD_0000_0000_0000;
 /// SPEC-105：subtype——本消息携带某服务的**代码段 cap**（另一条 cap 槽留给栈段前一条）。
 /// `payload_bits` 为 `code_pages`（1..=255）。
 pub const SERVICE_SETUP_CODE: u64 = 1;

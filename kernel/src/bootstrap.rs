@@ -6375,38 +6375,6 @@ impl BootstrapState {
                 SERVICE2_CODE_CAP_SLOT,
             )),
         )?;
-        // SPEC-093：第二个服务端点的**独立栈段**（独立**物理栈帧**，不再与 A 共享）。
-        let stack2_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let stack2_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
-        self.create_segment_object(
-            stack2_id,
-            KERNEL_ACTOR,
-            1,
-            stack2_access,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                SERVICE2_STACK_CAP_SLOT,
-            )),
-        )?;
-        // SPEC-094：**第一个**服务端点（`ALPHA`）的独立栈段——此前它与客户端共享 `Y[368]`。
-        let stack1_id = self
-            .alloc_segment_slot()
-            .ok_or(MemsegError::CapacityExceeded)?;
-        let stack1_access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
-        self.create_segment_object(
-            stack1_id,
-            KERNEL_ACTOR,
-            1,
-            stack1_access,
-            phys_offset,
-            Some((
-                CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                SERVICE_STACK_CAP_SLOT,
-            )),
-        )?;
         // SPEC-103：ring3 服务管理器的**独立代码段**（承载 `prima-servicemgr` 映像）。
         let code3_id = self
             .alloc_segment_slot()
@@ -6528,22 +6496,6 @@ impl BootstrapState {
                 STORE_CODE_CAP_SLOT,
             )),
         )?;
-        // SPEC-106：三个基础服务端点的独立栈段（独立物理栈帧）。`alloc_segment_slot` 是 `&self`
-        // （不预留），故必须**在循环内逐个分配**——否则三次连续调用会返回同一个空闲 id。
-        for slot in [LOG_STACK_CAP_SLOT, NS_STACK_CAP_SLOT, STORE_STACK_CAP_SLOT] {
-            let id = self
-                .alloc_segment_slot()
-                .ok_or(MemsegError::CapacityExceeded)?;
-            let access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
-            self.create_segment_object(
-                id,
-                KERNEL_ACTOR,
-                1,
-                access,
-                phys_offset,
-                Some((CapabilityLocation::HeldByTask(INIT_TASK_ID), slot)),
-            )?;
-        }
         Ok(TaskCreateImages {
             code: frames,
             code2,

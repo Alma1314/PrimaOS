@@ -145,9 +145,14 @@ pub const SERVICE_PREPARE_TAG: u64 = 0x5EC3_0000_0000_0000;
 pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
 /// SPEC-105：init 向服务管理器移交**建端点所需 cap 与参数**的消息 tag（与
 /// `prima-runtime::protocol::SERVICE_SETUP_TAG` 一致）。payload 布局
-/// `tag(48..63) | code_pages(40..47) | name(0..39)`；本 tag 的消息带**两条** cap
-/// （cap0 = 代码段、cap1 = 栈段），或**一条** cap（父 Namespace，此时 payload 仅 tag）。
+/// `tag(48..63) | code_pages(40..47) | name(0..39)`；本 tag 的消息带**一条** cap（父 Namespace，
+/// 此时 payload 仅 tag）。
 pub const SERVICE_SETUP_TAG: u64 = 0x5ECC_0000_0000_0000;
+/// SPEC-108：init 向服务管理器移交**服务代码段**的消息 tag（与
+/// `prima-runtime::protocol::SERVICE_SETUP_CODE_TAG` 一致）。payload 布局
+/// `tag(48..63) | code_pages(40..47) | name(0..39)`；带**一条** cap（cap0 = 代码段）。
+/// 服务**栈段**不再移交——由管理器 `SYS_MEMSEG_CREATE` 自建（栈创建下沉到 ring3）。
+pub const SERVICE_SETUP_CODE_TAG: u64 = 0x5ECD_0000_0000_0000;
 /// SPEC-088：服务端点把协商结果写回的段内偏移（init 经 `USER_HELLO2_VA` 的同一物理帧读回）。
 pub const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
 /// SPEC-088：服务端点把两个负例码写回的段内偏移。
@@ -1865,53 +1870,54 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         SERVICEMGR_RECEIPT_MGR as u32,
     );
     at += 7;
-    // 1) ALPHA：payload = SETUP | (code_pages<<40) | name；cap0 = 代码段、cap1 = 独立栈段。
+    // 1) ALPHA：payload = SETUP_CODE | (code_pages<<40) | name；cap0 = 代码段（**单 cap**）。
+    // SPEC-108：服务**栈段**不再由 `init` 移交——由管理器 `SYS_MEMSEG_CREATE` 自建。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
         at,
-        SERVICE_SETUP_TAG | ((RUNTIME_APP_CODE_PAGES as u64) << 40) | SERVICE_NAME_ALPHA,
-        2,
+        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_CODE_PAGES as u64) << 40) | SERVICE_NAME_ALPHA,
+        1,
         TASK_CREATE_CODE_CAP_HANDLE.encode(),
-        crate::bootstrap::SERVICE_STACK_CAP_HANDLE.encode(),
+        0,
     );
-    // 2) BETA：第二个独立代码段 + 第二个独立栈段。
+    // 2) BETA：第二个独立代码段。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
         at,
-        SERVICE_SETUP_TAG | ((RUNTIME_APP2_CODE_PAGES as u64) << 40) | SERVICE_NAME_BETA,
-        2,
+        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP2_CODE_PAGES as u64) << 40) | SERVICE_NAME_BETA,
+        1,
         crate::bootstrap::SERVICE2_CODE_CAP_HANDLE.encode(),
-        crate::bootstrap::SERVICE2_STACK_CAP_HANDLE.encode(),
+        0,
     );
-    // 3) SPEC-106（S4-D3）：三个基础服务——日志 / Namespace / 基础存储，各一对「代码段 + 栈段」。
+    // 3) SPEC-106（S4-D3）：三个基础服务——日志 / Namespace / 基础存储，各一个独立代码段。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
         at,
-        SERVICE_SETUP_TAG | ((RUNTIME_APP_LOG_CODE_PAGES as u64) << 40) | SERVICE_NAME_LOG,
-        2,
+        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_LOG_CODE_PAGES as u64) << 40) | SERVICE_NAME_LOG,
+        1,
         crate::bootstrap::LOG_CODE_CAP_HANDLE.encode(),
-        crate::bootstrap::LOG_STACK_CAP_HANDLE.encode(),
+        0,
     );
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
         at,
-        SERVICE_SETUP_TAG | ((RUNTIME_APP_NS_CODE_PAGES as u64) << 40) | SERVICE_NAME_NS,
-        2,
+        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_NS_CODE_PAGES as u64) << 40) | SERVICE_NAME_NS,
+        1,
         crate::bootstrap::NS_CODE_CAP_HANDLE.encode(),
-        crate::bootstrap::NS_STACK_CAP_HANDLE.encode(),
+        0,
     );
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
     at = emit_send(
         &mut code,
         at,
-        SERVICE_SETUP_TAG | ((RUNTIME_APP_STORE_CODE_PAGES as u64) << 40) | SERVICE_NAME_STORE,
-        2,
+        SERVICE_SETUP_CODE_TAG | ((RUNTIME_APP_STORE_CODE_PAGES as u64) << 40) | SERVICE_NAME_STORE,
+        1,
         crate::bootstrap::STORE_CODE_CAP_HANDLE.encode(),
-        crate::bootstrap::STORE_STACK_CAP_HANDLE.encode(),
+        0,
     );
     // 4) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);

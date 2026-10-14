@@ -38,8 +38,8 @@ use prima_runtime::{
         SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET,
-        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICEMGR_HELLO_TAG, pack_service_name,
+        SERVICE_NAME_STORE, SERVICE_SERVE_PROBE, SERVICE_SERVE_TAG, SERVICE_SETUP_CODE_TAG,
+        SERVICE_SETUP_TAG, SERVICEMGR_HELLO_TAG, pack_service_name,
     },
     task::TaskSpec,
 };
@@ -125,11 +125,12 @@ struct Endpoint {
     behavior: u64,
 }
 
-/// SPEC-105：待创建的服务（`init` 移交的 cap + 运行期参数）。
+/// SPEC-105/108：待创建的服务（`init` 移交的**代码段** cap + 运行期参数）。
+///
+/// SPEC-108：**栈段**不再由 `init` 移交——[`create_service`] 用 `SYS_MEMSEG_CREATE` 自建。
 #[derive(Clone, Copy)]
 struct Pending {
     code: Capability,
-    stack: Capability,
     pages: u64,
     name: u64,
 }
@@ -212,27 +213,28 @@ pub extern "C" fn _start(
         let Ok(message) = runtime.receive() else {
             continue;
         };
-        if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
-            // ⓪ SPEC-105/106：init 移交建端点所需的 cap/参数。
+        if message.payload >> 48 == SERVICE_SETUP_CODE_TAG >> 48 {
+            // ⓪ SPEC-108：init 移交某服务的**代码段** cap（**单 cap**）；name/pages 在 payload。
+            // 栈段由本管理器自建（见 [`create_service`]）。
             if let Some(cap0) = message.capabilities[0] {
-                if let Some(cap1) = message.capabilities[1] {
-                    // 一条服务：cap0 = 代码段、cap1 = 栈段；参数在 payload 里。
-                    let name = message.payload & SERVICE_NAME_MASK;
-                    let pages = (message.payload >> 40) & 0xff;
-                    if let Some(slot) = table_slot(name)
-                        && pending[slot].is_none()
-                    {
-                        pending[slot] = Some(Pending {
-                            code: cap0,
-                            stack: cap1,
-                            pages,
-                            name,
-                        });
-                    }
-                } else if ns.is_none() {
-                    // 父 Namespace（单条 cap）。
-                    ns = Some(cap0);
+                let name = message.payload & SERVICE_NAME_MASK;
+                let pages = (message.payload >> 40) & 0xff;
+                if let Some(slot) = table_slot(name)
+                    && pending[slot].is_none()
+                {
+                    pending[slot] = Some(Pending {
+                        code: cap0,
+                        pages,
+                        name,
+                    });
                 }
+            }
+        } else if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
+            // ⓪' SPEC-105：init 移交父 Namespace（单 cap，payload 仅 tag）。
+            if let Some(cap0) = message.capabilities[0]
+                && ns.is_none()
+            {
+                ns = Some(cap0);
             }
         } else if message.capabilities[1].is_some() {
             // ① 客户端 Hello（唯一带**两条** cap 的消息：段 cap + 客户端自管理 cap）。
@@ -480,10 +482,14 @@ fn base_reply_offset(slot: usize) -> u64 {
     [OFF_LOG_REPLY, OFF_NS_REPLY, OFF_STORE_REPLY][slot - BASE_FIRST]
 }
 
-/// SPEC-105：表驱动地创建一个端点——自解 ELF 入口 → `task_create` → 映射独立栈段。
+/// SPEC-105/108：表驱动地创建一个端点——自解 ELF 入口 → **自建栈段** → `task_create` → 映射栈。
 ///
 /// 创建者（本管理器）从自身 `self_cap` 派生指向自己的 `TaskSend` 凭据作 `initial_cap0`（端点据此
 /// 自报/发 done 直达本管理器），从代码段派生只读令牌作 `initial_cap1`（非零 = 端点角色）。
+///
+/// **SPEC-108**：栈段由本管理器 `SYS_MEMSEG_CREATE` **自建**（不再由 `init` 移交）——服务任务的
+/// 全部创建（代码段之外的栈）就此收敛到 ring3。`memseg_create` 铸出的根 cap 属主是本管理器，
+/// 故随后可 `memseg_map` 进新端点根。
 #[allow(clippy::too_many_arguments)]
 fn create_service(
     runtime: &Runtime<impl SyscallTransport>,
@@ -519,6 +525,10 @@ fn create_service(
     if e_entry == u64::MAX {
         return false;
     }
+    // SPEC-108：自建 1 页栈段（`R|W`）。
+    let Ok(stack) = runtime.memseg_create(1, RW) else {
+        return false;
+    };
     let entry = ENDPOINT_CODE_VA + e_entry;
     let Ok(manager) = runtime.task_create(&TaskSpec {
         code_segment: spec.code,
@@ -535,7 +545,7 @@ fn create_service(
         return false;
     };
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
-    let _ = runtime.memseg_map(spec.stack, manager, 0, ENDPOINT_STACK_VA, 1, RW);
+    let _ = runtime.memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW);
     write_created_witness(runtime, slot, e_entry, initial1, manager);
     true
 }
