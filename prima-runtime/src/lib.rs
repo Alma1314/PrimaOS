@@ -11,6 +11,7 @@
 mod syscall;
 
 pub mod capability;
+pub mod device;
 pub mod error;
 pub mod ipc;
 pub mod memory;

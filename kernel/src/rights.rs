@@ -30,10 +30,14 @@ pub enum Right {
     ExcSourceDestroy,
     NodeConnect,
     NodeDestroy,
+    /// §15.3 `DeviceRight` 的 **IOPortRange** 子集（MMIO/DMA/IRQ 的权利在实现对应设备种类时再加）。
+    DevIORead,
+    DevIOWrite,
+    DevDestroy,
 }
 
 /// 全部 Right 的规范枚举顺序（同时是渲染顺序与解析顺序）。
-pub const ALL_RIGHTS: [Right; 20] = [
+pub const ALL_RIGHTS: [Right; 23] = [
     Right::Derive,
     Right::SegMapR,
     Right::SegMapW,
@@ -54,6 +58,9 @@ pub const ALL_RIGHTS: [Right; 20] = [
     Right::ExcSourceDestroy,
     Right::NodeConnect,
     Right::NodeDestroy,
+    Right::DevIORead,
+    Right::DevIOWrite,
+    Right::DevDestroy,
 ];
 
 impl Right {
@@ -79,6 +86,9 @@ impl Right {
             Right::ExcSourceDestroy => "ExcSourceDestroy",
             Right::NodeConnect => "NodeConnect",
             Right::NodeDestroy => "NodeDestroy",
+            Right::DevIORead => "DevIORead",
+            Right::DevIOWrite => "DevIOWrite",
+            Right::DevDestroy => "DevDestroy",
         }
     }
 
@@ -100,6 +110,8 @@ pub enum ObjectKind {
     Timer,
     ExcSource,
     Node,
+    /// §15.2 `Device(DevId)`——设备对象（本片仅实现 `IOPortRange` 种）。
+    Device,
 }
 
 impl ObjectKind {
@@ -124,6 +136,7 @@ impl ObjectKind {
             ObjectKind::Timer => &[Right::TimerCancel, Right::TimerDestroy],
             ObjectKind::ExcSource => &[Right::ExcSubscribe, Right::ExcSourceDestroy],
             ObjectKind::Node => &[Right::NodeConnect, Right::NodeDestroy],
+            ObjectKind::Device => &[Right::DevIORead, Right::DevIOWrite, Right::DevDestroy],
         }
     }
 }
@@ -331,6 +344,18 @@ mod tests {
         assert!(!parse("ExcSubscribe").well_typed(ObjectKind::Namespace));
         // `Derive` 自身可用于任何对象类型。
         assert!(parse("Derive").well_typed(ObjectKind::Node));
+    }
+
+    #[test]
+    fn device_ioport_rights_are_typed_to_devices_only() {
+        // §15.5：`dev_ioport_create` 的根 cap 权限 = {Derive, DevIORead, DevIOWrite, DevDestroy}。
+        let ioport = parse("DevIOWrite,Derive,DevIORead,DevDestroy");
+        assert_eq!(render(ioport), "Derive,DevIORead,DevIOWrite,DevDestroy");
+        assert!(ioport.well_typed(ObjectKind::Device));
+        // 设备权利不得落在其它对象类型上，反之亦然。
+        assert!(!parse("DevIORead").well_typed(ObjectKind::Segment));
+        assert!(!parse("SegMapR").well_typed(ObjectKind::Device));
+        assert!(parse("Derive").well_typed(ObjectKind::Device));
     }
 
     #[test]

@@ -38,12 +38,12 @@ use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
 pub use prima_abi::syscall::{
-    SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_ECHO,
-    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
-    SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
-    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
-    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
+    SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_DEV_IOPORT_CREATE,
+    SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE,
+    SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP,
+    SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND,
+    SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID,
+    SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -852,6 +852,49 @@ fn timer_errno(error: bootstrap::TimerError) -> Errno {
         TimerError::InvalidCap | TimerError::InvalidTimer => Errno::NoEnt,
         TimerError::InvalidTime => Errno::Invalid,
         TimerError::CapacityExceeded | TimerError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// SPEC-113 / §15：`DeviceError` → errno（受控 I/O 路径的失败编码）。
+fn device_errno(error: bootstrap::DeviceError) -> Errno {
+    use bootstrap::DeviceError;
+    match error {
+        DeviceError::InvalidCaller | DeviceError::NotHeld | DeviceError::MissingRight(_) => {
+            Errno::Access
+        }
+        DeviceError::InvalidCap | DeviceError::NotADevice | DeviceError::DeadDevice => Errno::NoEnt,
+        DeviceError::PortOutOfRange | DeviceError::EmptyRange => Errno::Invalid,
+        DeviceError::CapacityExceeded | DeviceError::AuditFull => Errno::NoSpace,
+    }
+}
+
+/// SPEC-113 / §15.5：`dev_ioport_create` 服务——`args[0]=base_port`、`args[1]=port_count`。
+fn dev_ioport_create_call(base_port: u64, port_count: u64) -> u64 {
+    match bootstrap::dev_ioport_create(sched::current(), base_port as u16, port_count as u16) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(device_errno(error)),
+    }
+}
+
+/// SPEC-113 / §15.5：受控端口写服务——`args[0]=dev cap`、`args[1]=port`、`args[2]=value`。
+fn dev_ioport_out_call(raw_cap: u64, port: u64, value: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::dev_ioport_out(sched::current(), cap, port as u16, value as u8) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(device_errno(error)),
+    }
+}
+
+/// SPEC-113 / §15.5：受控端口读服务——`args[0]=dev cap`、`args[1]=port`；成功返回读回的字节。
+fn dev_ioport_in_call(raw_cap: u64, port: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::dev_ioport_in(sched::current(), cap, port as u16) {
+        Ok(value) => value as u64,
+        Err(error) => encode_errno(device_errno(error)),
     }
 }
 
@@ -2159,6 +2202,12 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_destroy_call(args[0])
     } else if num == SYS_AUDIT {
         audit_call(args[0])
+    } else if num == SYS_DEV_IOPORT_CREATE {
+        dev_ioport_create_call(args[0], args[1])
+    } else if num == SYS_DEV_IOPORT_OUT {
+        dev_ioport_out_call(args[0], args[1], args[2])
+    } else if num == SYS_DEV_IOPORT_IN {
+        dev_ioport_in_call(args[0], args[1])
     } else {
         dispatch_plain(num, args)
     }

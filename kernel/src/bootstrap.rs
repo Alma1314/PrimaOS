@@ -919,6 +919,8 @@ pub enum ObjectRef {
     ExcSource(u32),
     /// SPEC-082 / §5.5：定时器对象。
     Timer(u32),
+    /// SPEC-113 / §15.2：设备对象（本片仅实现 `IOPortRange` 种）。
+    Device(u32),
 }
 
 impl ObjectRef {
@@ -929,6 +931,7 @@ impl ObjectRef {
             ObjectRef::Namespace(_) => ObjectKind::Namespace,
             ObjectRef::ExcSource(_) => ObjectKind::ExcSource,
             ObjectRef::Timer(_) => ObjectKind::Timer,
+            ObjectRef::Device(_) => ObjectKind::Device,
         }
     }
 
@@ -940,7 +943,8 @@ impl ObjectRef {
             | Self::Task(id)
             | Self::Namespace(id)
             | Self::ExcSource(id)
-            | Self::Timer(id) => id,
+            | Self::Timer(id)
+            | Self::Device(id) => id,
         }
     }
 }
@@ -2640,6 +2644,66 @@ impl TimerState {
     }
 }
 
+/// SPEC-113 / §15.5：`IOPortRange { base_port, port_count }` 设备对象（本片仅实现此一种
+/// `DeviceKind`；MMIO/DMA/IRQ 种在实现对应路径时再加）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceObject {
+    pub id: u32,
+    pub creator: u32,
+    pub base_port: u16,
+    pub port_count: u16,
+}
+
+impl DeviceObject {
+    /// §15.5：端口 `port` 是否落在本设备的授权区间 `[base_port, base_port + port_count)` 内。
+    /// 区间按 u32 计算，避免 `base_port + port_count` 在 u16 上回绕。
+    pub fn covers(self, port: u16) -> bool {
+        let port = port as u32;
+        let base = self.base_port as u32;
+        port >= base && port < base + self.port_count as u32
+    }
+}
+
+/// SPEC-113：活动设备表（固定容量、内联）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceTable {
+    pub entries: [Option<DeviceObject>; MAX_DEVICES],
+    pub count: usize,
+}
+
+impl DeviceTable {
+    pub const fn empty() -> Self {
+        Self {
+            entries: [None; MAX_DEVICES],
+            count: 0,
+        }
+    }
+
+    pub fn find(&self, id: u32) -> Option<&DeviceObject> {
+        self.entries.iter().flatten().find(|device| device.id == id)
+    }
+
+    /// 最小的空闲 id（与 Timer/Namespace 同款复用语义）。
+    fn next_id(&self) -> u32 {
+        let mut candidate = 1;
+        loop {
+            if self.find(candidate).is_none() {
+                return candidate;
+            }
+            candidate += 1;
+        }
+    }
+
+    fn insert(&mut self, device: DeviceObject) -> bool {
+        let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) else {
+            return false;
+        };
+        *slot = Some(device);
+        self.count += 1;
+        true
+    }
+}
+
 /// SPEC-082 / §5.5：`Timer { creator, state }`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerObject {
@@ -2770,6 +2834,31 @@ pub enum TimerError {
     AuditFull,
 }
 
+/// SPEC-113 / §15：设备操作的失败域。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceError {
+    /// §6.1 Actor 约束：调用者不是活动 Task。
+    InvalidCaller,
+    /// `cap` 不是有效 CapId。
+    InvalidCap,
+    /// `cap` 不指向 Device。
+    NotADevice,
+    /// `cap` 指向的 Device 已不存在。
+    DeadDevice,
+    /// 不在 `HeldBy(caller)`。
+    NotHeld,
+    /// 缺少指定权限。
+    MissingRight(Right),
+    /// §15.5：端口落在设备授权区间之外（受控 I/O 路径的核心拒绝分支）。
+    PortOutOfRange,
+    /// §15.5 构造约束：`port_count == 0`。
+    EmptyRange,
+    /// 实现层：设备表或槽位容量耗尽（§6.2 排除项）。
+    CapacityExceeded,
+    /// 实现层：审计容量耗尽（§6.2 排除项）。
+    AuditFull,
+}
+
 /// SPEC-082：Timer 的实现层计数（失败/状态返回不产生审计事件，故单列）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimerStats {
@@ -2877,6 +2966,15 @@ pub const MAX_NS_ENTRIES: usize = 16;
 pub type Instant = u64;
 /// SPEC-082：活动 Timer 上限（§5.5；细化为固定容量表，约 8 × 32 B = 256 B 内联）。
 pub const MAX_TIMERS: usize = 8;
+/// SPEC-113 / §15.2：活动设备对象上限（细化为固定容量表，8 × 16 B 内联）。
+pub const MAX_DEVICES: usize = 8;
+/// SPEC-113 / §15.5：`dev_ioport_create` 铸出的根 Capability 权限集。
+pub const DEVICE_IOPORT_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::DevIORead,
+    Right::DevIOWrite,
+    Right::DevDestroy,
+]);
 /// SPEC-082 / §10.2 成功动作 2：Timer 根 Capability 的权限集。
 pub const TIMER_RIGHTS: Rights =
     Rights::from_rights(&[Right::Derive, Right::TimerCancel, Right::TimerDestroy]);
@@ -2938,6 +3036,8 @@ pub struct BootstrapState {
     pub timers: TimerTable,
     /// SPEC-082：Timer 的实现层计数（不属抽象状态）。
     pub timer_stats: TimerStats,
+    /// SPEC-113 / §15.2：活动设备表（本片仅 `IOPortRange` 种）。
+    pub devices: DeviceTable,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -3281,6 +3381,7 @@ impl BootstrapState {
                 .any(|namespace| namespace.id == id),
             ObjectRef::ExcSource(id) => self.exc_sources.find(id).is_some(),
             ObjectRef::Timer(id) => self.timers.find(id).is_some(),
+            ObjectRef::Device(id) => self.devices.find(id).is_some(),
         }
     }
 
@@ -4751,6 +4852,119 @@ impl BootstrapState {
             }
         }
         false
+    }
+
+    // -----------------------------------------------------------------------
+    // SPEC-113：§15 设备（本片仅 IOPortRange 种）
+    // -----------------------------------------------------------------------
+
+    /// §15.5 `dev_ioport_create(base_port, port_count)`：建 `IOPortRange` 设备对象并铸根
+    /// Capability（权限 `{Derive, DevIORead, DevIOWrite, DevDestroy}`）。
+    ///
+    /// §15.5 声明「无失败分支」（`base_port`/`port_count` 由平台枚举提供）；细化层的表/槽/审计
+    /// 容量耗尽映射为 [`DeviceError::CapacityExceeded`]/[`DeviceError::AuditFull`]，`port_count == 0`
+    /// 为构造约束 [`DeviceError::EmptyRange`]。
+    pub fn dev_ioport_create(
+        &mut self,
+        caller: u32,
+        base_port: u16,
+        port_count: u16,
+    ) -> Result<Handle, DeviceError> {
+        if !self.tasks.is_live(caller) {
+            return Err(DeviceError::InvalidCaller);
+        }
+        if port_count == 0 {
+            return Err(DeviceError::EmptyRange);
+        }
+        if self.devices.count == MAX_DEVICES {
+            return Err(DeviceError::CapacityExceeded);
+        }
+        if !self.audit.can_append(2) {
+            return Err(DeviceError::AuditFull);
+        }
+        let id = self.devices.next_id();
+        let handle = self
+            .mint_root_capability(caller, DEVICE_IOPORT_RIGHTS, ObjectRef::Device(id))
+            .map_err(|_| DeviceError::CapacityExceeded)?;
+        if !self.devices.insert(DeviceObject {
+            id,
+            creator: caller,
+            base_port,
+            port_count,
+        }) {
+            return Err(DeviceError::CapacityExceeded);
+        }
+        self.audit.append(AuditEvent::ObjectCreated {
+            object_id: id,
+            segment: false,
+        });
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: handle,
+            holder: caller,
+        });
+        Ok(handle)
+    }
+
+    /// §15.5：授权一次端口 I/O——`cap` 须由 `caller` 持有、可用、指向活动 `Device`、含所需
+    /// `DevIORead`/`DevIOWrite`，且**端口落在该设备区间内**（超出即 [`DeviceError::PortOutOfRange`]）。
+    /// 返回设备 id。
+    fn authorize_ioport(
+        &self,
+        caller: u32,
+        cap: Handle,
+        port: u16,
+        right: Right,
+    ) -> Result<u32, DeviceError> {
+        if !self.tasks.is_live(caller) {
+            return Err(DeviceError::InvalidCaller);
+        }
+        match self.slots.check(cap) {
+            SlotState::Free => return Err(DeviceError::InvalidCap),
+            SlotState::Stale => return Err(DeviceError::DeadDevice),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(cap).ok_or(DeviceError::InvalidCap)?;
+        let ObjectRef::Device(id) = target else {
+            return Err(DeviceError::NotADevice);
+        };
+        let Some(device) = self.devices.find(id) else {
+            return Err(DeviceError::DeadDevice);
+        };
+        if self.holder_of(cap) != Some(caller) {
+            return Err(DeviceError::NotHeld);
+        }
+        let rights = self.rights_of(cap).ok_or(DeviceError::InvalidCap)?;
+        if !rights.contains(right) {
+            return Err(DeviceError::MissingRight(right));
+        }
+        if !device.covers(port) {
+            return Err(DeviceError::PortOutOfRange);
+        }
+        Ok(id)
+    }
+
+    /// SPEC-113 / §15.5：受控端口**写**——授权后由内核代执行 `outb`（细化层的受控 I/O 路径）。
+    pub fn dev_ioport_out(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+        port: u16,
+        value: u8,
+    ) -> Result<(), DeviceError> {
+        self.authorize_ioport(caller, cap, port, Right::DevIOWrite)?;
+        prima_ostd::arch::outb(port, value);
+        Ok(())
+    }
+
+    /// SPEC-113 / §15.5：受控端口**读**——授权后由内核代执行 `inb`（细化层的受控 I/O 路径）。
+    pub fn dev_ioport_in(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+        port: u16,
+    ) -> Result<u8, DeviceError> {
+        self.authorize_ioport(caller, cap, port, Right::DevIORead)?;
+        Ok(prima_ostd::arch::inb(port))
     }
 
     // -----------------------------------------------------------------------
@@ -6935,6 +7149,7 @@ pub fn create_state(
         now: 0,
         timers: TimerTable::empty(),
         timer_stats: TimerStats::default(),
+        devices: DeviceTable::empty(),
         vspace: TaskVspaceTable::empty(),
         // §14 步骤 9 / W14：bootstrap 成功即置位。
         booted: true,
@@ -7419,6 +7634,34 @@ pub fn timer_destroy(caller: u32, cap: Handle) -> Result<(), TimerError> {
     })
 }
 
+/// SPEC-113：全局 `dev_ioport_create`（§15.5）。
+pub fn dev_ioport_create(
+    caller: u32,
+    base_port: u16,
+    port_count: u16,
+) -> Result<Handle, DeviceError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.dev_ioport_create(caller, base_port, port_count),
+        None => Err(DeviceError::InvalidCaller),
+    })
+}
+
+/// SPEC-113：全局受控端口写（§15.5）。
+pub fn dev_ioport_out(caller: u32, cap: Handle, port: u16, value: u8) -> Result<(), DeviceError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.dev_ioport_out(caller, cap, port, value),
+        None => Err(DeviceError::InvalidCaller),
+    })
+}
+
+/// SPEC-113：全局受控端口读（§15.5）。
+pub fn dev_ioport_in(caller: u32, cap: Handle, port: u16) -> Result<u8, DeviceError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.dev_ioport_in(caller, cap, port),
+        None => Err(DeviceError::InvalidCaller),
+    })
+}
+
 /// SPEC-082：全局 `advance_time`（§10.3，`KernelActor` 内部迁移）。
 pub fn advance_time(new_now: Instant) -> Result<(), TimerError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
@@ -7731,20 +7974,21 @@ pub fn exc_subscribed(caller: u32, cap: Handle, kind: ExcKind) -> Result<u32, Ex
 mod tests {
     use super::{
         AuditError, AuditEvent, AuthError, AuthorityError, BootstrapError, CapabilityLocation,
-        CapabilityPositionError, DeriveError, DropError, EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS,
-        EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind, ExcResumeError, Handle, IMAGE_CAP_HANDLE,
-        IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION,
-        INITIAL_CAPABILITY_COUNT, InitialObject, IpcError, KERNEL_ACTOR, MAX_CAPABILITY_SLOTS,
-        MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE,
-        NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
-        PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT, PLATFORM_SEGMENT_ID_FIRST,
-        PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
-        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT,
-        SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
-        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskStatus,
-        TimerCancelOutcome, TimerCancelReason, TimerError, TimerState, USER_IPC_CAP_SLOT_BASE,
-        USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state, entry_in_image,
-        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
+        CapabilityPositionError, DEVICE_IOPORT_RIGHTS, DeriveError, DeviceError, DropError,
+        EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS, EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind,
+        ExcResumeError, Handle, IMAGE_CAP_HANDLE, IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID,
+        INIT_TASK_ID, INITIAL_CAP_GENERATION, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError,
+        KERNEL_ACTOR, MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES,
+        MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError,
+        ObjectRef, PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
+        PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
+        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc,
+        SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames,
+        SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE,
+        TIMER_RIGHTS, TaskError, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
+        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot,
+        create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
+        platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{ObjectKind, Right, Rights};
@@ -10486,6 +10730,109 @@ mod tests {
         assert!(
             size <= 13 * 1024,
             "BootstrapState size = {size} bytes：审计存储应已移出结构体（SPEC-074），余量应 ≥ 3 KiB"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SPEC-113：§15 设备（IOPortRange）与受控 I/O 端口授权
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dev_ioport_create_mints_a_typed_device_capability() {
+        let mut state = fresh_state();
+        let handle = state
+            .dev_ioport_create(INIT_TASK_ID, 0x3f8, 8)
+            .expect("device created");
+        let target = state.target_of(handle).expect("root cap resolves");
+        assert_eq!(target.kind(), ObjectKind::Device);
+        let device = state.devices.find(target.id()).expect("device is live");
+        assert_eq!((device.base_port, device.port_count), (0x3f8, 8));
+        assert!(device.covers(0x3f8) && device.covers(0x3ff));
+        assert!(!device.covers(0x3f7) && !device.covers(0x400));
+        // §15.5：根 cap 权限恰为 {Derive, DevIORead, DevIOWrite, DevDestroy}。
+        assert_eq!(state.rights_of(handle), Some(DEVICE_IOPORT_RIGHTS));
+    }
+
+    #[test]
+    fn dev_ioport_create_rejects_an_empty_range() {
+        let mut state = fresh_state();
+        assert_eq!(
+            state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 0),
+            Err(DeviceError::EmptyRange)
+        );
+        assert_eq!(state.devices.count, 0);
+    }
+
+    #[test]
+    fn port_authorization_is_scoped_to_the_device_range() {
+        let mut state = fresh_state();
+        let handle = state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 8).unwrap();
+        // 仅授权层——host 单测不能执行特权 `outb`/`inb`，故不调 `dev_ioport_out`/`_in`。
+        assert!(
+            state
+                .authorize_ioport(INIT_TASK_ID, handle, 0x3f8, Right::DevIOWrite)
+                .is_ok()
+        );
+        assert!(
+            state
+                .authorize_ioport(INIT_TASK_ID, handle, 0x3ff, Right::DevIORead)
+                .is_ok()
+        );
+        // 区间外的端口——即使持有正确的权利也被拒（受控 I/O 路径的核心约束）。
+        assert_eq!(
+            state.authorize_ioport(INIT_TASK_ID, handle, 0x2f8, Right::DevIOWrite),
+            Err(DeviceError::PortOutOfRange)
+        );
+        assert_eq!(
+            state.authorize_ioport(INIT_TASK_ID, handle, 0x400, Right::DevIORead),
+            Err(DeviceError::PortOutOfRange)
+        );
+    }
+
+    #[test]
+    fn port_authorization_requires_the_matching_right() {
+        let mut state = fresh_state();
+        let handle = state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 8).unwrap();
+        let read_only = state
+            .derive_capability(
+                INIT_TASK_ID,
+                handle,
+                Rights::from_rights(&[Right::DevIORead]),
+            )
+            .expect("derived read-only device cap");
+        // 无 DevIOWrite ⇒ 写被拒；读仍可。
+        assert_eq!(
+            state.authorize_ioport(INIT_TASK_ID, read_only, 0x3f8, Right::DevIOWrite),
+            Err(DeviceError::MissingRight(Right::DevIOWrite))
+        );
+        assert!(
+            state
+                .authorize_ioport(INIT_TASK_ID, read_only, 0x3f8, Right::DevIORead)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn port_authorization_rejects_a_non_device_capability() {
+        let state = fresh_state();
+        // 初始 image Segment cap 不是 Device。
+        assert_eq!(
+            state.authorize_ioport(INIT_TASK_ID, IMAGE_CAP_HANDLE, 0x3f8, Right::DevIOWrite),
+            Err(DeviceError::NotADevice)
+        );
+    }
+
+    #[test]
+    fn device_table_saturates_at_its_capacity() {
+        let mut state = fresh_state();
+        for index in 0..MAX_DEVICES {
+            state
+                .dev_ioport_create(INIT_TASK_ID, 0x3f8 + index as u16, 1)
+                .expect("within capacity");
+        }
+        assert_eq!(
+            state.dev_ioport_create(INIT_TASK_ID, 0x400, 1),
+            Err(DeviceError::CapacityExceeded)
         );
     }
 

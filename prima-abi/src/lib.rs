@@ -40,4 +40,10 @@ pub mod syscall {
     pub const SYS_TIMER_CANCEL: u64 = 30;
     pub const SYS_TIMER_DESTROY: u64 = 31;
     pub const SYS_AUDIT: u64 = 32;
+    /// SPEC-113 / §15.5：`dev_ioport_create(base_port, port_count) -> dev_cap`。
+    pub const SYS_DEV_IOPORT_CREATE: u64 = 33;
+    /// SPEC-113 / §15.5：受控端口写 `dev_ioport_out(dev_cap, port, value)`（内核代执行 `outb`）。
+    pub const SYS_DEV_IOPORT_OUT: u64 = 34;
+    /// SPEC-113 / §15.5：受控端口读 `dev_ioport_in(dev_cap, port) -> u8`（内核代执行 `inb`）。
+    pub const SYS_DEV_IOPORT_IN: u64 = 35;
 }
