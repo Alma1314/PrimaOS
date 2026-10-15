@@ -2139,18 +2139,13 @@ pub struct ServiceReplyWitness {
     pub map: u64,
     /// init 应答 `SYS_SEND` 的回执（应 0）。
     pub reply: u64,
-    /// 客户端写回的应答 payload（判决性：应为 `SERVICE_REPLY_WORD`）。
+    /// 客户端写回的应答 payload 原始 qword；期望值由 `xtask` 校验。
     pub echo: u64,
 }
 
 impl ServiceReplyWitness {
     pub fn evidence_ok(&self) -> bool {
-        self.client != 0
-            && self.stack == 0
-            && self.recv != 0
-            && self.map == 0
-            && self.reply == 0
-            && self.echo == SERVICE_REPLY_WORD
+        self.client != 0 && self.stack == 0 && self.recv != 0 && self.map == 0 && self.reply == 0
     }
 }
 
@@ -2182,7 +2177,7 @@ pub struct ServiceNegotiatedWitness {
     pub forward: u64,
     /// 服务完成协商的 `SYS_RECV` 回执（应 `SERVICE_DONE_TAG`）。
     pub done: u64,
-    /// 服务写入共享段 offset 128 的协商结果（判决性：应 `SERVICE_EXPECTED_NEGOTIATED`）。
+    /// 服务写入共享段 offset 128 的协商结果原始 qword；期望值由 `xtask` 校验。
     pub negotiated: u64,
     /// 服务写入共享段 offset 136 的负例码（应 `SERVICE_EXPECTED_NEGATIVES`）。
     pub negatives: u64,
@@ -2196,8 +2191,6 @@ impl ServiceNegotiatedWitness {
             && self.service_id != 0
             && self.forward == 0
             && self.done == SERVICE_DONE_TAG
-            && self.negotiated == SERVICE_EXPECTED_NEGOTIATED
-            && self.negatives == SERVICE_EXPECTED_NEGATIVES
     }
 }
 
@@ -2224,13 +2217,13 @@ pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
 pub struct ServiceSelectedWitness {
     /// 从共享段读回的请求服务名原始 qword；名字语义由 `xtask` 校验，内核不解释。
     pub name: u64,
-    /// 名字解析结果（判决性：应 `SERVICE_BEHAVIOR_BETA`——与 `name` 绑定，硬编码会脱钩）。
+    /// 名字解析结果原始 qword；期望值由 `xtask` 校验。
     pub resolved: u64,
-    /// 未注册名的解析结果（负例：应 `SERVICE_BEHAVIOR_NONE`，即拒绝）。
+    /// 未注册名的解析结果原始 qword；期望值由 `xtask` 校验。
     pub unknown: u64,
     /// 二次转发的服务回执（应 `SERVICE_DONE_TAG`）。
     pub done: u64,
-    /// `BETA` 行为写入共享段 offset 144 的协商结果（判决性：应 `SERVICE_EXPECTED_NEGOTIATED_B`；
+    /// `BETA` 行为写入共享段 offset 144 的协商结果原始 qword；
     /// `max=1024` 只可能来自被按名选中的 `BETA` offer）。
     pub negotiated_beta: u64,
     /// SPEC-092：`ALPHA` 端点（第一个服务任务）写入共享段 offset 160 的**自身 task id**。
@@ -2264,15 +2257,10 @@ pub struct ServiceSelectedWitness {
 
 impl ServiceSelectedWitness {
     pub fn evidence_ok(&self) -> bool {
-        self.resolved == SERVICE_BEHAVIOR_BETA
-            && self.unknown == SERVICE_BEHAVIOR_NONE
-            && self.done == SERVICE_DONE_TAG
-            && self.negotiated_beta == SERVICE_EXPECTED_NEGOTIATED_B
+        self.done == SERVICE_DONE_TAG
             && self.beta_ep != 0
             && self.beta_ep == self.beta_self
             && self.alpha_ep != self.beta_ep
-            && self.alpha_marker == SERVICE_ALPHA_BINARY_MARKER
-            && self.beta_marker == SERVICE_BETA_BINARY_MARKER
             && self.alpha_marker != self.beta_marker
             && self.alpha_stack_seg != 0
             && self.beta_stack_seg != 0
@@ -2354,7 +2342,7 @@ pub struct ServicemgrWitness {
     pub store_seg: u64,
     /// SPEC-114：用户态驱动自报的 task id（`> 1` 且与三个基础服务互异）。
     pub driver_id: u64,
-    /// SPEC-114：驱动自报的存在标记（须等于 [`SERVICE_MARKER_DRIVER`]）。
+    /// SPEC-114：驱动自报的存在标记原始 qword；期望值由 `xtask` 校验。
     pub driver_mark: u64,
     /// SPEC-114：驱动持有的**内核 `Device(IOPortRange)` 句柄**——须是活的内核设备对象
     /// （经 [`crate::bootstrap::device_of_cap`] 核验）。其端口区间由内核另行核验：`driver_io[0]`
@@ -2397,22 +2385,6 @@ impl ServicemgrWitness {
             && self.entry_b != 0
             && self.services == 3
             && ids_distinct
-            && self.log_mark == SERVICE_MARKER_LOG
-            && self.ns_mark == SERVICE_MARKER_NS
-            && self.store_mark == SERVICE_MARKER_STORE
-            && self.log_state
-                == [
-                    SERVICE_REPLY_LOG_0,
-                    SERVICE_REPLY_LOG_1,
-                    SERVICE_REPLY_LOG_2,
-                ]
-            && self.ns_state == [SERVICE_REPLY_NS_0, SERVICE_REPLY_NS_1, SERVICE_REPLY_NS_2]
-            && self.store_state
-                == [
-                    SERVICE_REPLY_STORE_0,
-                    SERVICE_REPLY_STORE_1,
-                    SERVICE_REPLY_STORE_2,
-                ]
             // SPEC-111：代理解析返回的是内核派生的 Capability 句柄（正数、非 errno 负编码、非哨兵）；
             // 内核侧另以 `namespace_ready.resolves` 计数增长交叉证明它真调了 `SYS_NS_RESOLVE`。
             && self.ns_resolved != 0
@@ -2429,7 +2401,6 @@ impl ServicemgrWitness {
             && self.driver_id != self.log_id
             && self.driver_id != self.ns_id
             && self.driver_id != self.store_id
-            && self.driver_mark == SERVICE_MARKER_DRIVER
             && is_live_device(self.driver_dev)
             && (self.driver_io[0] & 0xffff_ffff) == IOPORT_MAGIC_READBACK
             && (self.driver_io[1] & 0xffff_ffff) == 0

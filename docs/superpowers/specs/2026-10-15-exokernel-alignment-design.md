@@ -147,9 +147,9 @@ LibOS 行为。
 
 ### EXO-3：通用 trace / witness 通道
 
-> **状态（2026-10-15）**：进行中。已落 **EXO-3A**（SPEC-118）——内核不再定义/比较服务名，
-> 只输出原始 qword，由 `xtask` 校验；完整 trace/调试通道与 witness 下沉仍待完成。见
-> `docs/superpowers/reports/2026-10-15-exo3a-kernel-name-decoupling-report.md`。
+> **状态（2026-10-15）**：进行中。已落 **EXO-3A**（SPEC-118，内核不再解释服务名）与
+> **EXO-3B**（SPEC-119，marker/reply/协商期望值移出内核，由 `xtask` 校验）；
+> 完整 trace/调试通道与 witness 下沉仍待完成。见 EXO-3A/3B 报告。
 
 - 定义内核无关的 `exo_trace` 或调试 ring：用户态可写事件字节流，内核只提供共享段/串口
   等资源，不解释内容。
