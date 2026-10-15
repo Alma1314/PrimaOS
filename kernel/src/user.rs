@@ -238,8 +238,6 @@ pub const CLIENT_RECEIPT_MAP: u64 = 800;
 pub const CLIENT_RECEIPT_REPLY: u64 = 808;
 /// SPEC-087：客户端把收到的应答 payload 写回共享段内的偏移。
 pub const SERVICE_REPLY_OFFSET: u64 = 64;
-/// SPEC-087：init 的应答字——`"PONG"`(低 32) ‖ 应答 opcode `0x8001`(32..48) ‖ 回显 request_id `3`(48..64)。
-pub const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
 
 /// SPEC-088：服务端点自报 id 的消息 tag（高 16 位；低 16 位为 id）。与 `prima-user` 一致。
 pub const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
@@ -264,15 +262,6 @@ pub const SERVICE_SETUP_CODE_TAG: u64 = 0x5ECD_0000_0000_0000;
 pub const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
 /// SPEC-088：服务端点把两个负例码写回的段内偏移。
 pub const SERVICE_NEGATIVES_OFFSET: u64 = 136;
-/// SPEC-088：协商结果的期望字 `major<<48 | minor<<32 | max<<16 | features 低 16 位`。
-///
-/// 客户端 offer `{major1,minor0,features1,required1,max4096}` 与服务端 offer
-/// `{major1,minor0,features0b101,required0b001,max2048}` 协商得
-/// `{major1,minor0,features1,max2048}` ⇒ `0x0001_0000_0800_0001`。判决性在 `max=2048`：
-/// 只可能来自**服务端** offer（客户端是 4096）。
-pub const SERVICE_EXPECTED_NEGOTIATED: u64 = 0x0001_0000_0800_0001;
-/// SPEC-088：负例码期望字 `MajorMismatch(1)<<32 | BadMagic(0)`。
-pub const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_0000_0000;
 /// SPEC-088：broker 各步的 Y 页回执偏移与 recv 出缓冲。
 pub const SVC_RECEIPT_TOKEN: u64 = 864;
 pub const SVC_RECEIPT_MGR: u64 = 872;
@@ -285,37 +274,12 @@ pub const SVC_RECV_BUF: u64 = USER_Y_VA + 936;
 
 /// SPEC-090：客户端把**请求服务名**写入共享段的偏移（`init` 经 `USER_HELLO2_VA` 读回）。
 pub const HELLO_SERVICE_NAME_OFFSET: u64 = 48;
-/// SPEC-101：服务名 = 最多 5 字节 ASCII 令牌，按 little-endian 打包进 u64 的低 40 位（与
-/// `prima-runtime::protocol::pack_service_name` 同款）。取代 SPEC-095 的 64 位数字码。
-pub const SERVICE_NAME_MAX: usize = 5;
-pub const SERVICE_NAME_MASK: u64 = 0x0000_00ff_ffff_ffff;
-
-/// SPEC-101：把 ASCII 令牌打包为服务名（超过 5 字节截断）。
-pub const fn service_name(bytes: &[u8]) -> u64 {
-    let mut packed = 0u64;
-    let mut index = 0;
-    while index < bytes.len() && index < SERVICE_NAME_MAX {
-        packed |= (bytes[index] as u64) << (8 * index);
-        index += 1;
-    }
-    packed
-}
-
-/// SPEC-090/101：服务管理器**服务注册表**里的行为码（与 `prima-runtime::protocol` 一致）。
-pub const SERVICE_BEHAVIOR_NONE: u64 = 0;
-pub const SERVICE_BEHAVIOR_ALPHA: u64 = 1;
-pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
-/// SPEC-101：两个端点的服务名（ASCII 令牌 `"alpha"`/`"beta"`），由服务管理器在创建时**运行期
-/// 指派**（写入新任务初始帧 `rcx`），端点二进制不含名字字面量。
-pub const SERVICE_NAME_ALPHA: u64 = service_name(b"alpha");
-pub const SERVICE_NAME_BETA: u64 = service_name(b"beta");
 /// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
 /// （≤ 255，取低 8 位）。
 pub const SERVICE_ID_MASK: u64 = 0xff;
 /// SPEC-090：`BETA` 行为的协商结果写在 `128 + (behavior-1)*16` = 144；判决性在 `max=1024`
 /// （只可能来自被按名选中的 `BETA` offer，`ALPHA` 是 2048）。
 pub const SERVICE_NEGOTIATED_B_OFFSET: u64 = 144;
-pub const SERVICE_EXPECTED_NEGOTIATED_B: u64 = 0x0001_0000_0400_0001;
 /// SPEC-090：解析与二次路由的 Y 页回执（紧接 SPEC-088 的 `936..959`，`< NS_PATH_DATA_OFFSET`）。
 pub const SVC_RECEIPT_NAME: u64 = 960;
 pub const SVC_RECEIPT_RESOLVED: u64 = 968;
@@ -386,27 +350,8 @@ pub const SERVICEMGR_DRIVER_ID_OFFSET: u64 = 472;
 pub const SERVICEMGR_DRIVER_MARK_OFFSET: u64 = 480;
 pub const SERVICEMGR_DRIVER_DEV_OFFSET: u64 = 488;
 pub const SERVICEMGR_DRIVER_REPLY_OFFSET: u64 = 496;
-/// SPEC-114：驱动 40 位存在标记（与 `prima-runtime::protocol` 一致）。
-pub const SERVICE_MARKER_DRIVER: u64 = 0x0000_0049_4f50_0004;
 /// SPEC-114：受控端口往返的期望读回值（写入 Scratch 寄存器再读回的魔数）。
 pub const IOPORT_MAGIC_READBACK: u64 = 0x5A;
-/// SPEC-106：三个基础服务的 40 位存在标记（与 `prima-runtime::protocol` 及三个服务二进制一致）。
-pub const SERVICE_MARKER_LOG: u64 = 0x0000_004c_4f47_0001;
-pub const SERVICE_MARKER_NS: u64 = 0x0000_004e_5356_0002;
-pub const SERVICE_MARKER_STORE: u64 = 0x0000_0053_5452_0003;
-/// SPEC-106/110：三个基础服务的**定序状态**应答（`SERVICE_SERVE_TAG | kind<<32 | state`）。
-///
-/// 请求序列 = 推进 5、推进 3、查询；三个服务状态转移语义**各异**（日志累加 / 存储移位追加 /
-/// Namespace 滚动指纹）⇒ 三个终值互异。纯回声端点会回 `5/3/0`（`kind` 归槽），无法产生这些值。
-pub const SERVICE_REPLY_LOG_0: u64 = 0x5EC9_0003_0000_0005;
-pub const SERVICE_REPLY_LOG_1: u64 = 0x5EC9_0003_0000_0008;
-pub const SERVICE_REPLY_LOG_2: u64 = 0x5EC9_0003_0000_0008;
-pub const SERVICE_REPLY_NS_0: u64 = 0x5EC9_0004_0000_0005;
-pub const SERVICE_REPLY_NS_1: u64 = 0x5EC9_0004_0000_0053;
-pub const SERVICE_REPLY_NS_2: u64 = 0x5EC9_0004_0000_0053;
-pub const SERVICE_REPLY_STORE_0: u64 = 0x5EC9_0005_0000_0005;
-pub const SERVICE_REPLY_STORE_1: u64 = 0x5EC9_0005_0000_0503;
-pub const SERVICE_REPLY_STORE_2: u64 = 0x5EC9_0005_0000_0503;
 pub const SERVICE_RESOLVED_OFFSET: u64 = 208;
 pub const SERVICE_UNKNOWN_OFFSET: u64 = 216;
 pub const SERVICE_DONE_BETA_OFFSET: u64 = 224;
@@ -429,10 +374,6 @@ pub const SERVICE_ENDPOINT_ALPHA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET;
 pub const SERVICE_ENDPOINT_BETA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET + 8;
 /// SPEC-093：服务端点写入**自身二进制标记**的共享段偏移（`176 + (behavior-1)*8`；与 `prima-user` 一致）。
 pub const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
-/// SPEC-093：`ALPHA` 端点映像（`prima-smoke`）的二进制标记（与 `prima-user/src/main.rs` 一致）。
-pub const SERVICE_ALPHA_BINARY_MARKER: u64 = 0x414C_5048_4100_0001;
-/// SPEC-093：`BETA` 端点映像（`prima-beta`）的二进制标记（与 `prima-user/src/beta.rs` 一致）。
-pub const SERVICE_BETA_BINARY_MARKER: u64 = 0x4245_5441_0000_0002;
 /// SPEC-093：`ALPHA` 端点标记的共享段偏移。
 pub const SERVICE_ALPHA_MARKER_OFFSET: u64 = SERVICE_BINARY_MARKER_OFFSET;
 /// SPEC-093：`BETA` 端点标记的共享段偏移。
@@ -2281,7 +2222,7 @@ pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
 /// SPEC-090：服务管理器（init）**按名字解析并二次路由**的回执。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceSelectedWitness {
-    /// 从共享段读回的请求服务名（判决性：应 `SERVICE_NAME_BETA`；未写入则为 0）。
+    /// 从共享段读回的请求服务名原始 qword；名字语义由 `xtask` 校验，内核不解释。
     pub name: u64,
     /// 名字解析结果（判决性：应 `SERVICE_BEHAVIOR_BETA`——与 `name` 绑定，硬编码会脱钩）。
     pub resolved: u64,
@@ -2323,8 +2264,7 @@ pub struct ServiceSelectedWitness {
 
 impl ServiceSelectedWitness {
     pub fn evidence_ok(&self) -> bool {
-        self.name == SERVICE_NAME_BETA
-            && self.resolved == SERVICE_BEHAVIOR_BETA
+        self.resolved == SERVICE_BEHAVIOR_BETA
             && self.unknown == SERVICE_BEHAVIOR_NONE
             && self.done == SERVICE_DONE_TAG
             && self.negotiated_beta == SERVICE_EXPECTED_NEGOTIATED_B
@@ -2341,8 +2281,6 @@ impl ServiceSelectedWitness {
             && self.client_stack_seg != 0
             && self.client_stack_seg != self.alpha_stack_seg
             && self.client_stack_seg != self.beta_stack_seg
-            && self.reg_a_name == SERVICE_NAME_ALPHA
-            && self.reg_b_name == SERVICE_NAME_BETA
     }
 }
 
@@ -3530,7 +3468,7 @@ fn write_image_directory(
         (layout.driver_pages_off, layout.driver.pages),
     ];
     let mut at = 0usize;
-    write_dir_u64(base, &mut at, SERVICE_IMAGE_MAGIC);
+    write_dir_u64(base, &mut at, prima_abi::boot_image::SERVICE_IMAGE_MAGIC);
     write_dir_u64(base, &mut at, entries.len() as u64);
     for (pages_off, count) in entries {
         write_dir_u64(base, &mut at, pages_off as u64);
@@ -3761,18 +3699,6 @@ mod tests {
     use super::*;
     use crate::bootstrap::{NAMESPACE_CAP_HANDLE, TASK_CREATE_ROOT_NS_RIGHTS};
     use crate::syscall::{TASK_CODE_CAP, TASK_REQ_VA, TASK_SEND_CAP};
-
-    /// SPEC-101：服务名是 ASCII 令牌打包进 u64 低 40 位——钉住钉死值，并证明截断/相异性。
-    #[test]
-    fn service_names_pack_ascii_tokens() {
-        assert_eq!(SERVICE_NAME_ALPHA, 0x0000_0061_6870_6c61); // "alpha"
-        assert_eq!(SERVICE_NAME_BETA, 0x0000_0000_6174_6562); // "beta"
-        assert_eq!(&SERVICE_NAME_BETA.to_le_bytes()[..4], b"beta");
-        assert_ne!(SERVICE_NAME_ALPHA, SERVICE_NAME_BETA);
-        // 超过 5 字节截断，尾部补 0。
-        assert_eq!(service_name(b"abcdefgh"), service_name(b"abcde"));
-        assert_eq!(service_name(b"") & SERVICE_NAME_MASK, 0);
-    }
 
     /// 便于构造成功证据。
     fn valid() -> UserWitness {

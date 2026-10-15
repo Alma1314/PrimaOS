@@ -93,6 +93,9 @@
 
 - [2026-10-15 — SPEC-115 / EXO-1：通用 boot image（ramdisk）装载](superpowers/reports/2026-10-15-exo1-boot-image-report.md)
 - [2026-10-15 — SPEC-116 / EXO-2A：无服务名的映像目录](superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md)
+- [2026-10-15 — SPEC-117 / EXO-2B + EXO-4A：共享映像格式与设备可见撤销](superpowers/reports/2026-10-15-exo2b-exo4a-report.md)
+- [2026-10-15 — SPEC-118 / EXO-3A：内核不再解释服务名](superpowers/reports/2026-10-15-exo3a-kernel-name-decoupling-report.md)
+- [2026-10-15 — DOC-008 / EXO-5：机制基线再评估](superpowers/reports/2026-10-15-exo5-mechanism-baseline-review.md)
 - [2026-10-14 — 双人格 Holder 模型 H0 评审（条件通过）](superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review.md)
 - [2026-10-14 — COSIR/POSIR 双人格扩展候选采纳审核（WaitObject/upcall 与 `memseg_protect` 正式采纳）](superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)
 - [2026-10-14 — 双人格工作流交接与上下文压缩](superpowers/reports/2026-10-14-dual-personality-handoff.md)

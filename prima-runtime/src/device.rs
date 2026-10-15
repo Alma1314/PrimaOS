@@ -32,4 +32,9 @@ impl<T: SyscallTransport> Runtime<T> {
         )?;
         Ok(raw as u8)
     }
+
+    /// EXO-4A / §15.8：销毁 `Device` 对象；此后旧 cap 上的端口 I/O 返回已失效错误。
+    pub fn dev_destroy(&self, cap: Capability) -> Result<()> {
+        self.call_unit(syscall::DEV_DESTROY, [cap.as_raw(), 0, 0, 0, 0, 0])
+    }
 }

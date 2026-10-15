@@ -91,8 +91,71 @@ pub fn tcb_command(args: &[String]) -> Result<(), String> {
             report.mechanism_unsafe
         ));
     }
+    let coupling = kernel_service_coupling(&root)?;
+    println!(
+        "TCB kernel_service_coupling include_bytes={} prima_user_dep={} service_name_lines={} protocol_lines={}",
+        coupling.include_bytes,
+        coupling.prima_user_dep,
+        coupling.service_name_lines,
+        coupling.protocol_lines
+    );
+    if coupling.include_bytes != 0 {
+        return Err(format!(
+            "EXO-1 regression: kernel/src contains {} `include_bytes!`",
+            coupling.include_bytes
+        ));
+    }
+    if coupling.prima_user_dep {
+        return Err(
+            "EXO-1 regression: kernel/Cargo.toml depends on `prima-user` artifact".to_owned(),
+        );
+    }
     println!("PASS tcb metric");
     Ok(())
+}
+
+/// EXO-1 起持续约束的“内核-服务耦合面”计数（只报数/守住 0 回归）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct KernelServiceCoupling {
+    include_bytes: usize,
+    prima_user_dep: bool,
+    service_name_lines: usize,
+    protocol_lines: usize,
+}
+
+fn kernel_service_coupling(root: &Path) -> Result<KernelServiceCoupling, String> {
+    let cargo = fs::read_to_string(root.join("kernel/Cargo.toml"))
+        .map_err(|error| format!("failed to read kernel/Cargo.toml: {error}"))?;
+    let mut coupling = KernelServiceCoupling {
+        prima_user_dep: cargo.lines().any(|line| {
+            let line = line.trim_start();
+            line.starts_with("prima-user") || line.contains("package = \"prima-user\"")
+        }),
+        ..KernelServiceCoupling::default()
+    };
+    let dir = root.join("kernel/src");
+    let entries =
+        fs::read_dir(&dir).map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("failed to walk {}: {error}", dir.display()))?;
+        if entry.path().extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path())
+            .map_err(|error| format!("failed to read {}: {error}", entry.path().display()))?;
+        for line in text.lines() {
+            if line.contains("include_bytes!") {
+                coupling.include_bytes += 1;
+            }
+            if line.contains("SERVICE_NAME_") || line.contains("service_name(b\"") {
+                coupling.service_name_lines += 1;
+            }
+            if line.contains("SERVICE_") || line.contains("SERVICEMGR_") {
+                coupling.protocol_lines += 1;
+            }
+        }
+    }
+    Ok(coupling)
 }
 
 /// 可信面/机制层的行数与 `unsafe` 计数。

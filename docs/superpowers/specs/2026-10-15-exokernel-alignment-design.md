@@ -130,9 +130,10 @@ LibOS 行为。
 
 ### EXO-2：用户态 init/loader 承担编排
 
-> **状态（2026-10-15）**：进行中。已先落 **EXO-2A**（SPEC-116）——服务映像目录不再携带
-> 服务名，`prima-servicemgr` 按索引与自己的 `SERVICE_TABLE` 对齐；见
-> `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md`。
+> **状态（2026-10-15）**：进行中。已落 **EXO-2A**（SPEC-116，目录无名字）与
+> **EXO-2B**（SPEC-117，目录格式提升为 `prima-abi` 共享常量）；见
+> `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md` 与
+> `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md`。
 > init 机器码、协议 tag 与共享段 witness 迁移仍未完成。
 
 - 新建或强化真正的 ring3 `init`/`prima-servicemgr`：从 ramdisk 读 manifest，创建服务
@@ -146,6 +147,10 @@ LibOS 行为。
 
 ### EXO-3：通用 trace / witness 通道
 
+> **状态（2026-10-15）**：进行中。已落 **EXO-3A**（SPEC-118）——内核不再定义/比较服务名，
+> 只输出原始 qword，由 `xtask` 校验；完整 trace/调试通道与 witness 下沉仍待完成。见
+> `docs/superpowers/reports/2026-10-15-exo3a-kernel-name-decoupling-report.md`。
+
 - 定义内核无关的 `exo_trace` 或调试 ring：用户态可写事件字节流，内核只提供共享段/串口
   等资源，不解释内容。
 - `xtask` 直接解析该 trace，把现由 `ServicemgrWitness`、`service_reply_witness()` 等
@@ -156,6 +161,9 @@ LibOS 行为。
 固定偏移。
 
 ### EXO-4：secure binding 与可见撤销
+
+> **状态（2026-10-15）**：EXO-4A 已落——Device 对象有 `dev_destroy` 与可见撤销；
+> MMIO/IRQ/DMA、IOMMU 与完整 abort 协议仍未完成。见 SPEC-117 报告。
 
 优先于继续增加服务/驱动数量，完成：
 
@@ -168,6 +176,9 @@ LibOS 行为。
 “故障服务不破坏无关应用域”和阶段 7 资源配额的前置。
 
 ### EXO-5：机制基线再评估
+
+> **状态（2026-10-15）**：已完成一次审查（DOC-008 / EXO-5 报告），结论为保留机制、
+> 收紧服务语义；不直接修改规范。
 
 在 EXO-1..4 完成后，用同一“四问”重新评估 Namespace、Audit、Timer、WaitObject 等
 跨 personality 机制：

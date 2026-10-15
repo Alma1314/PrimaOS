@@ -4932,12 +4932,7 @@ impl BootstrapState {
 
     /// EXO-4A / §15：通用 Device 授权——`cap` 须由活动 `caller` 持有、可用、指向活动
     /// `Device` 且含 `right`。返回设备 id。端口范围检查由调用方按操作补充。
-    fn authorize_device(
-        &self,
-        caller: u32,
-        cap: Handle,
-        right: Right,
-    ) -> Result<u32, DeviceError> {
+    fn authorize_device(&self, caller: u32, cap: Handle, right: Right) -> Result<u32, DeviceError> {
         if !self.tasks.is_live(caller) {
             return Err(DeviceError::InvalidCaller);
         }
@@ -5002,6 +4997,29 @@ impl BootstrapState {
     ) -> Result<u8, DeviceError> {
         self.authorize_ioport(caller, cap, port, Right::DevIORead)?;
         Ok(prima_ostd::arch::inb(port))
+    }
+
+    /// EXO-4A / §15.8：销毁 `Device` 对象。
+    ///
+    /// 前置：`cap` 由活动 `caller` 持有、可用、指向活动 Device，且含 `DevDestroy`。
+    /// 成功动作：从活动 Device 表删除对象并追加 `ObjectDestroyed`；所有指向它的现有 cap
+    /// 随后在 [`Self::authorize_device`] 得到 `DeadDevice`（可见撤销/abort 路径）。
+    pub fn dev_destroy(&mut self, caller: u32, cap: Handle) -> Result<(), DeviceError> {
+        let id = self.authorize_device(caller, cap, Right::DevDestroy)?;
+        if self.devices.find(id).is_none() {
+            return Err(DeviceError::DeadDevice);
+        }
+        if !self.audit.can_append(1) {
+            return Err(DeviceError::AuditFull);
+        }
+        if !self.devices.remove(id) {
+            return Err(DeviceError::DeadDevice);
+        }
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: id,
+            segment: false,
+        });
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -7703,6 +7721,14 @@ pub fn dev_ioport_out(caller: u32, cap: Handle, port: u16, value: u8) -> Result<
 pub fn dev_ioport_in(caller: u32, cap: Handle, port: u16) -> Result<u8, DeviceError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.dev_ioport_in(caller, cap, port),
+        None => Err(DeviceError::InvalidCaller),
+    })
+}
+
+/// EXO-4A / §15.8：全局 `dev_destroy`。
+pub fn dev_destroy(caller: u32, cap: Handle) -> Result<(), DeviceError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.dev_destroy(caller, cap),
         None => Err(DeviceError::InvalidCaller),
     })
 }
@@ -10887,6 +10913,58 @@ mod tests {
             state.dev_ioport_create(INIT_TASK_ID, 0x400, 1),
             Err(DeviceError::CapacityExceeded)
         );
+    }
+
+    /// EXO-4A：`dev_destroy` 是可见撤销——旧 cap 立即失效，活动表容量释放。
+    #[test]
+    fn dev_destroy_stales_existing_caps_and_frees_capacity() {
+        let mut state = fresh_state();
+        let handle = state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 8).unwrap();
+        assert!(
+            state
+                .authorize_ioport(INIT_TASK_ID, handle, 0x3f8, Right::DevIOWrite)
+                .is_ok()
+        );
+        let id = state.target_of(handle).unwrap().id();
+        state.dev_destroy(INIT_TASK_ID, handle).unwrap();
+        assert!(state.devices.find(id).is_none());
+        assert_eq!(state.devices.count, 0);
+        assert_eq!(
+            state.authorize_ioport(INIT_TASK_ID, handle, 0x3f8, Right::DevIOWrite),
+            Err(DeviceError::DeadDevice)
+        );
+        assert_eq!(
+            state.dev_destroy(INIT_TASK_ID, handle),
+            Err(DeviceError::DeadDevice)
+        );
+        // 容量复用：删除后可再次铸造。
+        assert!(state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 8).is_ok());
+    }
+
+    /// EXO-4A：缺少 `DevDestroy` 的派生 cap 不能销毁设备。
+    #[test]
+    fn dev_destroy_requires_the_destroy_right() {
+        let mut state = fresh_state();
+        let handle = state.dev_ioport_create(INIT_TASK_ID, 0x3f8, 8).unwrap();
+        let read_only = state
+            .derive_capability(
+                INIT_TASK_ID,
+                handle,
+                Rights::from_rights(&[Right::DevIORead]),
+            )
+            .expect("derived read-only device cap");
+        assert_eq!(
+            state.dev_destroy(INIT_TASK_ID, read_only),
+            Err(DeviceError::MissingRight(Right::DevDestroy))
+        );
+        // 失败原子性：对象仍在，根 cap 仍可销毁。
+        assert!(
+            state
+                .devices
+                .find(state.target_of(handle).unwrap().id())
+                .is_some()
+        );
+        state.dev_destroy(INIT_TASK_ID, handle).unwrap();
     }
 
     #[test]

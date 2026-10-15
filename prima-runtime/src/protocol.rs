@@ -44,14 +44,11 @@ pub const ENDPOINT_STACK_VA: u64 = 0x0000_0B00_0010_0000;
 /// SPEC-105：ELF 头 `e_entry` 的偏移。
 pub const ELF_ENTRY_OFFSET: u64 = 24;
 
-/// EXO-2A：内核为 ring3 服务管理器打包的**服务映像段**目录页魔数（段**首页**首个 u64）。
-/// 与内核 `user::SERVICE_IMAGE_MAGIC` 同款。
-pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
-/// EXO-2A：目录头部字节数（`magic(0..8) | count(8..16)`）。
-pub const SERVICE_IMAGE_DIR_HEADER: u64 = 16;
-/// EXO-2A：单个目录项字节数（`offset_pages(0..8) | page_count(8..16)`）。
-/// 目录项无名字；名字按顺序由 `prima-user/src/servicemgr.rs::SERVICE_TABLE` 持有。
-pub const SERVICE_IMAGE_ENTRY_LEN: u64 = 16;
+/// EXO-2B：服务映像目录格式由 `prima-abi` 共享，内核只写 opaque 条目；名字按顺序由
+/// `prima-user/src/servicemgr.rs::SERVICE_TABLE` 持有。
+pub use prima_abi::boot_image::{
+    SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC,
+};
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。

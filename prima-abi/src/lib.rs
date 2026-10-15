@@ -22,6 +22,15 @@ pub mod boot_image {
     pub const HEADER_QWORDS: usize = 3;
     /// 每个条目的 qword 数：offset / len。
     pub const ENTRY_QWORDS: usize = 2;
+
+    /// EXO-2B：服务映像段目录页的第一个 u64。
+    pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
+    /// 服务映像目录头部字节数（`magic | count`）。
+    pub const SERVICE_IMAGE_DIR_HEADER: u64 = 16;
+    /// 服务映像目录项字节数（`offset_pages | page_count`）。
+    pub const SERVICE_IMAGE_ENTRY_LEN: u64 = 16;
+    /// 目录中允许的服务条目数（不含 ring3 服务管理器自身）。
+    pub const SERVICE_IMAGE_ENTRY_COUNT: u64 = 6;
 }
 
 /// 当前 x86_64 syscall 递送层使用的实验性调用号。
