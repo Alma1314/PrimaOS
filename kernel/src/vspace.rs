@@ -42,6 +42,8 @@ pub enum VspaceError {
     NotMapped,
     /// 独立用户 ELF 格式或受支持的重定位不合法。
     InvalidImage,
+    /// EXO-1：boot image 尚未由 bootloader 传入或安装。
+    NoBootImage,
 }
 
 /// 从虚拟地址取出 4 级索引 `[i4, i3, i2, i1]`。

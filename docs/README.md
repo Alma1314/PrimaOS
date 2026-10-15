@@ -38,6 +38,7 @@
 
 按日期倒序排列；同日切片按主题列出。
 
+- [2026-10-15 — Exokernel 对齐：规划与实现逻辑优化设计（提案）](superpowers/specs/2026-10-15-exokernel-alignment-design.md)
 - [2026-10-14 — 双人格 Holder 模型设计草案：AddressSpace / CapTable / ShareGroup / Thread](superpowers/specs/2026-10-14-dual-personality-holder-model-design.md)
 - [2026-10-12 — 阶段 4 运行期服务注册表（闭合 SPEC-093 §5.2）](superpowers/specs/2026-10-12-stage4-runtime-service-registry-design.md)
 - [2026-10-12 — 阶段 4 `ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）](superpowers/specs/2026-10-12-stage4-alpha-independent-stack-design.md)
@@ -90,6 +91,8 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-15 — SPEC-115 / EXO-1：通用 boot image（ramdisk）装载](superpowers/reports/2026-10-15-exo1-boot-image-report.md)
+- [2026-10-15 — SPEC-116 / EXO-2A：无服务名的映像目录](superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md)
 - [2026-10-14 — 双人格 Holder 模型 H0 评审（条件通过）](superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review.md)
 - [2026-10-14 — COSIR/POSIR 双人格扩展候选采纳审核（WaitObject/upcall 与 `memseg_protect` 正式采纳）](superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)
 - [2026-10-14 — 双人格工作流交接与上下文压缩](superpowers/reports/2026-10-14-dual-personality-handoff.md)

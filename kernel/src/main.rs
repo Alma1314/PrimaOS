@@ -144,6 +144,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             protocol::bootstrap_ready(&state.snapshot);
                                             // K：安装授权表，供后续 syscall 授权查询使用。
                                             kernel::bootstrap::install(state);
+                                            // EXO-1：bootloader 传入的通用 ramdisk；内核只解析
+                                            // 格式头和 ELF program header，不按服务名索引 ELF。
+                                            match (
+                                                boot_info.ramdisk_addr.into_option(),
+                                                boot_info.ramdisk_len,
+                                            ) {
+                                                (Some(addr), len) if len > 0 => {
+                                                    if kernel::user::install_boot_image(addr, len)
+                                                        .is_err()
+                                                    {
+                                                        protocol::panic_event();
+                                                        serial::flush();
+                                                        qemu::exit(qemu::PANIC)
+                                                    }
+                                                }
+                                                _ => {
+                                                    protocol::panic_event();
+                                                    serial::flush();
+                                                    qemu::exit(qemu::PANIC)
+                                                }
+                                            }
                                             // L：显式创建预定义异常源，并实证一次 pending 直投。
                                             if kernel::bootstrap::platform_init_exception_sources()
                                                 .is_err()

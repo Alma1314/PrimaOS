@@ -638,21 +638,21 @@ fn read_image_directory(
         .read_user_u64(ENDPOINT_CODE_PROBE_VA + 8)
         .unwrap_or(0);
     if magic == SERVICE_IMAGE_MAGIC {
+        // EXO-2A：目录项无名字，按顺序与 [`SERVICE_TABLE`] 对齐；服务名由本 ring3
+        // 服务管理器持有，内核不再生成/转递名字。
         let mut index = 0u64;
         while index < count && index < SERVICES as u64 {
             let at =
                 ENDPOINT_CODE_PROBE_VA + SERVICE_IMAGE_DIR_HEADER + index * SERVICE_IMAGE_ENTRY_LEN;
-            let name = runtime.read_user_u64(at).unwrap_or(0);
-            let offset_pages = runtime.read_user_u64(at + 8).unwrap_or(0);
-            let pages = runtime.read_user_u64(at + 16).unwrap_or(0);
-            if pages != 0
-                && let Some(slot) = table_slot(name)
-            {
+            let offset_pages = runtime.read_user_u64(at).unwrap_or(0);
+            let pages = runtime.read_user_u64(at + 8).unwrap_or(0);
+            if pages != 0 {
+                let slot = index as usize;
                 pending[slot] = Some(Pending {
                     code: image,
                     offset_pages,
                     pages,
-                    name,
+                    name: SERVICE_TABLE[slot].0,
                 });
             }
             index += 1;
@@ -660,18 +660,6 @@ fn read_image_directory(
     }
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, 1);
     Ok(())
-}
-
-/// SPEC-105/106：名字对应的服务表下标（未注册 → `None`）。
-fn table_slot(name: u64) -> Option<usize> {
-    let mut index = 0;
-    while index < SERVICES {
-        if SERVICE_TABLE[index].0 == name {
-            return Some(index);
-        }
-        index += 1;
-    }
-    None
 }
 
 /// SPEC-106/114：基础服务与用户态驱动（下标 ≥ [`BASE_FIRST`]）在共享段内的 id 见证偏移。

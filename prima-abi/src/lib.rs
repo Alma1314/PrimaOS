@@ -6,6 +6,24 @@
 //! 这些调用号用于当前单机原型，**不是稳定 ABI**。应用应依赖 `prima-runtime`，不应直接
 //! 使用本 crate；编号变更必须同步调整内核分派和运行时封装。
 
+/// EXO-1：内核与 xtask 共享的通用 boot image（ramdisk）格式。
+///
+/// 该格式只描述**opaque ELF 字节块**，内核不解释服务名或服务协议；服务名/注册表由后续
+/// ring3 loader 读取自己的 manifest。当前过渡实现按固定顺序读取块，以兼容阶段 4 的
+/// 既有服务映像布局。
+pub mod boot_image {
+    /// little-endian 的 `"PRIMARMD"`。
+    pub const MAGIC: u64 = 0x444d_5241_4d49_5250;
+    /// 格式版本。
+    pub const VERSION: u64 = 1;
+    /// 当前阶段 4 的映像块数量：alpha / beta / servicemgr / log / ns / store / driver。
+    pub const ENTRY_COUNT: u64 = 7;
+    /// 头部 qword 数：magic / version / count。
+    pub const HEADER_QWORDS: usize = 3;
+    /// 每个条目的 qword 数：offset / len。
+    pub const ENTRY_QWORDS: usize = 2;
+}
+
 /// 当前 x86_64 syscall 递送层使用的实验性调用号。
 pub mod syscall {
     pub const SYS_ECHO: u64 = 1;
@@ -46,4 +64,6 @@ pub mod syscall {
     pub const SYS_DEV_IOPORT_OUT: u64 = 34;
     /// SPEC-113 / §15.5：受控端口读 `dev_ioport_in(dev_cap, port) -> u8`（内核代执行 `inb`）。
     pub const SYS_DEV_IOPORT_IN: u64 = 35;
+    /// EXO-4A / §15.8：销毁 `Device` 对象 `dev_destroy(dev_cap)`。
+    pub const SYS_DEV_DESTROY: u64 = 36;
 }

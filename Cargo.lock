@@ -213,7 +213,6 @@ dependencies = [
  "bootloader_api",
  "prima-abi",
  "prima-ostd",
- "prima-user",
 ]
 
 [[package]]
@@ -554,6 +553,8 @@ version = "0.1.0"
 dependencies = [
  "bootloader",
  "kernel",
+ "prima-abi",
+ "prima-user",
 ]
 
 [[package]]

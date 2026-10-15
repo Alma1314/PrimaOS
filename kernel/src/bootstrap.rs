@@ -2713,6 +2713,20 @@ impl DeviceTable {
         self.count += 1;
         true
     }
+
+    /// EXO-4A / §15.8：删除活动设备对象；返回是否找到并删除。
+    fn remove(&mut self, id: u32) -> bool {
+        let Some(slot) = self
+            .entries
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|device| device.id == id))
+        else {
+            return false;
+        };
+        *slot = None;
+        self.count = self.count.saturating_sub(1);
+        true
+    }
 }
 
 /// SPEC-082 / §5.5：`Timer { creator, state }`。
@@ -4916,14 +4930,12 @@ impl BootstrapState {
         Ok(handle)
     }
 
-    /// §15.5：授权一次端口 I/O——`cap` 须由 `caller` 持有、可用、指向活动 `Device`、含所需
-    /// `DevIORead`/`DevIOWrite`，且**端口落在该设备区间内**（超出即 [`DeviceError::PortOutOfRange`]）。
-    /// 返回设备 id。
-    fn authorize_ioport(
+    /// EXO-4A / §15：通用 Device 授权——`cap` 须由活动 `caller` 持有、可用、指向活动
+    /// `Device` 且含 `right`。返回设备 id。端口范围检查由调用方按操作补充。
+    fn authorize_device(
         &self,
         caller: u32,
         cap: Handle,
-        port: u16,
         right: Right,
     ) -> Result<u32, DeviceError> {
         if !self.tasks.is_live(caller) {
@@ -4938,9 +4950,9 @@ impl BootstrapState {
         let ObjectRef::Device(id) = target else {
             return Err(DeviceError::NotADevice);
         };
-        let Some(device) = self.devices.find(id) else {
+        if self.devices.find(id).is_none() {
             return Err(DeviceError::DeadDevice);
-        };
+        }
         if self.holder_of(cap) != Some(caller) {
             return Err(DeviceError::NotHeld);
         }
@@ -4948,6 +4960,20 @@ impl BootstrapState {
         if !rights.contains(right) {
             return Err(DeviceError::MissingRight(right));
         }
+        Ok(id)
+    }
+
+    /// §15.5：授权一次端口 I/O——在 [`Self::authorize_device`] 之上再校验端口落在设备区间内
+    /// （超出即 [`DeviceError::PortOutOfRange`]）。返回设备 id。
+    fn authorize_ioport(
+        &self,
+        caller: u32,
+        cap: Handle,
+        port: u16,
+        right: Right,
+    ) -> Result<u32, DeviceError> {
+        let id = self.authorize_device(caller, cap, right)?;
+        let device = self.devices.find(id).ok_or(DeviceError::DeadDevice)?;
         if !device.covers(port) {
             return Err(DeviceError::PortOutOfRange);
         }

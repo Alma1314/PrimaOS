@@ -59,46 +59,151 @@ use crate::syscall::{
 use crate::vspace::{self, VspaceError};
 use prima_ostd::sync::StaticCell;
 
-/// 独立 Rust ring3 程序构建产物（ELF）。装载路径由 `prepare_runtime_app` 解析。
-pub const PRIMA_SMOKE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"));
-/// SPEC-093：**第二个**服务端点的独立二进制映像（`BETA` 端点），与上者是不同的 ELF。
-pub const PRIMA_BETA_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"));
-/// SPEC-103：**ring3 服务管理器**的独立二进制映像（服务机制的收敛目标）。
-pub const PRIMA_SERVICEMGR_ELF: &[u8] =
-    include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"));
-/// SPEC-106（S4-D3）：三个**基础服务端点**的独立二进制映像（日志 / Namespace / 基础存储）。
-pub const PRIMA_LOG_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-log"));
-pub const PRIMA_NS_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-ns"));
-pub const PRIMA_STORE_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"));
-/// SPEC-114（S4-D4）：第一个 ring3 用户态驱动的独立二进制映像（`prima-driver`）。
-pub const PRIMA_DRIVER_ELF: &[u8] = include_bytes!(env!("CARGO_BIN_FILE_PRIMA_USER_prima-driver"));
-
-const fn elf_word(bytes: &[u8], at: usize) -> u64 {
-    let mut value = 0u64;
-    let mut index = 0;
-    while index < 8 {
-        value |= (bytes[at + index] as u64) << (index * 8);
-        index += 1;
-    }
-    value
+/// EXO-1：一个 boot image 条目——只暴露 opaque ELF 字节与装载布局。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageEntry {
+    pub bytes: &'static [u8],
+    pub pages: usize,
+    pub entry: u64,
 }
 
-const fn runtime_app_pages(bytes: &[u8]) -> usize {
-    let phoff = elf_word(bytes, 32) as usize;
-    let phnum = u16::from_le_bytes([bytes[56], bytes[57]]) as usize;
-    let mut max_end = 0u64;
-    let mut index = 0;
-    while index < phnum {
-        let at = phoff + index * 56;
-        if u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) == 1 {
-            let end = elf_word(bytes, at + 16) + elf_word(bytes, at + 40);
-            if end > max_end {
-                max_end = end;
-            }
-        }
-        index += 1;
+/// EXO-1：从通用 ramdisk 解析出的服务映像布局。
+///
+/// 当前阶段仍按固定顺序映射到阶段 4 的既有服务集合；服务名、注册表和协议仍由
+/// `user_code()`/`write_image_directory()` 处理，留待 EXO-2 下沉到用户态 loader。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootLayout {
+    pub alpha: ImageEntry,
+    pub beta: ImageEntry,
+    pub servicemgr: ImageEntry,
+    pub log: ImageEntry,
+    pub ns: ImageEntry,
+    pub store: ImageEntry,
+    pub driver: ImageEntry,
+    pub alpha_pages_off: usize,
+    pub beta_pages_off: usize,
+    pub servicemgr_pages_off: usize,
+    pub log_pages_off: usize,
+    pub ns_pages_off: usize,
+    pub store_pages_off: usize,
+    pub driver_pages_off: usize,
+    pub total_pages: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootImageError {
+    Missing,
+    TooSmall,
+    BadMagic,
+    BadVersion,
+    BadEntryCount,
+    BadEntryRange,
+    InvalidElf,
+    ImageSegmentTooLarge,
+}
+
+static BOOT_LAYOUT: StaticCell<Option<BootLayout>> = StaticCell::new(None);
+
+fn boot_layout() -> Option<BootLayout> {
+    BOOT_LAYOUT.with(|slot| *slot)
+}
+
+/// 从 boot image 头部读取第 `index` 个 little-endian qword。
+fn boot_u64(bytes: &[u8], index: usize) -> Option<u64> {
+    let at = index.checked_mul(8)?;
+    let raw = bytes.get(at..at.checked_add(8)?)?;
+    Some(u64::from_le_bytes(raw.try_into().ok()?))
+}
+
+/// EXO-1：安装 bootloader 传入的通用 ramdisk，解析 opaque ELF 块并计算映像段布局。
+///
+/// 内核只解释格式头部（magic/version/count/offset/len）和 ELF program header；不读取
+/// 服务名、服务注册表或服务协议。ramdisk 本身由 bootloader 映射、且不属于 `Usable` 帧。
+pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootImageError> {
+    if ramdisk_len == 0 {
+        return Err(BootImageError::Missing);
     }
-    max_end.div_ceil(FRAME_SIZE) as usize
+    let len = usize::try_from(ramdisk_len).map_err(|_| BootImageError::TooSmall)?;
+    let bytes = prima_ostd::mm::bytes_at(ramdisk_va, len);
+    let header_qwords = prima_abi::boot_image::HEADER_QWORDS;
+    if bytes.len() < header_qwords * 8 {
+        return Err(BootImageError::TooSmall);
+    }
+    let magic = boot_u64(bytes, 0).ok_or(BootImageError::TooSmall)?;
+    let version = boot_u64(bytes, 1).ok_or(BootImageError::TooSmall)?;
+    let count = boot_u64(bytes, 2).ok_or(BootImageError::TooSmall)?;
+    if magic != prima_abi::boot_image::MAGIC {
+        return Err(BootImageError::BadMagic);
+    }
+    if version != prima_abi::boot_image::VERSION {
+        return Err(BootImageError::BadVersion);
+    }
+    if count != prima_abi::boot_image::ENTRY_COUNT {
+        return Err(BootImageError::BadEntryCount);
+    }
+
+    let entry_qwords = prima_abi::boot_image::ENTRY_QWORDS;
+    let table_qwords = header_qwords + (count as usize) * entry_qwords;
+    if bytes.len() < table_qwords * 8 {
+        return Err(BootImageError::TooSmall);
+    }
+
+    let mut entries = [ImageEntry {
+        bytes: &[],
+        pages: 0,
+        entry: 0,
+    }; 7];
+    for (index, entry) in entries.iter_mut().enumerate() {
+        let base = header_qwords + index * entry_qwords;
+        let offset = boot_u64(bytes, base).ok_or(BootImageError::TooSmall)?;
+        let entry_len = boot_u64(bytes, base + 1).ok_or(BootImageError::TooSmall)?;
+        let offset = usize::try_from(offset).map_err(|_| BootImageError::BadEntryRange)?;
+        let entry_len = usize::try_from(entry_len).map_err(|_| BootImageError::BadEntryRange)?;
+        let end = offset
+            .checked_add(entry_len)
+            .ok_or(BootImageError::BadEntryRange)?;
+        let image = bytes
+            .get(offset..end)
+            .ok_or(BootImageError::BadEntryRange)?;
+        let elf = elf_layout(image).map_err(|_| BootImageError::InvalidElf)?;
+        *entry = ImageEntry {
+            bytes: image,
+            pages: elf.pages,
+            entry: elf.entry,
+        };
+    }
+
+    let alpha_pages_off = 1;
+    let beta_pages_off = alpha_pages_off + entries[0].pages;
+    let servicemgr_pages_off = beta_pages_off + entries[1].pages;
+    let log_pages_off = servicemgr_pages_off + entries[2].pages;
+    let ns_pages_off = log_pages_off + entries[3].pages;
+    let store_pages_off = ns_pages_off + entries[4].pages;
+    let driver_pages_off = store_pages_off + entries[5].pages;
+    let total_pages = driver_pages_off + entries[6].pages;
+    if total_pages > crate::bootstrap::MAX_SEGMENT_FRAMES {
+        return Err(BootImageError::ImageSegmentTooLarge);
+    }
+
+    let layout = BootLayout {
+        alpha: entries[0],
+        beta: entries[1],
+        servicemgr: entries[2],
+        log: entries[3],
+        ns: entries[4],
+        store: entries[5],
+        driver: entries[6],
+        alpha_pages_off,
+        beta_pages_off,
+        servicemgr_pages_off,
+        log_pages_off,
+        ns_pages_off,
+        store_pages_off,
+        driver_pages_off,
+        total_pages,
+    };
+    BOOT_LAYOUT.with_mut(|slot| *slot = Some(layout));
+    Ok(())
 }
 
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
@@ -204,14 +309,6 @@ pub const SERVICE_BEHAVIOR_BETA: u64 = 2;
 /// 指派**（写入新任务初始帧 `rcx`），端点二进制不含名字字面量。
 pub const SERVICE_NAME_ALPHA: u64 = service_name(b"alpha");
 pub const SERVICE_NAME_BETA: u64 = service_name(b"beta");
-/// SPEC-106（S4-D3）：三个基础服务的注册名（与 `prima-runtime::protocol` 的打包一致）。
-pub const SERVICE_NAME_LOG: u64 = service_name(b"log");
-pub const SERVICE_NAME_NS: u64 = service_name(b"nsvc");
-pub const SERVICE_NAME_STORE: u64 = service_name(b"store");
-/// SPEC-114：用户态驱动的注册名 `"ioprt"`（与 `prima-runtime::protocol` 一致）。
-pub const SERVICE_NAME_DRIVER: u64 = service_name(b"ioprt");
-/// SPEC-090/101：未注册名，用于「解析拒绝」负例（解析结果应为 [`SERVICE_BEHAVIOR_NONE`]）。
-pub const SERVICE_NAME_UNKNOWN: u64 = service_name(b"ghost");
 /// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
 /// （≤ 255，取低 8 位）。
 pub const SERVICE_ID_MASK: u64 = 0xff;
@@ -452,55 +549,9 @@ pub const TASK4_CODE_OFFSET: u64 = 256;
 /// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一
 /// 时间片内发送后立即自毁，刚排队的 id 会被自己的销毁清理掉（实测确认），父任务将取不到。
 pub const TASK4_CODE_LEN: usize = 109;
-/// 当前 Rust smoke 用户映像 PT_LOAD 覆盖的页数；ELF 解析器会在启动时重新核验。
-pub const RUNTIME_APP_CODE_PAGES: usize = runtime_app_pages(PRIMA_SMOKE_ELF);
-/// 当前 PIE 用户映像入口相对装载基址的偏移；启动时由 ELF 头核验。
-pub const RUNTIME_APP_ENTRY_OFFSET: u64 = elf_word(PRIMA_SMOKE_ELF, 24);
-/// SPEC-093：第二个服务端点映像（`prima-beta`）PT_LOAD 覆盖的页数。
-pub const RUNTIME_APP2_CODE_PAGES: usize = runtime_app_pages(PRIMA_BETA_ELF);
-/// SPEC-093：第二个服务端点映像的入口相对装载基址的偏移。
-pub const RUNTIME_APP2_ENTRY_OFFSET: u64 = elf_word(PRIMA_BETA_ELF, 24);
-/// SPEC-103：ring3 服务管理器映像（`prima-servicemgr`）PT_LOAD 覆盖的页数。
-pub const RUNTIME_APP3_CODE_PAGES: usize = runtime_app_pages(PRIMA_SERVICEMGR_ELF);
-/// SPEC-103：服务管理器映像的入口相对装载基址的偏移。
-pub const RUNTIME_APP3_ENTRY_OFFSET: u64 = elf_word(PRIMA_SERVICEMGR_ELF, 24);
-/// SPEC-106（S4-D3）：三个基础服务端点映像（`prima-log`/`prima-ns`/`prima-store`）PT_LOAD 覆盖页数。
-pub const RUNTIME_APP_LOG_CODE_PAGES: usize = runtime_app_pages(PRIMA_LOG_ELF);
-pub const RUNTIME_APP_NS_CODE_PAGES: usize = runtime_app_pages(PRIMA_NS_ELF);
-pub const RUNTIME_APP_STORE_CODE_PAGES: usize = runtime_app_pages(PRIMA_STORE_ELF);
-/// SPEC-106：三个基础服务端点映像的入口相对装载基址的偏移。
-pub const RUNTIME_APP_LOG_ENTRY_OFFSET: u64 = elf_word(PRIMA_LOG_ELF, 24);
-pub const RUNTIME_APP_NS_ENTRY_OFFSET: u64 = elf_word(PRIMA_NS_ELF, 24);
-pub const RUNTIME_APP_STORE_ENTRY_OFFSET: u64 = elf_word(PRIMA_STORE_ELF, 24);
-/// SPEC-114：用户态驱动映像（`prima-driver`）PT_LOAD 覆盖的页数与入口偏移。
-pub const RUNTIME_APP_DRIVER_CODE_PAGES: usize = runtime_app_pages(PRIMA_DRIVER_ELF);
-pub const RUNTIME_APP_DRIVER_ENTRY_OFFSET: u64 = elf_word(PRIMA_DRIVER_ELF, 24);
 /// S2-D4：子任务若被再次调度时写入的哨兵（正常路径下销毁后不再被调度，故该值不应出现）。
 pub const TASK3_RESCHEDULED_MAGIC: u64 = 0xDEAD_0000_0000_0003;
 
-// ===== SPEC-109：单一服务映像段布局（首页目录 + 6 个 ELF 页对齐打包）=====
-/// 目录页固定在**段首页**：`prima-servicemgr` 只需映射 1 页即可读目录，且加服务不改此偏移。
-pub const IMAGE_DIR_PAGES_OFF: usize = 0;
-/// 各映像在段内的页偏移（按序、页对齐）。
-pub const IMAGE_ALPHA_PAGES_OFF: usize = IMAGE_DIR_PAGES_OFF + 1;
-pub const IMAGE_BETA_PAGES_OFF: usize = IMAGE_ALPHA_PAGES_OFF + RUNTIME_APP_CODE_PAGES;
-pub const IMAGE_SERVICEMGR_PAGES_OFF: usize = IMAGE_BETA_PAGES_OFF + RUNTIME_APP2_CODE_PAGES;
-pub const IMAGE_LOG_PAGES_OFF: usize = IMAGE_SERVICEMGR_PAGES_OFF + RUNTIME_APP3_CODE_PAGES;
-pub const IMAGE_NS_PAGES_OFF: usize = IMAGE_LOG_PAGES_OFF + RUNTIME_APP_LOG_CODE_PAGES;
-pub const IMAGE_STORE_PAGES_OFF: usize = IMAGE_NS_PAGES_OFF + RUNTIME_APP_NS_CODE_PAGES;
-/// SPEC-114：用户态驱动映像在段内的页偏移。
-pub const IMAGE_DRIVER_PAGES_OFF: usize = IMAGE_STORE_PAGES_OFF + RUNTIME_APP_STORE_CODE_PAGES;
-/// 映像段总页数（1 目录页 + 6 个基础/驱动映像，不含由 init 单独移交的 servicemgr）。
-pub const IMAGE_TOTAL_PAGES: usize = IMAGE_DRIVER_PAGES_OFF + RUNTIME_APP_DRIVER_CODE_PAGES;
-
-/// SPEC-111 编译期护栏：服务映像段必须放得进**单段内联帧向量**（[`crate::bootstrap::MAX_SEGMENT_FRAMES`]），
-/// 否则 boot 时 `SegmentFrames::Vector` 写穿相邻字段 → 早期 #PF。此前该约束**只写在注释里**，
-/// 服务二进制一长大（43→50 页）即静默越界；此断言把它钉成编译期错误。
-const _: () = assert!(
-    IMAGE_TOTAL_PAGES <= crate::bootstrap::MAX_SEGMENT_FRAMES,
-    "service image segment exceeds MAX_SEGMENT_FRAMES: raise that cap or shrink the embedded ELFs"
-);
-/// SPEC-109：服务映像段目录页魔数（与 `prima-runtime::protocol::SERVICE_IMAGE_MAGIC` 同款）。
 pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
 
 /// 用户代码占据一个 4 KiB 页；路径文本放在独立的 Y 页。
@@ -616,7 +667,7 @@ const NS_MODRM_RDX: u8 = 0x91;
 /// S2-D4：建栈段 → `SYS_TASK_CREATE`（完整 §8.1）→ 两个创建负例（入口越界 / 缺 `SegMapX`）→
 /// 把栈映射进**子任务**根 → 让出 → `SYS_RECV` 取子任务回发的 id → 缺 `TaskDestroy` 的销毁负例 →
 /// 销毁成功 → 重复销毁与向已销毁任务映射两个负例 → `int3`。
-pub const fn user_code() -> [u8; USER_CODE_LEN] {
+pub fn user_code(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     let mut code = [0u8; USER_CODE_LEN];
     // 0: mov rdx, X
     put_imm64(&mut code, 0, 0x48, 0xBA, USER_X_VA);
@@ -991,9 +1042,9 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
     );
     put(&mut code, 1824, &[0x48, 0x89, 0x02]);
-    put_imm64(&mut code, 1827, 0x48, 0xB8, IMAGE_ALPHA_PAGES_OFF as u64);
+    put_imm64(&mut code, 1827, 0x48, 0xB8, layout.alpha_pages_off as u64);
     put(&mut code, 1837, &[0x48, 0x89, 0x42, 0x08]);
-    put_imm64(&mut code, 1841, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64);
+    put_imm64(&mut code, 1841, 0x48, 0xB8, layout.alpha.pages as u64);
     put(&mut code, 1851, &[0x48, 0x89, 0x42, 0x10]);
     put_imm64(&mut code, 1855, 0x48, 0xB8, USER3_CODE_VA);
     put(&mut code, 1865, &[0x48, 0x89, 0x42, 0x18]);
@@ -1002,7 +1053,7 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         1869,
         0x48,
         0xB8,
-        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+        USER3_CODE_VA + layout.alpha.entry,
     );
     put(&mut code, 1879, &[0x48, 0x89, 0x42, 0x20]);
     put_imm64(&mut code, 1883, 0x48, 0xB8, USER3_STACK_VA + FRAME_SIZE);
@@ -1052,7 +1103,7 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         2014,
         0x48,
         0xB8,
-        USER3_CODE_VA + RUNTIME_APP_CODE_PAGES as u64 * FRAME_SIZE,
+        USER3_CODE_VA + layout.alpha.pages as u64 * FRAME_SIZE,
     );
     put(&mut code, 2024, &[0x48, 0x89, 0x42, 0x20]);
     put(&mut code, 2028, &[0x48, 0x89, 0xD7]);
@@ -1696,11 +1747,17 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, IMAGE_SERVICEMGR_PAGES_OFF as u64); // code_offset
+    put_imm64(
+        &mut code,
+        at,
+        0x48,
+        0xB8,
+        layout.servicemgr_pages_off as u64,
+    ); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP3_CODE_PAGES as u64); // code_pages
+    put_imm64(&mut code, at, 0x48, 0xB8, layout.servicemgr.pages as u64); // code_pages
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
     at += 4;
@@ -1709,7 +1766,7 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         at,
         0x48,
         0xB8,
-        USER3_CODE_VA + RUNTIME_APP3_ENTRY_OFFSET,
+        USER3_CODE_VA + layout.servicemgr.entry,
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
@@ -1827,11 +1884,11 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, IMAGE_ALPHA_PAGES_OFF as u64); // code_offset
+    put_imm64(&mut code, at, 0x48, 0xB8, layout.alpha_pages_off as u64); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, RUNTIME_APP_CODE_PAGES as u64); // code_pages
+    put_imm64(&mut code, at, 0x48, 0xB8, layout.alpha.pages as u64); // code_pages
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
     at += 4;
@@ -1841,7 +1898,7 @@ pub const fn user_code() -> [u8; USER_CODE_LEN] {
         at,
         0x48,
         0xB8,
-        USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET,
+        USER3_CODE_VA + layout.alpha.entry,
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
@@ -3031,6 +3088,7 @@ fn build_task_root(offset: u64) -> Result<u64, VspaceError> {
 /// 切片 O：用户页映射进**本任务独立根**（克隆 bootloader 根 + 隔离用户槽），并把 root 与
 /// 内核栈登记到调度器，使每次 [`crate::sched::resume`] 写 CR3 与 `TSS.rsp0`。
 pub fn prepare(offset: u64) -> Result<(), VspaceError> {
+    let layout = boot_layout().ok_or(VspaceError::NoBootImage)?;
     let map = |phys: u64| phys_to_virt(phys, offset);
     let task_root = build_task_root(offset)?;
     for va in [
@@ -3063,7 +3121,7 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     let y = region_frame(&y_frames)?;
 
     // SPEC-087：代码跨 2 页（页 0 → `USER_CODE_VA`，页 1 → `USER_CODE2_VA`）。
-    let code_bytes = user_code();
+    let code_bytes = user_code(&layout);
     for (index, &byte) in code_bytes.iter().enumerate() {
         let frame = code_frames
             .frame_at(index / FRAME_SIZE as usize)
@@ -3240,77 +3298,34 @@ pub fn prepare_spin(offset: u64) -> Result<(), VspaceError> {
 /// 必须在既有 bring-up 取帧序列（`prepare`/`prepare_task2`/`prepare_spin`）**之后**调用，
 /// 否则会平移切片 E/F/G/O 的物理帧序列与既有金标地址。
 pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
-    let images = crate::bootstrap::prepare_task_create_caps(IMAGE_TOTAL_PAGES, offset)
+    let layout = boot_layout().ok_or(VspaceError::NoBootImage)?;
+    let images = crate::bootstrap::prepare_task_create_caps(layout.total_pages, offset)
         .map_err(|_| VspaceError::NoFrame)?;
-    // SPEC-109：6 个独立 ELF 按页偏移装进**单一映像段**（`page_base` 定位各映像起点）。
-    load_runtime_elf(
-        PRIMA_SMOKE_ELF,
-        &images.image,
-        IMAGE_ALPHA_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP_CODE_PAGES,
-        RUNTIME_APP_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_BETA_ELF,
-        &images.image,
-        IMAGE_BETA_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP2_CODE_PAGES,
-        RUNTIME_APP2_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_SERVICEMGR_ELF,
-        &images.image,
-        IMAGE_SERVICEMGR_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP3_CODE_PAGES,
-        RUNTIME_APP3_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_LOG_ELF,
-        &images.image,
-        IMAGE_LOG_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP_LOG_CODE_PAGES,
-        RUNTIME_APP_LOG_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_NS_ELF,
-        &images.image,
-        IMAGE_NS_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP_NS_CODE_PAGES,
-        RUNTIME_APP_NS_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_STORE_ELF,
-        &images.image,
-        IMAGE_STORE_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP_STORE_CODE_PAGES,
-        RUNTIME_APP_STORE_ENTRY_OFFSET,
-    )?;
-    load_runtime_elf(
-        PRIMA_DRIVER_ELF,
-        &images.image,
-        IMAGE_DRIVER_PAGES_OFF,
-        offset,
-        USER3_CODE_VA,
-        RUNTIME_APP_DRIVER_CODE_PAGES,
-        RUNTIME_APP_DRIVER_ENTRY_OFFSET,
-    )?;
+    // EXO-1：7 个 opaque ELF 块由 ramdisk 提供，内核仍按既有页偏移装入单一映像段。
+    for (entry, page_base) in [
+        (layout.alpha, layout.alpha_pages_off),
+        (layout.beta, layout.beta_pages_off),
+        (layout.servicemgr, layout.servicemgr_pages_off),
+        (layout.log, layout.log_pages_off),
+        (layout.ns, layout.ns_pages_off),
+        (layout.store, layout.store_pages_off),
+        (layout.driver, layout.driver_pages_off),
+    ] {
+        load_runtime_elf(
+            entry.bytes,
+            &images.image,
+            page_base,
+            offset,
+            USER3_CODE_VA,
+            entry.pages,
+            entry.entry,
+        )?;
+    }
     // 段首页写入服务目录（服务管理器据此按名拿各服务的页偏移/页数）。
-    write_image_directory(&images.image, offset)?;
+    write_image_directory(&layout, &images.image, offset)?;
     let frame = images
         .image
-        .frame_at(IMAGE_ALPHA_PAGES_OFF)
+        .frame_at(layout.alpha_pages_off)
         .ok_or(VspaceError::NoFrame)?;
     // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
     write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
@@ -3411,7 +3426,7 @@ fn elf_layout(bytes: &[u8]) -> Result<ElfLayout, VspaceError> {
     }
     let pages =
         usize::try_from(max_end.div_ceil(FRAME_SIZE)).map_err(|_| VspaceError::InvalidImage)?;
-    if !entry_loaded || pages == 0 || pages > RUNTIME_APP_CODE_PAGES {
+    if !entry_loaded || pages == 0 {
         return Err(VspaceError::InvalidImage);
     }
     Ok(ElfLayout {
@@ -3489,54 +3504,35 @@ fn load_runtime_elf(
     Ok(())
 }
 
-/// SPEC-109：把服务目录写进映像段首页。布局（little-endian u64）：
-/// `magic(0..8) | count(8..16) | [name(0..8) | offset_pages(8..16) | page_count(16..24)] × count`。
-fn write_image_directory(frames: &SegmentFrames, offset: u64) -> Result<(), VspaceError> {
+/// EXO-2A：把服务映像目录写进映像段首页。布局（little-endian u64）：
+/// `magic(0..8) | count(8..16) | [offset_pages(0..8) | page_count(8..16)] × count`。
+///
+/// 目录不再携带服务名；内核只按 boot image 的固定顺序写 opaque 条目，名字由 ring3
+/// `prima-servicemgr` 的 `SERVICE_TABLE` 持有。这样“服务叫什么”不再进入内核的目录生成路径。
+fn write_image_directory(
+    layout: &BootLayout,
+    frames: &SegmentFrames,
+    offset: u64,
+) -> Result<(), VspaceError> {
     let map = |phys| phys_to_virt(phys, offset);
-    let dir_frame = frames
-        .frame_at(IMAGE_DIR_PAGES_OFF)
-        .ok_or(VspaceError::NoFrame)?;
+    let dir_frame = frames.frame_at(0).ok_or(VspaceError::NoFrame)?;
     let base = map(dir_frame);
     for byte in 0..FRAME_SIZE {
         prima_ostd::mm::write_u8_at(base, byte, 0);
     }
-    let entries: [(u64, usize, usize); 6] = [
-        (
-            SERVICE_NAME_ALPHA,
-            IMAGE_ALPHA_PAGES_OFF,
-            RUNTIME_APP_CODE_PAGES,
-        ),
-        (
-            SERVICE_NAME_BETA,
-            IMAGE_BETA_PAGES_OFF,
-            RUNTIME_APP2_CODE_PAGES,
-        ),
-        (
-            SERVICE_NAME_LOG,
-            IMAGE_LOG_PAGES_OFF,
-            RUNTIME_APP_LOG_CODE_PAGES,
-        ),
-        (
-            SERVICE_NAME_NS,
-            IMAGE_NS_PAGES_OFF,
-            RUNTIME_APP_NS_CODE_PAGES,
-        ),
-        (
-            SERVICE_NAME_STORE,
-            IMAGE_STORE_PAGES_OFF,
-            RUNTIME_APP_STORE_CODE_PAGES,
-        ),
-        (
-            SERVICE_NAME_DRIVER,
-            IMAGE_DRIVER_PAGES_OFF,
-            RUNTIME_APP_DRIVER_CODE_PAGES,
-        ),
+    // 顺序必须与 `prima-user/src/servicemgr.rs::SERVICE_TABLE` 一致。
+    let entries: [(usize, usize); 6] = [
+        (layout.alpha_pages_off, layout.alpha.pages),
+        (layout.beta_pages_off, layout.beta.pages),
+        (layout.log_pages_off, layout.log.pages),
+        (layout.ns_pages_off, layout.ns.pages),
+        (layout.store_pages_off, layout.store.pages),
+        (layout.driver_pages_off, layout.driver.pages),
     ];
     let mut at = 0usize;
     write_dir_u64(base, &mut at, SERVICE_IMAGE_MAGIC);
     write_dir_u64(base, &mut at, entries.len() as u64);
-    for (name, pages_off, count) in entries {
-        write_dir_u64(base, &mut at, name);
+    for (pages_off, count) in entries {
         write_dir_u64(base, &mut at, pages_off as u64);
         write_dir_u64(base, &mut at, count as u64);
     }
@@ -3771,7 +3767,6 @@ mod tests {
     fn service_names_pack_ascii_tokens() {
         assert_eq!(SERVICE_NAME_ALPHA, 0x0000_0061_6870_6c61); // "alpha"
         assert_eq!(SERVICE_NAME_BETA, 0x0000_0000_6174_6562); // "beta"
-        assert_eq!(SERVICE_NAME_UNKNOWN, 0x0000_0074_736f_6867); // "ghost"
         assert_eq!(&SERVICE_NAME_BETA.to_le_bytes()[..4], b"beta");
         assert_ne!(SERVICE_NAME_ALPHA, SERVICE_NAME_BETA);
         // 超过 5 字节截断，尾部补 0。
@@ -3792,16 +3787,95 @@ mod tests {
         }
     }
 
+    /// EXO-1：构造一个最小合法 ELF，验证 ramdisk 解析器只看 program header。
+    fn minimal_elf(entry: u64, memsz: u64) -> Vec<u8> {
+        let mut bytes = vec![0u8; 128];
+        bytes[0..4].copy_from_slice(b"\x7fELF");
+        bytes[4] = 2;
+        bytes[5] = 1;
+        bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+        bytes[18..20].copy_from_slice(&62u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+        bytes[24..32].copy_from_slice(&entry.to_le_bytes());
+        bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+        bytes[54..56].copy_from_slice(&(ELF_PHDR_SIZE as u16).to_le_bytes());
+        bytes[56..58].copy_from_slice(&1u16.to_le_bytes());
+        bytes[64..68].copy_from_slice(&PT_LOAD.to_le_bytes());
+        bytes[72..80].copy_from_slice(&120u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&8u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&memsz.to_le_bytes());
+        bytes[120..128].copy_from_slice(&0x5A5A_5A5A_5A5A_5A5Au64.to_le_bytes());
+        bytes
+    }
+
+    fn test_layout() -> BootLayout {
+        let alpha = ImageEntry {
+            bytes: &[],
+            pages: 5,
+            entry: 0x1234,
+        };
+        let beta = ImageEntry {
+            bytes: &[],
+            pages: 2,
+            entry: 0x2345,
+        };
+        let servicemgr = ImageEntry {
+            bytes: &[],
+            pages: 3,
+            entry: 0x3456,
+        };
+        let log = ImageEntry {
+            bytes: &[],
+            pages: 1,
+            entry: 0x4567,
+        };
+        let ns = ImageEntry {
+            bytes: &[],
+            pages: 1,
+            entry: 0x5678,
+        };
+        let store = ImageEntry {
+            bytes: &[],
+            pages: 1,
+            entry: 0x6789,
+        };
+        let driver = ImageEntry {
+            bytes: &[],
+            pages: 1,
+            entry: 0x789A,
+        };
+        BootLayout {
+            alpha,
+            beta,
+            servicemgr,
+            log,
+            ns,
+            store,
+            driver,
+            alpha_pages_off: 1,
+            beta_pages_off: 6,
+            servicemgr_pages_off: 8,
+            log_pages_off: 11,
+            ns_pages_off: 12,
+            store_pages_off: 13,
+            driver_pages_off: 14,
+            total_pages: 15,
+        }
+    }
+
     #[test]
     fn runtime_elf_matches_loader_layout() {
-        let layout = elf_layout(PRIMA_SMOKE_ELF).unwrap();
-        assert_eq!(layout.entry, RUNTIME_APP_ENTRY_OFFSET);
-        assert_eq!(layout.pages, RUNTIME_APP_CODE_PAGES);
+        let bytes = minimal_elf(0x10, FRAME_SIZE * 3);
+        let layout = elf_layout(&bytes).unwrap();
+        assert_eq!(layout.entry, 0x10);
+        assert_eq!(layout.pages, 3);
     }
 
     #[test]
     fn user_code_bytes_are_fixed() {
-        let code = user_code();
+        let layout = test_layout();
+        let code = user_code(&layout);
         assert_eq!(USER_CODE_LEN, USER_CODE_PAGES * FRAME_SIZE as usize);
         // COW 故障点与回执 0。
         assert_eq!(&code[0..2], &[0x48, 0xBA]); // mov rdx, imm64
@@ -4069,14 +4143,14 @@ mod tests {
         assert_eq!(&code[1837..1841], &[0x48, 0x89, 0x42, 0x08]); // code_offset = 0
         assert_eq!(
             &code[1843..1851],
-            &(RUNTIME_APP_CODE_PAGES as u64).to_le_bytes()
+            &(layout.alpha.pages as u64).to_le_bytes()
         );
         assert_eq!(&code[1851..1855], &[0x48, 0x89, 0x42, 0x10]); // code_pages
         assert_eq!(&code[1857..1865], &USER3_CODE_VA.to_le_bytes());
         assert_eq!(&code[1865..1869], &[0x48, 0x89, 0x42, 0x18]); // load_base
         assert_eq!(
             &code[1871..1879],
-            &(USER3_CODE_VA + RUNTIME_APP_ENTRY_OFFSET).to_le_bytes()
+            &(USER3_CODE_VA + layout.alpha.entry).to_le_bytes()
         );
         assert_eq!(&code[1879..1883], &[0x48, 0x89, 0x42, 0x20]); // entry
         assert_eq!(
@@ -4111,7 +4185,7 @@ mod tests {
         // 负例 1：entry 越界 → [Y+384]；随后还原 entry。
         assert_eq!(
             &code[2016..2024],
-            &(USER3_CODE_VA + RUNTIME_APP_CODE_PAGES as u64 * FRAME_SIZE).to_le_bytes()
+            &(USER3_CODE_VA + layout.alpha.pages as u64 * FRAME_SIZE).to_le_bytes()
         );
         assert_eq!(&code[2024..2028], &[0x48, 0x89, 0x42, 0x20]);
         assert_eq!(&code[2043..2050], &[0x48, 0x89, 0x81, 0x80, 0x01, 0, 0]);
