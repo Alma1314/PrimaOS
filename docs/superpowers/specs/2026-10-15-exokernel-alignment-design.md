@@ -130,13 +130,16 @@ LibOS 行为。
 
 ### EXO-2：用户态 init/loader 承担编排
 
-> **状态（2026-10-16）**：进行中。已落 **EXO-2A**（SPEC-116，目录无名字）
-> **EXO-2B**（SPEC-117，目录格式提升为 `prima-abi` 共享常量）与 **EXO-2C**
-> （SPEC-120，init 机器码生成器移出内核，改由 host 生成、ramdisk opaque ELF 装载）；
+> **状态（2026-10-16）**：进行中。已落 **EXO-2A**（SPEC-116，目录无名字）、
+> **EXO-2B**（SPEC-117，目录格式提升为 `prima-abi` 共享常量）、**EXO-2C**
+> （SPEC-120，init 机器码生成器移出内核，改由 host 生成、ramdisk opaque ELF 装载）与
+> **EXO-2D**（SPEC-121，带 opaque `kind` 的通用 manifest + boot entry ABI；
+> `prima-initgen` 不再镜像 capability 句柄）；
 > 见 `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md`、
-> `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md` 与
-> `docs/superpowers/reports/2026-10-16-exo2c-init-loader-report.md`。
-> 协议 tag、共享段 witness 与真正的 ring3 manifest/loader 迁移仍未完成。
+> `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md`、
+> `docs/superpowers/reports/2026-10-16-exo2c-init-loader-report.md` 与
+> `docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md`。
+> 共享段 witness 与真正的运行时 ring3 loader/trace 迁移仍未完成。
 
 - 新建或强化真正的 ring3 `init`/`prima-servicemgr`：从 ramdisk 读 manifest，创建服务
   Task、映射代码/栈、建立注册表、按名解析和路由。
@@ -149,9 +152,10 @@ LibOS 行为。
 
 ### EXO-3：通用 trace / witness 通道
 
-> **状态（2026-10-15）**：进行中。已落 **EXO-3A**（SPEC-118，内核不再解释服务名）与
-> **EXO-3B**（SPEC-119，marker/reply/协商期望值移出内核，由 `xtask` 校验）；
-> 完整 trace/调试通道与 witness 下沉仍待完成。见 EXO-3A/3B 报告。
+> **状态（2026-10-16）**：进行中。已落 **EXO-3A**（SPEC-118，内核不再解释服务名）、
+> **EXO-3B**（SPEC-119，marker/reply/协商期望值移出内核，由 `xtask` 校验）与
+> **EXO-3C**（SPEC-122，协议 tag 常量与 witness tag 断言移出内核）；
+> 完整 trace/调试通道与共享段 witness 偏移/内核读回下沉仍待完成。见 EXO-3A/3B/3C 报告。
 
 - 定义内核无关的 `exo_trace` 或调试 ring：用户态可写事件字节流，内核只提供共享段/串口
   等资源，不解释内容。

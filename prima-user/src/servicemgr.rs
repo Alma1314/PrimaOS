@@ -48,14 +48,14 @@ use prima_runtime::{
         IOPORT_COUNT, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_DRIVER,
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE,
         SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
-        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
-        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG,
-        SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE,
-        SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
-        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW,
-        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG,
-        SERVICE_SETUP_TAG, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name,
-        pack_service_request,
+        SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
+        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
+        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
+        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
+        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
+        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
 };
@@ -638,22 +638,28 @@ fn read_image_directory(
         .read_user_u64(ENDPOINT_CODE_PROBE_VA + 8)
         .unwrap_or(0);
     if magic == SERVICE_IMAGE_MAGIC {
-        // EXO-2A：目录项无名字，按顺序与 [`SERVICE_TABLE`] 对齐；服务名由本 ring3
-        // 服务管理器持有，内核不再生成/转递名字。
+        // EXO-2D：目录项为 `kind | offset_pages | pages`。kind 是用户态协议号
+        // （既有 `SERVICE_BEHAVIOR_*`）；服务管理器自身 kind 被跳过。
         let mut index = 0u64;
-        while index < count && index < SERVICES as u64 {
+        while index < count {
             let at =
                 ENDPOINT_CODE_PROBE_VA + SERVICE_IMAGE_DIR_HEADER + index * SERVICE_IMAGE_ENTRY_LEN;
-            let offset_pages = runtime.read_user_u64(at).unwrap_or(0);
-            let pages = runtime.read_user_u64(at + 8).unwrap_or(0);
-            if pages != 0 {
-                let slot = index as usize;
-                pending[slot] = Some(Pending {
-                    code: image,
-                    offset_pages,
-                    pages,
-                    name: SERVICE_TABLE[slot].0,
-                });
+            let kind = runtime.read_user_u64(at).unwrap_or(0);
+            let offset_pages = runtime.read_user_u64(at + 8).unwrap_or(0);
+            let pages = runtime.read_user_u64(at + 16).unwrap_or(0);
+            if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
+                let Some(slot) = (kind as usize).checked_sub(1) else {
+                    index += 1;
+                    continue;
+                };
+                if slot < SERVICES && SERVICE_TABLE[slot].1 == kind {
+                    pending[slot] = Some(Pending {
+                        code: image,
+                        offset_pages,
+                        pages,
+                        name: SERVICE_TABLE[slot].0,
+                    });
+                }
             }
             index += 1;
         }

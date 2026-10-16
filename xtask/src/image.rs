@@ -9,10 +9,10 @@ const BIOS_IMAGE_NAME: &str = "prima-os-bios.img";
 const UEFI_IMAGE_NAME: &str = "prima-os-uefi.img";
 const RAMDISK_IMAGE_NAME: &str = "prima-os-ramdisk.img";
 
-/// EXO-2C：ramdisk 中的服务 ELF（init 映像由 `prima-initgen` 在第 0 项生成）。
+/// EXO-2C/2D：ramdisk 中的服务 ELF（init 映像由 `prima-initgen` 生成）。
 ///
-/// 名称只出现在构建工具侧；内核按 opaque 序号读取。顺序必须与
-/// `kernel/src/user.rs::install_boot_image` 的服务条目下标一致。
+/// 名称只出现在构建工具侧；内核按 opaque `kind`/manifest 顺序读取。这里保持
+/// `alpha_index == 1`、`servicemgr_index == 3` 仅作为构建期 init 生成器的索引输入。
 const SERVICE_IMAGE_BINARIES: [&str; 7] = [
     env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"),
     env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"),
@@ -78,21 +78,57 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
         );
     }
 
-    // EXO-2C：init 机器码由 host 生成器产出，再封装成不透明 ELF 作为第 0 项。
-    // 这样内核不再需要 `user_code()`，但仍在同一批 ramdisk 块中装载 init。
-    let init_elf = build_init_elf(&service_blobs)?;
-    let mut blobs = Vec::with_capacity(service_blobs.len() + 1);
-    blobs.push(init_elf);
-    blobs.extend(service_blobs);
+    // EXO-2D：manifest 条目带 opaque `kind`。内核只按 kind 找 init，其余条目按
+    // manifest 顺序做通用页打包/目录；服务语义只在用户态解释。
+    let alpha_index = 1;
+    let servicemgr_index = 3;
+    let init_elf = build_init_elf(alpha_index, servicemgr_index)?;
+    let mut manifest: Vec<(u64, Vec<u8>)> = Vec::with_capacity(service_blobs.len() + 1);
+    manifest.push((prima_abi::boot_image::KIND_INIT, init_elf));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_ALPHA,
+        service_blobs[0].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_BETA,
+        service_blobs[1].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_IMAGE_KIND_SERVICEMGR,
+        service_blobs[2].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_LOG,
+        service_blobs[3].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_NS,
+        service_blobs[4].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_STORE,
+        service_blobs[5].clone(),
+    ));
+    manifest.push((
+        prima_runtime::protocol::SERVICE_BEHAVIOR_DRIVER,
+        service_blobs[6].clone(),
+    ));
 
-    let count = blobs.len() as u64;
+    let count = manifest.len() as u64;
+    if count as usize > prima_abi::boot_image::MAX_ENTRIES {
+        return Err(format!(
+            "boot manifest has {count} entries, capacity is {}",
+            prima_abi::boot_image::MAX_ENTRIES
+        ));
+    }
+
     let mut next_offset = (prima_abi::boot_image::HEADER_QWORDS
-        + blobs.len() * prima_abi::boot_image::ENTRY_QWORDS)
+        + manifest.len() * prima_abi::boot_image::ENTRY_QWORDS)
         * 8;
-    let mut entries = Vec::with_capacity(blobs.len());
-    for blob in &blobs {
+    let mut entries = Vec::with_capacity(manifest.len());
+    for (kind, blob) in &manifest {
         next_offset = align_up(next_offset, 8)?;
-        entries.push((next_offset, blob.len() as u64));
+        entries.push((*kind, next_offset, blob.len() as u64));
         next_offset = next_offset
             .checked_add(blob.len())
             .ok_or_else(|| "boot image size overflow".to_owned())?;
@@ -102,11 +138,12 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     push_u64(&mut ramdisk, prima_abi::boot_image::MAGIC);
     push_u64(&mut ramdisk, prima_abi::boot_image::VERSION);
     push_u64(&mut ramdisk, count);
-    for (offset, len) in &entries {
+    for (kind, offset, len) in &entries {
+        push_u64(&mut ramdisk, *kind);
         push_u64(&mut ramdisk, *offset as u64);
         push_u64(&mut ramdisk, *len);
     }
-    for ((offset, _), blob) in entries.into_iter().zip(blobs) {
+    for ((_, offset, _), (_, blob)) in entries.into_iter().zip(manifest) {
         // 头部结束后先按 offset 补零；后续块之间也按 8 字节对齐。
         while ramdisk.len() < offset {
             ramdisk.push(0);
@@ -120,31 +157,14 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// EXO-2C：用七块服务 ELF 的布局生成 init 机器码，并封装成两块 4 KiB
-/// `PT_LOAD`（vaddr 0 与 0x1000）的不透明 ELF。
-///
-/// 内核的通用 ELF 解析器只读 program header 与字节；装载 init 代码时按这两个
-/// 连续虚拟页选帧，然后映射到 `USER_CODE_VA` / `USER_CODE2_VA`。
-fn build_init_elf(service_blobs: &[Vec<u8>]) -> Result<Vec<u8>, String> {
-    let (alpha_pages, alpha_entry) = elf_layout(&service_blobs[0])?;
-    let (beta_pages, _) = elf_layout(&service_blobs[1])?;
-    let (servicemgr_pages, servicemgr_entry) = elf_layout(&service_blobs[2])?;
-    let alpha_pages_off = 1;
-    let beta_pages_off = alpha_pages_off + alpha_pages;
-    let servicemgr_pages_off = beta_pages_off + beta_pages;
-    let layout = prima_initgen::BootLayout {
-        alpha: prima_initgen::ImageEntry {
-            pages: alpha_pages,
-            entry: alpha_entry,
-        },
-        servicemgr: prima_initgen::ImageEntry {
-            pages: servicemgr_pages,
-            entry: servicemgr_entry,
-        },
-        alpha_pages_off,
-        servicemgr_pages_off,
+/// EXO-2C/2D：init 代码由 host 生成器产出，并封装为两个连续 `PT_LOAD`
+/// （vaddr 0 / 0x1000）的不透明 ELF。布局值改由内核写入的 boot-info 提供。
+fn build_init_elf(alpha_index: usize, servicemgr_index: usize) -> Result<Vec<u8>, String> {
+    let manifest = prima_initgen::Manifest {
+        alpha_index,
+        servicemgr_index,
     };
-    let code = prima_initgen::generate(&layout);
+    let code = prima_initgen::generate(&manifest);
     Ok(encode_init_elf(&code))
 }
 
@@ -191,74 +211,6 @@ fn write_phdr(elf: &mut [u8], at: usize, vaddr: u64, file_offset: u64, file_end:
     put_u64(elf, at + 32, file_end - file_offset);
     put_u64(elf, at + 40, file_end - file_offset);
     put_u64(elf, at + 48, INIT_CODE_PAGE as u64);
-}
-
-fn elf_layout(bytes: &[u8]) -> Result<(usize, u64), String> {
-    if bytes.len() < ELF_HEADER_LEN
-        || bytes.get(0..4) != Some(b"\x7fELF")
-        || bytes[4] != 2
-        || bytes[5] != 1
-        || read_u16(bytes, 16) != Some(3)
-        || read_u16(bytes, 18) != Some(62)
-        || read_u32(bytes, 20) != Some(1)
-        || read_u16(bytes, 54) != Some(ELF_PHDR_LEN as u16)
-    {
-        return Err("service image is not a supported ELF64".to_owned());
-    }
-    let entry = read_u64(bytes, 24).ok_or_else(|| "ELF entry is truncated".to_owned())?;
-    let phoff =
-        usize::try_from(read_u64(bytes, 32).ok_or_else(|| "ELF phoff is truncated".to_owned())?)
-            .map_err(|_| "ELF phoff does not fit usize".to_owned())?;
-    let phnum = read_u16(bytes, 56).ok_or_else(|| "ELF phnum is truncated".to_owned())? as usize;
-    let phbytes = phnum
-        .checked_mul(ELF_PHDR_LEN)
-        .and_then(|size| phoff.checked_add(size))
-        .ok_or_else(|| "ELF program headers overflow".to_owned())?;
-    if phnum == 0 || phbytes > bytes.len() {
-        return Err("ELF program headers are out of range".to_owned());
-    }
-    let mut max_end = 0u64;
-    let mut entry_loaded = false;
-    for index in 0..phnum {
-        let at = phoff + index * ELF_PHDR_LEN;
-        let kind = read_u32(bytes, at).ok_or_else(|| "ELF phdr is truncated".to_owned())?;
-        if kind != 1 {
-            continue;
-        }
-        let vaddr = read_u64(bytes, at + 16).ok_or_else(|| "ELF vaddr is truncated".to_owned())?;
-        let filesz =
-            read_u64(bytes, at + 32).ok_or_else(|| "ELF filesz is truncated".to_owned())?;
-        let memsz = read_u64(bytes, at + 40).ok_or_else(|| "ELF memsz is truncated".to_owned())?;
-        if memsz < filesz || memsz == 0 {
-            return Err("ELF PT_LOAD has an invalid size".to_owned());
-        }
-        let end = vaddr
-            .checked_add(memsz)
-            .ok_or_else(|| "ELF segment end overflows".to_owned())?;
-        max_end = max_end.max(end);
-        entry_loaded |= entry >= vaddr && entry < end;
-    }
-    if !entry_loaded || max_end == 0 {
-        return Err("ELF entry is not covered by a PT_LOAD".to_owned());
-    }
-    let pages = usize::try_from(max_end.div_ceil(INIT_CODE_PAGE as u64))
-        .map_err(|_| "ELF page count does not fit usize".to_owned())?;
-    if pages == 0 {
-        return Err("ELF page count is zero".to_owned());
-    }
-    Ok((pages, entry))
-}
-
-fn read_u16(bytes: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
 fn put_u16(bytes: &mut [u8], at: usize, value: u16) {

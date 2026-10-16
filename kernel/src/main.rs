@@ -287,6 +287,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    // EXO-2D：所有 boot capability 已铸妥，写入 init 的通用 entry ABI。
+                                    if kernel::user::install_boot_info(offset).is_err() {
+                                        protocol::panic_event();
+                                        serial::flush();
+                                        qemu::exit(qemu::PANIC)
+                                    }
                                     // SPEC-066：把 11 条用户可见平台段 cap 与 2 条平台 Task cap 按
                                     // 属主移交给 task 1 / task 2，使用户可自持经 memseg_map 使用。
                                     // 必须在既有 bring-up 映射（均以 KERNEL_ACTOR 为 caller）之后。

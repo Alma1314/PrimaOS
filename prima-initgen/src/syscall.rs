@@ -2,7 +2,6 @@
 //! machine-code generator. These are deliberately frozen mirrors; the kernel is
 //! still the source of truth for enforcement, and QEMU/xtask gates detect drift.
 
-use crate::bootstrap;
 use crate::rights::{Right, Rights};
 
 pub const FRAME_SIZE: u64 = 4096;
@@ -13,8 +12,6 @@ pub const ACCESS_W_BITS: u64 = 1 << (Right::SegMapW as u32);
 pub const AUDIT_RECEIPT_LIVE: u64 = 720;
 
 pub const AUDIT_RECEIPT_STALE: u64 = 728;
-
-pub const AUTHORIZE_CAP: u64 = 0x0000_0001_0000_0001;
 
 pub const BAD_PTR: u64 = crate::code::USER_BASE_VA + 0x20_0000;
 
@@ -29,10 +26,6 @@ pub const COPY_PTR: u64 = crate::code::USER_X_VA;
 pub const EXC_KIND_PAGEFAULT: u64 = 1;
 
 pub const EXC_KIND_SYSCALLTRAP: u64 = 2;
-
-pub const EXC_PAGE_FAULT_CAP: u64 = bootstrap::EXC_PAGE_FAULT_HANDLE.encode();
-
-pub const EXC_SYSCALL_TRAP_CAP: u64 = bootstrap::EXC_SYSCALL_TRAP_HANDLE.encode();
 
 pub const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 
@@ -107,7 +100,7 @@ pub const NS_RECEIPT_UNBIND: u64 = 640;
 
 pub const NS_RECEIPT_UNMOUNT: u64 = 648;
 
-pub const NS_ROOT_RIGHTS_BITS: u64 = crate::bootstrap::NAMESPACE_RIGHTS.bits() as u64;
+pub const NS_ROOT_RIGHTS_BITS: u64 = 0x3F01;
 
 pub const RIGHT_DERIVE: u64 = 0;
 
@@ -130,17 +123,12 @@ pub const SYS_BAD: u64 = 0xDEAD;
 
 pub const SYS_ECHO_ARG: u64 = 0x0123_4567_89AB_CDEF;
 
-pub const TASK_CODE_CAP: u64 = crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode();
-pub const TASK_SEND_CAP: u64 = crate::bootstrap::TASK_CREATE_SEND_CAP_HANDLE.encode();
-
 pub const TASK_RECV_BUF: u64 = crate::code::USER_Y_VA + 0x300;
 pub const TASK_RECEIPT_STACK_SEG: u64 = 368;
 
 pub const TASK_REQ_VA: u64 = crate::code::USER_STACK_VA + 0x800;
 
 pub const TASK2_ID: u32 = 2;
-
-pub const TASK2_SEND_CAP: u64 = bootstrap::TASK2_SEND_CAP_HANDLE.encode();
 
 pub const TASK2_WAKE_PAYLOAD: u64 = 0x5A3C_0000_0000_0002;
 

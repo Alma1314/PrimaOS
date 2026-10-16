@@ -21,8 +21,11 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
-    INIT_TASK_ID, PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, SegmentFrames,
-    TASK_CAP_HANDLE,
+    EXC_PAGE_FAULT_HANDLE, EXC_SYSCALL_TRAP_HANDLE, IMAGE_CAP_HANDLE, INIT_TASK_ID,
+    NAMESPACE_CAP_HANDLE, PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE,
+    SERVICE_IMAGE_CAP_HANDLE, SERVICE_IMAGE_MGR_CAP_HANDLE, SERVICE3_STACK_CAP_HANDLE,
+    SERVICEMGR_SEND_CAP_HANDLE, SegmentFrames, TASK_CAP_HANDLE, TASK_CREATE_ROOT_NS_RIGHTS,
+    TASK_CREATE_SEND_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TASK4_SEND_CAP_HANDLE,
 };
 use crate::exc::SretFrame;
 use crate::frames;
@@ -43,34 +46,31 @@ use prima_ostd::sync::StaticCell;
 /// EXO-1：一个 boot image 条目——只暴露 opaque ELF 字节与装载布局。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageEntry {
+    /// EXO-2D：manifest 条目的 opaque kind；内核只解释 [`prima_abi::boot_image::KIND_INIT`]。
+    pub kind: u64,
     pub bytes: &'static [u8],
     pub pages: usize,
     pub entry: u64,
 }
 
-/// EXO-1/EXO-2C：从通用 ramdisk 解析出的 boot image 布局。
+impl ImageEntry {
+    const EMPTY: Self = Self {
+        kind: 0,
+        bytes: &[],
+        pages: 0,
+        entry: 0,
+    };
+}
+
+/// EXO-2D：从通用 ramdisk 解析出的**通用 manifest 布局**。
 ///
-/// 第 0 项 init ELF 由内核通用 ELF 装载器装入 task 1；第 1..7 项是服务映像，仍按
-/// 固定顺序映射到阶段 4 的既有服务集合。服务名、协议 tag 与 witness 偏移仍由
-/// `write_image_directory()` 和内核 witness 处理，留待 EXO-3 继续下沉。
+/// 内核不再假定固定 8 项或服务顺序：它只按 `kind == KIND_INIT` 找 init，其余条目按
+/// manifest 顺序打包为服务映像段，并在 BootInfo 中按同一顺序暴露页偏移/入口。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootLayout {
-    /// EXO-2C：第 0 项是 init 的不透明 ELF；它不是服务映像段的一部分。
-    pub init: ImageEntry,
-    pub alpha: ImageEntry,
-    pub beta: ImageEntry,
-    pub servicemgr: ImageEntry,
-    pub log: ImageEntry,
-    pub ns: ImageEntry,
-    pub store: ImageEntry,
-    pub driver: ImageEntry,
-    pub alpha_pages_off: usize,
-    pub beta_pages_off: usize,
-    pub servicemgr_pages_off: usize,
-    pub log_pages_off: usize,
-    pub ns_pages_off: usize,
-    pub store_pages_off: usize,
-    pub driver_pages_off: usize,
+    pub count: usize,
+    pub entries: [ImageEntry; prima_abi::boot_image::MAX_ENTRIES],
+    pub pages_off: [usize; prima_abi::boot_image::MAX_ENTRIES],
     pub total_pages: usize,
 }
 
@@ -84,6 +84,8 @@ pub enum BootImageError {
     BadEntryRange,
     InvalidElf,
     ImageSegmentTooLarge,
+    TooManyEntries,
+    MissingInit,
 }
 
 static BOOT_LAYOUT: StaticCell<Option<BootLayout>> = StaticCell::new(None);
@@ -122,25 +124,26 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
     if version != prima_abi::boot_image::VERSION {
         return Err(BootImageError::BadVersion);
     }
-    if count != prima_abi::boot_image::ENTRY_COUNT {
+    let count = usize::try_from(count).map_err(|_| BootImageError::BadEntryCount)?;
+    if count == 0 {
         return Err(BootImageError::BadEntryCount);
+    }
+    if count > prima_abi::boot_image::MAX_ENTRIES {
+        return Err(BootImageError::TooManyEntries);
     }
 
     let entry_qwords = prima_abi::boot_image::ENTRY_QWORDS;
-    let table_qwords = header_qwords + (count as usize) * entry_qwords;
+    let table_qwords = header_qwords + count * entry_qwords;
     if bytes.len() < table_qwords * 8 {
         return Err(BootImageError::TooSmall);
     }
 
-    let mut entries = [ImageEntry {
-        bytes: &[],
-        pages: 0,
-        entry: 0,
-    }; 8];
-    for (index, entry) in entries.iter_mut().enumerate() {
+    let mut entries = [ImageEntry::EMPTY; prima_abi::boot_image::MAX_ENTRIES];
+    for (index, entry) in entries.iter_mut().take(count).enumerate() {
         let base = header_qwords + index * entry_qwords;
-        let offset = boot_u64(bytes, base).ok_or(BootImageError::TooSmall)?;
-        let entry_len = boot_u64(bytes, base + 1).ok_or(BootImageError::TooSmall)?;
+        let kind = boot_u64(bytes, base).ok_or(BootImageError::TooSmall)?;
+        let offset = boot_u64(bytes, base + 1).ok_or(BootImageError::TooSmall)?;
+        let entry_len = boot_u64(bytes, base + 2).ok_or(BootImageError::TooSmall)?;
         let offset = usize::try_from(offset).map_err(|_| BootImageError::BadEntryRange)?;
         let entry_len = usize::try_from(entry_len).map_err(|_| BootImageError::BadEntryRange)?;
         let end = offset
@@ -151,45 +154,52 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
             .ok_or(BootImageError::BadEntryRange)?;
         let elf = elf_layout(image).map_err(|_| BootImageError::InvalidElf)?;
         *entry = ImageEntry {
+            kind,
             bytes: image,
             pages: elf.pages,
             entry: elf.entry,
         };
     }
 
-    // 第 0 项是 init ELF，不进入服务映像段；服务目录仍从该段的第 1 页开始。
-    let alpha_pages_off = 1;
-    let beta_pages_off = alpha_pages_off + entries[1].pages;
-    let servicemgr_pages_off = beta_pages_off + entries[2].pages;
-    let log_pages_off = servicemgr_pages_off + entries[3].pages;
-    let ns_pages_off = log_pages_off + entries[4].pages;
-    let store_pages_off = ns_pages_off + entries[5].pages;
-    let driver_pages_off = store_pages_off + entries[6].pages;
-    let total_pages = driver_pages_off + entries[7].pages;
+    let mut pages_off = [0usize; prima_abi::boot_image::MAX_ENTRIES];
+    let mut total_pages = 1; // 服务映像段首页留给目录。
+    let mut init_seen = false;
+    for (index, entry) in entries.iter().take(count).enumerate() {
+        if entry.kind == prima_abi::boot_image::KIND_INIT {
+            init_seen = true;
+            continue;
+        }
+        pages_off[index] = total_pages;
+        total_pages = total_pages
+            .checked_add(entry.pages)
+            .ok_or(BootImageError::ImageSegmentTooLarge)?;
+    }
+    if !init_seen {
+        return Err(BootImageError::MissingInit);
+    }
     if total_pages > crate::bootstrap::MAX_SEGMENT_FRAMES {
         return Err(BootImageError::ImageSegmentTooLarge);
     }
 
     let layout = BootLayout {
-        init: entries[0],
-        alpha: entries[1],
-        beta: entries[2],
-        servicemgr: entries[3],
-        log: entries[4],
-        ns: entries[5],
-        store: entries[6],
-        driver: entries[7],
-        alpha_pages_off,
-        beta_pages_off,
-        servicemgr_pages_off,
-        log_pages_off,
-        ns_pages_off,
-        store_pages_off,
-        driver_pages_off,
+        count,
+        entries,
+        pages_off,
         total_pages,
     };
     BOOT_LAYOUT.with_mut(|slot| *slot = Some(layout));
     Ok(())
+}
+
+/// 按 `kind` 查找 manifest 条目；返回 `(index, entry)`。
+fn boot_entry_by_kind(layout: &BootLayout, kind: u64) -> Option<(usize, ImageEntry)> {
+    layout
+        .entries
+        .iter()
+        .take(layout.count)
+        .enumerate()
+        .find(|(_, entry)| entry.kind == kind)
+        .map(|(index, entry)| (index, *entry))
 }
 
 /// 用户空间基址：PML4 槽 20（实测槽 0..8 已被 bootloader/内核占用，槽 16 归切片 F）。
@@ -225,25 +235,6 @@ pub const CLIENT_RECEIPT_REPLY: u64 = 808;
 /// SPEC-087：客户端把收到的应答 payload 写回共享段内的偏移。
 pub const SERVICE_REPLY_OFFSET: u64 = 64;
 
-/// SPEC-088：服务端点自报 id 的消息 tag（高 16 位；低 16 位为 id）。与 `prima-user` 一致。
-pub const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
-/// SPEC-088：服务端点完成协商的消息 tag。
-pub const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
-/// SPEC-088：broker 给服务端点的**无 cap 唤醒** payload（内核拒绝向 `BlockedRecv` 投递带 cap 消息）。
-pub const SERVICE_PREPARE_TAG: u64 = 0x5EC3_0000_0000_0000;
-/// SPEC-105：向常态阻塞在 `recv` 的服务管理器投递**带 cap** 消息前的**无 cap 唤醒** tag
-/// （与 `prima-runtime::protocol::SERVICE_WAKE_TAG` 一致）。
-pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
-/// SPEC-105：init 向服务管理器移交**建端点所需 cap 与参数**的消息 tag（与
-/// `prima-runtime::protocol::SERVICE_SETUP_TAG` 一致）。payload 布局
-/// `tag(48..63) | code_pages(40..47) | name(0..39)`；本 tag 的消息带**一条** cap（父 Namespace，
-/// 此时 payload 仅 tag）。
-pub const SERVICE_SETUP_TAG: u64 = 0x5ECC_0000_0000_0000;
-/// SPEC-108：init 向服务管理器移交**服务代码段**的消息 tag（与
-/// `prima-runtime::protocol::SERVICE_SETUP_CODE_TAG` 一致）。payload 布局
-/// `tag(48..63) | code_pages(40..47) | name(0..39)`；带**一条** cap（cap0 = 代码段）。
-/// 服务**栈段**不再移交——由管理器 `SYS_MEMSEG_CREATE` 自建（栈创建下沉到 ring3）。
-pub const SERVICE_SETUP_CODE_TAG: u64 = 0x5ECD_0000_0000_0000;
 /// SPEC-088：服务端点把协商结果写回的段内偏移（init 经 `USER_HELLO2_VA` 的同一物理帧读回）。
 pub const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
 /// SPEC-088：服务端点把两个负例码写回的段内偏移。
@@ -285,20 +276,12 @@ pub const SVC_RECEIPT_SEG_B: u64 = 1016;
 /// 之间，无任何见证读取），避开 `runtime_hello` 的 `map_result`（`Y+736`）等既有回执。
 pub const SVC_RECEIPT_REG_A_NAME: u64 = 768;
 pub const SVC_RECEIPT_REG_B_NAME: u64 = 776;
-/// SPEC-103：ring3 服务管理器向 init 自报存活的 tag（高 16 位；与 `prima-runtime::protocol` 一致）。
-pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 /// SPEC-103：init 收到的服务管理器回执在 Y 页的偏移——`784`＝创建返回的 task id、`792`＝自报
 /// payload（`TAG ‖ id 低 8 位`）。取 Y 页空隙 `784/792`（`SVC_RECEIPT_REG_B_NAME=776` 与
 /// `CLIENT_RECEIPT_MAP=800` 之间，无任何既有见证读取）。
 pub const SERVICEMGR_RECEIPT_MGR: u64 = 784;
 pub const SERVICEMGR_RECEIPT_HELLO: u64 = 792;
 
-/// SPEC-104：管理器 → init 的三段控制消息 tag（唤醒 / 交回共享段只读副本 / finish）。
-///
-/// 与 `prima-user/src/servicemgr.rs` 一致。三段**连发**（中间不让出）确保唤醒先于带 cap 消息。
-pub const SERVICEMGR_WAKE_TAG: u64 = 0x5E57_0000_0000_0000;
-pub const SERVICEMGR_SEG_TAG: u64 = 0x5E58_0000_0000_0000;
-pub const SERVICEMGR_FINISH_TAG: u64 = 0x5E59_0000_0000_0000;
 /// SPEC-104：管理器写回客户端共享段的固定偏移（与 `prima-user/src/servicemgr.rs` 一致）。
 ///
 /// 内核见证改从这些偏移读回「由管理器产出」的注册表/解析结果；值本身沿用既有语义，
@@ -448,6 +431,7 @@ fn kstack_top(stack: *const KStack) -> u64 {
 }
 
 /// 任务 2 回执页 Y2 的物理帧（切片 O：task1 根下不可见 Y2 VA，witness 按物理读）。
+static TASK1_STACK_PHYS: AtomicU64 = AtomicU64::new(0);
 static TASK2_Y_PHYS: AtomicU64 = AtomicU64::new(0);
 
 /// 任务 2 回执页的物理帧（未准备时 `None`）。
@@ -615,7 +599,7 @@ pub struct ServiceNegotiatedWitness {
     pub service_id: u64,
     /// 转发 Hello 段 cap 给服务的 `SYS_SEND` 回执（应 0）。
     pub forward: u64,
-    /// 服务完成协商的 `SYS_RECV` 回执（应 `SERVICE_DONE_TAG`）。
+    /// 服务完成协商的 `SYS_RECV` 回执原始 qword；期望值由 `xtask` 校验。
     pub done: u64,
     /// 服务写入共享段 offset 128 的协商结果原始 qword；期望值由 `xtask` 校验。
     pub negotiated: u64,
@@ -630,7 +614,6 @@ impl ServiceNegotiatedWitness {
             && self.stack == 0
             && self.service_id != 0
             && self.forward == 0
-            && self.done == SERVICE_DONE_TAG
     }
 }
 
@@ -661,7 +644,7 @@ pub struct ServiceSelectedWitness {
     pub resolved: u64,
     /// 未注册名的解析结果原始 qword；期望值由 `xtask` 校验。
     pub unknown: u64,
-    /// 二次转发的服务回执（应 `SERVICE_DONE_TAG`）。
+    /// 二次转发的服务回执原始 qword；期望值由 `xtask` 校验。
     pub done: u64,
     /// `BETA` 行为写入共享段 offset 144 的协商结果原始 qword；
     /// `max=1024` 只可能来自被按名选中的 `BETA` offer）。
@@ -671,8 +654,8 @@ pub struct ServiceSelectedWitness {
     /// SPEC-092：`BETA` 端点（第二个服务任务）写入共享段 offset 168 的**自身 task id**——
     /// 把 `negotiated_beta` 绑定到**端点身份**（与 `alpha_ep` 必须相异）。
     pub beta_ep: u64,
-    /// SPEC-092：init 从第二个 `SERVICE_ID_TAG` 收集到的端点 id——须等于 `beta_ep`（否则
-    /// BETA 请求没送到被记录的那个端点）。
+    /// SPEC-092：init 从第二个服务端点自报消息收集到的 id——须等于 `beta_ep`（否则
+    /// BETA 请求没送到被记录的那个端点）；消息 tag 由 `xtask` 校验。
     pub beta_self: u64,
     /// SPEC-093：`ALPHA` 端点映像（`prima-smoke`）写入共享段 offset 176 的**二进制标记**。
     pub alpha_marker: u64,
@@ -697,8 +680,7 @@ pub struct ServiceSelectedWitness {
 
 impl ServiceSelectedWitness {
     pub fn evidence_ok(&self) -> bool {
-        self.done == SERVICE_DONE_TAG
-            && self.beta_ep != 0
+        self.beta_ep != 0
             && self.beta_ep == self.beta_self
             && self.alpha_ep != self.beta_ep
             && self.alpha_marker != self.beta_marker
@@ -745,7 +727,7 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
 pub struct ServicemgrWitness {
     /// 从 `SYS_TASK_CREATE` 返回的**管理 cap** 解出的新任务 id（0 = 未能解出）。
     pub task_id: u64,
-    /// 服务管理器自报存活的 payload（`SERVICEMGR_HELLO_TAG ‖ 自身 task id 低 8 位`）。
+    /// 服务管理器自报存活的 payload 原始 qword；tag 期望值由 `xtask` 校验。
     pub hello: u64,
     /// SPEC-104：管理器写入共享段的**自身 task id**——须等于从管理 cap 解出的 id（把注册表/
     /// 解析结果的产出方绑定到 init 建起的那**同一个**任务）。
@@ -816,7 +798,6 @@ impl ServicemgrWitness {
             && self.ns_id != self.store_id
             && self.log_id != self.store_id;
         self.task_id > 1
-            && (self.hello & 0xffff_0000_0000_0000) == SERVICEMGR_HELLO_TAG
             && (self.hello & 0xff) == (self.task_id & 0xff)
             && self.self_id == self.task_id
             && self.marker == SERVICEMGR_BINARY_MARKER
@@ -1163,6 +1144,7 @@ pub fn task1_frame() -> SretFrame {
     let mut frame = SretFrame::ZERO;
     frame.rip = USER_CODE_VA;
     frame.rsp = USER_STACK_VA + FRAME_SIZE;
+    frame.r15 = prima_abi::boot_abi::BOOT_INFO_VA;
     frame.cs = USER_CS as u64;
     frame.ss = USER_DS as u64;
     frame.rflags = 0x2; // bit1 固定；IF=0
@@ -1468,18 +1450,20 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     let stack = region_frame(&stack_frames)?;
     let x = region_frame(&x_frames)?;
     let y = region_frame(&y_frames)?;
+    TASK1_STACK_PHYS.store(stack, Ordering::Relaxed);
 
-    // EXO-2C：init 代码从 ramdisk 的第 0 项 opaque ELF 装载；内核不再包含
-    // `user_code()` 生成器。ELF 的两个 PT_LOAD 恰好对应 `SEG_TASK1_CODE` 的两帧，
-    // 映射仍分别落在 `USER_CODE_VA` / `USER_CODE2_VA`。
+    // EXO-2D：init 代码按 `kind == KIND_INIT` 从 manifest 中定位；其余服务条目
+    // 不进入 task 1 代码段。
+    let (_, init) = boot_entry_by_kind(&layout, prima_abi::boot_image::KIND_INIT)
+        .ok_or(VspaceError::NoBootImage)?;
     load_runtime_elf(
-        layout.init.bytes,
+        init.bytes,
         &code_frames,
         0,
         offset,
         USER_CODE_VA,
         USER_CODE_PAGES,
-        layout.init.entry,
+        init.entry,
     )?;
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(x) + index * 8, crate::cow::pattern(index));
@@ -1654,16 +1638,14 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     let layout = boot_layout().ok_or(VspaceError::NoBootImage)?;
     let images = crate::bootstrap::prepare_task_create_caps(layout.total_pages, offset)
         .map_err(|_| VspaceError::NoFrame)?;
-    // EXO-1：7 个 opaque ELF 块由 ramdisk 提供，内核仍按既有页偏移装入单一映像段。
-    for (entry, page_base) in [
-        (layout.alpha, layout.alpha_pages_off),
-        (layout.beta, layout.beta_pages_off),
-        (layout.servicemgr, layout.servicemgr_pages_off),
-        (layout.log, layout.log_pages_off),
-        (layout.ns, layout.ns_pages_off),
-        (layout.store, layout.store_pages_off),
-        (layout.driver, layout.driver_pages_off),
-    ] {
+    // EXO-2D：所有非 init 条目按 manifest 顺序通用打包；内核不解释服务 kind/顺序。
+    let mut scratch_pages_off = None;
+    for (index, entry) in layout.entries.iter().take(layout.count).enumerate() {
+        if entry.kind == prima_abi::boot_image::KIND_INIT {
+            continue;
+        }
+        let page_base = layout.pages_off[index];
+        scratch_pages_off.get_or_insert(page_base);
         load_runtime_elf(
             entry.bytes,
             &images.image,
@@ -1674,14 +1656,134 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
             entry.entry,
         )?;
     }
-    // 段首页写入服务目录（服务管理器据此按名拿各服务的页偏移/页数）。
+    // 段首页写入通用目录（kind / page offset / page count）。
     write_image_directory(&layout, &images.image, offset)?;
     let frame = images
         .image
-        .frame_at(layout.alpha_pages_off)
+        .frame_at(scratch_pages_off.ok_or(VspaceError::NoFrame)?)
         .ok_or(VspaceError::NoFrame)?;
-    // 切片 V：task 4 的旧机器码见证复用 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
+    // 切片 V：task 4 的旧机器码见证复用首个服务 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
     write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
+    Ok(())
+}
+
+/// EXO-2D：把通用 boot entry ABI 写入 init 用户栈页的低地址区。
+///
+/// 内核只写入 manifest 顺序、页偏移、入口和 boot capability 句柄；服务语义不在内核。
+/// `task1_frame.r15` 指向该块，`prima-initgen` 生成的 init 代码通过 `[r15+disp]` 读取。
+pub fn install_boot_info(offset: u64) -> Result<(), VspaceError> {
+    let layout = boot_layout().ok_or(VspaceError::NoBootImage)?;
+    let stack_phys = TASK1_STACK_PHYS.load(Ordering::Relaxed);
+    if stack_phys == 0 {
+        return Err(VspaceError::NoFrame);
+    }
+    let base =
+        phys_to_virt(stack_phys, offset) + (prima_abi::boot_abi::BOOT_INFO_VA - USER_STACK_VA);
+    for index in 0..prima_abi::boot_abi::AREA_LEN {
+        prima_ostd::mm::write_u8_at(base, index as u64, 0);
+    }
+    let write_u64 = |at: u32, value: u64| {
+        for (index, byte) in value.to_le_bytes().into_iter().enumerate() {
+            prima_ostd::mm::write_u8_at(base, (at as usize + index) as u64, byte);
+        }
+    };
+
+    write_u64(prima_abi::boot_abi::OFF_MAGIC, prima_abi::boot_abi::MAGIC);
+    write_u64(
+        prima_abi::boot_abi::OFF_VERSION,
+        prima_abi::boot_abi::VERSION,
+    );
+    write_u64(prima_abi::boot_abi::OFF_ENTRY_COUNT, layout.count as u64);
+
+    for (index, entry) in layout.entries.iter().take(layout.count).enumerate() {
+        let entry_va = if entry.kind == prima_abi::boot_image::KIND_INIT {
+            USER_CODE_VA + entry.entry
+        } else {
+            USER3_CODE_VA + entry.entry
+        };
+        let code_end_va = if entry.kind == prima_abi::boot_image::KIND_INIT {
+            USER_CODE_VA + (entry.pages as u64) * FRAME_SIZE
+        } else {
+            USER3_CODE_VA + (entry.pages as u64) * FRAME_SIZE
+        };
+        let field = |field: u32| prima_abi::boot_abi::entry_field(index, field);
+        write_u64(field(prima_abi::boot_abi::ENTRY_OFF_KIND), entry.kind);
+        write_u64(
+            field(prima_abi::boot_abi::ENTRY_OFF_OFFSET_PAGES),
+            layout.pages_off[index] as u64,
+        );
+        write_u64(
+            field(prima_abi::boot_abi::ENTRY_OFF_PAGES),
+            entry.pages as u64,
+        );
+        write_u64(field(prima_abi::boot_abi::ENTRY_OFF_ENTRY_VA), entry_va);
+        write_u64(
+            field(prima_abi::boot_abi::ENTRY_OFF_CODE_END_VA),
+            code_end_va,
+        );
+    }
+
+    write_u64(
+        prima_abi::boot_abi::OFF_IMAGE_CAP,
+        IMAGE_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_NAMESPACE_CAP,
+        NAMESPACE_CAP_HANDLE.encode(),
+    );
+    write_u64(prima_abi::boot_abi::OFF_TASK_CAP, TASK_CAP_HANDLE.encode());
+    write_u64(
+        prima_abi::boot_abi::OFF_PLATFORM_TASK1_CAP,
+        PLATFORM_TASK1_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_TASK2_SEND_CAP,
+        TASK2_SEND_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_SERVICE_IMAGE_CAP,
+        SERVICE_IMAGE_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_SERVICE_IMAGE_MGR_CAP,
+        SERVICE_IMAGE_MGR_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_SERVICEMGR_SEND_CAP,
+        SERVICEMGR_SEND_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_SERVICE3_STACK_CAP,
+        SERVICE3_STACK_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_TASK_CREATE_SEND_CAP,
+        TASK_CREATE_SEND_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_TASK4_SEND_CAP,
+        TASK4_SEND_CAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_EXC_PAGE_FAULT_CAP,
+        EXC_PAGE_FAULT_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_EXC_SYSCALL_TRAP_CAP,
+        EXC_SYSCALL_TRAP_HANDLE.encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_PLATFORM_TASK1_X_CAP,
+        crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK1_X).encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_PLATFORM_TASK2_CODE_CAP,
+        crate::bootstrap::platform_segment_cap_handle(frames::SEG_TASK2_CODE).encode(),
+    );
+    write_u64(
+        prima_abi::boot_abi::OFF_TASK_CREATE_ROOT_NS_RIGHTS,
+        TASK_CREATE_ROOT_NS_RIGHTS.bits() as u64,
+    );
     Ok(())
 }
 
@@ -1873,21 +1975,23 @@ fn write_image_directory(
     for byte in 0..FRAME_SIZE {
         prima_ostd::mm::write_u8_at(base, byte, 0);
     }
-    // 顺序必须与 `prima-user/src/servicemgr.rs::SERVICE_TABLE` 一致。
-    let entries: [(usize, usize); 6] = [
-        (layout.alpha_pages_off, layout.alpha.pages),
-        (layout.beta_pages_off, layout.beta.pages),
-        (layout.log_pages_off, layout.log.pages),
-        (layout.ns_pages_off, layout.ns.pages),
-        (layout.store_pages_off, layout.store.pages),
-        (layout.driver_pages_off, layout.driver.pages),
-    ];
+    // EXO-2D：目录项为 `kind | offset_pages | page_count`；内核只按 manifest 顺序透传。
+    let entry_count = layout
+        .entries
+        .iter()
+        .take(layout.count)
+        .filter(|entry| entry.kind != prima_abi::boot_image::KIND_INIT)
+        .count();
     let mut at = 0usize;
     write_dir_u64(base, &mut at, prima_abi::boot_image::SERVICE_IMAGE_MAGIC);
-    write_dir_u64(base, &mut at, entries.len() as u64);
-    for (pages_off, count) in entries {
-        write_dir_u64(base, &mut at, pages_off as u64);
-        write_dir_u64(base, &mut at, count as u64);
+    write_dir_u64(base, &mut at, entry_count as u64);
+    for (index, entry) in layout.entries.iter().take(layout.count).enumerate() {
+        if entry.kind == prima_abi::boot_image::KIND_INIT {
+            continue;
+        }
+        write_dir_u64(base, &mut at, entry.kind);
+        write_dir_u64(base, &mut at, layout.pages_off[index] as u64);
+        write_dir_u64(base, &mut at, entry.pages as u64);
     }
     Ok(())
 }

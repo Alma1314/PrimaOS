@@ -562,6 +562,7 @@ dependencies = [
  "kernel",
  "prima-abi",
  "prima-initgen",
+ "prima-runtime",
  "prima-user",
 ]
 

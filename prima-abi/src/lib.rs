@@ -6,31 +6,88 @@
 //! 这些调用号用于当前单机原型，**不是稳定 ABI**。应用应依赖 `prima-runtime`，不应直接
 //! 使用本 crate；编号变更必须同步调整内核分派和运行时封装。
 
-/// EXO-1：内核与 xtask 共享的通用 boot image（ramdisk）格式。
+/// EXO-1/2D：内核与 xtask 共享的通用 boot image（ramdisk）manifest 格式。
 ///
-/// 该格式只描述**opaque ELF 字节块**，内核不解释服务名或服务协议；服务名/注册表由后续
-/// ring3 loader 读取自己的 manifest。当前过渡实现按固定顺序读取块，以兼容阶段 4 的
-/// 既有服务映像布局。
+/// 每个条目是 **opaque `kind` + ELF 字节块**；内核不解释服务名/协议，只按
+/// [`KIND_INIT`] 找启动镜像，其余条目按 manifest 顺序通用打包。服务语义由 ring3
+/// 服务管理器按 `kind` 解释。
 pub mod boot_image {
     /// little-endian 的 `"PRIMARMD"`。
     pub const MAGIC: u64 = 0x444d_5241_4d49_5250;
-    /// 格式版本。
-    pub const VERSION: u64 = 1;
-    /// EXO-2C：映像块数量：init / alpha / beta / servicemgr / log / ns / store / driver。
-    pub const ENTRY_COUNT: u64 = 8;
+    /// EXO-2D：带 opaque `kind` 的 manifest 版本。
+    pub const VERSION: u64 = 2;
+    /// manifest 条目容量。内核只检验实际 `count <= MAX_ENTRIES`，不假定固定服务数量。
+    pub const MAX_ENTRIES: usize = 16;
+    /// `kind` 保留值：init 映像（内核据此定位启动镜像，不解释其余 kind）。
+    pub const KIND_INIT: u64 = 0;
     /// 头部 qword 数：magic / version / count。
     pub const HEADER_QWORDS: usize = 3;
-    /// 每个条目的 qword 数：offset / len。
-    pub const ENTRY_QWORDS: usize = 2;
+    /// 每个条目的 qword 数：kind / offset / len。
+    pub const ENTRY_QWORDS: usize = 3;
 
-    /// EXO-2B：服务映像段目录页的第一个 u64。
+    /// EXO-2B/2D：服务映像段目录页的第一个 u64。
     pub const SERVICE_IMAGE_MAGIC: u64 = 0x5345_5256_494D_4701;
     /// 服务映像目录头部字节数（`magic | count`）。
     pub const SERVICE_IMAGE_DIR_HEADER: u64 = 16;
-    /// 服务映像目录项字节数（`offset_pages | page_count`）。
-    pub const SERVICE_IMAGE_ENTRY_LEN: u64 = 16;
-    /// 目录中允许的服务条目数（不含 ring3 服务管理器自身）。
-    pub const SERVICE_IMAGE_ENTRY_COUNT: u64 = 6;
+    /// EXO-2D：目录项字节数（`kind | offset_pages | page_count`）。
+    pub const SERVICE_IMAGE_ENTRY_LEN: u64 = 24;
+    /// 目录条目容量（与 manifest 容量一致；ring3 服务管理器自行跳过自身 kind）。
+    pub const SERVICE_IMAGE_ENTRY_COUNT: u64 = MAX_ENTRIES as u64;
+}
+
+/// EXO-2D：内核写入、ring3 init 读取的通用 boot entry ABI。
+///
+/// 该页放在 init 用户栈页的低地址区；`task1_frame.r15` 在进入 CPL3 前指向
+/// [`BOOT_INFO_VA`]。生成器通过 `[r15+disp]` 读取 manifest 条目与 boot capability
+/// 句柄，故 `prima-initgen` 不再镜像具体句柄值。
+pub mod boot_abi {
+    use super::boot_image;
+
+    /// boot info 页 magic。
+    pub const MAGIC: u64 = 0x5449_4E49_424F_4F42; // "BOOTINIT"
+    /// boot info 布局版本。
+    pub const VERSION: u64 = 1;
+    /// init 用户栈页内的 boot info 起始 VA（`USER_STACK_VA + 0x100`）。
+    pub const BOOT_INFO_VA: u64 = 0x0000_0A00_0000_1100;
+    /// boot info 支持的最大 manifest 条目数。
+    pub const MAX_ENTRIES: usize = boot_image::MAX_ENTRIES;
+    /// boot info 区字节数（给内核清零用；保留余量）。
+    pub const AREA_LEN: usize = 0x700;
+
+    pub const OFF_MAGIC: u32 = 0;
+    pub const OFF_VERSION: u32 = 8;
+    pub const OFF_ENTRY_COUNT: u32 = 16;
+    pub const OFF_ENTRIES: u32 = 32;
+    pub const ENTRY_SIZE: u32 = 40;
+
+    pub const ENTRY_OFF_KIND: u32 = 0;
+    pub const ENTRY_OFF_OFFSET_PAGES: u32 = 8;
+    pub const ENTRY_OFF_PAGES: u32 = 16;
+    pub const ENTRY_OFF_ENTRY_VA: u32 = 24;
+    pub const ENTRY_OFF_CODE_END_VA: u32 = 32;
+
+    pub const OFF_HANDLES: u32 = OFF_ENTRIES + (MAX_ENTRIES as u32) * ENTRY_SIZE;
+
+    pub const OFF_IMAGE_CAP: u32 = OFF_HANDLES;
+    pub const OFF_NAMESPACE_CAP: u32 = OFF_IMAGE_CAP + 8;
+    pub const OFF_TASK_CAP: u32 = OFF_NAMESPACE_CAP + 8;
+    pub const OFF_PLATFORM_TASK1_CAP: u32 = OFF_TASK_CAP + 8;
+    pub const OFF_TASK2_SEND_CAP: u32 = OFF_PLATFORM_TASK1_CAP + 8;
+    pub const OFF_SERVICE_IMAGE_CAP: u32 = OFF_TASK2_SEND_CAP + 8;
+    pub const OFF_SERVICE_IMAGE_MGR_CAP: u32 = OFF_SERVICE_IMAGE_CAP + 8;
+    pub const OFF_SERVICEMGR_SEND_CAP: u32 = OFF_SERVICE_IMAGE_MGR_CAP + 8;
+    pub const OFF_SERVICE3_STACK_CAP: u32 = OFF_SERVICEMGR_SEND_CAP + 8;
+    pub const OFF_TASK_CREATE_SEND_CAP: u32 = OFF_SERVICE3_STACK_CAP + 8;
+    pub const OFF_TASK4_SEND_CAP: u32 = OFF_TASK_CREATE_SEND_CAP + 8;
+    pub const OFF_EXC_PAGE_FAULT_CAP: u32 = OFF_TASK4_SEND_CAP + 8;
+    pub const OFF_EXC_SYSCALL_TRAP_CAP: u32 = OFF_EXC_PAGE_FAULT_CAP + 8;
+    pub const OFF_PLATFORM_TASK1_X_CAP: u32 = OFF_EXC_SYSCALL_TRAP_CAP + 8;
+    pub const OFF_PLATFORM_TASK2_CODE_CAP: u32 = OFF_PLATFORM_TASK1_X_CAP + 8;
+    pub const OFF_TASK_CREATE_ROOT_NS_RIGHTS: u32 = OFF_PLATFORM_TASK2_CODE_CAP + 8;
+
+    pub const fn entry_field(index: usize, field: u32) -> u32 {
+        OFF_ENTRIES + (index as u32) * ENTRY_SIZE + field
+    }
 }
 
 /// 当前 x86_64 syscall 递送层使用的实验性调用号。

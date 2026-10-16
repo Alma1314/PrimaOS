@@ -1,9 +1,9 @@
 // Auto-extracted from kernel/src/user.rs during EXO-2C init-loader refactor.
 // The generator is host-side build-tool code; the kernel must not contain it.
 
-use crate::BootLayout;
-use crate::bootstrap::*;
+use crate::Manifest;
 use crate::syscall::*;
+use prima_abi::boot_abi;
 
 pub const USER_BASE_VA: u64 = 0x0000_0A00_0000_0000;
 
@@ -356,7 +356,69 @@ const NS_MODRM_RDX: u8 = 0x91;
 /// S2-D4：建栈段 → `SYS_TASK_CREATE`（完整 §8.1）→ 两个创建负例（入口越界 / 缺 `SegMapX`）→
 /// 把栈映射进**子任务**根 → 让出 → `SYS_RECV` 取子任务回发的 id → 缺 `TaskDestroy` 的销毁负例 →
 /// 销毁成功 → 重复销毁与向已销毁任务映射两个负例 → `int3`。
-pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
+/// `SYS_SEND` 变体：cap0/cap1 可来自 boot-info 句柄槽，而不是生成期立即数。
+fn emit_send_boot<const N: usize>(
+    code: &mut [u8; N],
+    at: usize,
+    payload: u64,
+    cap_count: u64,
+    cap0: Option<u32>,
+    cap1: Option<u32>,
+) -> usize {
+    put_imm64(code, at, 0x48, 0xBA, payload);
+    put_imm64(code, at + 10, 0x49, 0xBA, cap_count);
+    if let Some(offset) = cap0 {
+        put_boot_load(code, at + 20, BootReg::R8, offset);
+    } else {
+        put_imm64(code, at + 20, 0x49, 0xB8, 0);
+    }
+    if let Some(offset) = cap1 {
+        put_boot_load(code, at + 30, BootReg::R9, offset);
+    } else {
+        put_imm64(code, at + 30, 0x49, 0xB9, 0);
+    }
+    put_syscall(code, at + 40, SYS_SEND);
+    put(code, at + 45, &[0xCD, 0x80]);
+    at + 47
+}
+
+/// Generated code reserves `r15` for the boot-info page pointer set by the kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BootReg {
+    Rax,
+    Rcx,
+    Rdx,
+    Rsi,
+    Rdi,
+    R8,
+    R9,
+    R10,
+}
+
+/// Emit a 10-byte slot equivalent to `mov reg, [r15 + disp32]` followed by a
+/// 2-byte NOP. Keeping the original `mov reg, imm64` length preserves all
+/// hand-maintained code offsets and the existing byte-level regression tests.
+fn put_boot_load<const N: usize>(code: &mut [u8; N], at: usize, reg: BootReg, disp: u32) {
+    let (reg_bits, rex_r) = match reg {
+        BootReg::Rax => (0u8, false),
+        BootReg::Rcx => (1, false),
+        BootReg::Rdx => (2, false),
+        BootReg::Rsi => (6, false),
+        BootReg::Rdi => (7, false),
+        BootReg::R8 => (0, true),
+        BootReg::R9 => (1, true),
+        BootReg::R10 => (2, true),
+    };
+    // REX.W + REX.B (r15 base) (+ optional REX.R); SIB index=100 (none), base=111 (r15).
+    code[at] = if rex_r { 0x4D } else { 0x49 };
+    code[at + 1] = 0x8B;
+    code[at + 2] = 0x80 | (reg_bits << 3) | 0x04;
+    code[at + 3] = 0x27;
+    code[at + 4..at + 8].copy_from_slice(&disp.to_le_bytes());
+    code[at + 8..at + 10].copy_from_slice(&[0x66, 0x90]);
+}
+
+pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     let mut code = [0u8; USER_CODE_LEN];
     // 0: mov rdx, X
     put_imm64(&mut code, 0, 0x48, 0xBA, USER_X_VA);
@@ -423,7 +485,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 218: mov [rcx+48], rax
     put(&mut code, 218, &[0x48, 0x89, 0x41, 0x30]);
     // 222: mov rdi, AUTHORIZE_CAP
-    put_imm64(&mut code, 222, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_boot_load(&mut code, 222, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     // 232: mov rsi, RIGHT_SEGMAPR
     put_imm64(&mut code, 232, 0x48, 0xBE, RIGHT_SEGMAPR);
     // 242: mov rax, SYS_AUTHORIZE
@@ -451,7 +513,12 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 316: mov [rcx+80], rax
     put(&mut code, 316, &[0x48, 0x89, 0x41, 0x50]);
     // 320: mov rdi, EXC_PAGE_FAULT_CAP
-    put_imm64(&mut code, 320, 0x48, 0xBF, EXC_PAGE_FAULT_CAP);
+    put_boot_load(
+        &mut code,
+        320,
+        BootReg::Rdi,
+        boot_abi::OFF_EXC_PAGE_FAULT_CAP,
+    );
     // 330: mov rsi, EXC_KIND_PAGEFAULT
     put_imm64(&mut code, 330, 0x48, 0xBE, EXC_KIND_PAGEFAULT);
     // 340: mov rax, SYS_EXC_SUBSCRIBE
@@ -477,7 +544,12 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 404: mov [rcx+104], rax
     put(&mut code, 404, &[0x48, 0x89, 0x41, 0x68]);
     // 408: mov rdi, EXC_SYSCALL_TRAP_CAP
-    put_imm64(&mut code, 408, 0x48, 0xBF, EXC_SYSCALL_TRAP_CAP);
+    put_boot_load(
+        &mut code,
+        408,
+        BootReg::Rdi,
+        boot_abi::OFF_EXC_SYSCALL_TRAP_CAP,
+    );
     // 418: mov rsi, EXC_KIND_SYSCALLTRAP
     put_imm64(&mut code, 418, 0x48, 0xBE, EXC_KIND_SYSCALLTRAP);
     // 428: mov rax, SYS_EXC_SUBSCRIBE
@@ -487,7 +559,12 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 440: mov [rcx+112], rax
     put(&mut code, 440, &[0x48, 0x89, 0x41, 0x70]);
     // 444: mov rdi, EXC_PAGE_FAULT_CAP
-    put_imm64(&mut code, 444, 0x48, 0xBF, EXC_PAGE_FAULT_CAP);
+    put_boot_load(
+        &mut code,
+        444,
+        BootReg::Rdi,
+        boot_abi::OFF_EXC_PAGE_FAULT_CAP,
+    );
     // 454: mov rax, SYS_EXC_UNSUBSCRIBE
     put_imm64(&mut code, 454, 0x48, 0xB8, SYS_EXC_UNSUBSCRIBE);
     // 464: int 0x80 → 取消成功（返回 source_id 1）
@@ -529,7 +606,12 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 575: mov [rcx+152], rax
     put(&mut code, 575, &[0x48, 0x89, 0x81, 0x98, 0, 0, 0]);
     // 582: mov rdi, EXC_SYSCALL_TRAP_CAP
-    put_imm64(&mut code, 582, 0x48, 0xBF, EXC_SYSCALL_TRAP_CAP);
+    put_boot_load(
+        &mut code,
+        582,
+        BootReg::Rdi,
+        boot_abi::OFF_EXC_SYSCALL_TRAP_CAP,
+    );
     // 592: mov rsi, EXC_KIND_SYSCALLTRAP
     put_imm64(&mut code, 592, 0x48, 0xBE, EXC_KIND_SYSCALLTRAP);
     // 602: mov rax, SYS_EXC_WAIT
@@ -540,13 +622,13 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 614, &[0x48, 0x89, 0x81, 0xa0, 0, 0, 0]);
     // 621: S2-D2 能力生命周期：派生 → 越权拒绝 → drop → 重复 drop → 槽位复用 →
     //      stale 拒绝 → 授权 → 结构性根保护。回执写 Y+168..Y+232（disp32，≥128 不可用 disp8）。
-    put_imm64(&mut code, 621, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_boot_load(&mut code, 621, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     put_imm64(&mut code, 631, 0x48, 0xBE, RIGHTS_DERIVE_BITS);
     put_imm64(&mut code, 641, 0x48, 0xB8, SYS_CAP_DERIVE);
     put(&mut code, 651, &[0xCD, 0x80]);
     put(&mut code, 653, &[0x48, 0x89, 0x81, 168, 0, 0, 0]);
     // 越权：请求 image cap 不拥有的 SegMapW。
-    put_imm64(&mut code, 660, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_boot_load(&mut code, 660, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     put_imm64(&mut code, 670, 0x48, 0xBE, RIGHTS_SEGMAPW_BITS);
     put_imm64(&mut code, 680, 0x48, 0xB8, SYS_CAP_DERIVE);
     put(&mut code, 690, &[0xCD, 0x80]);
@@ -561,7 +643,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 748, &[0xCD, 0x80]);
     put(&mut code, 750, &[0x48, 0x89, 0x81, 192, 0, 0, 0]);
     // 槽位复用：再派生应拿到同槽更高 generation 的新句柄。
-    put_imm64(&mut code, 757, 0x48, 0xBF, AUTHORIZE_CAP);
+    put_boot_load(&mut code, 757, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     put_imm64(&mut code, 767, 0x48, 0xBE, RIGHTS_DERIVE_BITS);
     put_imm64(&mut code, 777, 0x48, 0xB8, SYS_CAP_DERIVE);
     put(&mut code, 787, &[0xCD, 0x80]);
@@ -583,7 +665,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 894, &[0xCD, 0x80]);
     put(&mut code, 896, &[0x48, 0x89, 0x81, 224, 0, 0, 0]);
     // 结构性根 Namespace cap 不可丢弃（§4.5 StructuralCap → EACCES）。
-    put_imm64(&mut code, 903, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 903, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     put_imm64(&mut code, 913, 0x48, 0xB8, SYS_CAP_DROP);
     put(&mut code, 923, &[0xCD, 0x80]);
     put(&mut code, 925, &[0x48, 0x89, 0x81, 232, 0, 0, 0]);
@@ -599,7 +681,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 965, &[0x48, 0x89, 0x81, 240, 0, 0, 0]);
     // map(seg, task, 0, SEG_VA, 1, R|W)
     put_imm64(&mut code, 972, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
-    put_imm64(&mut code, 982, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 982, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 992, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1002, 0x49, 0xBA, USER_SEG_VA);
     put_imm64(&mut code, 1012, 0x49, 0xB8, 1);
@@ -618,7 +700,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1094, &[0x48, 0x8B, 0x02]);
     put(&mut code, 1097, &[0x48, 0x89, 0x81, 8, 1, 0, 0]);
     // unmap(task, SEG_VA, 1)
-    put_imm64(&mut code, 1104, 0x48, 0xBF, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 1104, BootReg::Rdi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1114, 0x48, 0xBE, USER_SEG_VA);
     put_imm64(&mut code, 1124, 0x48, 0xBA, 1);
     put_imm64(&mut code, 1134, 0x48, 0xB8, SYS_MEMSEG_UNMAP);
@@ -631,7 +713,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1175, &[0x48, 0x89, 0x81, 24, 1, 0, 0]);
     // 销毁后再 map：stale token 不可授权（EACCES）。
     put_imm64(&mut code, 1182, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
-    put_imm64(&mut code, 1192, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 1192, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1202, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1212, 0x49, 0xBA, USER_SEG_VA);
     put_imm64(&mut code, 1222, 0x49, 0xB8, 1);
@@ -647,7 +729,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1293, &[0x48, 0x89, 0x81, 40, 1, 0, 0]);
     // map2 + 读零（复用帧必须先清零才对用户可见 → S2-X3）。
     put_imm64(&mut code, 1300, 0x48, 0xBF, MEMSEG_CAP2_HANDLE);
-    put_imm64(&mut code, 1310, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 1310, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1320, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1330, 0x49, 0xBA, USER_SEG_VA);
     put_imm64(&mut code, 1340, 0x49, 0xB8, 1);
@@ -659,7 +741,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1389, &[0x48, 0x8B, 0x02]);
     put(&mut code, 1392, &[0x48, 0x89, 0x81, 56, 1, 0, 0]);
     // unmap2 + destroy2（清理）。
-    put_imm64(&mut code, 1399, 0x48, 0xBF, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 1399, BootReg::Rdi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1409, 0x48, 0xBE, USER_SEG_VA);
     put_imm64(&mut code, 1419, 0x48, 0xBA, 1);
     put_imm64(&mut code, 1429, 0x48, 0xB8, SYS_MEMSEG_UNMAP);
@@ -678,7 +760,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1509, &[0x48, 0x89, 0x81, 0x50, 0x01, 0, 0]);
     // map(seg, task1_self_cap, 0, SHARED_VA, 1, R|W)
     put(&mut code, 1516, &[0x48, 0x8B, 0xB9, 0x50, 0x01, 0, 0]); // rdi = [Y+336]（新段 cap）
-    put_imm64(&mut code, 1523, 0x48, 0xBE, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, 1523, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1533, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1543, 0x49, 0xBA, USER_SEG_SHARED_VA);
     put_imm64(&mut code, 1553, 0x49, 0xB8, 1);
@@ -692,7 +774,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1612, &[0x48, 0x89, 0x02]);
     // send(2, TASK2_SEND_CAP, MAGIC, cap_count=1, cap0=[Y+336])
     put_imm64(&mut code, 1615, 0x48, 0xBF, 2);
-    put_imm64(&mut code, 1625, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_boot_load(&mut code, 1625, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     put_imm64(&mut code, 1635, 0x48, 0xBA, IPC_SHARED_MAGIC);
     put_imm64(&mut code, 1645, 0x49, 0xBA, 1);
     put(&mut code, 1655, &[0x4C, 0x8B, 0x81, 0x50, 0x01, 0, 0]); // r8 = [Y+336]
@@ -706,7 +788,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // send(2, TASK2_SEND_CAP, DIRECT_PAYLOAD, cap_count=0) —— 此时 task 2 阻塞在 RECV，
     // 走**直投路径**并唤醒它。
     put_imm64(&mut code, 1703, 0x48, 0xBF, 2);
-    put_imm64(&mut code, 1713, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_boot_load(&mut code, 1713, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     put_imm64(&mut code, 1723, 0x48, 0xBA, IPC_DIRECT_PAYLOAD);
     put_imm64(&mut code, 1733, 0x49, 0xBA, 0);
     put_imm64(&mut code, 1743, 0x49, 0xB8, 0);
@@ -723,52 +805,52 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 1804, 0x48, 0xBA, TASK_REQ_VA);
     // 建请求块（10 个 qword）：code_seg_cap/code_offset/code_pages/load_base/entry/stack_top/
     // parent_ns_cap/root_rights/initial_cap0/initial_cap1。
-    put_imm64(
+    put_boot_load(
         &mut code,
         1814,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
+        BootReg::Rax,
+        boot_abi::OFF_SERVICE_IMAGE_CAP,
     );
     put(&mut code, 1824, &[0x48, 0x89, 0x02]);
-    put_imm64(&mut code, 1827, 0x48, 0xB8, layout.alpha_pages_off as u64);
+    put_boot_load(
+        &mut code,
+        1827,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_OFFSET_PAGES),
+    );
     put(&mut code, 1837, &[0x48, 0x89, 0x42, 0x08]);
-    put_imm64(&mut code, 1841, 0x48, 0xB8, layout.alpha.pages as u64);
+    put_boot_load(
+        &mut code,
+        1841,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_PAGES),
+    );
     put(&mut code, 1851, &[0x48, 0x89, 0x42, 0x10]);
     put_imm64(&mut code, 1855, 0x48, 0xB8, USER3_CODE_VA);
     put(&mut code, 1865, &[0x48, 0x89, 0x42, 0x18]);
-    put_imm64(
+    put_boot_load(
         &mut code,
         1869,
-        0x48,
-        0xB8,
-        USER3_CODE_VA + layout.alpha.entry,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_ENTRY_VA),
     );
     put(&mut code, 1879, &[0x48, 0x89, 0x42, 0x20]);
     put_imm64(&mut code, 1883, 0x48, 0xB8, USER3_STACK_VA + FRAME_SIZE);
     put(&mut code, 1893, &[0x48, 0x89, 0x42, 0x28]);
-    put_imm64(
-        &mut code,
-        1897,
-        0x48,
-        0xB8,
-        crate::bootstrap::NAMESPACE_CAP_HANDLE.encode(),
-    );
+    put_boot_load(&mut code, 1897, BootReg::Rax, boot_abi::OFF_NAMESPACE_CAP);
     put(&mut code, 1907, &[0x48, 0x89, 0x42, 0x30]);
-    put_imm64(
+    put_boot_load(
         &mut code,
         1911,
-        0x48,
-        0xB8,
-        crate::bootstrap::TASK_CREATE_ROOT_NS_RIGHTS.bits() as u64,
+        BootReg::Rax,
+        boot_abi::OFF_TASK_CREATE_ROOT_NS_RIGHTS,
     );
     put(&mut code, 1921, &[0x48, 0x89, 0x42, 0x38]);
-    put_imm64(
+    put_boot_load(
         &mut code,
         1925,
-        0x48,
-        0xB8,
-        crate::bootstrap::TASK_CREATE_SEND_CAP_HANDLE.encode(),
+        BootReg::Rax,
+        boot_abi::OFF_TASK_CREATE_SEND_CAP,
     );
     put(&mut code, 1935, &[0x48, 0x89, 0x42, 0x40]);
     put_imm64(&mut code, 1939, 0x48, 0xB8, 0);
@@ -787,12 +869,11 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 负例 1：entry 越出代码段 → EINVAL。用**代码段末尾**（one-past-end）而非硬编码 `+0x9000`：
     // 后者在嵌入 ELF 增长到 ≥10 页（`code_end = +0xA000`）后会落入代码段内，使本负例改由
     // 后置的 initial_cap 检查以 EACCES 拒绝（SPEC-088 实测暴露）。
-    put_imm64(
+    put_boot_load(
         &mut code,
         2014,
-        0x48,
-        0xB8,
-        USER3_CODE_VA + layout.alpha.pages as u64 * FRAME_SIZE,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_CODE_END_VA),
     );
     put(&mut code, 2024, &[0x48, 0x89, 0x42, 0x20]);
     put(&mut code, 2028, &[0x48, 0x89, 0xD7]);
@@ -808,12 +889,11 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 2077, 0x48, 0xB8, SYS_TASK_CREATE);
     put(&mut code, 2087, &[0xCD, 0x80]);
     put(&mut code, 2089, &[0x48, 0x89, 0x81, 0x88, 0x01, 0, 0]);
-    put_imm64(
+    put_boot_load(
         &mut code,
         2096,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
+        BootReg::Rax,
+        boot_abi::OFF_SERVICE_IMAGE_CAP,
     );
     put(&mut code, 2106, &[0x48, 0x89, 0x02]);
     // 栈映射进**子任务**根：SYS_MEMSEG_MAP(栈段, mgr, 0, USER3_STACK_VA, 1, R|W)
@@ -864,7 +944,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 2379, &[0x48, 0x89, 0x81, 0xB8, 0x01, 0, 0]);
     // 唤醒阻塞在尾部循环里的 task 2：收尾的抢占阶段需要存在 Ready 任务可轮转。
     put_imm64(&mut code, 2386, 0x48, 0xBF, 2);
-    put_imm64(&mut code, 2396, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_boot_load(&mut code, 2396, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     put_imm64(&mut code, 2406, 0x48, 0xBA, TASK2_WAKE_PAYLOAD);
     put_imm64(&mut code, 2416, 0x49, 0xBA, 0);
     put_imm64(&mut code, 2426, 0x49, 0xB8, 0);
@@ -873,19 +953,17 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 2456, &[0xCD, 0x80]);
     // SPEC-066：用**自持**的平台段 cap（切片 U 已按属主移交）经 `SYS_MEMSEG_MAP` 建立新映射。
     // 正例：X 段 cap（槽 36）+ Task(1) 管理 cap（槽 45）→ 应在**用户侧**通过 `authorize`。
-    put_imm64(
+    put_boot_load(
         &mut code,
         2458,
-        0x48,
-        0xBF,
-        crate::bootstrap::platform_segment_cap_handle(6).encode(),
+        BootReg::Rdi,
+        boot_abi::OFF_PLATFORM_TASK1_X_CAP,
     );
-    put_imm64(
+    put_boot_load(
         &mut code,
         2468,
-        0x48,
-        0xBE,
-        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+        BootReg::Rsi,
+        boot_abi::OFF_PLATFORM_TASK1_CAP,
     );
     put_imm64(&mut code, 2478, 0x48, 0xBA, 0);
     put_imm64(&mut code, 2488, 0x49, 0xBA, USER_MAP_WITNESS_VA);
@@ -901,19 +979,17 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put(&mut code, 2550, &[0x48, 0x89, 0x81, 0xC8, 0x01, 0, 0]);
     // 负例：用 **task 2 所属**的段 cap（槽 38）以 task 1 为 caller 再映射 → `EACCES`
     // （`authorize` 第 3 步的 `holder_of(cap) == caller` 对非属主成立拒绝）。
-    put_imm64(
+    put_boot_load(
         &mut code,
         2557,
-        0x48,
-        0xBF,
-        crate::bootstrap::platform_segment_cap_handle(8).encode(),
+        BootReg::Rdi,
+        boot_abi::OFF_PLATFORM_TASK2_CODE_CAP,
     );
-    put_imm64(
+    put_boot_load(
         &mut code,
         2567,
-        0x48,
-        0xBE,
-        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+        BootReg::Rsi,
+        boot_abi::OFF_PLATFORM_TASK1_CAP,
     );
     put_imm64(&mut code, 2577, 0x48, 0xBA, 0);
     put_imm64(&mut code, 2587, 0x49, 0xBA, USER_MAP_WITNESS_VA2);
@@ -934,13 +1010,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
         USER3_CODE_VA + TASK4_CODE_OFFSET,
     );
     put(&mut code, 2656, &[0x48, 0x89, 0x42, 0x20]);
-    put_imm64(
-        &mut code,
-        2660,
-        0x48,
-        0xB8,
-        crate::bootstrap::TASK4_SEND_CAP_HANDLE.encode(),
-    );
+    put_boot_load(&mut code, 2660, BootReg::Rax, boot_abi::OFF_TASK4_SEND_CAP);
     put(&mut code, 2670, &[0x48, 0x89, 0x42, 0x40]);
     // create task 4
     put(&mut code, 2674, &[0x48, 0x89, 0xD7]);
@@ -984,7 +1054,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 收尾的抢占阶段需要 Ready 任务可轮转：切片 V 的第一次让出已把 task 2 排空成
     // `BlockedRecv`，故这里再直投唤醒它一次（同切片 T 末尾的做法，位置后移）。
     put_imm64(&mut code, 2907, 0x48, 0xBF, 2);
-    put_imm64(&mut code, 2917, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_boot_load(&mut code, 2917, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     put_imm64(&mut code, 2927, 0x48, 0xBA, TASK2_WAKE_PAYLOAD);
     put_imm64(&mut code, 2937, 0x49, 0xBA, 0);
     put_imm64(&mut code, 2947, 0x49, 0xB8, 0);
@@ -1001,7 +1071,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 10;
 
     // child1/child2 = derive(image_cap, {Derive, SegMapR})——避免移动初始 image cap。
-    put_imm64(&mut code, at, 0x48, 0xBF, IMAGE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_BIND_RIGHTS_BITS);
     at += 10;
@@ -1011,7 +1081,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, NS_RECEIPT_DERIVE1 as u32);
     at += 7;
-    put_imm64(&mut code, at, 0x48, 0xBF, IMAGE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_IMAGE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_BIND_RIGHTS_BITS);
     at += 10;
@@ -1120,7 +1190,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // bind(init_ns, "lib", child1) 成功；再 bind 同名 child2 ⇒ EEXIST。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
     at += 10;
@@ -1135,7 +1205,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, NS_RECEIPT_BIND as u32);
     at += 7;
 
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
     at += 10;
@@ -1173,7 +1243,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // resolve(init_ns, "lib", {NsResolve})：同一 Namespace 内的末端绑定解析。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
     at += 10;
@@ -1189,7 +1259,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // mount(init_ns, "mnt", c_copy)：把子 Namespace 挂到 init 下。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_MNT_OFF);
     at += 10;
@@ -1205,7 +1275,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // resolve(init_ns, "mnt/sub", {SegMapR})：跨挂载解析，父项是 c 内的 child2。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(
         &mut code,
@@ -1227,7 +1297,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // bind(init_ns, "/lib", task_cap)：前导 `/` 产生空分量 ⇒ Path::parse 拒绝 ⇒ EINVAL。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(
         &mut code,
@@ -1239,7 +1309,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, 4);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xBA, TASK_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::R10, boot_abi::OFF_TASK_CAP);
     at += 10;
     put_syscall(&mut code, at, SYS_NS_BIND);
     at += 5;
@@ -1249,7 +1319,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 7;
 
     // unbind(init_ns, "lib") → 取回 child1；unmount(init_ns, "mnt")。
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_LIB_OFF);
     at += 10;
@@ -1262,7 +1332,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, NS_RECEIPT_UNBIND as u32);
     at += 7;
 
-    put_imm64(&mut code, at, 0x48, 0xBF, NAMESPACE_CAP_HANDLE.encode());
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBE, NS_PATH_DATA_VA + NS_PATH_MNT_OFF);
     at += 10;
@@ -1383,12 +1453,11 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
         (TASK_RECV_BUF - USER_Y_VA) as u32,
     );
     at += 7;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xBE,
-        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+        BootReg::Rsi,
+        boot_abi::OFF_PLATFORM_TASK1_CAP,
     );
     at += 10;
     put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx（写入 32 位寄存器会清零 rdx）
@@ -1426,56 +1495,51 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, TASK_REQ_VA); // rdx = 请求块
     at += 10;
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
-    );
+    put_boot_load(&mut code, at, BootReg::Rax, boot_abi::OFF_SERVICE_IMAGE_CAP);
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xB8,
-        layout.servicemgr_pages_off as u64,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.servicemgr_index, boot_abi::ENTRY_OFF_OFFSET_PAGES),
     ); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, layout.servicemgr.pages as u64); // code_pages
+    put_boot_load(
+        &mut code,
+        at,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.servicemgr_index, boot_abi::ENTRY_OFF_PAGES),
+    ); // code_pages
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
     at += 4;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xB8,
-        USER3_CODE_VA + layout.servicemgr.entry,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.servicemgr_index, boot_abi::ENTRY_OFF_ENTRY_VA),
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
     at += 4;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICEMGR_SEND_CAP_HANDLE.encode(),
+        BootReg::Rax,
+        boot_abi::OFF_SERVICEMGR_SEND_CAP,
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x40]); // mov [rdx+0x40], rax（initial_cap0：→init 回发凭据）
     at += 4;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xB8,
-        SERVICE_IMAGE_MGR_CAP_HANDLE.encode(),
+        BootReg::Rax,
+        boot_abi::OFF_SERVICE_IMAGE_MGR_CAP,
     ); // initial_cap1 = 服务映像段（移动进管理器，供其读目录 + 派生端点代码）
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x48]);
@@ -1493,12 +1557,11 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
     at += 7;
     // 映射管理器的**独立栈段**：memseg_map(stack3, mgr, 0, USER3_STACK_VA, 1, R|W)。
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xBF,
-        crate::bootstrap::SERVICE3_STACK_CAP_HANDLE.encode(),
+        BootReg::Rdi,
+        boot_abi::OFF_SERVICE3_STACK_CAP,
     );
     at += 10;
     put_load_reg(
@@ -1563,31 +1626,34 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     at += 10;
     // SPEC-104：页 1 起始处的服务管理器块已改写共享请求块，故此处**显式**写回本客户端
     // （`prima-smoke` 映像）的代码段字段，避免误用管理器的代码段。
-    put_imm64(
-        &mut code,
-        at,
-        0x48,
-        0xB8,
-        crate::bootstrap::SERVICE_IMAGE_CAP_HANDLE.encode(),
-    );
+    put_boot_load(&mut code, at, BootReg::Rax, boot_abi::OFF_SERVICE_IMAGE_CAP);
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x02]); // mov [rdx+0x00], rax（code_seg_cap）
     at += 3;
-    put_imm64(&mut code, at, 0x48, 0xB8, layout.alpha_pages_off as u64); // code_offset
+    put_boot_load(
+        &mut code,
+        at,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_OFFSET_PAGES),
+    ); // code_offset
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x08]);
     at += 4;
-    put_imm64(&mut code, at, 0x48, 0xB8, layout.alpha.pages as u64); // code_pages
+    put_boot_load(
+        &mut code,
+        at,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_PAGES),
+    ); // code_pages
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x10]);
     at += 4;
     // 改写请求块：其余字段（load_base/stack_top/parent_ns/root_rights）沿用 task 3 的。
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xB8,
-        USER3_CODE_VA + layout.alpha.entry,
+        BootReg::Rax,
+        boot_abi::entry_field(manifest.alpha_index, boot_abi::ENTRY_OFF_ENTRY_VA),
     );
     at += 10;
     put(&mut code, at, &[0x48, 0x89, 0x42, 0x20]); // mov [rdx+0x20], rax（entry）
@@ -1689,13 +1755,13 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // 零 IPC 移交，管理器读段首目录按表建端点（见 `prima-servicemgr`）。此处只余父 Namespace。
     // 4) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send(
+    at = emit_send_boot(
         &mut code,
         at,
         SERVICE_SETUP_TAG,
         1,
-        NAMESPACE_CAP_HANDLE.encode(),
-        0,
+        Some(boot_abi::OFF_NAMESPACE_CAP),
+        None,
     );
     // 让出：管理器按表创建两端点（入口自解）、端点自报、客户端 Hello 经管理器路由。
     put_syscall(&mut code, at, SYS_YIELD);
@@ -1738,12 +1804,11 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
         (CLIENT_RECV_BUF - USER_Y_VA) as u32,
     );
     at += 7;
-    put_imm64(
+    put_boot_load(
         &mut code,
         at,
-        0x48,
-        0xBE,
-        crate::bootstrap::PLATFORM_TASK1_CAP_HANDLE.encode(),
+        BootReg::Rsi,
+        boot_abi::OFF_PLATFORM_TASK1_CAP,
     );
     at += 10;
     put(&mut code, at, &[0x31, 0xD2]); // xor edx, edx
@@ -1797,7 +1862,7 @@ pub fn generate(layout: &BootLayout) -> [u8; USER_CODE_LEN] {
     // TASK2_WAKE_PAYLOAD, 0, 0, 0)`，使 task 2 在 int3 时重新为 Ready。
     put_imm64(&mut code, at, 0x48, 0xBF, TASK2_ID as u64);
     at += 10;
-    put_imm64(&mut code, at, 0x48, 0xBE, TASK2_SEND_CAP);
+    put_boot_load(&mut code, at, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     at += 10;
     put_imm64(&mut code, at, 0x48, 0xBA, TASK2_WAKE_PAYLOAD);
     at += 10;

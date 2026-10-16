@@ -44,11 +44,17 @@ pub const ENDPOINT_STACK_VA: u64 = 0x0000_0B00_0010_0000;
 /// SPEC-105：ELF 头 `e_entry` 的偏移。
 pub const ELF_ENTRY_OFFSET: u64 = 24;
 
-/// EXO-2B：服务映像目录格式由 `prima-abi` 共享，内核只写 opaque 条目；名字按顺序由
-/// `prima-user/src/servicemgr.rs::SERVICE_TABLE` 持有。
+/// EXO-2B/2D：服务映像目录格式由 `prima-abi` 共享，内核只写 opaque `kind` 条目；
+/// 名字与 kind→behavior 映射由 `prima-user/src/servicemgr.rs` 持有。
 pub use prima_abi::boot_image::{
     SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_MAGIC,
 };
+
+/// EXO-2D：manifest 中 ring3 服务管理器自身的 opaque `kind`。
+///
+/// 服务 kind 复用既有 `SERVICE_BEHAVIOR_*`（`ALPHA=1`…`DRIVER=6`），故服务管理器只按
+/// `kind` 建端点，不再依赖目录顺序或内核预排。
+pub const SERVICE_IMAGE_KIND_SERVICEMGR: u64 = 0x100;
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
