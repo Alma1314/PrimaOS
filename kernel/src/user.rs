@@ -566,21 +566,25 @@ impl ServiceNegotiatedWitness {
     }
 }
 
+fn trace_service_negotiated(occurrence: usize) -> Option<prima_abi::trace::Record> {
+    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_NEGOTIATED, occurrence)
+}
+
 pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
+    // EXO-3F：token/service/service_id/done/negotiated/negatives 由服务管理器的通用
+    // trace 记录提供；内核不再读 `USER_HELLO2_VA` 的固定偏移。
+    let first = trace_service_negotiated(0);
+    let second = trace_service_negotiated(1);
     ServiceNegotiatedWitness {
-        // SPEC-105：端点由**管理器**创建，故令牌/管理 cap 改读管理器写回共享段的同义偏移
-        // （init 不再有这两条自建回执；`stack` 亦由管理器映射，保留 0）。
-        token: read_qword(USER_HELLO2_VA + SERVICEMGR_TOKEN_OFFSET),
-        service: read_qword(USER_HELLO2_VA + SERVICEMGR_MANAGER_OFFSET),
+        token: first.map_or(0, |record| record.args[0]),
+        service: first.map_or(0, |record| record.args[1]),
         stack: 0,
-        // SPEC-104：`ALPHA` 端点 id 由端点自己写入共享段（init 不再收集自报）。
-        service_id: read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET),
+        service_id: first.map_or(0, |record| record.args[2]),
         // SPEC-104：转发由管理器完成，init 不再持有该回执槽（保持 0）。
         forward: read_qword(USER_Y_VA + SVC_RECEIPT_FORWARD),
-        // SPEC-104：`ALPHA` 的 done 由管理器接收后写回共享段。
-        done: read_qword(USER_HELLO2_VA + SERVICE_DONE_ALPHA_OFFSET),
-        negotiated: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_OFFSET),
-        negatives: read_qword(USER_HELLO2_VA + SERVICE_NEGATIVES_OFFSET),
+        done: first.map_or(0, |record| record.args[3]),
+        negotiated: first.map_or(0, |record| record.args[4]),
+        negatives: second.map_or(0, |record| record.args[0]),
     }
 }
 

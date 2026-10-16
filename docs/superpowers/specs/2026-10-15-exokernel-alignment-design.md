@@ -156,10 +156,11 @@ LibOS 行为。
 > **EXO-3B**（SPEC-119，marker/reply/协商期望值移出内核，由 `xtask` 校验）、
 > **EXO-3C**（SPEC-122，协议 tag 常量与 witness tag 断言移出内核）、
 > **EXO-3D**（SPEC-123，通用用户态 trace 通道；`runtime_hello_ready` 已改为内核
-> 只透传 raw trace 记录）与 **EXO-3E**（SPEC-124，`service_reply_ready` 的
-> `recv`/`echo` 已改由服务管理器 trace 上报）；
-> 其余 `service_negotiated`/`service_selected`/`servicemgr` 共享段 witness 偏移/内核
-> 读回下沉仍待完成。见 EXO-3A/3B/3C/3D/3E 报告。
+> 只透传 raw trace 记录）、**EXO-3E**（SPEC-124，`service_reply_ready` 的
+> `recv`/`echo` 已改由服务管理器 trace 上报）与 **EXO-3F**（SPEC-125，
+> `service_negotiated_ready` 的共享段字段已改由通用 trace 透传）；
+> 其余 `service_selected`/`servicemgr` 共享段 witness 偏移/内核读回下沉仍待完成。
+> 见 EXO-3A/3B/3C/3D/3E/3F 报告。
 
 - 定义内核无关的 `exo_trace` 或调试 ring：用户态可写事件字节流，内核只提供共享段/串口
   等资源，不解释内容。
