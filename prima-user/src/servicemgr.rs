@@ -58,6 +58,7 @@ use prima_runtime::{
         SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
+    trace::EVENT_SERVICE_REPLY,
 };
 
 /// 客户端把共享段映射到的 VA（与本进程自身根内的同一物理帧映射目标；与 `prima-user` 一致）。
@@ -599,16 +600,18 @@ pub extern "C" fn _start(
             );
             // 等客户端把应答写回共享段（offset 64）后再收尾——否则 init 可能先 `int3`，内核见证
             // 会读到未写入的 0。客户端被 `PONG` 直投唤醒后必然写入。
-            loop {
+            let echo = loop {
                 let _ = runtime.yield_task();
-                if runtime
+                let value = runtime
                     .read_user_u64(USER_SEG_VA + SERVICE_REPLY_OFFSET)
-                    .unwrap_or(0)
-                    != 0
-                {
-                    break;
+                    .unwrap_or(0);
+                if value != 0 {
+                    break value;
                 }
-            }
+            };
+            // EXO-3E：把 service-reply 的共享段字段作为通用 trace 记录交给内核透传，
+            // 内核不再读 `USER_HELLO2_VA + {CLIENT_ID, REPLY}`。args = [recv, echo, 0,0,0]。
+            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, [client_id, echo, 0, 0, 0]);
             // 三段**连发**（中间不让出）：唤醒先于带 cap 消息，宿主的 `BlockedRecv` 约束不触发。
             let _ = runtime.send(init_id, init_cap, SERVICEMGR_WAKE_TAG, &[]);
             if let Ok(read_only) = runtime.cap_derive(seg, R_DERIVE) {

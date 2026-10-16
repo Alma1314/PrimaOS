@@ -517,16 +517,21 @@ impl ServiceReplyWitness {
     }
 }
 
+fn trace_service_reply() -> Option<prima_abi::trace::Record> {
+    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_REPLY, 0)
+}
+
 pub fn service_reply_witness() -> ServiceReplyWitness {
     ServiceReplyWitness {
         client: read_qword(USER_Y_VA + CLIENT_RECEIPT_MGR),
         stack: read_qword(USER_Y_VA + CLIENT_RECEIPT_STACK),
-        // SPEC-104：客户端 id 由**管理器**从 Hello payload 收集后写回共享段（init 不再 recv）。
-        recv: read_qword(USER_HELLO2_VA + SERVICE_CLIENT_ID_OFFSET),
+        // EXO-3E：`recv`/`echo` 由服务管理器的通用 trace 记录提供；内核不再读
+        // `USER_HELLO2_VA` 的固定偏移。args = [recv, echo, 0,0,0]。
+        recv: trace_service_reply().map_or(0, |record| record.args[0]),
         map: read_qword(USER_Y_VA + CLIENT_RECEIPT_MAP),
         // SPEC-104：`PONG` 由管理器发送，init 不再持有该回执槽（保持 0）。
         reply: read_qword(USER_Y_VA + CLIENT_RECEIPT_REPLY),
-        echo: read_qword(USER_HELLO2_VA + SERVICE_REPLY_OFFSET),
+        echo: trace_service_reply().map_or(0, |record| record.args[1]),
     }
 }
 

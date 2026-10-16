@@ -2142,6 +2142,22 @@ pub fn trace_record(index: usize) -> Option<prima_abi::trace::Record> {
     TRACE.with(|trace| (index < trace.count).then(|| trace.records[index]))
 }
 
+/// 按 opaque `id` 查找第 `occurrence` 条 trace 记录；内核不解释 id 语义。
+pub fn trace_find(id: u64, occurrence: usize) -> Option<prima_abi::trace::Record> {
+    TRACE.with(|trace| {
+        let mut seen = 0usize;
+        for record in trace.records.iter().take(trace.count) {
+            if record.id == id {
+                if seen == occurrence {
+                    return Some(*record);
+                }
+                seen += 1;
+            }
+        }
+        None
+    })
+}
+
 /// 由框架裸入口 `syscall_entry` 调用的内核侧处理。
 ///
 /// `frame` 是栈上 8 个 qword 的 ABI 现场帧的**类型化视图**：`[0]=调用号(rax)`、

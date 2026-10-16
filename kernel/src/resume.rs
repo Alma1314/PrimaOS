@@ -149,7 +149,7 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::task_ready(&task);
     // EXO-3D：`runtime_hello_ready` 不再由内核读共享段固定偏移；改为透传 ring3
     // 客户端通过 `SYS_TRACE_EMIT` 写入的通用 trace 记录。
-    match kernel::syscall::trace_record(0) {
+    match kernel::syscall::trace_find(prima_abi::trace::EVENT_RUNTIME_HELLO, 0) {
         Some(record) => protocol::runtime_hello_trace(&record),
         None => {
             protocol::panic_event();
