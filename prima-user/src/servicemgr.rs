@@ -58,7 +58,9 @@ use prima_runtime::{
         SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
-    trace::{EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY},
+    trace::{
+        EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY, EVENT_SERVICE_SELECTED, EVENT_SERVICEMGR,
+    },
 };
 
 /// 客户端把共享段映射到的 VA（与本进程自身根内的同一物理帧映射目标；与 `prima-user` 一致）。
@@ -68,6 +70,16 @@ const SERVICE_REPLY_OFFSET: u64 = 64;
 /// 协商结果/负例码在共享段内的偏移（与 `prima-user/src/main.rs` 一致）。
 const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
 const SERVICE_NEGATIVES_OFFSET: u64 = 136;
+const SERVICE_NEGOTIATED_B_OFFSET: u64 = 144;
+const SERVICE_ALPHA_MARKER_OFFSET: u64 = 176;
+const SERVICE_BETA_MARKER_OFFSET: u64 = 184;
+const SERVICE_ENDPOINT_ALPHA_OFFSET: u64 = 160;
+const SERVICE_ENDPOINT_BETA_OFFSET: u64 = 168;
+/// EXO-3H：在 servicemgr 内读回自己映射的客户端共享段偏移；内核不再解释这些偏移。
+fn read_shared(runtime: &Runtime<impl SyscallTransport>, offset: u64) -> u64 {
+    runtime.read_user_u64(USER_SEG_VA + offset).unwrap_or(0)
+}
+
 /// 端点用户栈的页大小（`stack_top = ENDPOINT_STACK_VA + 0x1000`）。
 const FRAME_SIZE: u64 = 0x1000;
 /// 只读 + 可写映射权（`SegMapR|SegMapW`）。
@@ -148,6 +160,8 @@ const OFF_DRIVER_REPLY: u64 = 496;
 const SERVICES: usize = 6;
 /// 基础服务的表下标起点（`SERVICE_BEHAVIOR_LOG` = 3 ⇒ 下标 2）。
 const BASE_FIRST: usize = 2;
+const LOG_SLOT: usize = BASE_FIRST;
+const STORE_SLOT: usize = BASE_FIRST + 2;
 /// SPEC-114：**基础服务**（日志/Namespace/存储）的表项数——§15 的定序状态探针**只打这三个**，
 /// 用户态驱动走自己的受控端口握手。
 const BASE_COUNT: usize = 3;
@@ -254,12 +268,6 @@ pub extern "C" fn _start(
     let mut registry: [Option<Endpoint>; SERVICES] = [None; SERVICES];
     let mut alpha_forwarded = false;
     let mut alpha_done = false;
-    let mut alpha_token = 0u64;
-    let mut alpha_manager = 0u64;
-    let mut alpha_ep_id = 0u64;
-    let mut alpha_done_payload = 0u64;
-    let mut alpha_negotiated = 0u64;
-    let mut alpha_negatives = 0u64;
     let mut beta_forwarded = false;
     let mut beta_done = false;
     let mut finished = false;
@@ -322,9 +330,6 @@ pub extern "C" fn _start(
                 && registry[slot].is_none()
             {
                 let id = message.payload & 0xff;
-                if behavior == SERVICE_BEHAVIOR_ALPHA {
-                    alpha_ep_id = id;
-                }
                 registry[slot] = Some(Endpoint {
                     id,
                     authority,
@@ -353,13 +358,6 @@ pub extern "C" fn _start(
             // ③ 端点完成协商。先转发的是 `ALPHA`，故首个 done 属 `ALPHA`。
             if !alpha_done {
                 alpha_done = true;
-                alpha_done_payload = message.payload;
-                alpha_negotiated = runtime
-                    .read_user_u64(USER_SEG_VA + SERVICE_NEGOTIATED_OFFSET)
-                    .unwrap_or(0);
-                alpha_negatives = runtime
-                    .read_user_u64(USER_SEG_VA + SERVICE_NEGATIVES_OFFSET)
-                    .unwrap_or(0);
                 if segment.is_some() {
                     let _ = runtime.write_user_bytes(
                         USER_SEG_VA + OFF_DONE_ALPHA,
@@ -424,13 +422,9 @@ pub extern "C" fn _start(
             while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
-                    && let Some((token, manager)) =
+                    && let Some((_token, _manager, _entry)) =
                         create_service(&runtime, &self_cap, ns_cap, &spec, slot, &mut created_slot)
                 {
-                    if slot == 0 {
-                        alpha_token = token.as_raw();
-                        alpha_manager = manager.as_raw();
-                    }
                     created += 1;
                     let _ = runtime
                         .write_user_bytes(USER_SEG_VA + OFF_MGR_CREATED, &created.to_le_bytes());
@@ -460,11 +454,10 @@ pub extern "C" fn _start(
                 .read_user_u64(USER_SEG_VA + SERVICE_NAME_OFFSET)
                 .unwrap_or(0);
             let resolved = behavior_for(requested);
+            let selected_unknown = behavior_for(SERVICE_NAME_UNKNOWN);
             let _ = runtime.write_user_bytes(USER_SEG_VA + OFF_RESOLVED, &resolved.to_le_bytes());
-            let _ = runtime.write_user_bytes(
-                USER_SEG_VA + OFF_UNKNOWN,
-                &behavior_for(SERVICE_NAME_UNKNOWN).to_le_bytes(),
-            );
+            let _ = runtime
+                .write_user_bytes(USER_SEG_VA + OFF_UNKNOWN, &selected_unknown.to_le_bytes());
             let slot = resolved.wrapping_sub(1) as usize;
             if resolved != SERVICE_BEHAVIOR_NONE
                 && slot < SERVICES
@@ -634,20 +627,112 @@ pub extern "C" fn _start(
                 }
             };
             // EXO-3E：把 service-reply 的共享段字段作为通用 trace 记录交给内核透传，
-            // 内核不再读 `USER_HELLO2_VA + {CLIENT_ID, REPLY}`。args = [recv, echo, 0,0,0]。
-            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, [client_id, echo, 0, 0, 0]);
+            // 内核不再读 `USER_HELLO2_VA + {CLIENT_ID, REPLY}`。
+            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
             // EXO-3F：service-negotiated 的共享段字段也用通用 trace 透传。
             let _ = runtime.trace_emit(
                 EVENT_SERVICE_NEGOTIATED,
-                [
-                    alpha_token,
-                    alpha_manager,
-                    alpha_ep_id,
-                    alpha_done_payload,
-                    alpha_negotiated,
-                ],
+                read_shared(&runtime, OFF_MGR_TOKEN),
+                read_shared(&runtime, OFF_MGR_MANAGER),
+                read_shared(&runtime, SERVICE_ENDPOINT_ALPHA_OFFSET),
+                read_shared(&runtime, OFF_DONE_ALPHA),
+                read_shared(&runtime, SERVICE_NEGOTIATED_OFFSET),
             );
-            let _ = runtime.trace_emit(EVENT_SERVICE_NEGOTIATED, [alpha_negatives, 0, 0, 0, 0]);
+            let _ = runtime.trace_emit(
+                EVENT_SERVICE_NEGOTIATED,
+                read_shared(&runtime, SERVICE_NEGATIVES_OFFSET),
+                0,
+                0,
+                0,
+                0,
+            );
+            // EXO-3G：service-selected 的共享段字段用三条通用 trace 记录透传。
+            let alpha_marker = runtime
+                .read_user_u64(USER_SEG_VA + SERVICE_ALPHA_MARKER_OFFSET)
+                .unwrap_or(0);
+            let beta_marker = runtime
+                .read_user_u64(USER_SEG_VA + SERVICE_BETA_MARKER_OFFSET)
+                .unwrap_or(0);
+            let _ = runtime.trace_emit(
+                EVENT_SERVICE_SELECTED,
+                read_shared(&runtime, 48),
+                read_shared(&runtime, OFF_RESOLVED),
+                read_shared(&runtime, OFF_UNKNOWN),
+                read_shared(&runtime, OFF_DONE_BETA),
+                read_shared(&runtime, SERVICE_NEGOTIATED_B_OFFSET),
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICE_SELECTED,
+                read_shared(&runtime, SERVICE_ENDPOINT_ALPHA_OFFSET),
+                read_shared(&runtime, SERVICE_ENDPOINT_BETA_OFFSET),
+                read_shared(&runtime, SERVICE_ENDPOINT_BETA_OFFSET),
+                alpha_marker,
+                beta_marker,
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICE_SELECTED,
+                client_id,
+                read_shared(&runtime, OFF_REG_A_NAME),
+                read_shared(&runtime, OFF_REG_B_NAME),
+                0,
+                0,
+            );
+            // EXO-3H：servicemgr 的共享段字段用六条通用 trace 记录透传。
+            let log_id = registry[LOG_SLOT].map_or(0, |endpoint| endpoint.id);
+            let ns_id = registry[NS_SLOT].map_or(0, |endpoint| endpoint.id);
+            let store_id = registry[STORE_SLOT].map_or(0, |endpoint| endpoint.id);
+            let driver_id = registry[DRIVER_SLOT].map_or(0, |endpoint| endpoint.id);
+            let log_reply = base_reply_offset(LOG_SLOT);
+            let ns_reply = base_reply_offset(NS_SLOT);
+            let store_reply = base_reply_offset(STORE_SLOT);
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                self_id,
+                SERVICEMGR_BINARY_MARKER,
+                created,
+                read_shared(&runtime, OFF_MGR_ENTRY_A),
+                read_shared(&runtime, OFF_MGR_ENTRY_B),
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                served,
+                log_id,
+                ns_id,
+                store_id,
+                marker[LOG_SLOT],
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                marker[NS_SLOT],
+                marker[STORE_SLOT],
+                read_shared(&runtime, log_reply),
+                read_shared(&runtime, log_reply + 8),
+                read_shared(&runtime, log_reply + 16),
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                read_shared(&runtime, ns_reply),
+                read_shared(&runtime, ns_reply + 8),
+                read_shared(&runtime, ns_reply + 16),
+                read_shared(&runtime, store_reply),
+                read_shared(&runtime, store_reply + 8),
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                read_shared(&runtime, store_reply + 16),
+                read_shared(&runtime, OFF_NS_RESOLVED),
+                read_shared(&runtime, OFF_LOG_SEG),
+                read_shared(&runtime, OFF_STORE_SEG),
+                driver_id,
+            );
+            let _ = runtime.trace_emit(
+                EVENT_SERVICEMGR,
+                marker[DRIVER_SLOT],
+                read_shared(&runtime, OFF_DRIVER_DEV),
+                read_shared(&runtime, OFF_DRIVER_REPLY),
+                read_shared(&runtime, OFF_DRIVER_REPLY + 8),
+                0,
+            );
             // 三段**连发**（中间不让出）：唤醒先于带 cap 消息，宿主的 `BlockedRecv` 约束不触发。
             let _ = runtime.send(init_id, init_cap, SERVICEMGR_WAKE_TAG, &[]);
             if let Ok(read_only) = runtime.cap_derive(seg, R_DERIVE) {
@@ -748,7 +833,7 @@ fn create_service(
     spec: &Pending,
     slot: usize,
     created_slot: &mut [bool; SERVICES],
-) -> Option<(Capability, Capability)> {
+) -> Option<(Capability, Capability, u64)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
         runtime.cap_derive(*self_cap, TASK_SEND_RIGHTS),
@@ -797,7 +882,7 @@ fn create_service(
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
     let _ = runtime.memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW);
     write_created_witness(runtime, slot, e_entry, initial1, manager);
-    Some((initial1, manager))
+    Some((initial1, manager, e_entry))
 }
 
 /// SPEC-105：把「管理器确实创建了端点」的证据、收到的建端点参数与**自解出的 ELF 入口**

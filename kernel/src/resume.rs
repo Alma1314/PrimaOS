@@ -102,6 +102,8 @@ extern "C" fn after_resume() -> ! {
         None => protocol::panic_event(),
     }
     protocol::boot_complete();
+    // EXO-3I：原始 trace 调试通道（非 PRIMA 行，不影响既有事件序列校验）。
+    protocol::trace_dump();
     serial::flush();
     qemu::exit(qemu::SUCCESS)
 }

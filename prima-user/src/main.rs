@@ -196,7 +196,11 @@ pub extern "C" fn _start(
                 let packed = features | (required << 16) | (max_message_size << 32);
                 let _ = runtime.trace_emit(
                     EVENT_RUNTIME_HELLO,
-                    [0, magic_version, opcode_request, length_version, packed],
+                    0,
+                    magic_version,
+                    opcode_request,
+                    length_version,
+                    packed,
                 );
                 // SPEC-090：把**请求服务名**写入共享段（众所周知的常量 `"beta"`），供服务管理器
                 // 按名解析端点。客户端是**请求方**，用固定名寻址是常态；运行期指派的是**端点**的

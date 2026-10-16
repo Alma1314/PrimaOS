@@ -102,6 +102,10 @@ pub mod trace {
     pub const EVENT_SERVICE_REPLY: u64 = 2;
     /// 用户态/xtask 约定的 service-negotiated trace 事件 ID（内核不分支解释）。
     pub const EVENT_SERVICE_NEGOTIATED: u64 = 3;
+    /// 用户态/xtask 约定的 service-selected trace 事件 ID（内核不分支解释）。
+    pub const EVENT_SERVICE_SELECTED: u64 = 4;
+    /// 用户态/xtask 约定的 servicemgr trace 事件 ID（内核不分支解释）。
+    pub const EVENT_SERVICEMGR: u64 = 5;
 
     /// 内核保存的通用 trace 记录；内核只复制/透传，不解释 `id` 或 `args`。
     #[repr(C)]

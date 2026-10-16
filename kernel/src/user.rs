@@ -647,22 +647,30 @@ impl ServiceSelectedWitness {
     }
 }
 
+fn trace_service_selected(occurrence: usize) -> Option<prima_abi::trace::Record> {
+    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_SELECTED, occurrence)
+}
+
 pub fn service_selected_witness() -> ServiceSelectedWitness {
-    let alpha_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_ALPHA_OFFSET);
-    let beta_ep = read_qword(USER_HELLO2_VA + SERVICE_ENDPOINT_BETA_OFFSET);
-    let client_ep = read_qword(USER_HELLO2_VA + SERVICE_CLIENT_ID_OFFSET);
+    // EXO-3G：service-selected 的共享段字段由服务管理器通过三条通用 trace 记录提供；
+    // 内核不再读 `USER_HELLO2_VA` 的固定偏移。栈 Segment id 是关于任务映射的通用查询。
+    let first = trace_service_selected(0);
+    let second = trace_service_selected(1);
+    let third = trace_service_selected(2);
+    let alpha_ep = second.map_or(0, |record| record.args[0]);
+    let beta_ep = second.map_or(0, |record| record.args[1]);
+    let client_ep = third.map_or(0, |record| record.args[0]);
     ServiceSelectedWitness {
-        // SPEC-104：以下「由管理器产出」的值均从共享段的固定偏移读回。
-        name: read_qword(USER_HELLO2_VA + HELLO_SERVICE_NAME_OFFSET),
-        resolved: read_qword(USER_HELLO2_VA + SERVICE_RESOLVED_OFFSET),
-        unknown: read_qword(USER_HELLO2_VA + SERVICE_UNKNOWN_OFFSET),
-        done: read_qword(USER_HELLO2_VA + SERVICE_DONE_BETA_OFFSET),
-        negotiated_beta: read_qword(USER_HELLO2_VA + SERVICE_NEGOTIATED_B_OFFSET),
+        name: first.map_or(0, |record| record.args[0]),
+        resolved: first.map_or(0, |record| record.args[1]),
+        unknown: first.map_or(0, |record| record.args[2]),
+        done: first.map_or(0, |record| record.args[3]),
+        negotiated_beta: first.map_or(0, |record| record.args[4]),
         alpha_ep,
         beta_ep,
-        beta_self: read_qword(USER_HELLO2_VA + SERVICE_BETA_SELF_OFFSET),
-        alpha_marker: read_qword(USER_HELLO2_VA + SERVICE_ALPHA_MARKER_OFFSET),
-        beta_marker: read_qword(USER_HELLO2_VA + SERVICE_BETA_MARKER_OFFSET),
+        beta_self: second.map_or(0, |record| record.args[2]),
+        alpha_marker: second.map_or(0, |record| record.args[3]),
+        beta_marker: second.map_or(0, |record| record.args[4]),
         alpha_stack_seg: crate::bootstrap::mapped_segment_at(alpha_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
         beta_stack_seg: crate::bootstrap::mapped_segment_at(beta_ep as u32, USER3_STACK_VA)
@@ -670,8 +678,8 @@ pub fn service_selected_witness() -> ServiceSelectedWitness {
         client_ep,
         client_stack_seg: crate::bootstrap::mapped_segment_at(client_ep as u32, USER3_STACK_VA)
             .unwrap_or(0) as u64,
-        reg_a_name: read_qword(USER_HELLO2_VA + SERVICE_REG_A_NAME_OFFSET),
-        reg_b_name: read_qword(USER_HELLO2_VA + SERVICE_REG_B_NAME_OFFSET),
+        reg_a_name: third.map_or(0, |record| record.args[1]),
+        reg_b_name: third.map_or(0, |record| record.args[2]),
     }
 }
 
@@ -785,40 +793,52 @@ impl ServicemgrWitness {
 ///
 /// Y[`SERVICEMGR_RECEIPT_MGR`] 存的是 `SYS_TASK_CREATE` 的返回（新任务的**管理 cap**），经
 /// [`crate::bootstrap::task_of_cap`] 解出其目标 task id，与自报 payload 的低 8 位交叉核对。
+fn trace_servicemgr(occurrence: usize) -> Option<prima_abi::trace::Record> {
+    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICEMGR, occurrence)
+}
+
 pub fn servicemgr_witness() -> ServicemgrWitness {
+    // `task_id` / `hello` 是 Y 页通用机制回执；其余共享段字段由 EXO-3H 的六条 trace
+    // 记录提供，内核不再读 `USER_HELLO2_VA` 固定偏移。
     let manager_cap = read_qword(USER_Y_VA + SERVICEMGR_RECEIPT_MGR);
     let task_id = crate::bootstrap::decode_handle(manager_cap)
         .ok()
         .and_then(crate::bootstrap::task_of_cap)
         .map_or(0, |id| id as u64);
+    let r0 = trace_servicemgr(0);
+    let r1 = trace_servicemgr(1);
+    let r2 = trace_servicemgr(2);
+    let r3 = trace_servicemgr(3);
+    let r4 = trace_servicemgr(4);
+    let r5 = trace_servicemgr(5);
+    let arg = |record: Option<prima_abi::trace::Record>, index: usize| {
+        record.map_or(0, |record| record.args[index])
+    };
     ServicemgrWitness {
         task_id,
         hello: read_qword(USER_Y_VA + SERVICEMGR_RECEIPT_HELLO),
-        self_id: read_qword(USER_HELLO2_VA + SERVICEMGR_SELF_ID_OFFSET),
-        marker: read_qword(USER_HELLO2_VA + SERVICEMGR_MARKER_OFFSET),
-        created: read_qword(USER_HELLO2_VA + SERVICEMGR_CREATED_OFFSET),
-        entry_a: read_qword(USER_HELLO2_VA + SERVICEMGR_ENTRY_A_OFFSET),
-        entry_b: read_qword(USER_HELLO2_VA + SERVICEMGR_ENTRY_B_OFFSET),
-        services: read_qword(USER_HELLO2_VA + SERVICEMGR_SERVICES_OFFSET),
-        log_id: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_ID_OFFSET),
-        ns_id: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_ID_OFFSET),
-        store_id: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_ID_OFFSET),
-        log_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_MARK_OFFSET),
-        ns_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_MARK_OFFSET),
-        store_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_MARK_OFFSET),
-        log_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_LOG_REPLY_OFFSET),
-        ns_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_NS_REPLY_OFFSET),
-        store_state: read_reply_triple(USER_HELLO2_VA + SERVICEMGR_STORE_REPLY_OFFSET),
-        ns_resolved: read_qword(USER_HELLO2_VA + SERVICEMGR_NS_RESOLVED_OFFSET),
-        log_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_LOG_SEG_OFFSET),
-        store_seg: read_qword(USER_HELLO2_VA + SERVICEMGR_STORE_SEG_OFFSET),
-        driver_id: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_ID_OFFSET),
-        driver_mark: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_MARK_OFFSET),
-        driver_dev: read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_DEV_OFFSET),
-        driver_io: [
-            read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_REPLY_OFFSET),
-            read_qword(USER_HELLO2_VA + SERVICEMGR_DRIVER_REPLY_OFFSET + 8),
-        ],
+        self_id: arg(r0, 0),
+        marker: arg(r0, 1),
+        created: arg(r0, 2),
+        entry_a: arg(r0, 3),
+        entry_b: arg(r0, 4),
+        services: arg(r1, 0),
+        log_id: arg(r1, 1),
+        ns_id: arg(r1, 2),
+        store_id: arg(r1, 3),
+        log_mark: arg(r1, 4),
+        ns_mark: arg(r2, 0),
+        store_mark: arg(r2, 1),
+        log_state: [arg(r2, 2), arg(r2, 3), arg(r2, 4)],
+        ns_state: [arg(r3, 0), arg(r3, 1), arg(r3, 2)],
+        store_state: [arg(r3, 3), arg(r3, 4), arg(r4, 0)],
+        ns_resolved: arg(r4, 1),
+        log_seg: arg(r4, 2),
+        store_seg: arg(r4, 3),
+        driver_id: arg(r4, 4),
+        driver_mark: arg(r5, 0),
+        driver_dev: arg(r5, 1),
+        driver_io: [arg(r5, 2), arg(r5, 3)],
     }
 }
 
@@ -840,15 +860,6 @@ fn is_live_device(raw: u64) -> bool {
             .ok()
             .and_then(crate::bootstrap::device_of_cap)
             .is_some()
-}
-
-/// SPEC-110：读一个基础服务的三条定序状态应答（起始偏移 + 0/8/16）。
-fn read_reply_triple(base: u64) -> [u64; 3] {
-    [
-        read_qword(base),
-        read_qword(base + 8),
-        read_qword(base + 16),
-    ]
 }
 
 /// 组装第二任务机器码：
