@@ -130,11 +130,13 @@ LibOS 行为。
 
 ### EXO-2：用户态 init/loader 承担编排
 
-> **状态（2026-10-15）**：进行中。已落 **EXO-2A**（SPEC-116，目录无名字）与
-> **EXO-2B**（SPEC-117，目录格式提升为 `prima-abi` 共享常量）；见
-> `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md` 与
-> `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md`。
-> init 机器码、协议 tag 与共享段 witness 迁移仍未完成。
+> **状态（2026-10-16）**：进行中。已落 **EXO-2A**（SPEC-116，目录无名字）
+> **EXO-2B**（SPEC-117，目录格式提升为 `prima-abi` 共享常量）与 **EXO-2C**
+> （SPEC-120，init 机器码生成器移出内核，改由 host 生成、ramdisk opaque ELF 装载）；
+> 见 `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md`、
+> `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md` 与
+> `docs/superpowers/reports/2026-10-16-exo2c-init-loader-report.md`。
+> 协议 tag、共享段 witness 与真正的 ring3 manifest/loader 迁移仍未完成。
 
 - 新建或强化真正的 ring3 `init`/`prima-servicemgr`：从 ramdisk 读 manifest，创建服务
   Task、映射代码/栈、建立注册表、按名解析和路由。

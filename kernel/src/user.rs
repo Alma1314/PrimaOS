@@ -48,10 +48,11 @@ pub struct ImageEntry {
     pub entry: u64,
 }
 
-/// EXO-1：从通用 ramdisk 解析出的服务映像布局。
+/// EXO-1/EXO-2C：从通用 ramdisk 解析出的 boot image 布局。
 ///
-/// 当前阶段仍按固定顺序映射到阶段 4 的既有服务集合；服务名、注册表和协议仍由
-/// `user_code()`/`write_image_directory()` 处理，留待 EXO-2 下沉到用户态 loader。
+/// 第 0 项 init ELF 由内核通用 ELF 装载器装入 task 1；第 1..7 项是服务映像，仍按
+/// 固定顺序映射到阶段 4 的既有服务集合。服务名、协议 tag 与 witness 偏移仍由
+/// `write_image_directory()` 和内核 witness 处理，留待 EXO-3 继续下沉。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootLayout {
     /// EXO-2C：第 0 项是 init 的不透明 ELF；它不是服务映像段的一部分。
