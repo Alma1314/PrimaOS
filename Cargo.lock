@@ -275,6 +275,13 @@ name = "prima-abi"
 version = "0.1.0"
 
 [[package]]
+name = "prima-initgen"
+version = "0.1.0"
+dependencies = [
+ "prima-abi",
+]
+
+[[package]]
 name = "prima-ostd"
 version = "0.1.0"
 
@@ -554,6 +561,7 @@ dependencies = [
  "bootloader",
  "kernel",
  "prima-abi",
+ "prima-initgen",
  "prima-user",
 ]
 

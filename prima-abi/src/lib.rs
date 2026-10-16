@@ -16,8 +16,8 @@ pub mod boot_image {
     pub const MAGIC: u64 = 0x444d_5241_4d49_5250;
     /// 格式版本。
     pub const VERSION: u64 = 1;
-    /// 当前阶段 4 的映像块数量：alpha / beta / servicemgr / log / ns / store / driver。
-    pub const ENTRY_COUNT: u64 = 7;
+    /// EXO-2C：映像块数量：init / alpha / beta / servicemgr / log / ns / store / driver。
+    pub const ENTRY_COUNT: u64 = 8;
     /// 头部 qword 数：magic / version / count。
     pub const HEADER_QWORDS: usize = 3;
     /// 每个条目的 qword 数：offset / len。

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 prima-abi = { path = "../prima-abi" }
+prima-initgen = { path = "../prima-initgen" }
 bootloader = "=0.11.17"
 prima-user = { path = "../prima-user", artifact = "bin", target = "x86_64-unknown-none" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
