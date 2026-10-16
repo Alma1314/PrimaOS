@@ -898,22 +898,23 @@ pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
 }
 
 /// Stage 4：Rust ring3 客户端经 IPC 移交共享 Segment 后的协议回执。
-pub(crate) fn runtime_hello_ready(witness: &kernel::user::RuntimeHelloWitness) {
+/// EXO-3D：`runtime_hello_ready` 事件改为**只透传通用 trace 记录**。
+///
+/// 内核不解释记录中的 event id/args；字段期望由 `xtask/src/protocol.rs` 校验。
+pub(crate) fn runtime_hello_trace(record: &prima_abi::trace::Record) {
     write_prefix("runtime_hello_ready", "ok");
-    serial::write_bytes(b"|data=map=");
-    write_hex_u64(witness.map_result);
-    serial::write_bytes(b";magic=");
-    write_hex_u64(witness.magic_version);
-    serial::write_bytes(b";opcode=");
-    write_hex_u64(witness.opcode_request);
-    serial::write_bytes(b";length=");
-    write_hex_u64(witness.length_version);
-    serial::write_bytes(b";features=");
-    write_hex_u64(witness.features);
-    serial::write_bytes(b";required=");
-    write_hex_u64(witness.required_features);
-    serial::write_bytes(b";max=");
-    write_u32(witness.max_message_size);
+    serial::write_bytes(b"|data=id=");
+    write_hex_u64(record.id);
+    serial::write_bytes(b";a=");
+    write_hex_u64(record.args[0]);
+    serial::write_bytes(b";b=");
+    write_hex_u64(record.args[1]);
+    serial::write_bytes(b";c=");
+    write_hex_u64(record.args[2]);
+    serial::write_bytes(b";d=");
+    write_hex_u64(record.args[3]);
+    serial::write_bytes(b";e=");
+    write_hex_u64(record.args[4]);
     serial::write_bytes(b"\r\n");
 }
 

@@ -90,6 +90,31 @@ pub mod boot_abi {
     }
 }
 
+/// EXO-3D：内核只透传、不解释的通用用户态 trace 记录 ABI。
+pub mod trace {
+    /// 一条 trace 记录最多携带 5 个 u64 原始参数。
+    pub const ARGS: usize = 5;
+    /// 内核单次 boot 保存的 trace 记录容量。
+    pub const MAX_RECORDS: usize = 16;
+    /// 用户态/xtask 约定的 runtime-hello trace 事件 ID（内核不分支解释）。
+    pub const EVENT_RUNTIME_HELLO: u64 = 1;
+
+    /// 内核保存的通用 trace 记录；内核只复制/透传，不解释 `id` 或 `args`。
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Record {
+        pub id: u64,
+        pub args: [u64; ARGS],
+    }
+
+    impl Record {
+        pub const EMPTY: Self = Self {
+            id: 0,
+            args: [0; ARGS],
+        };
+    }
+}
+
 /// 当前 x86_64 syscall 递送层使用的实验性调用号。
 pub mod syscall {
     pub const SYS_ECHO: u64 = 1;
@@ -132,4 +157,6 @@ pub mod syscall {
     pub const SYS_DEV_IOPORT_IN: u64 = 35;
     /// EXO-4A / §15.8：销毁 `Device` 对象 `dev_destroy(dev_cap)`。
     pub const SYS_DEV_DESTROY: u64 = 36;
+    /// EXO-3D：写入一条通用用户态 trace 记录 `trace_emit(id,a,b,c,d,e)`。
+    pub const SYS_TRACE_EMIT: u64 = 37;
 }

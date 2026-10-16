@@ -43,8 +43,8 @@ pub use prima_abi::syscall::{
     SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
     SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE,
     SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
-    SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP,
-    SYS_YIELD,
+    SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRACE_EMIT,
+    SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -2113,6 +2113,35 @@ static CALLS: StaticCell<[CallRecord; MAX_CALLS]> =
 /// 已进入的 syscall 次数。
 static COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// EXO-3D：内核只保存原始 trace 记录，不解释 event id/args。
+#[derive(Clone, Copy)]
+struct TraceBuffer {
+    count: usize,
+    records: [prima_abi::trace::Record; prima_abi::trace::MAX_RECORDS],
+}
+
+static TRACE: StaticCell<TraceBuffer> = StaticCell::new(TraceBuffer {
+    count: 0,
+    records: [prima_abi::trace::Record::EMPTY; prima_abi::trace::MAX_RECORDS],
+});
+
+/// `SYS_TRACE_EMIT`：复制一条不透明记录进内核 trace 缓冲。
+fn trace_emit_call(id: u64, args: [u64; prima_abi::trace::ARGS]) -> u64 {
+    TRACE.with_mut(|trace| {
+        if trace.count >= prima_abi::trace::MAX_RECORDS {
+            return encode_errno(Errno::NoSpace);
+        }
+        trace.records[trace.count] = prima_abi::trace::Record { id, args };
+        trace.count += 1;
+        0
+    })
+}
+
+/// 读取第 `index` 条 trace 记录；越界返回 `None`。
+pub fn trace_record(index: usize) -> Option<prima_abi::trace::Record> {
+    TRACE.with(|trace| (index < trace.count).then(|| trace.records[index]))
+}
+
 /// 由框架裸入口 `syscall_entry` 调用的内核侧处理。
 ///
 /// `frame` 是栈上 8 个 qword 的 ABI 现场帧的**类型化视图**：`[0]=调用号(rax)`、
@@ -2222,6 +2251,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         dev_ioport_in_call(args[0], args[1])
     } else if num == SYS_DEV_DESTROY {
         dev_destroy_call(args[0])
+    } else if num == SYS_TRACE_EMIT {
+        trace_emit_call(args[0], [args[1], args[2], args[3], args[4], args[5]])
     } else {
         dispatch_plain(num, args)
     }

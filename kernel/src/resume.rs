@@ -147,8 +147,16 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
     let task = kernel::syscall::task_witness();
     protocol::task_ready(&task);
-    // Stage 4：在 task 1 的地址空间内核对 Rust 客户端共享 Segment 中的真实 wire 消息。
-    protocol::runtime_hello_ready(&kernel::user::runtime_hello_witness());
+    // EXO-3D：`runtime_hello_ready` 不再由内核读共享段固定偏移；改为透传 ring3
+    // 客户端通过 `SYS_TRACE_EMIT` 写入的通用 trace 记录。
+    match kernel::syscall::trace_record(0) {
+        Some(record) => protocol::runtime_hello_trace(&record),
+        None => {
+            protocol::panic_event();
+            serial::flush();
+            qemu::exit(qemu::PANIC)
+        }
+    }
     // SPEC-087：init 与**存活**客户端的双向握手（请求 → 应答 → 客户端写回执）。
     protocol::service_reply_ready(&kernel::user::service_reply_witness());
     // SPEC-088：init（broker）把客户端 Hello 转发给 ring3 Rust 服务端点，服务解析+协商。

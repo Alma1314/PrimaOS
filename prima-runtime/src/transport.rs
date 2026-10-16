@@ -87,6 +87,14 @@ impl<T: SyscallTransport> Runtime<T> {
     pub fn yield_task(&self) -> Result<()> {
         self.call_unit(syscall::YIELD, [0; 6])
     }
+
+    /// EXO-3D：写入一条内核只复制/透传、不解释的通用 trace 记录。
+    pub fn trace_emit(&self, id: u64, args: [u64; 5]) -> Result<()> {
+        self.call_unit(
+            syscall::TRACE_EMIT,
+            [id, args[0], args[1], args[2], args[3], args[4]],
+        )
+    }
 }
 
 /// `timer_cancel` 的状态结果；`AlreadyFired` 和 `AlreadyCancelled` 不是错误。

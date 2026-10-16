@@ -494,62 +494,6 @@ const fn put_imm64<const N: usize>(
     put(code, at + 2, &imm.to_le_bytes());
 }
 
-/// 独立 ring3 Rust 客户端的真实协议握手回执（原始 wire word，避免依赖结构体布局）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RuntimeHelloWitness {
-    pub map_result: u64,
-    pub magic_version: u64,
-    pub opcode_request: u64,
-    pub length_version: u64,
-    pub features: u64,
-    pub required_features: u64,
-    pub max_message_size: u32,
-}
-
-impl RuntimeHelloWitness {
-    pub fn evidence_ok(&self) -> bool {
-        self.map_result == 0
-            && self.magic_version as u32 == u32::from_le_bytes(*b"PRIM")
-            && (self.magic_version >> 32) as u16 == 1
-            && (self.magic_version >> 48) as u16 == 0
-            && self.opcode_request as u16 == 1
-            && (self.opcode_request >> 16) as u16 == 0
-            && (self.opcode_request >> 32) as u32 == 3
-            && self.length_version as u32 == 24
-            && (self.length_version >> 32) as u16 == 1
-            && (self.length_version >> 48) as u16 == 0
-            && self.features == 1
-            && self.required_features == 1
-            && self.max_message_size == 4096
-    }
-}
-
-pub fn runtime_hello_witness() -> RuntimeHelloWitness {
-    let map_result = read_qword(USER_Y_VA + 736);
-    if map_result != 0 {
-        return RuntimeHelloWitness {
-            map_result,
-            magic_version: 0,
-            opcode_request: 0,
-            length_version: 0,
-            features: 0,
-            required_features: 0,
-            max_message_size: 0,
-        };
-    }
-    let length_version = read_qword(USER_HELLO_VA + 16);
-    let max_word = read_qword(USER_HELLO_VA + 40);
-    RuntimeHelloWitness {
-        map_result,
-        magic_version: read_qword(USER_HELLO_VA),
-        opcode_request: read_qword(USER_HELLO_VA + 8),
-        length_version,
-        features: read_qword(USER_HELLO_VA + 24),
-        required_features: read_qword(USER_HELLO_VA + 32),
-        max_message_size: max_word as u32,
-    }
-}
-
 /// SPEC-087：init ↔ **存活** ring3 客户端 双向握手的回执（原始值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceReplyWitness {

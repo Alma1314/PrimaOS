@@ -3252,7 +3252,8 @@ fn validate_memory_data(data: Option<&str>) -> Result<u64, String> {
     Ok(kstart)
 }
 
-const RUNTIME_HELLO_DATA: &str = "map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096";
+const RUNTIME_HELLO_DATA: &str =
+    "id=0x1;a=0x0;b=0x14d495250;c=0x300000001;d=0x100000018;e=0x100000010001";
 
 /// SPEC-087：`service_reply_ready` 的镜像常量，与 `kernel/src/{user,syscall}.rs` 一致
 /// （跨 crate 需人工同步）。
@@ -3265,7 +3266,46 @@ fn validate_runtime_hello_data(data: Option<&str>) -> Result<(), String> {
     if data != RUNTIME_HELLO_DATA {
         return Err(format!("runtime_hello_ready wire data differs: {data}"));
     }
-    Ok(())
+    // EXO-3D：data 是内核透传的通用 trace 记录；xtask 负责解包/判定语义。
+    let mut id = None;
+    let mut a = None;
+    let mut b = None;
+    let mut c = None;
+    let mut d = None;
+    let mut e = None;
+    for pair in data.split(';') {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("malformed runtime_hello trace pair: {pair}"))?;
+        match key {
+            "id" => id = Some(parse_addr(value)?),
+            "a" => a = Some(parse_addr(value)?),
+            "b" => b = Some(parse_addr(value)?),
+            "c" => c = Some(parse_addr(value)?),
+            "d" => d = Some(parse_addr(value)?),
+            "e" => e = Some(parse_addr(value)?),
+            _ => return Err(format!("unknown runtime_hello trace key: {key}")),
+        }
+    }
+    let (Some(id), Some(a), Some(b), Some(c), Some(d), Some(e)) = (id, a, b, c, d, e) else {
+        return Err("runtime_hello trace record is missing fields".to_owned());
+    };
+    let features = e & 0xffff;
+    let required = (e >> 16) & 0xffff;
+    let max_message_size = e >> 32;
+    if id == prima_abi::trace::EVENT_RUNTIME_HELLO
+        && a == 0
+        && b == 0x14d495250
+        && c == 0x300000001
+        && d == 0x100000018
+        && features == 1
+        && required == 1
+        && max_message_size == 4096
+    {
+        Ok(())
+    } else {
+        Err(format!("runtime_hello trace values differ: {data}"))
+    }
 }
 
 /// SPEC-087：`service_reply_ready` 的期望字段——init 与存活 ring3 客户端双向握手。
@@ -4156,7 +4196,7 @@ mod tests {
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=44;direct=26;blocks=34\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=110;root_cleared=1;grandchild=4;tasks_after=11;caps_after=110;root4_cleared=1\n",
-        "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=map=0x0;magic=0x14d495250;opcode=0x300000001;length=0x100000018;features=0x1;required=0x1;max=4096\n",
+        "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=id=0x1;a=0x0;b=0x14d495250;c=0x300000001;d=0x100000018;e=0x100000010001\n",
         "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
         "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x100000038;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
         "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
@@ -4179,10 +4219,11 @@ mod tests {
 
     #[test]
     fn rejects_runtime_hello_corruption() {
-        let output = VALID.replace("magic=0x14d495250", "magic=0x0");
+        let output = VALID.replace("b=0x14d495250", "b=0x0");
         let error = validate_output(&output).unwrap_err();
         assert!(
-            error.contains("runtime_hello_ready wire data differs"),
+            error.contains("runtime_hello_ready wire data differs")
+                || error.contains("runtime_hello trace values differ"),
             "{error}"
         );
     }

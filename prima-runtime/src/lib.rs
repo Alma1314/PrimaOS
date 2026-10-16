@@ -26,6 +26,9 @@ pub use ipc::Message;
 pub use task::{TaskId, TaskSpec};
 pub use transport::{Runtime, SyscallTransport, TimerCancelOutcome};
 
+/// EXO-3D 通用用户态 trace ABI（记录格式由 `prima-abi` 共享，内核不解释）。
+pub use prima_abi::trace;
+
 /// 当前 crate 的源码 API 主版本。仍处于 `0.x` 阶段，兼容性按仓库的 S4-D1 约定管理。
 pub const API_MAJOR: u16 = 0;
 /// 当前 crate 的源码 API 次版本。

@@ -10,6 +10,7 @@ use prima_runtime::{
         SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, SERVICE_WAKE_TAG,
         negotiation_negatives, negotiation_word, service_offer,
     },
+    trace::EVENT_RUNTIME_HELLO,
 };
 
 const USER_HELLO_VA: u64 = 0x0000_0A00_0000_7000;
@@ -182,6 +183,21 @@ pub extern "C" fn _start(
             let mapped =
                 runtime.memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS);
             if mapped.is_ok() && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok() {
+                // EXO-3D：把 runtime-hello 的结果/字段作为**通用 trace 记录**交给内核透传，
+                // 不再依赖内核读共享段固定偏移。字段打包成 5 个 u64：
+                // a=map_result、b=magic_version、c=opcode_request、d=length_version、
+                // e=features | required<<16 | max<<32。
+                let magic_version = u64::from_le_bytes(message[0..8].try_into().unwrap());
+                let opcode_request = u64::from_le_bytes(message[8..16].try_into().unwrap());
+                let length_version = u64::from_le_bytes(message[16..24].try_into().unwrap());
+                let features = offer.features;
+                let required = offer.required_features;
+                let max_message_size = offer.max_message_size as u64;
+                let packed = features | (required << 16) | (max_message_size << 32);
+                let _ = runtime.trace_emit(
+                    EVENT_RUNTIME_HELLO,
+                    [0, magic_version, opcode_request, length_version, packed],
+                );
                 // SPEC-090：把**请求服务名**写入共享段（众所周知的常量 `"beta"`），供服务管理器
                 // 按名解析端点。客户端是**请求方**，用固定名寻址是常态；运行期指派的是**端点**的
                 // 注册名（见下）。
