@@ -210,6 +210,15 @@ pub fn exit_to(next: u32) -> ! {
     resume(next)
 }
 
+/// 硬件故障后的切换：当前任务已经是 Faulted，不可重新置 Ready。
+pub fn fault_to(next: u32) -> ! {
+    let cur = current();
+    assert_ne!(cur, next, "fault_to must target a different task");
+    bootstrap::schedule_task_global(next).expect("fault successor must be Ready");
+    set_current(next);
+    resume(next)
+}
+
 /// 切片 V：延迟帧队列已满。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeferredQueueFull;

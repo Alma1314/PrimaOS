@@ -9,8 +9,8 @@
 //! 授权语义，也不是 ring3 用户态 COW 协议；COW 动作自身若故障会产生嵌套 #PF（已知边界）。
 //!
 //! **与 #PF handler 的接口：** `idt::page_fault_entry` 捕获完整现场后 `call` 本模块的
-//! [`dispatch`]，由它返回"iretq 应回到的 RIP"——默认 `rip + FAULT_SKIP_LEN`（跳过，保持
-//! 切片 C/E 的探测行为），命中 COW 条件时返回原 `rip` 以**重试**故障指令。
+//! [`dispatch`]：命中 COW 时返回原 `rip` 重试；早期 ring0 探针沿用固定长度跳过；其余
+//! ring3 页故障把当前 Task 标为 `Faulted` 并切走。
 
 use crate::exc::SretFrame;
 use crate::frames;
@@ -87,6 +87,24 @@ struct CowContext {
 }
 
 static COW_CTX: StaticCell<Option<CowContext>> = StaticCell::new(None);
+static USER_COW_ERR: StaticCell<Option<u64>> = StaticCell::new(None);
+
+#[derive(Clone, Copy)]
+pub struct UserFaultRecord {
+    pub task: u32,
+    pub addr: u64,
+    pub err: u64,
+}
+
+static USER_FAULT: StaticCell<Option<UserFaultRecord>> = StaticCell::new(None);
+
+pub fn user_cow_err() -> Option<u64> {
+    USER_COW_ERR.with(|slot| *slot)
+}
+
+pub fn user_fault_record() -> Option<UserFaultRecord> {
+    USER_FAULT.with(|slot| *slot)
+}
 
 /// COW 私有帧的取帧入口（切片 R：追加进 COW `SegmentObject` 的真实帧向量）。
 ///
@@ -213,23 +231,21 @@ fn cow_region(root_phys: u64, offset: u64, va: u64, shared: u64, user: bool) -> 
 
 /// #PF 分派器：由 `page_fault_entry` 在捕获现场后调用，返回 iretq 应恢复到的 RIP。
 ///
-/// 默认跳过故障指令（`rip + FAULT_SKIP_LEN`）。命中已注册 COW 区域（内核 [`COW_VA`] 或
+/// 早期 ring0 探针跳过故障指令（`rip + FAULT_SKIP_LEN`）。命中已注册 COW 区域（内核 [`COW_VA`] 或
 /// 用户页 [`crate::user::USER_X_VA`]）的首次写故障时，执行复制 + 换映射 + `invlpg` 并
-/// 返回原 `rip` 以**重试**。
+/// 返回原 `rip` 以**重试**。其他 ring3 页故障进入 `Faulted` 并调度后继。
 ///
 /// # Safety
 ///
 /// 只能由裸 #PF 入口在捕获现场后调用；`frame` 必须指向有效的现场帧。
 pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
-    COW_CTX.with_mut(|slot| {
-        let Some(ctx) = slot.as_mut() else {
-            return frame.rip + crate::idt::FAULT_SKIP_LEN;
-        };
+    let handled = COW_CTX.with_mut(|slot| {
+        let ctx = slot.as_mut()?;
         let cr2 = crate::idt::fault_addr();
         let err = crate::idt::last_fault_err();
         let write = err & 0x2 != 0;
         if !write {
-            return frame.rip + crate::idt::FAULT_SKIP_LEN;
+            return None;
         }
         let (root_phys, offset) = (ctx.root_phys, ctx.offset);
 
@@ -237,7 +253,7 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
             if let Some(private) = cow_region(root_phys, offset, COW_VA, ctx.shared, false) {
                 ctx.private = private;
                 ctx.copied = true;
-                return frame.rip;
+                return Some(frame.rip);
             }
         } else if !ctx.user_copied && ctx.user_va != 0 && cr2 == ctx.user_va {
             let shared = ctx.user_shared;
@@ -247,11 +263,29 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
             if let Some(private) = cow_region(user_root, offset, va, shared, true) {
                 ctx.user_private = private;
                 ctx.user_copied = true;
-                return frame.rip;
+                USER_COW_ERR.with_mut(|slot| *slot = Some(err));
+                return Some(frame.rip);
             }
         }
-        frame.rip + crate::idt::FAULT_SKIP_LEN
-    })
+        None
+    });
+    if let Some(rip) = handled {
+        return rip;
+    }
+    if frame.cs & 3 != 0 {
+        let task = crate::sched::current();
+        let record = UserFaultRecord {
+            task,
+            addr: crate::idt::fault_addr(),
+            err: crate::idt::last_fault_err(),
+        };
+        crate::bootstrap::fault_running_global(task).expect("faulted task transition");
+        USER_FAULT.with_mut(|slot| *slot = Some(record));
+        let next = crate::sched::pick_next(task).expect("fault requires a Ready successor");
+        crate::sched::fault_to(next)
+    }
+    // 早期 ring0 页表探针的固定三字节指令仍沿用原有跳过语义。
+    frame.rip + crate::idt::FAULT_SKIP_LEN
 }
 
 /// 触发一次 COW 见证并收集证据（内核/QEMU 专用）。

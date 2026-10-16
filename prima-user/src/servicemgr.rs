@@ -45,21 +45,26 @@ use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
         ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA, IOPORT_BASE,
-        IOPORT_COUNT, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA, SERVICE_BEHAVIOR_DRIVER,
-        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE,
-        SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
-        SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
-        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
-        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
-        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
-        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        IOPORT_COUNT, NATIVE_APP_BAD_LENGTH, NATIVE_APP_BYTES, NATIVE_APP_CANCELLED,
+        NATIVE_APP_DATA_VA, NATIVE_APP_DONE_TAG, NATIVE_APP_OK, NATIVE_APP_OP_CANCEL,
+        NATIVE_APP_OP_DATA, NATIVE_APP_OP_EXECUTE, NATIVE_APP_OP_SUBMIT, NATIVE_APP_QUEUED,
+        NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
+        SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
+        SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER,
+        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_MAGIC,
+        SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA,
+        SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK,
+        SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG,
+        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, pack_service_name, pack_service_request,
+        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, native_app_hash, native_app_reply,
+        pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
-        EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY, EVENT_SERVICE_SELECTED, EVENT_SERVICEMGR,
+        EVENT_NATIVE_APP, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY, EVENT_SERVICE_SELECTED,
+        EVENT_SERVICEMGR,
     },
 };
 
@@ -78,6 +83,22 @@ const SERVICE_ENDPOINT_BETA_OFFSET: u64 = 168;
 /// EXO-3H：在 servicemgr 内读回自己映射的客户端共享段偏移；内核不再解释这些偏移。
 fn read_shared(runtime: &Runtime<impl SyscallTransport>, offset: u64) -> u64 {
     runtime.read_user_u64(USER_SEG_VA + offset).unwrap_or(0)
+}
+
+fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32> {
+    let mut chunk = [0u8; 64];
+    let mut hash = 2_166_136_261u32;
+    let mut offset = 0usize;
+    while offset < NATIVE_APP_BYTES {
+        runtime
+            .read_user_bytes(NATIVE_APP_DATA_VA + offset as u64, &mut chunk)
+            .ok()?;
+        for byte in chunk {
+            hash = native_app_hash(hash, byte);
+        }
+        offset += chunk.len();
+    }
+    Some(hash)
 }
 
 /// 端点用户栈的页大小（`stack_top = ENDPOINT_STACK_VA + 0x1000`）。
@@ -270,9 +291,21 @@ pub extern "C" fn _start(
     let mut alpha_done = false;
     let mut beta_forwarded = false;
     let mut beta_done = false;
+    let mut pong_sent = false;
+    let mut app_done = false;
+    let mut app_flags = 0u64;
+    let mut app_hashes = [0u32; 2];
+    let mut app_data = 0u64;
+    let mut app_queued = 0u64;
+    let mut app_cancel = 0u64;
+    let mut app_skipped = 0u64;
+    let mut app_error = 0u64;
+    let mut app_pending = false;
+    let mut app_cancelled = false;
     let mut finished = false;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
+    let mut isolated_ns: Option<Capability> = None;
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
     // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
     let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending);
@@ -291,12 +324,60 @@ pub extern "C" fn _start(
         let Ok(message) = runtime.receive() else {
             continue;
         };
-        if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
+        if message.payload >> 48 == NATIVE_APP_REQUEST_TAG >> 48 && pong_sent {
+            // 控制消息携带操作与长度；8 KiB 数据留在客户端移交的跨页共享 Segment 中。
+            let op = (message.payload >> 40) & 0xff;
+            let length = (message.payload & 0xffff_ffff) as usize;
+            let (status, hash) = if op == NATIVE_APP_OP_SUBMIT && length == NATIVE_APP_BYTES {
+                app_pending = true;
+                app_cancelled = false;
+                app_queued += 1;
+                (NATIVE_APP_QUEUED, 0)
+            } else if op == NATIVE_APP_OP_CANCEL && app_pending {
+                app_pending = false;
+                app_cancelled = true;
+                app_cancel += 1;
+                (NATIVE_APP_CANCELLED, 0)
+            } else if op == NATIVE_APP_OP_EXECUTE && app_cancelled {
+                app_cancelled = false;
+                app_skipped += 1;
+                (NATIVE_APP_CANCELLED, 0)
+            } else if (op != NATIVE_APP_OP_DATA && op != NATIVE_APP_OP_EXECUTE)
+                || (op == NATIVE_APP_OP_DATA && length != NATIVE_APP_BYTES)
+                || (op == NATIVE_APP_OP_EXECUTE && !app_pending)
+            {
+                app_error += 1;
+                (NATIVE_APP_BAD_LENGTH, 0)
+            } else if let Some(hash) = read_native_app_hash(&runtime) {
+                app_pending = false;
+                if app_data < 2 {
+                    app_hashes[app_data as usize] = hash;
+                }
+                app_data += 1;
+                (NATIVE_APP_OK, hash)
+            } else {
+                app_error += 1;
+                (NATIVE_APP_BAD_LENGTH, 0)
+            };
+            if let Some(client_cap) = client {
+                let _ = runtime.send(
+                    TaskId::from_raw(client_id as u32),
+                    client_cap,
+                    native_app_reply(status, hash),
+                    &[],
+                );
+            }
+        } else if message.payload >> 48 == NATIVE_APP_DONE_TAG >> 48 && pong_sent {
+            app_flags = message.payload & 0xf;
+            app_done = true;
+        } else if message.payload >> 48 == SERVICE_SETUP_TAG >> 48 {
             // ⓪' SPEC-105：init 移交父 Namespace（单 cap，payload 仅 tag）。
             if let Some(cap0) = message.capabilities[0]
                 && ns.is_none()
             {
                 ns = Some(cap0);
+                // 普通端点所需的结构性根只指向空 Namespace；全局解析权单独交给 NS 服务。
+                isolated_ns = runtime.namespace_create().ok();
             }
         } else if message.capabilities[1].is_some() {
             // ① 客户端 Hello（唯一带**两条** cap 的消息：段 cap + 客户端自管理 cap）。
@@ -307,7 +388,15 @@ pub extern "C" fn _start(
                     continue;
                 };
                 client_id = message.payload & 0xff;
-                let _ = runtime.memseg_map(seg, self_cap, 0, USER_SEG_VA, 1, RW);
+                if runtime
+                    .memseg_map(seg, self_cap, 0, USER_SEG_VA, 1, RW)
+                    .is_err()
+                    || runtime
+                        .memseg_map(seg, self_cap, 1, NATIVE_APP_DATA_VA, 3, RW)
+                        .is_err()
+                {
+                    continue;
+                }
                 let _ =
                     runtime.write_user_bytes(USER_SEG_VA + OFF_CLIENT_ID, &client_id.to_le_bytes());
                 let _ = runtime
@@ -417,13 +506,19 @@ pub extern "C" fn _start(
 
         // ⓪' SPEC-105/106：cap、参数与共享段齐全即创建端点（表驱动）——建端点证据写回共享段，故
         // 须待客户端 Hello 把段映射进本根之后。
-        if let (Some(ns_cap), Some(_)) = (ns, segment) {
+        if let (Some(parent_ns), Some(_)) = (isolated_ns, segment) {
             let mut slot = 0;
             while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
-                    && let Some((_token, _manager, _entry)) =
-                        create_service(&runtime, &self_cap, ns_cap, &spec, slot, &mut created_slot)
+                    && let Some((_token, _manager, _entry)) = create_service(
+                        &runtime,
+                        &self_cap,
+                        parent_ns,
+                        &spec,
+                        slot,
+                        &mut created_slot,
+                    )
                 {
                     created += 1;
                     let _ = runtime
@@ -606,7 +701,7 @@ pub extern "C" fn _start(
         if beta_done
             && served == BASE_COUNT as u64
             && reply_count[DRIVER_SLOT] >= DRIVER_PROBES
-            && !finished
+            && !pong_sent
             && let Some(client_cap) = client
         {
             let _ = runtime.send(
@@ -626,9 +721,26 @@ pub extern "C" fn _start(
                     break value;
                 }
             };
+            pong_sent = true;
+            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
+        }
+        if pong_sent && app_done && !finished {
+            // 两次成功的数据读回、一次执行前取消、一次越界拒绝与客户端的四项检查，
+            // 均由独立 ring3 管理器提交为原始 trace，xtask 负责判断其含义。
+            let _ = runtime.trace_emit(
+                EVENT_NATIVE_APP,
+                NATIVE_APP_BYTES as u64,
+                app_hashes[0] as u64,
+                app_hashes[1] as u64,
+                (app_data << 32)
+                    | (app_queued << 24)
+                    | (app_cancel << 16)
+                    | (app_skipped << 8)
+                    | app_error,
+                app_flags,
+            );
             // EXO-3E：把 service-reply 的共享段字段作为通用 trace 记录交给内核透传，
             // 内核不再读 `USER_HELLO2_VA + {CLIENT_ID, REPLY}`。
-            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
             // EXO-3F：service-negotiated 的共享段字段也用通用 trace 透传。
             let _ = runtime.trace_emit(
                 EVENT_SERVICE_NEGOTIATED,

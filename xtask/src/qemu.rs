@@ -61,7 +61,10 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     let output = run_captured(image)?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
-    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))
+    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
 /// 用固定 BIOS 参数捕获一次运行（切片 A/B 的既有路径）。
@@ -76,6 +79,10 @@ pub(crate) fn run_bios_capture(image: &Path) -> Result<String, String> {
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_user_fault_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
     Ok(output.stdout)
 }
 

@@ -2000,6 +2000,9 @@ pub const TASK_CREATE_CODE_RIGHTS: Rights = Rights::from_rights(&[
     Right::SegMapX,
     Right::SegDestroy,
 ]);
+/// 管理器只需派生服务代码令牌和映射/装载 ELF，不持销毁整个服务映像的权限。
+pub const SERVICE_IMAGE_MGR_RIGHTS: Rights =
+    Rights::from_rights(&[Right::Derive, Right::SegMapR, Right::SegMapX]);
 /// 新 Task 的结构性根 Namespace 权限（`root_rights`）：只含 `NsResolve`。
 pub const TASK_CREATE_ROOT_NS_RIGHTS: Rights = Rights::from_rights(&[Right::NsResolve]);
 /// 新 Task 代码段的访问集（§8.1 步骤 2：初始代码映射权限恰为 `{R, X}`）。
@@ -4322,7 +4325,8 @@ impl BootstrapState {
                 .is_some_and(|target| self.target_live(target))
     }
 
-    /// SPEC-081：最小未用的 Namespace id（`ns_destroy` 释放的 id 可被复用）。
+    /// 最小未用且未被历史 Capability 引用的 Namespace id。
+    /// 已销毁对象若重用 id，旧 cap 的 `target_live` 会错误地重新变真。
     fn next_namespace_id(&self) -> u32 {
         let mut candidate = 1;
         loop {
@@ -4331,7 +4335,13 @@ impl BootstrapState {
                 .iter()
                 .flatten()
                 .any(|namespace| namespace.id == candidate);
-            if !used {
+            let historically_referenced = self
+                .records
+                .entries
+                .iter()
+                .flatten()
+                .any(|record| record.target == ObjectRef::Namespace(candidate));
+            if !used && !historically_referenced {
                 return candidate;
             }
             candidate += 1;
@@ -6658,7 +6668,7 @@ impl BootstrapState {
         self.mint_root_capability_at(
             CapabilityLocation::HeldByTask(INIT_TASK_ID),
             SERVICE_IMAGE_MGR_CAP_SLOT,
-            TASK_CREATE_CODE_RIGHTS,
+            SERVICE_IMAGE_MGR_RIGHTS,
             ObjectRef::Segment(USER_SEGMENT_ID_FIRST),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
@@ -8025,6 +8035,24 @@ pub fn task_status(task_id: u32) -> Option<TaskStatus> {
     })
 }
 
+/// 硬件 #PF：当前 Running 任务进入 Faulted，保留唯一 pending_exc 与审计记录。
+pub fn fault_running_global(task_id: u32) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        let state = slot.as_mut().ok_or(TaskError::NoSuchTask)?;
+        if !state.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        state
+            .tasks
+            .fault(task_id, PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)?;
+        state.audit.append(AuditEvent::TaskStateChanged {
+            task_id,
+            status: TaskStatus::Faulted,
+        });
+        Ok(())
+    })
+}
+
 /// 切片 N：把 `task_id` 置为 BlockedRecv（`SYS_EXC_WAIT` 阻塞调用者用）。
 pub fn block_recv_global(task_id: u32) -> Result<(), TaskError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
@@ -8358,6 +8386,18 @@ mod tests {
             ),
             Err(NsError::StructuralCap)
         );
+    }
+
+    #[test]
+    fn destroyed_namespace_id_cannot_resurrect_stale_capability() {
+        let mut state = fresh_state();
+        let old = state.ns_create(INIT_TASK_ID).expect("create old");
+        let old_target = state.target_of(old);
+        state.ns_destroy(INIT_TASK_ID, old).expect("destroy old");
+        assert!(!state.target_live(old_target.unwrap()));
+        let new = state.ns_create(INIT_TASK_ID).expect("create new");
+        assert_ne!(state.target_of(new), old_target);
+        assert!(!state.target_live(old_target.unwrap()));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 > 文档类型：实施进度与证据跟踪
 >
-> 更新日期：2026-09-25
+> 更新日期：2026-10-16
 >
 > 架构与阶段定义：[[Prima OS]]
 >
@@ -34,6 +34,7 @@
 |---|---|
 | 当前阶段 | 阶段 0 — 语义基线 |
 | 当前状态 | 进行中 |
+| 阶段 4 技术状态 | S4-D1–D5 / X1–X4 已有 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md) 实现与测试证据；跨阶段正式晋级仍等待 S0-X1 组织级第三方复核。 |
 | 已满足退出条件的最高阶段 | 无 |
 | 当前实现代码 | 阶段 1–3 的真实内核探索实现：`kernel/`、`prima-ostd/`、`xtask/`；阶段 4 有 `prima-abi/` 共享实验性调用号、`prima-runtime/` 基础 API、协议编解码及经 `prima-ostd` CPL3 检查的 x86_64 syscall transport；**已接入独立 ring3 Rust 程序**（`prima-user` 的 `prima-smoke` bin，嵌入式 ELF 由内核装入 task 并走真实 `syscall` 传输），QEMU 实测 `runtime_hello_ready` 事件通过——该步已登记为 **SPEC-085/TEST-029**（提交 `8a25e49`/`5abdd65`/`5a49a19`，报告见 `docs/superpowers/reports/2026-10-10-stage4-ring3-runtime-hello-report.md`）。 |
 | 可信面（TCB）量化基线（G3） | 2026-09-25 基线（`cargo xtask tcb`）：可信面 `prima-ostd/src` **1217** 行 / 机制层 `kernel/src` 15339 行 / 合计 16556 行 ⇒ 占比 **7.35 %**；`unsafe` 标识符 可信 **53** / 机制 **0**。**口径**：分母只含「OS 实现代码」两 crate（`cosir`/`cosir_state` 是可执行模型、`xtask` 是构建工具，均不进内核镜像）；代码行 = 剥离注释与字符串后的非空行，非 LCS/语义等价意义上的可信基（G3 允许"以简单行数起步"）。**用法**：后续切片若把机制搬进框架或框架内新增 unsafe 原语，占比应上升且**必须复测并登记**；机制层 `unsafe` 非零即使 `cargo xtask tcb` 失败。**2026-09-25 复测（SPEC-081）**：可信面 `prima-ostd/src` **1217** 行 / 机制层 `kernel/src` **17698** 行 ⇒ 占比 **6.43 %**（机制层 +2359 行、可信面未动，故占比**下降**）；机制层 `unsafe` 仍 **0**。**2026-09-25 复测（SPEC-082）**：可信面 1217 行 / 机制层 **18685** 行 ⇒ 占比 **6.11 %**（机制层 +987 行、可信面未动）；机制层 `unsafe` 仍 **0**。**2026-09-25 复测（SPEC-083）**：机制层 **19010** 行 ⇒ 占比 **6.02 %**（可信面仍 1217 行）。**2026-09-25 复测（SPEC-084）**：可信面 `prima-ostd/src` **1255** 行 / 机制层 `kernel/src` **18688** 行 / 合计 19943 ⇒ 占比 **6.29 %**；`unsafe` 标识符为可信 **55** / 机制 **0**。**2026-10-10 复测（SPEC-083 实现恢复）**：可信面 `prima-ostd/src` **1250** 行 / 机制层 `kernel/src` **19671** 行 / 合计 20921 ⇒ 占比 **5.97 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（相对 SPEC-084 的差异来自其间已合入的 `8a25e49`/`dd1c08b` 等重构与 stage4 改动，非本片引入；本片只加机制层代码，占比因此下降。） **2026-10-10 复测（SPEC-087）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **19934** 行 / 合计 21196 ⇒ 占比 **5.95 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。可信面 +12 行来自 `syscall_fast_entry` 的硬件帧模拟与 `CONTEXT_BASE` 写入（本片根因修复）。 **2026-10-10 复测（SPEC-088）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20219** 行 / 合计 **21481** ⇒ 占比 **5.87 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（本片只加机制层代码 + `prima-runtime` 的安全读回，占比因此下降。） **2026-10-11 复测（SPEC-091）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20501** 行 / 合计 **21763** ⇒ 占比 **5.80 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（vspace arena 化重构：机制层 +55 行、可信面未动，占比因此下降。） **2026-10-11 复测（SPEC-092）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20676** 行 / 合计 **21938** ⇒ 占比 **5.75 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（多端点服务：机制层 +180 行、可信面未动，占比因此下降。） **2026-10-11 复测（SPEC-093）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20804** 行 / 合计 **22066** ⇒ 占比 **5.72 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（独立二进制映像 + 独立栈段：机制层 +128 行、可信面未动，占比因此下降。） **2026-10-12 复测（SPEC-094）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20836** 行 / 合计 **22098** ⇒ 占比 **5.71 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（`ALPHA` 端点独立栈段：机制层 +32 行、可信面未动，占比因此下降。） **2026-10-12 复测（SPEC-095）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **20874** 行 / 合计 **22136** ⇒ 占比 **5.70 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（运行期服务注册表：机制层 +38 行、可信面未动，占比因此下降。） **2026-10-13 复测（SPEC-101）**：可信面 `prima-ostd/src` **1262** 行 / 机制层 `kernel/src` **21067** 行 / 合计 **22329** ⇒ 占比 **5.65 %**；`unsafe` 标识符为可信 **56** / 机制 **0**。（字符串服务名与端点名运行期指派：机制层较 SPEC-095 有 +193 行累积增量——其间含 SPEC-096/100 等已合入改动，**非本片独有**；本片只加机制层代码、可信面未动，占比因此下降。） |
@@ -228,6 +229,8 @@
 | SPEC-126 | 真实内核重构（EXO-3G：`service_selected_ready` 迁移到通用 trace） | `prima-abi/src/lib.rs`（`EVENT_SERVICE_SELECTED=4`）、`prima-user/src/servicemgr.rs`（三条 service-selected trace）、`kernel/src/user.rs`（`service_selected_witness` 从 `trace_find` 组合；栈 Segment id 仍按任务映射查询）、`docs/superpowers/reports/2026-10-16-exo3g-service-selected-trace-report.md` | 2026-10-16 | `service_selected_ready` 的 name/resolved/unknown/done/negotiated_beta/端点 id/marker/client id/注册名等共享段字段不再由内核读 `USER_HELLO2_VA` 固定偏移，改由 servicemgr 三条通用 trace 上报；`alpha/beta/client_stack_seg` 仍由内核按任务映射查询。`cargo xtask test` 六条 PASS、43 条事件、退出码 33；原始串口 `frames_ready.image=1126`、`self_root_ready.pages=362`；`cargo test --workspace` 796 passed；`cargo xtask lint` 四条 PASS；`cargo xtask tcb` 1262/20118=**5.90%**，耦合面 `service_name_lines=2→1`、`protocol_lines=127→115`；`cargo xtask compat` PASS | （支撑 EXO-3G；不直接对应阶段检查项） |
 | SPEC-127 | 真实内核重构（EXO-3H：`servicemgr_ready` 迁移到通用 trace） | `prima-abi/src/lib.rs`（`EVENT_SERVICEMGR=5`）、`prima-user/src/servicemgr.rs`（六条 servicemgr trace；`trace_emit` 改标量参数以避免 1 页栈溢出）、`prima-runtime/src/transport.rs`（标量 `trace_emit`）、`kernel/src/user.rs`（`servicemgr_witness` 从 `trace_find` 组合；仅 `task_id/hello` 仍读 Y 页）、`docs/superpowers/reports/2026-10-16-exo3h-servicemgr-trace-report.md` | 2026-10-16 | `servicemgr_ready` 的 self_id/marker/created/entry/服务 id/marker/定序状态/ns_resolved/持久段/驱动字段等共享段字段不再由内核读 `USER_HELLO2_VA` 固定偏移，改由 servicemgr 六条通用 trace 上报；`task_id/hello` 仍为 Y 页通用机制回执。为压低 1 页 servicemgr 栈峰值，`trace_emit` 从数组参数改为标量参数。`cargo xtask test` 六条 PASS、43 条事件、退出码 33；原始串口 `frames_ready.image=1128`、`self_root_ready.pages=363`；`cargo test --workspace` 796 passed；`cargo xtask lint` 四条 PASS；`cargo xtask tcb` 1262/20120=**5.90%**，耦合面 `service_name_lines=1`、`protocol_lines=115→92`；`cargo xtask compat` PASS。**边界**：trace 仍为内核静态缓冲 + syscall；共享 trace ring/串口通道未完成 | （支撑 EXO-3H；不直接对应阶段检查项） |
 | SPEC-128 | 真实内核重构（EXO-3I：原始 trace 调试通道） | `kernel/src/protocol.rs`（`trace_dump`）、`kernel/src/resume.rs`（boot_complete 后 dump 非 PRIMA `TRACE|` 行）、`docs/superpowers/reports/2026-10-16-exo3i-raw-trace-debug-channel-report.md` | 2026-10-16 | 内核把已有通用 `Record{id,args[5]}` 原样输出为 `TRACE|id=..;a=..;..;e=..`，不解释事件语义；xtask 只校验 PRIMA 事件，43 条事件流保持不变；原始终端可见 14 条 TRACE 记录。`cargo xtask test` 六条 PASS、43 条事件、退出码 33；原始串口 `frames_ready.image=1128`、`self_root_ready.pages=363`；`cargo test --workspace` 796 passed；`cargo xtask lint` 四条 PASS；`cargo xtask tcb` 1262/20143=**5.90%**，机制层 unsafe=0，耦合面 `service_name_lines=1 protocol_lines=92`；`cargo xtask compat` PASS。**边界**：仍是内核静态缓冲 + syscall，不是共享 trace ring/用户态字节流；TRACE dump 仅 boot 收尾输出 | （支撑 EXO-3I；不直接对应阶段检查项） |
+| SPEC-129 | 阶段 4 原生应用消息控制与共享 Segment 数据路径 | `prima-user/src/{main,servicemgr}.rs`、`prima-runtime/src/protocol.rs`、`prima-abi/src/lib.rs`、`xtask/src/{protocol,qemu}.rs`、`docs/superpowers/reports/2026-10-16-stage4-native-shared-segment-app-report.md` | 2026-10-16 | 独立 ring3 客户端写 2 KiB 共享 Segment，服务管理器从同一页读入并经消息应答；待处理请求的执行前取消、越界长度拒绝和重试成功由 `EVENT_NATIVE_APP=6` 原始 trace 逐字段校验。`cargo xtask test` 六条 PASS，`cargo test --workspace --quiet` 797 passed，`cargo xtask lint` 四条 PASS；`ipc_ready` 45/38/46。证据边界：一页、执行前取消；S4-D5 与 S4-X3 尚未正式验收 | S4-D5、S4-X3 |
+| SPEC-130 | 阶段 4 技术退出条件收口 | `prima-user/src/{main,servicemgr,driver}.rs`、`prima-runtime/src/protocol.rs`、`kernel/src/{bootstrap,cow,sched,resume,protocol}.rs`、`xtask/src/{protocol,qemu}.rs`、`docs/superpowers/reports/2026-10-16-stage4-closure-report.md` | 2026-10-16 | 4 页共享段中 8 KiB 跨页数据往返、执行前取消/越界拒绝后重试；驱动 ring3 越权写客户端 VA 引发硬件 `#PF`（`err=0x6`）、驱动进入 `Faulted` 而原生应用随后完成；普通服务端点结构性根改指空隔离 Namespace，Namespace ID 不复用历史 cap 目标。初始 Capability 清单与 QEMU/host 证据见报告。`cargo xtask test` 六条 PASS，`cargo test --workspace --quiet` 799 passed，`cargo xtask lint` 四条 PASS，`cargo xtask tcb` PASS；`ipc_ready` 45/38/45。S4-D1–D5 / X1–X4 技术证据齐，正式阶段晋级仍受 S0-X1 组织级第三方复核约束 | S4-D1–D5、S4-X1–X4 |
 新增证据时使用稳定 ID；阶段检查项只引用该表中的 ID，不复制大段输出。
 
 ## 已知问题与纠偏计划
@@ -547,22 +550,22 @@
 
 ## 阶段 4 — Prima 原生运行时与服务
 
-**状态：探索进行中（S4-D1 API 原型 + 独立 ring3 客户端单向握手证据 SPEC-085；S4-D2 前置的 init ↔ 存活 ring3 客户端双向握手 SPEC-087；S4-D2 前置的 ring3 Rust 服务端点解析与协商 SPEC-088；S4-D2 前置的 init 服务管理器按名解析并路由 SPEC-090；S4-D2 前置的逻辑 vspace 存储移出 BootstrapState（解除多端点存储墙）SPEC-091；S4-D2 的独立第二服务端点（init 按名路由到不同任务）SPEC-092；S4-D2 的独立二进制映像与独立物理栈段（闭合 SPEC-092 §6.1）SPEC-093；S4-D2 的 `ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）SPEC-094；S4-D2 的运行期服务注册表（闭合 SPEC-093 §5.2）SPEC-095；S4-D2 的字符串服务名与端点名的运行期指派（闭合 SPEC-095 §5.1）SPEC-101；S4-D2 的服务管理器迁移到 ring3 Rust（设计 + `TaskSpec.name` 前置）SPEC-102；S4-D2 的 ring3 服务管理器任务（独立二进制 `prima-servicemgr`）SPEC-103；S4-D2 的服务管理器迁移之对端 id 入口 ABI（前置片，`r8` = 发送凭据所指 task id）SPEC-104（前置片）；S4-D2 的服务管理器迁移主体（注册表/按名解析/路由转发迁入 `prima-servicemgr`，`init` 退化为引导+载入）SPEC-104（主体）；S4-D2 的表驱动端点创建（`ALPHA`/`BETA` 改由 `prima-servicemgr` 建立，自解 ELF 入口）SPEC-105；S4-D3 的三个基础服务（日志/Namespace/基础存储）接入 ring3 服务表（表 2→5 项、三个独立二进制、表驱动创建、路由探针）SPEC-106；S4-D3 的销毁路径 vspace 栈快照治本（滚动拆除取代栈上 VA 快照，消除「容量常量放大即挤压内核栈」在拆除路径的一支）SPEC-107；S4-D3 的服务**栈段创建**下沉到 ring3 服务管理器（`SYS_MEMSEG_CREATE` 自建栈段、`init` 移交由 2 cap 降为单 cap 的 `SERVICE_SETUP_CODE_TAG`）SPEC-108；尚未验收）**
+**状态：已满足退出条件（技术证据），正式阶段晋级待 S0-X1 组织级第三方复核。** S4-D1 Runtime API/版本协商（SPEC-084/085），S4-D2 ring3 服务管理器（SPEC-103–105、109），S4-D3 三个有状态基础服务（SPEC-106、110–112），S4-D4 用户态驱动/受控 I/O（SPEC-113/114），S4-D5 及 X1–X4 的收口证据见 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)。
 
 ### 交付检查
 
-- [ ] S4-D1：原生运行时 API 与版本规则。
-- [ ] S4-D2：init / 服务管理器。
-- [ ] S4-D3：日志、Namespace 和基本存储服务。
-- [ ] S4-D4：第一条用户态驱动或受控 I/O 路径。
-- [ ] S4-D5：使用消息与共享 Segment 的原生示例应用。
+- [x] S4-D1：原生运行时 API 与版本规则；SPEC-084/085 + SPEC-130。
+- [x] S4-D2：init / 服务管理器；SPEC-103–105、109 + SPEC-130。
+- [x] S4-D3：日志、Namespace 和基本存储服务；SPEC-106、110–112 + SPEC-130。
+- [x] S4-D4：第一条用户态驱动或受控 I/O 路径；SPEC-113/114 + SPEC-130。
+- [x] S4-D5：使用消息与共享 Segment 的原生示例应用；[SPEC-129](docs/superpowers/reports/2026-10-16-stage4-native-shared-segment-app-report.md) 的一页起点扩为 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md) 的 8 KiB 跨页路径，QEMU 两次运行。
 
 ### 退出条件
 
-- [ ] S4-X1：不依赖 POSIX LibOS 即可自举并运行应用。
-- [ ] S4-X2：服务按最小权限拆分，证据列出各服务初始 Capability。
-- [ ] S4-X3：大数据路径可使用共享 Segment，且有取消和错误恢复测试。
-- [ ] S4-X4：故障服务不能直接破坏无关应用域。
+- [x] S4-X1：不依赖 POSIX LibOS 即可自举并运行应用；SPEC-130 的独立 ring3 Rust 原生客户端和 BIOS QEMU 双次启动。
+- [x] S4-X2：服务按现行 COSIR §8.1 的最小权限拆分；[SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md) 列出初始 Capability、结构性空 Namespace 与运行期额外授予。
+- [x] S4-X3：共享 Segment 传 8 KiB 跨页数据；SPEC-130 的执行前取消、越界长度拒绝与恢复重试由客户端/管理器双侧和 QEMU trace 校验。
+- [x] S4-X4：驱动从 ring3 向无权映射的客户端数据 VA 写入产生真实 `#PF`，驱动变 `Faulted`，无关客户端随后完成两次校验并到达 `boot_complete`；SPEC-130。
 
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 

@@ -106,6 +106,8 @@ pub mod trace {
     pub const EVENT_SERVICE_SELECTED: u64 = 4;
     /// 用户态/xtask 约定的 servicemgr trace 事件 ID（内核不分支解释）。
     pub const EVENT_SERVICEMGR: u64 = 5;
+    /// 原生应用共享段数据往返、取消与错误恢复见证。
+    pub const EVENT_NATIVE_APP: u64 = 6;
 
     /// 内核保存的通用 trace 记录；内核只复制/透传，不解释 `id` 或 `args`。
     #[repr(C)]

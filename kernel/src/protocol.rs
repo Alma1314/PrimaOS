@@ -44,6 +44,24 @@ pub(crate) fn trace_dump() {
     }
 }
 
+/// 硬件故障原始证据；与应用 trace 一样放在 PRIMA 事件序列之外。
+pub(crate) fn user_fault_dump() {
+    let Some(record) = kernel::cow::user_fault_record() else {
+        return;
+    };
+    serial::write_bytes(b"FAULT|task=");
+    write_u32(record.task);
+    serial::write_bytes(b";addr=");
+    write_hex_u64(record.addr);
+    serial::write_bytes(b";err=");
+    write_hex_u64(record.err);
+    serial::write_bytes(b";faulted=");
+    write_u32(u32::from(
+        kernel::bootstrap::task_status(record.task) == Some(kernel::bootstrap::TaskStatus::Faulted),
+    ));
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
     write_prefix("bootstrap_ready", "ok");
     serial::write_bytes(b"|data=task=");

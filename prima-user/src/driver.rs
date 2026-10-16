@@ -21,10 +21,11 @@ use core::panic::PanicInfo;
 use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
-        IOPORT_MAGIC, IOPORT_OUT_OF_RANGE, IOPORT_SCRATCH, SERVICE_BEHAVIOR_DRIVER,
-        SERVICE_DEV_CAP_TAG, SERVICE_MARKER_DRIVER, SERVICE_NAME_DRIVER, SERVICE_NAME_MASK,
-        SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_SHIFT,
-        SERVICE_SERVE_TAG, SERVICE_WAKE_TAG, pack_service_marker, pack_service_reply,
+        IOPORT_MAGIC, IOPORT_OUT_OF_RANGE, IOPORT_SCRATCH, NATIVE_APP_DATA_VA,
+        SERVICE_BEHAVIOR_DRIVER, SERVICE_DEV_CAP_TAG, SERVICE_MARKER_DRIVER, SERVICE_NAME_DRIVER,
+        SERVICE_NAME_MASK, SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW,
+        SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG, pack_service_marker,
+        pack_service_reply,
     },
 };
 
@@ -79,6 +80,7 @@ pub extern "C" fn _start(
     }
     // SPEC-114：管理器运行期移交的 `Device(IOPortRange)` Capability（驱动唯一的设备权威）。
     let mut dev_cap: Option<Capability> = None;
+    let mut replies = 0;
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
@@ -116,6 +118,11 @@ pub extern "C" fn _start(
                 pack_service_reply(SERVICE_BEHAVIOR_DRIVER, result),
                 &[],
             );
+            replies += 1;
+            if replies == 2 {
+                // 隔离见证：驱动无客户端共享段映射，向同 VA 写入须真实触发 #PF。
+                prima_ostd::entry::trigger_page_fault_write(NATIVE_APP_DATA_VA);
+            }
         }
     }
 }

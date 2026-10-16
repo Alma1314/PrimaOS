@@ -140,6 +140,49 @@ pub const SERVICE_SEG_TAG: u64 = 0x5ECE_0000_0000_0000;
 /// SPEC-112：日志/存储服务把移交来的段映射到**自身根**内的 VA（RW），供随后的状态读写。
 /// 落在端点代码基址（`ENDPOINT_CODE_VA`）之上一页对齐的独立区域，不与代码/栈映射相交。
 pub const SERVICE_DATA_VA: u64 = 0x0000_0B00_0020_0000;
+
+/// 原生应用共享段的第 1..3 页在客户端和管理器中的独立映射，避开 Hello 页与 ELF 探针。
+pub const NATIVE_APP_DATA_VA: u64 = 0x0000_0A10_0000_0000;
+pub const NATIVE_APP_BYTES: usize = 8192;
+pub const NATIVE_APP_SENTINEL_OFFSET: u64 = 8192;
+pub const NATIVE_APP_SENTINEL: u64 = 0x5049_4e4e_4544_4f4b;
+pub const NATIVE_APP_REQUEST_TAG: u64 = 0x5ED1_0000_0000_0000;
+pub const NATIVE_APP_REPLY_TAG: u64 = 0x5ED2_0000_0000_0000;
+pub const NATIVE_APP_DONE_TAG: u64 = 0x5ED3_0000_0000_0000;
+pub const NATIVE_APP_OP_DATA: u64 = 1;
+pub const NATIVE_APP_OP_CANCEL: u64 = 2;
+pub const NATIVE_APP_OP_SUBMIT: u64 = 3;
+pub const NATIVE_APP_OP_EXECUTE: u64 = 4;
+pub const NATIVE_APP_OK: u64 = 0;
+pub const NATIVE_APP_CANCELLED: u64 = 1;
+pub const NATIVE_APP_BAD_LENGTH: u64 = 2;
+pub const NATIVE_APP_QUEUED: u64 = 3;
+
+pub const fn native_app_request(op: u64, length: u64) -> u64 {
+    NATIVE_APP_REQUEST_TAG | ((op & 0xff) << 40) | (length & 0xffff_ffff)
+}
+
+pub const fn native_app_reply(status: u64, checksum: u32) -> u64 {
+    NATIVE_APP_REPLY_TAG | ((status & 0xff) << 40) | checksum as u64
+}
+
+pub const fn native_app_byte(index: usize, seed: u8) -> u8 {
+    (index as u8).wrapping_mul(17).wrapping_add(seed)
+}
+
+pub const fn native_app_hash(hash: u32, byte: u8) -> u32 {
+    (hash ^ byte as u32).wrapping_mul(16_777_619)
+}
+
+pub fn native_app_expected_hash(seed: u8) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    let mut index = 0;
+    while index < NATIVE_APP_BYTES {
+        hash = native_app_hash(hash, native_app_byte(index, seed));
+        index += 1;
+    }
+    hash
+}
 /// SPEC-110：定序请求的两个推进入参（5 → 3）。三个基础服务的状态转移语义**各异**（日志累加 /
 /// 存储移位追加 / Namespace 滚动指纹），故两次推进后查询返回的**三个值互异**——判决「请求经服务
 /// 表路由到了各自的**有状态**服务二进制，而非任一无状态回声端点」。

@@ -52,3 +52,4 @@ bench = false
 
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }
+prima-ostd = { path = "../prima-ostd" }

@@ -104,16 +104,17 @@ extern "C" fn after_resume() -> ! {
     protocol::boot_complete();
     // EXO-3I：原始 trace 调试通道（非 PRIMA 行，不影响既有事件序列校验）。
     protocol::trace_dump();
+    protocol::user_fault_dump();
     serial::flush();
     qemu::exit(qemu::SUCCESS)
 }
 
 /// 切片 G：用户任务以 `int3` 从 CPL3 陷入内核时的收尾回调（由 `idt` 调用，不返回）。
 ///
-/// 此时最近一次 #PF 的 error code 仍是用户写只读页的 `0x7`（P|W|US），据此构造
+/// 用户 COW 的 error code 在故障时已单独保存（后续驱动 #PF 可覆盖硬件槽）；据此构造
 /// [`kernel::user::UserWitness`]、发出 `user_cow_ready`，随后继续切片 D 的帧恢复见证。
 pub extern "C" fn user_trap_exit() -> ! {
-    let err = kernel::idt::last_fault_err();
+    let err = kernel::cow::user_cow_err().unwrap_or_else(kernel::idt::last_fault_err);
     let witness = kernel::user::witness(err);
     protocol::user_cow_ready(&witness);
     // 切片 H/I：用户代码在 COW 之后完成 6 次 `int 0x80`（ABI v1 电池）。

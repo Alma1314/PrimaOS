@@ -4,11 +4,15 @@
 
 use core::panic::PanicInfo;
 use prima_runtime::{
-    Capability, Rights, Runtime, TaskId,
+    Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
-        MESSAGE_HEADER_LEN, MessageHeader, OFFER_LEN, ProtocolOffer, SERVICE_BEHAVIOR_NONE,
-        SERVICE_NAME_BETA, SERVICE_NAME_MASK, SERVICE_NAME_OFFSET, SERVICE_WAKE_TAG,
-        negotiation_negatives, negotiation_word, service_offer,
+        MESSAGE_HEADER_LEN, MessageHeader, NATIVE_APP_BAD_LENGTH, NATIVE_APP_BYTES,
+        NATIVE_APP_CANCELLED, NATIVE_APP_DATA_VA, NATIVE_APP_DONE_TAG, NATIVE_APP_OK,
+        NATIVE_APP_OP_CANCEL, NATIVE_APP_OP_DATA, NATIVE_APP_OP_EXECUTE, NATIVE_APP_OP_SUBMIT,
+        NATIVE_APP_QUEUED, NATIVE_APP_REPLY_TAG, NATIVE_APP_SENTINEL, NATIVE_APP_SENTINEL_OFFSET,
+        OFFER_LEN, ProtocolOffer, SERVICE_BEHAVIOR_NONE, SERVICE_NAME_BETA, SERVICE_NAME_MASK,
+        SERVICE_NAME_OFFSET, SERVICE_WAKE_TAG, native_app_byte, native_app_expected_hash,
+        native_app_request, negotiation_negatives, negotiation_word, service_offer,
     },
     trace::EVENT_RUNTIME_HELLO,
 };
@@ -179,10 +183,19 @@ pub extern "C" fn _start(
         let mut message = [0u8; MESSAGE_HEADER_LEN + prima_runtime::protocol::OFFER_LEN];
         message[..MESSAGE_HEADER_LEN].copy_from_slice(&header_bytes);
         message[MESSAGE_HEADER_LEN..].copy_from_slice(&offer_bytes);
-        if let Ok(segment) = runtime.memseg_create(1, HELLO_RW_ACCESS) {
+        let app_client = id.as_raw() != 3;
+        if let Ok(segment) = runtime.memseg_create(if app_client { 4 } else { 1 }, HELLO_RW_ACCESS)
+        {
             let mapped =
                 runtime.memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS);
-            if mapped.is_ok() && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok() {
+            let app_mapped = !app_client
+                || runtime
+                    .memseg_map(segment, self_cap, 1, NATIVE_APP_DATA_VA, 3, HELLO_RW_ACCESS)
+                    .is_ok();
+            if mapped.is_ok()
+                && app_mapped
+                && runtime.write_user_bytes(USER_HELLO_VA, &message).is_ok()
+            {
                 // EXO-3D：把 runtime-hello 的结果/字段作为**通用 trace 记录**交给内核透传，
                 // 不再依赖内核读共享段固定偏移。字段打包成 5 个 u64：
                 // a=map_result、b=magic_version、c=opcode_request、d=length_version、
@@ -229,6 +242,8 @@ pub extern "C" fn _start(
                             USER_HELLO_VA + SERVICE_REPLY_OFFSET,
                             &reply.payload.to_le_bytes(),
                         );
+                        let flags = run_native_app(&runtime, peer, send_cap);
+                        let _ = runtime.send(peer, send_cap, NATIVE_APP_DONE_TAG | flags, &[]);
                     }
                     // 握手完成后**阻塞等待**（不再 Ready）：抢占阶段只轮转 task 1/2，
                     // 一个持续 Ready 的客户端会被 `pick_next` 选中并打乱轮转。
@@ -242,6 +257,115 @@ pub extern "C" fn _start(
     loop {
         let _ = runtime.yield_task();
     }
+}
+
+/// 8 KiB 经跨页共享段传送，消息只携带控制信息。随后取消一条尚未执行的请求，拒绝越界长度，
+/// 再成功提交一条请求，证明同一会话从错误中恢复。每个通过的检查占 `flags` 一位。
+fn run_native_app<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    peer: TaskId,
+    send: Capability,
+) -> u64 {
+    let mut flags = 0u64;
+    if write_pattern(runtime, 3).is_ok()
+        && exchange(
+            runtime,
+            peer,
+            send,
+            native_app_request(NATIVE_APP_OP_DATA, NATIVE_APP_BYTES as u64),
+        ) == Some(prima_runtime::protocol::native_app_reply(
+            NATIVE_APP_OK,
+            native_app_expected_hash(3),
+        ))
+    {
+        flags |= 1;
+    }
+    let sentinel = NATIVE_APP_SENTINEL.to_le_bytes();
+    let queued = exchange(
+        runtime,
+        peer,
+        send,
+        native_app_request(NATIVE_APP_OP_SUBMIT, NATIVE_APP_BYTES as u64),
+    ) == Some(prima_runtime::protocol::native_app_reply(
+        NATIVE_APP_QUEUED,
+        0,
+    ));
+    if queued
+        && runtime
+            .write_user_bytes(NATIVE_APP_DATA_VA + NATIVE_APP_SENTINEL_OFFSET, &sentinel)
+            .is_ok()
+        && exchange(
+            runtime,
+            peer,
+            send,
+            native_app_request(NATIVE_APP_OP_CANCEL, NATIVE_APP_BYTES as u64),
+        ) == Some(prima_runtime::protocol::native_app_reply(
+            NATIVE_APP_CANCELLED,
+            0,
+        ))
+        && exchange(
+            runtime,
+            peer,
+            send,
+            native_app_request(NATIVE_APP_OP_EXECUTE, 0),
+        ) == Some(prima_runtime::protocol::native_app_reply(
+            NATIVE_APP_CANCELLED,
+            0,
+        ))
+        && runtime.read_user_u64(NATIVE_APP_DATA_VA + NATIVE_APP_SENTINEL_OFFSET)
+            == Ok(NATIVE_APP_SENTINEL)
+    {
+        flags |= 2;
+    }
+    if exchange(
+        runtime,
+        peer,
+        send,
+        native_app_request(NATIVE_APP_OP_DATA, (NATIVE_APP_BYTES * 2) as u64),
+    ) == Some(prima_runtime::protocol::native_app_reply(
+        NATIVE_APP_BAD_LENGTH,
+        0,
+    )) {
+        flags |= 4;
+    }
+    if write_pattern(runtime, 7).is_ok()
+        && exchange(
+            runtime,
+            peer,
+            send,
+            native_app_request(NATIVE_APP_OP_DATA, NATIVE_APP_BYTES as u64),
+        ) == Some(prima_runtime::protocol::native_app_reply(
+            NATIVE_APP_OK,
+            native_app_expected_hash(7),
+        ))
+    {
+        flags |= 8;
+    }
+    flags
+}
+
+fn write_pattern<T: SyscallTransport>(runtime: &Runtime<T>, seed: u8) -> prima_runtime::Result<()> {
+    let mut chunk = [0u8; 64];
+    let mut offset = 0usize;
+    while offset < NATIVE_APP_BYTES {
+        for (index, byte) in chunk.iter_mut().enumerate() {
+            *byte = native_app_byte(offset + index, seed);
+        }
+        runtime.write_user_bytes(NATIVE_APP_DATA_VA + offset as u64, &chunk)?;
+        offset += chunk.len();
+    }
+    Ok(())
+}
+
+fn exchange<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    peer: TaskId,
+    send: Capability,
+    request: u64,
+) -> Option<u64> {
+    runtime.send(peer, send, request, &[]).ok()?;
+    let reply = runtime.receive().ok()?.payload;
+    (reply >> 48 == NATIVE_APP_REPLY_TAG >> 48).then_some(reply)
 }
 
 #[panic_handler]
