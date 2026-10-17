@@ -600,8 +600,8 @@ pub extern "C" fn _start(
                 let _ = runtime.namespace_bind(ns_cap, "svc", entry);
             }
             // SPEC-111：先给 Namespace 服务**运行期移交**一份 `NsResolve` 只读 Namespace 副本——
-            // 无 cap 唤醒（接收方可能阻塞在 recv，内核拒绝向 BlockedRecv 投带 cap 消息）+ 带 cap
-            // 消息，两条连续发送；只有该服务收到，故 log/store 始终无 Namespace 权限（最小权限）。
+            // 保留无 cap 唤醒 + 带 cap 消息的两条连续发送协议；阶段 2 直投修复已解除
+            // 内核限制。只有该服务收到，故 log/store 始终无 Namespace 权限（最小权限）。
             if let Some(ns_cap) = ns
                 && let Some(ns_ep) = registry[NS_SLOT]
                 && let Ok(copy) = runtime.cap_derive(ns_cap, NS_RESOLVE_RIGHTS)
@@ -1058,8 +1058,8 @@ fn write_created_witness(
 
 /// 转发一条 `prepare(behavior)` 无 cap 唤醒 + 一条携带共享段 cap 的消息给端点。
 ///
-/// 两条**连续**发送（中间不让出）：接收者若阻塞在 `recv`，唤醒消息先解除阻塞，故随后带 cap 的
-/// 消息不会被内核以「向 `BlockedRecv` 投递带 cap 消息」拒绝（`syscall.rs::send_call`）。
+/// 保留两条**连续**发送的 SPEC-104 协议。阶段 2 直投修复后，内核已可把带 cap 消息
+/// 直接递送给阻塞在 `recv` 的接收者；移除此唤醒需同步修改服务端协议和见证。
 fn forward(runtime: &Runtime<impl SyscallTransport>, endpoint: &Endpoint, segment: Capability) {
     let receiver = TaskId::from_raw(endpoint.id as u32);
     let _ = runtime.send(

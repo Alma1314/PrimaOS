@@ -107,7 +107,7 @@ mod tests {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        // ISSUE-AUTH-004（SPEC-151）：setup 路径先派生 Namespace 副本再移交，机器码/哈希相应更新。
-        assert_eq!(hash, 0x8db7_9beb_2cef_cd61);
+        // 阶段 2 复核：阻塞接收者的直投见证携带 page-fault-source Capability。
+        assert_eq!(hash, 0xd323_a475_71d5_c45a);
     }
 }

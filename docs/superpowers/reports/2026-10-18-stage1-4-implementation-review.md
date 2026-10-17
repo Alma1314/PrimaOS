@@ -38,3 +38,7 @@
 | `CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/prima-stage5-review-target cargo xtask test` | PASS：kernel 构建、BIOS/UEFI 镜像、BIOS QEMU run=1/2、stage1 boot slice；验证固定启动协议及 xtask 断言 |
 
 `xtask test` 首次在受限工作区因无法写入 `target/prima-os/prima-os-ramdisk.img` 而中止；获授权后在 `master` 工作区重跑并全部 PASS。测试通过只证明已有场景，不能覆盖上面的新增 Task 与带 Cap 阻塞直投。
+
+## 后续处置（2026-10-18）
+
+本报告在 `eba03c4` 上发现的 ISSUE-IPC-001，后经[阶段 2 实现复核与整改](2026-10-18-stage2-ipc-review-remediation.md)修复并以 host/QEMU 复验关闭。此更新不改变本报告当时的发现口径；BLK-004 仍 Open。

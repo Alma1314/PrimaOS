@@ -2,7 +2,7 @@
 
 **日期**：2026-10-18
 **基线**：`master` `eba03c4`；依据[阶段 1–4 实现复核](../reports/2026-10-18-stage1-4-implementation-review.md)及[准入分析](../reports/2026-10-18-stage5-entry-analysis.md)
-**状态**：执行计划；S5-D1–D7/X1–X3 均未完成。DOC-002 仍为外部候选，BLK-003/004 与 ISSUE-IPC-001 未关闭。
+**状态**：执行计划；S5-D1–D7/X1–X3 均未完成。DOC-002 仍为外部候选，BLK-003/004 未关闭；ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
 
 ## 1. 目标与取舍
 
@@ -15,7 +15,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 | 可复用输入 | 仍需新建或裁决 |
 |---|---|
 | 初始 Authority、逐帧归属、自建页表、用户 ELF 程序段 | 用户程序的通用 ELF 装载、C 入口栈/auxv、段权限与 W^X；不得把 kernel image 的 `ISSUE-AUTH-001` 分叉延伸到新程序 |
-| generation Capability、Task/Segment、1 个 `u64` + 最多 2 Cap 的 IPC、4 页共享段示例 | Process/Thread/退出状态、完整字节流传输、带 Cap 阻塞接收的 syscall 语义（ISSUE-IPC-001）、资源容量（BLK-004） |
+| generation Capability、Task/Segment、1 个 `u64` + 最多 2 Cap 的 IPC、4 页共享段示例 | Process/Thread/退出状态、完整字节流传输、资源容量（BLK-004）；带 Cap 阻塞接收已修复并验证（ISSUE-IPC-001） |
 | Capability Namespace、Timer、Audit | 用户态 fd 表、文件树/目录、时间单位与时钟语义、长时间运行时 Audit 容量策略 |
 | log/ns/store 与服务管理器 | tty 字节流、文件读写、基础网络服务；现有 log/store 的 `u64` 状态不是这些 API 的后端 |
 
@@ -24,7 +24,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 | 片 | 工作与依赖 | 验收证据 |
 |---|---|---|
 | A 准入冻结 | 冻结 profile v0 的 API、具体参数/错误/partial 边界；逐项裁决 BLK-003（保留 1–36，仅追加新号；Prima 命名；错误码/版本握手；动态链接阶段归属）；选定开源程序的版本、许可证与冻结用例。 | S5-D1 的版本化 profile 草案经评审后冻结；每行有 planned/supported/partial/unsupported、Linux 参考行为、Prima 后端和测试 ID。未评审的 DOC-002 条目不得混入 ABI。 |
-| B 容量与 IPC | 解决 BLK-004，保证全量现有服务启动后还可建、运行、退出、回收新 Task；修 ISSUE-IPC-001 的 Cap 直投及 out 缓冲/恢复帧一致性。 | host 状态机 + ring3 QEMU 正反例；峰值容量/错误语义记录；旧阶段 1–4 事件不回归。若 B 未完成，后续 profile 不得将通用 Cap IPC 标 supported。 |
+| B 容量 | 解决 BLK-004，保证全量现有服务启动后还可建、运行、退出、回收新 Task；沿用已修复的带 Cap 直投作为 IPC 基线。 | host 状态机 + ring3 QEMU 正反例；峰值容量/错误语义记录；旧阶段 1–4 事件不回归。通用 Cap IPC 的 supported 范围仍限已实现的消息大小与 2 Cap 上限。 |
 | C 首个 C 程序 | 用当前用户 ELF 机制构建最小静态 C crt/syscall 适配；定义 ABI 版本、退出状态与观察者；接入新 tty 字节流服务，先覆盖 `_start`、`write(1/2)`、`_exit`。 | 同一 C 源码在 Linux/Prima 编译运行；输出和退出状态与冻结预期一致；非法 fd/坏指针确定失败；不宣称已有 libc/文件系统。 |
 | D 文件与路径 | 在用户态建立 fd 生命周期、`openat/read/write/close/lseek` 的冻结子集、目录/路径服务与真实字节存储；利用 Namespace 做授权入口，不把它当文件树。 | 每个支持的 API 有 Linux/Prima 差分；`dup`/`CLOEXEC`/目录等未实现者标 partial/unsupported；服务崩溃/失效句柄有确定行为。 |
 | E 内存、时间、线程 | 有限 `mmap/munmap/mprotect`、单调时间映射；设计 Process/Thread 与共享地址空间、TLS、mutex/cond/wait 对应机制。`memseg_protect`、WaitObject 目前只有规范文本，须独立实现与验证。 | 每个承诺 flag、权限转移、超时和同步边界都有成功/失败 QEMU 测试；W^X 由 ELF 装载、map 和 protect 三路径共同强制。 |

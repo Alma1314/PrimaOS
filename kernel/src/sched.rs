@@ -23,6 +23,9 @@ static CURRENT: AtomicU32 = AtomicU32::new(1);
 /// 每个 Task 的用户上下文；索引即 Task id。
 static FRAMES: StaticCell<[SretFrame; MAX_TASKS]> = StaticCell::new([SretFrame::ZERO; MAX_TASKS]);
 
+/// A blocked SYS_RECV's validated user out pointer, indexed by Task id (0 = none).
+static RECV_OUTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
+
 /// 每个 Task 的 PML4 物理地址（0 = 未设置，例如 boot 早期）。索引即 Task id。
 static ROOTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
@@ -106,6 +109,23 @@ pub fn frame(task_id: u32) -> Option<SretFrame> {
     }
 }
 
+/// Save the out pointer while SYS_RECV is blocked; clear it when that call completes.
+pub fn set_recv_out(task_id: u32, ptr: u64) {
+    RECV_OUTS.with_mut(|outs| {
+        if let Some(out) = outs.get_mut(task_id as usize) {
+            *out = ptr;
+        }
+    });
+}
+
+pub fn recv_out(task_id: u32) -> Option<u64> {
+    RECV_OUTS.with(|outs| outs.get(task_id as usize).copied().filter(|ptr| *ptr != 0))
+}
+
+pub fn clear_recv_out(task_id: u32) {
+    set_recv_out(task_id, 0);
+}
+
 /// 切片 N：把某 Task 保存帧的 `rax` 设为 `value`。
 ///
 /// 阻塞在 `SYS_EXC_WAIT` 的任务被 raise 唤醒且写入 pending 时，调用者据此把通知
@@ -159,12 +179,13 @@ pub fn kstack_top(task_id: u32) -> Option<u64> {
 
 /// S2-D4：`task_destroy` 拆除目标后清除其调度登记，使该 id 不再可被恢复。
 ///
-/// 只清 root/kstack/frame 三个槽；调用者 id 不得被清除（自毁未实现，`task_destroy` 已拒绝）。
+/// 清理 root、内核栈、保存帧及阻塞接收缓冲指针。
 pub fn clear_task(task_id: u32) {
     if (task_id as usize) < MAX_TASKS {
         ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
+        clear_recv_out(task_id);
     }
 }
 
@@ -317,13 +338,16 @@ mod tests {
         set_root(3, 0x3000);
         set_kstack_top(3, 0xFFFF_8000_0003_0000);
         set_frame(3, ctx);
+        set_recv_out(3, 0x4000);
         assert_eq!(root(3), Some(0x3000));
         assert_eq!(frame(3).unwrap().rip, 0xABCD);
+        assert_eq!(recv_out(3), Some(0x4000));
 
         clear_task(3);
         assert_eq!(root(3), None);
         assert_eq!(kstack_top(3), None);
         assert_eq!(frame(3).unwrap().rip, 0);
+        assert_eq!(recv_out(3), None);
 
         // 越界 id 安全忽略。
         clear_task(MAX_TASKS as u32);

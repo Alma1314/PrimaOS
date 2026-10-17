@@ -33,7 +33,7 @@ use crate::namespace::Path;
 use crate::rights::{Right, Rights};
 use crate::sched;
 use crate::user::{USER_BASE_VA, USER_STORE_VALUE, USER_X_VA, USER_Y_VA};
-use crate::vspace::{self, PT_PRESENT, PT_USER, PT_WRITABLE};
+use crate::vspace::{self, PT_ADDR_MASK, PT_PRESENT, PT_USER, PT_WRITABLE};
 use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
@@ -1289,6 +1289,7 @@ fn trap_call() -> u64 {
                 // 消息必须同 `send_call` 的直投路径一样**吃掉**——否则它会滞留，被该任务
                 // 之后任意一次 `SYS_RECV` 当作新消息返回（`receive_message` 先取 pending）。
                 let _ = bootstrap::take_pending_global(task);
+                sched::clear_recv_out(task);
                 sched::set_frame_rax(task, outcome.payload);
             }
             exc_trap_record(&outcome);
@@ -1465,8 +1466,7 @@ fn ipc_path_record(direct: bool) {
 /// `SYS_SEND`：经授权把一条（可携带 Capability 的）消息投递给 `receiver`。
 ///
 /// **授权绑定接收者**：`send_cap` 必须是指向 `receiver` 且含 `TaskSend` 的 Task Capability。
-/// 携带 Capability 的消息只走排队路径——接收者正 `BlockedRecv` 时拒绝：把 cap 静默挂到一个
-/// 未被告知句柄的接收者名下，只会制造它无法寻址、却仍然生效的 Authority。
+/// 阻塞接收者的 out 缓冲由 SYS_RECV 保存；直投前验证其映射，成功后同时写回句柄。
 fn send_call(
     raw_receiver: u64,
     raw_send_cap: u64,
@@ -1476,7 +1476,9 @@ fn send_call(
     raw_cap1: u64,
 ) -> u64 {
     let sender = sched::current();
-    let receiver = raw_receiver as u32;
+    let Ok(receiver) = u32::try_from(raw_receiver) else {
+        return encode_errno(Errno::Invalid);
+    };
     let Ok(send_cap) = bootstrap::decode_handle(raw_send_cap) else {
         return encode_errno(Errno::Invalid);
     };
@@ -1490,9 +1492,17 @@ fn send_call(
         return encode_errno(Errno::Access);
     }
     let was_blocked = bootstrap::is_blocked_recv_global(receiver);
-    if was_blocked && cap_count > 0 {
-        return encode_errno(Errno::Invalid);
-    }
+    let direct_out = if was_blocked && cap_count > 0 {
+        let Some(ptr) = sched::recv_out(receiver) else {
+            return encode_errno(Errno::Invalid);
+        };
+        match recv_out_phys(receiver, ptr) {
+            Ok(phys) => Some(phys),
+            Err(errno) => return encode_errno(errno),
+        }
+    } else {
+        None
+    };
     let mut caps = [Handle::ZERO; bootstrap::MAX_MESSAGE_CAPABILITIES];
     for (index, raw) in [raw_cap0, raw_cap1]
         .into_iter()
@@ -1515,7 +1525,16 @@ fn send_call(
             if was_blocked {
                 // 直投：吃掉 pending（否则后续 `SYS_RECV` 会重复投递同一消息），并把 payload
                 // 注入被唤醒任务的保存帧 `rax`，使其阻塞中的 `SYS_RECV` 直接返回 payload。
-                let _ = bootstrap::take_pending_global(receiver);
+                let message = bootstrap::take_pending_global(receiver)
+                    .expect("successful direct send must leave a pending message");
+                if let Some(out) = direct_out {
+                    write_recv_out(
+                        out,
+                        &message.capabilities[..message.capability_count],
+                        message.capability_count as u64,
+                    );
+                }
+                sched::clear_recv_out(receiver);
                 sched::set_frame_rax(receiver, payload);
             }
             ipc_path_record(was_blocked);
@@ -1525,9 +1544,9 @@ fn send_call(
     }
 }
 
-/// `SYS_RECV` 的 out 缓冲边界：24 字节、8 对齐、不得跨页（纯函数，host 可测）。
+/// `SYS_RECV` 的 out 缓冲边界：用户低半区、24 字节、8 对齐、不得跨页。
 pub const fn recv_out_bounds(ptr: u64) -> Result<(), Errno> {
-    if !ptr.is_multiple_of(8) || (ptr & 0xfff) + RECV_BUF_LEN > 0x1000 {
+    if ptr >= (1u64 << 47) || !ptr.is_multiple_of(8) || (ptr & 0xfff) + RECV_BUF_LEN > 0x1000 {
         return Err(Errno::Fault);
     }
     Ok(())
@@ -1546,6 +1565,25 @@ fn recv_out_ok(ptr: u64) -> Result<(), Errno> {
         return Err(Errno::Fault);
     }
     Ok(())
+}
+
+/// Translate a blocked receiver's out buffer through its own page tables before moving caps.
+/// The direct-map alias stays writable while the single-core send commits.
+fn recv_out_phys(receiver: u32, ptr: u64) -> Result<u64, Errno> {
+    recv_out_bounds(ptr)?;
+    let root = sched::root(receiver).ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let pte = vspace::read_leaf(root, ptr, |phys| phys_to_virt(phys, offset))
+        .map_err(|_| Errno::Fault)?;
+    recv_out_phys_from_pte(ptr, pte, offset)
+}
+
+fn recv_out_phys_from_pte(ptr: u64, pte: u64, offset: u64) -> Result<u64, Errno> {
+    recv_out_bounds(ptr)?;
+    if pte & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE) {
+        return Err(Errno::Fault);
+    }
+    Ok(phys_to_virt((pte & PT_ADDR_MASK) + (ptr & 0xfff), offset))
 }
 
 /// 把接收到的 Capability 句柄与条数写入用户 out 缓冲。
@@ -1569,6 +1607,7 @@ fn recv_call(out_ptr: u64) -> u64 {
     }
     match bootstrap::receive_message(cur) {
         Ok(message) => {
+            sched::clear_recv_out(cur);
             write_recv_out(
                 out_ptr,
                 &message.capabilities[..message.capability_count],
@@ -1582,6 +1621,7 @@ fn recv_call(out_ptr: u64) -> u64 {
             let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
+            sched::set_recv_out(cur, out_ptr);
             IPC_PATHS.with_mut(|paths| paths.blocks += 1);
             let next = sched::pick_next(cur).expect("SYS_RECV: no Ready task to switch to");
             sched::block_to(next)
@@ -1605,14 +1645,16 @@ pub struct IpcWitness {
     pub send_denied: u64,
     pub recv2: u64,
     pub cap_count: u64,
+    pub direct_cap0: u64,
+    pub direct_cap_count: u64,
     pub queued: u64,
     pub direct: u64,
     pub blocks: u64,
 }
 
 impl IpcWitness {
-    /// 判定：排队路径转交 cap → task 2 映射进自己根并读回同一魔数 → 跨任务映射与未授权发送
-    /// 均被 `EACCES` 拒绝 → 直投路径唤醒阻塞的接收者。
+    /// 判定：排队路径转交共享段 cap，直投路径向阻塞接收者转交异常源 cap；
+    /// task 2 读回共享帧魔数，跨任务映射与未授权发送均被 `EACCES` 拒绝。
     pub fn evidence_ok(&self) -> bool {
         let denied = encode_errno(Errno::Access);
         self.create == SHARED_SEG_CAP_HANDLE
@@ -1627,6 +1669,8 @@ impl IpcWitness {
             && self.send_denied == denied
             && self.recv2 == IPC_DIRECT_PAYLOAD
             && self.cap_count == 1
+            && self.direct_cap0 == EXC_PAGE_FAULT_CAP
+            && self.direct_cap_count == 1
             && self.queued == 1
             && self.direct == 1
             && self.blocks == 1
@@ -1650,6 +1694,8 @@ pub fn ipc_witness() -> IpcWitness {
         send_denied: read_task2_qword(IPC2_RECEIPT_SEND_DENIED),
         recv2: read_task2_qword(IPC2_RECEIPT_RECV2),
         cap_count: read_task2_qword(IPC2_RECEIPT_CAPCOUNT),
+        direct_cap0: read_task2_qword(USER2_RECV_BUF2 - crate::user::USER2_Y_VA),
+        direct_cap_count: read_task2_qword(USER2_RECV_BUF2 - crate::user::USER2_Y_VA + 16),
         queued: paths.queued,
         direct: paths.direct,
         blocks: paths.blocks,
@@ -3088,10 +3134,22 @@ mod tests {
             send_denied: encode_errno(Errno::Access),
             recv2: IPC_DIRECT_PAYLOAD,
             cap_count: 1,
+            direct_cap0: EXC_PAGE_FAULT_CAP,
+            direct_cap_count: 1,
             queued: 1,
             direct: 1,
             blocks: 1,
         }
+    }
+
+    #[test]
+    fn rejects_ipc_without_direct_capability_delivery() {
+        let mut w = valid_ipc();
+        w.direct_cap0 = 0;
+        assert!(!w.evidence_ok());
+        w.direct_cap0 = EXC_PAGE_FAULT_CAP;
+        w.direct_cap_count = 0;
+        assert!(!w.evidence_ok());
     }
 
     #[test]
@@ -3308,12 +3366,37 @@ mod tests {
     }
 
     #[test]
+    fn blocked_recv_out_translation_requires_writable_user_page() {
+        let ptr = 0x3140;
+        let page = 0x2000;
+        let flags = PT_PRESENT | PT_USER | PT_WRITABLE;
+        assert_eq!(
+            recv_out_phys_from_pte(ptr, page | flags, 0x1000),
+            Ok(0x3140)
+        );
+        assert_eq!(
+            recv_out_phys_from_pte(ptr, page | PT_PRESENT | PT_USER, 0),
+            Err(Errno::Fault)
+        );
+        assert_eq!(
+            recv_out_phys_from_pte(ptr, page | PT_PRESENT | PT_WRITABLE, 0),
+            Err(Errno::Fault)
+        );
+        assert_eq!(
+            recv_out_phys_from_pte(0xff0, page | flags, 0),
+            Err(Errno::Fault)
+        );
+    }
+
+    #[test]
     fn recv_out_bounds_rejects_misaligned_and_cross_page() {
         assert_eq!(recv_out_bounds(0x1000), Ok(()));
         assert_eq!(recv_out_bounds(0x1004), Err(Errno::Fault)); // 未 8 对齐
         // 24 字节跨页：0xff8 + 24 > 0x1000。
         assert_eq!(recv_out_bounds(0xff8), Err(Errno::Fault));
         assert_eq!(recv_out_bounds(0xfe8), Ok(())); // 恰好不跨页
+        assert_eq!(recv_out_bounds(1u64 << 47), Err(Errno::Fault)); // 非用户 canonical 半区
+        assert_eq!(recv_out_bounds(0xffff_8000_0000_1000), Err(Errno::Fault));
     }
 
     #[test]

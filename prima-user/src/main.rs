@@ -79,9 +79,9 @@ pub extern "C" fn _start(
             // SPEC-104：向管理器移交**自身自管理凭据的派生副本**（仅 `TaskSend`）——端点自己仍须
             // 持有原 self cap（随后 `memseg_map` 需要它），故不能直接移交原 cap。
             if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
-                // 仅当对端是**服务管理器**（id ≠ 引导任务 1、常态阻塞在 `recv`）时先发无 cap 唤醒：
-                // 内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息。对引导任务（id 1）其握手块按**单条**
-                // 消息接收，不预期额外唤醒，故直发。
+                // 保留 SPEC-104 的两消息协议：管理器先收无 cap 唤醒，再收带 cap 自报。
+                // 阶段 2 复核已使阻塞接收者支持带 cap 直投；协议精简需双方一起调整。
+                // 引导任务（id 1）的握手块仍按单条消息接收。
                 if peer.as_raw() != BOOTSTRAP_TASK {
                     let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
                 }
@@ -227,9 +227,8 @@ pub extern "C" fn _start(
                 );
                 // SPEC-104：把 Hello 随消息移交给**服务管理器**：payload = 客户端 id，cap = 共享段 +
                 // **自管理凭据的派生副本**（仅 `TaskSend`，供管理器回送 `PONG`）。对端 = 入口 `r8`
-                // （发送凭据所指 task id）。仅对**服务管理器**（id ≠ 引导任务 1）先发无 cap 唤醒——
-                // 它常态阻塞在 `recv`，而内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息；对引导任务
-                // 其握手块按**单条**消息接收，故直发。
+                // （发送凭据所指 task id）。对服务管理器保留 SPEC-104 的无 cap 唤醒 + 带 cap
+                // 消息顺序；引导任务的握手块按单条消息接收。
                 if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
                     if peer.as_raw() != BOOTSTRAP_TASK {
                         let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);

@@ -765,13 +765,18 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     // 让出给 task 2（它读走队列里的消息）。
     put_imm64(&mut code, 1691, 0x48, 0xB8, SYS_YIELD);
     put(&mut code, 1701, &[0xCD, 0x80]);
-    // send(2, TASK2_SEND_CAP, DIRECT_PAYLOAD, cap_count=0) —— 此时 task 2 阻塞在 RECV，
-    // 走**直投路径**并唤醒它。
+    // send(2, TASK2_SEND_CAP, DIRECT_PAYLOAD, cap_count=1, page-fault-source cap)
+    // —— task 2 阻塞在 RECV；直投必须连同句柄和数量写回它的 out 缓冲。
     put_imm64(&mut code, 1703, 0x48, 0xBF, 2);
     put_boot_load(&mut code, 1713, BootReg::Rsi, boot_abi::OFF_TASK2_SEND_CAP);
     put_imm64(&mut code, 1723, 0x48, 0xBA, IPC_DIRECT_PAYLOAD);
-    put_imm64(&mut code, 1733, 0x49, 0xBA, 0);
-    put_imm64(&mut code, 1743, 0x49, 0xB8, 0);
+    put_imm64(&mut code, 1733, 0x49, 0xBA, 1);
+    put_boot_load(
+        &mut code,
+        1743,
+        BootReg::R8,
+        boot_abi::OFF_EXC_PAGE_FAULT_CAP,
+    );
     put_imm64(&mut code, 1753, 0x49, 0xB9, 0);
     put_imm64(&mut code, 1763, 0x48, 0xB8, SYS_SEND);
     put(&mut code, 1773, &[0xCD, 0x80]);

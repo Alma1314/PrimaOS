@@ -67,8 +67,8 @@ pub fn run(
     if let Ok(id) = runtime.task_id()
         && let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS)
     {
-        // 与端点同款：先发无 cap 唤醒（管理器常态阻塞在 `recv`，内核拒绝向 `BlockedRecv` 投带 cap
-        // 消息），再带自管理凭据自报注册名 + id。
+        // 与端点同款：保留先唤醒、再带自管理凭据自报的两消息协议；
+        // 阶段 2 直投修复后不再由内核限制要求此顺序。
         if peer.as_raw() != BOOTSTRAP_TASK {
             let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
         }

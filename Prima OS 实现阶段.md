@@ -258,7 +258,7 @@
 
 | ISSUE ID      | 问题与影响                                            | 当前证据                                                        | 修复阶段 | 可执行验收条件                                                                                                                                            | 状态             |
 | ------------- | ------------------------------------------------ | ----------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| ISSUE-IPC-001 | `SYS_SEND` 对 `BlockedRecv` 接收者的带 Capability 消息提前返回 `EINVAL`；§9.1/9.2 允许原子直投，ring3 服务须先发无 Cap 唤醒 | 2026-10-18 阶段 1–4 实现复核；`kernel/src/syscall.rs::send_call/recv_call`、`kernel/src/bootstrap.rs::send_message_with_capabilities` | 阶段 5 IPC 前置 | 被阻塞的 ring3 接收者一次 `recv` 同时得到 payload、Cap 数与句柄；失败不转移权限；排队/直投审计等价；host + QEMU 正反例通过 | Open |
+| ISSUE-IPC-001 | 带 Capability 消息向 `BlockedRecv` 接收者直投时，旧 syscall 提前返回 `EINVAL` 且未填写接收者 out 缓冲 | [阶段 2 实现复核与整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)；ring3 `ipc_ready` 验证 payload/`direct_cap0=0x100000004`/`direct_cap_count=1`，host 负例确认失败不转移权限 | 阶段 2 签署后整改 | 阻塞接收者一次 `recv` 得到 payload、Cap 数和句柄；失败保持 Authority；host 与 QEMU 双跑通过 | Closed（2026-10-18） |
 | ISSUE-MEM-001 | pagewalk 接受未对齐/非 canonical 地址，high-half 投影缺少符号扩展 | MODEL-TEST 暴露缺口                                             | 阶段一  | 地址别名、对齐、高低半测试通过；`cargo test -p cosir pagewalk_tests -- --nocapture`、`cargo test -p cosir memseg_refine_tests -- --nocapture`、`cargo test -p cosir` | Fixed          |
 | ISSUE-MEM-002 | 地址、页数、offset、usize 转换和 SegId 递增可能溢出              | MODEL-TEST 暴露缺口                                             | 阶段一  | 每个溢出返回稳定错误且状态不变；`cargo test -p cosir pagewalk_tests -- --nocapture`、`cargo test -p cosir memseg_refine_tests -- --nocapture`、`cargo test -p cosir` | Fixed          |
 | ISSUE-MEM-003 | α 未验证物理帧、offset 和 PTE 权限位                        | REFINEMENT-DESIGN 不完整                                       | 阶段一  | 七项独立 mutation 均被拒绝                                                                                                                                 | Fixed          |
@@ -631,7 +631,7 @@
 - [x] S2-D2：Capability 派生、移动、drop 与 stale 检测。**已勾选（SPEC-147，2026-10-17）**：`SYS_CAP_DERIVE`/`SYS_CAP_DROP`、权限收窄、结构性根保护、stale token 可 drop；host 单测。
 - [x] S2-D3：Segment create/map/unmap/destroy。**已勾选（SPEC-147，2026-10-17）**：`SYS_MEMSEG_*`、真实 PTE 装/卸、空表帧回收、帧归还、新段清零；`memseg_ready` QEMU。
 - [x] S2-D4：Task create/yield/destroy 与单核调度。证据：SPEC-065/TEST-012（完整 §8.1 `SYS_TASK_CREATE`、§8.2 `SYS_TASK_DESTROY`、`SYS_YIELD`；QEMU 实测 `task_ready`）。**已勾选（SPEC-147，2026-10-17）**：`task_ready` 的 create/bad_entry/no_x/deny/destroy/again/map_dead/root_cleared 全部被 xtask 断言。
-- [x] S2-D5：Send/Recv、FIFO 邮箱与阻塞恢复。**已勾选（SPEC-147，2026-10-17）**：`SYS_SEND`/`SYS_RECV`、FIFO/直投、接收者绑定授权；`ipc_ready` QEMU。 **2026-10-18 复核边界**：带 Cap 向 `BlockedRecv` 直投在 syscall 层仍被拒，见 ISSUE-IPC-001；本行已签证据只覆盖已测试路径。
+- [x] S2-D5：Send/Recv、FIFO 邮箱与阻塞恢复。**已勾选（SPEC-147，2026-10-17）**：`SYS_SEND`/`SYS_RECV`、FIFO/直投、接收者绑定授权；`ipc_ready` QEMU。 **2026-10-18 签署后整改**：ISSUE-IPC-001 已修复，ring3 `ipc_ready` 新增带 Cap 的阻塞直投见证；详见[阶段 2 复核报告](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)。
 
 ### 退出条件
 
@@ -682,11 +682,11 @@
 
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 
-**2026-10-18 实现复核**：阶段 1–4 的既有有界见证在当前基线复验通过；新增 ISSUE-IPC-001 与 BLK-004 作为阶段 5 前置，不把 log/store/Namespace 的原生示例解释成 POSIX fd/VFS/tty。详见[复核报告](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)。
+**2026-10-18 实现复核**：阶段 1–4 的既有有界见证在当时基线复验通过；发现 ISSUE-IPC-001 与 BLK-004。ISSUE-IPC-001 随后经[阶段 2 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)关闭；BLK-004 仍是阶段 5 前置。不把 log/store/Namespace 的原生示例解释成 POSIX fd/VFS/tty。详见[原复核报告](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)。
 
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：进行中（准入评审，开发未开始）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003/004、ISSUE-IPC-001 仍 Open。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
+**状态：进行中（准入评审，开发未开始）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003/004 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
 
 ### 交付检查
 
@@ -704,7 +704,7 @@
 
 | 前置 | 候选规格要求 | 本仓库现状 | 归属 |
 |---|---|---|---|
-| 直接 IPC 快路径 | 小消息往返 ≤250 ns 依赖直接 IPC（决策 D-09） | 未实现；现有排队 + 无 Cap 的 `BlockedRecv` 直投两条路径（带 Cap 差距见 ISSUE-IPC-001） | 阶段 4/5 |
+| 直接 IPC 快路径 | 小消息往返 ≤250 ns 依赖直接 IPC（决策 D-09） | 同步 `call/reply` 快路径及 ≤250 ns 指标未实现；排队和带 Cap 的 `BlockedRecv` 直投已通过有限见证（ISSUE-IPC-001） | 阶段 4/5 |
 | futex / wait_multi 内核化 | 决策 D-02 | 未实现 | 阶段 4/5 |
 | 基础信号 | 规格 §4.5.1 结构 + 号段 `0x03A–0x03D`（`sigaction`/`kill`/`sigreturn`/`abort`） | 抽象层已有 `exc_subscribe`/`exc_unsubscribe`（COSIR §12）与 `exc_resume`；用户可调仅 `SYS_TRAP`/`SYS_EXC_WAIT`（SPEC-052） | 阶段 5 |
 | `fork`/`execve`/`wait4` | 规格 §5.11（V1 仅单线程 fork，多线程返 `EAGAIN`，决策 D-13） | 未实现 | 阶段 5 |

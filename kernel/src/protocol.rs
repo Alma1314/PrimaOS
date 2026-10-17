@@ -840,7 +840,7 @@ pub(crate) fn platform_segments_ready(record: &kernel::bootstrap::PlatformSegmen
 ///
 /// 断言两个不可信 Task 的交互只能走「授权消息」与「共享 Segment」：段 cap 经**授权消息**
 /// 转交（排队路径，位置经历 `InMessage`），task 2 把它映射进**自己的**根并读回 task 1 写的
-/// 魔数；跨任务映射与未授权发送都被 `EACCES` 拒绝；直投路径唤醒阻塞的接收者。
+/// 魔数；跨任务映射与未授权发送都被 `EACCES` 拒绝；直投路径同时交付 payload 与 Cap。
 pub(crate) fn ipc_ready(witness: &kernel::syscall::IpcWitness) {
     write_prefix("ipc_ready", "ok");
     serial::write_bytes(b"|data=create=");
@@ -867,6 +867,10 @@ pub(crate) fn ipc_ready(witness: &kernel::syscall::IpcWitness) {
     write_hex_u64(witness.recv2);
     serial::write_bytes(b";cap_count=");
     write_u32(witness.cap_count as u32);
+    serial::write_bytes(b";direct_cap0=");
+    write_hex_u64(witness.direct_cap0);
+    serial::write_bytes(b";direct_cap_count=");
+    write_u32(witness.direct_cap_count as u32);
     serial::write_bytes(b";queued=");
     write_u32(witness.queued as u32);
     serial::write_bytes(b";direct=");

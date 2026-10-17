@@ -6551,7 +6551,6 @@ impl BootstrapState {
                 return Err(IpcError::CapabilityHolderMismatch);
             }
             // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
-            // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
             let target = self.target_of(cap).ok_or(IpcError::InvalidCapability)?;
             if !self.target_live(target) {
                 return Err(IpcError::InvalidCapability);
@@ -10167,6 +10166,22 @@ mod tests {
         state.create_task(2).unwrap();
         state.prepare_user_ipc_caps().unwrap();
         assert_eq!(state.receive_message(2), Err(IpcError::QueueEmpty));
+        // Invalid transfer leaves both the sender's authority and receiver's wait untouched.
+        assert_eq!(
+            state.send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                54,
+                &[Handle::ZERO],
+            ),
+            Err(IpcError::InvalidCapability)
+        );
+        assert_eq!(state.holder_of(IMAGE_CAP_HANDLE), Some(INIT_TASK_ID));
+        assert_eq!(
+            state.tasks.find(2).map(|task| task.status),
+            Some(TaskStatus::BlockedRecv)
+        );
         state
             .send_message_with_capabilities(
                 INIT_TASK_ID,

@@ -63,8 +63,8 @@ pub extern "C" fn _start(
         runtime.task_id(),
     ) {
         // SPEC-104：向管理器移交**自身自管理凭据的派生副本**（仅 `TaskSend`）——端点自己仍须
-        // 持有原 self cap（随后 `memseg_map` 需要它）。先发**无 cap 唤醒**（管理器常态阻塞在
-        // `recv`，内核拒绝向 `BlockedRecv` 接收者投递带 cap 消息）。
+        // 持有原 self cap（随后 `memseg_map` 需要它）。保留 SPEC-104 的**无 cap 唤醒**
+        // 与带 cap 自报两消息协议；阶段 2 的直投修复已解除内核限制。
         if let Ok(authority) = runtime.cap_derive(self_cap, TASK_SEND_RIGHTS) {
             if peer.as_raw() != BOOTSTRAP_TASK {
                 let _ = runtime.send(peer, send_cap, SERVICE_WAKE_TAG, &[]);
