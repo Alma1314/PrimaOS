@@ -9,18 +9,36 @@ const BIOS_IMAGE_NAME: &str = "prima-os-bios.img";
 const UEFI_IMAGE_NAME: &str = "prima-os-uefi.img";
 const RAMDISK_IMAGE_NAME: &str = "prima-os-ramdisk.img";
 
-/// EXO-2C/2D：ramdisk 中的服务 ELF（init 映像由 `prima-initgen` 生成）。
-///
-/// 名称只出现在构建工具侧；内核按 opaque `kind`/manifest 顺序读取。这里保持
-/// `alpha_index == 1`、`servicemgr_index == 3` 仅作为构建期 init 生成器的索引输入。
-const SERVICE_IMAGE_BINARIES: [&str; 7] = [
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-log"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-ns"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"),
-    env!("CARGO_BIN_FILE_PRIMA_USER_prima-driver"),
+/// 用户态服务映像及其 opaque manifest kind；内核只复制 kind，不解释服务角色。
+const SERVICE_IMAGES: [(&str, u64); 7] = [
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_ALPHA,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-beta"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_BETA,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"),
+        prima_runtime::protocol::SERVICE_IMAGE_KIND_SERVICEMGR,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-log"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_LOG,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-ns"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_NS,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_STORE,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-driver"),
+        prima_runtime::protocol::SERVICE_BEHAVIOR_DRIVER,
+    ),
 ];
 
 #[derive(Debug)]
@@ -68,51 +86,26 @@ pub(crate) fn build_images() -> Result<Images, String> {
 /// 格式只含 magic/version/count + `(offset, len)` 表；内核不解释块名，块里的 ELF
 /// program header 由内核通用解析器读取。
 fn build_ramdisk(path: &Path) -> Result<(), String> {
-    let mut service_blobs = Vec::with_capacity(SERVICE_IMAGE_BINARIES.len());
-    for binary in SERVICE_IMAGE_BINARIES {
+    let mut manifest = Vec::with_capacity(SERVICE_IMAGES.len() + 1);
+    manifest.push((prima_abi::boot_image::KIND_INIT, Vec::new()));
+    for (binary, kind) in SERVICE_IMAGES {
         let source = PathBuf::from(binary);
         ensure_non_empty(&source, "boot image binary")?;
-        service_blobs.push(
+        manifest.push((
+            kind,
             fs::read(&source)
                 .map_err(|error| format!("failed to read {}: {error}", source.display()))?,
-        );
+        ));
     }
 
     // EXO-2D：manifest 条目带 opaque `kind`。内核只按 kind 找 init，其余条目按
     // manifest 顺序做通用页打包/目录；服务语义只在用户态解释。
-    let alpha_index = 1;
-    let servicemgr_index = 3;
-    let init_elf = build_init_elf(alpha_index, servicemgr_index)?;
-    let mut manifest: Vec<(u64, Vec<u8>)> = Vec::with_capacity(service_blobs.len() + 1);
-    manifest.push((prima_abi::boot_image::KIND_INIT, init_elf));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_ALPHA,
-        service_blobs[0].clone(),
-    ));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_BETA,
-        service_blobs[1].clone(),
-    ));
-    manifest.push((
+    let alpha_index = manifest_index(&manifest, prima_runtime::protocol::SERVICE_BEHAVIOR_ALPHA)?;
+    let servicemgr_index = manifest_index(
+        &manifest,
         prima_runtime::protocol::SERVICE_IMAGE_KIND_SERVICEMGR,
-        service_blobs[2].clone(),
-    ));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_LOG,
-        service_blobs[3].clone(),
-    ));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_NS,
-        service_blobs[4].clone(),
-    ));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_STORE,
-        service_blobs[5].clone(),
-    ));
-    manifest.push((
-        prima_runtime::protocol::SERVICE_BEHAVIOR_DRIVER,
-        service_blobs[6].clone(),
-    ));
+    )?;
+    manifest[0].1 = build_init_elf(alpha_index, servicemgr_index)?;
 
     let count = manifest.len() as u64;
     if count as usize > prima_abi::boot_image::MAX_ENTRIES {
@@ -155,6 +148,13 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     fs::write(path, &ramdisk)
         .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
     Ok(())
+}
+
+fn manifest_index(manifest: &[(u64, Vec<u8>)], kind: u64) -> Result<usize, String> {
+    manifest
+        .iter()
+        .position(|entry| entry.0 == kind)
+        .ok_or_else(|| format!("boot manifest is missing kind {kind:#x}"))
 }
 
 /// EXO-2C/2D：init 代码由 host 生成器产出，并封装为两个连续 `PT_LOAD`
@@ -271,4 +271,17 @@ fn ensure_non_empty(path: &PathBuf, label: &str) -> Result<(), String> {
         return Err(format!("{label} is empty at {}", path.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manifest_index;
+
+    #[test]
+    fn manifest_index_follows_entry_order_and_rejects_missing_kind() {
+        let entries = vec![(0x100, Vec::new()), (1, Vec::new()), (2, Vec::new())];
+        assert_eq!(manifest_index(&entries, 1), Ok(1));
+        assert_eq!(manifest_index(&entries, 0x100), Ok(0));
+        assert!(manifest_index(&entries, 3).is_err());
+    }
 }

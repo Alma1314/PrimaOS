@@ -552,7 +552,7 @@
 
 **状态：已满足退出条件（技术证据），正式阶段晋级待 S0-X1 组织级第三方复核。** S4-D1 Runtime API/版本协商（SPEC-084/085），S4-D2 ring3 服务管理器（SPEC-103–105、109），S4-D3 三个有状态基础服务（SPEC-106、110–112），S4-D4 用户态驱动/受控 I/O（SPEC-113/114），S4-D5 及 X1–X4 的收口证据见 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)。
 
-**后续硬化（2026-10-17）**：[SPEC-131](docs/superpowers/reports/2026-10-17-stage4-init-dynamic-handles-report.md) 将 init 自检路径中 4 个写死的 Capability 句柄改为读取 syscall 回执；不改变上述退出条件判定。
+**后续硬化（2026-10-17）**：[SPEC-131](docs/superpowers/reports/2026-10-17-stage4-init-dynamic-handles-report.md) 将 init 自检路径中 4 个写死的 Capability 句柄改为读取 syscall 回执；[SPEC-132](docs/superpowers/reports/2026-10-17-stage4-manifest-index-report.md) 从实际 manifest 条目确定 init 所需的服务索引。不改变上述退出条件判定。
 
 ### 交付检查
 

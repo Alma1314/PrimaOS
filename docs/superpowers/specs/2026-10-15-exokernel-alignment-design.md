@@ -136,6 +136,7 @@ LibOS 行为。
 > **EXO-2D**（SPEC-121，带 opaque `kind` 的通用 manifest + boot entry ABI；
 > `prima-initgen` 不再镜像 capability 句柄）；
 > SPEC-131 进一步让 init 自检中的派生 Capability 与 Segment 句柄从 syscall 回执读取；
+> SPEC-132 又从实际 manifest 顺序求出 init 所需的服务索引，移除构建期的 1/3 常量；
 > 见 `docs/superpowers/reports/2026-10-15-exo2a-name-free-service-directory-report.md`、
 > `docs/superpowers/reports/2026-10-15-exo2b-exo4a-report.md`、
 > `docs/superpowers/reports/2026-10-16-exo2c-init-loader-report.md` 与
