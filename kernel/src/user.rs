@@ -232,13 +232,6 @@ pub const CLIENT_RECEIPT_STACK: u64 = 752;
 pub const CLIENT_RECEIPT_RECV: u64 = 760;
 pub const CLIENT_RECEIPT_MAP: u64 = 800;
 pub const CLIENT_RECEIPT_REPLY: u64 = 808;
-/// SPEC-087：客户端把收到的应答 payload 写回共享段内的偏移。
-pub const SERVICE_REPLY_OFFSET: u64 = 64;
-
-/// SPEC-088：服务端点把协商结果写回的段内偏移（init 经 `USER_HELLO2_VA` 的同一物理帧读回）。
-pub const SERVICE_NEGOTIATED_OFFSET: u64 = 128;
-/// SPEC-088：服务端点把两个负例码写回的段内偏移。
-pub const SERVICE_NEGATIVES_OFFSET: u64 = 136;
 /// SPEC-088：broker 各步的 Y 页回执偏移与 recv 出缓冲。
 pub const SVC_RECEIPT_TOKEN: u64 = 864;
 pub const SVC_RECEIPT_MGR: u64 = 872;
@@ -249,14 +242,6 @@ pub const SVC_RECEIPT_DONE: u64 = 904;
 pub const SVC_RECEIPT_PREPARE: u64 = 920;
 pub const SVC_RECV_BUF: u64 = USER_Y_VA + 936;
 
-/// SPEC-090：客户端把**请求服务名**写入共享段的偏移（`init` 经 `USER_HELLO2_VA` 读回）。
-pub const HELLO_SERVICE_NAME_OFFSET: u64 = 48;
-/// SPEC-101：端点自报 payload 布局 `ID_TAG(48..63) | name(8..47) | id(0..7)`；id 为自身 task id
-/// （≤ 255，取低 8 位）。
-pub const SERVICE_ID_MASK: u64 = 0xff;
-/// SPEC-090：`BETA` 行为的协商结果写在 `128 + (behavior-1)*16` = 144；判决性在 `max=1024`
-/// （只可能来自被按名选中的 `BETA` offer，`ALPHA` 是 2048）。
-pub const SERVICE_NEGOTIATED_B_OFFSET: u64 = 144;
 /// SPEC-090：解析与二次路由的 Y 页回执（紧接 SPEC-088 的 `936..959`，`< NS_PATH_DATA_OFFSET`）。
 pub const SVC_RECEIPT_NAME: u64 = 960;
 pub const SVC_RECEIPT_RESOLVED: u64 = 968;
@@ -281,69 +266,6 @@ pub const SVC_RECEIPT_REG_B_NAME: u64 = 776;
 /// `CLIENT_RECEIPT_MAP=800` 之间，无任何既有见证读取）。
 pub const SERVICEMGR_RECEIPT_MGR: u64 = 784;
 pub const SERVICEMGR_RECEIPT_HELLO: u64 = 792;
-
-/// SPEC-104：管理器写回客户端共享段的固定偏移（与 `prima-user/src/servicemgr.rs` 一致）。
-///
-/// 内核见证改从这些偏移读回「由管理器产出」的注册表/解析结果；值本身沿用既有语义，
-/// 故事件除**产出方与 task id** 外逐字段不变。
-pub const SERVICEMGR_SELF_ID_OFFSET: u64 = 192;
-pub const SERVICEMGR_MARKER_OFFSET: u64 = 200;
-/// SPEC-105：管理器写回共享段的**建端点证据**——已创建端点数（应 2）、端点令牌 cap、
-/// 管理 cap，以及两个端点**由管理器自解 ELF 头**（偏移 24..32）得到的入口偏移。
-pub const SERVICEMGR_CREATED_OFFSET: u64 = 272;
-pub const SERVICEMGR_TOKEN_OFFSET: u64 = 280;
-pub const SERVICEMGR_MANAGER_OFFSET: u64 = 288;
-pub const SERVICEMGR_ENTRY_A_OFFSET: u64 = 304;
-pub const SERVICEMGR_ENTRY_B_OFFSET: u64 = 312;
-/// SPEC-106（S4-D3）：三个基础服务（日志/Namespace/存储）写回共享段的 (id, 存在标记, 探针应答)
-/// 及其计数——见证据此证明三服务由 ring3 管理器按表建立、且**请求路由到了正确的服务二进制**。
-pub const SERVICEMGR_LOG_ID_OFFSET: u64 = 320;
-pub const SERVICEMGR_LOG_MARK_OFFSET: u64 = 328;
-pub const SERVICEMGR_NS_ID_OFFSET: u64 = 336;
-pub const SERVICEMGR_NS_MARK_OFFSET: u64 = 344;
-pub const SERVICEMGR_STORE_ID_OFFSET: u64 = 352;
-pub const SERVICEMGR_STORE_MARK_OFFSET: u64 = 360;
-pub const SERVICEMGR_SERVICES_OFFSET: u64 = 368;
-/// SPEC-110：每个基础服务的**定序状态见证起始**偏移（占 3 槽：推进 A / 推进 B / 查询）。
-pub const SERVICEMGR_LOG_REPLY_OFFSET: u64 = 376;
-pub const SERVICEMGR_NS_REPLY_OFFSET: u64 = 400;
-pub const SERVICEMGR_STORE_REPLY_OFFSET: u64 = 424;
-/// SPEC-111：Namespace 服务**代理解析**返回的内核句柄（内核命名空间树的 `SYS_NS_RESOLVE` 结果）。
-pub const SERVICEMGR_NS_RESOLVED_OFFSET: u64 = 448;
-/// SPEC-112（S4-D3 收口）：日志/存储服务**持久化段**的内核句柄（管理器 `SYS_MEMSEG_CREATE` 铸出、
-/// 运行期移交服务）。内核据此证明两服务各持有**真实的内核 Segment 对象**，而非仅内部状态。
-pub const SERVICEMGR_LOG_SEG_OFFSET: u64 = 456;
-pub const SERVICEMGR_STORE_SEG_OFFSET: u64 = 464;
-/// SPEC-114（S4-D4）：用户态驱动的 (id, 存在标记, 内核设备句柄)；受控端口的两条应答各占 8 B。
-pub const SERVICEMGR_DRIVER_ID_OFFSET: u64 = 472;
-pub const SERVICEMGR_DRIVER_MARK_OFFSET: u64 = 480;
-pub const SERVICEMGR_DRIVER_DEV_OFFSET: u64 = 488;
-pub const SERVICEMGR_DRIVER_REPLY_OFFSET: u64 = 496;
-/// SPEC-114：受控端口往返的期望读回值（写入 Scratch 寄存器再读回的魔数）。
-pub const IOPORT_MAGIC_READBACK: u64 = 0x5A;
-pub const SERVICE_RESOLVED_OFFSET: u64 = 208;
-pub const SERVICE_UNKNOWN_OFFSET: u64 = 216;
-pub const SERVICE_DONE_BETA_OFFSET: u64 = 224;
-pub const SERVICE_REG_A_NAME_OFFSET: u64 = 232;
-pub const SERVICE_REG_B_NAME_OFFSET: u64 = 240;
-pub const SERVICE_BETA_SELF_OFFSET: u64 = 248;
-pub const SERVICE_DONE_ALPHA_OFFSET: u64 = 256;
-pub const SERVICE_CLIENT_ID_OFFSET: u64 = 264;
-/// SPEC-104：`prima-servicemgr` 映像写回共享段的**二进制标记**（与 `prima-user/src/servicemgr.rs`
-/// 一致）——见证据此证明上述结果来自**独立 ring3 映像**，而非 init 的手写块。
-pub const SERVICEMGR_BINARY_MARKER: u64 = 0x5345_5256_4D47_5203;
-/// SPEC-092：服务端点把自己的 task id 写入共享段的偏移（`160 + (behavior-1)*8`；与 `prima-user` 一致）。
-pub const SERVICE_ENDPOINT_OFFSET: u64 = 160;
-/// SPEC-092：`ALPHA` 端点（第一个服务任务）自报 id 的共享段偏移。
-pub const SERVICE_ENDPOINT_ALPHA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET;
-/// SPEC-092：`BETA` 端点（第二个服务任务）自报 id 的共享段偏移。
-pub const SERVICE_ENDPOINT_BETA_OFFSET: u64 = SERVICE_ENDPOINT_OFFSET + 8;
-/// SPEC-093：服务端点写入**自身二进制标记**的共享段偏移（`176 + (behavior-1)*8`；与 `prima-user` 一致）。
-pub const SERVICE_BINARY_MARKER_OFFSET: u64 = 176;
-/// SPEC-093：`ALPHA` 端点标记的共享段偏移。
-pub const SERVICE_ALPHA_MARKER_OFFSET: u64 = SERVICE_BINARY_MARKER_OFFSET;
-/// SPEC-093：`BETA` 端点标记的共享段偏移。
-pub const SERVICE_BETA_MARKER_OFFSET: u64 = SERVICE_BINARY_MARKER_OFFSET + 8;
 
 /// 切片 M：第二个 ring3 任务的区域基址（独立 PML4 槽 21，避免与 task 1 的槽 20
 /// 共享 `slot_free` 只按 PML4 present 判定的粒度）。
@@ -511,14 +433,42 @@ pub struct ServiceReplyWitness {
     pub echo: u64,
 }
 
-impl ServiceReplyWitness {
-    pub fn evidence_ok(&self) -> bool {
-        self.client != 0 && self.stack == 0 && self.recv != 0 && self.map == 0 && self.reply == 0
+/// Read an opaque record from the mapped shared page while init still owns this root.
+/// A malformed count cannot make the kernel read beyond the fixed trace region.
+pub fn shared_trace_find_at(
+    page: u64,
+    id: u64,
+    occurrence: usize,
+) -> Option<prima_abi::trace::Record> {
+    let base = page + prima_abi::trace::SHARED_OFFSET;
+    let count = read_qword(base) as usize;
+    if count > prima_abi::trace::SHARED_RECORDS {
+        return None;
     }
+    let mut seen = 0;
+    for index in 0..count {
+        let address = base + 8 + (index * prima_abi::trace::RECORD_BYTES) as u64;
+        if read_qword(address) != id {
+            continue;
+        }
+        if seen == occurrence {
+            let mut args = [0; prima_abi::trace::ARGS];
+            for (slot, arg) in args.iter_mut().enumerate() {
+                *arg = read_qword(address + ((slot + 1) * 8) as u64);
+            }
+            return Some(prima_abi::trace::Record { id, args });
+        }
+        seen += 1;
+    }
+    None
+}
+
+fn shared_trace_find(id: u64, occurrence: usize) -> Option<prima_abi::trace::Record> {
+    shared_trace_find_at(USER_HELLO2_VA, id, occurrence)
 }
 
 fn trace_service_reply() -> Option<prima_abi::trace::Record> {
-    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_REPLY, 0)
+    shared_trace_find(prima_abi::trace::EVENT_SERVICE_REPLY, 0)
 }
 
 pub fn service_reply_witness() -> ServiceReplyWitness {
@@ -556,18 +506,8 @@ pub struct ServiceNegotiatedWitness {
     pub negatives: u64,
 }
 
-impl ServiceNegotiatedWitness {
-    pub fn evidence_ok(&self) -> bool {
-        self.token != 0
-            && self.service != 0
-            && self.stack == 0
-            && self.service_id != 0
-            && self.forward == 0
-    }
-}
-
 fn trace_service_negotiated(occurrence: usize) -> Option<prima_abi::trace::Record> {
-    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_NEGOTIATED, occurrence)
+    shared_trace_find(prima_abi::trace::EVENT_SERVICE_NEGOTIATED, occurrence)
 }
 
 pub fn service_negotiated_witness() -> ServiceNegotiatedWitness {
@@ -631,24 +571,8 @@ pub struct ServiceSelectedWitness {
     pub reg_b_name: u64,
 }
 
-impl ServiceSelectedWitness {
-    pub fn evidence_ok(&self) -> bool {
-        self.beta_ep != 0
-            && self.beta_ep == self.beta_self
-            && self.alpha_ep != self.beta_ep
-            && self.alpha_marker != self.beta_marker
-            && self.alpha_stack_seg != 0
-            && self.beta_stack_seg != 0
-            && self.alpha_stack_seg != self.beta_stack_seg
-            && self.client_ep != 0
-            && self.client_stack_seg != 0
-            && self.client_stack_seg != self.alpha_stack_seg
-            && self.client_stack_seg != self.beta_stack_seg
-    }
-}
-
 fn trace_service_selected(occurrence: usize) -> Option<prima_abi::trace::Record> {
-    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICE_SELECTED, occurrence)
+    shared_trace_find(prima_abi::trace::EVENT_SERVICE_SELECTED, occurrence)
 }
 
 pub fn service_selected_witness() -> ServiceSelectedWitness {
@@ -737,55 +661,15 @@ pub struct ServicemgrWitness {
 }
 
 impl ServicemgrWitness {
-    /// 判决性：任务 id 是一个**真实的子任务**（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8
-    /// 位与从管理 cap 解出的 id 相符；共享段里的自身 id/标记与之一致——证明「存活自报与注册表/
-    /// 解析结果都来自 init 建起的那**同一个**独立 ring3 映像」，而非任何编译期常量。
-    ///
-    /// SPEC-106：另核验服务表各项全部建立、三个基础服务各由**不同二进制**运行（互异的存在标记与
-    /// task id）。
-    ///
-    /// SPEC-110：再核验三个基础服务的**定序状态应答**逐一等于各自的期望序列（推进 5 / 推进 3 /
-    /// 查询 的终值）——`kind` 各归其位且携带的是**跨请求保留的状态**，三者终值互异。这判决路由到
-    /// 了各自的有状态服务二进制，**无状态回声端点**（回 5/3/0）无法通过。
-    ///
-    /// SPEC-114：最后核验第 6 个服务项——**用户态驱动**由本管理器按表建立（`created == 6`）、自报
-    /// 独立二进制的存在标记、持有**活的内核 `Device` 对象**，且两条受控端口应答证明「区间内可往返、
-    /// 区间外被内核拒绝」。
+    /// 只核验任务绑定与对象类型/存活；服务数量、标记和应答语义由 xtask 判定。
     pub fn evidence_ok(&self) -> bool {
-        let ids_distinct = self.log_id > 1
-            && self.ns_id > 1
-            && self.store_id > 1
-            && self.log_id != self.ns_id
-            && self.ns_id != self.store_id
-            && self.log_id != self.store_id;
         self.task_id > 1
             && (self.hello & 0xff) == (self.task_id & 0xff)
             && self.self_id == self.task_id
-            && self.marker == SERVICEMGR_BINARY_MARKER
-            && self.created == 6
-            && self.entry_a != 0
-            && self.entry_b != 0
-            && self.services == 3
-            && ids_distinct
-            // SPEC-111：代理解析返回的是内核派生的 Capability 句柄（正数、非 errno 负编码、非哨兵）；
-            // 内核侧另以 `namespace_ready.resolves` 计数增长交叉证明它真调了 `SYS_NS_RESOLVE`。
-            && self.ns_resolved != 0
-            && self.ns_resolved < (1 << 63)
-            // SPEC-112：日志/存储服务各持一个**活的内核 Segment 对象**（句柄非零、非哨兵、互异，
-            // 且内核 `segment_of_cap` 认其为 live Segment）——纯内部状态机产生不出该句柄。
             && is_live_segment(self.log_seg)
             && is_live_segment(self.store_seg)
             && self.log_seg != self.store_seg
-            // SPEC-114：用户态驱动——真实子任务、独立二进制标记、持有**活的内核设备对象**；两条
-            // 受控端口应答证明「区间内可往返、区间外被内核拒绝」。纯状态机/无设备权限者产生不出。
-            && self.driver_id > 1
-            && ids_distinct
-            && self.driver_id != self.log_id
-            && self.driver_id != self.ns_id
-            && self.driver_id != self.store_id
             && is_live_device(self.driver_dev)
-            && (self.driver_io[0] & 0xffff_ffff) == IOPORT_MAGIC_READBACK
-            && (self.driver_io[1] & 0xffff_ffff) == 0
     }
 }
 
@@ -794,7 +678,7 @@ impl ServicemgrWitness {
 /// Y[`SERVICEMGR_RECEIPT_MGR`] 存的是 `SYS_TASK_CREATE` 的返回（新任务的**管理 cap**），经
 /// [`crate::bootstrap::task_of_cap`] 解出其目标 task id，与自报 payload 的低 8 位交叉核对。
 fn trace_servicemgr(occurrence: usize) -> Option<prima_abi::trace::Record> {
-    crate::syscall::trace_find(prima_abi::trace::EVENT_SERVICEMGR, occurrence)
+    shared_trace_find(prima_abi::trace::EVENT_SERVICEMGR, occurrence)
 }
 
 pub fn servicemgr_witness() -> ServicemgrWitness {

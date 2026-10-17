@@ -88,13 +88,6 @@ impl<T: SyscallTransport> Runtime<T> {
         self.call_unit(syscall::YIELD, [0; 6])
     }
 
-    /// EXO-3D：写入一条内核只复制/透传、不解释的通用 trace 记录。
-    ///
-    /// 标量参数避免调用方在栈上构造 `[u64; 5]`。
-    pub fn trace_emit(&self, id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> Result<()> {
-        self.call_unit(syscall::TRACE_EMIT, [id, a, b, c, d, e])
-    }
-
     /// 将不透明记录追加到已映射的共享页；计数最后写入，供读者判定完整前缀。
     pub fn trace_append_shared(&self, base: u64, words: [u64; 6]) -> Result<()> {
         let count = self.read_user_u64(base)? as usize;

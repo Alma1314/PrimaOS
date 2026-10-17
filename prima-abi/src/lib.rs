@@ -94,12 +94,10 @@ pub mod boot_abi {
 pub mod trace {
     /// 一条 trace 记录最多携带 5 个 u64 原始参数。
     pub const ARGS: usize = 5;
-    /// 内核单次 boot 保存的 trace 记录容量。
-    pub const MAX_RECORDS: usize = 16;
     /// 客户端共享页中的 trace 区；前 512 字节留给既有协议字段。
     pub const SHARED_OFFSET: u64 = 512;
-    /// 8 字节记录数，后跟至多 13 条小端 `Record`。
-    pub const SHARED_RECORDS: usize = 13;
+    /// 8 字节记录数，后跟至多 14 条小端 `Record`。
+    pub const SHARED_RECORDS: usize = 14;
     pub const RECORD_BYTES: usize = 8 * (1 + ARGS);
     const _: () = assert!(SHARED_OFFSET as usize + 8 + SHARED_RECORDS * RECORD_BYTES <= 4096);
     /// 用户态/xtask 约定的 runtime-hello trace 事件 ID（内核不分支解释）。
@@ -173,6 +171,4 @@ pub mod syscall {
     pub const SYS_DEV_IOPORT_IN: u64 = 35;
     /// EXO-4A / §15.8：销毁 `Device` 对象 `dev_destroy(dev_cap)`。
     pub const SYS_DEV_DESTROY: u64 = 36;
-    /// EXO-3D：写入一条通用用户态 trace 记录 `trace_emit(id,a,b,c,d,e)`。
-    pub const SYS_TRACE_EMIT: u64 = 37;
 }

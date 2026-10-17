@@ -102,8 +102,6 @@ extern "C" fn after_resume() -> ! {
         None => protocol::panic_event(),
     }
     protocol::boot_complete();
-    // EXO-3I：原始 trace 调试通道（非 PRIMA 行，不影响既有事件序列校验）。
-    protocol::trace_dump();
     protocol::user_fault_dump();
     serial::flush();
     qemu::exit(qemu::SUCCESS)
@@ -150,9 +148,12 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
     let task = kernel::syscall::task_witness();
     protocol::task_ready(&task);
-    // EXO-3D：`runtime_hello_ready` 不再由内核读共享段固定偏移；改为透传 ring3
-    // 客户端通过 `SYS_TRACE_EMIT` 写入的通用 trace 记录。
-    match kernel::syscall::trace_find(prima_abi::trace::EVENT_RUNTIME_HELLO, 0) {
+    // 两个客户端的原始记录都留在各自映射给 init 的共享页中。
+    match kernel::user::shared_trace_find_at(
+        kernel::user::USER_HELLO_VA,
+        prima_abi::trace::EVENT_RUNTIME_HELLO,
+        0,
+    ) {
         Some(record) => protocol::runtime_hello_trace(&record),
         None => {
             protocol::panic_event();
@@ -168,7 +169,8 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::service_selected_ready(&kernel::user::service_selected_witness());
     // SPEC-103：ring3 服务管理器任务被 init 建起并自报存活（独立二进制映像、id 非 init）。
     protocol::servicemgr_ready(&kernel::user::servicemgr_witness());
-    protocol::trace_bytes_dump();
+    protocol::trace_bytes_dump(kernel::user::USER_HELLO_VA, 0);
+    protocol::trace_bytes_dump(kernel::user::USER_HELLO2_VA, 1);
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);

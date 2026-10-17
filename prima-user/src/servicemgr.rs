@@ -81,7 +81,6 @@ fn trace_emit(
     d: u64,
     e: u64,
 ) -> prima_runtime::Result<()> {
-    runtime.trace_emit(id, a, b, c, d, e)?;
     runtime.trace_append_shared(TRACE_BASE, [id, a, b, c, d, e])
 }
 /// 客户端把 `PONG` 的 payload 写回共享段内的偏移（与 `prima-user`/内核一致）。

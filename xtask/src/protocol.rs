@@ -610,14 +610,19 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 原始 trace 的应用层判定；内核只负责透传五个 qword。
+/// 共享 trace 的应用层判定；内核只负责透传字节。
 pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
-    let prefix = format!("TRACE|id=0x{:x};", prima_runtime::trace::EVENT_NATIVE_APP);
-    let mut records = output.lines().filter(|line| line.starts_with(&prefix));
+    let records = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
     let record = records
-        .next()
+        .iter()
+        .find(|record| record.id == prima_runtime::trace::EVENT_NATIVE_APP)
         .ok_or_else(|| "missing native app trace".to_owned())?;
-    if records.next().is_some() {
+    if records
+        .iter()
+        .filter(|record| record.id == prima_runtime::trace::EVENT_NATIVE_APP)
+        .count()
+        != 1
+    {
         return Err("duplicate native app trace".to_owned());
     }
     let expected = [
@@ -627,20 +632,8 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
         (2u64 << 32) | (1 << 24) | (1 << 16) | (1 << 8) | 1,
         0xf,
     ];
-    let fields: Vec<_> = record[prefix.len()..]
-        .trim_end_matches('\r')
-        .split(';')
-        .collect();
-    if fields.len() != 5 {
-        return Err("native app trace must have five fields".to_owned());
-    }
-    for (index, (field, wanted)) in fields.iter().zip(expected).enumerate() {
-        let name = ["a=0x", "b=0x", "c=0x", "d=0x", "e=0x"][index];
-        let value = field
-            .strip_prefix(name)
-            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-            .ok_or_else(|| format!("invalid native app trace field {index}"))?;
-        if value != wanted {
+    for (index, (value, wanted)) in record.args.iter().zip(expected).enumerate() {
+        if *value != wanted {
             return Err(format!(
                 "native app trace field {index}: expected {wanted:#x}, got {value:#x}"
             ));
@@ -649,7 +642,7 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// EXO-3J：独立核对原始 TRACE 通道与服务 witness，避免 PRIMA 事件单独自证。
+/// 独立核对共享字节流与服务 witness，避免 PRIMA 事件单独自证。
 pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     use prima_abi::trace::{
         EVENT_NATIVE_APP, EVENT_RUNTIME_HELLO, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY,
@@ -657,7 +650,6 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     };
 
     let expected = [
-        EVENT_RUNTIME_HELLO,
         EVENT_RUNTIME_HELLO,
         EVENT_SERVICE_REPLY,
         EVENT_NATIVE_APP,
@@ -673,39 +665,40 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
         EVENT_SERVICEMGR,
         EVENT_SERVICEMGR,
     ];
-    let records: Vec<_> = output
+    if output
         .lines()
-        .filter(|line| line.starts_with("TRACE|"))
-        .map(parse_trace_record)
-        .collect::<Result<_, _>>()?;
-    let ids: Vec<_> = records.iter().map(|record| record.id).collect();
-    if ids != expected {
-        return Err(format!("unexpected TRACE record IDs: {ids:?}"));
+        .filter(|line| line.starts_with("TRACEBYTES|"))
+        .count()
+        != 2
+    {
+        return Err("expected exactly two shared trace streams".to_owned());
     }
-    let shared = parse_shared_trace(output)?;
-    if shared != records[2..] {
-        return Err("shared trace bytes differ from raw TRACE records".to_owned());
+    let first = parse_shared_trace(output, 0, 1)?;
+    let shared = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
+    let ids: Vec<_> = shared.iter().map(|record| record.id).collect();
+    if ids != expected {
+        return Err(format!("unexpected shared trace record IDs: {ids:?}"));
+    }
+    if first[0].id != EVENT_RUNTIME_HELLO || first[0] != shared[0] {
+        return Err("runtime-hello shared records differ".to_owned());
     }
 
     check_trace_fields(
         output,
         "runtime_hello_ready",
-        &records[0],
+        &first[0],
         &[Some("a"), Some("b"), Some("c"), Some("d"), Some("e")],
     )?;
-    if records[0] != records[1] {
-        return Err("runtime_hello TRACE records differ".to_owned());
-    }
     check_trace_fields(
         output,
         "service_reply_ready",
-        &records[2],
+        &shared[1],
         &[Some("recv"), Some("echo"), None, None, None],
     )?;
     check_trace_fields(
         output,
         "service_negotiated_ready",
-        &records[4],
+        &shared[3],
         &[
             Some("token"),
             Some("service"),
@@ -717,10 +710,10 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     check_trace_fields(
         output,
         "service_negotiated_ready",
-        &records[5],
+        &shared[4],
         &[Some("negatives"), None, None, None, None],
     )?;
-    for (record, fields) in records[6..9].iter().zip([
+    for (record, fields) in shared[5..8].iter().zip([
         [
             Some("name"),
             Some("resolved"),
@@ -745,7 +738,7 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     ]) {
         check_trace_fields(output, "service_selected_ready", record, &fields)?;
     }
-    for (record, fields) in records[9..15].iter().zip([
+    for (record, fields) in shared[8..14].iter().zip([
         [
             Some("self_id"),
             Some("marker"),
@@ -794,10 +787,13 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_shared_trace(output: &str) -> Result<Vec<prima_abi::trace::Record>, String> {
-    let mut lines = output
-        .lines()
-        .filter(|line| line.starts_with("TRACEBYTES|"));
+fn parse_shared_trace(
+    output: &str,
+    slot: u8,
+    expected_count: usize,
+) -> Result<Vec<prima_abi::trace::Record>, String> {
+    let prefix = format!("TRACEBYTES|slot={slot};count=");
+    let mut lines = output.lines().filter(|line| line.starts_with(&prefix));
     let line = lines
         .next()
         .ok_or_else(|| "missing shared trace bytes".to_owned())?
@@ -806,13 +802,11 @@ fn parse_shared_trace(output: &str) -> Result<Vec<prima_abi::trace::Record>, Str
         return Err("duplicate shared trace bytes".to_owned());
     }
     let (count, hex) = line
-        .strip_prefix("TRACEBYTES|count=")
+        .strip_prefix(&prefix)
         .and_then(|rest| rest.split_once(";data="))
         .ok_or_else(|| "invalid shared trace header".to_owned())?;
     let count = parse_addr(count)? as usize;
-    if count != prima_abi::trace::SHARED_RECORDS
-        || hex.len() != count * prima_abi::trace::RECORD_BYTES * 2
-    {
+    if count != expected_count || hex.len() != count * prima_abi::trace::RECORD_BYTES * 2 {
         return Err("invalid shared trace length".to_owned());
     }
     let bytes = hex
@@ -838,28 +832,6 @@ fn parse_shared_trace(output: &str) -> Result<Vec<prima_abi::trace::Record>, Str
         });
     }
     Ok(records)
-}
-
-fn parse_trace_record(line: &str) -> Result<prima_abi::trace::Record, String> {
-    let line = line.trim_end_matches('\r');
-    let mut fields = line.split(';');
-    let id = fields
-        .next()
-        .and_then(|field| field.strip_prefix("TRACE|id="))
-        .ok_or_else(|| format!("invalid TRACE id: {line}"))
-        .and_then(parse_addr)?;
-    let mut args = [0; prima_abi::trace::ARGS];
-    for (index, name) in ["a=", "b=", "c=", "d=", "e="].into_iter().enumerate() {
-        args[index] = fields
-            .next()
-            .and_then(|field| field.strip_prefix(name))
-            .ok_or_else(|| format!("invalid TRACE field {name}: {line}"))
-            .and_then(parse_addr)?;
-    }
-    if fields.next().is_some() {
-        return Err(format!("extra TRACE field: {line}"));
-    }
-    Ok(prima_abi::trace::Record { id, args })
 }
 
 fn check_trace_fields(
@@ -4481,55 +4453,35 @@ mod tests {
             output.push_str(event);
             output.push('\n');
         }
-        for id in [1, 1, 2, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
-            output.push_str(&format!(
-                "TRACE|id=0x{id:x};a=0x0;b=0x0;c=0x0;d=0x0;e=0x0\r\n"
-            ));
-        }
+        let first = format!("{:02x}{}", 1, "00".repeat(47));
+        output.push_str(&format!("TRACEBYTES|slot=0;count=0x1;data={first}\r\n"));
         let mut hex = String::new();
-        for id in [2u64, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
+        for id in [1u64, 2, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
             for byte in id.to_le_bytes().into_iter().chain([0u8; 40]) {
                 hex.push_str(&format!("{byte:02x}"));
             }
         }
-        output.push_str(&format!("TRACEBYTES|count=0xd;data={hex}\r\n"));
+        output.push_str(&format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n"));
         assert_eq!(validate_service_traces(&output), Ok(()));
-        assert!(validate_service_traces(&output.replace("count=0xd", "count=0xc")).is_err());
-        assert!(validate_service_traces(&output.replacen("data=02", "data=ff", 1)).is_err());
-        assert!(validate_service_traces(&output.replacen("data=02", "data=zz", 1)).is_err());
-        assert!(validate_service_traces(&output.replacen("data=02", "data=é", 1)).is_err());
+        assert!(validate_service_traces(&output.replace("count=0xe", "count=0xd")).is_err());
+        assert!(validate_service_traces(&output.replacen("data=01", "data=ff", 1)).is_err());
+        assert!(validate_service_traces(&output.replacen("data=01", "data=zz", 1)).is_err());
+        assert!(validate_service_traces(&output.replacen("data=01", "data=é", 1)).is_err());
         assert!(validate_service_traces(&output.replace("TRACEBYTES|", "BROKEN|")).is_err());
-        assert!(validate_service_traces(&output.replacen("TRACE|id=0x1;", "", 1)).is_err());
+        assert!(validate_service_traces(&output.replace("slot=0", "slot=1")).is_err());
         assert!(
-            validate_service_traces(&format!(
-                "{output}TRACE|id=0x5;a=0x0;b=0x0;c=0x0;d=0x0;e=0x0\n"
-            ))
-            .is_err()
+            validate_service_traces(&format!("{output}TRACEBYTES|slot=1;count=0xe;data={hex}\n"))
+                .is_err()
         );
         assert!(
             validate_service_traces(&output.replacen(
-                "TRACE|id=0x1;a=0x0",
-                "TRACE|id=0x1;a=oops",
+                "slot=0;count=0x1;data=01",
+                "slot=0;count=0x1;data=02",
                 1
             ))
             .is_err()
         );
-        assert!(
-            validate_service_traces(&output.replacen(
-                "TRACE|id=0x1;a=0x0",
-                "TRACE|id=0x1;a=0x1",
-                1
-            ))
-            .is_err()
-        );
-        assert!(
-            validate_service_traces(&output.replacen(
-                "TRACE|id=0x2;a=0x0",
-                "TRACE|id=0x2;a=0x1",
-                1
-            ))
-            .is_err()
-        );
+        assert!(validate_service_traces(&output.replacen("data=01", "data=03", 1)).is_err());
     }
 
     #[test]
@@ -4543,15 +4495,29 @@ mod tests {
 
     #[test]
     fn native_app_trace_requires_large_transfer_cancel_rejection_and_retry() {
-        let good = format!(
-            "TRACE|id=0x6;a=0x2000;b={:#x};c={:#x};d=0x201010101;e=0xf\r\n",
-            prima_runtime::protocol::native_app_expected_hash(3),
-            prima_runtime::protocol::native_app_expected_hash(7),
-        );
+        let mut bytes =
+            vec![0u8; prima_abi::trace::SHARED_RECORDS * prima_abi::trace::RECORD_BYTES];
+        let native = &mut bytes[prima_abi::trace::RECORD_BYTES..2 * prima_abi::trace::RECORD_BYTES];
+        for (chunk, word) in native.as_chunks_mut::<8>().0.iter_mut().zip([
+            prima_runtime::trace::EVENT_NATIVE_APP,
+            0x2000,
+            prima_runtime::protocol::native_app_expected_hash(3) as u64,
+            prima_runtime::protocol::native_app_expected_hash(7) as u64,
+            0x201010101,
+            0xf,
+        ]) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let good = format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n");
         assert_eq!(validate_native_app_trace(&good), Ok(()));
-        assert!(validate_native_app_trace(&good.replace("e=0xf", "e=0x7")).is_err());
         assert!(
-            validate_native_app_trace(&good.replace("d=0x201010101", "d=0x200000001")).is_err()
+            validate_native_app_trace(&good.replace("0f00000000000000", "0700000000000000"))
+                .is_err()
+        );
+        assert!(
+            validate_native_app_trace(&good.replace("0101010102000000", "0100000002000000"))
+                .is_err()
         );
         assert!(validate_native_app_trace("").is_err());
     }

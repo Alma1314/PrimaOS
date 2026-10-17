@@ -17,39 +17,14 @@ pub(crate) fn boot_complete() {
     write_event("boot_complete", "ok");
 }
 
-/// EXO-3I：把内核保存的通用 trace 记录原样输出为**非 PRIMA** 调试行。
-///
-/// 内核只按 Record{id,args} 复制/透传，不解释 id/args；`xtask` 的 PRIMA 事件校验
-/// 会忽略这些行，调试工具可直接解析 `TRACE|` 前缀。
-pub(crate) fn trace_dump() {
-    let mut index = 0usize;
-    while index < prima_abi::trace::MAX_RECORDS {
-        let Some(record) = kernel::syscall::trace_record(index) else {
-            break;
-        };
-        serial::write_bytes(b"TRACE|id=");
-        write_hex_u64(record.id);
-        serial::write_bytes(b";a=");
-        write_hex_u64(record.args[0]);
-        serial::write_bytes(b";b=");
-        write_hex_u64(record.args[1]);
-        serial::write_bytes(b";c=");
-        write_hex_u64(record.args[2]);
-        serial::write_bytes(b";d=");
-        write_hex_u64(record.args[3]);
-        serial::write_bytes(b";e=");
-        write_hex_u64(record.args[4]);
-        serial::write_bytes(b"\r\n");
-        index += 1;
-    }
-}
-
 /// init 与 servicemgr 共享段中的原始字节；这里只检查长度并逐字节透传。
 /// 调用点仍在 init 的页表上，串口行由 xtask 解码。
-pub(crate) fn trace_bytes_dump() {
-    let base = kernel::user::USER_HELLO2_VA + prima_abi::trace::SHARED_OFFSET;
+pub(crate) fn trace_bytes_dump(page: u64, slot: u8) {
+    let base = page + prima_abi::trace::SHARED_OFFSET;
     let count = prima_ostd::mm::read_u64(base);
-    serial::write_bytes(b"TRACEBYTES|count=");
+    serial::write_bytes(b"TRACEBYTES|slot=");
+    write_u32(slot as u32);
+    serial::write_bytes(b";count=");
     write_hex_u64(count);
     serial::write_bytes(b";data=");
     let bytes = count.min(prima_abi::trace::SHARED_RECORDS as u64) as usize
