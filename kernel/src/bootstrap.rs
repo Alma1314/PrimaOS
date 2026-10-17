@@ -6672,7 +6672,7 @@ impl BootstrapState {
             ObjectRef::Segment(USER_SEGMENT_ID_FIRST),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        // SPEC-103：服务管理器的**独立栈段**（独立物理栈帧）。
+        // 服务管理器独立栈段；EXO-3 共享 trace 写入路径需要第二页栈。
         let stack3_id = self
             .alloc_segment_slot()
             .ok_or(MemsegError::CapacityExceeded)?;
@@ -6680,7 +6680,7 @@ impl BootstrapState {
         self.create_segment_object(
             stack3_id,
             KERNEL_ACTOR,
-            1,
+            2,
             stack3_access,
             phys_offset,
             Some((

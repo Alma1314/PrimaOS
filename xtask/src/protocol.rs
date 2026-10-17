@@ -682,6 +682,10 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     if ids != expected {
         return Err(format!("unexpected TRACE record IDs: {ids:?}"));
     }
+    let shared = parse_shared_trace(output)?;
+    if shared != records[2..] {
+        return Err("shared trace bytes differ from raw TRACE records".to_owned());
+    }
 
     check_trace_fields(
         output,
@@ -788,6 +792,52 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
         check_trace_fields(output, "servicemgr_ready", record, &fields)?;
     }
     Ok(())
+}
+
+fn parse_shared_trace(output: &str) -> Result<Vec<prima_abi::trace::Record>, String> {
+    let mut lines = output
+        .lines()
+        .filter(|line| line.starts_with("TRACEBYTES|"));
+    let line = lines
+        .next()
+        .ok_or_else(|| "missing shared trace bytes".to_owned())?
+        .trim_end_matches('\r');
+    if lines.next().is_some() {
+        return Err("duplicate shared trace bytes".to_owned());
+    }
+    let (count, hex) = line
+        .strip_prefix("TRACEBYTES|count=")
+        .and_then(|rest| rest.split_once(";data="))
+        .ok_or_else(|| "invalid shared trace header".to_owned())?;
+    let count = parse_addr(count)? as usize;
+    if count != prima_abi::trace::SHARED_RECORDS
+        || hex.len() != count * prima_abi::trace::RECORD_BYTES * 2
+    {
+        return Err("invalid shared trace length".to_owned());
+    }
+    let bytes = hex
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let pair =
+                core::str::from_utf8(pair).map_err(|_| "invalid shared trace hex".to_owned())?;
+            u8::from_str_radix(pair, 16).map_err(|_| "invalid shared trace hex".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut records = Vec::with_capacity(count);
+    for raw in bytes.as_chunks::<{ prima_abi::trace::RECORD_BYTES }>().0 {
+        let mut words = [0u64; 1 + prima_abi::trace::ARGS];
+        for (word, chunk) in words.iter_mut().zip(raw.as_chunks::<8>().0) {
+            *word = u64::from_le_bytes(*chunk);
+        }
+        records.push(prima_abi::trace::Record {
+            id: words[0],
+            args: words[1..].try_into().expect("five trace arguments"),
+        });
+    }
+    Ok(records)
 }
 
 fn parse_trace_record(line: &str) -> Result<prima_abi::trace::Record, String> {
@@ -4436,7 +4486,19 @@ mod tests {
                 "TRACE|id=0x{id:x};a=0x0;b=0x0;c=0x0;d=0x0;e=0x0\r\n"
             ));
         }
+        let mut hex = String::new();
+        for id in [2u64, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
+            for byte in id.to_le_bytes().into_iter().chain([0u8; 40]) {
+                hex.push_str(&format!("{byte:02x}"));
+            }
+        }
+        output.push_str(&format!("TRACEBYTES|count=0xd;data={hex}\r\n"));
         assert_eq!(validate_service_traces(&output), Ok(()));
+        assert!(validate_service_traces(&output.replace("count=0xd", "count=0xc")).is_err());
+        assert!(validate_service_traces(&output.replacen("data=02", "data=ff", 1)).is_err());
+        assert!(validate_service_traces(&output.replacen("data=02", "data=zz", 1)).is_err());
+        assert!(validate_service_traces(&output.replacen("data=02", "data=é", 1)).is_err());
+        assert!(validate_service_traces(&output.replace("TRACEBYTES|", "BROKEN|")).is_err());
         assert!(validate_service_traces(&output.replacen("TRACE|id=0x1;", "", 1)).is_err());
         assert!(
             validate_service_traces(&format!(

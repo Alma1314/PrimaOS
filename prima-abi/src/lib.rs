@@ -96,6 +96,12 @@ pub mod trace {
     pub const ARGS: usize = 5;
     /// 内核单次 boot 保存的 trace 记录容量。
     pub const MAX_RECORDS: usize = 16;
+    /// 客户端共享页中的 trace 区；前 512 字节留给既有协议字段。
+    pub const SHARED_OFFSET: u64 = 512;
+    /// 8 字节记录数，后跟至多 13 条小端 `Record`。
+    pub const SHARED_RECORDS: usize = 13;
+    pub const RECORD_BYTES: usize = 8 * (1 + ARGS);
+    const _: () = assert!(SHARED_OFFSET as usize + 8 + SHARED_RECORDS * RECORD_BYTES <= 4096);
     /// 用户态/xtask 约定的 runtime-hello trace 事件 ID（内核不分支解释）。
     pub const EVENT_RUNTIME_HELLO: u64 = 1;
     /// 用户态/xtask 约定的 service-reply trace 事件 ID（内核不分支解释）。

@@ -44,6 +44,24 @@ pub(crate) fn trace_dump() {
     }
 }
 
+/// init 与 servicemgr 共享段中的原始字节；这里只检查长度并逐字节透传。
+/// 调用点仍在 init 的页表上，串口行由 xtask 解码。
+pub(crate) fn trace_bytes_dump() {
+    let base = kernel::user::USER_HELLO2_VA + prima_abi::trace::SHARED_OFFSET;
+    let count = prima_ostd::mm::read_u64(base);
+    serial::write_bytes(b"TRACEBYTES|count=");
+    write_hex_u64(count);
+    serial::write_bytes(b";data=");
+    let bytes = count.min(prima_abi::trace::SHARED_RECORDS as u64) as usize
+        * prima_abi::trace::RECORD_BYTES;
+    for index in 0..bytes {
+        let byte = prima_ostd::mm::read_u8(base + 8 + index as u64);
+        let hex = b"0123456789abcdef";
+        serial::write_bytes(&[hex[(byte >> 4) as usize], hex[(byte & 0xf) as usize]]);
+    }
+    serial::write_bytes(b"\r\n");
+}
+
 /// 硬件故障原始证据；与应用 trace 一样放在 PRIMA 事件序列之外。
 pub(crate) fn user_fault_dump() {
     let Some(record) = kernel::cow::user_fault_record() else {

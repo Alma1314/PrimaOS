@@ -72,6 +72,6 @@ mod tests {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        assert_eq!(hash, 0x1420_d9dc_85ca_1c5e);
+        assert_eq!(hash, 0xf02f_6c19_ce2f_63de);
     }
 }

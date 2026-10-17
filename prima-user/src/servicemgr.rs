@@ -70,6 +70,20 @@ use prima_runtime::{
 
 /// 客户端把共享段映射到的 VA（与本进程自身根内的同一物理帧映射目标；与 `prima-user` 一致）。
 const USER_SEG_VA: u64 = 0x0000_0A00_0000_7000;
+const TRACE_BASE: u64 = USER_SEG_VA + prima_runtime::trace::SHARED_OFFSET;
+
+fn trace_emit(
+    runtime: &Runtime<impl SyscallTransport>,
+    id: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64,
+    e: u64,
+) -> prima_runtime::Result<()> {
+    runtime.trace_emit(id, a, b, c, d, e)?;
+    runtime.trace_append_shared(TRACE_BASE, [id, a, b, c, d, e])
+}
 /// 客户端把 `PONG` 的 payload 写回共享段内的偏移（与 `prima-user`/内核一致）。
 const SERVICE_REPLY_OFFSET: u64 = 64;
 /// 协商结果/负例码在共享段内的偏移（与 `prima-user/src/main.rs` 一致）。
@@ -722,12 +736,13 @@ pub extern "C" fn _start(
                 }
             };
             pong_sent = true;
-            let _ = runtime.trace_emit(EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
+            let _ = trace_emit(&runtime, EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
         }
         if pong_sent && app_done && !finished {
             // 两次成功的数据读回、一次执行前取消、一次越界拒绝与客户端的四项检查，
             // 均由独立 ring3 管理器提交为原始 trace，xtask 负责判断其含义。
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_NATIVE_APP,
                 NATIVE_APP_BYTES as u64,
                 app_hashes[0] as u64,
@@ -742,7 +757,8 @@ pub extern "C" fn _start(
             // EXO-3E：把 service-reply 的共享段字段作为通用 trace 记录交给内核透传，
             // 内核不再读 `USER_HELLO2_VA + {CLIENT_ID, REPLY}`。
             // EXO-3F：service-negotiated 的共享段字段也用通用 trace 透传。
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICE_NEGOTIATED,
                 read_shared(&runtime, OFF_MGR_TOKEN),
                 read_shared(&runtime, OFF_MGR_MANAGER),
@@ -750,7 +766,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, OFF_DONE_ALPHA),
                 read_shared(&runtime, SERVICE_NEGOTIATED_OFFSET),
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICE_NEGOTIATED,
                 read_shared(&runtime, SERVICE_NEGATIVES_OFFSET),
                 0,
@@ -765,7 +782,8 @@ pub extern "C" fn _start(
             let beta_marker = runtime
                 .read_user_u64(USER_SEG_VA + SERVICE_BETA_MARKER_OFFSET)
                 .unwrap_or(0);
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICE_SELECTED,
                 read_shared(&runtime, 48),
                 read_shared(&runtime, OFF_RESOLVED),
@@ -773,7 +791,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, OFF_DONE_BETA),
                 read_shared(&runtime, SERVICE_NEGOTIATED_B_OFFSET),
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICE_SELECTED,
                 read_shared(&runtime, SERVICE_ENDPOINT_ALPHA_OFFSET),
                 read_shared(&runtime, SERVICE_ENDPOINT_BETA_OFFSET),
@@ -781,7 +800,8 @@ pub extern "C" fn _start(
                 alpha_marker,
                 beta_marker,
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICE_SELECTED,
                 client_id,
                 read_shared(&runtime, OFF_REG_A_NAME),
@@ -797,7 +817,8 @@ pub extern "C" fn _start(
             let log_reply = base_reply_offset(LOG_SLOT);
             let ns_reply = base_reply_offset(NS_SLOT);
             let store_reply = base_reply_offset(STORE_SLOT);
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 self_id,
                 SERVICEMGR_BINARY_MARKER,
@@ -805,7 +826,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, OFF_MGR_ENTRY_A),
                 read_shared(&runtime, OFF_MGR_ENTRY_B),
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 served,
                 log_id,
@@ -813,7 +835,8 @@ pub extern "C" fn _start(
                 store_id,
                 marker[LOG_SLOT],
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 marker[NS_SLOT],
                 marker[STORE_SLOT],
@@ -821,7 +844,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, log_reply + 8),
                 read_shared(&runtime, log_reply + 16),
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 read_shared(&runtime, ns_reply),
                 read_shared(&runtime, ns_reply + 8),
@@ -829,7 +853,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, store_reply),
                 read_shared(&runtime, store_reply + 8),
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 read_shared(&runtime, store_reply + 16),
                 read_shared(&runtime, OFF_NS_RESOLVED),
@@ -837,7 +862,8 @@ pub extern "C" fn _start(
                 read_shared(&runtime, OFF_STORE_SEG),
                 driver_id,
             );
-            let _ = runtime.trace_emit(
+            let _ = trace_emit(
+                &runtime,
                 EVENT_SERVICEMGR,
                 marker[DRIVER_SLOT],
                 read_shared(&runtime, OFF_DRIVER_DEV),

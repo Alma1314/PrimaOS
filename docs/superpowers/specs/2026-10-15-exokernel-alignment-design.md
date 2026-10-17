@@ -163,8 +163,9 @@ LibOS 行为。
 > 与 **EXO-3H**（SPEC-127，`servicemgr_ready`）——所有服务共享段固定偏移 witness
 > 均已迁到通用 trace；**EXO-3I**（SPEC-128）又增加了非 PRIMA 的原始 `TRACE|` 调试输出。
 > **EXO-3J**（SPEC-133）让 `xtask` 直接解析原始记录，检查完整性并与服务 witness 交叉核对。
-> 剩余工作主要是共享 trace ring/用户态字节流，以及少量 Y 页通用机制回执的继续下沉。
-> 见 EXO-3A..3I 报告。
+> **EXO-3K**（SPEC-135）让 servicemgr 在共享页写 13 条原始记录的有界字节流，内核按字节输出，`xtask` 与原始 `TRACE|` 逐条核对。
+> 剩余工作是循环 ring/任意长度字节流、去除 `SYS_TRACE_EMIT` 与内核静态缓冲，以及少量 Y 页通用机制回执的继续下沉。
+> 见 EXO-3A..3K 报告。
 
 - 定义内核无关的 `exo_trace` 或调试 ring：用户态可写事件字节流，内核只提供共享段/串口
   等资源，不解释内容。

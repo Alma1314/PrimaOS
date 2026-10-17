@@ -91,6 +91,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-135 / EXO-3K 共享页原始 trace 字节流](superpowers/reports/2026-10-17-exo3k-shared-trace-bytes-report.md)
 - [2026-10-17 — 阶段 0–4 缺口复核包](superpowers/reports/2026-10-17-stage0-4-gap-audit.md)
 - [2026-10-17 — SPEC-134 / S0-X2 逐操作覆盖报告（DOC-007 增量复核）](superpowers/reports/2026-10-17-s0x2-coverage-increment-doc007.md)
 - [2026-10-17 — Prima OS 内核原语对照评估](superpowers/reports/2026-10-17-kernel-primitives-comparative-review.md)

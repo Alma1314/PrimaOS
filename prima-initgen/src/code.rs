@@ -1562,7 +1562,7 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
     at += 7;
-    // 映射管理器的**独立栈段**：memseg_map(stack3, mgr, 0, USER3_STACK_VA, 1, R|W)。
+    // 管理器栈向下增长：两页连续映射，栈顶仍为 USER3_STACK_VA+4K。
     put_boot_load(
         &mut code,
         at,
@@ -1580,9 +1580,9 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     at += 7;
     put_imm64(&mut code, at, 0x48, 0xBA, 0);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA);
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA - FRAME_SIZE);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB8, 1);
+    put_imm64(&mut code, at, 0x49, 0xB8, 2);
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
     at += 10;

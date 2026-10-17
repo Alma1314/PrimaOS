@@ -168,6 +168,7 @@ pub extern "C" fn user_trap_exit() -> ! {
     protocol::service_selected_ready(&kernel::user::service_selected_witness());
     // SPEC-103：ring3 服务管理器任务被 init 建起并自报存活（独立二进制映像、id 非 init）。
     protocol::servicemgr_ready(&kernel::user::servicemgr_witness());
+    protocol::trace_bytes_dump();
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);

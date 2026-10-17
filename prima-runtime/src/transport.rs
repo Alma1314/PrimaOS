@@ -94,6 +94,23 @@ impl<T: SyscallTransport> Runtime<T> {
     pub fn trace_emit(&self, id: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> Result<()> {
         self.call_unit(syscall::TRACE_EMIT, [id, a, b, c, d, e])
     }
+
+    /// 将不透明记录追加到已映射的共享页；计数最后写入，供读者判定完整前缀。
+    pub fn trace_append_shared(&self, base: u64, words: [u64; 6]) -> Result<()> {
+        let count = self.read_user_u64(base)? as usize;
+        if count >= prima_abi::trace::SHARED_RECORDS {
+            return Err(Error::InvalidInput);
+        }
+        let mut bytes = [0u8; prima_abi::trace::RECORD_BYTES];
+        for (chunk, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        let address = base
+            .checked_add(8 + (count * bytes.len()) as u64)
+            .ok_or(Error::InvalidInput)?;
+        self.write_user_bytes(address, &bytes)?;
+        self.write_user_bytes(base, &((count + 1) as u64).to_le_bytes())
+    }
 }
 
 /// `timer_cancel` 的状态结果；`AlreadyFired` 和 `AlreadyCancelled` 不是错误。
