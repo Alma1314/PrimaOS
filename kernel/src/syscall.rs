@@ -457,7 +457,7 @@ pub const fn ipc_errno(error: bootstrap::IpcError) -> Errno {
     use bootstrap::IpcError as E;
     match error {
         E::NoSuchTask | E::InvalidCapability | E::QueueEmpty => Errno::NoEnt,
-        E::NotAuthorized | E::CapabilityHolderMismatch => Errno::Access,
+        E::NotAuthorized | E::CapabilityHolderMismatch | E::StructuralCap => Errno::Access,
         E::TooManyCapabilities => Errno::Invalid,
         E::AuditFull | E::QueueFull => Errno::NoSpace,
     }
@@ -3158,6 +3158,7 @@ mod tests {
         assert_eq!(ipc_errno(E::QueueEmpty), Errno::NoEnt);
         assert_eq!(ipc_errno(E::NotAuthorized), Errno::Access);
         assert_eq!(ipc_errno(E::CapabilityHolderMismatch), Errno::Access);
+        assert_eq!(ipc_errno(E::StructuralCap), Errno::Access);
         assert_eq!(ipc_errno(E::TooManyCapabilities), Errno::Invalid);
         assert_eq!(ipc_errno(E::AuditFull), Errno::NoSpace);
         assert_eq!(ipc_errno(E::QueueFull), Errno::NoSpace);

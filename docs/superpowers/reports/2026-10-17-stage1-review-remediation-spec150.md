@@ -6,6 +6,8 @@
 >
 > 基线：`5a137eb`（SPEC-149 阶段 4 复核后的 HEAD）；本轮代码改动位于工作树
 >
+> **后续（2026-10-18）：** 本报告第 2 节登记的 4 项 Open 已由 [SPEC-151](2026-10-18-stage1-open-issues-spec151.md) 全部关闭。
+>
 > 范围：S1-X2（init 初始 Authority）与 S1-X3（帧唯一归属）的**补充对抗复核**；对照
 > `COSIR 原语规范.md` §4.1/§4.2/§9.1/§13.1/§14/§16、`kernel/src/{bootstrap,rights,frames}.rs`、
 > `cosir` 与 `xtask` 证据。

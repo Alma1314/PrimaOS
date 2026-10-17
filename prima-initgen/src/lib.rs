@@ -39,6 +39,41 @@ mod tests {
     }
 
     #[test]
+    fn service_setup_derives_a_namespace_copy_before_handoff() {
+        // ISSUE-AUTH-004：服务管理器收到的必须是 init 结构根的**派生副本**，不是根本身。
+        use crate::syscall::*;
+
+        let code = generate(&manifest());
+        let mut expected = [0u8; 32];
+        expected[0..4].copy_from_slice(&[0x49, 0x8B, 0xBC, 0x27]);
+        expected[4..8].copy_from_slice(&boot_abi::OFF_NAMESPACE_CAP.to_le_bytes());
+        expected[8..10].copy_from_slice(&[0x66, 0x90]);
+        expected[10] = 0x48;
+        expected[11] = 0xBE;
+        expected[12..20].copy_from_slice(&NS_ROOT_RIGHTS_BITS.to_le_bytes());
+        expected[20] = 0x48;
+        expected[21] = 0xB8;
+        expected[22..30].copy_from_slice(&SYS_CAP_DERIVE.to_le_bytes());
+        expected[30..32].copy_from_slice(&[0xCD, 0x80]);
+        let derive_at = code
+            .windows(expected.len())
+            .position(|window| window == expected)
+            .expect("setup path must derive a namespace copy");
+        let setup_tag = SERVICE_SETUP_TAG.to_le_bytes();
+        let setup_at = code
+            .windows(10)
+            .position(|window| window[0] == 0x48 && window[1] == 0xBA && window[2..] == setup_tag)
+            .expect("setup message");
+        assert!(derive_at < setup_at);
+        assert!(
+            code[derive_at..setup_at + 40]
+                .windows(3)
+                .any(|window| window == [0x49, 0x89, 0xC0]),
+            "setup message must send the derived handle (mov r8, rax)"
+        );
+    }
+
+    #[test]
     fn generated_image_reads_boot_info_and_is_stable() {
         let code = generate(&manifest());
         assert_eq!(code.len(), USER_CODE_LEN);
@@ -72,6 +107,7 @@ mod tests {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        assert_eq!(hash, 0xf02f_6c19_ce2f_63de);
+        // ISSUE-AUTH-004（SPEC-151）：setup 路径先派生 Namespace 副本再移交，机器码/哈希相应更新。
+        assert_eq!(hash, 0x8db7_9beb_2cef_cd61);
     }
 }

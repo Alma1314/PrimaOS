@@ -91,6 +91,16 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 pub const MAX_CAPABILITY_SLOTS: usize = 144;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
+
+/// ISSUE-AUTH-003：平台/见证 Task 的结构根预留槽区间。
+///
+/// 这些 Task 由内部 `create_task` 辅助路径创建，其根 cap 不能占用最低空闲槽——那会平移
+/// init 机器码内嵌的派生句柄槽（S2-D2）与既有 QEMU 证据。区间位于动态分配峰值之上、
+/// Namespace 根区间（[`NS_ROOT_CAP_SLOT_BASE`] = 136）之下，并由 [`CapabilitySlotTable::alloc`]
+/// 跳过，避免运行期动态分配撞入。
+pub const INTERNAL_TASK_ROOT_SLOT_BASE: u32 = 120;
+pub const INTERNAL_TASK_ROOT_SLOT_COUNT: u32 = 8;
+
 /// 任务表容量（含已保留槽位与已销毁记录）。
 ///
 /// SPEC-087：普通 id 空间 `2..8` 被保留的 Dead（3/4）与 Faulted（5/6/7）记录占满，
@@ -839,6 +849,8 @@ pub enum IpcError {
     TooManyCapabilities,
     InvalidCapability,
     CapabilityHolderMismatch,
+    /// §9.1 前置 6：待传 Capability 是活动 Task 的结构性根 Namespace Capability。
+    StructuralCap,
     AuditFull,
     QueueFull,
     QueueEmpty,
@@ -990,6 +1002,10 @@ pub struct InitialCapability {
     pub object: InitialObject,
     pub holder: u32,
     pub rights: Rights,
+    /// §4.2：单调 `CapId`（初始三条根取 1..3；parent 序检查据此不受槽位复用影响）。
+    pub cap_id: u32,
+    /// §4.2/§13.1：创建事件序号。Bootstrap 根以 `Bootstrapped`（序号 0）为创建记录。
+    pub created_at: u32,
 }
 
 impl InitialCapability {
@@ -1113,6 +1129,14 @@ impl CapabilitySlotTable {
     pub fn alloc(&mut self) -> Option<Handle> {
         let mut index = 1;
         while index < MAX_CAPABILITY_SLOTS {
+            let slot = index as u32;
+            if (INTERNAL_TASK_ROOT_SLOT_BASE
+                ..INTERNAL_TASK_ROOT_SLOT_BASE + INTERNAL_TASK_ROOT_SLOT_COUNT)
+                .contains(&slot)
+            {
+                index += 1;
+                continue;
+            }
             if !self.entries[index].in_use {
                 self.entries[index].in_use = true;
                 return Handle::new(index as u32, self.entries[index].generation).ok();
@@ -1165,12 +1189,43 @@ impl CapabilitySlotTable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapabilityRecord {
     pub handle: Handle,
+    /// §4.2：单调 `CapId`。句柄索引可被复用，故父子字面序用本字段而不是槽索引。
+    pub cap_id: u32,
     pub parent: Option<Handle>,
     pub holder: u32,
     pub rights: Rights,
     /// 目标对象（派生时必须与父相同）。
     pub target: ObjectRef,
+    /// §4.2/§13.1：对应铸造/派生事件的审计序号。
+    pub created_at: u32,
 }
+
+/// §4.2：`caps` 追加式历史表中的一条不可变记录。
+///
+/// 活动 `CapRecord` 在位置消失后从 [`CapabilityRecordTable`] 删除（槽位可复用），但本表只追加、
+/// 从不修改或删除，`cap_drop`/撤销不会移除历史条目。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapabilityHistoryRecord {
+    pub handle: Handle,
+    pub cap_id: u32,
+    pub parent: Option<Handle>,
+    pub holder: u32,
+    pub rights: Rights,
+    pub target: ObjectRef,
+    pub created_at: u32,
+}
+
+/// ISSUE-AUDIT-007：历史表容量（每个 `BootstrapState` 实例的累计铸造/派生次数上限）。
+pub const MAX_CAPABILITY_HISTORY: usize = 512;
+#[cfg(not(test))]
+const CAPABILITY_HISTORY_REGIONS: usize = 1;
+#[cfg(test)]
+const CAPABILITY_HISTORY_REGIONS: usize = 512;
+static CAPABILITY_HISTORY_ARENA: crate::arena::Arena<
+    CapabilityHistoryRecord,
+    MAX_CAPABILITY_HISTORY,
+    CAPABILITY_HISTORY_REGIONS,
+> = crate::arena::Arena::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeriveError {
@@ -1193,104 +1248,106 @@ pub enum DeriveError {
     AuditFull,
 }
 
-/// CapRecord 表：按槽索引直索引（`entries[slot]`）。
+/// ISSUE-AUDIT-007：活动 `CapRecord` 表移入静态 arena——表项随 `cap_id`/`created_at` 扩容后，
+/// 内联会越过 `BootstrapState` 的 13 KiB 守卫。与 `SEGMENT_ARENA`/审计区段同一模式。
+#[cfg(not(test))]
+const CAPABILITY_RECORD_REGIONS: usize = 1;
+#[cfg(test)]
+const CAPABILITY_RECORD_REGIONS: usize = 512;
+static CAPABILITY_RECORD_ARENA: crate::arena::Arena<
+    CapabilityRecord,
+    MAX_CAPABILITY_SLOTS,
+    CAPABILITY_RECORD_REGIONS,
+> = crate::arena::Arena::new();
+
+/// CapRecord 表：按槽索引直索引（内容在 [`CAPABILITY_RECORD_ARENA`]）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapabilityRecordTable {
-    pub entries: [Option<CapabilityRecord>; MAX_CAPABILITY_SLOTS],
+    pub slice: crate::arena::ArenaSlice,
     pub count: usize,
 }
 
 impl CapabilityRecordTable {
-    pub const fn empty() -> Self {
+    fn claim() -> Self {
         Self {
-            entries: [None; MAX_CAPABILITY_SLOTS],
+            slice: CAPABILITY_RECORD_ARENA.claim(),
             count: 0,
         }
     }
 
     /// 按槽索引查找。**越界索引返回 `None` 而非 panic**——`Handle` 只是编码，槽索引上界由本表
     /// 决定；对不可信 ring3 传入的畸形句柄（如 `0xffff_ffff_ffff_ffea`），此路径必须安全失败。
-    pub fn find(&self, handle: Handle) -> Option<&CapabilityRecord> {
-        self.entries
-            .get(handle.index() as usize)
-            .and_then(Option::as_ref)
+    pub fn find(&self, handle: Handle) -> Option<CapabilityRecord> {
+        let index = handle.index() as usize;
+        if index >= MAX_CAPABILITY_SLOTS {
+            return None;
+        }
+        CAPABILITY_RECORD_ARENA
+            .get(self.slice, index)
+            .filter(|record| record.handle == handle)
     }
 
-    pub fn insert(
-        &mut self,
-        handle: Handle,
-        parent: Option<Handle>,
-        holder: u32,
-        rights: Rights,
-        target: ObjectRef,
-    ) -> Result<(), DeriveError> {
-        let index = handle.index() as usize;
+    pub fn insert(&mut self, record: CapabilityRecord) -> Result<CapabilityRecord, DeriveError> {
+        let index = record.handle.index() as usize;
         if index >= MAX_CAPABILITY_SLOTS {
             return Err(DeriveError::MalformedHandle);
         }
-        if self.entries[index].is_some() {
+        if CAPABILITY_RECORD_ARENA.get(self.slice, index).is_some() {
             return Err(DeriveError::CapacityExceeded);
         }
-        self.entries[index] = Some(CapabilityRecord {
-            handle,
-            parent,
-            holder,
-            rights,
-            target,
-        });
+        CAPABILITY_RECORD_ARENA.set(self.slice, index, Some(record));
         self.count += 1;
-        Ok(())
+        Ok(record)
     }
 
     fn remove(&mut self, handle: Handle) -> bool {
         let index = handle.index() as usize;
-        if index >= MAX_CAPABILITY_SLOTS {
+        if index >= MAX_CAPABILITY_SLOTS || CAPABILITY_RECORD_ARENA.get(self.slice, index).is_none()
+        {
             return false;
         }
-        let slot = &mut self.entries[index];
-        if slot.is_some() {
-            *slot = None;
-            self.count -= 1;
-            true
-        } else {
-            false
-        }
+        CAPABILITY_RECORD_ARENA.set(self.slice, index, None);
+        self.count -= 1;
+        true
+    }
+
+    fn get_index(&self, index: usize) -> Option<CapabilityRecord> {
+        CAPABILITY_RECORD_ARENA.get(self.slice, index)
+    }
+
+    /// 测试专用：直接改写一条表项（用于构造损坏状态的反例）。
+    #[cfg(test)]
+    fn set_index(&mut self, index: usize, record: Option<CapabilityRecord>) {
+        CAPABILITY_RECORD_ARENA.set(self.slice, index, record);
     }
 
     /// 撤销以 `root` 为根的派生子树，返回被撤销的句柄（含 root）。
     ///
     /// 只沿 `parent = Some` 的链传播：`parent = None` 的铸造根不会被「父链」误伤。
-    fn revoke_subtree(&mut self, root: Handle) -> ([Handle; MAX_CAPABILITY_SLOTS], usize) {
+    /// 本方法只读；实际移除由调用方在审计容量预检后逐条执行。
+    fn revoke_subtree(&self, root: Handle) -> ([Handle; MAX_CAPABILITY_SLOTS], usize) {
         let mut revoked = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
-        if self.find(root).is_none() {
-            // root 不是本表中的 Capability（初始根），仅返回自身。
-            revoked[0] = root;
-            return (revoked, 1);
-        }
         revoked[0] = root;
         let mut revoked_count = 1;
-        self.remove(root);
+        if self.find(root).is_none() {
+            // root 不是本表中的 Capability（初始根），仅返回自身。
+            return (revoked, 1);
+        }
         loop {
             let mut changed = false;
             let mut index = 1;
             while index < MAX_CAPABILITY_SLOTS {
-                let matches = self.entries[index].as_ref().is_some_and(|entry| {
-                    entry
+                if let Some(entry) = CAPABILITY_RECORD_ARENA.get(self.slice, index) {
+                    let matches = entry
                         .parent
-                        .is_some_and(|parent| revoked[..revoked_count].contains(&parent))
-                });
-                if matches {
-                    let handle = self.entries[index]
-                        .as_ref()
-                        .map(|entry| entry.handle)
-                        .unwrap_or(Handle::ZERO);
-                    self.entries[index] = None;
-                    self.count -= 1;
-                    if revoked_count < MAX_CAPABILITY_SLOTS {
-                        revoked[revoked_count] = handle;
-                        revoked_count += 1;
+                        .is_some_and(|parent| revoked[..revoked_count].contains(&parent));
+                    if matches && !revoked[..revoked_count].contains(&entry.handle) {
+                        if revoked_count < MAX_CAPABILITY_SLOTS {
+                            revoked[revoked_count] = entry.handle;
+                            revoked_count += 1;
+                        }
+                        changed = true;
                     }
-                    changed = true;
                 }
                 index += 1;
             }
@@ -3070,8 +3127,13 @@ pub struct BootstrapState {
     pub slots: CapabilitySlotTable,
     pub capabilities: [InitialCapability; INITIAL_CAPABILITY_COUNT as usize],
     pub positions: CapabilityPositionTable,
-    /// §4.2：除初始 3 条根之外的全部 `CapRecord`（铸造根 + 派生）。
+    /// §4.2：除初始 3 条根之外的全部**活动** `CapRecord`（铸造根 + 派生）。
     pub records: CapabilityRecordTable,
+    /// ISSUE-AUDIT-007 / §4.2：追加式 `CapRecord` 历史（内容在静态 arena）。
+    pub cap_history: crate::arena::ArenaSlice,
+    pub cap_history_count: usize,
+    /// §4.2：单调 `CapId` 分配游标（初始 3 条根占 1..3）。
+    pub next_cap_id: u32,
     pub tasks: TaskTable,
     pub ipc: IpcQueue,
     pub audit: AuditLog,
@@ -3190,27 +3252,57 @@ impl BootstrapState {
             }
         }
 
-        // 每条 CapRecord：槽 live、位置存在、父链权限子集、同目标、类型匹配。
-        for record in self.records.entries.iter().flatten() {
+        // 每条 CapRecord：槽 live、位置存在、父链权限子集/目标相同/单调 CapId、类型匹配。
+        for index in 0..MAX_CAPABILITY_SLOTS {
+            let Some(record) = self.records.get_index(index) else {
+                continue;
+            };
             if self.slots.check(record.handle) != SlotState::Live {
                 return Err(AuthorityError::InvalidCount);
             }
             if self.positions.find(record.handle).is_none() {
                 return Err(AuthorityError::MissingPosition);
             }
+            if record.cap_id >= self.next_cap_id {
+                return Err(AuthorityError::DuplicateCapability);
+            }
             if let Some(parent) = record.parent {
-                let parent_rights = self
-                    .rights_of(parent)
+                // 父可能已被 drop；其不可变记录仍在历史表中（§4.2：子不受父丢弃影响）。
+                let parent_record = self
+                    .immutable_record(parent)
                     .ok_or(AuthorityError::InvalidParent)?;
-                if !record.rights.subset_of(parent_rights) {
+                // ISSUE-CAP-004 / §4.2：`parent < child` 用单调 CapId 判定，不用槽索引。
+                if parent_record.cap_id >= record.cap_id {
+                    return Err(AuthorityError::InvalidParent);
+                }
+                if !record.rights.subset_of(parent_record.rights) {
                     return Err(AuthorityError::RightsEscalation);
                 }
-                if self.target_of(parent) != Some(record.target) {
+                if parent_record.target != record.target {
                     return Err(AuthorityError::InvalidParent);
                 }
             }
             if !record.rights.well_typed(record.target.kind()) {
                 return Err(AuthorityError::RightsEscalation);
+            }
+            // ISSUE-AUDIT-007：每个活动记录都必须在追加式历史中有不可变副本。
+            let historical = self
+                .capability_history_record(record.handle)
+                .ok_or(AuthorityError::MissingPosition)?;
+            if historical.cap_id != record.cap_id
+                || historical.parent != record.parent
+                || historical.holder != record.holder
+                || historical.rights != record.rights
+                || historical.target != record.target
+                || historical.created_at != record.created_at
+            {
+                return Err(AuthorityError::InvalidParent);
+            }
+        }
+        // 初始根同样占用单调 CapId 1..3，且必须严格小于游标。
+        for capability in &self.capabilities {
+            if capability.cap_id >= self.next_cap_id {
+                return Err(AuthorityError::DuplicateCapability);
             }
         }
 
@@ -3261,15 +3353,14 @@ impl BootstrapState {
             return Err(AuthorityError::InvalidHolder);
         }
 
-        // W5：每个活动 Task 的结构性根 Namespace Capability 都必须由该 Task 持有、指向活动
-        // Namespace 且含 `NsResolve`。
-        //
-        // ISSUE-AUTH-003（已登记）：平台 witness task 与 `create_task` 辅助路径仍以
-        // `Handle::ZERO` 表示“无结构根”，本检查暂跳过它们；POSIR 的 W5 要求所有活动
-        // 非 RemoteProxy Task 都有结构根，该缺口不在本切片静默放宽——见 tracker。
+        // W5：每个活动非 RemoteProxy Task 的结构性根 Namespace Capability 都必须由该 Task
+        // 持有、指向活动 Namespace 且含 `NsResolve`。本细化层只创建 CPU Task。
         for task in self.tasks.entries.iter().flatten() {
-            if task.status == TaskStatus::Dead || task.root_ns_cap == Handle::ZERO {
+            if task.status == TaskStatus::Dead {
                 continue;
+            }
+            if task.root_ns_cap == Handle::ZERO {
+                return Err(AuthorityError::InvalidHolder);
             }
             let root_ns_cap = task.root_ns_cap;
             let root_position = self
@@ -3327,6 +3418,88 @@ impl BootstrapState {
             }
         }
         Ok(())
+    }
+
+    /// §4.2：分配下一个单调 `CapId`。
+    fn allocate_cap_id(&mut self) -> Option<u32> {
+        let id = self.next_cap_id;
+        self.next_cap_id = self.next_cap_id.checked_add(1)?;
+        Some(id)
+    }
+
+    fn can_record_capability(&self) -> bool {
+        self.cap_history_count < MAX_CAPABILITY_HISTORY
+    }
+
+    /// 把一条已提交的 `CapRecord` 追加到不可变历史表。
+    fn append_capability_history(&mut self, record: CapabilityRecord) {
+        let index = self.cap_history_count;
+        CAPABILITY_HISTORY_ARENA.set(
+            self.cap_history,
+            index,
+            Some(CapabilityHistoryRecord {
+                handle: record.handle,
+                cap_id: record.cap_id,
+                parent: record.parent,
+                holder: record.holder,
+                rights: record.rights,
+                target: record.target,
+                created_at: record.created_at,
+            }),
+        );
+        self.cap_history_count += 1;
+    }
+
+    /// ISSUE-AUDIT-007：历史表中的累计 `CapRecord` 数（含已 drop/撤销的条目）。
+    pub fn capability_history_len(&self) -> usize {
+        self.cap_history_count
+    }
+
+    /// 按句柄查不可变历史记录。句柄含 generation，故跨槽位复用仍唯一。
+    pub fn capability_history_record(&self, handle: Handle) -> Option<CapabilityHistoryRecord> {
+        (0..self.cap_history_count)
+            .filter_map(|index| CAPABILITY_HISTORY_ARENA.get(self.cap_history, index))
+            .find(|record| record.handle == handle)
+    }
+
+    /// 句柄 → 单调 `CapId`（初始根或活动 `CapRecord`）。
+    pub fn cap_id_of(&self, handle: Handle) -> Option<u32> {
+        self.capabilities
+            .iter()
+            .find(|capability| capability.handle == handle)
+            .map(|capability| capability.cap_id)
+            .or_else(|| self.records.find(handle).map(|record| record.cap_id))
+    }
+
+    /// 不可变记录查询（活动表或历史表），供父链校验在父已被 drop 后继续工作。
+    fn immutable_record(&self, handle: Handle) -> Option<CapabilityHistoryRecord> {
+        if let Some(capability) = self
+            .capabilities
+            .iter()
+            .find(|capability| capability.handle == handle)
+        {
+            return Some(CapabilityHistoryRecord {
+                handle: capability.handle,
+                cap_id: capability.cap_id,
+                parent: None,
+                holder: capability.holder,
+                rights: capability.rights,
+                target: capability.object.target(),
+                created_at: capability.created_at,
+            });
+        }
+        self.records
+            .find(handle)
+            .map(|record| CapabilityHistoryRecord {
+                handle: record.handle,
+                cap_id: record.cap_id,
+                parent: record.parent,
+                holder: record.holder,
+                rights: record.rights,
+                target: record.target,
+                created_at: record.created_at,
+            })
+            .or_else(|| self.capability_history_record(handle))
     }
 
     /// 句柄 → 权限集合（初始根或 CapRecord）。
@@ -3536,7 +3709,7 @@ impl BootstrapState {
             return Err(TaskError::AuditFull);
         }
         let task_id = FAULT_WITNESS_TASK_ID;
-        self.tasks.create_with_entry(task_id, 0)?;
+        self.create_task(task_id)?;
         // 前置 4 反例：init 此刻仍是 Ready，对它 raise 硬件异常必须被拒且不留痕。
         let precond_rejected =
             self.tasks
@@ -3593,11 +3766,11 @@ impl BootstrapState {
     pub fn reclaim_witness(&mut self) -> Result<ReclaimWitness, TaskError> {
         // 本见证会直接追加两条 `TaskStateChanged`（正/反例各一）；`kernel_reclaim_task`
         // 自身再按实际销毁事件预检。这里先保证前两条不会越界。
-        if !self.audit.can_append(2) {
+        if !self.audit.can_append(4) {
             return Err(TaskError::AuditFull);
         }
         // 反例：可恢复的 Faulted。
-        self.tasks.create_with_entry(RECLAIM_NEGATIVE_TASK_ID, 0)?;
+        self.create_task(RECLAIM_NEGATIVE_TASK_ID)?;
         self.tasks.schedule(RECLAIM_NEGATIVE_TASK_ID)?;
         self.tasks.fault(
             RECLAIM_NEGATIVE_TASK_ID,
@@ -3617,7 +3790,7 @@ impl BootstrapState {
             .is_some_and(|task| task.status == TaskStatus::Faulted && task.pending_exc.is_some());
 
         // 正例：不可恢复的 Faulted。
-        self.tasks.create_with_entry(RECLAIM_WITNESS_TASK_ID, 0)?;
+        self.create_task(RECLAIM_WITNESS_TASK_ID)?;
         self.tasks.schedule(RECLAIM_WITNESS_TASK_ID)?;
         self.tasks.fault(
             RECLAIM_WITNESS_TASK_ID,
@@ -3763,11 +3936,27 @@ impl BootstrapState {
         if !rights.well_typed(target.kind()) {
             return Err(DeriveError::WrongRightType);
         }
+        if !self.can_record_capability() {
+            return Err(DeriveError::CapacityExceeded);
+        }
+        let cap_id = self
+            .allocate_cap_id()
+            .ok_or(DeriveError::CapacityExceeded)?;
+        let created_at = self.audit.count as u32;
         let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
-        self.records.insert(handle, None, holder, rights, target)?;
+        let record = self.records.insert(CapabilityRecord {
+            handle,
+            cap_id,
+            parent: None,
+            holder,
+            rights,
+            target,
+            created_at,
+        })?;
         self.positions
             .register(handle, holder)
             .map_err(|_| DeriveError::CapacityExceeded)?;
+        self.append_capability_history(record);
         Ok(handle)
     }
 
@@ -3791,13 +3980,28 @@ impl BootstrapState {
         if !rights.well_typed(target.kind()) {
             return Err(DeriveError::WrongRightType);
         }
+        if !self.can_record_capability() {
+            return Err(DeriveError::CapacityExceeded);
+        }
         let record_holder = holder.holder_id().unwrap_or(KERNEL_ACTOR);
+        let cap_id = self
+            .allocate_cap_id()
+            .ok_or(DeriveError::CapacityExceeded)?;
+        let created_at = self.audit.count as u32;
         let handle = self.slots.reserve(slot);
-        self.records
-            .insert(handle, None, record_holder, rights, target)?;
+        let record = self.records.insert(CapabilityRecord {
+            handle,
+            cap_id,
+            parent: None,
+            holder: record_holder,
+            rights,
+            target,
+            created_at,
+        })?;
         self.positions
             .register_location(handle, holder)
             .map_err(|_| DeriveError::CapacityExceeded)?;
+        self.append_capability_history(record);
         Ok(handle)
     }
 
@@ -4255,12 +4459,27 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
         }
+        if !self.can_record_capability() {
+            return Err(DeriveError::CapacityExceeded);
+        }
+        let cap_id = self
+            .allocate_cap_id()
+            .ok_or(DeriveError::CapacityExceeded)?;
+        let created_at = self.audit.count as u32;
         let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
-        self.records
-            .insert(handle, Some(parent), caller, rights, target)?;
+        let record = self.records.insert(CapabilityRecord {
+            handle,
+            cap_id,
+            parent: Some(parent),
+            holder: caller,
+            rights,
+            target,
+            created_at,
+        })?;
         self.positions
             .register(handle, caller)
             .map_err(|_| DeriveError::CapacityExceeded)?;
+        self.append_capability_history(record);
         self.audit.append(AuditEvent::CapabilityDerived {
             cap: handle,
             parent,
@@ -4280,6 +4499,31 @@ impl BootstrapState {
         parent: Handle,
         rights: Rights,
         holder: u32,
+    ) -> Result<Handle, DeriveError> {
+        self.derive_capability_to_holder_in_slot(caller, parent, rights, holder, None)
+    }
+
+    /// ISSUE-AUTH-003：同 [`Self::derive_capability_to_holder`]，但子 Capability 落在显式槽位。
+    ///
+    /// 内部 Task 的结构根必须使用预留槽区间，避免平移 init 机器码内嵌的派生句柄。
+    pub fn derive_capability_to_holder_at(
+        &mut self,
+        caller: u32,
+        parent: Handle,
+        rights: Rights,
+        holder: u32,
+        slot: u32,
+    ) -> Result<Handle, DeriveError> {
+        self.derive_capability_to_holder_in_slot(caller, parent, rights, holder, Some(slot))
+    }
+
+    fn derive_capability_to_holder_in_slot(
+        &mut self,
+        caller: u32,
+        parent: Handle,
+        rights: Rights,
+        holder: u32,
+        slot: Option<u32>,
     ) -> Result<Handle, DeriveError> {
         match self.slots.check(parent) {
             SlotState::Free => return Err(DeriveError::NoSuchParent),
@@ -4306,12 +4550,35 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
         }
-        let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
-        self.records
-            .insert(handle, Some(parent), holder, rights, target)?;
+        if !self.can_record_capability() {
+            return Err(DeriveError::CapacityExceeded);
+        }
+        if let Some(slot) = slot
+            && !self.slots.slot_free(slot)
+        {
+            return Err(DeriveError::CapacityExceeded);
+        }
+        let cap_id = self
+            .allocate_cap_id()
+            .ok_or(DeriveError::CapacityExceeded)?;
+        let created_at = self.audit.count as u32;
+        let handle = match slot {
+            Some(slot) => self.slots.reserve(slot),
+            None => self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?,
+        };
+        let record = self.records.insert(CapabilityRecord {
+            handle,
+            cap_id,
+            parent: Some(parent),
+            holder,
+            rights,
+            target,
+            created_at,
+        })?;
         self.positions
             .register(handle, holder)
             .map_err(|_| DeriveError::CapacityExceeded)?;
+        self.append_capability_history(record);
         self.audit.append(AuditEvent::CapabilityDerived {
             cap: handle,
             parent,
@@ -4398,11 +4665,8 @@ impl BootstrapState {
                 .iter()
                 .flatten()
                 .any(|namespace| namespace.id == candidate);
-            let historically_referenced = self
-                .records
-                .entries
-                .iter()
-                .flatten()
+            let historically_referenced = (0..self.cap_history_count)
+                .filter_map(|index| CAPABILITY_HISTORY_ARENA.get(self.cap_history, index))
                 .any(|record| record.target == ObjectRef::Namespace(candidate));
             if !used && !historically_referenced {
                 return candidate;
@@ -4456,13 +4720,31 @@ impl BootstrapState {
         if !rights.well_typed(target.kind()) {
             return Err(NsError::WrongRightType);
         }
+        if !self.audit.can_append(1) {
+            return Err(NsError::AuditFull);
+        }
+        if !self.can_record_capability() {
+            return Err(NsError::CapacityExceeded);
+        }
+        let cap_id = self.allocate_cap_id().ok_or(NsError::CapacityExceeded)?;
+        let created_at = self.audit.count as u32;
         let handle = self.slots.alloc().ok_or(NsError::CapacityExceeded)?;
-        self.records
-            .insert(handle, Some(parent), caller, rights, target)
+        let record = self
+            .records
+            .insert(CapabilityRecord {
+                handle,
+                cap_id,
+                parent: Some(parent),
+                holder: caller,
+                rights,
+                target,
+                created_at,
+            })
             .map_err(|_| NsError::CapacityExceeded)?;
         self.positions
             .register_location(handle, location)
             .map_err(|_| NsError::CapacityExceeded)?;
+        self.append_capability_history(record);
         self.audit.append(AuditEvent::CapabilityDerived {
             cap: handle,
             parent,
@@ -5480,12 +5762,10 @@ impl BootstrapState {
         if self.is_structural_root_ns_cap(cap) {
             return Err(CapabilityPositionError::StructuralCap);
         }
-        let mut preview = self.records;
-        let (_, revoked_count) = preview.revoke_subtree(cap);
+        let (revoked, revoked_count) = self.records.revoke_subtree(cap);
         if !self.audit.can_append(revoked_count) {
             return Err(CapabilityPositionError::AuditFull);
         }
-        let (revoked, revoked_count) = self.records.revoke_subtree(cap);
         for revoked_cap in revoked[..revoked_count].iter().copied() {
             self.retire_capability(revoked_cap);
             self.audit
@@ -5560,8 +5840,43 @@ impl BootstrapState {
         Ok(revoked_roots)
     }
 
+    /// ISSUE-AUTH-003：内部/平台路径创建 Task 时同时建立 W5 的结构性根。
+    ///
+    /// 根从 init 的结构性根 Namespace Capability 派生（§8.1 步骤 6 同一语义），落在预留槽区间，
+    /// 不扰动最低空闲槽上的用户可见派生句柄。
     pub fn create_task(&mut self, task_id: u32) -> Result<(), TaskError> {
-        self.tasks.create(task_id)
+        let slot = (INTERNAL_TASK_ROOT_SLOT_BASE
+            ..INTERNAL_TASK_ROOT_SLOT_BASE + INTERNAL_TASK_ROOT_SLOT_COUNT)
+            .find(|slot| self.slots.slot_free(*slot))
+            .ok_or(TaskError::CapacityExceeded)?;
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.create(task_id)?;
+        match self.derive_capability_to_holder_at(
+            INIT_TASK_ID,
+            NAMESPACE_CAP_HANDLE,
+            TASK_CREATE_ROOT_NS_RIGHTS,
+            task_id,
+            slot,
+        ) {
+            Ok(root) => {
+                if self.tasks.set_root_ns_cap(task_id, root).is_err() {
+                    self.retire_capability(root);
+                    self.tasks.remove(task_id);
+                    return Err(TaskError::CapacityExceeded);
+                }
+                Ok(())
+            }
+            Err(DeriveError::AuditFull) => {
+                self.tasks.remove(task_id);
+                Err(TaskError::AuditFull)
+            }
+            Err(_) => {
+                self.tasks.remove(task_id);
+                Err(TaskError::CapacityExceeded)
+            }
+        }
     }
 
     /// §13.1/W13：为一次**已提交**的 Task 状态迁移追加 `TaskStateChanged`。
@@ -6241,9 +6556,11 @@ impl BootstrapState {
             if !self.target_live(target) {
                 return Err(IpcError::InvalidCapability);
             }
-            // §9.1 前置 6 / W5 的发送侧守卫：**暂不在此启用**。ring3 init 的启动协议
-            // （`SERVICE_SETUP_TAG`）当前直接移交结构性根 Namespace cap；在 init 代码改为
-            // 先派生副本之前启用会中断启动。见 ISSUE-AUTH-004（SPEC-150 登记）。
+            // §9.1 前置 6：任何活动 Task 的结构性根 Namespace Capability 都不得随消息转移。
+            // init 的 `SERVICE_SETUP_TAG` 已改为先派生副本（ISSUE-AUTH-004）。
+            if self.is_structural_root_ns_cap(cap) {
+                return Err(IpcError::StructuralCap);
+            }
             capabilities[index] = cap;
         }
         let direct_delivery = self.tasks.is_blocked_recv(receiver);
@@ -7249,18 +7566,24 @@ pub fn create_state(
             object: InitialObject::ImageSegment,
             holder: INIT_TASK_ID,
             rights: IMAGE_RIGHTS,
+            cap_id: 1,
+            created_at: 0,
         },
         InitialCapability {
             handle: NAMESPACE_CAP_HANDLE,
             object: InitialObject::Namespace,
             holder: INIT_TASK_ID,
             rights: NAMESPACE_RIGHTS,
+            cap_id: 2,
+            created_at: 0,
         },
         InitialCapability {
             handle: TASK_CAP_HANDLE,
             object: InitialObject::InitTask,
             holder: INIT_TASK_ID,
             rights: TASK_RIGHTS,
+            cap_id: 3,
+            created_at: 0,
         },
     ];
     let positions = CapabilityPositionTable::from_capabilities(&capabilities);
@@ -7304,7 +7627,10 @@ pub fn create_state(
         slots,
         capabilities,
         positions,
-        records: CapabilityRecordTable::empty(),
+        records: CapabilityRecordTable::claim(),
+        cap_history: CAPABILITY_HISTORY_ARENA.claim(),
+        cap_history_count: 0,
+        next_cap_id: 4,
         tasks: TaskTable::with_init(),
         ipc: IpcQueue::empty(),
         audit: AuditLog::claim(),
@@ -8194,18 +8520,19 @@ mod tests {
         CapabilityPositionError, DEVICE_IOPORT_RIGHTS, DeriveError, DeviceError, DropError,
         EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS, EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind,
         ExcResumeError, Handle, IMAGE_CAP_HANDLE, IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID,
-        INIT_TASK_ID, INITIAL_CAP_GENERATION, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError,
-        KERNEL_ACTOR, LOCAL_NODE, MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS,
-        MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS,
-        NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
-        PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT, PLATFORM_SEGMENT_ID_FIRST,
-        PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
-        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT,
-        SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
-        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskKind,
-        TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError, TimerState,
-        USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
-        entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
+        INIT_NAMESPACE_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION, INITIAL_CAPABILITY_COUNT,
+        INTERNAL_TASK_ROOT_SLOT_COUNT, InitialObject, IpcError, KERNEL_ACTOR, LOCAL_NODE,
+        MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES, MemsegError,
+        NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef,
+        PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
+        PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
+        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc,
+        RECLAIM_NEGATIVE_TASK_ID, RECLAIM_WITNESS_TASK_ID, SEGMENT_ROOT_RIGHTS,
+        SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject,
+        TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
+        TaskError, TaskKind, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
+        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot,
+        create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
         platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
@@ -9200,10 +9527,11 @@ mod tests {
             .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("SegMapR"))
             .unwrap();
         // 越权：把子权限改成非父权限子集（TaskSend 不在 image cap 权限内）。
-        state.records.entries[child.index() as usize]
-            .as_mut()
-            .unwrap()
-            .rights = Rights::from_rights(&[Right::SegMapR, Right::TaskSend]);
+        let mut corrupted = state.records.find(child).expect("child record");
+        corrupted.rights = Rights::from_rights(&[Right::SegMapR, Right::TaskSend]);
+        state
+            .records
+            .set_index(child.index() as usize, Some(corrupted));
         assert_eq!(
             state.validate_authority(),
             Err(AuthorityError::RightsEscalation)
@@ -9239,7 +9567,11 @@ mod tests {
         );
         state.positions.drop_from_task(IMAGE_CAP_HANDLE, 2).unwrap();
         assert!(state.positions.has_unique_active_locations());
-        assert_eq!(state.positions.count, INITIAL_CAPABILITY_COUNT as usize - 1);
+        // 初始 3 条根 + `create_task(2)` 派生的结构根；移走 image cap 后剩 3 条位置。
+        assert_eq!(
+            state.positions.count,
+            INITIAL_CAPABILITY_COUNT as usize + 1 - 1
+        );
     }
 
     #[test]
@@ -9291,12 +9623,18 @@ mod tests {
                 }
             }
         }
-        // 槽 0 保留不用：可分配槽 = MAX-1，扣除 3 条初始根。
+        // 槽 0 保留不用，内部 Task 根预留区间不被动态分配：可分配槽 = MAX-1-预留，再扣 3 条初始根。
         assert_eq!(
             granted,
-            MAX_CAPABILITY_SLOTS - 1 - INITIAL_CAPABILITY_COUNT as usize
+            MAX_CAPABILITY_SLOTS
+                - 1
+                - INTERNAL_TASK_ROOT_SLOT_COUNT as usize
+                - INITIAL_CAPABILITY_COUNT as usize
         );
-        assert_eq!(state.slots.live_count(), MAX_CAPABILITY_SLOTS - 1);
+        assert_eq!(
+            state.slots.live_count(),
+            MAX_CAPABILITY_SLOTS - 1 - INTERNAL_TASK_ROOT_SLOT_COUNT as usize
+        );
     }
 
     #[test]
@@ -9414,6 +9752,12 @@ mod tests {
         let child = state
             .derive_capability(2, parent, rights("Derive"))
             .unwrap();
+        // 活动 Task 的结构根受 W5 保护；销毁路径会先清根再撤销（见 `destroy_task_model`）。
+        assert_eq!(
+            state.revoke_task_capabilities(2),
+            Err(CapabilityPositionError::StructuralCap)
+        );
+        state.tasks.find_mut(2).expect("task").root_ns_cap = Handle::ZERO;
         assert_eq!(state.revoke_task_capabilities(2), Ok(1));
         assert!(state.records.find(parent).is_none());
         assert!(state.records.find(child).is_none());
@@ -9593,6 +9937,136 @@ mod tests {
     }
 
     #[test]
+    fn create_task_derives_a_structural_root_namespace_capability() {
+        // ISSUE-AUTH-003：非 init Task 也必须满足 W5（活动非 RemoteProxy Task 有结构根）。
+        let mut state = fresh_state();
+        state.create_task(2).expect("task");
+        let task = state.tasks.find(2).expect("task record");
+        assert_ne!(task.root_ns_cap, Handle::ZERO);
+        assert_eq!(state.holder_of(task.root_ns_cap), Some(2));
+        assert_eq!(
+            state.target_of(task.root_ns_cap),
+            Some(ObjectRef::Namespace(INIT_NAMESPACE_ID))
+        );
+        assert!(
+            state
+                .rights_of(task.root_ns_cap)
+                .expect("root rights")
+                .contains(Right::NsResolve)
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn validate_authority_rejects_an_active_task_without_a_structural_root() {
+        // ISSUE-AUTH-003：W5 的全局量化不得再跳过错根 Task。
+        let mut state = fresh_state();
+        state.create_task(2).expect("task");
+        state.tasks.find_mut(2).expect("task record").root_ns_cap = Handle::ZERO;
+        assert_eq!(
+            state.validate_authority(),
+            Err(AuthorityError::InvalidHolder)
+        );
+    }
+
+    #[test]
+    fn witness_tasks_are_created_with_structural_roots() {
+        let mut state = fresh_state();
+        state.platform_init().expect("platform init");
+        let fault = state.fault_witness().expect("fault witness");
+        let fault_root = state
+            .tasks
+            .find(fault.task_id)
+            .expect("fault witness task")
+            .root_ns_cap;
+        assert_ne!(fault_root, Handle::ZERO);
+        assert_eq!(state.holder_of(fault_root), Some(fault.task_id));
+        state.reclaim_witness().expect("reclaim witness");
+        let negative_root = state
+            .tasks
+            .find(RECLAIM_NEGATIVE_TASK_ID)
+            .expect("negative witness task")
+            .root_ns_cap;
+        assert_ne!(negative_root, Handle::ZERO);
+        // 正例任务已被内核回收为 Dead；W5 只约束活动 Task。
+        assert_eq!(
+            state.tasks.find(RECLAIM_WITNESS_TASK_ID).map(|t| t.status),
+            Some(TaskStatus::Dead)
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn send_rejects_a_structural_root_namespace_capability() {
+        // ISSUE-AUTH-004：init 先派生副本再移交后，§9.1 前置 6 的发送侧守卫必须启用。
+        let mut state = fresh_state();
+        state.create_task(2).expect("receiver");
+        state.prepare_user_ipc_caps().expect("send cap");
+        assert_eq!(
+            state.send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                0,
+                &[NAMESPACE_CAP_HANDLE]
+            ),
+            Err(IpcError::StructuralCap)
+        );
+        assert_eq!(state.holder_of(NAMESPACE_CAP_HANDLE), Some(INIT_TASK_ID));
+    }
+
+    #[test]
+    fn capability_history_survives_drop_and_records_creation_order() {
+        // ISSUE-AUDIT-007：CapRecord 是追加式历史；drop 只删除位置，不删除不可变记录。
+        let mut state = fresh_state();
+        let parent = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("Derive,SegMapR"))
+            .expect("parent");
+        let parent_created = state
+            .records
+            .find(parent)
+            .expect("parent record")
+            .created_at;
+        let child = state
+            .derive_capability(INIT_TASK_ID, parent, rights("Derive"))
+            .expect("child");
+        let child_created = state.records.find(child).expect("child record").created_at;
+        assert!(child_created > parent_created);
+        let history_len = state.capability_history_len();
+        state.drop_capability(INIT_TASK_ID, child).expect("drop");
+        assert_eq!(state.capability_history_len(), history_len);
+        let historical = state
+            .capability_history_record(child)
+            .expect("history record survives drop");
+        assert_eq!(historical.created_at, child_created);
+        assert_eq!(historical.parent, Some(parent));
+        assert!(state.records.find(child).is_none());
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn cap_id_ordering_stays_monotonic_across_slot_reuse() {
+        // ISSUE-CAP-004：§4.2 的 parent < child 由单调 CapId 保证，与槽位复用无关。
+        let mut state = fresh_state();
+        let first = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("Derive,SegMapR"))
+            .expect("first");
+        let first_id = state.cap_id_of(first).expect("first cap id");
+        state.drop_capability(INIT_TASK_ID, first).expect("drop");
+        let second = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("Derive,SegMapR"))
+            .expect("second");
+        assert_eq!(second.index(), first.index(), "槽位应被复用");
+        let second_id = state.cap_id_of(second).expect("second cap id");
+        assert!(second_id > first_id);
+        let child = state
+            .derive_capability(INIT_TASK_ID, second, rights("Derive"))
+            .expect("child");
+        assert!(state.cap_id_of(child).expect("child cap id") > second_id);
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
     fn queued_capability_position_keeps_authority_valid() {
         let mut state = fresh_state();
         state.activate_init().unwrap();
@@ -9707,7 +10181,7 @@ mod tests {
         // SPEC-071 的 Task 状态迁移（`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞
         // 与投递唤醒）、§13.1 的携带 Capability 位置变化（直投：`HeldBy(init)` → `HeldBy(2)`）
         // 与消息事件。
-        assert_eq!(state.audit.count, 13);
+        assert_eq!(state.audit.count, 14);
         assert_eq!(
             state.audit.entry(state.audit.len() - 4),
             Some(AuditEvent::CapabilityMoved {
@@ -9856,22 +10330,21 @@ mod tests {
             Err(ExcError::NoSuchSource)
         );
         // 缺少 ExcSubscribe：把源 cap 权限改窄后触发 MissingRight。
-        state.records.entries[page_cap.index() as usize]
-            .as_mut()
-            .unwrap()
-            .rights = Rights::from_rights(&[Right::Derive]);
+        let mut corrupted = state.records.find(page_cap).expect("source cap");
+        corrupted.rights = Rights::from_rights(&[Right::Derive]);
+        state
+            .records
+            .set_index(page_cap.index() as usize, Some(corrupted));
         assert_eq!(
             state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
             Err(ExcError::MissingRight)
         );
-        state.records.entries[page_cap.index() as usize]
-            .as_mut()
-            .unwrap()
-            .rights = EXC_SOURCE_RIGHTS;
-        state.records.entries[page_cap.index() as usize]
-            .as_mut()
-            .unwrap()
-            .holder = 2;
+        let mut restored = state.records.find(page_cap).expect("source cap");
+        restored.rights = EXC_SOURCE_RIGHTS;
+        restored.holder = 2;
+        state
+            .records
+            .set_index(page_cap.index() as usize, Some(restored));
         assert_eq!(
             state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
             Err(ExcError::NotHolder)
@@ -9933,10 +10406,14 @@ mod tests {
             state.exc_source_destroy(2, EXC_SYSCALL_TRAP_HANDLE),
             Err(ExcError::NotHolder)
         );
-        state.records.entries[EXC_SYSCALL_TRAP_HANDLE.index() as usize]
-            .as_mut()
-            .unwrap()
-            .rights = Rights::from_rights(&[Right::ExcSubscribe]);
+        let mut corrupted = state
+            .records
+            .find(EXC_SYSCALL_TRAP_HANDLE)
+            .expect("syscall trap cap");
+        corrupted.rights = Rights::from_rights(&[Right::ExcSubscribe]);
+        state
+            .records
+            .set_index(EXC_SYSCALL_TRAP_HANDLE.index() as usize, Some(corrupted));
         assert_eq!(
             state.exc_source_destroy(INIT_TASK_ID, EXC_SYSCALL_TRAP_HANDLE),
             Err(ExcError::MissingRight)

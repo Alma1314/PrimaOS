@@ -121,7 +121,11 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// 一个持久化 Segment 根 cap（+2）；SPEC-114 再计入用户态驱动的两条初始 cap（自管理凭据派生
 /// 副本 + 代码段只读令牌）、其自建栈段根 cap、任务自管理/结构性根 cap，以及驱动两次运行时各
 /// 派生的一条 `TaskSend` 凭据（+8）。
-const TASK_READY_LIVE_CAPS: usize = 111;
+///
+/// **SPEC-151（ISSUE-AUTH-003/004）再 +3**：task 2 的结构性根、仍活动的 Faulted 见证 Task 的
+/// 结构性根、以及 init 移交管理器后仍在册的派生 Namespace 副本。前两者落在预留槽区
+/// （120..127）；后者取代原先直接移交根本身（根本身仍由 init 持有，总数 +1）。
+const TASK_READY_LIVE_CAPS: usize = 114;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -3822,8 +3826,10 @@ const IOPORT_MAGIC_READBACK: u64 = 0x5A;
 /// 都来自 init 建起的**同一个**独立 ring3 映像，而非任何编译期常量。
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 /// SPEC-105：端点令牌由 **ring3 服务管理器**从代码段派生（不再是 init 自建回执，故句柄值改变）。
-const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0002_0000_0033;
-const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_0038;
+// SPEC-151：init 先为服务管理器派生 Namespace 副本（ISSUE-AUTH-004），新增 cap 占用一个最低
+// 空闲槽，使后续管理器派生句柄整体平移。此处按实际运行证据更新常量。
+const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_0037;
+const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_0039;
 const SERVICE_NEGOTIATED_ID: u64 = 10;
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 /// `major<<48 | minor<<32 | max<<16 | features` —— 客户端 offer 与服务端 offer
@@ -4270,7 +4276,7 @@ mod tests {
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=45;direct=38;blocks=45\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=111;root_cleared=1;grandchild=4;tasks_after=11;caps_after=111;root4_cleared=1\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=114;root_cleared=1;grandchild=4;tasks_after=11;caps_after=114;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=1;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4361,7 +4367,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=111;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=114;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),

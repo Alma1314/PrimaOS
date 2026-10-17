@@ -362,32 +362,6 @@ const NS_MODRM_RDX: u8 = 0x91;
 /// S2-D4：建栈段 → `SYS_TASK_CREATE`（完整 §8.1）→ 两个创建负例（入口越界 / 缺 `SegMapX`）→
 /// 把栈映射进**子任务**根 → 让出 → `SYS_RECV` 取子任务回发的 id → 缺 `TaskDestroy` 的销毁负例 →
 /// 销毁成功 → 重复销毁与向已销毁任务映射两个负例 → `int3`。
-/// `SYS_SEND` 变体：cap0/cap1 可来自 boot-info 句柄槽，而不是生成期立即数。
-fn emit_send_boot<const N: usize>(
-    code: &mut [u8; N],
-    at: usize,
-    payload: u64,
-    cap_count: u64,
-    cap0: Option<u32>,
-    cap1: Option<u32>,
-) -> usize {
-    put_imm64(code, at, 0x48, 0xBA, payload);
-    put_imm64(code, at + 10, 0x49, 0xBA, cap_count);
-    if let Some(offset) = cap0 {
-        put_boot_load(code, at + 20, BootReg::R8, offset);
-    } else {
-        put_imm64(code, at + 20, 0x49, 0xB8, 0);
-    }
-    if let Some(offset) = cap1 {
-        put_boot_load(code, at + 30, BootReg::R9, offset);
-    } else {
-        put_imm64(code, at + 30, 0x49, 0xB9, 0);
-    }
-    put_syscall(code, at + 40, SYS_SEND);
-    put(code, at + 45, &[0xCD, 0x80]);
-    at + 47
-}
-
 /// Generated code reserves `r15` for the boot-info page pointer set by the kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BootReg {
@@ -1761,14 +1735,48 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     // 零 IPC 移交，管理器读段首目录按表建端点（见 `prima-servicemgr`）。此处只余父 Namespace。
     // 4) 父 Namespace（单 cap）——管理器的 `task_create` 前置要求持 `NsResolve|Derive`。
     at = emit_send(&mut code, at, SERVICE_WAKE_TAG, 0, 0, 0);
-    at = emit_send_boot(
+    // ISSUE-AUTH-004：移交的是 init 结构根的**派生副本**，不是根本身——§9.1 前置 6 禁止发送
+    // 活动 Task 的结构性根；内核发送侧守卫已启用。派生紧邻 setup 发送，句柄直接取自 rax。
+    put_boot_load(&mut code, at, BootReg::Rdi, boot_abi::OFF_NAMESPACE_CAP);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xBE, NS_ROOT_RIGHTS_BITS);
+    at += 10;
+    put_imm64(&mut code, at, 0x48, 0xB8, SYS_CAP_DERIVE);
+    at += 10;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
+    // 派生调用覆盖了 rdi/rsi（父句柄/权限位），setup 发送前必须重新装入接收者与发送凭据。
+    put_load_reg(
         &mut code,
         at,
-        SERVICE_SETUP_TAG,
-        1,
-        Some(boot_abi::OFF_NAMESPACE_CAP),
-        None,
+        0x48,
+        NS_MODRM_RDI,
+        SERVICEMGR_RECEIPT_HELLO as u32,
     );
+    at += 7;
+    put(&mut code, at, &[0x48, 0x81, 0xE7, 0xFF, 0x00, 0x00, 0x00]); // and rdi, 0xff
+    at += 7;
+    put_load_reg(
+        &mut code,
+        at,
+        0x48,
+        NS_MODRM_RSI,
+        SERVICEMGR_RECEIPT_MGR as u32,
+    );
+    at += 7;
+    // 带 cap 的 setup：cap0 取自已派生的 rax 副本（不是 `[r15+OFF_NAMESPACE_CAP]` 的根）。
+    put_imm64(&mut code, at, 0x48, 0xBA, SERVICE_SETUP_TAG);
+    at += 10;
+    put_imm64(&mut code, at, 0x49, 0xBA, 1);
+    at += 10;
+    put(&mut code, at, &[0x49, 0x89, 0xC0]); // mov r8, rax
+    at += 3;
+    put_imm64(&mut code, at, 0x49, 0xB9, 0);
+    at += 10;
+    put_syscall(&mut code, at, SYS_SEND);
+    at += 5;
+    put(&mut code, at, &[0xCD, 0x80]);
+    at += 2;
     // 让出：管理器按表创建两端点（入口自解）、端点自报、客户端 Hello 经管理器路由。
     put_syscall(&mut code, at, SYS_YIELD);
     at += 5;
