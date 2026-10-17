@@ -154,7 +154,7 @@ LibOS 行为。
 
 ### EXO-3：通用 trace / witness 通道
 
-> **状态（2026-10-16）**：进行中。已落 **EXO-3A**（SPEC-118，内核不再解释服务名）、
+> **状态（2026-10-17）**：进行中。已落 **EXO-3A**（SPEC-118，内核不再解释服务名）、
 > **EXO-3B**（SPEC-119，marker/reply/协商期望值移出内核，由 `xtask` 校验）、
 > **EXO-3C**（SPEC-122，协议 tag 常量与 witness tag 断言移出内核）、
 > **EXO-3D**（SPEC-123，通用用户态 trace 通道）、
@@ -162,6 +162,7 @@ LibOS 行为。
 > `service_negotiated_ready`）、**EXO-3G**（SPEC-126，`service_selected_ready`）
 > 与 **EXO-3H**（SPEC-127，`servicemgr_ready`）——所有服务共享段固定偏移 witness
 > 均已迁到通用 trace；**EXO-3I**（SPEC-128）又增加了非 PRIMA 的原始 `TRACE|` 调试输出。
+> **EXO-3J**（SPEC-133）让 `xtask` 直接解析原始记录，检查完整性并与服务 witness 交叉核对。
 > 剩余工作主要是共享 trace ring/用户态字节流，以及少量 Y 页通用机制回执的继续下沉。
 > 见 EXO-3A..3I 报告。
 

@@ -649,6 +649,196 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// EXO-3J：独立核对原始 TRACE 通道与服务 witness，避免 PRIMA 事件单独自证。
+pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
+    use prima_abi::trace::{
+        EVENT_NATIVE_APP, EVENT_RUNTIME_HELLO, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY,
+        EVENT_SERVICE_SELECTED, EVENT_SERVICEMGR,
+    };
+
+    let expected = [
+        EVENT_RUNTIME_HELLO,
+        EVENT_RUNTIME_HELLO,
+        EVENT_SERVICE_REPLY,
+        EVENT_NATIVE_APP,
+        EVENT_SERVICE_NEGOTIATED,
+        EVENT_SERVICE_NEGOTIATED,
+        EVENT_SERVICE_SELECTED,
+        EVENT_SERVICE_SELECTED,
+        EVENT_SERVICE_SELECTED,
+        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR,
+    ];
+    let records: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("TRACE|"))
+        .map(parse_trace_record)
+        .collect::<Result<_, _>>()?;
+    let ids: Vec<_> = records.iter().map(|record| record.id).collect();
+    if ids != expected {
+        return Err(format!("unexpected TRACE record IDs: {ids:?}"));
+    }
+
+    check_trace_fields(
+        output,
+        "runtime_hello_ready",
+        &records[0],
+        &[Some("a"), Some("b"), Some("c"), Some("d"), Some("e")],
+    )?;
+    if records[0] != records[1] {
+        return Err("runtime_hello TRACE records differ".to_owned());
+    }
+    check_trace_fields(
+        output,
+        "service_reply_ready",
+        &records[2],
+        &[Some("recv"), Some("echo"), None, None, None],
+    )?;
+    check_trace_fields(
+        output,
+        "service_negotiated_ready",
+        &records[4],
+        &[
+            Some("token"),
+            Some("service"),
+            Some("svc_id"),
+            Some("done"),
+            Some("negotiated"),
+        ],
+    )?;
+    check_trace_fields(
+        output,
+        "service_negotiated_ready",
+        &records[5],
+        &[Some("negatives"), None, None, None, None],
+    )?;
+    for (record, fields) in records[6..9].iter().zip([
+        [
+            Some("name"),
+            Some("resolved"),
+            Some("unknown"),
+            Some("done"),
+            Some("negotiated_beta"),
+        ],
+        [
+            Some("alpha_ep"),
+            Some("beta_ep"),
+            Some("beta_self"),
+            Some("alpha_marker"),
+            Some("beta_marker"),
+        ],
+        [
+            Some("client_ep"),
+            Some("reg_a_name"),
+            Some("reg_b_name"),
+            None,
+            None,
+        ],
+    ]) {
+        check_trace_fields(output, "service_selected_ready", record, &fields)?;
+    }
+    for (record, fields) in records[9..15].iter().zip([
+        [
+            Some("self_id"),
+            Some("marker"),
+            Some("created"),
+            Some("entry_a"),
+            Some("entry_b"),
+        ],
+        [
+            Some("services"),
+            Some("log_id"),
+            Some("ns_id"),
+            Some("store_id"),
+            Some("log_mark"),
+        ],
+        [
+            Some("ns_mark"),
+            Some("store_mark"),
+            Some("log_state0"),
+            Some("log_state1"),
+            Some("log_state2"),
+        ],
+        [
+            Some("ns_state0"),
+            Some("ns_state1"),
+            Some("ns_state2"),
+            Some("store_state0"),
+            Some("store_state1"),
+        ],
+        [
+            Some("store_state2"),
+            Some("ns_resolved"),
+            Some("log_seg"),
+            Some("store_seg"),
+            Some("driver_id"),
+        ],
+        [
+            Some("driver_mark"),
+            Some("driver_dev"),
+            Some("driver_io0"),
+            Some("driver_io1"),
+            None,
+        ],
+    ]) {
+        check_trace_fields(output, "servicemgr_ready", record, &fields)?;
+    }
+    Ok(())
+}
+
+fn parse_trace_record(line: &str) -> Result<prima_abi::trace::Record, String> {
+    let line = line.trim_end_matches('\r');
+    let mut fields = line.split(';');
+    let id = fields
+        .next()
+        .and_then(|field| field.strip_prefix("TRACE|id="))
+        .ok_or_else(|| format!("invalid TRACE id: {line}"))
+        .and_then(parse_addr)?;
+    let mut args = [0; prima_abi::trace::ARGS];
+    for (index, name) in ["a=", "b=", "c=", "d=", "e="].into_iter().enumerate() {
+        args[index] = fields
+            .next()
+            .and_then(|field| field.strip_prefix(name))
+            .ok_or_else(|| format!("invalid TRACE field {name}: {line}"))
+            .and_then(parse_addr)?;
+    }
+    if fields.next().is_some() {
+        return Err(format!("extra TRACE field: {line}"));
+    }
+    Ok(prima_abi::trace::Record { id, args })
+}
+
+fn check_trace_fields(
+    output: &str,
+    event: &str,
+    record: &prima_abi::trace::Record,
+    fields: &[Option<&str>; prima_abi::trace::ARGS],
+) -> Result<(), String> {
+    let prefix = format!("|event={event}|status=ok|data=");
+    let data = output
+        .lines()
+        .find_map(|line| {
+            line.split_once(&prefix)
+                .map(|(_, data)| data.trim_end_matches('\r'))
+        })
+        .ok_or_else(|| format!("missing {event} witness"))?;
+    for (name, actual) in fields.iter().zip(record.args) {
+        let Some(name) = name else { continue };
+        let value = data
+            .split(';')
+            .find_map(|field| field.strip_prefix(&format!("{name}=")))
+            .ok_or_else(|| format!("missing {name} in {event} witness"))?;
+        if parse_addr(value)? != actual {
+            return Err(format!("{event}.{name} differs from raw TRACE"));
+        }
+    }
+    Ok(())
+}
+
 /// 独立驱动的硬件页故障证据；应用 trace 和启动完成由相邻校验器检查。
 pub(crate) fn validate_user_fault_trace(output: &str) -> Result<(), String> {
     let mut records = output.lines().filter(|line| line.starts_with("FAULT|"));
@@ -4222,7 +4412,63 @@ fn parse_line(line: &str) -> Result<Event, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_native_app_trace, validate_output, validate_user_fault_trace};
+    use super::{
+        validate_native_app_trace, validate_output, validate_service_traces,
+        validate_user_fault_trace,
+    };
+
+    #[test]
+    fn service_trace_rejects_missing_duplicate_malformed_and_divergent_records() {
+        let mut output = String::new();
+        for event in [
+            "runtime_hello_ready|status=ok|data=a=0x0;b=0x0;c=0x0;d=0x0;e=0x0",
+            "service_reply_ready|status=ok|data=recv=0x0;echo=0x0",
+            "service_negotiated_ready|status=ok|data=token=0x0;service=0x0;svc_id=0x0;done=0x0;negotiated=0x0;negatives=0x0",
+            "service_selected_ready|status=ok|data=name=0x0;resolved=0x0;unknown=0x0;done=0x0;negotiated_beta=0x0;alpha_ep=0x0;beta_ep=0x0;beta_self=0x0;alpha_marker=0x0;beta_marker=0x0;client_ep=0x0;reg_a_name=0x0;reg_b_name=0x0",
+            "servicemgr_ready|status=ok|data=self_id=0x0;marker=0x0;created=0x0;entry_a=0x0;entry_b=0x0;services=0x0;log_id=0x0;ns_id=0x0;store_id=0x0;log_mark=0x0;ns_mark=0x0;store_mark=0x0;log_state0=0x0;log_state1=0x0;log_state2=0x0;ns_state0=0x0;ns_state1=0x0;ns_state2=0x0;store_state0=0x0;store_state1=0x0;store_state2=0x0;ns_resolved=0x0;log_seg=0x0;store_seg=0x0;driver_id=0x0;driver_mark=0x0;driver_dev=0x0;driver_io0=0x0;driver_io1=0x0",
+        ] {
+            output.push_str("PRIMA|v=1|seq=1|event=");
+            output.push_str(event);
+            output.push('\n');
+        }
+        for id in [1, 1, 2, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
+            output.push_str(&format!(
+                "TRACE|id=0x{id:x};a=0x0;b=0x0;c=0x0;d=0x0;e=0x0\r\n"
+            ));
+        }
+        assert_eq!(validate_service_traces(&output), Ok(()));
+        assert!(validate_service_traces(&output.replacen("TRACE|id=0x1;", "", 1)).is_err());
+        assert!(
+            validate_service_traces(&format!(
+                "{output}TRACE|id=0x5;a=0x0;b=0x0;c=0x0;d=0x0;e=0x0\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_service_traces(&output.replacen(
+                "TRACE|id=0x1;a=0x0",
+                "TRACE|id=0x1;a=oops",
+                1
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_service_traces(&output.replacen(
+                "TRACE|id=0x1;a=0x0",
+                "TRACE|id=0x1;a=0x1",
+                1
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_service_traces(&output.replacen(
+                "TRACE|id=0x2;a=0x0",
+                "TRACE|id=0x2;a=0x1",
+                1
+            ))
+            .is_err()
+        );
+    }
 
     #[test]
     fn user_fault_trace_requires_faulted_driver() {

@@ -62,6 +62,8 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
     protocol::validate_native_app_trace(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, &output))
@@ -79,6 +81,8 @@ pub(crate) fn run_bios_capture(image: &Path) -> Result<String, String> {
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
     protocol::validate_native_app_trace(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout)
