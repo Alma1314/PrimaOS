@@ -39,6 +39,8 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 
 每行至少包含 `API | Linux 参考语义 | Prima 后端/权限 | 状态 | 已知偏差 | 正反测试 ID | 证据命令`。只有真实实现和重复测试后才能从 planned 改为 supported；partial 必须列出保留的边界。差分既比较成功结果，也比较失败码、数据、顺序和资源回收；现有 `cargo xtask compat` 只是 COW 单场景先例。
 
+musl 的依赖盘点、静态链接闭环和逐步验收见 [musl 移植计划](2026-10-18-musl-port-plan.md)。
+
 ## 5. 暂缓裁决
 
 - `fork/execve/wait4`、完整 POSIX signal、`ld.so` 和 Rust `std` 全量覆盖仍在 S5-D2/D6 候选范围内；各自必须先决定阶段归属与所需 Process/Thread、loader、VFS 语义。不能把单线程 `pthread` 假实现或返回 `ENOSYS` 算成线程交付。
