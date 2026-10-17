@@ -830,6 +830,8 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - Audit 能重建 Capability 派生和位置变化；
 - 容器销毁不破坏其他对象生命周期。
 
+**2026-10-17：阶段 3 已通过（SPEC-148）。** S3-D1–D5 与 S3-X1–X4 已勾选：Namespace 七操作/环检测/stale Mount、Timer 绝对时间/立即触发/exactly-once、`audit(cap)` 派生链与位置历史；QEMU `namespace_ready`/`timer_ready`/`audit_ready`；已登记边界（ns 只删位置、stale Mount 不全局扫描、Timer destroyed 实现计数）不阻塞。
+
 ### 阶段 4 — Prima 原生运行时与服务
 
 交付：
