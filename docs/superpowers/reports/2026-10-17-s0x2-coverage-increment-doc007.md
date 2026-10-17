@@ -105,12 +105,12 @@ DOC-007 审核报告自身声明「不产生 MODEL-TEST、QEMU、Lean 或 COMPAT
 
 ## 11. 2026-10-17 组织级审查计数更正（SPEC-139）
 
-组织级阶段 0 审查发现本报告沿用的 `26 + 8 + 1 = 35` 口径与 §19 不一致：SPEC-054 的“26”包含内部迁移 `advance_time`，同时排除了 Exception（5）与 Device（7）两族。更正后：
+组织级阶段 0 审查发现本报告沿用的 `26 + 8 + 1 = 35` 口径与 §19 不一致。经逐项核对，SPEC-054 §3 的表格实际已覆盖部分 Exception/Device 与内部迁移，因此不能再按“26 排除两族”解释；旧口径的 26/34/35 均不应作为权威计数。更正后：
 
 - **§19 权威常规操作面 = 46 项**（不含 Bootstrap，也不含 `advance_time`/`schedule`/`enqueue_or_deliver`/`raise_exception` 等 `KernelActor` 内部迁移）；
-- 旧口径 35 = 26（含内部 `advance_time`） + 8（DOC-007） + 1（`gpu_memseg_create`）；
-- 更正：35 − 1（去掉内部 `advance_time`） + 5（Exception） + 7（Device） = **46**；
+- 46 的判据只取 §19 枚举，不再从旧 26/35 推导：Capability 2 + MemorySegment 6 + Task 5 + Send 1 + Recv 1 + WaitObject 5 + Timer 4 + Namespace 7 + Audit 1 + Exception 5 + Device 7 + Node 2；
 - `dev_irq_mask`/`dev_irq_unmask` 只改变 COSIR 细化层的中断屏蔽状态，不改变 POSIR 状态，不计入 46 项 POSIR 操作；
+- **SPEC-140 补齐 `memseg_map`、`dev_dma_create`、`ns_resolve`、`dev_mmio_unmap` 的错误出口，并补齐 `InvalidEntry`/`InvalidCodeRange`/`InvalidInitialCap`/`InvalidRootRights` 等定义；下表的“显式”分类以 SPEC-140 后的规范为准**；
 - 旧 26/34/35 口径全部作废。下表以 §19 分类逐项列出当前检查面与失败语义类型：
 
 | 类别 | 操作（失败语义：显式清单 / 默认规则 / 无失败分支） |
@@ -121,7 +121,7 @@ DOC-007 审核报告自身声明「不产生 MODEL-TEST、QEMU、Lean 或 COMPAT
 | Send (1) | `send`（显式 + 标准错误） |
 | Recv (1) | `recv`（无失败） |
 | WaitObject (5) | `wait_object_create`（无失败）、`wait_object_observe`（显式）、`wait_object_destroy`（显式）、`wait_objects`（显式，含 `LengthMismatch`）、`signal_object`（显式） |
-| Timer (4) | `timer_set`（无失败）、`timer_cancel`（显式）、`timer_destroy`（显式）、`time_now`（无失败；§19 记作 `now`） |
+| Timer (4) | `timer_set`（无失败）、`timer_cancel`（显式）、`timer_destroy`（显式）、`time_now`（无失败） |
 | Namespace (7) | `ns_create`（无失败）、`ns_bind`、`ns_unbind`、`ns_mount`、`ns_unmount`、`ns_resolve`、`ns_destroy`（均显式 + 标准错误） |
 | Audit (1) | `audit`（显式） |
 | Exception (5) | `exc_source_create`（显式）、`exc_subscribe`（显式，补 `NotHeld`/`TargetDead`）、`exc_unsubscribe`（显式）、`exc_resume`（显式 + 标准错误）、`exc_source_destroy`（显式） |
