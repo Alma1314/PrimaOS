@@ -236,16 +236,12 @@ pub enum AuditEvent {
     /// 切片 P：对象创建（§13.1 要求活动对象有创建事件）。
     ObjectCreated {
         object_id: u32,
-        segment: bool,
+        kind: ObjectKind,
     },
-    /// S2-D3：Segment 销毁（§13.1 对象生命周期；帧已归还来源池）。
-    ///
-    /// SPEC-083：与 `ObjectCreated` 对称携带 `segment` 标志——`ObjectRef` 的 id 空间按类型
-    /// 独立（image `Segment(1)` 与 init `Namespace(1)` 同 id），`audit(cap)` 按目标对象过滤
-    /// 必须用「id + 类型」双条件，否则跨类型混计。
+    /// 对象销毁。各对象种类独立分配 ID，故审计必须携带准确类型。
     ObjectDestroyed {
         object_id: u32,
-        segment: bool,
+        kind: ObjectKind,
     },
     /// 切片 P：Task 状态迁移（W13 要求每次迁移有事件）。
     TaskStateChanged {
@@ -427,8 +423,8 @@ impl AuditLog {
     }
 }
 
-/// §13.2：Capability 祖先链的最大长度（受 Capability 槽数上界约束，保证回溯必然终止）。
-pub const MAX_TRACE_CHAIN: usize = MAX_CAPABILITY_SLOTS;
+/// §13.2：父 Cap 可在派生后丢弃并复用槽位，链长由追加式历史容量约束。
+pub const MAX_TRACE_CHAIN: usize = MAX_CAPABILITY_HISTORY;
 
 /// §13.2：一条 Capability 的不可变祖先链与相关事件摘要（`audit(cap)` 的返回值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3556,7 +3552,7 @@ impl BootstrapState {
         };
         let mut current = cap;
         loop {
-            // 每个 parent 都先于其 child 存在；该上界同时兜住内部状态畸形的情形。
+            // 每个 parent 都先于其 child 存在；历史表容量也是有效链的上界。
             if trace.chain_len == MAX_TRACE_CHAIN {
                 return Err(AuditError::InvalidCap);
             }
@@ -3586,7 +3582,7 @@ impl BootstrapState {
             }
         }
         trace.chain[..trace.chain_len].reverse();
-        let is_segment = matches!(target, ObjectRef::Segment(_));
+        let kind = target.kind();
         self.audit.for_each(|event| match *event {
             AuditEvent::CapabilityMinted { cap: event_cap, .. }
                 if trace.chain[..trace.chain_len].contains(&event_cap) =>
@@ -3604,15 +3600,27 @@ impl BootstrapState {
             {
                 trace.moves += 1
             }
-            AuditEvent::ObjectCreated { object_id, segment }
-                if object_id == target.id() && segment == is_segment =>
+            AuditEvent::ObjectCreated {
+                object_id,
+                kind: event_kind,
+            } if object_id == target.id() && event_kind == kind => trace.created += 1,
+            AuditEvent::ObjectDestroyed {
+                object_id,
+                kind: event_kind,
+            } if object_id == target.id() && event_kind == kind => trace.destroyed += 1,
+            AuditEvent::TaskCreated { task_id } if target == ObjectRef::Task(task_id) => {
+                trace.created += 1
+            }
+            AuditEvent::TaskDestroyed { task_id } if target == ObjectRef::Task(task_id) => {
+                trace.destroyed += 1
+            }
+            AuditEvent::ExcSourceCreated { source_id, .. }
+                if target == ObjectRef::ExcSource(source_id) =>
             {
                 trace.created += 1
             }
-            AuditEvent::ObjectDestroyed { object_id, segment }
-                if object_id == target.id() && segment == is_segment =>
-            {
-                trace.destroyed += 1
+            AuditEvent::TimerSet { timer_id, .. } if target == ObjectRef::Timer(timer_id) => {
+                trace.created += 1
             }
             _ => {}
         });
@@ -4079,11 +4087,10 @@ impl BootstrapState {
         {
             self.exc_sources.entries[index] = None;
         }
-        // 成功动作 4：追加销毁事件。与 Timer/Namespace 共用 `segment: false` 形态
-        // （`ObjectRef` 的 id 空间按类型独立，见 SPEC-083）。
+        // 成功动作 4：追加带对象类型的销毁事件。
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: source_id,
-            segment: false,
+            kind: ObjectKind::ExcSource,
         });
         Ok(())
     }
@@ -4793,7 +4800,7 @@ impl BootstrapState {
         self.namespace_count += 1;
         self.audit.append(AuditEvent::ObjectCreated {
             object_id: ns_id,
-            segment: false,
+            kind: ObjectKind::Namespace,
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
@@ -5116,35 +5123,48 @@ impl BootstrapState {
         if self.is_structural_root_namespace(ns) {
             return Err(NsError::StructuralCap);
         }
-        // 审计预算：每个条目一条 `CapabilityDropped`，加一条 `ObjectDestroyed`。
+        // 每个条目同时记录位置删除及对应的 Namespace 操作。
         let entry_count = self.ns_entries.count_in(ns);
-        if !self.audit.can_append(entry_count + 1) {
+        if !self.audit.can_append(entry_count * 2 + 1) {
             return Err(NsError::AuditFull);
         }
         // 收集待删条目（先取值再改，避免闭包借用冲突）。
-        let mut doomed = [Handle::ZERO; MAX_NS_ENTRIES];
+        let mut doomed = [None; MAX_NS_ENTRIES];
         let mut doomed_count = 0usize;
         self.ns_entries.for_each(|entry| {
             if entry.ns == ns && doomed_count < MAX_NS_ENTRIES {
-                doomed[doomed_count] = entry.cap;
+                doomed[doomed_count] = Some(entry);
                 doomed_count += 1;
             }
         });
         self.ns_entries.clear_namespace(ns);
         let mut i = 0;
         while i < doomed_count {
-            let cap = doomed[i];
+            let entry = doomed[i].expect("collected namespace entry");
+            let cap = entry.cap;
             // 成功动作 2 / §4.6：删除这些 Bound/Mount Capability 的**位置**（`CapRecord`
             // 不变）——细化层因此不回收其槽位（无位置 Capability 不可表示），登记见设计 §5。
             self.positions.remove(cap);
             self.audit.append(AuditEvent::CapabilityDropped { cap });
+            match entry.kind {
+                NsEntryKind::Bound => self.audit.append(AuditEvent::NsUnbound {
+                    ns,
+                    path: entry.path,
+                    cap,
+                }),
+                NsEntryKind::Mount => self.audit.append(AuditEvent::NsUnmounted {
+                    ns,
+                    path: entry.path,
+                    cap,
+                }),
+            }
             i += 1;
         }
         // 成功动作 3：从活动 Namespace 表删除。
         self.remove_namespace_object(ns);
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: ns,
-            segment: false,
+            kind: ObjectKind::Namespace,
         });
         Ok(())
     }
@@ -5202,7 +5222,8 @@ impl BootstrapState {
             return true;
         }
         let mut visited = [false; MAX_NAMESPACE_OBJECTS];
-        let mut stack = [0u32; MAX_NAMESPACE_OBJECTS];
+        // 一个已访问节点最多展开一次，但它的多条边可指向同一节点；栈须容纳全部边。
+        let mut stack = [0u32; MAX_NS_ENTRIES];
         let mut stack_len = 1usize;
         stack[0] = from;
         while stack_len > 0 {
@@ -5223,7 +5244,7 @@ impl BootstrapState {
                 if target == to {
                     reached = true;
                 }
-                if stack_len < MAX_NAMESPACE_OBJECTS {
+                if stack_len < MAX_NS_ENTRIES {
                     stack[stack_len] = target;
                     stack_len += 1;
                 }
@@ -5281,7 +5302,7 @@ impl BootstrapState {
         }
         self.audit.append(AuditEvent::ObjectCreated {
             object_id: id,
-            segment: false,
+            kind: ObjectKind::Device(DeviceKind::IoPortRange),
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
@@ -5377,7 +5398,7 @@ impl BootstrapState {
         }
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: id,
-            segment: false,
+            kind: ObjectKind::Device(DeviceKind::IoPortRange),
         });
         Ok(())
     }
@@ -5595,7 +5616,7 @@ impl BootstrapState {
         }
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: id,
-            segment: false,
+            kind: ObjectKind::Timer,
         });
         self.timer_stats.destroyed += 1;
         Ok(())
@@ -5683,7 +5704,7 @@ impl BootstrapState {
                 }
                 self.audit.append(AuditEvent::ObjectDestroyed {
                     object_id: id,
-                    segment: false,
+                    kind: ObjectKind::Timer,
                 });
             }
         }
@@ -6844,7 +6865,7 @@ impl BootstrapState {
         self.segment_count += 1;
         self.audit.append(AuditEvent::ObjectCreated {
             object_id: id,
-            segment: true,
+            kind: ObjectKind::Segment,
         });
         Ok((handle, segment_frames))
     }
@@ -7462,7 +7483,7 @@ impl BootstrapState {
         );
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: seg_id,
-            segment: true,
+            kind: ObjectKind::Segment,
         });
         Ok(())
     }
@@ -7672,11 +7693,11 @@ pub fn create_state(
     state.audit.append(AuditEvent::Bootstrapped);
     state.audit.append(AuditEvent::ObjectCreated {
         object_id: IMAGE_SEGMENT_ID,
-        segment: true,
+        kind: ObjectKind::Segment,
     });
     state.audit.append(AuditEvent::ObjectCreated {
         object_id: INIT_NAMESPACE_ID,
-        segment: false,
+        kind: ObjectKind::Namespace,
     });
     // W13「每个活动对象都有创建事件」+ §13.1：init Task 是**创建**（非状态迁移），
     // 故与 `task_create`（成功动作 8）一致用 `TaskCreated`，不误用 `TaskStateChanged`。
@@ -8636,6 +8657,30 @@ mod tests {
     }
 
     #[test]
+    fn audit_trace_separates_same_id_object_kinds() {
+        let mut state = fresh_state();
+        let timer = state.timer_set(INIT_TASK_ID, 5).expect("timer");
+        state
+            .timer_destroy(INIT_TASK_ID, timer)
+            .expect("destroy timer");
+        let timer_trace = state
+            .audit_trace(INIT_TASK_ID, timer)
+            .expect("audit destroyed timer");
+        assert_eq!((timer_trace.created, timer_trace.destroyed), (1, 1));
+        let _device = state
+            .dev_ioport_create(INIT_TASK_ID, 0x3f8, 8)
+            .expect("device");
+        let namespace = state
+            .audit_trace(INIT_TASK_ID, NAMESPACE_CAP_HANDLE)
+            .expect("audit namespace");
+        assert_eq!((namespace.created, namespace.destroyed), (1, 0));
+        let task = state
+            .audit_trace(INIT_TASK_ID, TASK_CAP_HANDLE)
+            .expect("audit task");
+        assert_eq!((task.created, task.destroyed), (1, 0));
+    }
+
+    #[test]
     fn audit_trace_follows_a_dropped_and_reused_parent_slot() {
         let mut state = fresh_state();
         let parent = state
@@ -8658,6 +8703,28 @@ mod tests {
             &[IMAGE_CAP_HANDLE, parent, child]
         );
         assert_eq!(trace.derived, 2);
+    }
+
+    #[test]
+    fn audit_trace_follows_history_beyond_concurrent_slot_count() {
+        let mut state = fresh_state();
+        let mut parent = IMAGE_CAP_HANDLE;
+        for _ in 0..MAX_CAPABILITY_SLOTS {
+            let child = state
+                .derive_capability(INIT_TASK_ID, parent, rights("Derive,SegMapR"))
+                .expect("derive child");
+            if parent != IMAGE_CAP_HANDLE {
+                state
+                    .drop_capability(INIT_TASK_ID, parent)
+                    .expect("drop old parent");
+            }
+            parent = child;
+        }
+        let trace = state
+            .audit_trace(INIT_TASK_ID, parent)
+            .expect("long historical chain remains auditable");
+        assert_eq!(trace.chain_len, MAX_CAPABILITY_SLOTS + 1);
+        assert_eq!(trace.derived as usize, MAX_CAPABILITY_SLOTS);
     }
 
     #[test]
@@ -8712,7 +8779,7 @@ mod tests {
             event,
             AuditEvent::ObjectCreated {
                 object_id: 2,
-                segment: false
+                kind: ObjectKind::Namespace
             }
         )));
     }
@@ -9081,9 +9148,24 @@ mod tests {
         state
             .ns_bind(INIT_TASK_ID, a, path("lib"), IMAGE_CAP_HANDLE)
             .expect("bind");
+        state
+            .ns_mount(INIT_TASK_ID, a, path("mnt"), NAMESPACE_CAP_HANDLE)
+            .expect("mount");
         let a_ns = ns_of(&state, a);
-        assert_eq!(state.ns_entries.count_in(a_ns), 1);
+        assert_eq!(state.ns_entries.count_in(a_ns), 2);
+        let audit_before = state.audit.len();
         state.ns_destroy(INIT_TASK_ID, keeper).expect("destroy");
+        assert_eq!(state.audit.len() - audit_before, 5);
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::NsUnbound { ns, path: event_path, cap }
+                if *ns == a_ns && *event_path == path("lib") && *cap == IMAGE_CAP_HANDLE
+        )));
+        assert!(state.audit.any(|event| matches!(
+            event,
+            AuditEvent::NsUnmounted { ns, path: event_path, .. }
+                if *ns == a_ns && *event_path == path("mnt")
+        )));
         assert_eq!(state.ns_entries.count_in(a_ns), 0);
         assert_eq!(state.namespace_count, 1);
         assert!(!state.target_live(ObjectRef::Namespace(a_ns)));
@@ -9140,6 +9222,27 @@ mod tests {
         assert!(!state.namespace_reaches(c_ns, a_ns));
         // 自身恒可达（`ns_mount` 因此拒绝自挂）。
         assert!(state.namespace_reaches(c_ns, c_ns));
+    }
+
+    #[test]
+    fn namespace_reaches_checks_branches_after_duplicate_mount_edges() {
+        let mut state = fresh_state();
+        let a = state.ns_create(INIT_TASK_ID).expect("create a");
+        let b = state.ns_create(INIT_TASK_ID).expect("create b");
+        let c = state.ns_create(INIT_TASK_ID).expect("create c");
+        let d = state.ns_create(INIT_TASK_ID).expect("create d");
+        for suffix in b'0'..=b'7' {
+            let name = [b'b', suffix];
+            let mount_path = Path::parse(&name).expect("valid path");
+            state.ns_mount(INIT_TASK_ID, a, mount_path, b).expect("a→b");
+        }
+        state.ns_mount(INIT_TASK_ID, a, path("c"), c).expect("a→c");
+        state.ns_mount(INIT_TASK_ID, c, path("d"), d).expect("c→d");
+        assert!(state.namespace_reaches(ns_of(&state, a), ns_of(&state, d)));
+        assert_eq!(
+            state.ns_mount(INIT_TASK_ID, d, path("a"), a),
+            Err(NsError::MountCycle)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -9383,11 +9486,13 @@ mod tests {
                 .is_some_and(|timer| timer.state.recipient() == 2 && timer.state.is_pending())
         );
         assert_eq!(state.target_of(second), Some(ObjectRef::Timer(2)));
-        assert!(
-            !state
-                .audit
-                .any(|event| matches!(event, AuditEvent::ObjectDestroyed { object_id: 2, .. }))
-        );
+        assert!(!state.audit.any(|event| matches!(
+            event,
+            AuditEvent::ObjectDestroyed {
+                object_id: 2,
+                kind: ObjectKind::Timer
+            }
+        )));
     }
 
     #[test]

@@ -1208,14 +1208,14 @@ fn validate_namespace_data(data: Option<&str>) -> Result<(), String> {
     // SPEC-111：`binds` 2→3、`resolves` 2→3——管理器绑 `svc` 一次、Namespace 服务代理解析一次。
     for (key, expected) in [
         ("binds", 3usize),
-        ("unbinds", 1),
+        ("unbinds", 2),
         ("mounts", 2),
         ("unmounts", 1),
         ("resolves", 3),
     ] {
         if get(key)? != expected {
             return Err(format!(
-                "namespace_ready {key} must be {expected} — the audit log must record exactly one Ns* event per successful path operation"
+                "namespace_ready {key} must be {expected} — the audit log must record path events including entries removed by ns_destroy"
             ));
         }
     }
@@ -4290,7 +4290,7 @@ mod tests {
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=45;direct=38;blocks=45\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=114;root_cleared=1;grandchild=4;tasks_after=11;caps_after=114;root4_cleared=1\n",
-        "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=1;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
+        "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=2;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=33|event=audit_ready|status=ok|data=chain_len=2;derived=1;moves=2;created=1;destroyed=0;stale_ok=1;purity_ok=1;evidence_ok=1\n",
@@ -5725,7 +5725,7 @@ mod tests {
     }
 
     /// SPEC-081：`namespace_ready` 的判决性数据（与 `VALID` 中的一致）。
-    const NAMESPACE_DATA: &str = "namespaces=4;entries=2;binds=3;unbinds=1;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1";
+    const NAMESPACE_DATA: &str = "namespaces=4;entries=2;binds=3;unbinds=2;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1";
 
     #[test]
     fn rejects_namespace_without_a_rejected_cycle() {

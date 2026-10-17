@@ -792,7 +792,7 @@ impl NsWitness {
             // SPEC-111：`binds` 2→3、`resolves` 2→3——服务管理器把共享段副本绑到 `svc`（+1 bind），
             // Namespace 服务据此代理解析一次（+1 resolve），两者都是 ring3 真实触发的内核操作。
             && self.audit.binds == 3
-            && self.audit.unbinds == 1
+            && self.audit.unbinds == 2
             && self.audit.mounts == 2
             && self.audit.unmounts == 1
             && self.audit.resolves == 3
