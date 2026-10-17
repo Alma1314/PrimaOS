@@ -1,5 +1,11 @@
 # 切片 P 报告：阶段 1 退出条件——帧唯一归属与初始 Authority 物化
 
+> **SPEC-150 更正（2026-10-17）**：本文保留 2026-09-16 的原始证据快照。后续已发生：
+> 初始创建事件改为 `TaskCreated`；bootstrap 追加三条初始 `CapMinted`；`root_ns` 为
+> `0x100000002`；`frames_ready` 增 `disjoint=1` 且逐帧 owner 表已存在
+> （`ISSUE-FRAME-002` 已关闭）。补充复核与剩余 Open ISSUE 见
+> [SPEC-150 报告](2026-10-17-stage1-review-remediation-spec150.md)。
+
 > 文档类型：实施报告（非设计、非规范、非证明）
 >
 > 日期：2026-09-16

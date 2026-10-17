@@ -300,6 +300,9 @@ pub enum AuditKind {
     /// `TaskCreated`——`TaskStateChanged` 仅用于状态**迁移**（创建非迁移），故 bootstrap 的
     /// init Task 用本变体而非 `TaskStateChanged`。
     TaskCreated { task: TaskId, status: TaskStatus },
+    /// §14 步骤 5/6 + 步骤 9 / §13.1 `CapMinted`：bootstrap 铸造的三条初始根 Capability。
+    /// 与真实内核一致写入审计，作为 W13 的创建记录。
+    CapabilityMinted { cap: CapId, holder: TaskId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

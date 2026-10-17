@@ -4,7 +4,7 @@ use core::num::NonZeroU32;
 use crate::handle::Handle;
 use crate::mem::FrameInventory;
 use crate::namespace::{MAX_PATH_COMPONENTS, NsEntry, NsEntryKind, Path};
-use crate::rights::{ObjectKind, Right, Rights};
+use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
 use prima_ostd::sync::StaticCell;
 
 pub const INIT_TASK_ID: u32 = 1;
@@ -251,10 +251,10 @@ pub enum AuditEvent {
     TaskCreated {
         task_id: u32,
     },
-    /// SPEC-081 / §13.1 `CapMinted`：随对象创建铸造根 Capability（`parent = None`）。
+    /// SPEC-081 / §13.1 `CapMinted`：铸造根 Capability（`parent = None`）。
     ///
-    /// `bootstrap` 期的三条初始根仍由 [`InitialCapability`] 表示、**不**补发本事件（它们不是
-    /// 「随对象创建铸造」的运行时路径）；本事件用于 `ns_create` 等运行时铸造。
+    /// §14 步骤 9 要求 bootstrap 也记录三条初始根的铸造事件；它们虽由
+    /// [`InitialCapability`] 表示，仍以本事件入审计（W13 的创建记录）。
     CapabilityMinted {
         cap: Handle,
         holder: u32,
@@ -371,6 +371,13 @@ impl AuditLog {
     }
 
     fn append(&mut self, event: AuditEvent) {
+        // 所有可失败路径都应在修改状态前用 `can_append` 预检。若仍然越界，宁可确定性 panic
+        // 也不能写出本实例的 arena 区段（会覆盖相邻实例/越界）。
+        assert!(
+            self.can_append(1),
+            "audit append without capacity precheck: count={} cap={MAX_AUDIT_EVENTS}",
+            self.count
+        );
         let index = self.base + self.count;
         AUDIT_ARENA.with_mut(|arena| arena[index] = Some(event));
         self.count += 1;
@@ -452,10 +459,25 @@ pub struct PendingExc {
     pub kind: ExcKind,
 }
 
+/// §5.2 的 Task 种类（本细化层只创建 CPU Task；其余种类在对应机制落地时扩展）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskKind {
+    Cpu,
+}
+
+/// 单节点细化层：所有 Task 的 `node` 都是本节点。
+pub const LOCAL_NODE: u32 = 0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskRecord {
     pub id: u32,
     pub status: TaskStatus,
+    /// §5.2/§14 步骤 4：创建者（`KERNEL_ACTOR` = 0）。
+    pub creator: u32,
+    /// §5.2/§14 步骤 4：Task 种类。
+    pub kind: TaskKind,
+    /// §5.2/§14 步骤 4：所属节点。
+    pub node: u32,
     /// §5.2/§14 步骤 7：Task 的结构性根 Namespace Capability（[`Handle::ZERO`] 表示无）。
     pub root_ns_cap: Handle,
     /// §5.2：Task 入口虚拟地址（`memseg_unmap` 的 `entry` 页保护）。
@@ -564,6 +586,10 @@ impl TaskTable {
                     id: INIT_TASK_ID,
                     // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
                     status: TaskStatus::Ready,
+                    // §14 步骤 4：init 由 KernelActor 创建，CPU Task，本节点。
+                    creator: KERNEL_ACTOR,
+                    kind: TaskKind::Cpu,
+                    node: LOCAL_NODE,
                     root_ns_cap: NAMESPACE_CAP_HANDLE,
                     entry: 0,
                     pending_exc: None,
@@ -618,6 +644,10 @@ impl TaskTable {
         self.entries[self.count] = Some(TaskRecord {
             id: task_id,
             status: TaskStatus::Ready,
+            // 平台/KernelActor 内部创建的 Task；`task_create` 会随后覆写为调用者。
+            creator: KERNEL_ACTOR,
+            kind: TaskKind::Cpu,
+            node: LOCAL_NODE,
             // 非 init 任务由创建者显式设置结构根；本切片不创建此类任务的结构根。
             root_ns_cap: Handle::ZERO,
             entry,
@@ -924,8 +954,8 @@ pub enum ObjectRef {
     ExcSource(u32),
     /// SPEC-082 / §5.5：定时器对象。
     Timer(u32),
-    /// SPEC-113 / §15.2：设备对象（本片仅实现 `IOPortRange` 种）。
-    Device(u32),
+    /// SPEC-113 / §15.2：设备对象。`kind` 随引用携带，供 W2 类型检查（§15.2）。
+    Device(u32, DeviceKind),
 }
 
 impl ObjectRef {
@@ -936,7 +966,7 @@ impl ObjectRef {
             ObjectRef::Namespace(_) => ObjectKind::Namespace,
             ObjectRef::ExcSource(_) => ObjectKind::ExcSource,
             ObjectRef::Timer(_) => ObjectKind::Timer,
-            ObjectRef::Device(_) => ObjectKind::Device,
+            ObjectRef::Device(_, kind) => ObjectKind::Device(kind),
         }
     }
 
@@ -949,7 +979,7 @@ impl ObjectRef {
             | Self::Namespace(id)
             | Self::ExcSource(id)
             | Self::Timer(id)
-            | Self::Device(id) => id,
+            | Self::Device(id, _) => id,
         }
     }
 }
@@ -1631,6 +1661,8 @@ pub enum CapabilityPositionError {
     ProtectedTask,
     /// §4.5：活动 Task 的结构性根 Namespace Capability 不可丢弃。
     StructuralCap,
+    /// 目标位置要求活动 Task（§4.3 W4）。
+    InvalidHolder,
     AuditFull,
 }
 
@@ -2363,6 +2395,8 @@ pub enum MemsegError {
 pub struct NamespaceObject {
     pub id: u32,
     pub creator: u32,
+    /// §5.4/§14 步骤 3：所属节点（单节点细化层恒为 [`LOCAL_NODE`]）。
+    pub node: u32,
     /// 当前活动条目数（条目内容在 [`NsEntryTable`] 承载）。
     pub entries: usize,
 }
@@ -3084,6 +3118,8 @@ pub enum BootstrapError {
     EntryOutsideImage,
     /// W14：`booted=true` 后不得再次成功执行 `bootstrap`。
     AlreadyBooted,
+    /// 细化层审计容量耗尽（容量是 §6.2 排除项；失败保持状态不变）。
+    AuditFull,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3225,24 +3261,40 @@ impl BootstrapState {
             return Err(AuthorityError::InvalidHolder);
         }
 
-        // W5：init 的结构性根 Namespace Capability 由 init 持有且含 `NsResolve`。
-        let init = self
-            .tasks
-            .find(INIT_TASK_ID)
-            .ok_or(AuthorityError::InvalidHolder)?;
-        let root_ns_cap = init.root_ns_cap;
-        let root_position = self
-            .positions
-            .find(root_ns_cap)
-            .ok_or(AuthorityError::InvalidHolder)?;
-        if root_position.location != CapabilityLocation::HeldByTask(INIT_TASK_ID) {
-            return Err(AuthorityError::InvalidHolder);
-        }
-        let root_rights = self
-            .rights_of(root_ns_cap)
-            .ok_or(AuthorityError::InvalidHolder)?;
-        if !root_rights.contains(Right::NsResolve) {
-            return Err(AuthorityError::RightsEscalation);
+        // W5：每个活动 Task 的结构性根 Namespace Capability 都必须由该 Task 持有、指向活动
+        // Namespace 且含 `NsResolve`。
+        //
+        // ISSUE-AUTH-003（已登记）：平台 witness task 与 `create_task` 辅助路径仍以
+        // `Handle::ZERO` 表示“无结构根”，本检查暂跳过它们；POSIR 的 W5 要求所有活动
+        // 非 RemoteProxy Task 都有结构根，该缺口不在本切片静默放宽——见 tracker。
+        for task in self.tasks.entries.iter().flatten() {
+            if task.status == TaskStatus::Dead || task.root_ns_cap == Handle::ZERO {
+                continue;
+            }
+            let root_ns_cap = task.root_ns_cap;
+            let root_position = self
+                .positions
+                .find(root_ns_cap)
+                .ok_or(AuthorityError::InvalidHolder)?;
+            if root_position.location != CapabilityLocation::HeldByTask(task.id) {
+                return Err(AuthorityError::InvalidHolder);
+            }
+            let root_rights = self
+                .rights_of(root_ns_cap)
+                .ok_or(AuthorityError::InvalidHolder)?;
+            if !root_rights.contains(Right::NsResolve) {
+                return Err(AuthorityError::RightsEscalation);
+            }
+            let Some(ObjectRef::Namespace(ns_id)) = self.target_of(root_ns_cap) else {
+                return Err(AuthorityError::InvalidHolder);
+            };
+            if !self.namespaces[..self.namespace_count]
+                .iter()
+                .flatten()
+                .any(|namespace| namespace.id == ns_id)
+            {
+                return Err(AuthorityError::InvalidHolder);
+            }
         }
 
         // 异常源：cap 必须是一条目标为 `ExcSource(id)` 的 live 记录；订阅者活跃；id 唯一。
@@ -3409,7 +3461,7 @@ impl BootstrapState {
                 .any(|namespace| namespace.id == id),
             ObjectRef::ExcSource(id) => self.exc_sources.find(id).is_some(),
             ObjectRef::Timer(id) => self.timers.find(id).is_some(),
-            ObjectRef::Device(id) => self.devices.find(id).is_some(),
+            ObjectRef::Device(id, _) => self.devices.find(id).is_some(),
         }
     }
 
@@ -3480,6 +3532,9 @@ impl BootstrapState {
     /// `status == Faulted ⇔ pending_exc != None`（W9 双向）、Faulted 任务不可被 `schedule`
     /// 选中（它不在 Ready 集合内，调度器不会隐式恢复它）。
     pub fn fault_witness(&mut self) -> Result<FaultWitness, TaskError> {
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
         let task_id = FAULT_WITNESS_TASK_ID;
         self.tasks.create_with_entry(task_id, 0)?;
         // 前置 4 反例：init 此刻仍是 Ready，对它 raise 硬件异常必须被拒且不留痕。
@@ -3536,6 +3591,11 @@ impl BootstrapState {
     /// §12.10 的候选，回收会绕过未来的恢复路径）；正例为**不可恢复**的 `Faulted`
     /// （`DoubleFault`，§12.10 前置 6），由 KernelActor 无 cap 回收。
     pub fn reclaim_witness(&mut self) -> Result<ReclaimWitness, TaskError> {
+        // 本见证会直接追加两条 `TaskStateChanged`（正/反例各一）；`kernel_reclaim_task`
+        // 自身再按实际销毁事件预检。这里先保证前两条不会越界。
+        if !self.audit.can_append(2) {
+            return Err(TaskError::AuditFull);
+        }
         // 反例：可恢复的 Faulted。
         self.tasks.create_with_entry(RECLAIM_NEGATIVE_TASK_ID, 0)?;
         self.tasks.schedule(RECLAIM_NEGATIVE_TASK_ID)?;
@@ -3605,6 +3665,9 @@ impl BootstrapState {
         };
         if task.status != TaskStatus::Ready {
             return Err(BootstrapError::InvalidAuthority);
+        }
+        if !self.audit.can_append(1) {
+            return Err(BootstrapError::AuditFull);
         }
         task.status = TaskStatus::Running;
         self.audit.append(AuditEvent::TaskStateChanged {
@@ -4442,6 +4505,7 @@ impl BootstrapState {
         self.namespaces[object_slot] = Some(NamespaceObject {
             id: ns_id,
             creator: caller,
+            node: LOCAL_NODE,
             entries: 0,
         });
         self.namespace_count += 1;
@@ -4919,7 +4983,11 @@ impl BootstrapState {
         }
         let id = self.devices.next_id();
         let handle = self
-            .mint_root_capability(caller, DEVICE_IOPORT_RIGHTS, ObjectRef::Device(id))
+            .mint_root_capability(
+                caller,
+                DEVICE_IOPORT_RIGHTS,
+                ObjectRef::Device(id, DeviceKind::IoPortRange),
+            )
             .map_err(|_| DeviceError::CapacityExceeded)?;
         if !self.devices.insert(DeviceObject {
             id,
@@ -4952,7 +5020,7 @@ impl BootstrapState {
             SlotState::Live => {}
         }
         let target = self.target_of(cap).ok_or(DeviceError::InvalidCap)?;
-        let ObjectRef::Device(id) = target else {
+        let ObjectRef::Device(id, _) = target else {
             return Err(DeviceError::NotADevice);
         };
         if self.devices.find(id).is_none() {
@@ -5408,6 +5476,10 @@ impl BootstrapState {
         if self.holder_of(cap) != Some(holder) {
             return Err(CapabilityPositionError::HolderMismatch);
         }
+        // W5：结构性根 Namespace Capability 不得被直接撤销/丢弃。
+        if self.is_structural_root_ns_cap(cap) {
+            return Err(CapabilityPositionError::StructuralCap);
+        }
         let mut preview = self.records;
         let (_, revoked_count) = preview.revoke_subtree(cap);
         if !self.audit.can_append(revoked_count) {
@@ -5433,6 +5505,14 @@ impl BootstrapState {
             SlotState::Free => return Err(CapabilityPositionError::NoSuchCapability),
             SlotState::Stale => return Err(CapabilityPositionError::StaleHandle),
             SlotState::Live => {}
+        }
+        // W5：结构性根 Namespace Capability 不得被直接移动。
+        if self.is_structural_root_ns_cap(cap) {
+            return Err(CapabilityPositionError::StructuralCap);
+        }
+        // W4：`HeldBy(t)` 要求 t 是活动 Task。
+        if !self.tasks.is_live(to_task) {
+            return Err(CapabilityPositionError::InvalidHolder);
         }
         if !self.audit.can_append(1) {
             return Err(CapabilityPositionError::AuditFull);
@@ -5734,6 +5814,10 @@ impl BootstrapState {
         if self.tasks.create_with_entry(new_id, req.entry).is_err() {
             rollback(&fresh_tables, fresh_count);
             return Err(TaskCreateError::CapacityExceeded);
+        }
+        if let Some(task) = self.tasks.find_mut(new_id) {
+            // §8.1 成功动作 1/2：记录调用者为创建者；种类/节点沿用 CPU/本节点。
+            task.creator = caller;
         }
         let mut vspace_count = 0u64;
         for index in 0..req.code_pages {
@@ -6151,6 +6235,15 @@ impl BootstrapState {
             if self.holder_of(cap) != Some(sender) {
                 return Err(IpcError::CapabilityHolderMismatch);
             }
+            // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
+            // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
+            let target = self.target_of(cap).ok_or(IpcError::InvalidCapability)?;
+            if !self.target_live(target) {
+                return Err(IpcError::InvalidCapability);
+            }
+            // §9.1 前置 6 / W5 的发送侧守卫：**暂不在此启用**。ring3 init 的启动协议
+            // （`SERVICE_SETUP_TAG`）当前直接移交结构性根 Namespace cap；在 init 代码改为
+            // 先派生副本之前启用会中断启动。见 ISSUE-AUTH-004（SPEC-150 登记）。
             capabilities[index] = cap;
         }
         let direct_delivery = self.tasks.is_blocked_recv(receiver);
@@ -6285,7 +6378,7 @@ impl BootstrapState {
     /// SPEC-114：一句柄是否指向一个**活的** `Device` 对象（内核侧核验驱动持有的端口环）。
     pub fn device_of_cap(&self, cap: Handle) -> Option<u32> {
         match self.target_of(cap) {
-            Some(ObjectRef::Device(id)) if self.devices.find(id).is_some() => Some(id),
+            Some(ObjectRef::Device(id, _)) if self.devices.find(id).is_some() => Some(id),
             _ => None,
         }
     }
@@ -7081,6 +7174,7 @@ impl fmt::Display for BootstrapError {
             Self::InvalidAuthority => formatter.write_str("invalid authority"),
             Self::EntryOutsideImage => formatter.write_str("entry outside image range"),
             Self::AlreadyBooted => formatter.write_str("already booted"),
+            Self::AuditFull => formatter.write_str("audit full"),
         }
     }
 }
@@ -7134,7 +7228,13 @@ pub fn create_state(
     {
         return Err(BootstrapError::InvalidFrameOwnership);
     }
-    if !entry_in_image(entry, image_base, image_len) {
+    // §14 前置 3 以**页**为单位：`image_virtual_base + image_frames.length * PAGE_SIZE`。
+    // 不能直接用 `image_len`（字节）：镜像末页可能只部分使用，按字节比较会拒绝规范允许的
+    // 末页内入口。
+    let image_span = (inventory.image_frames as u64)
+        .checked_mul(crate::mem::FRAME_SIZE)
+        .ok_or(BootstrapError::ImageRangeOverflow)?;
+    if !entry_in_image(entry, image_base, image_span) {
         return Err(BootstrapError::EntryOutsideImage);
     }
     let snapshot = create_snapshot(
@@ -7174,7 +7274,8 @@ pub fn create_state(
         Some(SegmentObject {
             id: IMAGE_SEGMENT_ID,
             generation: INITIAL_CAP_GENERATION,
-            creator: INIT_TASK_ID,
+            // §14 步骤 2：image Segment 由 KernelActor 在 bootstrap 中创建。
+            creator: KERNEL_ACTOR,
             pool: crate::frames::Pool::Cpu,
             frames: SegmentFrames::Image {
                 count: inventory.image_frames,
@@ -7187,7 +7288,9 @@ pub fn create_state(
     let mut namespaces = [None; MAX_NAMESPACE_OBJECTS];
     namespaces[0] = Some(NamespaceObject {
         id: INIT_NAMESPACE_ID,
-        creator: INIT_TASK_ID,
+        // §14 步骤 3：Namespace 由 KernelActor 在 bootstrap 中创建。
+        creator: KERNEL_ACTOR,
+        node: LOCAL_NODE,
         entries: 0,
     });
 
@@ -7255,6 +7358,13 @@ pub fn create_state(
     state.audit.append(AuditEvent::TaskCreated {
         task_id: INIT_TASK_ID,
     });
+    // §14 步骤 5/6 + 步骤 9：三条初始根 Capability 的铸造事件（W13 创建记录）。
+    for capability in &capabilities {
+        state.audit.append(AuditEvent::CapabilityMinted {
+            cap: capability.handle,
+            holder: capability.holder,
+        });
+    }
     state
         .validate_authority()
         .map_err(|_| BootstrapError::InvalidAuthority)?;
@@ -8085,20 +8195,21 @@ mod tests {
         EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS, EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind,
         ExcResumeError, Handle, IMAGE_CAP_HANDLE, IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID,
         INIT_TASK_ID, INITIAL_CAP_GENERATION, INITIAL_CAPABILITY_COUNT, InitialObject, IpcError,
-        KERNEL_ACTOR, MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES,
-        MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError,
-        ObjectRef, PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
-        PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
-        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc,
-        SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames,
-        SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE,
-        TIMER_RIGHTS, TaskError, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
-        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot,
-        create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
+        KERNEL_ACTOR, LOCAL_NODE, MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS,
+        MAX_SEGMENT_FRAMES, MemsegError, NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS,
+        NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef, PAGE_FAULT_SOURCE_ID,
+        PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT, PLATFORM_SEGMENT_ID_FIRST,
+        PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS, PLATFORM_TASK1_CAP_HANDLE,
+        PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, SEGMENT_ROOT_RIGHTS, SERVICE_STACK_CAP_SLOT,
+        SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject, TASK_CAP_HANDLE, TASK_RIGHTS,
+        TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS, TaskError, TaskKind,
+        TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError, TimerState,
+        USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot, create_state,
+        entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
         platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
-    use crate::rights::{ObjectKind, Right, Rights};
+    use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
 
     #[test]
     fn tlb_flush_only_for_current_root() {
@@ -8191,7 +8302,8 @@ mod tests {
         let before = state.audit_len();
         let trace = state.audit_trace(INIT_TASK_ID, child).expect("query");
         assert_eq!(&trace.chain[..trace.chain_len], &[IMAGE_CAP_HANDLE, child]);
-        assert_eq!((trace.minted, trace.derived, trace.moves), (0, 1, 2));
+        // IMAGE_CAP 的初始铸造事件现在也入审计（§14 步骤 9），故根链上 minted = 1。
+        assert_eq!((trace.minted, trace.derived, trace.moves), (1, 1, 2));
         assert_eq!((trace.created, trace.destroyed), (1, 0));
         assert!(trace.target_live && trace.origin_none);
         assert_eq!(state.audit_len(), before);
@@ -9111,6 +9223,8 @@ mod tests {
     #[test]
     fn capability_move_and_drop_preserve_unique_location() {
         let mut state = fresh_state();
+        // W4：`HeldBy(t)` 要求 t 是活动 Task（本测试要移动到 task 2）。
+        state.create_task(2).unwrap();
         state
             .move_capability(IMAGE_CAP_HANDLE, INIT_TASK_ID, 2)
             .unwrap();
@@ -9389,6 +9503,96 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_audit_records_the_three_initial_capability_mints() {
+        // §14 步骤 9 / W13：初始根也是铸造记录；三条 CapMinted 与三个初始句柄一一对应。
+        let state = fresh_state();
+        let mut seen = [false; 3];
+        state.audit.for_each(|event| {
+            if let AuditEvent::CapabilityMinted { cap, holder } = event {
+                assert_eq!(*holder, INIT_TASK_ID);
+                for (index, handle) in [IMAGE_CAP_HANDLE, NAMESPACE_CAP_HANDLE, TASK_CAP_HANDLE]
+                    .iter()
+                    .enumerate()
+                {
+                    if cap == handle {
+                        seen[index] = true;
+                    }
+                }
+            }
+        });
+        assert_eq!(seen, [true, true, true]);
+        assert_eq!(state.audit.count, 7);
+    }
+
+    #[test]
+    fn init_task_represents_spec_creator_kind_and_node() {
+        // §14 步骤 4：init 由 KernelActor 创建、CPU Task、本节点。
+        let state = fresh_state();
+        let init = state.tasks.find(INIT_TASK_ID).expect("init exists");
+        assert_eq!(init.creator, KERNEL_ACTOR);
+        assert_eq!(init.kind, TaskKind::Cpu);
+        assert_eq!(init.node, LOCAL_NODE);
+        assert_eq!(
+            state.namespaces[0].as_ref().map(|ns| (ns.creator, ns.node)),
+            Some((KERNEL_ACTOR, LOCAL_NODE))
+        );
+        assert_eq!(
+            state.segment(IMAGE_SEGMENT_ID).map(|seg| seg.creator),
+            Some(KERNEL_ACTOR)
+        );
+    }
+
+    #[test]
+    fn entry_range_is_checked_in_image_pages_not_partial_bytes() {
+        // §14 前置 3：末页只部分使用时，入口落在该页内仍合法（按页上取整）。
+        assert!(create_state(0x4000_0000, 0x2800, 0x4000_2f00, &inventory()).is_ok());
+        assert_eq!(
+            create_state(0x4000_0000, 0x2800, 0x4000_3000, &inventory()),
+            Err(BootstrapError::EntryOutsideImage)
+        );
+    }
+
+    #[test]
+    fn structural_root_capability_cannot_be_moved_or_revoked() {
+        let mut state = fresh_state();
+        state.create_task(2).expect("receiver");
+        assert_eq!(
+            state.move_capability(NAMESPACE_CAP_HANDLE, INIT_TASK_ID, 2),
+            Err(CapabilityPositionError::StructuralCap)
+        );
+        assert_eq!(
+            state.revoke_capability(NAMESPACE_CAP_HANDLE, INIT_TASK_ID),
+            Err(CapabilityPositionError::StructuralCap)
+        );
+        // 失败不得移动根 cap。
+        assert_eq!(state.holder_of(NAMESPACE_CAP_HANDLE), Some(INIT_TASK_ID));
+    }
+
+    #[test]
+    fn send_rejects_a_capability_whose_target_is_dead() {
+        // §9.1 前置 5：目标对象已销毁的 token 不 `usable`，不得随消息转移。
+        let mut state = fresh_state();
+        state.create_task(2).expect("receiver");
+        state.prepare_user_ipc_caps().expect("send cap");
+        let dead = state.ns_create(INIT_TASK_ID).expect("namespace");
+        state
+            .ns_destroy(INIT_TASK_ID, dead)
+            .expect("destroy namespace");
+        assert!(state.target_of(dead).is_some());
+        assert_eq!(
+            state.send_message_with_capabilities(
+                INIT_TASK_ID,
+                2,
+                TASK2_SEND_CAP_HANDLE,
+                0,
+                &[dead]
+            ),
+            Err(IpcError::InvalidCapability)
+        );
+        assert_eq!(state.holder_of(dead), Some(INIT_TASK_ID));
+    }
+
+    #[test]
     fn queued_capability_position_keeps_authority_valid() {
         let mut state = fresh_state();
         state.activate_init().unwrap();
@@ -9499,10 +9703,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state.ipc.count, 0);
-        // 前 5 条是 SPEC-061 的初始 Authority 审计；随后是 SPEC-071 的 Task 状态迁移
-        // （`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞与投递唤醒）、§13.1 的
-        // 携带 Capability 位置变化（直投：`HeldBy(init)` → `HeldBy(2)`）与消息事件。
-        assert_eq!(state.audit.count, 10);
+        // 前 8 条是 §14 步骤 9 的初始 Authority 审计（含三条初始 CapMinted）；随后是
+        // SPEC-071 的 Task 状态迁移（`prepare_user_ipc_caps`/`receive_message` 的空队列阻塞
+        // 与投递唤醒）、§13.1 的携带 Capability 位置变化（直投：`HeldBy(init)` → `HeldBy(2)`）
+        // 与消息事件。
+        assert_eq!(state.audit.count, 13);
         assert_eq!(
             state.audit.entry(state.audit.len() - 4),
             Some(AuditEvent::CapabilityMoved {
@@ -10863,7 +11068,7 @@ mod tests {
             .dev_ioport_create(INIT_TASK_ID, 0x3f8, 8)
             .expect("device created");
         let target = state.target_of(handle).expect("root cap resolves");
-        assert_eq!(target.kind(), ObjectKind::Device);
+        assert_eq!(target.kind(), ObjectKind::Device(DeviceKind::IoPortRange));
         let device = state.devices.find(target.id()).expect("device is live");
         assert_eq!((device.base_port, device.port_count), (0x3f8, 8));
         assert!(device.covers(0x3f8) && device.covers(0x3ff));

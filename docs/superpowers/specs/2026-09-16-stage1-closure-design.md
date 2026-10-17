@@ -1,5 +1,11 @@
 # 切片 P 设计：阶段 1 退出条件——帧唯一归属与初始 Authority 物化
 
+> **SPEC-150 更正（2026-10-17）**：本文保留 2026-09-16 的原始设计快照。后续已发生：
+> 初始创建事件改为 `TaskCreated`（非 `TaskStateChanged`）；bootstrap 追加三条初始
+> `CapMinted`（§14 步骤 9）；`authority_ready.root_ns` 为严格句柄 `0x100000002`；
+> `frames_ready` 增 `disjoint=1`（`ISSUE-FRAME-002` 已关闭）。现行结论见
+> [SPEC-150 报告](../reports/2026-10-17-stage1-review-remediation-spec150.md)。
+
 > 文档类型：真实内核实现设计（阶段 1 退出条件）
 >
 > 日期：2026-09-16

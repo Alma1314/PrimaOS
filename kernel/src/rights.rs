@@ -30,14 +30,33 @@ pub enum Right {
     ExcSourceDestroy,
     NodeConnect,
     NodeDestroy,
-    /// §15.3 `DeviceRight` 的 **IOPortRange** 子集（MMIO/DMA/IRQ 的权利在实现对应设备种类时再加）。
+    /// §15.3 `DeviceRight` 的 IOPortRange 子集。
     DevIORead,
     DevIOWrite,
     DevDestroy,
+    // 以下为 §4.1 已定义、此前内核枚举遗漏的权利。**追加在末尾**以保持既有权利的位序
+    // 与渲染顺序不变（既有 QEMU 事件中的权限列表不受影响）。
+    WaitWait,
+    WaitSignal,
+    WaitDestroy,
+    DevMMIOR,
+    DevMMIOW,
+    DevDMAR,
+    DevDMAW,
+    DevInterruptSubscribe,
+}
+
+/// §15.2 的设备种类；`ObjectRef::Device(dev, kind)` 随引用携带，供 W2 类型检查。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceKind {
+    MmioRegion,
+    IoPortRange,
+    DmaBuffer,
+    InterruptLine,
 }
 
 /// 全部 Right 的规范枚举顺序（同时是渲染顺序与解析顺序）。
-pub const ALL_RIGHTS: [Right; 23] = [
+pub const ALL_RIGHTS: [Right; 31] = [
     Right::Derive,
     Right::SegMapR,
     Right::SegMapW,
@@ -61,6 +80,14 @@ pub const ALL_RIGHTS: [Right; 23] = [
     Right::DevIORead,
     Right::DevIOWrite,
     Right::DevDestroy,
+    Right::WaitWait,
+    Right::WaitSignal,
+    Right::WaitDestroy,
+    Right::DevMMIOR,
+    Right::DevMMIOW,
+    Right::DevDMAR,
+    Right::DevDMAW,
+    Right::DevInterruptSubscribe,
 ];
 
 impl Right {
@@ -89,6 +116,14 @@ impl Right {
             Right::DevIORead => "DevIORead",
             Right::DevIOWrite => "DevIOWrite",
             Right::DevDestroy => "DevDestroy",
+            Right::WaitWait => "WaitWait",
+            Right::WaitSignal => "WaitSignal",
+            Right::WaitDestroy => "WaitDestroy",
+            Right::DevMMIOR => "DevMMIOR",
+            Right::DevMMIOW => "DevMMIOW",
+            Right::DevDMAR => "DevDMAR",
+            Right::DevDMAW => "DevDMAW",
+            Right::DevInterruptSubscribe => "DevInterruptSubscribe",
         }
     }
 
@@ -110,8 +145,10 @@ pub enum ObjectKind {
     Timer,
     ExcSource,
     Node,
-    /// §15.2 `Device(DevId)`——设备对象（本片仅实现 `IOPortRange` 种）。
-    Device,
+    /// §5.6 / §4.1：等待对象。
+    WaitObject,
+    /// §15.2 `Device(DevId, kind)`——按设备种类做 W2 类型检查（本片仅实现 `IOPortRange`）。
+    Device(DeviceKind),
 }
 
 impl ObjectKind {
@@ -136,7 +173,19 @@ impl ObjectKind {
             ObjectKind::Timer => &[Right::TimerCancel, Right::TimerDestroy],
             ObjectKind::ExcSource => &[Right::ExcSubscribe, Right::ExcSourceDestroy],
             ObjectKind::Node => &[Right::NodeConnect, Right::NodeDestroy],
-            ObjectKind::Device => &[Right::DevIORead, Right::DevIOWrite, Right::DevDestroy],
+            ObjectKind::WaitObject => &[Right::WaitWait, Right::WaitSignal, Right::WaitDestroy],
+            ObjectKind::Device(DeviceKind::MmioRegion) => {
+                &[Right::DevMMIOR, Right::DevMMIOW, Right::DevDestroy]
+            }
+            ObjectKind::Device(DeviceKind::IoPortRange) => {
+                &[Right::DevIORead, Right::DevIOWrite, Right::DevDestroy]
+            }
+            ObjectKind::Device(DeviceKind::DmaBuffer) => {
+                &[Right::DevDMAR, Right::DevDMAW, Right::DevDestroy]
+            }
+            ObjectKind::Device(DeviceKind::InterruptLine) => {
+                &[Right::DevInterruptSubscribe, Right::DevDestroy]
+            }
         }
     }
 }
@@ -350,12 +399,41 @@ mod tests {
     fn device_ioport_rights_are_typed_to_devices_only() {
         // §15.5：`dev_ioport_create` 的根 cap 权限 = {Derive, DevIORead, DevIOWrite, DevDestroy}。
         let ioport = parse("DevIOWrite,Derive,DevIORead,DevDestroy");
+        let kind = ObjectKind::Device(DeviceKind::IoPortRange);
         assert_eq!(render(ioport), "Derive,DevIORead,DevIOWrite,DevDestroy");
-        assert!(ioport.well_typed(ObjectKind::Device));
+        assert!(ioport.well_typed(kind));
         // 设备权利不得落在其它对象类型上，反之亦然。
         assert!(!parse("DevIORead").well_typed(ObjectKind::Segment));
-        assert!(!parse("SegMapR").well_typed(ObjectKind::Device));
-        assert!(parse("Derive").well_typed(ObjectKind::Device));
+        assert!(!parse("SegMapR").well_typed(kind));
+        assert!(parse("Derive").well_typed(kind));
+        // W2 按设备种类匹配：MMIO/DMA/IRQ 权利不得用于 IOPortRange。
+        assert!(!parse("DevMMIOR").well_typed(kind));
+        assert!(
+            parse("DevMMIOR,DevMMIOW,DevDestroy")
+                .well_typed(ObjectKind::Device(DeviceKind::MmioRegion))
+        );
+        assert!(
+            parse("DevInterruptSubscribe,DevDestroy")
+                .well_typed(ObjectKind::Device(DeviceKind::InterruptLine))
+        );
+    }
+
+    #[test]
+    fn all_spec_4_1_rights_parse_and_round_trip() {
+        // 回归：此前 Right/ALL_RIGHTS 遗漏 Wait* 与 DevMMIO/DMA/IRQ 权利。
+        for name in [
+            "WaitWait",
+            "WaitSignal",
+            "WaitDestroy",
+            "DevMMIOR",
+            "DevMMIOW",
+            "DevDMAR",
+            "DevDMAW",
+            "DevInterruptSubscribe",
+        ] {
+            assert_eq!(render(parse(name)), name);
+        }
+        assert!(parse("WaitWait,WaitSignal,WaitDestroy").well_typed(ObjectKind::WaitObject));
     }
 
     #[test]

@@ -91,6 +91,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-150 / 阶段 1 补充复核与整改（处置 8 类、登记 4 项 Open）](superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)
 - [2026-10-17 — SPEC-149 / 阶段 4 退出条件复核与签署（S4-D1–D5/X1–X4 通过）](superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)
 - [2026-10-17 — SPEC-148 / 阶段 3 退出条件复核与签署（S3-D1–D5/X1–X4 通过）](superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)
 - [2026-10-17 — SPEC-147 / 阶段 2 退出条件复核与签署（S2-D1–D5/X1–X4 通过）](superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)

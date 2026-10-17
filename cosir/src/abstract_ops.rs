@@ -116,9 +116,7 @@ pub fn abstract_state(m: &MachineState) -> State {
         // §14 步骤 9 / §13.1：写入第一组 Audit 事件（`KernelActor`，bootstrap 无 Task 调用者）。
         // 顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）：`Bootstrapped` → 两个
         // `ObjectCreated`（image Segment、init Namespace；`segment` 标志区分同 id 的两种对象）
-        // → init Task 创建。§14 步骤 5/6 的三条根 Capability **不**补发 `CapMinted`——§13.1 的
-        // `CapMinted` 用于「随对象创建铸造」的**运行时**路径（如 `ns_create`），bootstrap 根由
-        // §14 步骤 5/6 表示，内核亦不发（见 `kernel/src/bootstrap.rs` 的 `CapabilityMinted` 注释）。
+        // → init Task 创建 → 三条初始根 Capability 的 `CapMinted`（W13 创建记录）。
         s.push_audit(Actor::Kernel, AuditKind::Bootstrapped);
         s.push_audit(
             Actor::Kernel,
@@ -141,6 +139,9 @@ pub fn abstract_state(m: &MachineState) -> State {
                 status: TaskStatus::Ready,
             },
         );
+        for (cap, holder) in [(1, init), (2, init), (3, init)] {
+            s.push_audit(Actor::Kernel, AuditKind::CapabilityMinted { cap, holder });
+        }
     }
     s
 }
@@ -375,9 +376,30 @@ mod tests {
                         status: TaskStatus::Ready,
                     }
                 ),
+                ev(
+                    4,
+                    AuditKind::CapabilityMinted {
+                        cap: 1,
+                        holder: init_task_id(),
+                    }
+                ),
+                ev(
+                    5,
+                    AuditKind::CapabilityMinted {
+                        cap: 2,
+                        holder: init_task_id(),
+                    }
+                ),
+                ev(
+                    6,
+                    AuditKind::CapabilityMinted {
+                        cap: 3,
+                        holder: init_task_id(),
+                    }
+                ),
             ]
         );
-        assert_eq!(s.next_event, 4, "W13：EventId 严格递增");
+        assert_eq!(s.next_event, 7, "W13：EventId 严格递增");
     }
 
     #[test]

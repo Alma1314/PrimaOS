@@ -1784,7 +1784,7 @@ Bootstrap 是唯一允许在没有 Task Actor 时铸造初始 Authority 的内�
 6. 将这些 Capability 放入 `HeldBy(init)`；
 7. 把 Namespace Capability 写入 init 的 `root_ns_cap = Some(...)`，指定为结构性根；
 8. init Task 初始状态为 `Ready`；
-9. 设置 `booted = true`，并追加 `Bootstrapped`、`ObjectCreated`（image Segment、init Namespace）、`TaskCreated`（init）、每个 image 页的 `SegmentMapped` 与三条 Capability 铸造事件（§13.1）；事件顺序与内核 bootstrap 一致。
+9. 设置 `booted = true`，并追加 `Bootstrapped`、`ObjectCreated`（image Segment、init Namespace）、`TaskCreated`（init）与三条 Capability 铸造事件（§13.1）；事件顺序与内核 bootstrap 一致。若细化层在 bootstrap 中**实际物化**了步骤 4 的 image 逐页 `vspace` 映射，则还须为每个 image 页追加 `SegmentMapped`；若该细化在 bootstrap 阶段只建立对象与帧归属、image 映射由后续细化操作建立，则逐页 `SegmentMapped` 随映射实际建立时补记，不得伪报为已在 bootstrap 发生。
 
 Bootstrap 不向“不存在的调用者”返回 Capability。其创建的初始 Capability 直接位于 init Task。Bootstrap 后再次调用必须返回 `AlreadyBooted`（本规范中表示“`booted = true` 后再次调用 bootstrap”）且状态不变。
 
@@ -2199,7 +2199,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W13 — Audit 完整性
 
-- 每个 `CapRecord.created_at` 指向对应铸造或派生事件；
+- 每个 `CapRecord.created_at` 指向对应铸造或派生事件；Bootstrap 铸造的初始根 Capability 以该次 `Bootstrapped` 事件为创建记录；
 - 每次 Capability 位置变化都有事件；
 - 每个活动对象都有创建事件；
 - Audit EventId 严格递增且事件序列只追加不改写。

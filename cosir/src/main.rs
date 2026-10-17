@@ -170,9 +170,10 @@ fn main() {
     let st_after = bootstrap(&m).expect("bootstrap should succeed");
     assert!(st_after.booted);
     assert!(st_after.tasks.contains_key(&abstract_ops::init_task_id()));
-    // §14 步骤 9 / §13.1：第一组 Audit 事件（Bootstrapped + 2×ObjectCreated + TaskCreated）。
-    assert_eq!(st_after.audit.len(), 4, "§14 步骤 9 第一组 Audit");
-    assert_eq!(st_after.next_event, 4, "W13：EventId 严格递增");
+    // §14 步骤 9 / §13.1：第一组 Audit（Bootstrapped + 2×ObjectCreated + TaskCreated +
+    // 3×CapabilityMinted）。
+    assert_eq!(st_after.audit.len(), 7, "§14 步骤 9 第一组 Audit");
+    assert_eq!(st_after.next_event, 7, "W13：EventId 严格递增");
     println!("PASS cosir bootstrap abstract");
     println!("PASS cosir bootstrap alpha projection");
     println!("PASS cosir bootstrap initial audit");
