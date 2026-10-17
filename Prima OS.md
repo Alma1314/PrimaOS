@@ -811,6 +811,8 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - 页帧复用前清零；
 - stale handle 不会重新获得 Authority。
 
+**2026-10-17：阶段 2 已通过（SPEC-147）。** S2-D1–D5 与 S2-X1–X4 已勾选：handle/generation、derive/drop/stale、memseg（含清零）、task create/destroy/yield、send/recv 均有 host 单测 + QEMU `task_ready`/`ipc_ready`/`memseg_ready`/`state_audit_ready`；`ISSUE-TASK-001/003` 关闭、`ISSUE-CAP-002` 闭合；`ISSUE-CAP-001` 仍是 host 模型缺口，不阻塞本阶段。
+
 ### 阶段 3 — Namespace、Timer 与 Audit
 
 交付：

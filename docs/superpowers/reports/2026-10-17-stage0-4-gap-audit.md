@@ -10,7 +10,7 @@
 |---|---|---|
 | 0 | S0-D1–D4、S0-X3。SPEC-054、SPEC-134、SPEC-139、SPEC-140 与 SPEC-143 覆盖现行 **47 项**常规操作（SPEC-143 新增 `node_attach`）的成功/失败语义；`lake build` 通过 | **S0-X1/S0-X2**：2026-10-17 的第三方组织级复核（SPEC-142）曾发现 29 项；经 SPEC-143/144 整改后，SPEC-145 在冻结基线 `16ff1fc` 上复核通过并签署（文本层面；跨节点 Cap 传递收窄为 v1 仅消息、`Faulted` 原上下文重播显式降级、`reserved_frames`/GPU 池进入状态）。实现/Lean/QEMU 边界见 SPEC-145。不能由本仓库作者或同一 harness 自行签署 |
 | 1 | S1-D1–D5、S1-X1 的构建与 QEMU 证据；SPEC-061/TEST-008 覆盖初始 Authority 和帧归属；**SPEC-146（2026-10-17）复核通过** | S1-X2/X3 已勾选；`ISSUE-FRAME-001/002` 关闭；`ISSUE-AUTH-001` 的 §14 image/vspace 偏差按显式细化分叉接受，保留到阶段 2/4 |
-| 2 | S2-D1–D5 与 X1–X4 的实现侧证据见 SPEC-062–075；SPEC-067 已实现自毁，SPEC-071 已补调度迁移 Audit，原 S2-X1 文案已纠正 | 交付项与退出条件仍按既定独立性门槛未勾选；复核 `ISSUE-TASK-001/003` 的已实现行为与残留偏差，以及跨任务授权/清零/stale 句柄负例 |
+| 2 | S2-D1–D5 与 X1–X4 的实现侧证据见 SPEC-062–075；**SPEC-147（2026-10-17）复核通过** | S2-D1–D5/X1–X4 已勾选；`ISSUE-TASK-001/003` 关闭、`ISSUE-CAP-002` 已闭合；`ISSUE-CAP-001` 的 host 模型缺口保留（不阻塞），跨任务授权/清零/stale 句柄负例已由 `ipc_ready`/`task_ready`/`memseg_ready` 覆盖 |
 | 3 | SPEC-081–083 的 Namespace、Timer、`audit(cap)` 实现与见证覆盖 D1–D5、X1–X4；SPEC-083 §7 列出逐项映射 | 交付项与退出条件待范畴外复核，不能把 harness 内审查当作组织级结论 |
 | 4 | SPEC-130 覆盖 D1–D5/X1–X4 的技术退出条件，SPEC-131–133/135 继续硬化；本轮 BIOS QEMU 双次通过 | 技术退出条件已具证据；**正式晋级**受 S0-X1 的阶段顺序约束。EXO-3 完整 ring 与静态缓冲退出、EXO-4 其他设备路径、DOC-007 新机制实现与 W17 证明是另列的后续工作，现有阶段 4 退出定义未要求它们 |
 
