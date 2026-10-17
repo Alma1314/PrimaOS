@@ -91,6 +91,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-134 / S0-X2 逐操作覆盖报告（DOC-007 增量复核）](superpowers/reports/2026-10-17-s0x2-coverage-increment-doc007.md)
 - [2026-10-17 — Prima OS 内核原语对照评估](superpowers/reports/2026-10-17-kernel-primitives-comparative-review.md)
 - [2026-10-16 — SPEC-130 / 阶段 4 技术退出条件收口](superpowers/reports/2026-10-16-stage4-closure-report.md)
 - [2026-10-15 — SPEC-115 / EXO-1：通用 boot image（ramdisk）装载](superpowers/reports/2026-10-15-exo1-boot-image-report.md)

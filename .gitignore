@@ -2,3 +2,4 @@
 /target/
 .obsidian
 /lean/.lake/
+.claude
