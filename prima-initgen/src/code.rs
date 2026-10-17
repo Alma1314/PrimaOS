@@ -306,6 +306,12 @@ const fn put_load_reg<const N: usize>(
     put(code, at + 3, &disp.to_le_bytes());
 }
 
+/// 从 Y 回执页加载实际返回的句柄；补齐原 `mov rdi, imm64` 的 10 字节槽位。
+const fn put_receipt_rdi<const N: usize>(code: &mut [u8; N], at: usize, disp: u32) {
+    put_load_reg(code, at, 0x48, 0xB9, disp);
+    put(code, at + 7, &[0x90; 3]);
+}
+
 /// `mov rdi, [rcx+disp32]` 的 `modrm`。
 const NS_MODRM_RDI: u8 = 0xB9;
 /// `mov rsi, [rcx+disp32]`（mod=10, reg=rsi, rm=rcx）。
@@ -634,11 +640,11 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put(&mut code, 690, &[0xCD, 0x80]);
     put(&mut code, 692, &[0x48, 0x89, 0x81, 176, 0, 0, 0]);
     // drop 子句柄（成功）→ 重复 drop（ENOENT）。
-    put_imm64(&mut code, 699, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_receipt_rdi(&mut code, 699, 168);
     put_imm64(&mut code, 709, 0x48, 0xB8, SYS_CAP_DROP);
     put(&mut code, 719, &[0xCD, 0x80]);
     put(&mut code, 721, &[0x48, 0x89, 0x81, 184, 0, 0, 0]);
-    put_imm64(&mut code, 728, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_receipt_rdi(&mut code, 728, 168);
     put_imm64(&mut code, 738, 0x48, 0xB8, SYS_CAP_DROP);
     put(&mut code, 748, &[0xCD, 0x80]);
     put(&mut code, 750, &[0x48, 0x89, 0x81, 192, 0, 0, 0]);
@@ -649,18 +655,18 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put(&mut code, 787, &[0xCD, 0x80]);
     put(&mut code, 789, &[0x48, 0x89, 0x81, 200, 0, 0, 0]);
     // 旧句柄授权应被拒绝（stale），新句柄应被授予。
-    put_imm64(&mut code, 796, 0x48, 0xBF, CAP_CHILD1_HANDLE);
+    put_receipt_rdi(&mut code, 796, 168);
     put_imm64(&mut code, 806, 0x48, 0xBE, RIGHT_DERIVE);
     put_imm64(&mut code, 816, 0x48, 0xB8, SYS_AUTHORIZE);
     put(&mut code, 826, &[0xCD, 0x80]);
     put(&mut code, 828, &[0x48, 0x89, 0x81, 208, 0, 0, 0]);
-    put_imm64(&mut code, 835, 0x48, 0xBF, CAP_CHILD2_HANDLE);
+    put_receipt_rdi(&mut code, 835, 200);
     put_imm64(&mut code, 845, 0x48, 0xBE, RIGHT_DERIVE);
     put_imm64(&mut code, 855, 0x48, 0xB8, SYS_AUTHORIZE);
     put(&mut code, 865, &[0xCD, 0x80]);
     put(&mut code, 867, &[0x48, 0x89, 0x81, 216, 0, 0, 0]);
     // drop 新句柄（清理）。
-    put_imm64(&mut code, 874, 0x48, 0xBF, CAP_CHILD2_HANDLE);
+    put_receipt_rdi(&mut code, 874, 200);
     put_imm64(&mut code, 884, 0x48, 0xB8, SYS_CAP_DROP);
     put(&mut code, 894, &[0xCD, 0x80]);
     put(&mut code, 896, &[0x48, 0x89, 0x81, 224, 0, 0, 0]);
@@ -680,7 +686,7 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put(&mut code, 963, &[0xCD, 0x80]);
     put(&mut code, 965, &[0x48, 0x89, 0x81, 240, 0, 0, 0]);
     // map(seg, task, 0, SEG_VA, 1, R|W)
-    put_imm64(&mut code, 972, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_receipt_rdi(&mut code, 972, 240);
     put_boot_load(&mut code, 982, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 992, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1002, 0x49, 0xBA, USER_SEG_VA);
@@ -707,12 +713,12 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1144, &[0xCD, 0x80]);
     put(&mut code, 1146, &[0x48, 0x89, 0x81, 16, 1, 0, 0]);
     // destroy(seg)
-    put_imm64(&mut code, 1153, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_receipt_rdi(&mut code, 1153, 240);
     put_imm64(&mut code, 1163, 0x48, 0xB8, SYS_MEMSEG_DESTROY);
     put(&mut code, 1173, &[0xCD, 0x80]);
     put(&mut code, 1175, &[0x48, 0x89, 0x81, 24, 1, 0, 0]);
     // 销毁后再 map：stale token 不可授权（EACCES）。
-    put_imm64(&mut code, 1182, 0x48, 0xBF, MEMSEG_CAP1_HANDLE);
+    put_receipt_rdi(&mut code, 1182, 240);
     put_boot_load(&mut code, 1192, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1202, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1212, 0x49, 0xBA, USER_SEG_VA);
@@ -728,7 +734,7 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put(&mut code, 1291, &[0xCD, 0x80]);
     put(&mut code, 1293, &[0x48, 0x89, 0x81, 40, 1, 0, 0]);
     // map2 + 读零（复用帧必须先清零才对用户可见 → S2-X3）。
-    put_imm64(&mut code, 1300, 0x48, 0xBF, MEMSEG_CAP2_HANDLE);
+    put_receipt_rdi(&mut code, 1300, 296);
     put_boot_load(&mut code, 1310, BootReg::Rsi, boot_abi::OFF_TASK_CAP);
     put_imm64(&mut code, 1320, 0x48, 0xBA, 0);
     put_imm64(&mut code, 1330, 0x49, 0xBA, USER_SEG_VA);
@@ -747,7 +753,7 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     put_imm64(&mut code, 1429, 0x48, 0xB8, SYS_MEMSEG_UNMAP);
     put(&mut code, 1439, &[0xCD, 0x80]);
     put(&mut code, 1441, &[0x48, 0x89, 0x81, 64, 1, 0, 0]);
-    put_imm64(&mut code, 1448, 0x48, 0xBF, MEMSEG_CAP2_HANDLE);
+    put_receipt_rdi(&mut code, 1448, 296);
     put_imm64(&mut code, 1458, 0x48, 0xB8, SYS_MEMSEG_DESTROY);
     put(&mut code, 1468, &[0xCD, 0x80]);
     put(&mut code, 1470, &[0x48, 0x89, 0x81, 72, 1, 0, 0]);

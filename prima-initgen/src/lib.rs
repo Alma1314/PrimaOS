@@ -51,11 +51,27 @@ mod tests {
             u32::from_le_bytes(code[226..230].try_into().unwrap()),
             boot_abi::OFF_IMAGE_CAP
         );
+        for (at, receipt) in [
+            (699, 168u32),
+            (728, 168),
+            (796, 168),
+            (835, 200),
+            (874, 200),
+            (972, 240),
+            (1153, 240),
+            (1182, 240),
+            (1300, 296),
+            (1448, 296),
+        ] {
+            assert_eq!(&code[at..at + 3], &[0x48, 0x8B, 0xB9]);
+            assert_eq!(&code[at + 3..at + 7], &receipt.to_le_bytes());
+            assert_eq!(&code[at + 7..at + 10], &[0x90; 3]);
+        }
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for byte in code {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
-        assert_eq!(hash, 0x2b76_d424_af1e_1496);
+        assert_eq!(hash, 0x1420_d9dc_85ca_1c5e);
     }
 }

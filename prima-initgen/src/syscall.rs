@@ -15,10 +15,6 @@ pub const AUDIT_RECEIPT_STALE: u64 = 728;
 
 pub const BAD_PTR: u64 = crate::code::USER_BASE_VA + 0x20_0000;
 
-pub const CAP_CHILD1_HANDLE: u64 = 0x0000_0001_0000_0006;
-
-pub const CAP_CHILD2_HANDLE: u64 = 0x0000_0002_0000_0006;
-
 pub const COPY_LEN: u64 = 8;
 
 pub const COPY_PTR: u64 = crate::code::USER_X_VA;
@@ -32,10 +28,6 @@ pub const FAST_ARG: u64 = 0x0FED_CBA9_8765_4321;
 pub const IPC_DIRECT_PAYLOAD: u64 = 0xD1EC_7000_0000_0002;
 
 pub const IPC_SHARED_MAGIC: u64 = 0x51A5_0000_0000_0001;
-
-pub const MEMSEG_CAP1_HANDLE: u64 = 0x0000_0003_0000_0006;
-
-pub const MEMSEG_CAP2_HANDLE: u64 = 0x0000_0001_0000_0007;
 
 pub const MEMSEG_PATTERN: u64 = 0xDEC0_DE00_1234_5678;
 
