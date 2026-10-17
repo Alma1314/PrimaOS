@@ -41,5 +41,5 @@
 ## 已登记而未冒称关闭的范围
 
 - `ISSUE-CAP-001` 的 host 模型位置表/完整溯源、`ISSUE-FRAME-001`、`ISSUE-AUTH-001`、`ISSUE-TASK-001/003` 的剩余解释或实现偏差，按跟踪文档状态保留。
-- `ISSUE-EXO-001` 已部分处置：服务 ELF 与构建依赖从内核移出，SPEC-136 将全部 15 条原始记录迁到两页共享字节流并删除内核静态 trace buffer/syscall。内核仍组装兼容 `PRIMA` 服务事件、读取少量 Y 页通用机制回执；循环 ring/任意长度字节流未交付。
+- `ISSUE-EXO-001` 已部分处置：服务 ELF 与构建依赖从内核移出，SPEC-136 将全部 15 条原始记录迁到两页共享字节流并删除内核静态 trace buffer/syscall；SPEC-138 又退役内核组装的兼容 `PRIMA` 服务事件与 Y 页服务回执偏移读取，服务语义改由 `xtask` 判定。循环 ring/任意长度字节流仍未交付。
 - DOC-007 的 8 项新增操作只有规范文本覆盖；WaitObject/upcall、`memseg_protect` 的 cosir/内核实现以及 W17/§17.9 证明尚未交付。SPEC-134 不把这些列为 S0-X2 文本覆盖缺口，也不把它们记成已实现。

@@ -148,29 +148,17 @@ pub extern "C" fn user_trap_exit() -> ! {
     // S2-D4：Task create/yield/destroy 用户原语 + 单核调度（S2-D4 主见证）。
     let task = kernel::syscall::task_witness();
     protocol::task_ready(&task);
-    // 两个客户端的原始记录都留在各自映射给 init 的共享页中。
-    match kernel::user::shared_trace_find_at(
-        kernel::user::USER_HELLO_VA,
-        prima_abi::trace::EVENT_RUNTIME_HELLO,
-        0,
-    ) {
-        Some(record) => protocol::runtime_hello_trace(&record),
-        None => {
-            protocol::panic_event();
-            serial::flush();
-            qemu::exit(qemu::PANIC)
-        }
+    // EXO-3M：服务语义事件不再由内核组装。保留原 seq 25–29 的空槽位，使后续事件
+    // 字节不变；用户态证据以下面的原始 trace / Y 页 / 活句柄扫描输出。
+    for _ in 0..5 {
+        protocol::skip_event();
     }
-    // SPEC-087：init 与**存活**客户端的双向握手（请求 → 应答 → 客户端写回执）。
-    protocol::service_reply_ready(&kernel::user::service_reply_witness());
-    // SPEC-088：init（broker）把客户端 Hello 转发给 ring3 Rust 服务端点，服务解析+协商。
-    protocol::service_negotiated_ready(&kernel::user::service_negotiated_witness());
-    // SPEC-090：init（服务管理器）按客户端写入共享段的服务名解析端点并二次路由 + 未知名拒绝。
-    protocol::service_selected_ready(&kernel::user::service_selected_witness());
-    // SPEC-103：ring3 服务管理器任务被 init 建起并自报存活（独立二进制映像、id 非 init）。
-    protocol::servicemgr_ready(&kernel::user::servicemgr_witness());
     protocol::trace_bytes_dump(kernel::user::USER_HELLO_VA, 0);
     protocol::trace_bytes_dump(kernel::user::USER_HELLO2_VA, 1);
+    protocol::trace_live_handles_dump(kernel::user::USER_HELLO_VA, 0);
+    protocol::trace_live_handles_dump(kernel::user::USER_HELLO2_VA, 1);
+    protocol::y_bytes_dump(kernel::user::USER_Y_VA);
+    protocol::page_live_handles_dump(kernel::user::USER_Y_VA);
     // SPEC-081：§11 Namespace 路径操作（七个原语的 ring3 端到端见证 + 环检测）。
     let namespace = kernel::syscall::ns_witness();
     protocol::namespace_ready(&namespace);

@@ -49,6 +49,7 @@ Capability 的派生、丢弃以及对象生命周期操作可以作为独立操
 - 物理内存中字节的具体内容及程序读写行为；
 - SMP 并发、弱内存模型和锁实现；
 - 资源配额、审计日志容量、Capability 数量和消息队列的全局上限；
+- 基于 Capability 引用计数或可达性的自动对象回收：对象在最后一个 Capability 位置被删除后仍保持活动（§4.5）；
 - Rust 实现对本状态机的细化证明；
 - 选择性撤销某棵 Capability 派生子树。
 
@@ -258,6 +259,8 @@ cap_drop(cap) -> ()
 成功动作：删除 `locations[cap]` 并追加 `CapDropped`。`CapRecord` 及其子 Capability 均不受影响。
 
 `cap_drop` 不要求目标对象仍然存活，因此可用于清理 stale token。
+
+`cap_drop` 不做引用计数，也不触发隐式对象销毁。若某个活动对象的全部 Capability 位置均被删除，该对象仍保留在活动对象表中，且不再存在任何可用授权路径来销毁它；其资源在 POSIR 中保持占用。这不是授权安全漏洞（对象不可达、不可授权），而是资源回收边界，已在 §2.2 登记为非目标。实现层若引入基于引用计数或可达性的自动回收，必须作为细化层资源域语义单独定义，并证明其不改变本规范的授权与审计义务。
 
 错误：`InvalidCap`（`cap` 不是有效 CapId）、`NotHeld`（不在 `HeldBy(caller)`）、`StructuralCap`（是活动 Task 的结构性根 Namespace Capability）。目标对象已销毁不构成失败，stale token 仍可成功丢弃。
 
@@ -594,7 +597,7 @@ s —[actor, op/Error(e)]→ s
 - **默认规则兜底：** 若操作小节未给出“错误：”清单，则其失败语义为——失败当且仅当该操作列出的任一前置条件不满足；失败时返回 §6.2 第 1–5 阶段中适用阶段的标准错误标识，并保持 `State` 不变；实现可返回任一适用错误。
 - **显式无失败分支：** 若操作小节声明“无失败分支”，则在 §6.1 的 Actor 约束成立且其前置条件由内核保证成立时，该操作不产生失败结果。
 
-据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet` 在首次出现的小节内就地定义。
+据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet`、`InvalidArch` 在首次出现的小节内就地定义。
 
 ### 6.3 内部辅助操作 `enqueue_or_deliver`
 
@@ -896,7 +899,13 @@ Task {
 node_create(transport) → node_cap
 ```
 
-铸造完整根 Node Capability，权限为 `{Derive, NodeConnect, NodeDestroy}`。`NodeConnect` 授权在与该节点建立传输连接时使用此 Capability；`NodeDestroy` 授权销毁该 Node 对象。
+成功动作：
+
+1. 创建 `Node` 对象，其 `transport` 取自参数；具体传输实现及其可用性由内核/平台提供；
+2. 铸造完整根 Node Capability，权限为 `{Derive, NodeConnect, NodeDestroy}`，放在 `HeldBy(caller)`；
+3. 追加对象创建与 Capability 铸造 Audit 事件。
+
+`NodeConnect` 授权在与该节点建立传输连接时使用此 Capability；`NodeDestroy` 授权销毁该 Node 对象。
 
 **失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件；`transport` 是内核提供的传输实现，其可用性属资源问题（§6.2 排除），不作为抽象层失败。
 
@@ -965,11 +974,27 @@ Node 对象的 `KernelState` 字段：`nodes: NodeId ⇀ Node`，`next_node: Nod
 
 **GPU 内存操作：**
 
-POSIR 的 `gpu_frame_universe` 只按 `GPUArch` 索引（§5.1）；下表 NPU/FPGA 行的池名仅作细化层说明。GPU 显存通过 `gpu_frame_universe` 管理，逻辑上与 CPU `frame_universe` 隔离。显存 Segment 的创建类似于 CPU Segment，但页帧来自对应 GPU 架构的帧池，且 `pool = GPU(arch)`；销毁同样经 `memseg_destroy`，帧归还 `gpu_free_frames[arch]`（§7.5）：
+POSIR 的 `gpu_frame_universe` 只按 `GPUArch` 索引（§5.1）；下表 NPU/FPGA 行的池名仅作细化层说明。GPU 显存通过 `gpu_frame_universe` 管理，逻辑上与 CPU `frame_universe` 隔离。显存 Segment 的 `pool = GPU(arch)`；销毁同样经 `memseg_destroy`，帧归还 `gpu_free_frames[arch]`（§7.5）：
 
 ```text
 gpu_memseg_create(arch, page_count, allowed_access) → CapId
 ```
+
+前置条件：
+
+- `arch ∈ GPUArch`；
+- `page_count > 0`；
+- `allowed_access` 非空且只含 `R/W/X`；
+- `gpu_free_frames[arch]` 至少包含 `page_count` 个页帧。
+
+成功动作：
+
+1. 从 `gpu_free_frames[arch]` 选择并移除恰好 `page_count` 个页帧；抽象状态把这些页视为已清零；
+2. 创建 Segment，`pool = GPU(arch)`，`frames` 为选定的页帧序列；
+3. 铸造由调用者持有的根 Segment Capability，权限为 `Derive | SegDestroy`，并按 `allowed_access` 加入 `SegMapR/W/X`；
+4. 追加对象创建、页帧分配与 Capability 铸造事件。
+
+错误：`InvalidArch`（`arch` 不在 `GPUArch` 域内）、`ZeroSize`、`InvalidAccess`、`NoMemory`（目标架构帧池不足）。`InvalidArch` 定义为本规范中“GPU 架构参数不在 `GPUArch` 域内”的失败标识。
 
 GPU 显存映射到 CPU Task 的 `vspace`（用于 CPU 端读写显存内容）走常规 `memseg_map`。底层通过 COSIR 细化保证映射的一致性（PCIe BAR 映射或 unified memory 页迁移）。
 
@@ -1157,12 +1182,19 @@ timer_destroy(timer_cap) -> ()
 ns_create() -> ns_cap
 ```
 
-创建空 Namespace，并铸造由调用者持有的完整根 Capability。抽象模型中 Namespace 作为纯数学映射（`Path ⇀ NsEntry`）不消耗页帧；COSIR 细化层中 Namespace 的存储必然消耗内核内存，该消耗属于内核元数据开销，不在本规范中建模：
+成功动作：
+
+1. 创建空 Namespace；
+2. 铸造由调用者持有的完整根 Capability，权限为：
 
 ```text
 Derive | NsResolve | NsBind | NsUnbind |
 NsMount | NsUnmount | NsDestroy
 ```
+
+3. 追加对象创建与 Capability 铸造 Audit 事件。
+
+抽象模型中 Namespace 作为纯数学映射（`Path ⇀ NsEntry`）不消耗页帧；COSIR 细化层中 Namespace 的存储必然消耗内核内存，该消耗属于内核元数据开销，不在本规范中建模。
 
 **失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件、不接受 Capability 参数；实现层元数据空间耗尽属 §6.2 明确排除的资源可用性问题，不作为抽象层失败。
 
@@ -1788,14 +1820,14 @@ dev_mmio_create(base_paddr, size_pages, allowed_access) -> dev_cap
 前置条件：
 
 1. `base_paddr` 和 `size_pages` 由平台的内存发现/设备枚举信息提供；
-2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不在任何现有 MMIO 区域或 Segment 物理页的范围内；
+2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不与任何现有活动设备的物理地址空间资源（现有 MMIO 区域、活动 `DMABuffer` 的帧）重叠，也不与 `free_frames` 或任何活动 Segment 的帧重叠（W16.1）；
 3. `allowed_access` 非空且只含 `{R, W}`。
 
 成功动作：
 
 1. 创建 `Device` 对象，`kind = MMIORegion{...}`；
-2. 铸造完整根 Capability，权限为 `{Derive, DevMMIOR/W (按 allowed_access), DevDestroy}`；
-3. 追加设备创建 Audit 事件。
+2. 铸造完整根 Capability，权限为 `{Derive, DevMMIOR/W (按 allowed_access), DevDestroy}`，放在 `HeldBy(caller)`；
+3. 追加设备创建与 Capability 铸造 Audit 事件。
 
 错误：`InvalidPhysRange`、`Overlap`、`InvalidAccess`。
 
@@ -1837,7 +1869,16 @@ IOPortRange {
 dev_ioport_create(base_port, port_count) -> dev_cap
 ```
 
-铸造根 Capability，权限为 `{Derive, DevIORead, DevIOWrite, DevDestroy}`。
+前置条件：
+
+- `port_count > 0`；
+- 区间 `[base_port, base_port + port_count)` 不与任何活动 `IOPortRange` 的端口区间重叠（W16.1）。
+
+成功动作：
+
+1. 创建 `Device` 对象，`kind = IOPortRange{base_port, port_count}`；
+2. 铸造根 Capability，权限为 `{Derive, DevIORead, DevIOWrite, DevDestroy}`，放在 `HeldBy(caller)`；
+3. 追加设备创建与 Capability 铸造 Audit 事件。
 
 I/O port 授权在 Task 切换时由 COSIR 细化层通过 IOPL 或 TSS I/O bitmap 实现。抽象模型只建模"持有 Capability 的 Task 有权执行 I/O 指令"这一事实。
 
@@ -1845,7 +1886,7 @@ I/O port 授权在 Task 切换时由 COSIR 细化层通过 IOPL 或 TSS I/O bitm
 
 抽象状态机的安全声明（§17.8）依赖 COSIR 细化层正确地实现了 per-port bitmap 隔离。具体实现必须确保每个 Task 的 TSS I/O bitmap 或等效机制严格限制到仅其持有 `IOPortRange` Capability 覆盖的端口范围。
 
-**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件（`base_port`/`port_count` 由平台枚举提供，`port_count > 0` 为构造约束）；资源耗尽按 §6.2 排除。
+错误：`Overlap`（端口区间与活动 `IOPortRange` 重叠）、`ZeroSize`（`port_count = 0`）。`base_port` 仍应由平台设备枚举提供；本规范只强制 W16.1 的端口区间不交性，具体端口是否存在属细化层职责；资源耗尽按 §6.2 排除。
 
 ### 15.6 DMA 缓冲区
 
@@ -1875,8 +1916,9 @@ dev_dma_create(page_count, direction) -> dev_cap
 
 1. 从 `free_frames` 移除选定的连续页帧；
 2. 创建 `DMABuffer` 对象，分配其页帧和 IO 地址；
-3. 铸造根 Capability，权限为 `{Derive, DevDMAR (if DMAFromDevice/双向), DevDMAW (if DMAToDevice/双向), DevDestroy}`；
-4. 页帧被清零（由平台负责通过 coherent 手段完成）。
+3. 铸造根 Capability，权限为 `{Derive, DevDMAR (if DMAFromDevice/双向), DevDMAW (if DMAToDevice/双向), DevDestroy}`，放在 `HeldBy(caller)`；
+4. 页帧被清零（由平台负责通过 coherent 手段完成）；
+5. 追加对象创建、页帧分配与 Capability 铸造 Audit 事件。
 
 错误：`NoMemory`、`NotContiguous`、`NoIOMMUDomain`（细化层：平台无法为该缓冲区提供 DMA 一致性/IOMMU domain，对应前置条件“平台有能力确保 DMA 一致性”；它是细化层报告的平台能力缺失，非 POSIR 状态冲突）。
 
@@ -1899,14 +1941,19 @@ InterruptLine {
 dev_irq_create(irq_number) -> dev_cap
 ```
 
+前置条件：
+
+- `irq_number` 尚未被任何活动 `InterruptLine` 使用（W16.1）。
+
 成功动作：
 
 1. 创建一个 `ExcSource`，`kind` 约束为 `ExternalInterrupt`；
 2. 创建 `Device` 对象，`kind = InterruptLine{irq_number, exc_source_id}`；
-3. 铸造根 Capability，权限为 `{Derive, DevInterruptSubscribe, DevDestroy}`；
-4. 将 `ExcSubscribe` Capability 放在 `HeldBy(caller)`，使创建者可以自行委托中断订阅。
+3. 铸造根 Capability，权限为 `{Derive, DevInterruptSubscribe, DevDestroy}`，放在 `HeldBy(caller)`；
+4. 将 `ExcSubscribe` Capability 放在 `HeldBy(caller)`，使创建者可以自行委托中断订阅；
+5. 追加 `ExcSource`/设备对象创建与 Capability 铸造 Audit 事件。
 
-**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外本操作无前置条件；`irq_number` 由平台设备枚举提供，其合法性属细化层职责，不作为抽象层失败。
+错误：`Overlap`（`irq_number` 已被活动 `InterruptLine` 占用）。除该冲突与 §6.1 的 Actor 约束外，本操作无其他前置条件；`irq_number` 是否存在属细化层职责，不作为抽象层失败。
 
 硬件中断到来时，COSIR 细化层：
 
@@ -1965,7 +2012,7 @@ KernelState {
 
 新增不变量（对应 §16 全局良构不变量中的 W16，以下为 W16 的四个子条件）：
 
-**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源（MMIO 区域、I/O port 范围、DMA 帧、IRQ 号）两两不交，且不与通用页池或 Segment 帧重叠。
+**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `free_frames` 或任何活动 Segment 的帧重叠。
 
 **W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；销毁时必须归还其来源池（§7.5）。清零是细化层义务（§15.6），不进入 POSIR 状态。
 
@@ -2105,7 +2152,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W16 — Device 物理资源唯一
 
-- 所有活动设备的物理资源（MMIO 区域、I/O port 范围、DMA 帧、IRQ 号）两两不交，且不与通用 `free_frames` 或任何活动 Segment 的帧重叠；
+- 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `free_frames` 或任何活动 Segment 的帧重叠；
 - DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；
 - 设备销毁时，其占用的所有物理资源必须被释放（MMIO 区域移除全部 `dev_vspace` 映射、DMA 帧归还来源池、IRQ 号释放）；其中“先停 DMA/拆 IOMMU 并清零”是细化层义务（§15.6），不进入 POSIR 不变量；
 - **W16.4 — 设备映射有效：** 每个 `DeviceMapping` 指向活动 MMIORegion 设备，`offset` 位于该 region 的页范围内，`access` 非空且不超过 region 的 `allowed_access`；同一 Task 的任一 `VirtPage` 不得同时出现在 `vspace` 与 `dev_vspace` 中。
@@ -2466,10 +2513,10 @@ wait_object_observe(wait_object_cap) -> Nat
 
 前置条件：
 
-1. `wait_object_cap` 由调用者持有、可用，并指向活动 `WaitObject`；
+1. `wait_object_cap` 由调用者持有，且其 `CapRecord` 指向 `WaitObject`（目标可以已销毁）；
 2. `wait_object_cap` 包含 `WaitWait`。
 
-成功动作：返回 `wait_objects[object].generation`。本操作是纯查询，不改变状态。
+成功动作：返回 `wait_objects[object].generation`。本操作是纯查询，不改变状态。若目标已销毁，按错误 `TargetDead` 失败且状态不变。
 
 错误：`InvalidWaitObject`（Capability 不指向有效 WaitObject）、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`（目标 WaitObject 已销毁但 Capability 仍存在）。
 
@@ -2481,7 +2528,7 @@ wait_object_observe(wait_object_cap) -> Nat
 wait_object_destroy(wait_object_cap) -> ()
 ```
 
-前置条件：`wait_object_cap` 由调用者持有、可用，指向活动 `WaitObject`，并授权 `WaitDestroy`。
+前置条件：`wait_object_cap` 由调用者持有，其 `CapRecord` 指向 `WaitObject`，并授权 `WaitDestroy`；若目标已销毁则返回 `TargetDead`。
 
 成功动作：
 
@@ -2513,7 +2560,7 @@ wait_objects(
 1. 调用者是 Running CPU Task；
 2. `wait_caps` 与 `observed_generations` 长度相同、非空；
 3. 两个列表按下标一一对应，且没有两个 `wait_caps` 指向同一个 WaitObject；
-4. 每个 Capability 由调用者持有、可用，指向活动 `WaitObject`，并包含 `WaitWait`。
+4. 每个 Capability 由调用者持有，其 `CapRecord` 指向 `WaitObject`，并包含 `WaitWait`；任一目标已销毁则返回 `TargetDead`。
 
 设输入条目为 `entry_i = { object: target(wait_caps[i]), observed_generation: observed_generations[i] }`。
 
@@ -2537,7 +2584,7 @@ wait_objects(
 signal_object(wait_object_cap) -> Nat
 ```
 
-前置条件：`wait_object_cap` 由调用者持有、可用，指向活动 `WaitObject`，并授权 `WaitSignal`。
+前置条件：`wait_object_cap` 由调用者持有，其 `CapRecord` 指向 `WaitObject`，并授权 `WaitSignal`；若目标已销毁则返回 `TargetDead`。
 
 成功动作：
 

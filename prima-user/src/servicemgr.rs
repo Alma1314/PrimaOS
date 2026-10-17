@@ -324,6 +324,8 @@ pub extern "C" fn _start(
     let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending);
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
+    // EXO-3M：端点栈段句柄（本管理器创建），供原始 trace 的通用活对象判定。
+    let mut stack_segs: [u64; SERVICES] = [0; SERVICES];
     // SPEC-106：三个基础服务的存在标记与路由探针应答。
     let mut marker: [u64; SERVICES] = [0; SERVICES];
     let mut probe_sent = false;
@@ -524,7 +526,7 @@ pub extern "C" fn _start(
             while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
-                    && let Some((_token, _manager, _entry)) = create_service(
+                    && let Some((_token, _manager, _entry, stack)) = create_service(
                         &runtime,
                         &self_cap,
                         parent_ns,
@@ -534,6 +536,7 @@ pub extern "C" fn _start(
                     )
                 {
                     created += 1;
+                    stack_segs[slot] = stack.as_raw();
                     let _ = runtime
                         .write_user_bytes(USER_SEG_VA + OFF_MGR_CREATED, &created.to_le_bytes());
                 }
@@ -805,8 +808,9 @@ pub extern "C" fn _start(
                 client_id,
                 read_shared(&runtime, OFF_REG_A_NAME),
                 read_shared(&runtime, OFF_REG_B_NAME),
-                0,
-                0,
+                // EXO-3M：端点栈段句柄（本管理器创建）作为通用原始值上报；内核只做活对象扫描。
+                stack_segs[0],
+                stack_segs[1],
             );
             // EXO-3H：servicemgr 的共享段字段用六条通用 trace 记录透传。
             let log_id = registry[LOG_SLOT].map_or(0, |endpoint| endpoint.id);
@@ -970,7 +974,7 @@ fn create_service(
     spec: &Pending,
     slot: usize,
     created_slot: &mut [bool; SERVICES],
-) -> Option<(Capability, Capability, u64)> {
+) -> Option<(Capability, Capability, u64, Capability)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
         runtime.cap_derive(*self_cap, TASK_SEND_RIGHTS),
@@ -1019,7 +1023,7 @@ fn create_service(
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
     let _ = runtime.memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW);
     write_created_witness(runtime, slot, e_entry, initial1, manager);
-    Some((initial1, manager, e_entry))
+    Some((initial1, manager, e_entry, stack))
 }
 
 /// SPEC-105：把「管理器确实创建了端点」的证据、收到的建端点参数与**自解出的 ELF 入口**

@@ -935,183 +935,83 @@ pub(crate) fn task_ready(witness: &kernel::syscall::TaskWitness) {
     serial::write_bytes(b"\r\n");
 }
 
-/// Stage 4：Rust ring3 客户端经 IPC 移交共享 Segment 后的协议回执。
-/// EXO-3D：`runtime_hello_ready` 事件改为**只透传通用 trace 记录**。
+/// EXO-3M：保留已退役 PRIMA 事件的序号槽位，使后续事件字节保持不变。
 ///
-/// 内核不解释记录中的 event id/args；字段期望由 `xtask/src/protocol.rs` 校验。
-pub(crate) fn runtime_hello_trace(record: &prima_abi::trace::Record) {
-    write_prefix("runtime_hello_ready", "ok");
-    serial::write_bytes(b"|data=id=");
-    write_hex_u64(record.id);
-    serial::write_bytes(b";a=");
-    write_hex_u64(record.args[0]);
-    serial::write_bytes(b";b=");
-    write_hex_u64(record.args[1]);
-    serial::write_bytes(b";c=");
-    write_hex_u64(record.args[2]);
-    serial::write_bytes(b";d=");
-    write_hex_u64(record.args[3]);
-    serial::write_bytes(b";e=");
-    write_hex_u64(record.args[4]);
+/// 服务语义事件的组装已移到 `xtask`；这里只消耗序号，不输出任何行。
+pub(crate) fn skip_event() {
+    let _ = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+}
+
+/// EXO-3M：原样转储 init 证据页（Y 页）的 4096 字节；内核不解释任何偏移。
+pub(crate) fn y_bytes_dump(page: u64) {
+    serial::write_bytes(b"YBYTES|data=");
+    let hex = b"0123456789abcdef";
+    for offset in 0..4096u64 {
+        let byte = prima_ostd::mm::read_u8(page + offset);
+        serial::write_bytes(&[hex[(byte >> 4) as usize], hex[(byte & 0xf) as usize]]);
+    }
     serial::write_bytes(b"\r\n");
 }
 
-/// SPEC-087：init 与**存活** ring3 客户端双向握手的协议回执。
-pub(crate) fn service_reply_ready(witness: &kernel::user::ServiceReplyWitness) {
-    write_prefix("service_reply_ready", "ok");
-    serial::write_bytes(b"|data=client=");
-    write_hex_u64(witness.client);
-    serial::write_bytes(b";stack=");
-    write_hex_u64(witness.stack);
-    serial::write_bytes(b";recv=");
-    write_hex_u64(witness.recv);
-    serial::write_bytes(b";map=");
-    write_hex_u64(witness.map);
-    serial::write_bytes(b";reply=");
-    write_hex_u64(witness.reply);
-    serial::write_bytes(b";echo=");
-    write_hex_u64(witness.echo);
-    serial::write_bytes(b"\r\n");
+/// EXO-3M：对共享 trace 的每个原始参数做通用句柄存活检查。
+///
+/// 内核不解释记录/字段语义，只报告哪些原始值是**活的内核对象句柄**；
+/// 判定哪个字段应为何种对象由 `xtask` 完成。
+pub(crate) fn trace_live_handles_dump(page: u64, slot: u8) {
+    let base = page + prima_abi::trace::SHARED_OFFSET;
+    let count =
+        prima_ostd::mm::read_u64(base).min(prima_abi::trace::SHARED_RECORDS as u64) as usize;
+    for record in 0..count {
+        let record_base = base + 8 + (record * prima_abi::trace::RECORD_BYTES) as u64;
+        for arg in 0..prima_abi::trace::ARGS {
+            let raw = prima_ostd::mm::read_u64(record_base + ((arg + 1) * 8) as u64);
+            let Ok(handle) = kernel::bootstrap::decode_handle(raw) else {
+                continue;
+            };
+            let kind = if kernel::bootstrap::segment_of_cap(handle).is_some() {
+                b"seg".as_slice()
+            } else if kernel::bootstrap::device_of_cap(handle).is_some() {
+                b"dev".as_slice()
+            } else {
+                continue;
+            };
+            serial::write_bytes(b"LIVE|slot=");
+            write_u32(slot as u32);
+            serial::write_bytes(b";rec=");
+            write_u32(record as u32);
+            serial::write_bytes(b";arg=");
+            write_u32(arg as u32);
+            serial::write_bytes(b";kind=");
+            serial::write_bytes(kind);
+            serial::write_bytes(b";handle=");
+            write_hex_u64(raw);
+            serial::write_bytes(b"\r\n");
+        }
+    }
 }
 
-/// SPEC-088：init（broker）与 ring3 Rust 服务端点解析/协商的协议回执。
-pub(crate) fn service_negotiated_ready(witness: &kernel::user::ServiceNegotiatedWitness) {
-    write_prefix("service_negotiated_ready", "ok");
-    serial::write_bytes(b"|data=token=");
-    write_hex_u64(witness.token);
-    serial::write_bytes(b";service=");
-    write_hex_u64(witness.service);
-    serial::write_bytes(b";stack=");
-    write_hex_u64(witness.stack);
-    serial::write_bytes(b";svc_id=");
-    write_hex_u64(witness.service_id);
-    serial::write_bytes(b";forward=");
-    write_hex_u64(witness.forward);
-    serial::write_bytes(b";done=");
-    write_hex_u64(witness.done);
-    serial::write_bytes(b";negotiated=");
-    write_hex_u64(witness.negotiated);
-    serial::write_bytes(b";negatives=");
-    write_hex_u64(witness.negatives);
-    serial::write_bytes(b"\r\n");
-}
-
-/// SPEC-090：init（服务管理器）按名字解析端点并二次路由的协议回执。
-pub(crate) fn service_selected_ready(witness: &kernel::user::ServiceSelectedWitness) {
-    write_prefix("service_selected_ready", "ok");
-    serial::write_bytes(b"|data=name=");
-    write_hex_u64(witness.name);
-    serial::write_bytes(b";resolved=");
-    write_hex_u64(witness.resolved);
-    serial::write_bytes(b";unknown=");
-    write_hex_u64(witness.unknown);
-    serial::write_bytes(b";done=");
-    write_hex_u64(witness.done);
-    serial::write_bytes(b";negotiated_beta=");
-    write_hex_u64(witness.negotiated_beta);
-    serial::write_bytes(b";alpha_ep=");
-    write_hex_u64(witness.alpha_ep);
-    serial::write_bytes(b";beta_ep=");
-    write_hex_u64(witness.beta_ep);
-    serial::write_bytes(b";beta_self=");
-    write_hex_u64(witness.beta_self);
-    serial::write_bytes(b";alpha_marker=");
-    write_hex_u64(witness.alpha_marker);
-    serial::write_bytes(b";beta_marker=");
-    write_hex_u64(witness.beta_marker);
-    serial::write_bytes(b";alpha_stack_seg=");
-    write_hex_u64(witness.alpha_stack_seg);
-    serial::write_bytes(b";beta_stack_seg=");
-    write_hex_u64(witness.beta_stack_seg);
-    serial::write_bytes(b";client_ep=");
-    write_hex_u64(witness.client_ep);
-    serial::write_bytes(b";client_stack_seg=");
-    write_hex_u64(witness.client_stack_seg);
-    serial::write_bytes(b";reg_a_name=");
-    write_hex_u64(witness.reg_a_name);
-    serial::write_bytes(b";reg_b_name=");
-    write_hex_u64(witness.reg_b_name);
-    serial::write_bytes(b"\r\n");
-}
-
-/// SPEC-103：ring3 服务管理器任务的存活见证（独立二进制映像 `prima-servicemgr`、id 非 init）。
-pub(crate) fn servicemgr_ready(witness: &kernel::user::ServicemgrWitness) {
-    write_prefix(
-        "servicemgr_ready",
-        if witness.evidence_ok() {
-            "ok"
+/// EXO-3M：对用户证据页的每个 qword 做通用句柄存活检查（偏移由 xtask 解释）。
+pub(crate) fn page_live_handles_dump(page: u64) {
+    for offset in (0..4096u64).step_by(8) {
+        let raw = prima_ostd::mm::read_u64(page + offset);
+        let Ok(handle) = kernel::bootstrap::decode_handle(raw) else {
+            continue;
+        };
+        let kind = if kernel::bootstrap::segment_of_cap(handle).is_some() {
+            b"seg".as_slice()
+        } else if kernel::bootstrap::device_of_cap(handle).is_some() {
+            b"dev".as_slice()
         } else {
-            "mismatch"
-        },
-    );
-    serial::write_bytes(b"|data=task_id=");
-    write_hex_u64(witness.task_id);
-    serial::write_bytes(b";hello=");
-    write_hex_u64(witness.hello);
-    serial::write_bytes(b";self_id=");
-    write_hex_u64(witness.self_id);
-    serial::write_bytes(b";marker=");
-    write_hex_u64(witness.marker);
-    serial::write_bytes(b";created=");
-    write_hex_u64(witness.created);
-    serial::write_bytes(b";entry_a=");
-    write_hex_u64(witness.entry_a);
-    serial::write_bytes(b";entry_b=");
-    write_hex_u64(witness.entry_b);
-    // SPEC-106（S4-D3）：三个基础服务的见证。
-    serial::write_bytes(b";services=");
-    write_hex_u64(witness.services);
-    serial::write_bytes(b";log_id=");
-    write_hex_u64(witness.log_id);
-    serial::write_bytes(b";ns_id=");
-    write_hex_u64(witness.ns_id);
-    serial::write_bytes(b";store_id=");
-    write_hex_u64(witness.store_id);
-    serial::write_bytes(b";log_mark=");
-    write_hex_u64(witness.log_mark);
-    serial::write_bytes(b";ns_mark=");
-    write_hex_u64(witness.ns_mark);
-    serial::write_bytes(b";store_mark=");
-    write_hex_u64(witness.store_mark);
-    // SPEC-110：三个基础服务的**定序状态**应答（推进 5 / 推进 3 / 查询 各一条）。
-    serial::write_bytes(b";log_state0=");
-    write_hex_u64(witness.log_state[0]);
-    serial::write_bytes(b";log_state1=");
-    write_hex_u64(witness.log_state[1]);
-    serial::write_bytes(b";log_state2=");
-    write_hex_u64(witness.log_state[2]);
-    serial::write_bytes(b";ns_state0=");
-    write_hex_u64(witness.ns_state[0]);
-    serial::write_bytes(b";ns_state1=");
-    write_hex_u64(witness.ns_state[1]);
-    serial::write_bytes(b";ns_state2=");
-    write_hex_u64(witness.ns_state[2]);
-    serial::write_bytes(b";store_state0=");
-    write_hex_u64(witness.store_state[0]);
-    serial::write_bytes(b";store_state1=");
-    write_hex_u64(witness.store_state[1]);
-    serial::write_bytes(b";store_state2=");
-    write_hex_u64(witness.store_state[2]);
-    // SPEC-111：Namespace 服务代理解析返回的内核句柄。
-    serial::write_bytes(b";ns_resolved=");
-    write_hex_u64(witness.ns_resolved);
-    // SPEC-112：日志/存储服务持久化段的内核句柄（活的内核 Segment 对象，互异）。
-    serial::write_bytes(b";log_seg=");
-    write_hex_u64(witness.log_seg);
-    serial::write_bytes(b";store_seg=");
-    write_hex_u64(witness.store_seg);
-    // SPEC-114：用户态驱动（id / 存在标记 / 内核设备句柄 / 两条受控端口应答）。
-    serial::write_bytes(b";driver_id=");
-    write_hex_u64(witness.driver_id);
-    serial::write_bytes(b";driver_mark=");
-    write_hex_u64(witness.driver_mark);
-    serial::write_bytes(b";driver_dev=");
-    write_hex_u64(witness.driver_dev);
-    serial::write_bytes(b";driver_io0=");
-    write_hex_u64(witness.driver_io[0]);
-    serial::write_bytes(b";driver_io1=");
-    write_hex_u64(witness.driver_io[1]);
-    serial::write_bytes(b"\r\n");
+            continue;
+        };
+        serial::write_bytes(b"LIVE|page=1;offset=");
+        write_u32(offset as u32);
+        serial::write_bytes(b";kind=");
+        serial::write_bytes(kind);
+        serial::write_bytes(b";handle=");
+        write_hex_u64(raw);
+        serial::write_bytes(b"\r\n");
+    }
 }
 
 /// 切片 O：PIT 时钟抢占见证（per-task CR3/内核栈 + 时钟轮转空转任务）。

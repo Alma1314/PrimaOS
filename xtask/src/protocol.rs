@@ -24,11 +24,6 @@ enum EventKind {
     MemsegReady,
     IpcReady,
     TaskReady,
-    RuntimeHelloReady,
-    ServiceReplyReady,
-    ServiceNegotiatedReady,
-    ServiceSelectedReady,
-    ServicemgrReady,
     NamespaceReady,
     PreemptReady,
     TimerReady,
@@ -223,7 +218,8 @@ struct Event {
     data: Option<String>,
 }
 
-const EXPECTED_EVENTS: [(u32, EventKind); 43] = [
+/// EXO-3M：seq 25–29 的内核组装服务事件已退役，但序号槽位保留（不重编号后续事件）。
+const EXPECTED_EVENTS: [(u32, EventKind); 38] = [
     (1, EventKind::BootStart),
     (2, EventKind::SerialReady),
     (3, EventKind::MemoryReady),
@@ -248,11 +244,6 @@ const EXPECTED_EVENTS: [(u32, EventKind); 43] = [
     (22, EventKind::MemsegReady),
     (23, EventKind::IpcReady),
     (24, EventKind::TaskReady),
-    (25, EventKind::RuntimeHelloReady),
-    (26, EventKind::ServiceReplyReady),
-    (27, EventKind::ServiceNegotiatedReady),
-    (28, EventKind::ServiceSelectedReady),
-    (29, EventKind::ServicemgrReady),
     (30, EventKind::NamespaceReady),
     (31, EventKind::PreemptReady),
     (32, EventKind::TimerReady),
@@ -480,41 +471,6 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         validate_task_data(task.data.as_deref())?;
     }
 
-    if let Some(hello) = events
-        .iter()
-        .find(|event| event.kind == EventKind::RuntimeHelloReady)
-    {
-        validate_runtime_hello_data(hello.data.as_deref())?;
-    }
-
-    if let Some(reply) = events
-        .iter()
-        .find(|event| event.kind == EventKind::ServiceReplyReady)
-    {
-        validate_service_reply_data(reply.data.as_deref())?;
-    }
-
-    if let Some(negotiated) = events
-        .iter()
-        .find(|event| event.kind == EventKind::ServiceNegotiatedReady)
-    {
-        validate_service_negotiated_data(negotiated.data.as_deref())?;
-    }
-
-    if let Some(selected) = events
-        .iter()
-        .find(|event| event.kind == EventKind::ServiceSelectedReady)
-    {
-        validate_service_selected_data(selected.data.as_deref())?;
-    }
-
-    if let Some(servicemgr) = events
-        .iter()
-        .find(|event| event.kind == EventKind::ServicemgrReady)
-    {
-        validate_servicemgr_data(servicemgr.data.as_deref())?;
-    }
-
     if let Some(audit) = events
         .iter()
         .find(|event| event.kind == EventKind::AuditReady)
@@ -642,7 +598,7 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 独立核对共享字节流与服务 witness，避免 PRIMA 事件单独自证。
+/// EXO-3M：内核只输出原始 trace 字节、Y 页字节与活句柄扫描；服务语义在此判定。
 pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     use prima_abi::trace::{
         EVENT_NATIVE_APP, EVENT_RUNTIME_HELLO, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY,
@@ -682,109 +638,419 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     if first[0].id != EVENT_RUNTIME_HELLO || first[0] != shared[0] {
         return Err("runtime-hello shared records differ".to_owned());
     }
-
-    check_trace_fields(
-        output,
-        "runtime_hello_ready",
-        &first[0],
-        &[Some("a"), Some("b"), Some("c"), Some("d"), Some("e")],
-    )?;
-    check_trace_fields(
-        output,
-        "service_reply_ready",
-        &shared[1],
-        &[Some("recv"), Some("echo"), None, None, None],
-    )?;
-    check_trace_fields(
-        output,
-        "service_negotiated_ready",
-        &shared[3],
-        &[
-            Some("token"),
-            Some("service"),
-            Some("svc_id"),
-            Some("done"),
-            Some("negotiated"),
-        ],
-    )?;
-    check_trace_fields(
-        output,
-        "service_negotiated_ready",
-        &shared[4],
-        &[Some("negatives"), None, None, None, None],
-    )?;
-    for (record, fields) in shared[5..8].iter().zip([
-        [
-            Some("name"),
-            Some("resolved"),
-            Some("unknown"),
-            Some("done"),
-            Some("negotiated_beta"),
-        ],
-        [
-            Some("alpha_ep"),
-            Some("beta_ep"),
-            Some("beta_self"),
-            Some("alpha_marker"),
-            Some("beta_marker"),
-        ],
-        [
-            Some("client_ep"),
-            Some("reg_a_name"),
-            Some("reg_b_name"),
-            None,
-            None,
-        ],
-    ]) {
-        check_trace_fields(output, "service_selected_ready", record, &fields)?;
+    if first[0].args != [0, 0x14d495250, 0x300000001, 0x100000018, 0x100000010001] {
+        return Err(format!(
+            "runtime_hello trace values differ: {:x?}",
+            first[0].args
+        ));
     }
-    for (record, fields) in shared[8..14].iter().zip([
-        [
-            Some("self_id"),
-            Some("marker"),
-            Some("created"),
-            Some("entry_a"),
-            Some("entry_b"),
-        ],
-        [
-            Some("services"),
-            Some("log_id"),
-            Some("ns_id"),
-            Some("store_id"),
-            Some("log_mark"),
-        ],
-        [
-            Some("ns_mark"),
-            Some("store_mark"),
-            Some("log_state0"),
-            Some("log_state1"),
-            Some("log_state2"),
-        ],
-        [
-            Some("ns_state0"),
-            Some("ns_state1"),
-            Some("ns_state2"),
-            Some("store_state0"),
-            Some("store_state1"),
-        ],
-        [
-            Some("store_state2"),
-            Some("ns_resolved"),
-            Some("log_seg"),
-            Some("store_seg"),
-            Some("driver_id"),
-        ],
-        [
-            Some("driver_mark"),
-            Some("driver_dev"),
-            Some("driver_io0"),
-            Some("driver_io1"),
-            None,
-        ],
-    ]) {
-        check_trace_fields(output, "servicemgr_ready", record, &fields)?;
+
+    let y = parse_y_bytes(output)?;
+    let live = parse_live_handles(output)?;
+
+    // SPEC-087：init ↔ 存活客户端。
+    let reply = &shared[1];
+    if y_u64(&y, 744)? != SERVICE_REPLY_CLIENT_CAP {
+        return Err(format!(
+            "service_reply client (0x{:x}) must be the manager cap 0x{SERVICE_REPLY_CLIENT_CAP:x} returned by SYS_TASK_CREATE",
+            y_u64(&y, 744)?
+        ));
+    }
+    if y_u64(&y, 752)? != 0 {
+        return Err("service_reply stack must be 0 — init must map the client stack through the manager cap".to_owned());
+    }
+    if reply.args[0] != SERVICE_REPLY_CLIENT_ID {
+        return Err(format!(
+            "service_reply recv ({}) must equal the client id {SERVICE_REPLY_CLIENT_ID} — the Hello payload is the client's own SYS_TASK_ID",
+            reply.args[0]
+        ));
+    }
+    if y_u64(&y, 800)? != 0 {
+        return Err("service_reply map must be 0 — init must map the received shared Segment into its own root".to_owned());
+    }
+    if y_u64(&y, 808)? != 0 {
+        return Err(
+            "service_reply reply must be 0 — init's reply SYS_SEND must succeed".to_owned(),
+        );
+    }
+    if reply.args[1] != SERVICE_REPLY_WORD {
+        return Err(format!(
+            "service_reply echo (0x{:x}) must be 0x{SERVICE_REPLY_WORD:x} — the client must write init's reply payload back into the shared Segment",
+            reply.args[1]
+        ));
+    }
+
+    // SPEC-088：服务端点协商。
+    let negotiated = &shared[3];
+    if negotiated.args[0] != SERVICE_NEGOTIATED_TOKEN {
+        return Err(format!(
+            "service_negotiated token (0x{:x}) must be the derived endpoint token 0x{SERVICE_NEGOTIATED_TOKEN:x}",
+            negotiated.args[0]
+        ));
+    }
+    if negotiated.args[1] != SERVICE_NEGOTIATED_CAP {
+        return Err(format!(
+            "service_negotiated service (0x{:x}) must be the manager cap 0x{SERVICE_NEGOTIATED_CAP:x} returned by the 4th SYS_TASK_CREATE",
+            negotiated.args[1]
+        ));
+    }
+    if negotiated.args[2] != SERVICE_NEGOTIATED_ID {
+        return Err(format!(
+            "service_negotiated svc_id ({}) must equal the service id {SERVICE_NEGOTIATED_ID}",
+            negotiated.args[2]
+        ));
+    }
+    if y_u64(&y, 896)? != 0 {
+        return Err(
+            "service_negotiated forward must be 0 — init's cap-carrying forward SYS_SEND must succeed"
+                .to_owned(),
+        );
+    }
+    if negotiated.args[3] != SERVICE_DONE_TAG {
+        return Err(format!(
+            "service_negotiated done (0x{:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}",
+            negotiated.args[3]
+        ));
+    }
+    if negotiated.args[4] != SERVICE_EXPECTED_NEGOTIATED {
+        return Err(format!(
+            "service_negotiated negotiated (0x{:x}) must be 0x{SERVICE_EXPECTED_NEGOTIATED:x} — the server-side negotiation must yield max=2048, not echo the client's 4096",
+            negotiated.args[4]
+        ));
+    }
+    if shared[4].args[0] != SERVICE_EXPECTED_NEGATIVES {
+        return Err(format!(
+            "service_negotiated negatives (0x{:x}) must be 0x{SERVICE_EXPECTED_NEGATIVES:x} — the ring3 service must observe MajorMismatch (1) and BadMagic (0)",
+            shared[4].args[0]
+        ));
+    }
+
+    // SPEC-090/101/092：按名解析与多端点路由。
+    let selected = &shared[5];
+    let endpoints = &shared[6];
+    let registry = &shared[7];
+    if selected.args[0] != SERVICE_SELECTED_NAME {
+        return Err(format!(
+            "service_selected name (0x{:x}) must be 0x{SERVICE_SELECTED_NAME:x} — the manager must read the requested service name from the shared Segment",
+            selected.args[0]
+        ));
+    }
+    if selected.args[1] != SERVICE_SELECTED_RESOLVED {
+        return Err(format!(
+            "service_selected resolved (0x{:x}) must be {SERVICE_SELECTED_RESOLVED} — the requested name must resolve to the BETA behavior",
+            selected.args[1]
+        ));
+    }
+    if selected.args[2] != SERVICE_SELECTED_UNKNOWN {
+        return Err(format!(
+            "service_selected unknown (0x{:x}) must be {SERVICE_SELECTED_UNKNOWN} — an unregistered name must resolve to NONE (refused)",
+            selected.args[2]
+        ));
+    }
+    if selected.args[3] != SERVICE_DONE_TAG {
+        return Err(format!(
+            "service_selected done (0x{:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}",
+            selected.args[3]
+        ));
+    }
+    if selected.args[4] != SERVICE_SELECTED_NEGOTIATED_B {
+        return Err(format!(
+            "service_selected negotiated_beta (0x{:x}) must be 0x{SERVICE_SELECTED_NEGOTIATED_B:x} — the routed BETA behavior must yield max=1024, not ALPHA's 2048",
+            selected.args[4]
+        ));
+    }
+    let alpha_ep = endpoints.args[0];
+    let beta_ep = endpoints.args[1];
+    let beta_self = endpoints.args[2];
+    if alpha_ep != SERVICE_SELECTED_ALPHA_EP {
+        return Err(format!(
+            "service_selected alpha_ep ({alpha_ep}) must be {SERVICE_SELECTED_ALPHA_EP} — the ALPHA endpoint must report its own task id next to its result"
+        ));
+    }
+    if beta_ep != SERVICE_SELECTED_BETA_EP {
+        return Err(format!(
+            "service_selected beta_ep ({beta_ep}) must be {SERVICE_SELECTED_BETA_EP} — the BETA request must be routed to a second, independent service task"
+        ));
+    }
+    if beta_self != SERVICE_SELECTED_BETA_EP {
+        return Err(format!(
+            "service_selected beta_self ({beta_self}) must be {SERVICE_SELECTED_BETA_EP} — the manager must route BETA to the endpoint from the second self-report"
+        ));
+    }
+    if endpoints.args[3] != SERVICE_SELECTED_ALPHA_MARKER
+        || endpoints.args[4] != SERVICE_SELECTED_BETA_MARKER
+    {
+        return Err(format!(
+            "service_selected markers (0x{:x}/0x{:x}) must be 0x{SERVICE_SELECTED_ALPHA_MARKER:x}/0x{SERVICE_SELECTED_BETA_MARKER:x} — the endpoints must run two distinct binaries",
+            endpoints.args[3], endpoints.args[4]
+        ));
+    }
+    let client_ep = registry.args[0];
+    let reg_a_name = registry.args[1];
+    let reg_b_name = registry.args[2];
+    let alpha_stack = registry.args[3];
+    let beta_stack = registry.args[4];
+    let client_stack = y_u64(&y, 368)?;
+    if client_ep != SERVICE_SELECTED_CLIENT_EP {
+        return Err(format!(
+            "service_selected client_ep ({client_ep}) must be {SERVICE_SELECTED_CLIENT_EP} — the surviving ring3 client from the Hello payload"
+        ));
+    }
+    if reg_a_name != SERVICE_SELECTED_REG_A_NAME || reg_b_name != SERVICE_SELECTED_REG_B_NAME {
+        return Err(format!(
+            "service_selected registry names ({reg_a_name}/{reg_b_name}) must be {SERVICE_SELECTED_REG_A_NAME}/{SERVICE_SELECTED_REG_B_NAME} — built from endpoint self-reports, not a compile-time constant"
+        ));
+    }
+    for (label, raw) in [
+        ("alpha_stack_seg", alpha_stack),
+        ("beta_stack_seg", beta_stack),
+        ("client_stack_seg", client_stack),
+    ] {
+        if raw == 0 {
+            return Err(format!(
+                "service_selected {label} must be non-zero — every endpoint and the client must own a stack Segment"
+            ));
+        }
+        require_live(&live, raw, 's', label)?;
+    }
+    if alpha_stack == beta_stack || alpha_stack == client_stack || beta_stack == client_stack {
+        return Err(
+            "service_selected stack Segments must be pairwise distinct — the client, ALPHA and BETA must own independent physical stack frames"
+                .to_owned(),
+        );
+    }
+
+    // SPEC-103/104/106/110/112/114：ring3 服务管理器与基础服务。
+    let mgr = &shared[8..14];
+    let self_id = mgr[0].args[0];
+    let hello = y_u64(&y, 792)?;
+    if self_id <= 1 {
+        return Err(format!(
+            "servicemgr self_id ({self_id}) must be a real ring3 child task (> 1, not init)"
+        ));
+    }
+    if hello & 0xffff_0000_0000_0000 != SERVICEMGR_HELLO_TAG {
+        return Err(format!(
+            "servicemgr hello (0x{hello:x}) must carry the SERVICEMGR_HELLO_TAG tag 0x{SERVICEMGR_HELLO_TAG:x}"
+        ));
+    }
+    if hello & 0xff != self_id & 0xff {
+        return Err(format!(
+            "servicemgr hello low byte ({:#x}) must equal the traced self_id low byte ({:#x}) — the liveness report and the registry results must come from the same task",
+            hello & 0xff,
+            self_id & 0xff
+        ));
+    }
+    if mgr[0].args[1] != SERVICEMGR_BINARY_MARKER {
+        return Err(format!(
+            "servicemgr marker (0x{:x}) must be 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image",
+            mgr[0].args[1]
+        ));
+    }
+    if mgr[0].args[2] != 6 {
+        return Err(format!(
+            "servicemgr created ({}) must be 6 — all six service-table entries must be created by the ring3 manager",
+            mgr[0].args[2]
+        ));
+    }
+    if mgr[0].args[3] == 0 || mgr[0].args[4] == 0 {
+        return Err("servicemgr entry_a/entry_b must be nonzero — the manager must derive each endpoint's ELF entry itself".to_owned());
+    }
+    let services = mgr[1].args[0];
+    let log_id = mgr[1].args[1];
+    let ns_id = mgr[1].args[2];
+    let store_id = mgr[1].args[3];
+    if services != 3 {
+        return Err(format!(
+            "servicemgr services ({services}) must be 3 — the three base services must all answer the routed probe"
+        ));
+    }
+    if log_id <= 1 || ns_id <= 1 || store_id <= 1 {
+        return Err(format!(
+            "servicemgr base service ids ({log_id}/{ns_id}/{store_id}) must each be a real ring3 child task (> 1)"
+        ));
+    }
+    if log_id == ns_id || ns_id == store_id || log_id == store_id {
+        return Err(format!(
+            "servicemgr base service ids ({log_id}/{ns_id}/{store_id}) must be pairwise distinct"
+        ));
+    }
+    if mgr[1].args[4] != SERVICE_MARKER_LOG
+        || mgr[2].args[0] != SERVICE_MARKER_NS
+        || mgr[2].args[1] != SERVICE_MARKER_STORE
+    {
+        return Err(format!(
+            "servicemgr log/ns/store markers (0x{:x}/0x{:x}/0x{:x}) must be 0x{SERVICE_MARKER_LOG:x}/0x{SERVICE_MARKER_NS:x}/0x{SERVICE_MARKER_STORE:x}",
+            mgr[1].args[4], mgr[2].args[0], mgr[2].args[1]
+        ));
+    }
+    let log_state = [mgr[2].args[2], mgr[2].args[3], mgr[2].args[4]];
+    let ns_state = [mgr[3].args[0], mgr[3].args[1], mgr[3].args[2]];
+    let store_state = [mgr[3].args[3], mgr[3].args[4], mgr[4].args[0]];
+    if log_state
+        != [
+            SERVICE_REPLY_LOG_0,
+            SERVICE_REPLY_LOG_1,
+            SERVICE_REPLY_LOG_2,
+        ]
+    {
+        return Err(format!(
+            "servicemgr log_state ({log_state:x?}) must be [{SERVICE_REPLY_LOG_0:x}/{SERVICE_REPLY_LOG_1:x}/{SERVICE_REPLY_LOG_2:x}] — the log service must accumulate (5, 8, query 8)"
+        ));
+    }
+    if ns_state != [SERVICE_REPLY_NS_0, SERVICE_REPLY_NS_1, SERVICE_REPLY_NS_2] {
+        return Err(format!(
+            "servicemgr ns_state ({ns_state:x?}) must be [{SERVICE_REPLY_NS_0:x}/{SERVICE_REPLY_NS_1:x}/{SERVICE_REPLY_NS_2:x}]"
+        ));
+    }
+    if store_state
+        != [
+            SERVICE_REPLY_STORE_0,
+            SERVICE_REPLY_STORE_1,
+            SERVICE_REPLY_STORE_2,
+        ]
+    {
+        return Err(format!(
+            "servicemgr store_state ({store_state:x?}) must be [{SERVICE_REPLY_STORE_0:x}/{SERVICE_REPLY_STORE_1:x}/{SERVICE_REPLY_STORE_2:x}]"
+        ));
+    }
+    let ns_resolved = mgr[4].args[1];
+    let log_seg = mgr[4].args[2];
+    let store_seg = mgr[4].args[3];
+    let driver_id = mgr[4].args[4];
+    if ns_resolved == 0 || ns_resolved >= (1u64 << 63) {
+        return Err(format!(
+            "servicemgr ns_resolved (0x{ns_resolved:x}) must be a capability handle from SYS_NS_RESOLVE, not zero/an errno/a sentinel"
+        ));
+    }
+    for (label, raw) in [("log_seg", log_seg), ("store_seg", store_seg)] {
+        if raw == 0 || raw >= (1u64 << 63) {
+            return Err(format!(
+                "servicemgr {label} (0x{raw:x}) must be a segment handle from SYS_MEMSEG_CREATE, not zero/an errno/a sentinel"
+            ));
+        }
+        require_live(&live, raw, 's', label)?;
+    }
+    if log_seg == store_seg {
+        return Err("servicemgr log_seg == store_seg — the log and store services must each hold a distinct kernel MemorySegment".to_owned());
+    }
+    if driver_id <= 1 || driver_id == log_id || driver_id == ns_id || driver_id == store_id {
+        return Err(format!(
+            "servicemgr driver_id ({driver_id}) must be a separate ring3 child task, distinct from log/ns/store"
+        ));
+    }
+    if mgr[5].args[0] != SERVICE_MARKER_DRIVER {
+        return Err(format!(
+            "servicemgr driver_mark (0x{:x}) must be 0x{SERVICE_MARKER_DRIVER:x}",
+            mgr[5].args[0]
+        ));
+    }
+    let driver_dev = mgr[5].args[1];
+    if driver_dev == 0 || driver_dev >= (1u64 << 63) {
+        return Err(format!(
+            "servicemgr driver_dev (0x{driver_dev:x}) must be a Device handle from SYS_DEV_IOPORT_CREATE"
+        ));
+    }
+    require_live(&live, driver_dev, 'd', "driver_dev")?;
+    if driver_dev == log_seg || driver_dev == store_seg {
+        return Err(
+            "servicemgr driver_dev must be a Device, not a MemorySegment handle".to_owned(),
+        );
+    }
+    if mgr[5].args[2] & 0xffff_ffff != IOPORT_MAGIC_READBACK {
+        return Err(format!(
+            "servicemgr driver_io0 (0x{:x}) low word must be the read-back 0x{IOPORT_MAGIC_READBACK:x}",
+            mgr[5].args[2]
+        ));
+    }
+    if mgr[5].args[3] & 0xffff_ffff != 0 {
+        return Err(format!(
+            "servicemgr driver_io1 (0x{:x}) low word must be 0 — the out-of-range port write must be rejected",
+            mgr[5].args[3]
+        ));
     }
     Ok(())
+}
+
+fn y_u64(y: &[u8], offset: usize) -> Result<u64, String> {
+    let bytes = y
+        .get(offset..offset + 8)
+        .ok_or_else(|| format!("Y page offset {offset} is out of range"))?;
+    Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
+}
+
+fn parse_y_bytes(output: &str) -> Result<Vec<u8>, String> {
+    let mut lines = output
+        .lines()
+        .filter(|line| line.starts_with("YBYTES|data="));
+    let line = lines
+        .next()
+        .ok_or_else(|| "missing Y page bytes".to_owned())?
+        .trim_end_matches('\r');
+    if lines.next().is_some() {
+        return Err("duplicate Y page bytes".to_owned());
+    }
+    let hex = line
+        .strip_prefix("YBYTES|data=")
+        .ok_or_else(|| "invalid Y page header".to_owned())?;
+    if hex.len() != 4096 * 2 {
+        return Err("invalid Y page length".to_owned());
+    }
+    decode_hex(hex)
+}
+
+fn parse_live_handles(output: &str) -> Result<Vec<(char, u64)>, String> {
+    let mut handles = Vec::new();
+    for line in output.lines().filter(|line| line.starts_with("LIVE|")) {
+        let line = line.trim_end_matches('\r');
+        let mut kind = None;
+        let mut handle = None;
+        for pair in line["LIVE|".len()..].split(';') {
+            let (key, value) = pair
+                .split_once('=')
+                .ok_or_else(|| format!("malformed LIVE pair: {pair}"))?;
+            match key {
+                "kind" => {
+                    kind = Some(match value {
+                        "seg" => 's',
+                        "dev" => 'd',
+                        other => return Err(format!("unknown LIVE kind: {other}")),
+                    })
+                }
+                "handle" => handle = Some(parse_addr(value)?),
+                // 内核用十进制输出这些纯定位字段；判定不依赖它们。
+                "slot" | "rec" | "arg" | "page" | "offset" => {}
+                other => return Err(format!("unknown LIVE key: {other}")),
+            }
+        }
+        let kind = kind.ok_or_else(|| "LIVE line is missing kind".to_owned())?;
+        let handle = handle.ok_or_else(|| "LIVE line is missing handle".to_owned())?;
+        handles.push((kind, handle));
+    }
+    Ok(handles)
+}
+
+fn require_live(live: &[(char, u64)], raw: u64, kind: char, label: &str) -> Result<(), String> {
+    if live.iter().any(|(k, value)| *k == kind && *value == raw) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{label} (0x{raw:x}) must appear in the kernel live-{} scan — the raw trace value must be a live kernel object",
+            if kind == 's' { "Segment" } else { "Device" }
+        ))
+    }
+}
+
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    hex.as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let pair = core::str::from_utf8(pair).map_err(|_| "invalid trace hex".to_owned())?;
+            u8::from_str_radix(pair, 16).map_err(|_| "invalid trace hex".to_owned())
+        })
+        .collect()
 }
 
 fn parse_shared_trace(
@@ -832,33 +1098,6 @@ fn parse_shared_trace(
         });
     }
     Ok(records)
-}
-
-fn check_trace_fields(
-    output: &str,
-    event: &str,
-    record: &prima_abi::trace::Record,
-    fields: &[Option<&str>; prima_abi::trace::ARGS],
-) -> Result<(), String> {
-    let prefix = format!("|event={event}|status=ok|data=");
-    let data = output
-        .lines()
-        .find_map(|line| {
-            line.split_once(&prefix)
-                .map(|(_, data)| data.trim_end_matches('\r'))
-        })
-        .ok_or_else(|| format!("missing {event} witness"))?;
-    for (name, actual) in fields.iter().zip(record.args) {
-        let Some(name) = name else { continue };
-        let value = data
-            .split(';')
-            .find_map(|field| field.strip_prefix(&format!("{name}=")))
-            .ok_or_else(|| format!("missing {name} in {event} witness"))?;
-        if parse_addr(value)? != actual {
-            return Err(format!("{event}.{name} differs from raw TRACE"));
-        }
-    }
-    Ok(())
 }
 
 /// 独立驱动的硬件页故障证据；应用 trace 和启动完成由相邻校验器检查。
@@ -3518,127 +3757,11 @@ fn validate_memory_data(data: Option<&str>) -> Result<u64, String> {
     Ok(kstart)
 }
 
-const RUNTIME_HELLO_DATA: &str =
-    "id=0x1;a=0x0;b=0x14d495250;c=0x300000001;d=0x100000018;e=0x100000010001";
-
 /// SPEC-087：`service_reply_ready` 的镜像常量，与 `kernel/src/{user,syscall}.rs` 一致
 /// （跨 crate 需人工同步）。
 const SERVICE_REPLY_CLIENT_CAP: u64 = 0x0000_0001_0000_001c;
 const SERVICE_REPLY_CLIENT_ID: u64 = 9;
 const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
-
-fn validate_runtime_hello_data(data: Option<&str>) -> Result<(), String> {
-    let data = data.ok_or_else(|| "runtime_hello_ready is missing data".to_owned())?;
-    if data != RUNTIME_HELLO_DATA {
-        return Err(format!("runtime_hello_ready wire data differs: {data}"));
-    }
-    // EXO-3D：data 是内核透传的通用 trace 记录；xtask 负责解包/判定语义。
-    let mut id = None;
-    let mut a = None;
-    let mut b = None;
-    let mut c = None;
-    let mut d = None;
-    let mut e = None;
-    for pair in data.split(';') {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("malformed runtime_hello trace pair: {pair}"))?;
-        match key {
-            "id" => id = Some(parse_addr(value)?),
-            "a" => a = Some(parse_addr(value)?),
-            "b" => b = Some(parse_addr(value)?),
-            "c" => c = Some(parse_addr(value)?),
-            "d" => d = Some(parse_addr(value)?),
-            "e" => e = Some(parse_addr(value)?),
-            _ => return Err(format!("unknown runtime_hello trace key: {key}")),
-        }
-    }
-    let (Some(id), Some(a), Some(b), Some(c), Some(d), Some(e)) = (id, a, b, c, d, e) else {
-        return Err("runtime_hello trace record is missing fields".to_owned());
-    };
-    let features = e & 0xffff;
-    let required = (e >> 16) & 0xffff;
-    let max_message_size = e >> 32;
-    if id == prima_abi::trace::EVENT_RUNTIME_HELLO
-        && a == 0
-        && b == 0x14d495250
-        && c == 0x300000001
-        && d == 0x100000018
-        && features == 1
-        && required == 1
-        && max_message_size == 4096
-    {
-        Ok(())
-    } else {
-        Err(format!("runtime_hello trace values differ: {data}"))
-    }
-}
-
-/// SPEC-087：`service_reply_ready` 的期望字段——init 与存活 ring3 客户端双向握手。
-///
-/// `client` 是 `SYS_TASK_CREATE` 返回的 manager cap（槽 24 gen1），`recv` 是客户端自报的
-/// task id，`echo` 是客户端写回的 `SERVICE_REPLY_WORD`（本块由客户端从共享段读回）。
-fn validate_service_reply_data(data: Option<&str>) -> Result<(), String> {
-    let data = data.ok_or_else(|| "service_reply_ready is missing data".to_owned())?;
-    let mut client = None;
-    let mut stack = None;
-    let mut recv = None;
-    let mut map = None;
-    let mut reply = None;
-    let mut echo = None;
-    for pair in data.split(';') {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
-        match key {
-            "client" => client = Some(parse_addr(value)?),
-            "stack" => stack = Some(parse_addr(value)?),
-            "recv" => recv = Some(parse_addr(value)?),
-            "map" => map = Some(parse_addr(value)?),
-            "reply" => reply = Some(parse_addr(value)?),
-            "echo" => echo = Some(parse_addr(value)?),
-            _ => return Err(format!("unknown data key: {key}")),
-        }
-    }
-    let missing = |key: &str| format!("missing {key} in service_reply_ready data");
-    let client = client.ok_or_else(|| missing("client"))?;
-    let stack = stack.ok_or_else(|| missing("stack"))?;
-    let recv = recv.ok_or_else(|| missing("recv"))?;
-    let map = map.ok_or_else(|| missing("map"))?;
-    let reply = reply.ok_or_else(|| missing("reply"))?;
-    let echo = echo.ok_or_else(|| missing("echo"))?;
-    if client != SERVICE_REPLY_CLIENT_CAP {
-        return Err(format!(
-            "service_reply_ready client (0x{client:x}) must be the manager cap 0x{SERVICE_REPLY_CLIENT_CAP:x} returned by SYS_TASK_CREATE"
-        ));
-    }
-    if stack != 0 {
-        return Err(format!(
-            "service_reply_ready stack (0x{stack:x}) must be 0 — init must map the client stack through the manager cap"
-        ));
-    }
-    if recv != SERVICE_REPLY_CLIENT_ID {
-        return Err(format!(
-            "service_reply_ready recv ({recv}) must equal the client id {SERVICE_REPLY_CLIENT_ID} — the Hello payload is the client's own SYS_TASK_ID"
-        ));
-    }
-    if map != 0 {
-        return Err(format!(
-            "service_reply_ready map (0x{map:x}) must be 0 — init must map the received shared Segment into its own root"
-        ));
-    }
-    if reply != 0 {
-        return Err(format!(
-            "service_reply_ready reply (0x{reply:x}) must be 0 — init's reply SYS_SEND must succeed"
-        ));
-    }
-    if echo != SERVICE_REPLY_WORD {
-        return Err(format!(
-            "service_reply_ready echo (0x{echo:x}) must be 0x{SERVICE_REPLY_WORD:x} — the client must write init's reply payload back into the shared Segment"
-        ));
-    }
-    Ok(())
-}
 
 /// SPEC-090/101：`service_selected_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 /// SPEC-101 起服务名是 ASCII 令牌打包值：`name` = `"beta"`（`0x6174_6562`）。
@@ -3665,163 +3788,6 @@ const SERVICE_SELECTED_ALPHA_MARKER: u64 = 0x414C_5048_4100_0001;
 const SERVICE_SELECTED_BETA_MARKER: u64 = 0x4245_5441_0000_0002;
 
 /// SPEC-090：init（服务管理器）按名字解析并二次路由的期望字段。
-fn validate_service_selected_data(data: Option<&str>) -> Result<(), String> {
-    let data = data.ok_or_else(|| "service_selected_ready is missing data".to_owned())?;
-    let mut name = None;
-    let mut resolved = None;
-    let mut unknown = None;
-    let mut done = None;
-    let mut negotiated_beta = None;
-    let mut alpha_ep = None;
-    let mut beta_ep = None;
-    let mut beta_self = None;
-    let mut alpha_marker = None;
-    let mut beta_marker = None;
-    let mut alpha_stack_seg = None;
-    let mut beta_stack_seg = None;
-    let mut client_ep = None;
-    let mut client_stack_seg = None;
-    let mut reg_a_name = None;
-    let mut reg_b_name = None;
-    for pair in data.split(';') {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
-        match key {
-            "name" => name = Some(parse_addr(value)?),
-            "resolved" => resolved = Some(parse_addr(value)?),
-            "unknown" => unknown = Some(parse_addr(value)?),
-            "done" => done = Some(parse_addr(value)?),
-            "negotiated_beta" => negotiated_beta = Some(parse_addr(value)?),
-            "alpha_ep" => alpha_ep = Some(parse_addr(value)?),
-            "beta_ep" => beta_ep = Some(parse_addr(value)?),
-            "beta_self" => beta_self = Some(parse_addr(value)?),
-            "alpha_marker" => alpha_marker = Some(parse_addr(value)?),
-            "beta_marker" => beta_marker = Some(parse_addr(value)?),
-            "alpha_stack_seg" => alpha_stack_seg = Some(parse_addr(value)?),
-            "beta_stack_seg" => beta_stack_seg = Some(parse_addr(value)?),
-            "client_ep" => client_ep = Some(parse_addr(value)?),
-            "client_stack_seg" => client_stack_seg = Some(parse_addr(value)?),
-            "reg_a_name" => reg_a_name = Some(parse_addr(value)?),
-            "reg_b_name" => reg_b_name = Some(parse_addr(value)?),
-            _ => return Err(format!("unknown data key: {key}")),
-        }
-    }
-    let missing = |key: &str| format!("missing {key} in service_selected_ready data");
-    let name = name.ok_or_else(|| missing("name"))?;
-    let resolved = resolved.ok_or_else(|| missing("resolved"))?;
-    let unknown = unknown.ok_or_else(|| missing("unknown"))?;
-    let done = done.ok_or_else(|| missing("done"))?;
-    let negotiated_beta = negotiated_beta.ok_or_else(|| missing("negotiated_beta"))?;
-    let alpha_ep = alpha_ep.ok_or_else(|| missing("alpha_ep"))?;
-    let beta_ep = beta_ep.ok_or_else(|| missing("beta_ep"))?;
-    let beta_self = beta_self.ok_or_else(|| missing("beta_self"))?;
-    let alpha_marker = alpha_marker.ok_or_else(|| missing("alpha_marker"))?;
-    let beta_marker = beta_marker.ok_or_else(|| missing("beta_marker"))?;
-    let alpha_stack_seg = alpha_stack_seg.ok_or_else(|| missing("alpha_stack_seg"))?;
-    let beta_stack_seg = beta_stack_seg.ok_or_else(|| missing("beta_stack_seg"))?;
-    let client_ep = client_ep.ok_or_else(|| missing("client_ep"))?;
-    let client_stack_seg = client_stack_seg.ok_or_else(|| missing("client_stack_seg"))?;
-    let reg_a_name = reg_a_name.ok_or_else(|| missing("reg_a_name"))?;
-    let reg_b_name = reg_b_name.ok_or_else(|| missing("reg_b_name"))?;
-    if name != SERVICE_SELECTED_NAME {
-        return Err(format!(
-            "service_selected_ready name (0x{name:x}) must be {SERVICE_SELECTED_NAME} — the manager must read the requested service name from the shared Segment"
-        ));
-    }
-    if resolved != SERVICE_SELECTED_RESOLVED {
-        return Err(format!(
-            "service_selected_ready resolved (0x{resolved:x}) must be {SERVICE_SELECTED_RESOLVED} — the requested name must resolve to the BETA behavior"
-        ));
-    }
-    if unknown != SERVICE_SELECTED_UNKNOWN {
-        return Err(format!(
-            "service_selected_ready unknown (0x{unknown:x}) must be {SERVICE_SELECTED_UNKNOWN} — an unregistered name must resolve to NONE (refused)"
-        ));
-    }
-    if done != SERVICE_DONE_TAG {
-        return Err(format!(
-            "service_selected_ready done (0x{done:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}"
-        ));
-    }
-    if negotiated_beta != SERVICE_SELECTED_NEGOTIATED_B {
-        return Err(format!(
-            "service_selected_ready negotiated_beta (0x{negotiated_beta:x}) must be 0x{SERVICE_SELECTED_NEGOTIATED_B:x} — the routed BETA behavior must yield max=1024, not ALPHA's 2048"
-        ));
-    }
-    if alpha_ep != SERVICE_SELECTED_ALPHA_EP {
-        return Err(format!(
-            "service_selected_ready alpha_ep ({alpha_ep}) must be {SERVICE_SELECTED_ALPHA_EP} — the ALPHA endpoint (first service task) must report its own task id next to its result"
-        ));
-    }
-    if beta_ep != SERVICE_SELECTED_BETA_EP {
-        return Err(format!(
-            "service_selected_ready beta_ep ({beta_ep}) must be {SERVICE_SELECTED_BETA_EP} — the BETA request must be routed to a *second, independent* service task (multi-endpoint), not the ALPHA host"
-        ));
-    }
-    if beta_self != SERVICE_SELECTED_BETA_EP {
-        return Err(format!(
-            "service_selected_ready beta_self ({beta_self}) must be {SERVICE_SELECTED_BETA_EP} — the manager must route BETA to the endpoint it collected from the second SERVICE_ID_TAG self-report"
-        ));
-    }
-    if alpha_ep == beta_ep {
-        return Err(
-            "service_selected_ready alpha_ep and beta_ep must differ — two names must resolve to two distinct endpoint tasks".to_owned(),
-        );
-    }
-    if alpha_marker != SERVICE_SELECTED_ALPHA_MARKER {
-        return Err(format!(
-            "service_selected_ready alpha_marker (0x{alpha_marker:x}) must be 0x{SERVICE_SELECTED_ALPHA_MARKER:x} — the ALPHA endpoint must run the prima-smoke image"
-        ));
-    }
-    if beta_marker != SERVICE_SELECTED_BETA_MARKER {
-        return Err(format!(
-            "service_selected_ready beta_marker (0x{beta_marker:x}) must be 0x{SERVICE_SELECTED_BETA_MARKER:x} — the BETA endpoint must run the *second, distinct* image (prima-beta), not the ALPHA host image"
-        ));
-    }
-    if alpha_marker == beta_marker {
-        return Err(
-            "service_selected_ready alpha_marker and beta_marker must differ — the two endpoints must be created from two distinct binaries".to_owned(),
-        );
-    }
-    if alpha_stack_seg == 0 || beta_stack_seg == 0 {
-        return Err(format!(
-            "service_selected_ready stack segments (0x{alpha_stack_seg:x}/0x{beta_stack_seg:x}) must be non-zero — both endpoints must have a mapped stack at USER3_STACK_VA"
-        ));
-    }
-    if alpha_stack_seg == beta_stack_seg {
-        return Err(
-            "service_selected_ready alpha_stack_seg and beta_stack_seg must differ — the two endpoints must own independent physical stack frames, not share one Segment".to_owned(),
-        );
-    }
-    if client_ep != SERVICE_SELECTED_CLIENT_EP {
-        return Err(format!(
-            "service_selected_ready client_ep ({client_ep}) must be {SERVICE_SELECTED_CLIENT_EP} — the surviving ring3 client that init collected from the Hello payload"
-        ));
-    }
-    if client_stack_seg == 0 {
-        return Err(
-            "service_selected_ready client_stack_seg (0x0) must be non-zero — the client must have a mapped stack at USER3_STACK_VA".to_owned(),
-        );
-    }
-    if client_stack_seg == alpha_stack_seg {
-        return Err(
-            "service_selected_ready client_stack_seg and alpha_stack_seg must differ — the ALPHA endpoint must own its own physical stack frame, not the client's shared Y[368] Segment".to_owned(),
-        );
-    }
-    if client_stack_seg == beta_stack_seg {
-        return Err(
-            "service_selected_ready client_stack_seg and beta_stack_seg must differ — the client, ALPHA and BETA must all own independent physical stack frames".to_owned(),
-        );
-    }
-    if reg_a_name != SERVICE_SELECTED_REG_A_NAME || reg_b_name != SERVICE_SELECTED_REG_B_NAME {
-        return Err(format!(
-            "service_selected_ready registry names (reg_a_name={reg_a_name}, reg_b_name={reg_b_name}) must be {SERVICE_SELECTED_REG_A_NAME}/{SERVICE_SELECTED_REG_B_NAME} — the manager must build the name registry from the endpoints' self-reports, not from a compile-time constant"
-        ));
-    }
-    Ok(())
-}
-
 /// SPEC-103/104：`servicemgr_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 /// SPEC-104：`prima-servicemgr` 映像写回共享段的**二进制标记**（与 `prima-user/src/servicemgr.rs`
@@ -3854,260 +3820,6 @@ const IOPORT_MAGIC_READBACK: u64 = 0x5A;
 /// 子任务（`> 1`，非 init）；自报 payload 的 tag 正确、且其低 8 位与从管理 cap 解出的 `task_id`
 /// 相符；共享段里的 `self_id`/`marker` 与 `task_id`/映像标记一致——证明存活自报与注册表/解析结果
 /// 都来自 init 建起的**同一个**独立 ring3 映像，而非任何编译期常量。
-fn validate_servicemgr_data(data: Option<&str>) -> Result<(), String> {
-    let data = data.ok_or_else(|| "servicemgr_ready is missing data".to_owned())?;
-    let mut task_id = None;
-    let mut hello = None;
-    let mut self_id = None;
-    let mut marker = None;
-    let mut created = None;
-    let mut entry_a = None;
-    let mut entry_b = None;
-    let mut services = None;
-    let mut log_id = None;
-    let mut ns_id = None;
-    let mut store_id = None;
-    let mut log_mark = None;
-    let mut ns_mark = None;
-    let mut store_mark = None;
-    let mut ns_resolved = None;
-    let mut log_seg = None;
-    let mut store_seg = None;
-    let mut driver_id = None;
-    let mut driver_mark = None;
-    let mut driver_dev = None;
-    let mut driver_io = [None; 2];
-    let mut log_state = [None; 3];
-    let mut ns_state = [None; 3];
-    let mut store_state = [None; 3];
-    for pair in data.split(';') {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
-        match key {
-            "task_id" => task_id = Some(parse_addr(value)?),
-            "hello" => hello = Some(parse_addr(value)?),
-            "self_id" => self_id = Some(parse_addr(value)?),
-            "marker" => marker = Some(parse_addr(value)?),
-            "created" => created = Some(parse_addr(value)?),
-            "entry_a" => entry_a = Some(parse_addr(value)?),
-            "entry_b" => entry_b = Some(parse_addr(value)?),
-            "services" => services = Some(parse_addr(value)?),
-            "log_id" => log_id = Some(parse_addr(value)?),
-            "ns_id" => ns_id = Some(parse_addr(value)?),
-            "store_id" => store_id = Some(parse_addr(value)?),
-            "log_mark" => log_mark = Some(parse_addr(value)?),
-            "ns_mark" => ns_mark = Some(parse_addr(value)?),
-            "store_mark" => store_mark = Some(parse_addr(value)?),
-            "log_state0" => log_state[0] = Some(parse_addr(value)?),
-            "log_state1" => log_state[1] = Some(parse_addr(value)?),
-            "log_state2" => log_state[2] = Some(parse_addr(value)?),
-            "ns_state0" => ns_state[0] = Some(parse_addr(value)?),
-            "ns_state1" => ns_state[1] = Some(parse_addr(value)?),
-            "ns_state2" => ns_state[2] = Some(parse_addr(value)?),
-            "store_state0" => store_state[0] = Some(parse_addr(value)?),
-            "store_state1" => store_state[1] = Some(parse_addr(value)?),
-            "store_state2" => store_state[2] = Some(parse_addr(value)?),
-            "ns_resolved" => ns_resolved = Some(parse_addr(value)?),
-            "log_seg" => log_seg = Some(parse_addr(value)?),
-            "store_seg" => store_seg = Some(parse_addr(value)?),
-            "driver_id" => driver_id = Some(parse_addr(value)?),
-            "driver_mark" => driver_mark = Some(parse_addr(value)?),
-            "driver_dev" => driver_dev = Some(parse_addr(value)?),
-            "driver_io0" => driver_io[0] = Some(parse_addr(value)?),
-            "driver_io1" => driver_io[1] = Some(parse_addr(value)?),
-            _ => return Err(format!("unknown data key: {key}")),
-        }
-    }
-    let missing = |key: &str| format!("missing {key} in servicemgr_ready data");
-    let task_id = task_id.ok_or_else(|| missing("task_id"))?;
-    let hello = hello.ok_or_else(|| missing("hello"))?;
-    let self_id = self_id.ok_or_else(|| missing("self_id"))?;
-    let marker = marker.ok_or_else(|| missing("marker"))?;
-    let created = created.ok_or_else(|| missing("created"))?;
-    let entry_a = entry_a.ok_or_else(|| missing("entry_a"))?;
-    let entry_b = entry_b.ok_or_else(|| missing("entry_b"))?;
-    if task_id <= 1 {
-        return Err(format!(
-            "servicemgr_ready task_id ({task_id}) must be a real ring3 child task (> 1, not init)"
-        ));
-    }
-    if hello & 0xffff_0000_0000_0000 != SERVICEMGR_HELLO_TAG {
-        return Err(format!(
-            "servicemgr_ready hello (0x{hello:x}) must carry the SERVICEMGR_HELLO_TAG tag 0x{SERVICEMGR_HELLO_TAG:x}"
-        ));
-    }
-    if hello & 0xff != task_id & 0xff {
-        return Err(format!(
-            "servicemgr_ready hello low byte ({:#x}) must equal the task id decoded from the manager cap ({:#x}) — the liveness report must come from the very task init created",
-            hello & 0xff,
-            task_id & 0xff
-        ));
-    }
-    if self_id != task_id {
-        return Err(format!(
-            "servicemgr_ready self_id ({self_id}) must equal the task id decoded from the manager cap ({task_id}) — the registry/resolution results in the shared Segment must come from the very task init created"
-        ));
-    }
-    if marker != SERVICEMGR_BINARY_MARKER {
-        return Err(format!(
-            "servicemgr_ready marker (0x{marker:x}) must be the prima-servicemgr binary marker 0x{SERVICEMGR_BINARY_MARKER:x} — the manager must be a distinct ring3 image, not init's hand-written code"
-        ));
-    }
-    if created != 6 {
-        return Err(format!(
-            "servicemgr_ready created ({created}) must be 6 — SPEC-105/106/114: all six service-table entries (alpha/beta + log/ns/store + the ioprt user-mode driver) must be created by the ring3 manager, not by init's hand-written code"
-        ));
-    }
-    if entry_a == 0 || entry_b == 0 {
-        return Err(format!(
-            "servicemgr_ready entry_a/entry_b (0x{entry_a:x}/0x{entry_b:x}) must be nonzero — SPEC-105: the manager must derive each endpoint's ELF entry itself (e_entry at file offset 24)"
-        ));
-    }
-    let services = services.ok_or_else(|| missing("services"))?;
-    let log_id = log_id.ok_or_else(|| missing("log_id"))?;
-    let ns_id = ns_id.ok_or_else(|| missing("ns_id"))?;
-    let store_id = store_id.ok_or_else(|| missing("store_id"))?;
-    let log_mark = log_mark.ok_or_else(|| missing("log_mark"))?;
-    let ns_mark = ns_mark.ok_or_else(|| missing("ns_mark"))?;
-    let store_mark = store_mark.ok_or_else(|| missing("store_mark"))?;
-    let unwrap_state = |state: [Option<u64>; 3], name: &str| -> Result<[u64; 3], String> {
-        Ok([
-            state[0].ok_or_else(|| missing(&format!("{name}_state0")))?,
-            state[1].ok_or_else(|| missing(&format!("{name}_state1")))?,
-            state[2].ok_or_else(|| missing(&format!("{name}_state2")))?,
-        ])
-    };
-    let log_state = unwrap_state(log_state, "log")?;
-    let ns_state = unwrap_state(ns_state, "ns")?;
-    let store_state = unwrap_state(store_state, "store")?;
-    if services != 3 {
-        return Err(format!(
-            "servicemgr_ready services ({services}) must be 3 — SPEC-106: the three base services (log/ns/store) must all answer the routed probe"
-        ));
-    }
-    if log_id <= 1 || ns_id <= 1 || store_id <= 1 {
-        return Err(format!(
-            "servicemgr_ready log_id/ns_id/store_id ({log_id}/{ns_id}/{store_id}) must each be a real ring3 child task (> 1) — SPEC-106: each base service must run as its own task"
-        ));
-    }
-    if log_id == ns_id || ns_id == store_id || log_id == store_id {
-        return Err(format!(
-            "servicemgr_ready base service ids ({log_id}/{ns_id}/{store_id}) must be pairwise distinct — SPEC-106: the three services must be three separate tasks"
-        ));
-    }
-    if log_mark != SERVICE_MARKER_LOG
-        || ns_mark != SERVICE_MARKER_NS
-        || store_mark != SERVICE_MARKER_STORE
-    {
-        return Err(format!(
-            "servicemgr_ready log/ns/store markers (0x{log_mark:x}/0x{ns_mark:x}/0x{store_mark:x}) must be 0x{SERVICE_MARKER_LOG:x}/0x{SERVICE_MARKER_NS:x}/0x{SERVICE_MARKER_STORE:x} — SPEC-106: each base service must run from its own distinct binary"
-        ));
-    }
-    if log_state
-        != [
-            SERVICE_REPLY_LOG_0,
-            SERVICE_REPLY_LOG_1,
-            SERVICE_REPLY_LOG_2,
-        ]
-    {
-        return Err(format!(
-            "servicemgr_ready log_state ({log_state:x?}) must be [{SERVICE_REPLY_LOG_0:x}/{SERVICE_REPLY_LOG_1:x}/{SERVICE_REPLY_LOG_2:x}] — SPEC-110: the log service must accumulate (5, 8, query 8), a stateless echo endpoint would reply 5/3/0"
-        ));
-    }
-    if ns_state != [SERVICE_REPLY_NS_0, SERVICE_REPLY_NS_1, SERVICE_REPLY_NS_2] {
-        return Err(format!(
-            "servicemgr_ready ns_state ({ns_state:x?}) must be [{SERVICE_REPLY_NS_0:x}/{SERVICE_REPLY_NS_1:x}/{SERVICE_REPLY_NS_2:x}] — SPEC-110: the namespace service must fold (5, 0x53, query 0x53), a distinct stateful transition from log/store"
-        ));
-    }
-    if store_state
-        != [
-            SERVICE_REPLY_STORE_0,
-            SERVICE_REPLY_STORE_1,
-            SERVICE_REPLY_STORE_2,
-        ]
-    {
-        return Err(format!(
-            "servicemgr_ready store_state ({store_state:x?}) must be [{SERVICE_REPLY_STORE_0:x}/{SERVICE_REPLY_STORE_1:x}/{SERVICE_REPLY_STORE_2:x}] — SPEC-110: the store service must shift-append (5, 0x503, query 0x503), a distinct stateful transition from log/ns"
-        ));
-    }
-    // SPEC-111：Namespace 服务代理解析的返回值必须是内核派生的**活** Capability 句柄（非零、非
-    // errno 负编码、非哨兵）。硬证据是 `namespace_ready.resolves` 由 2 增至 3（内核侧审计计数，
-    // ring3 无法伪造）；此处把「返回值形状合法」钉住，句柄具体值随分配而变，故不硬编码。
-    let ns_resolved = ns_resolved.ok_or_else(|| missing("ns_resolved"))?;
-    if ns_resolved == 0 || ns_resolved >= (1u64 << 63) {
-        return Err(format!(
-            "servicemgr_ready ns_resolved (0x{ns_resolved:x}) must be a live Capability handle from the kernel SYS_NS_RESOLVE, not zero/an errno/a sentinel — SPEC-111: the namespace service must really proxy the kernel Namespace"
-        ));
-    }
-    // SPEC-112：日志/存储服务各持一个内核 MemorySegment 的句柄（管理器 `SYS_MEMSEG_CREATE` 铸出、
-    // 运行期移交）。软断言：非零、非 errno/哨兵、两者互异——具体 handle 值随分配而变，不硬编码。
-    // 硬证据在内核侧：`ServicemgrWitness::evidence_ok` 另以 `bootstrap::segment_of_cap` 认其为 **live**
-    // Segment，且 `task_ready.caps` 因两次 `memseg_create` 由 100 增至 102（内核侧计数，ring3 无法伪造）。
-    let log_seg = log_seg.ok_or_else(|| missing("log_seg"))?;
-    let store_seg = store_seg.ok_or_else(|| missing("store_seg"))?;
-    if log_seg == 0 || log_seg >= (1u64 << 63) {
-        return Err(format!(
-            "servicemgr_ready log_seg (0x{log_seg:x}) must be a live segment handle from the kernel SYS_MEMSEG_CREATE, not zero/an errno/a sentinel — SPEC-112: the log service must really hold a storage segment"
-        ));
-    }
-    if store_seg == 0 || store_seg >= (1u64 << 63) {
-        return Err(format!(
-            "servicemgr_ready store_seg (0x{store_seg:x}) must be a live segment handle from the kernel SYS_MEMSEG_CREATE, not zero/an errno/a sentinel — SPEC-112: the store service must really hold a storage segment"
-        ));
-    }
-    if log_seg == store_seg {
-        return Err(format!(
-            "servicemgr_ready log_seg == store_seg (0x{log_seg:x}) — SPEC-112: the log and store services must each hold a distinct kernel MemorySegment"
-        ));
-    }
-    // SPEC-114：用户态驱动——真实 ring3 子任务、独立二进制存在标记、持有管理器 `SYS_DEV_IOPORT_CREATE`
-    // 铸出的内核 `Device(IOPortRange)` 句柄，且两条受控端口应答证明「区间内可往返、区间外被内核拒绝」。
-    // 具体句柄值随分配而变，故只钉形状；硬证据在内核侧（`ServicemgrWitness::evidence_ok` 以
-    // `bootstrap::device_of_cap` 认其为 **live** Device）。
-    let driver_id = driver_id.ok_or_else(|| missing("driver_id"))?;
-    let driver_mark = driver_mark.ok_or_else(|| missing("driver_mark"))?;
-    let driver_dev = driver_dev.ok_or_else(|| missing("driver_dev"))?;
-    let driver_io0 = driver_io[0].ok_or_else(|| missing("driver_io0"))?;
-    let driver_io1 = driver_io[1].ok_or_else(|| missing("driver_io1"))?;
-    if driver_id <= 1 {
-        return Err(format!(
-            "servicemgr_ready driver_id ({driver_id}) must be a real ring3 child task (> 1) — SPEC-114: the user-mode driver must run as its own task"
-        ));
-    }
-    if driver_id == log_id || driver_id == ns_id || driver_id == store_id {
-        return Err(format!(
-            "servicemgr_ready driver_id ({driver_id}) collides with a base service id ({log_id}/{ns_id}/{store_id}) — SPEC-114: the driver must be a separate task from log/ns/store"
-        ));
-    }
-    if driver_mark != SERVICE_MARKER_DRIVER {
-        return Err(format!(
-            "servicemgr_ready driver_mark (0x{driver_mark:x}) must be 0x{SERVICE_MARKER_DRIVER:x} — SPEC-114: the driver must run from its own distinct binary"
-        ));
-    }
-    if driver_dev == 0 || driver_dev >= (1u64 << 63) {
-        return Err(format!(
-            "servicemgr_ready driver_dev (0x{driver_dev:x}) must be a live kernel Device handle from SYS_DEV_IOPORT_CREATE, not zero/an errno/a sentinel — SPEC-114: the driver must really hold an IOPortRange device capability"
-        ));
-    }
-    if driver_dev == log_seg || driver_dev == store_seg {
-        return Err(format!(
-            "servicemgr_ready driver_dev (0x{driver_dev:x}) must be a Device, not one of the MemorySegment handles — SPEC-114: the minted object must be the typed IOPortRange device"
-        ));
-    }
-    if driver_io0 & 0xffff_ffff != IOPORT_MAGIC_READBACK {
-        return Err(format!(
-            "servicemgr_ready driver_io0 (0x{driver_io0:x}) low word must be the scratch-register read-back 0x{IOPORT_MAGIC_READBACK:x} — SPEC-114: the driver must complete a real write→read round trip inside its authorized IOPortRange"
-        ));
-    }
-    if driver_io1 & 0xffff_ffff != 0 {
-        return Err(format!(
-            "servicemgr_ready driver_io1 (0x{driver_io1:x}) low word must be 0 — SPEC-114: the out-of-range port write must be rejected by the kernel (1 would mean the controlled port path is broken)"
-        ));
-    }
-    Ok(())
-}
-
 /// SPEC-088：`service_negotiated_ready` 的镜像常量，与 `kernel/src/user.rs` 一致。
 /// SPEC-105：端点令牌由 **ring3 服务管理器**从代码段派生（不再是 init 自建回执，故句柄值改变）。
 const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0002_0000_0033;
@@ -4126,84 +3838,6 @@ const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_0000_0000;
 /// `token` 是 init 从代码段根派生的只读端点令牌，`service` 是第 4 次 `SYS_TASK_CREATE`
 /// 返回的 manager cap（槽 28/29 gen1），`svc_id` 是服务自报的 task id，`done` 是服务完成
 /// 消息 `SERVICE_DONE_TAG`；`negotiated`/`negatives` 由服务写入共享段、init 从同一物理帧读回。
-fn validate_service_negotiated_data(data: Option<&str>) -> Result<(), String> {
-    let data = data.ok_or_else(|| "service_negotiated_ready is missing data".to_owned())?;
-    let mut token = None;
-    let mut service = None;
-    let mut stack = None;
-    let mut svc_id = None;
-    let mut forward = None;
-    let mut done = None;
-    let mut negotiated = None;
-    let mut negatives = None;
-    for pair in data.split(';') {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| format!("malformed data pair (missing '='): {pair}"))?;
-        match key {
-            "token" => token = Some(parse_addr(value)?),
-            "service" => service = Some(parse_addr(value)?),
-            "stack" => stack = Some(parse_addr(value)?),
-            "svc_id" => svc_id = Some(parse_addr(value)?),
-            "forward" => forward = Some(parse_addr(value)?),
-            "done" => done = Some(parse_addr(value)?),
-            "negotiated" => negotiated = Some(parse_addr(value)?),
-            "negatives" => negatives = Some(parse_addr(value)?),
-            _ => return Err(format!("unknown data key: {key}")),
-        }
-    }
-    let missing = |key: &str| format!("missing {key} in service_negotiated_ready data");
-    let token = token.ok_or_else(|| missing("token"))?;
-    let service = service.ok_or_else(|| missing("service"))?;
-    let stack = stack.ok_or_else(|| missing("stack"))?;
-    let svc_id = svc_id.ok_or_else(|| missing("svc_id"))?;
-    let forward = forward.ok_or_else(|| missing("forward"))?;
-    let done = done.ok_or_else(|| missing("done"))?;
-    let negotiated = negotiated.ok_or_else(|| missing("negotiated"))?;
-    let negatives = negatives.ok_or_else(|| missing("negatives"))?;
-    if token != SERVICE_NEGOTIATED_TOKEN {
-        return Err(format!(
-            "service_negotiated_ready token (0x{token:x}) must be the derived endpoint token 0x{SERVICE_NEGOTIATED_TOKEN:x}"
-        ));
-    }
-    if service != SERVICE_NEGOTIATED_CAP {
-        return Err(format!(
-            "service_negotiated_ready service (0x{service:x}) must be the manager cap 0x{SERVICE_NEGOTIATED_CAP:x} returned by the 4th SYS_TASK_CREATE"
-        ));
-    }
-    if stack != 0 {
-        return Err(format!(
-            "service_negotiated_ready stack (0x{stack:x}) must be 0 — init must map the service stack through the manager cap"
-        ));
-    }
-    if svc_id != SERVICE_NEGOTIATED_ID {
-        return Err(format!(
-            "service_negotiated_ready svc_id ({svc_id}) must equal the service id {SERVICE_NEGOTIATED_ID}"
-        ));
-    }
-    if forward != 0 {
-        return Err(format!(
-            "service_negotiated_ready forward (0x{forward:x}) must be 0 — init's cap-carrying forward SYS_SEND must succeed"
-        ));
-    }
-    if done != SERVICE_DONE_TAG {
-        return Err(format!(
-            "service_negotiated_ready done (0x{done:x}) must be the service completion tag 0x{SERVICE_DONE_TAG:x}"
-        ));
-    }
-    if negotiated != SERVICE_EXPECTED_NEGOTIATED {
-        return Err(format!(
-            "service_negotiated_ready negotiated (0x{negotiated:x}) must be 0x{SERVICE_EXPECTED_NEGOTIATED:x} — the server-side negotiation must yield max=2048 from the service offer, not echo the client's 4096"
-        ));
-    }
-    if negatives != SERVICE_EXPECTED_NEGATIVES {
-        return Err(format!(
-            "service_negotiated_ready negatives (0x{negatives:x}) must be 0x{SERVICE_EXPECTED_NEGATIVES:x} — the ring3 service must observe MajorMismatch (1) and BadMagic (0)"
-        ));
-    }
-    Ok(())
-}
-
 fn validate_physical_map_data(data: Option<&str>) -> Result<(), String> {
     let data =
         data.ok_or_else(|| "physical_map_ready event is missing its data field".to_owned())?;
@@ -4302,11 +3936,6 @@ fn parse_line(line: &str) -> Result<Event, String> {
         ("memseg_ready", "ok") => EventKind::MemsegReady,
         ("ipc_ready", "ok") => EventKind::IpcReady,
         ("task_ready", "ok") => EventKind::TaskReady,
-        ("runtime_hello_ready", "ok") => EventKind::RuntimeHelloReady,
-        ("service_reply_ready", "ok") => EventKind::ServiceReplyReady,
-        ("service_negotiated_ready", "ok") => EventKind::ServiceNegotiatedReady,
-        ("service_selected_ready", "ok") => EventKind::ServiceSelectedReady,
-        ("servicemgr_ready", "ok") => EventKind::ServicemgrReady,
         ("namespace_ready", "ok") => EventKind::NamespaceReady,
         ("preempt_ready", "ok") => EventKind::PreemptReady,
         ("timer_ready", "ok") => EventKind::TimerReady,
@@ -4354,11 +3983,6 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemsegReady
             | EventKind::IpcReady
             | EventKind::TaskReady
-            | EventKind::RuntimeHelloReady
-            | EventKind::ServiceReplyReady
-            | EventKind::ServiceNegotiatedReady
-            | EventKind::ServiceSelectedReady
-            | EventKind::ServicemgrReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -4399,11 +4023,6 @@ fn parse_line(line: &str) -> Result<Event, String> {
             | EventKind::MemsegReady
             | EventKind::IpcReady
             | EventKind::TaskReady
-            | EventKind::RuntimeHelloReady
-            | EventKind::ServiceReplyReady
-            | EventKind::ServiceNegotiatedReady
-            | EventKind::ServiceSelectedReady
-            | EventKind::ServicemgrReady
             | EventKind::NamespaceReady
             | EventKind::PreemptReady
             | EventKind::TimerReady
@@ -4439,49 +4058,153 @@ mod tests {
         validate_user_fault_trace,
     };
 
+    fn service_trace_fixture() -> (String, String) {
+        let first_args = [0u64, 0x14d495250, 0x300000001, 0x100000018, 0x100000010001];
+        let shared_records: [[u64; 6]; 14] = [
+            [
+                1,
+                first_args[0],
+                first_args[1],
+                first_args[2],
+                first_args[3],
+                first_args[4],
+            ],
+            [2, 9, super::SERVICE_REPLY_WORD, 0, 0, 0],
+            [6, 0x2000, 0, 0, 0, 0],
+            [
+                3,
+                super::SERVICE_NEGOTIATED_TOKEN,
+                super::SERVICE_NEGOTIATED_CAP,
+                super::SERVICE_NEGOTIATED_ID,
+                super::SERVICE_DONE_TAG,
+                super::SERVICE_EXPECTED_NEGOTIATED,
+            ],
+            [3, super::SERVICE_EXPECTED_NEGATIVES, 0, 0, 0, 0],
+            [
+                4,
+                super::SERVICE_SELECTED_NAME,
+                super::SERVICE_SELECTED_RESOLVED,
+                super::SERVICE_SELECTED_UNKNOWN,
+                super::SERVICE_DONE_TAG,
+                super::SERVICE_SELECTED_NEGOTIATED_B,
+            ],
+            [
+                4,
+                super::SERVICE_SELECTED_ALPHA_EP,
+                super::SERVICE_SELECTED_BETA_EP,
+                super::SERVICE_SELECTED_BETA_EP,
+                super::SERVICE_SELECTED_ALPHA_MARKER,
+                super::SERVICE_SELECTED_BETA_MARKER,
+            ],
+            [
+                4,
+                super::SERVICE_SELECTED_CLIENT_EP,
+                super::SERVICE_SELECTED_REG_A_NAME,
+                super::SERVICE_SELECTED_REG_B_NAME,
+                0x100000040,
+                0x100000041,
+            ],
+            [5, 8, super::SERVICEMGR_BINARY_MARKER, 6, 0x2ed0, 0x2390],
+            [5, 3, 12, 13, 14, super::SERVICE_MARKER_LOG],
+            [
+                5,
+                super::SERVICE_MARKER_NS,
+                super::SERVICE_MARKER_STORE,
+                super::SERVICE_REPLY_LOG_0,
+                super::SERVICE_REPLY_LOG_1,
+                super::SERVICE_REPLY_LOG_2,
+            ],
+            [
+                5,
+                super::SERVICE_REPLY_NS_0,
+                super::SERVICE_REPLY_NS_1,
+                super::SERVICE_REPLY_NS_2,
+                super::SERVICE_REPLY_STORE_0,
+                super::SERVICE_REPLY_STORE_1,
+            ],
+            [
+                5,
+                super::SERVICE_REPLY_STORE_2,
+                0x62,
+                0x100000060,
+                0x100000061,
+                15,
+            ],
+            [
+                5,
+                super::SERVICE_MARKER_DRIVER,
+                0x10000006a,
+                0x5ec900060000005a,
+                0x5ec9000600000000,
+                0,
+            ],
+        ];
+
+        let mut output = String::new();
+        let first_hex: String = shared_records[0]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        output.push_str(&format!("TRACEBYTES|slot=0;count=0x1;data={first_hex}\r\n"));
+        let hex: String = shared_records
+            .iter()
+            .flat_map(|record| record.iter().flat_map(|word| word.to_le_bytes()))
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        output.push_str(&format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n"));
+
+        let mut y = [0u8; 4096];
+        let mut put = |offset: usize, value: u64| {
+            y[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        put(368, 0x100000042);
+        put(744, super::SERVICE_REPLY_CLIENT_CAP);
+        put(792, 0x5e56_0000_0000_0008);
+        let y_hex: String = y.iter().map(|byte| format!("{byte:02x}")).collect();
+        output.push_str(&format!("YBYTES|data={y_hex}\r\n"));
+        for (kind, handle) in [
+            ("seg", 0x100000040u64),
+            ("seg", 0x100000041),
+            ("seg", 0x100000042),
+            ("seg", 0x100000060),
+            ("seg", 0x100000061),
+            ("dev", 0x10000006a),
+        ] {
+            output.push_str(&format!(
+                "LIVE|slot=0x1;rec=0x1;arg=0x1;kind={kind};handle=0x{handle:x}\r\n"
+            ));
+        }
+        (output, hex)
+    }
+
     #[test]
     fn service_trace_rejects_missing_duplicate_malformed_and_divergent_records() {
-        let mut output = String::new();
-        for event in [
-            "runtime_hello_ready|status=ok|data=a=0x0;b=0x0;c=0x0;d=0x0;e=0x0",
-            "service_reply_ready|status=ok|data=recv=0x0;echo=0x0",
-            "service_negotiated_ready|status=ok|data=token=0x0;service=0x0;svc_id=0x0;done=0x0;negotiated=0x0;negatives=0x0",
-            "service_selected_ready|status=ok|data=name=0x0;resolved=0x0;unknown=0x0;done=0x0;negotiated_beta=0x0;alpha_ep=0x0;beta_ep=0x0;beta_self=0x0;alpha_marker=0x0;beta_marker=0x0;client_ep=0x0;reg_a_name=0x0;reg_b_name=0x0",
-            "servicemgr_ready|status=ok|data=self_id=0x0;marker=0x0;created=0x0;entry_a=0x0;entry_b=0x0;services=0x0;log_id=0x0;ns_id=0x0;store_id=0x0;log_mark=0x0;ns_mark=0x0;store_mark=0x0;log_state0=0x0;log_state1=0x0;log_state2=0x0;ns_state0=0x0;ns_state1=0x0;ns_state2=0x0;store_state0=0x0;store_state1=0x0;store_state2=0x0;ns_resolved=0x0;log_seg=0x0;store_seg=0x0;driver_id=0x0;driver_mark=0x0;driver_dev=0x0;driver_io0=0x0;driver_io1=0x0",
-        ] {
-            output.push_str("PRIMA|v=1|seq=1|event=");
-            output.push_str(event);
-            output.push('\n');
-        }
-        let first = format!("{:02x}{}", 1, "00".repeat(47));
-        output.push_str(&format!("TRACEBYTES|slot=0;count=0x1;data={first}\r\n"));
-        let mut hex = String::new();
-        for id in [1u64, 2, 6, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5, 5] {
-            for byte in id.to_le_bytes().into_iter().chain([0u8; 40]) {
-                hex.push_str(&format!("{byte:02x}"));
-            }
-        }
-        output.push_str(&format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n"));
+        let (output, hex) = service_trace_fixture();
         assert_eq!(validate_service_traces(&output), Ok(()));
         assert!(validate_service_traces(&output.replace("count=0xe", "count=0xd")).is_err());
-        assert!(validate_service_traces(&output.replacen("data=01", "data=ff", 1)).is_err());
         assert!(validate_service_traces(&output.replacen("data=01", "data=zz", 1)).is_err());
-        assert!(validate_service_traces(&output.replacen("data=01", "data=é", 1)).is_err());
+        assert!(validate_service_traces(&output.replacen("data=01", "data=03", 1)).is_err());
         assert!(validate_service_traces(&output.replace("TRACEBYTES|", "BROKEN|")).is_err());
         assert!(validate_service_traces(&output.replace("slot=0", "slot=1")).is_err());
         assert!(
             validate_service_traces(&format!("{output}TRACEBYTES|slot=1;count=0xe;data={hex}\n"))
                 .is_err()
         );
+        assert!(validate_service_traces(&output.replace("YBYTES|", "BROKEN|")).is_err());
+        assert!(validate_service_traces(&output.replace("kind=seg", "kind=obj")).is_err());
+        // 活对象扫描缺失：栈段句柄无法被证明为活 Segment。
         assert!(
-            validate_service_traces(&output.replacen(
-                "slot=0;count=0x1;data=01",
-                "slot=0;count=0x1;data=02",
-                1
+            validate_service_traces(&output.replace(
+                "LIVE|slot=0x1;rec=0x1;arg=0x1;kind=seg;handle=0x100000040\r\n",
+                ""
             ))
-            .is_err()
+            .unwrap_err()
+            .contains("alpha_stack_seg")
         );
-        assert!(validate_service_traces(&output.replacen("data=01", "data=03", 1)).is_err());
+        // 语义负例：Y 页自报 id 低字节与 trace 的 self_id 不符。
+        let wrong_hello = output.replace("080000000000565e", "0c0000000000565e");
+        assert!(validate_service_traces(&wrong_hello).is_err());
     }
 
     #[test]
@@ -4548,11 +4271,6 @@ mod tests {
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
         "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;queued=45;direct=38;blocks=45\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=111;root_cleared=1;grandchild=4;tasks_after=11;caps_after=111;root4_cleared=1\n",
-        "PRIMA|v=1|seq=25|event=runtime_hello_ready|status=ok|data=id=0x1;a=0x0;b=0x14d495250;c=0x300000001;d=0x100000018;e=0x100000010001\n",
-        "PRIMA|v=1|seq=26|event=service_reply_ready|status=ok|data=client=0x10000001c;stack=0x0;recv=0x9;map=0x0;reply=0x0;echo=0x38001474e4f50\n",
-        "PRIMA|v=1|seq=27|event=service_negotiated_ready|status=ok|data=token=0x200000033;service=0x100000038;stack=0x0;svc_id=0xa;forward=0x0;done=0x5ec2000000000000;negotiated=0x1000008000001;negatives=0x100000000\n",
-        "PRIMA|v=1|seq=28|event=service_selected_ready|status=ok|data=name=0x61746562;resolved=0x2;unknown=0x0;done=0x5ec2000000000000;negotiated_beta=0x1000004000001;alpha_ep=0xa;beta_ep=0xb;beta_self=0xb;alpha_marker=0x414c504841000001;beta_marker=0x4245544100000002;alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e;reg_a_name=0x6168706c61;reg_b_name=0x61746562\n",
-        "PRIMA|v=1|seq=29|event=servicemgr_ready|status=ok|data=task_id=0x8;hello=0x5e56000000000008;self_id=0x8;marker=0x534552564d475203;created=0x6;entry_a=0x2ed0;entry_b=0x2390;services=0x3;log_id=0xc;ns_id=0xd;store_id=0xe;log_mark=0x4c4f470001;ns_mark=0x4e53560002;store_mark=0x5354520003;log_state0=0x5ec9000300000005;log_state1=0x5ec9000300000008;log_state2=0x5ec9000300000008;ns_state0=0x5ec9000400000005;ns_state1=0x5ec9000400000053;ns_state2=0x5ec9000400000053;store_state0=0x5ec9000500000005;store_state1=0x5ec9000500000503;store_state2=0x5ec9000500000503;ns_resolved=0x5ec9000400000062;log_seg=0x100000060;store_seg=0x100000061;driver_id=0xf;driver_mark=0x494f500004;driver_dev=0x10000006a;driver_io0=0x5ec900060000005a;driver_io1=0x5ec9000600000000\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=1;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4568,47 +4286,6 @@ mod tests {
         "PRIMA|v=1|seq=42|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=43|event=boot_complete|status=ok\r\n",
     );
-
-    #[test]
-    fn rejects_runtime_hello_corruption() {
-        let output = VALID.replace("b=0x14d495250", "b=0x0");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("runtime_hello_ready wire data differs")
-                || error.contains("runtime_hello trace values differ"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_servicemgr_when_the_liveness_report_is_not_from_the_created_task() {
-        // 自报 payload 的 id 低 8 位与从管理 cap 解出的 task id 不符（0x0b vs 0x0c）——
-        // 「存活自报来自 init 建起的那个任务」被证伪，必须拒绝。
-        let output = VALID.replace("hello=0x5e56000000000008", "hello=0x5e5600000000000c");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("must come from the very task init created"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_servicemgr_when_the_task_id_is_init() {
-        // task_id 为 init(1)：存活自报不可能来自 init 自身。
-        let output = VALID.replace("task_id=0x8", "task_id=0x1");
-        let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("must be a real ring3 child task"), "{error}");
-    }
-
-    #[test]
-    fn rejects_service_reply_when_echo_is_missing() {
-        let output = VALID.replace("echo=0x38001474e4f50", "echo=0x0");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("the client must write init's reply payload back"),
-            "{error}"
-        );
-    }
 
     #[test]
     fn rejects_task_ready_when_create_is_an_errno() {
@@ -4778,149 +4455,6 @@ mod tests {
         let output = VALID.replace(";direct=38;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("expected 45/38/45"), "{error}");
-    }
-
-    #[test]
-    fn rejects_service_negotiated_when_result_is_echoed() {
-        // 把协商结果换成客户端 offer 的原值（max=4096）：服务端若只回显客户端 offer 而非用
-        // 自己的 offer 协商，就会得到这个值——判决性检查必须拒绝。
-        let output = VALID.replace("negotiated=0x1000008000001", "negotiated=0x1000010000001");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("server-side negotiation must yield max=2048"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_negotiated_without_negative_cases() {
-        let output = VALID.replace("negatives=0x100000000", "negatives=0x0");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("MajorMismatch (1) and BadMagic (0)"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_routed_to_wrong_behavior() {
-        // 把 `BETA` 的协商结果换成 `ALPHA` 的值（max=2048）：若服务管理器没按名路由到 `BETA`
-        // 行为（而是走默认 `ALPHA`），就会得到这个值——判决性检查必须拒绝。
-        let output = VALID.replace(
-            "negotiated_beta=0x1000004000001",
-            "negotiated_beta=0x1000008000001",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("routed BETA behavior must yield max=1024"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_name_is_hardcoded() {
-        // 把解析结果与读回的服务名脱钩（resolved=RESOLVED 但 name 为空）：若管理器硬编码行为
-        // 而不读共享段里的名字，名字就不会等于客户端写入的 `BETA`——必须拒绝。
-        let output = VALID.replace(
-            "data=name=0x61746562;resolved=0x2",
-            "data=name=0x0;resolved=0x2",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("must read the requested service name"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_unknown_name_is_not_refused() {
-        // 未注册名解析结果非 NONE：若管理器对任何名字都解析成功（无注册表），必须拒绝。
-        let output = VALID.replace(";unknown=0x0;", ";unknown=0x2;");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("unregistered name must resolve to NONE"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_beta_ep_is_not_the_second_task() {
-        // SPEC-092：把 `BETA` 端点 id 改成 `ALPHA` 端点（9）——即单宿主多行为（SPEC-090 的简化）
-        // 而非独立第二端点；判决性检查必须拒绝。
-        let output = VALID.replace(";alpha_ep=0xa;beta_ep=0xb;", ";alpha_ep=0xa;beta_ep=0xa;");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("must be routed to a *second, independent* service task"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_beta_self_is_not_the_routed_endpoint() {
-        // SPEC-092：被记录的端点 id（第二个 `SERVICE_ID_TAG`）与写回结果的端点脱钩——即请求
-        // 没送到 init 记录的那个端点；必须拒绝。
-        let output = VALID.replace(";beta_ep=0xb;beta_self=0xb", ";beta_ep=0xb;beta_self=0xa");
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("must route BETA to the endpoint it collected"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_both_endpoints_run_the_same_binary() {
-        // SPEC-093：把 `BETA` 端点标记换成 `ALPHA` 的——即两个端点由**同一二进制**创建
-        //（SPEC-092 的简化）；必须拒绝。
-        let output = VALID.replace(
-            "beta_marker=0x4245544100000002",
-            "beta_marker=0x414c504841000001",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("second, distinct* image"), "{error}");
-    }
-
-    #[test]
-    fn rejects_service_selected_when_the_two_endpoints_share_a_stack_segment() {
-        // SPEC-093：两个端点的栈段 id 相同——即共享**物理栈帧**（SPEC-092 的简化）；必须拒绝。
-        let output = VALID.replace(
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11",
-            ";alpha_stack_seg=0x11;beta_stack_seg=0x11",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("independent physical stack frames"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_alpha_endpoint_shares_the_client_stack_segment() {
-        // SPEC-094：`ALPHA` 端点的栈段 id 等于客户端（task 8）的——即它仍沿用客户端 `Y[368]`
-        // 的那条**共享物理栈帧**（SPEC-093 §5.1 的登记残留）；必须拒绝。
-        let output = VALID.replace(
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x1e",
-            ";alpha_stack_seg=0x12;beta_stack_seg=0x11;client_ep=0x9;client_stack_seg=0x12",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("not the client's shared Y[368] Segment"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn rejects_service_selected_when_the_registry_is_not_built_from_self_reports() {
-        // SPEC-095/101：注册表项 B 的名字与端点回报不符——即解析用的注册表不是端点回报所建
-        //（退化回编译期常量）；必须拒绝。
-        let output = VALID.replace(
-            ";reg_a_name=0x6168706c61;reg_b_name=0x61746562",
-            ";reg_a_name=0x6168706c61;reg_b_name=0x9",
-        );
-        let error = validate_output(&output).unwrap_err();
-        assert!(
-            error.contains("build the name registry from the endpoints' self-reports"),
-            "{error}"
-        );
     }
 
     #[test]

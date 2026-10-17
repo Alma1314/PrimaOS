@@ -91,6 +91,8 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-138 / EXO-3M 内核服务 witness 组装退役](superpowers/reports/2026-10-17-exo3m-kernel-service-witness-retirement-report.md)
+- [2026-10-17 — SPEC-137 / 阶段 0 范畴外复核发现项整改](superpowers/reports/2026-10-17-stage0-third-party-review-remediation.md)
 - [2026-10-17 — SPEC-135 / EXO-3K 共享页原始 trace 字节流](superpowers/reports/2026-10-17-exo3k-shared-trace-bytes-report.md)
 - [2026-10-17 — SPEC-136 / EXO-3L 共享 trace 唯一记录通道](superpowers/reports/2026-10-17-exo3l-shared-trace-only-report.md)
 - [2026-10-17 — 阶段 0–4 缺口复核包](superpowers/reports/2026-10-17-stage0-4-gap-audit.md)

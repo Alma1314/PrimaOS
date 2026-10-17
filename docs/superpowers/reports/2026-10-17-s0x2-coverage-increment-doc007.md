@@ -92,3 +92,13 @@ DOC-007 审核报告自身声明「不产生 MODEL-TEST、QEMU、Lean 或 COMPAT
 ## 9. 证据边界
 
 本报告是对规范文本的覆盖核对，证据等级为文档审查（harness 内会话）；不构成机器检查，不声称实现与规范一致（`REFINEMENT-PROOF`），不覆盖 §2.2 非目标（调度公平性/无饥饿、隐蔽信道、硬件 MMU/IOMMU、SMP、资源配额），不推进也不关闭 S0-X1。§2/§3 的判定引用均给出规范行号，供独立复核者复查原文。
+
+## 10. 2026-10-17 范畴外复核整改追加（SPEC-137）
+
+阶段 0 范畴外复核发现本报告的操作面与分类存在三处偏差，已在 `COSIR 原语规范.md` 修正并登记：
+
+1. **操作面计数 34 → 35**：`gpu_memseg_create` 是 §19 列出的常规操作，但既不在 SPEC-054 的 26 项、也不在本报告的 8 项增量中。§8.6 已补全其前置条件、成功动作、错误清单与 `InvalidArch` 定义；常规操作总数为 **35**。
+2. **`dev_ioport_create`/`dev_irq_create` 分类变更**：原“无失败分支”与 W16.1（端口区间/IRQ 号唯一）冲突。现分别改为显式错误 `Overlap`/`ZeroSize` 与 `Overlap`，不再属于“无失败分支”类。
+3. **WaitObject 四操作的 `TargetDead` 恢复可达**：原前置要求目标活动，使错误清单中的 `TargetDead` 不可达；现改为允许 stale Capability 并返回 `TargetDead`。
+
+另将“最后一个 Capability 位置删除后对象不自动回收”按 `ISSUE-LIFE-008` 显式登记为 §2.2 非目标。详见 [SPEC-137 整改记录](2026-10-17-stage0-third-party-review-remediation.md)。本追加不改变原报告的独立性边界：仍为文本复核，非组织级第三方签署。
