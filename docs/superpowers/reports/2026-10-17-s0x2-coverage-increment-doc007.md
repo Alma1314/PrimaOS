@@ -97,8 +97,35 @@ DOC-007 审核报告自身声明「不产生 MODEL-TEST、QEMU、Lean 或 COMPAT
 
 阶段 0 范畴外复核发现本报告的操作面与分类存在三处偏差，已在 `COSIR 原语规范.md` 修正并登记：
 
-1. **操作面计数 34 → 35**：`gpu_memseg_create` 是 §19 列出的常规操作，但既不在 SPEC-054 的 26 项、也不在本报告的 8 项增量中。§8.6 已补全其前置条件、成功动作、错误清单与 `InvalidArch` 定义；常规操作总数为 **35**。
+1. **操作面计数 34 → 35**：`gpu_memseg_create` 是 §19 列出的常规操作，但既不在 SPEC-054 的 26 项、也不在本报告的 8 项增量中。§8.6 已补全其前置条件、成功动作、错误清单与 `InvalidArch` 定义；常规操作总数按本追加口径为 **35**（该旧口径已由 §11 更正为 46）。
 2. **`dev_ioport_create`/`dev_irq_create` 分类变更**：原“无失败分支”与 W16.1（端口区间/IRQ 号唯一）冲突。现分别改为显式错误 `Overlap`/`ZeroSize` 与 `Overlap`，不再属于“无失败分支”类。
 3. **WaitObject 四操作的 `TargetDead` 恢复可达**：原前置要求目标活动，使错误清单中的 `TargetDead` 不可达；现改为允许 stale Capability 并返回 `TargetDead`。
 
 另将“最后一个 Capability 位置删除后对象不自动回收”按 `ISSUE-LIFE-008` 显式登记为 §2.2 非目标。详见 [SPEC-137 整改记录](2026-10-17-stage0-third-party-review-remediation.md)。本追加不改变原报告的独立性边界：仍为文本复核，非组织级第三方签署。
+
+## 11. 2026-10-17 组织级审查计数更正（SPEC-139）
+
+组织级阶段 0 审查发现本报告沿用的 `26 + 8 + 1 = 35` 口径与 §19 不一致：SPEC-054 的“26”包含内部迁移 `advance_time`，同时排除了 Exception（5）与 Device（7）两族。更正后：
+
+- **§19 权威常规操作面 = 46 项**（不含 Bootstrap，也不含 `advance_time`/`schedule`/`enqueue_or_deliver`/`raise_exception` 等 `KernelActor` 内部迁移）；
+- 旧口径 35 = 26（含内部 `advance_time`） + 8（DOC-007） + 1（`gpu_memseg_create`）；
+- 更正：35 − 1（去掉内部 `advance_time`） + 5（Exception） + 7（Device） = **46**；
+- `dev_irq_mask`/`dev_irq_unmask` 只改变 COSIR 细化层的中断屏蔽状态，不改变 POSIR 状态，不计入 46 项 POSIR 操作；
+- 旧 26/34/35 口径全部作废。下表以 §19 分类逐项列出当前检查面与失败语义类型：
+
+| 类别 | 操作（失败语义：显式清单 / 默认规则 / 无失败分支） |
+|---|---|
+| Capability (2) | `cap_derive`（显式）、`cap_drop`（显式） |
+| MemorySegment (6) | `memseg_create`、`memseg_map`、`memseg_unmap`、`memseg_protect`、`memseg_destroy`、`gpu_memseg_create`（均显式 + §6.2.1 标准错误） |
+| Task (5) | `task_create`（显式，代码错误仅 CPU）、`task_destroy`（显式）、`task_yield`（无失败）、`task_alert`（显式）、`task_upcall_recv`（无失败） |
+| Send (1) | `send`（显式 + 标准错误） |
+| Recv (1) | `recv`（无失败） |
+| WaitObject (5) | `wait_object_create`（无失败）、`wait_object_observe`（显式）、`wait_object_destroy`（显式）、`wait_objects`（显式，含 `LengthMismatch`）、`signal_object`（显式） |
+| Timer (4) | `timer_set`（无失败）、`timer_cancel`（显式）、`timer_destroy`（显式）、`time_now`（无失败；§19 记作 `now`） |
+| Namespace (7) | `ns_create`（无失败）、`ns_bind`、`ns_unbind`、`ns_mount`、`ns_unmount`、`ns_resolve`、`ns_destroy`（均显式 + 标准错误） |
+| Audit (1) | `audit`（显式） |
+| Exception (5) | `exc_source_create`（显式）、`exc_subscribe`（显式，补 `NotHeld`/`TargetDead`）、`exc_unsubscribe`（显式）、`exc_resume`（显式 + 标准错误）、`exc_source_destroy`（显式） |
+| Device (7) | `dev_mmio_create`（显式，补 `ZeroSize`/`InvalidPhysRange`）、`dev_mmio_map`（显式 + 标准错误）、`dev_mmio_unmap`（显式）、`dev_ioport_create`（显式）、`dev_dma_create`（显式）、`dev_irq_create`（显式）、`dev_destroy`（显式） |
+| Node (2) | `node_create`（无失败）、`node_destroy`（显式） |
+
+本表只给出规范文本层面的失败语义分类，不构成机器检查或组织级签署；旧报告 §2–§3 的逐项判定仍有效，但覆盖范围应按上表 46 项理解。

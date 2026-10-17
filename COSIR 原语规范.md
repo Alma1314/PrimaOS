@@ -138,6 +138,9 @@ Right = Derive
       | ExcSubscribe | ExcSourceDestroy
 
       | NodeConnect | NodeDestroy
+
+      | DevMMIOR | DevMMIOW | DevIORead | DevIOWrite
+      | DevDMAR | DevDMAW | DevInterruptSubscribe | DevDestroy
 ```
 
 `well_typed_rights(target, rights)` 要求权限与目标对象类型匹配；`Derive` 可以用于任何对象类型，其他权限只能用于对应对象：
@@ -151,6 +154,10 @@ Right = Derive
 | WaitObject | `WaitWait`, `WaitSignal`, `WaitDestroy` |
 | ExcSource | `ExcSubscribe`, `ExcSourceDestroy` |
 | Node | `NodeConnect`, `NodeDestroy` |
+| Device(MMIORegion) | `DevMMIOR`, `DevMMIOW`, `DevDestroy` |
+| Device(IOPortRange) | `DevIORead`, `DevIOWrite`, `DevDestroy` |
+| Device(DMABuffer) | `DevDMAR`, `DevDMAW`, `DevDestroy` |
+| Device(InterruptLine) | `DevInterruptSubscribe`, `DevDestroy` |
 
 `Derive` 表示可以从该 Capability 派生指向同一对象、权限不更高的新 Capability。它不表示可以修改既有 Capability，也不表示可以撤销已经派生的子 Capability。
 
@@ -593,11 +600,12 @@ s —[actor, op/Error(e)]→ s
 
 为保证每个操作都有明确的失败语义，规定：
 
-- **显式错误清单优先：** 若操作小节给出“错误：”清单，该清单即其失败域；失败时按 §6.2 保持 `State` 不变。
+- **显式错误清单优先：** 若操作小节给出“错误：”清单，该清单与其前置条件对应的标准错误共同构成失败域；失败时按 §6.2 保持 `State` 不变。
+- **标准错误的隐式包含：** 即使未在清单中重复列出，下列错误在对应前置失败时总是可返回——前置要求 Capability 由调用者持有时，`NotHeld` 可返回；前置要求 Capability `usable`（目标活动）而目标已销毁时，`TargetDead` 可返回；前置要求目标为某对象类型而 Capability 指向其他类型时，对应的 `Invalid*`（如 `InvalidNamespace`、`InvalidSegment`、`InvalidTask`）可返回。实现可返回任一适用错误。
 - **默认规则兜底：** 若操作小节未给出“错误：”清单，则其失败语义为——失败当且仅当该操作列出的任一前置条件不满足；失败时返回 §6.2 第 1–5 阶段中适用阶段的标准错误标识，并保持 `State` 不变；实现可返回任一适用错误。
 - **显式无失败分支：** 若操作小节声明“无失败分支”，则在 §6.1 的 Actor 约束成立且其前置条件由内核保证成立时，该操作不产生失败结果。
 
-据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet`、`InvalidArch` 在首次出现的小节内就地定义。
+据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet`、`LengthMismatch`、`InvalidArch` 在首次出现的小节内就地定义。
 
 ### 6.3 内部辅助操作 `enqueue_or_deliver`
 
@@ -765,21 +773,23 @@ task_create(
 ) -> manager_task_cap : CapId
 ```
 
+`kind` 决定代码参数的语义：`kind = ComputeTask(CPU)` 时按前置 1–3 校验并建立 `vspace` 映射；非 CPU kind（GPU/NPU/FPGA）时 `code_seg_cap`、`code_offset`、`code_pages`、`load_base` 被忽略，`entry` 仅作为介质特定句柄，不建立任何 `vspace` 映射（§5.2/§8.6），也不产生 `InvalidEntry`/`InvalidCodeRange`。
+
 前置条件：
 
-1. 代码 Segment Capability 由调用者持有且授权 `SegMapR` 与 `SegMapX`，初始代码映射权限恰为 `{R, X}`；
-2. `code_pages > 0` 且 `code_offset + code_pages ≤ segment.frames.length`；
-3. `load_base ≤ page_of(entry) < load_base + code_pages`；
+1. （仅 CPU）代码 Segment Capability 由调用者持有且授权 `SegMapR` 与 `SegMapX`，初始代码映射权限恰为 `{R, X}`；
+2. （仅 CPU）`code_pages > 0` 且 `code_offset + code_pages ≤ segment.frames.length`；
+3. （仅 CPU）`load_base ≤ page_of(entry) < load_base + code_pages`；
 4. `parent_ns_cap` 由调用者持有、可用并指向 Namespace；
 5. `parent_ns_cap` 包含 `NsResolve` 和 `Derive`；
 6. `NsResolve ∈ root_rights ⊆ parent_ns_cap.rights`；
 7. `initial_caps` 无重复、全部由调用者持有且可用；
-8. `initial_caps` 不包含 `code_seg_cap` 或 `parent_ns_cap`，也不包含任何活动 Task 的结构性根 Namespace Capability。
+8. `initial_caps` 不包含 `parent_ns_cap`，也不包含任何活动 Task 的结构性根 Namespace Capability；若 `kind = ComputeTask(CPU)`，还不包含 `code_seg_cap`。
 
 成功动作是一个整体：
 
 1. 创建空地址空间的新 Task；
-2. 对每个 `i < code_pages` 建立 `vspace[load_base + i] = {segment = code_seg_cap.target, offset = code_offset + i, access = {R, X}}`；
+2. 若 `kind = ComputeTask(CPU)`，对每个 `i < code_pages` 建立 `vspace[load_base + i] = {segment = code_seg_cap.target, offset = code_offset + i, access = {R, X}}`；否则 `vspace` 保持为空；
 3. 铸造新 Task 的根管理 Capability，权限恰为 `{Derive, TaskSend, TaskManageVSpace, TaskDestroy}`，放在 `HeldBy(caller)`；
 4. 从管理 Capability 派生权限相同的 self Capability，放在 `HeldBy(new_task)`；
 5. 调用者或新 Task 可在创建后另行派生权限衰减的 Task Capability；
@@ -790,7 +800,7 @@ task_create(
 
 新 Task 的根 Namespace 是共享对象，不做深拷贝。创建者、所有者和授权者是不同概念：`creator` 只用于审计，所有后续操作只看 Capability。
 
-错误：`InvalidEntry`、`InvalidCodeRange`、`InvalidNamespace`、`InvalidInitialCap`、`DuplicateCap`、`MissingRight`、`RightsExceeded`。
+错误：`InvalidEntry`、`InvalidCodeRange`（二者仅适用于 CPU Task）、`InvalidNamespace`、`InvalidInitialCap`、`DuplicateCap`、`MissingRight`、`RightsExceeded`。
 
 ### 8.2 `task_destroy`
 
@@ -1000,7 +1010,7 @@ GPU 显存映射到 CPU Task 的 `vspace`（用于 CPU 端读写显存内容）�
 
 **GPU kernel 启动：**
 
-GPU Task 通过 `task_create` 创建，注入 `initial_caps` 包含其可访问的显存 Segment Capability。GPU kernel 在 COSIR 细化层通过特定驱动提交（CUDA stream、Vulkan command buffer 等）：
+GPU Task 通过 `task_create` 创建，注入 `initial_caps` 包含其可访问的显存 Segment Capability；其代码参数被忽略，`vspace` 保持为空（§8.1），`entry` 是介质特定句柄。GPU kernel 在 COSIR 细化层通过特定驱动提交（CUDA stream、Vulkan command buffer 等）：
 
 1. CPU Task 持有 GPU Task 的管理 Capability；
 2. CPU Task 通过消息协议向 GPU 驱动服务提交 kernel 启动请求；
@@ -1305,7 +1315,7 @@ ns_resolve(ns_cap, path, requested_rights) -> CapId
 
 返回的是新 `CapId`，Namespace 中的父 Capability 保持不变。新 Capability 的 `parent` 指向最终 Bound 或 Mount Capability。成功时追加 `NsResolved`，记录调用者使用的起始 Namespace Capability、规范化路径、依次经过的 Mount Capability、最终父 Capability 和新 Capability；因此既能追溯派生关系，也能重建路径授权证据。
 
-错误：`NotFound`、`NotDirectory`、`TargetDead`、`MountTargetDead`、`NotDelegable`、`RightsExceeded`、`InvalidPath`。
+错误：`InvalidNamespace`（`ns_cap` 未指向 Namespace）、`NotHeld`、`NotFound`、`NotDirectory`、`TargetDead`、`MountTargetDead`、`NotDelegable`、`RightsExceeded`、`InvalidPath`。
 
 ### 11.8 `ns_destroy`
 
@@ -1443,7 +1453,7 @@ ExceptionSource {
 
 ### 12.4 订阅生命周期
 
-订阅是异常源的内部状态，不是独立的 Capability。订阅由 `exc_subscribe` 创建，由 `exc_unsubscribe` 或事件源销毁终止。接收方 Task 不需要持有异常源的 Capability 来接收通知——它只需要在订阅期间保持存活。
+订阅是异常源的内部状态，不是独立的 Capability。订阅由 `exc_subscribe` 创建，由 `exc_unsubscribe` 或事件源销毁终止。接收方 Task 不需要持有异常源的 Capability 来接收通知——它只需要在订阅期间保持存活。一个 Task 对同一源至多有一个活跃订阅；该订阅覆盖此源允许的全部 `exception_kind`。
 
 ```text
 exc_subscribe(exc_source_cap, exception_kind) -> ()
@@ -1452,10 +1462,10 @@ exc_subscribe(exc_source_cap, exception_kind) -> ()
 前置条件：
 
 1. 调用者是当前 Running Task；
-2. `exc_source_cap` 由调用者持有且指向 ExcSource；
+2. `exc_source_cap` 由调用者持有，且其 `CapRecord` 指向活动 ExcSource（目标已销毁时返回 `TargetDead`）；
 3. `exc_source_cap` 包含 `ExcSubscribe`；
 4. `exception_kind` 与此源的 `kind` 类型兼容；
-5. 调用者尚未订阅此源的同一 `exception_kind`。
+5. 调用者尚未订阅此源。
 
 成功动作：
 
@@ -1464,7 +1474,7 @@ exc_subscribe(exc_source_cap, exception_kind) -> ()
 
 `exc_subscribe` 消耗的 Capability 仍由调用者持有；订阅成功不代表调用者获得了对此源的操作权限。
 
-错误：`InvalidExcSource`、`MissingRight(ExcSubscribe)`、`KindMismatch`、`AlreadySubscribed`。
+错误：`InvalidExcSource`、`NotHeld`、`TargetDead`、`MissingRight(ExcSubscribe)`、`KindMismatch`、`AlreadySubscribed`。
 
 ```text
 exc_unsubscribe(exc_source_cap) -> ()
@@ -1474,7 +1484,7 @@ exc_unsubscribe(exc_source_cap) -> ()
 
 1. `exc_source_cap` 由调用者持有且指向 ExcSource；
 2. `exc_source_cap` 包含 `ExcSubscribe`；
-3. 调用者当前订阅了此源（至少一个 `exception_kind`）。
+3. 调用者当前订阅了此源。
 
 成功动作：
 
@@ -1790,6 +1800,8 @@ DeviceRight = DevMMIOR  | DevMMIOW      // MMIO 区域读/写映射
             | DevDestroy
 ```
 
+`DeviceRight` 是 §4.1 `Right` 的设备子集；`well_typed_rights` 按 §4.1 表对具体 `DeviceKind` 接受对应子集，具体创建操作定义其铸造权限。
+
 ### 15.4 MMIO 区域对象
 
 ```text
@@ -1819,8 +1831,8 @@ dev_mmio_create(base_paddr, size_pages, allowed_access) -> dev_cap
 
 前置条件：
 
-1. `base_paddr` 和 `size_pages` 由平台的内存发现/设备枚举信息提供；
-2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不与任何现有活动设备的物理地址空间资源（现有 MMIO 区域、活动 `DMABuffer` 的帧）重叠，也不与 `free_frames` 或任何活动 Segment 的帧重叠（W16.1）；
+1. `base_paddr` 和 `size_pages` 由平台的内存发现/设备枚举信息提供；`size_pages > 0`，`base_paddr` 按 `PAGE_SIZE` 对齐，且 `base_paddr + size_pages * PAGE_SIZE` 不溢出；
+2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不与任何现有活动设备的物理地址空间资源（现有 MMIO 区域、活动 `DMABuffer` 的帧）重叠，也不与 `frame_universe` 中的任何帧重叠（覆盖 `free_frames`、活动 Segment 帧与 W6 保留帧，含页表帧；W16.1）；
 3. `allowed_access` 非空且只含 `{R, W}`。
 
 成功动作：
@@ -1829,7 +1841,7 @@ dev_mmio_create(base_paddr, size_pages, allowed_access) -> dev_cap
 2. 铸造完整根 Capability，权限为 `{Derive, DevMMIOR/W (按 allowed_access), DevDestroy}`，放在 `HeldBy(caller)`；
 3. 追加设备创建与 Capability 铸造 Audit 事件。
 
-错误：`InvalidPhysRange`、`Overlap`、`InvalidAccess`。
+错误：`InvalidPhysRange`（区间溢出或未按页对齐）、`ZeroSize`（`size_pages = 0`）、`Overlap`、`InvalidAccess`。`InvalidPhysRange` 定义为本规范中“物理地址区间溢出、未对齐或大小非法”的失败标识。
 
 **映射 MMIO 区域到 Task 虚拟地址空间：**
 
@@ -2012,7 +2024,7 @@ KernelState {
 
 新增不变量（对应 §16 全局良构不变量中的 W16，以下为 W16 的四个子条件）：
 
-**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `free_frames` 或任何活动 Segment 的帧重叠。
+**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `frame_universe` 中的任何帧重叠（包括 `free_frames`、任何活动 Segment 的帧与 W6 保留帧，含页表帧）。
 
 **W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；销毁时必须归还其来源池（§7.5）。清零是细化层义务（§15.6），不进入 POSIR 状态。
 
@@ -2086,7 +2098,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W8 — 可执行入口显式授权
 
-每个活动 Task 的 `entry` 所在虚拟页存在且映射权限含 `X`。`memseg_protect` 不得使任何活动 Task 的入口页失去 `X`（§7.4 前置 7）。
+每个活动 **CPU Task** 的 `entry` 所在虚拟页存在且映射权限含 `X`。`memseg_protect` 不得使任何活动 CPU Task 的入口页失去 `X`（§7.4 前置 7）。非 CPU Task 的 `entry` 是介质特定句柄，不适用本不变量。
 
 ### W9 — 调度状态一致
 
@@ -2152,7 +2164,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W16 — Device 物理资源唯一
 
-- 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `free_frames` 或任何活动 Segment 的帧重叠；
+- 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域与 DMA 帧、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；物理地址空间资源不得与 `frame_universe` 中的任何帧重叠（包括 `free_frames`、任何活动 Segment 的帧与 W6 保留帧，含页表帧）；
 - DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；
 - 设备销毁时，其占用的所有物理资源必须被释放（MMIO 区域移除全部 `dev_vspace` 映射、DMA 帧归还来源池、IRQ 号释放）；其中“先停 DMA/拆 IOMMU 并清零”是细化层义务（§15.6），不进入 POSIR 不变量；
 - **W16.4 — 设备映射有效：** 每个 `DeviceMapping` 指向活动 MMIORegion 设备，`offset` 位于该 region 的页范围内，`access` 非空且不超过 region 的 `allowed_access`；同一 Task 的任一 `VirtPage` 不得同时出现在 `vspace` 与 `dev_vspace` 中。
@@ -2576,7 +2588,7 @@ wait_objects(
 
 若立即返回 `WaitSatisfied`、`WaitTimedOut` 或 `WaitAlerted`，调用者保持 `Running`，不写入 `pending_wait_result` 与 `wait_request`。
 
-错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`、`DuplicateWaitObject`、`EmptyWaitSet`（`wait_caps` 为空）。`DuplicateWaitObject` 定义为本规范中“一次 `wait_objects` 中重复等待同一 WaitObject”的失败标识；`EmptyWaitSet` 定义为“等待集合为空”的失败标识。
+错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`、`DuplicateWaitObject`、`EmptyWaitSet`（`wait_caps` 为空）、`LengthMismatch`（`wait_caps` 与 `observed_generations` 长度不一致）。`DuplicateWaitObject` 定义为本规范中“一次 `wait_objects` 中重复等待同一 WaitObject”的失败标识；`EmptyWaitSet` 定义为“等待集合为空”的失败标识；`LengthMismatch` 定义为“两个等长输入列表长度不一致”的失败标识。
 
 #### 21.2.2 `signal_object`
 
