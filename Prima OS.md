@@ -792,6 +792,8 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - init 只获得规范定义的初始 Authority；
 - 页帧归属满足抽象不变量。
 
+**2026-10-17：阶段 1 已通过（SPEC-146）。** S1-X2（3 条初始 Authority/权限/root_ns/Ready→Running/Audit/AlreadyBooted/入口前置）与 S1-X3（逐帧 image/owner/table + 守恒/不交性，QEMU `conserved=1/disjoint=1`）已勾选；`ISSUE-FRAME-001/002` 关闭，`ISSUE-AUTH-001` 的 §14 image/vspace 细化分叉按显式接受保留到阶段 2/4。
+
 ### 阶段 2 — Capability、Segment、Task 与 IPC
 
 交付：

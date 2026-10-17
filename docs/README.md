@@ -91,6 +91,7 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-146 / 阶段 1 退出条件复核与签署（S1-X2/S1-X3 通过）](superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)
 - [2026-10-17 — SPEC-145 / 阶段 0 冻结基线复核与签署（S0-X1/S0-X2 通过，文本层面）](superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)
 - [2026-10-17 — SPEC-144 / SPEC-143 复核残修（3 项）](superpowers/reports/2026-10-17-stage0-re-review-spec144.md)
 - [2026-10-17 — SPEC-143 / 阶段 0 第三方复核发现项整改（29 项，§19 47 项）](superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)
