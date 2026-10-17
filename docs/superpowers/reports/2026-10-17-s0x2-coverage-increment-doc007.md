@@ -109,7 +109,7 @@ DOC-007 审核报告自身声明「不产生 MODEL-TEST、QEMU、Lean 或 COMPAT
 
 - **§19 权威常规操作面 = 46 项**（不含 Bootstrap，也不含 `advance_time`/`schedule`/`enqueue_or_deliver`/`raise_exception` 等 `KernelActor` 内部迁移）；
 - 46 的判据只取 §19 枚举，不再从旧 26/35 推导：Capability 2 + MemorySegment 6 + Task 5 + Send 1 + Recv 1 + WaitObject 5 + Timer 4 + Namespace 7 + Audit 1 + Exception 5 + Device 7 + Node 2；
-- `dev_irq_mask`/`dev_irq_unmask` 只改变 COSIR 细化层的中断屏蔽状态，不改变 POSIR 状态，不计入 46 项 POSIR 操作；
+- `dev_irq_mask`/`dev_irq_unmask` 只改变 COSIR 细化层的中断屏蔽状态，不改变 POSIR 状态，不计入 46 项 POSIR 操作；该分类已写入规范 §15.7 与 §19 注记（SPEC-141）；
 - **SPEC-140 补齐 `memseg_map`、`dev_dma_create`、`ns_resolve`、`dev_mmio_unmap` 的错误出口，并补齐 `InvalidEntry`/`InvalidCodeRange`/`InvalidInitialCap`/`InvalidRootRights` 等定义；下表的“显式”分类以 SPEC-140 后的规范为准**；
 - 旧 26/34/35 口径全部作废。下表以 §19 分类逐项列出当前检查面与失败语义类型：
 
