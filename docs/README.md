@@ -91,6 +91,8 @@
 
 按日期倒序排列。旧报告保留原结论与证据，不应单独用来推断当前状态。
 
+- [2026-10-17 — SPEC-143 / 阶段 0 第三方复核发现项整改（29 项，§19 47 项）](superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)
+- [2026-10-17 — SPEC-142 / 第三方组织级阶段 0 复核结论（未通过，24 项）](superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md)
 - [2026-10-17 — SPEC-141 / 阶段 0 第二轮组织级复核发现项整改（11 项）](superpowers/reports/2026-10-17-stage0-review-remediation-spec141.md)
 - [2026-10-17 — SPEC-140 / 阶段 0 对抗式复核发现项整改（12 项）](superpowers/reports/2026-10-17-stage0-review-remediation-spec140.md)
 - [2026-10-17 — SPEC-139 / 组织级阶段 0 审查发现项整改（9 项）](superpowers/reports/2026-10-17-stage0-organizational-review-remediation.md)

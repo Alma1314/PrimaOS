@@ -51,7 +51,9 @@ Capability 的派生、丢弃以及对象生命周期操作可以作为独立操
 - 资源配额、审计日志容量、Capability 数量和消息队列的全局上限；
 - 基于 Capability 引用计数或可达性的自动对象回收：对象在最后一个 Capability 位置被删除后仍保持活动（§4.5）；
 - Rust 实现对本状态机的细化证明；
-- 选择性撤销某棵 Capability 派生子树。
+- 选择性撤销某棵 Capability 派生子树；
+- **跨节点 Capability 传输出让**：POSIR v1 只支持跨节点消息（数据），`send` 不得把 Capability 跨节点传递；非空 `transferred_caps` 发往 `RemoteProxy` 时返回 `NonPortableCap`。跨节点 Capability 委托/统一命名留待后续版本（§8.5）；
+- **用户态故障处理的原上下文重播**：`exc_resume` 只恢复调用者或细化层提供的、已验证的帧；把故障 RIP/RSP 导出给用户态并重播原指令属于 COSIR 细化层职责，不在 POSIR v1 内（§12.8/§12.9）。
 
 因此，本文建立的是**显式授权安全**，不是包含时序与资源隐蔽信道的完全非干扰。
 
@@ -61,12 +63,15 @@ Capability 的派生、丢弃以及对象生命周期操作可以作为独立操
 
 ```text
 SegId, TaskId, NsId, TimerId, WaitObjectId, CapId, MsgId, EventId : Nat
+NodeId, NodeIdentity                                 : Nat
 FrameId, VirtPage, PageOffset, VirtAddr, Instant     : Nat
 Byte                                                   = Fin 256
 Bytes                                                  = List<Byte>
 ```
 
-这些名称在数学上都可由自然数实现，但在规范中是互不混用的类型。固定常量 `PAGE_SIZE > 0`、`MAX_PATH_COMPONENTS > 0`、`MAX_MSG_SIZE ≥ 0` 和 `MAX_CAPS_PER_MSG ≥ 0`。这些常量的具体值由 COSIR 细化层根据目标平台的缓存行大小、内核内存预算和性能目标确定；本抽象规范只要求它们为正（或非负）。定义：
+`NodeId` 是本节点 `nodes` 表的**本地键**，由 `next_node` 分配；`NodeIdentity` 是平台全局的节点身份，`local_node`、`Task.node`、`Node.peer` 与跨节点 wire 均使用 `NodeIdentity`。两者不可互相解释；`NodeId` 不要求与 `NodeIdentity` 同值。
+
+这些名称在数学上都可由自然数实现，但在规范中是互不混用的类型。固定常量 `PAGE_SIZE > 0`、`MAX_PATH_COMPONENTS > 0`、`MAX_MSG_SIZE ≥ 0`、`MAX_CAPS_PER_MSG ≥ 0` 和平台核数 `cpu_core_count ≥ 1`。这些常量的具体值由 COSIR 细化层根据目标平台的缓存行大小、内核内存预算和性能目标确定；本抽象规范只要求它们为正（或非负），`cpu_core_count` 是平台静态常量而非 `KernelState` 字段。定义：
 
 ```text
 page_of(addr)   = addr / PAGE_SIZE
@@ -170,19 +175,19 @@ CapRecord {
     target:     ObjectRef,
     rights:     FiniteSet<Right>,
     parent:     Option<CapId>,
-    origin:     Option<(NodeId, CapId)>,   // 跨节点代理的溯源；本地 Capability 为 None
+    origin:     Option<(NodeIdentity, CapId)>,   // 保留字段；v1 恒为 None
     created_at: EventId,
 }
 ```
 
 `CapRecord` 一经创建永久不可修改。`caps: CapId ⇀ CapRecord` 是追加式历史表；丢弃 Capability 或销毁目标对象都不会删除记录。
 
-- `parent = None`：该 Capability 是随对象创建、Bootstrap 铸造，或跨节点传输接收时铸造的**代理根 Capability**；
+- `parent = None`：该 Capability 是随对象创建、Bootstrap 铸造，或内部迁移 `attach_remote_task` 铸造的根 Capability；
 - `parent = Some(p)`：该 Capability 由同一节点上的 `p` 派生；
 - 子 Capability 必须与父 Capability 指向同一对象；
 - 子权限必须是父权限的子集；
 - 父 `CapId` 必须小于子 `CapId`，因此本节点内的派生关系天然无环；
-- `origin = Some((node, cap))`：该 Capability 是接收跨节点传输时铸造的代理根，`node`/`cap` 记录源节点与源 CapId。**代理根的 `parent` 必须为 `None`**（跨节点 `CapId` 不可比，不能作为本节点的 `parent`），跨节点溯源经 `origin` 与对应传输审计事件完成。
+- `origin` 是**保留字段**：POSIR v1 中恒为 `None`（跨节点 Capability 委托不在 v1 内，§2.2/§8.5）。若后续版本启用，`origin = Some((node, cap))` 的 Capability 是接收跨节点传输时铸造的代理根，必须 `parent = None`，且溯源经对应传输审计事件完成。
 
 ### 4.3 Capability 位置
 
@@ -199,7 +204,7 @@ locations: CapId ⇀ CapLocation
 
 `locations` 是函数，所以一个 `CapId` 在任意时刻至多有一个位置。共享 Authority 时不得复制同一个 `CapId`；必须派生一个新的子 Capability。
 
-`InTransit` 表示 Capability 正在跨节点传输——源节点已从本地位置移除，但目标节点尚未确认接收。`via` 记录承载本次传输的 Node（`Some(node)`）；本地同步移动不使用 `InTransit`，故不出现 `via = None` 的跨节点传输。在传输期间 token 不能用于授权。传输完成时 `InTransit` 被替换为目标位置；传输超时或失败时：若源 Task 仍活动且满足 §8.5 的超时回退安全条件，则回退到源位置；若源 Task 已销毁，则删除该位置并追加丢弃事件；若源 Task 仍活动但安全条件尚未确定，则保持 `InTransit` 并由 §8.5 的推进规则处理，不得回退或丢弃。该状态仅在多节点分布式场景中出现；单机场景下所有 Capability 移动是同步的（即不存在可观察的 `InTransit` 中间状态）。
+`InTransit` 表示 Capability 正在跨节点传输——源节点已从本地位置移除，但目标节点尚未确认接收。`via` 记录承载本次传输的 Node（`Some(node)`）；本地同步移动不使用 `InTransit`，故不出现 `via = None` 的跨节点传输。在传输期间 token 不能用于授权。传输完成时 `InTransit` 被替换为目标位置；传输超时或失败时：若源 Task 仍活动且满足 §8.5 的超时回退安全条件，则回退到源位置；若源 Task 已销毁，则删除该位置并追加丢弃事件；若源 Task 仍活动但安全条件尚未确定，则保持 `InTransit` 并由 §8.5 的推进规则处理，不得回退或丢弃。**POSIR v1 不产生 `InTransit`**：跨节点 Capability 传递不在本规范内（§2.2）；该构造保留给后续跨节点委托版本，本节后续的超时/回退规则在 v1 中不可达。
 
 区分以下概念：
 
@@ -285,8 +290,7 @@ Capability 没有用户可直接调用的任意 `move`。位置变化只发生�
 - `ns_unbind`：`InNamespace(ns, path) → HeldBy(caller)`；
 - `ns_mount`：派生后直接置于 `InNamespace(ns, path)`；
 - `cap_drop`、`task_destroy`、`ns_unmount`、容器销毁或消息丢弃：删除位置；
-- 跨节点 `send`：`HeldBy(sender)` → `InTransit(from=HeldBy(sender), to=HeldBy(receiver), via=Some(node), ...)` → （接收确认后）`HeldBy(receiver)`；
-- 跨节点 `send` 超时或网络不可达：`InTransit(...)` → `HeldBy(sender)`（回退到源位置，**仅当源 Task 仍活动且满足 §8.5 的超时回退安全条件**）；若源 Task 已销毁，则删除该位置并追加丢弃事件（不回退到已销毁 Task）。
+- 跨节点 `send` **不移动 Capability**：`transferred_caps` 必须为空；非空时操作返回 `NonPortableCap`（§2.2/§8.5），不存在 `InTransit` 位置；
 
 当移动导致调用者不再持有任何指向某 ExceptionSource 且含 `ExcSubscribe` 的 Capability 时，其对该源的订阅同时终止并追加 `ExcUnsubscribed`（§12.4）。
 
@@ -326,13 +330,15 @@ KernelState {
 
     frame_universe: FiniteSet<FrameId>,    // 启动后不变（CPU 可寻址内存）
     free_frames:    FiniteSet<FrameId>,
+    reserved_frames: FiniteSet<FrameId>,   // 页表帧/pin 帧等细化层保留帧（W6）
 
     gpu_frame_universe: Map<GPUArch, FiniteSet<FrameId>>,  // 每个 GPU 架构的显存池
     gpu_free_frames:    Map<GPUArch, FiniteSet<FrameId>>,
+    gpu_reserved_frames: Map<GPUArch, FiniteSet<FrameId>>, // 每个 GPU 池的保留帧（W6）
 
     now:        Instant,
     booted:     Bool,
-    local_node: NodeId,   // 本内核实例的节点标识；Bootstrap 后不变
+    local_node: NodeIdentity,   // 本内核实例的平台节点身份；Bootstrap 后不变
 
     next_seg:       SegId,
     next_task:      TaskId,
@@ -350,7 +356,7 @@ KernelState {
 
 活动对象表只包含存活对象。对象销毁时从活动表删除；相应 ID 永不复用，历史由 Audit 和 `caps` 保留。
 
-各对象的 `creator` 字段只用于审计，不要求 creator 存活；creator 销毁不改变对象存活性或授权。
+各对象的 `creator` 字段只用于审计，不要求 creator 存活；creator 销毁不改变对象存活性或授权。**例外：Timer 的存活性绑定 `recipient`；`timer_set` 下 recipient = creator，`task_destroy` 会删除以该 Task 为 recipient 的 Timer（§5.5/§8.2）。**
 
 **创建与 ID 分配约定。** 除非操作小节另有说明，每个创建操作成功时使用当前对应的 `next_*` 作为新对象 ID 并推进该计数器，并将对象的 `creator` 字段（若存在）置为调用者：`Actor` 字段用 `TaskActor(caller)`，`TaskId` 字段用调用者 ID；`KernelActor` 创建的内部对象用 `KernelActor` 或该对象定义允许的内部标识。W1/W13 依赖该约定；具体操作小节不必逐条重复。
 
@@ -425,12 +431,12 @@ NPUArch  = CoreML | OpenVINO | QualcommHexagon
 FPGAVendor = Xilinx | IntelFPGA
 
 TaskKind = ComputeTask(ComputeMedium)
-         | RemoteProxy(NodeId)           // 本节点对远端 Task 的本地代理；不执行、不可调度
+         | RemoteProxy(NodeIdentity)     // 本节点对远端 Task 的本地代理；不执行、不可调度
 
 Task {
     creator:       Actor,
     kind:          TaskKind,
-    node:          NodeId,                        // 所属节点；Bootstrap/task_create 置为 local_node，RemoteProxy 置为远端节点
+    node:          NodeIdentity,                  // 所属节点身份；Bootstrap/task_create 置为 local_node，RemoteProxy 置为远端身份
     status:        TaskStatus,
     vspace:        VirtPage ⇀ PageMapping,       // CPU Task：Segment MMU 映射；非 CPU：空（GPU/NPU 用显存池）
     dev_vspace:    VirtPage ⇀ DeviceMapping,     // 设备 MMIO 映射（§15.4）；与 vspace 的 VirtPage 不重叠
@@ -449,17 +455,13 @@ Task {
 
 CPU Task 拥有完整的 `vspace` 映射，`entry` 是虚拟地址。GPU/NPU/FPGA Task 的 `vspace` 为空，`entry` 在细化层解释为特定计算介质的 kernel 句柄（如 CUDA kernel 指针或 OpenCL kernel 名称）。所有介质上的 Task 共享同一个 Capability 位置空间——GPU Task 通过 `task_create` 注入的 `initial_caps` 获得对显存 Segment 的访问权。
 
-`kind = RemoteProxy(node)` 的 Task 是跨节点通信的本地代理：`node` 为目标远端节点，`vspace`/`dev_vspace` 为空，`root_ns_cap = None`，状态恒为 `Ready`，不参与 `schedule`，也不能调用任何用户操作。代理由 §8.5 的内部迁移 `attach_remote_task` 创建，并追加 `TaskCreated` 事件。
+`kind = RemoteProxy(node)` 的 Task 是跨节点通信的本地代理：`node` 为目标远端节点，`vspace`/`dev_vspace` 为空，`root_ns_cap = None`，状态恒为 `Ready`，不参与 `schedule`，也不能调用任何用户操作。代理由 §8.5 的 `node_attach`（用户可见）或内部迁移 `attach_remote_task`（目标端投递）创建，并追加 `TaskCreated` 事件。
 
 `dev_vspace` 记录通过 `dev_mmio_map`（§15.4）建立的设备 MMIO 映射，与 `vspace` 的 Segment 映射分开建模；同一 `VirtPage` 不得同时出现在两张表中（W16.4）。
 
 **`Faulted` 状态。** `Faulted` 是 POSIR 可见的常规 Task 状态：同步异常（如 `PageFault`）使 Running Task 无法继续执行，内核在 `raise_exception` 完成时把该 Task 置为 `Faulted` 并写入唯一 `pending_exc`；`Faulted` 与 `Running`/`Ready`/`BlockedRecv`/`BlockedWait` 互斥，调度器不会隐式恢复它或重播原始指令流。只有成功的 `exc_resume`（§12.10）执行 `Faulted → Ready`。不变量：`status = Faulted ⇔ pending_exc ≠ None`，且非 `Faulted` 的 Task 必有 `pending_exc = None`。`kernel_resume_frame` 仅在一次成功的 `exc_resume` 之后为 `Some`，直到该 Task 下次经由 `schedule` 进入 `Running` 时由细化层消费并清空；它不参与授权。不可恢复异常（如 `DoubleFault`）使 Task 永久保持 `Faulted`，只能经 §8.2 的内核回收路径（`KernelActor`，无需 `task_cap`）回收；持有 `TaskDestroy` 的其他 Task 也可在其仍能作为调用者时经 `task_destroy` 回收它。
 
-**SMP 扩展。** 当前 W9 要求"至多一个 Task 为 Running"。在多核系统中，此约束放松为：
-
-```text
-|{t ∈ dom(tasks) | tasks[t].status = Running ∧ tasks[t].kind = ComputeTask(CPU)}| ≤ cpu_core_count
-```
+**SMP 扩展。** 抽象状态不记录 CPU 核归属；W9 要求每个 CPU 核至多运行一个 CPU Task，且全系统 `Running` CPU Task 数不超过平台常量 `cpu_core_count`（§3）。每核约束由细化层投影保持（§8.4）。
 
 GPU/NPU Task 的 `Running` 语义由 COSIR 细化定义——CUDA stream 上的 kernel 提交视为 `Running`，直到完成通知返回。
 
@@ -472,9 +474,8 @@ GPU/NPU Task 的 `Running` 语义由 COSIR 细化定义——CUDA stream 上的 
 ### 5.3 Message
 
 ```text
-KernelEvent  = TimerFired(TimerId)
 MessageOrigin = FromTask(TaskId)
-              | FromKernel(KernelEvent)
+              | FromKernel(KernelEvent)   // KernelEvent 的完整定义见 §12.2：TimerFired | ExceptionRaised
 
 Message {
     origin: MessageOrigin,
@@ -503,7 +504,7 @@ NsEntry = Bound(CapId)
 
 Namespace {
     creator: Actor,
-    node:    NodeId,          // 所属节点；ns_create 置为 local_node
+    node:    NodeIdentity,    // 所属节点身份；ns_create 置为 local_node
     entries: Path ⇀ NsEntry,
 }
 ```
@@ -539,7 +540,7 @@ Timer {
 
 Timer 是一次性的。`Fired` 和 `Cancelled` 都不会回到 `Pending`。
 
-每个活动 Timer 的 `recipient` 必须是活动 Task：`task_destroy` 会把该 Task 作为 `recipient` 的全部 Timer（`Pending`/`Fired`/`Cancelled`）从活动表删除，其中 `Pending` 先追加 `TimerCancelled(RecipientDestroyed)`（§8.2）。因此已交付或已排队的 `FromKernel(TimerFired(id))` 通知可能引用一个已被删除的 TimerId；通知是自包含的历史记录，接收方不得以“该 Timer 仍然存在”为前提解释它（见 W11）。
+每个活动 Timer 的 `recipient` 必须是活动 Task：`task_destroy` 会把该 Task 作为 `recipient` 的全部 Timer（`Pending`/`Fired`/`Cancelled`）从活动表删除，其中 `Pending` 先追加 `TimerCancelled(RecipientDestroyed)`（§8.2）。因此已交付或已排队的 `FromKernel(TimerFired(id))` 通知可能引用一个已被删除的 TimerId；通知是自包含的历史记录，接收方不得以“该 Timer 仍然存在”为前提解释它（见 §10.6 与 W11）。
 
 ### 5.6 WaitObject
 
@@ -568,9 +569,9 @@ WaitObject {
 形式化模型的唯一起点 `EmptyState` 定义为：
 
 - 所有对象表（含 `nodes`、`wait_objects`）、`caps`、`locations`、`messages` 和 `audit` 为空；
-- `frame_universe = free_frames = ∅`；
-- `gpu_frame_universe = gpu_free_frames = empty map`；
-- `now = 0`，`booted = false`，`local_node = 0`（占位；Bootstrap 将其设为本节点 ID）；
+- `frame_universe = free_frames = reserved_frames = ∅`；
+- `gpu_frame_universe = gpu_free_frames = gpu_reserved_frames = empty map`；
+- `now = 0`，`booted = false`，`local_node = 0`（占位；Bootstrap 将其设为本节点身份）；
 - 所有 `next_* = 0`。
 
 预启动状态没有用户迁移；它唯一可执行的成功迁移是 `bootstrap`。具体平台的单调时钟可以用固定偏移细化抽象的零起点。
@@ -620,13 +621,13 @@ s —[actor, op/Error(e)]→ s
 - **默认规则兜底：** 若操作小节未给出“错误：”清单，则其失败语义为——失败当且仅当该操作列出的任一前置条件不满足；失败时返回 §6.2 第 1–5 阶段中适用阶段的标准错误标识，并保持 `State` 不变；实现可返回任一适用错误。
 - **显式无失败分支：** 若操作小节声明“无失败分支”，则在 §6.1 的 Actor 约束成立且其前置条件由内核保证成立时，该操作不产生失败结果。
 
-据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet`、`LengthMismatch`、`InvalidArch`、`InvalidRootRights`、`CrossNodeMount`、`InUseByAccelerator`、`MountTargetDead` 在首次出现的小节内就地定义。常用错误标识按名称自释：`ZeroSize` 表示长度/页数为零；`InvalidAccess` 表示访问集为空或非法；`OutOfBounds` 表示地址/偏移区间越界或溢出；`Overlap` 表示目标区间与既有映射或设备资源重叠；`NoMemory` 表示来源帧池不足；`NotHeld` 表示 Capability 不在调用者 `HeldBy` 中。
+据此，本规范中每个操作都具有明确的成功语义（“成功动作”或返回值）与失败语义（显式清单、默认规则或“无失败分支”声明）。本规范新引入的错误标识 `InvalidTime`、`InvalidTimer`、`MountCycle`、`InvalidDevice`、`InvalidNode`、`NodeUnreachable`、`TransfersInProgress`（保留给后续跨节点委托版本，v1 不产生）、`NoIOMMUDomain`、`InvalidWaitObject`、`DuplicateWaitObject`、`EmptyWaitSet`、`LengthMismatch`、`InvalidArch`、`InvalidRootRights`、`CrossNodeMount`、`InUseByAccelerator`、`MountTargetDead`、`AlreadyBooted`、`NonPortableCap`、`InvalidTaskKind`、`InvalidGeneration`、`AlreadyConnected` 在首次出现的小节内就地定义。常用错误标识按名称自释：`ZeroSize` 表示长度/页数为零；`InvalidAccess` 表示访问集为空或非法；`OutOfBounds` 表示地址/偏移区间越界或溢出；`Overlap` 表示目标区间与既有映射或设备资源重叠；`NoMemory` 表示来源帧池不足；`NotHeld` 表示 Capability 不在调用者 `HeldBy` 中。
 
 ### 6.3 内部辅助操作 `enqueue_or_deliver`
 
 内核发送消息时统一执行。对于 Task 发起的 `send`，输入 Capability 在操作开始时都位于 `HeldBy(sender)`；内核事件当前不携带 Capability：
 
-1. 分配 `MsgId` 并构造不可伪造的 `origin`；
+1. 使用并推进 `next_msg` 分配 `MsgId`，并构造不可伪造的 `origin`；
 2. 追加 `MessageSent`；这是发送动作的线性化点，并且总是先于同一消息的 `MessageReceived`；
 3. 若接收 Task 是 `BlockedRecv`：
    - 将每个 Capability 原子地从 `HeldBy(sender)` 直接移到 `HeldBy(receiver)`；
@@ -689,7 +690,7 @@ memseg_map(
 1. `seg_cap` 由调用者持有、可用且指向 Segment；
 2. 每项请求访问都得到相应 `SegMapR/W/X` 授权；
 3. `access ⊆ segment.allowed_access` 且非空；
-4. `task_cap` 授权目标 Task 的 `TaskManageVSpace`，且目标 Task 是 CPU Task（§5.2/§8.6）；
+4. `task_cap` 由调用者持有、可用，授权目标 Task 的 `TaskManageVSpace`，且目标 Task 是 CPU Task（§5.2/§8.6）；
 5. `page_count > 0`；
 6. `[seg_offset, seg_offset + page_count)` 位于 Segment 内；
 7. 目标 Task 的 `[target_base, target_base + page_count)` 在 `vspace` 与 `dev_vspace` 中均未映射（跨表互斥，见 W16.4）。
@@ -704,9 +705,9 @@ task.vspace[target_base + i] = {
 }
 ```
 
-对每一页插入后追加 `SegmentMapped(task_id, target_base + i, seg_cap)` Audit 事件。该操作同时需要 Segment 的映射授权和目标 Task 的地址空间管理授权。`TaskSend` 不得替代 `TaskManageVSpace`。
+对每一页插入后追加 `SegmentMapped(task_id, target_base + i, seg_cap, task_cap)` Audit 事件。该操作同时需要 Segment 的映射授权和目标 Task 的地址空间管理授权。`TaskSend` 不得替代 `TaskManageVSpace`。
 
-错误：`InvalidSegment`、`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`MissingMapRight`（Segment 映射授权不足）、`MissingRight(TaskManageVSpace)`、`RightsExceeded`、`InvalidAccess`（`access` 为空或超出 `segment.allowed_access`）、`OutOfBounds`、`Overlap`（目标区间已在 `vspace` 或 `dev_vspace` 任一表中被映射）、`ZeroSize`。
+错误：`InvalidSegment`、`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`NotHeld`、`TargetDead`、`MissingMapRight`（Segment 映射授权不足）、`MissingRight(TaskManageVSpace)`、`InvalidAccess`（`access` 为空或超出 `segment.allowed_access`）、`OutOfBounds`、`Overlap`（目标区间已在 `vspace` 或 `dev_vspace` 任一表中被映射）、`ZeroSize`。
 
 ### 7.3 `memseg_unmap`
 
@@ -716,16 +717,16 @@ memseg_unmap(task_cap, target_base, page_count) -> ()
 
 前置条件：
 
-- `task_cap` 授权 `TaskManageVSpace`，且目标 Task 是 CPU Task；
+- `task_cap` 由调用者持有、可用，授权 `TaskManageVSpace`，且目标 Task 是 CPU Task；
 - `page_count > 0`；
 - 目标区间中的每一页当前都有映射；
 - 目标区间不包含该 Task 的 `entry` 所在虚拟页。
 
-成功动作：原子删除区间中的全部页映射，并为每一页追加 `SegmentUnmapped(task_id, target_base + i)` Audit 事件。该操作不需要 Segment Capability，因为它只修改获得授权的目标地址空间，不销毁 Segment。
+成功动作：原子删除区间中的全部页映射，并为每一页追加 `SegmentUnmapped(task_id, target_base + i, task_cap)` Audit 事件。该操作不需要 Segment Capability，因为它只修改获得授权的目标地址空间，不销毁 Segment。
 
 当前模型不记录指令指针或入口迁移，因此要求初始入口映射在 Task 整个生命周期内保持有效。将来若加入执行上下文状态，可用“当前指令指针仍可执行”等更精确条件替代此限制。
 
-错误：`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`MissingRight(TaskManageVSpace)`、`NotMapped`（目标区间存在未映射页）、`EntryMapping`（目标区间包含 `entry` 所在虚拟页）、`ZeroSize`。
+错误：`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`NotHeld`、`TargetDead`、`MissingRight(TaskManageVSpace)`、`NotMapped`（目标区间存在未映射页）、`EntryMapping`（目标区间包含 `entry` 所在虚拟页）、`ZeroSize`。
 
 ### 7.4 `memseg_protect`
 
@@ -743,7 +744,7 @@ memseg_protect(task_cap, target_base, page_count, new_access) -> ()
 6. 对区间中每一页 `p`，令 `added = new_access \ task.vspace[p].access`。对 `added` 中每个权限 `r` 对应的 `SegMapR`/`SegMapW`/`SegMapX`，调用者必须持有至少一个指向该页 Segment 的可用 Capability，且该 Capability 包含对应权限。缩小或保持权限不要求新的 Segment 映射授权；
 7. 若目标区间包含 `page_of(task.entry)`，则 `new_access` 必须包含 `X`，以保持 W8。
 
-成功动作：对区间中每一页原子地保持 `segment` 与 `offset` 不变，仅把 `access` 置为 `new_access`，并追加 `VspaceProtChanged(task_id, target_base, page_count, new_access)` Audit 事件。
+成功动作：对区间中每一页原子地保持 `segment` 与 `offset` 不变，仅把 `access` 置为 `new_access`，并追加 `VspaceProtChanged(task_id, target_base, page_count, new_access, task_cap)` Audit 事件。
 
 该操作把 `mprotect` / `VirtualProtect` 的机制部分独立出来；权限的来源、COW 状态和共享映射语义仍由 LibOS 解释。
 
@@ -757,9 +758,9 @@ memseg_destroy(seg_cap) -> ()
 
 前置条件：
 
-- `seg_cap` 授权 `SegDestroy`；
+- `seg_cap` 由调用者持有、可用，授权 `SegDestroy`；
 - 任何活动 Task 的 `vspace` 都没有引用目标 Segment；
-- 若目标 Segment 的 `pool = GPU(arch)`，不存在状态为 `Running` 的非 CPU Task 持有指向该 Segment 的可用 Capability（细化层在 kernel 完成前必须保持该引用；销毁前须先完成或终止执行）。
+- 不存在状态为 `Running` 的非 CPU Task 持有指向该 Segment 的可用 Capability，**不论 `pool = CPU` 还是 `GPU(arch)`**（细化层在 kernel 完成前必须保持该引用；销毁前须先完成或终止执行）。
 
 成功动作：
 
@@ -769,7 +770,7 @@ memseg_destroy(seg_cap) -> ()
 
 所有指向该 Segment 的 Capability 记录与位置保留，但因目标不再存活而成为 stale token。
 
-错误：`InvalidSegment`、`MissingRight(SegDestroy)`、`StillMapped`（仍有活动 Task 的 `vspace` 引用目标 Segment）、`InUseByAccelerator`（目标 GPU Segment 仍被 `Running` 非 CPU Task 引用）。
+错误：`InvalidSegment`、`NotHeld`、`TargetDead`（目标 Segment 已销毁）、`MissingRight(SegDestroy)`、`StillMapped`（仍有活动 Task 的 `vspace` 引用目标 Segment）、`InUseByAccelerator`（目标 Segment 仍被 `Running` 非 CPU Task 引用）。
 
 ## 8. Task 与调度操作
 
@@ -793,6 +794,7 @@ task_create(
 
 前置条件：
 
+0. `kind = ComputeTask(...)`；`RemoteProxy` 只能由 §8.5 的 `node_attach` 或内部迁移 `attach_remote_task` 创建，传入 `kind = RemoteProxy(...)` 返回 `InvalidTaskKind`；
 1. （仅 CPU）代码 Segment Capability 由调用者持有、可用且指向活动 Segment，并授权 `SegMapR` 与 `SegMapX`；记 `segment = code_seg_cap.target`，初始代码映射权限恰为 `{R, X}`；
 2. （仅 CPU）`code_pages > 0` 且 `code_offset + code_pages ≤ segment.frames.length`；
 3. （仅 CPU）`load_base ≤ page_of(entry) < load_base + code_pages`；
@@ -811,12 +813,12 @@ task_create(
 5. 调用者或新 Task 可在创建后另行派生权限衰减的 Task Capability；
 6. 从 `parent_ns_cap` 派生 `root_rights` 子 Capability，放在 `HeldBy(new_task)` 并写入新 Task 的 `root_ns_cap = Some(...)`；
 7. 将 `initial_caps` 从调用者移动到新 Task；
-8. 将新 Task 的 `creator = caller`、`kind`、`node = local_node`、`dev_vspace = ∅`、`status = Ready`、邮箱为空、`pending_return = None`、`wait_request = None`、`pending_wait_result = None`、`pending_upcalls = []`、`pending_exc = None`、`kernel_resume_frame = None`，其余集合/可选字段为空集或 `None`；追加 `TaskCreated` 以及本操作中全部映射、Capability 铸造/移动事件（§13.1）；
+8. 将新 Task 的 `creator = caller`、`kind`、`node = local_node`、`dev_vspace = ∅`、`status = Ready`、邮箱为空、`pending_return = None`、`wait_request = None`、`pending_wait_result = None`、`pending_upcalls = []`、`pending_exc = None`、`kernel_resume_frame = None`，其余集合/可选字段为空集或 `None`；追加 `TaskCreated` 以及本操作中全部映射、Capability 铸造/派生/移动事件（§13.1）；
 9. 返回调用者持有的管理 Capability。
 
 新 Task 的根 Namespace 是共享对象，不做深拷贝。创建者、所有者和授权者是不同概念：`creator` 只用于审计，所有后续操作只看 Capability。
 
-错误：`InvalidSegment`（`code_seg_cap` 未指向有效 Segment）、`TargetDead`（代码 Segment 已销毁）、`InvalidEntry`（CPU Task 的 `entry` 不在代码映射范围内）、`InvalidCodeRange`（CPU Task 的 `code_pages = 0` 或 `code_offset + code_pages` 超出 Segment）、`InvalidNamespace`（`parent_ns_cap` 未指向 Namespace）、`InvalidInitialCap`（`initial_caps` 含无效项、非 CPU Task 的非 Segment 项或其他不允许项）、`DuplicateCap`、`StructuralCap`（`initial_caps` 含结构性根 Namespace Capability）、`InvalidRootRights`（`root_rights` 缺少必需的 `NsResolve`）、`MissingRight`、`RightsExceeded`（`root_rights` 超出 `parent_ns_cap.rights`）。
+错误：`InvalidTaskKind`（`kind = RemoteProxy(...)`）、`InvalidSegment`（`code_seg_cap` 未指向有效 Segment）、`TargetDead`（代码 Segment 已销毁）、`InvalidEntry`（CPU Task 的 `entry` 不在代码映射范围内）、`InvalidCodeRange`（CPU Task 的 `code_pages = 0` 或 `code_offset + code_pages` 超出 Segment）、`InvalidNamespace`（`parent_ns_cap` 未指向 Namespace）、`InvalidInitialCap`（`initial_caps` 含无效项、非 CPU Task 的非 Segment 项或其他不允许项）、`DuplicateCap`、`StructuralCap`（`initial_caps` 含结构性根 Namespace Capability）、`InvalidRootRights`（`root_rights` 缺少必需的 `NsResolve`）、`MissingRight`、`RightsExceeded`（`root_rights` 超出 `parent_ns_cap.rights`）。
 
 ### 8.2 `task_destroy`
 
@@ -824,34 +826,34 @@ task_create(
 task_destroy(task_cap) -> ()
 ```
 
-前置条件：`task_cap` 授权目标 Task 的 `TaskDestroy`。
+前置条件：`task_cap` 由调用者持有、可用，并授权目标 Task 的 `TaskDestroy`。
 
 成功动作：
 
 1. 删除目标 Task 的全部页映射（`vspace` 与 `dev_vspace`）；
 2. 删除其邮箱中的活动消息；
 3. 删除这些消息内 Capability 的位置；
-4. 删除该 Task 持有的全部 Capability 位置，包括 `root_ns_cap`（若存在）、`pending_return` 中的 Capability，以及**所有以该 Task 为 `InTransit` 源位置（`from = HeldBy(该 Task)`）的 Capability 位置**（中止在途传输，等价于丢弃并追加丢弃事件）；
+4. 删除该 Task 持有的全部 Capability 位置，包括 `root_ns_cap`（若存在）、`pending_return` 中的 Capability，以及所有以该 Task 为 `InTransit` 源位置的 Capability 位置（v1 无此类位置；保留给后续版本，处置方式为中止传输、等价于丢弃并追加丢弃事件）；
 5. 对所有以该 Task 为 `recipient`（即 `creator`）的 Timer：`Pending` → 先追加 `TimerCancelled(RecipientDestroyed)`（不产生 Timer 通知）、再追加对象销毁事件；`Fired`/`Cancelled` → 追加对象销毁事件；随后**一律从活动 Timer 表删除**（已排队或已交付的 `notification` 不撤回）。删除后活动 Timer 表不再含以该 Task 为 recipient 的条目，满足 W11；
 6. 清空该 Task 的 `pending_exc` 与 `kernel_resume_frame`（覆盖 `Faulted` 与已恢复的 Task）；
 7. 从所有 WaitObject 的 `waiters` 中删除目标 Task；清空该 Task 的 `wait_request`、`pending_wait_result` 与 `pending_upcalls`，不为这些被取消的等待产生结果；
 8. 从所有 ExceptionSource 的 `subscribers` 中删除 `task = 目标 Task` 的条目（对齐 §17.7 与 W15，避免对已销毁 Task 投递异常通知）；
 9. 从 `tasks` 删除目标 Task；
-10. 追加 Task 销毁、消息丢弃、Capability 丢弃、等待取消和 Timer 取消/销毁事件。
+10. 为步骤 1 删除的每个映射追加 `SegmentUnmapped`/`DeviceUnmapped`，为步骤 8 删除的每个订阅追加 `ExcUnsubscribed`，并追加 Task 销毁、消息丢弃、Capability 丢弃、等待取消和 Timer 取消/销毁事件。
 
 下列对象不会被隐式销毁：Segment、Namespace、其他 Task，以及已经发送到其他 Task 邮箱中的消息和 Capability。
 
 删除自身是合法的；成功后该 CPU 核上没有 Running Task，内核必须通过后续 `schedule` 选择新的 Task（SMP 下其他核的状态由各自调度器维护）。
 
-以该 Task 为 `InTransit` 目标位置（`to = HeldBy(该 Task)`）的在途传输，在目标确认时因目标 Task 无效而被拒绝，按 §8.5 回退到源位置（源 Task 仍活动时）或丢弃。
+POSIR v1 不产生 `InTransit`，故不存在以该 Task 为目标的在途 Capability 传输（§2.2/§8.5）。
 
-**内核回收路径。** 对处于不可恢复终态的 `Faulted` Task，`KernelActor` 可直接执行上述成功动作 1–10 的同一清理，无需 `task_cap`，也不要求调用者持有 `TaskDestroy`。**不可恢复终态 = 依据当前 State，该 Task 不可能成功执行一次 §12.10 的 `exc_resume`**。判定只使用与具体调用者无关的状态量：源活性、`kind`、订阅集合、Task 持有的 Capability、以及是否存在可承载恢复帧的可用 Segment；帧内容由调用者提供，不参与判定。典型情形包括：`pending_exc.kind` 是不可恢复硬件异常；`pending_exc.source_id` 指向的源不再活跃；该 Task 不在该源的 active subscription 集合中；该 Task 不持有指向该源且可用的 `ExcSubscribe` Capability（已 `cap_drop`、被撤销或变为 stale）；或该 Task 不持有任何满足 §12.10 前置 2 的 Segment（无可用且内核可读的 `SegMapW` Segment 承载恢复帧）。这是 §5.2/§12.6/§12.9 所指不可恢复 `Faulted` Task 的回收出路，保证其不会成为无法回收的僵尸。
+**内核回收路径。** 对处于不可恢复终态的 `Faulted` Task，`KernelActor` 可直接执行上述成功动作 1–10 的同一清理，无需 `task_cap`，也不要求调用者持有 `TaskDestroy`。**不可恢复终态 = 依据当前 State，该 Task 不可能成功执行一次 §12.10 的 `exc_resume`**。判定只使用与具体调用者无关的状态量：源活性、`kind`、订阅集合、Task 持有的 Capability、以及是否存在可承载恢复帧的可用 Segment；帧内容由调用者提供，不参与判定。典型情形包括：`pending_exc.kind` 是不可恢复硬件异常；`pending_exc.source_id` 指向的源不再活跃；该 Task 不在该源的 active subscription 集合中；该 Task 不持有指向该源且可用的 `ExcSubscribe` Capability（已 `cap_drop`、被撤销或变为 stale）；或该 Task 不持有任何满足 §12.10 前置 2 的 Segment（无可用且内核可读的 `SegMapW` Segment 承载恢复帧）。这是 §5.2/§12.6/§12.9 所指不可恢复 `Faulted` Task 的回收出路，保证其不会成为无法回收的僵尸。细化层可把“没有为该 Task 预置可恢复帧”作为不可恢复判据的输入；该判断属细化层策略，不新增 POSIR 状态。
 
 `RemoteProxy` 适用同一清理动作；其 `vspace`/`dev_vspace` 为空、无结构性根、无 Timer/订阅，因此仅删除消息、Capability 位置与 Task 记录并追加事件。
 
 指向被销毁 Task 的 Capability 变为 stale token。
 
-错误：`InvalidTask`（`task_cap` 不指向有效 Task）、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(TaskDestroy)`。
+错误：`InvalidTask`（`task_cap` 不指向有效 Task）、`NotHeld`（不在 `HeldBy(caller)`）、`TargetDead`、`MissingRight(TaskDestroy)`。
 
 ### 8.3 `task_yield`
 
@@ -872,6 +874,7 @@ schedule(chosen_task) -> Option<TaskReturn>
 这是 `KernelActor` 内部迁移。前置条件：
 
 - 该 CPU 核当前没有 `Running` CPU Task（其他核由各自调度器维护）；
+- 全系统 `Running` CPU Task 数小于 `cpu_core_count`（W9）；
 - `chosen_task` 当前为 `Ready`，且是 CPU Task、非 `RemoteProxy`；非 CPU Task 的 `Running` 迁移由细化层经 `KernelActor` 完成，不经过 `schedule`。
 
 成功动作：
@@ -885,120 +888,106 @@ schedule(chosen_task) -> Option<TaskReturn>
 
 选择可以是非确定的；本规范不要求公平。每个 CPU 核至多有一个 `Running` CPU Task，全系统 `Running` CPU Task 数量不超过 CPU 核数（与 §5.2 SMP 扩展及 W9 一致）；非 CPU Task 的 `Running` 迁移由细化层维护，不计入该约束。抽象状态不额外记录 CPU 核归属；`schedule` 的“该 CPU 核”指调用本次迁移的细化层调度器上下文，W9 的每核约束由细化层投影保持。
 
-**失败语义：无失败分支。** `schedule` 是 `KernelActor` 内部迁移；其两条前置条件（该 CPU 核无 `Running` CPU Task、`chosen_task` 为 `Ready`）由调度器本身维护，用户输入不能触发或绕过，故不产生可返回的错误。
+**失败语义：无失败分支。** `schedule` 是 `KernelActor` 内部迁移；其三条前置条件（该 CPU 核无 `Running` CPU Task、全系统 Running 数未达 `cpu_core_count`、`chosen_task` 为 `Ready`）由调度器本身维护，用户输入不能触发或绕过，故不产生可返回的错误。
 
 ### 8.5 跨节点与异地 Task
 
-多机集群中，每个节点运行独立的 HexArc 内核实例，拥有本地 `KernelState`。跨节点通信通过扩展的 `send` 原语完成。每条 Node 连接维护远端 TaskId 与本地 TaskId 的绑定；该绑定属传输/细化层，POSIR 只使用 `attach_remote_task` 物化对端代理，并在投递时按该绑定解析本地接收方。
+多机集群中，每个节点运行独立的 HexArc 内核实例，拥有本地 `KernelState`。**POSIR v1 的跨节点能力仅限消息数据**：`send` 可以向本地 `RemoteProxy` 投递数据，但**不得跨节点传递 Capability**（§2.2）；跨节点 Capability 委托/统一命名留待后续版本。
 
-`enqueue_or_deliver` 只处理本地接收方；`RemoteProxy` 目标必须走本节的跨节点协议。
+`enqueue_or_deliver` 只处理本地接收方；`RemoteProxy` 目标必须走本节的跨节点投递路径。
 
 **节点对象：**
 
 ```text
-NodeId : Nat
-
 Node {
     creator:  Actor,
+    peer:     NodeIdentity,      // 对端平台身份
     transport: NodeTransport,
     status:   NodeStatus,
 }
 
-NodeTransport = Direct(NodeId)
-              | Mesh(FiniteSet<NodeId>)
-              | Forwarded(NodeId)
+NodeTransport = Direct(NodeIdentity)
+              | Mesh(FiniteSet<NodeIdentity>)
+              | Forwarded(NodeIdentity)
 
 NodeStatus = Connected | Disconnected | PartiallyConnected
 ```
 
-`local_node : NodeId` 位于 `KernelState`（§5），是当前内核实例的节点标识；Bootstrap 将其设为平台提供的本节点 ID，此后不变。它只用于比较本地与远端 Task 的归属，不参与 Capability 授权。
-
-每个 Task 属于一个 Node：
-
-```text
-Task {
-    ...
-    node: NodeId,
-    ...
-}
-```
-
-`node` 字段的完整定义见 §5.2；Bootstrap 与 `task_create` 在创建 Task 时把其 `node` 设为 `local_node`（本节点）；`RemoteProxy` 由内部迁移 `attach_remote_task` 设为目标远端节点。
+`NodeId` 是本地 `nodes` 表键（由 `next_node` 分配）；`local_node : NodeIdentity` 是本节点平台身份（§5），二者不可混用。`Node.peer` 是连接对端的平台身份；`Task.node`、`Namespace.node` 与 `Node.peer` 均使用 `NodeIdentity`。Bootstrap 与 `task_create` 把本地 Task/Namespace 的 `node` 设为 `local_node`；`RemoteProxy` 的 `node` 设为 `Node.peer`。
 
 **节点创建：**
 
 ```text
-node_create(transport) → node_cap
+node_create(peer, transport) -> node_cap
 ```
+
+前置条件：`peer ≠ local_node`；当前没有活动 Node 满足 `Node.peer = peer`（每个对端至多一个活动连接对象）。
 
 成功动作：
 
-1. 分配 `NodeId`（使用并推进 `next_node`），创建 `Node` 对象，`creator = caller`、`transport` 取自参数、`status = Connected`；具体传输实现及其可用性由内核/平台提供；
-2. 铸造完整根 Node Capability，权限为 `{Derive, NodeConnect, NodeDestroy}`，放在 `HeldBy(caller)`；
+1. 使用并推进 `next_node` 分配 `NodeId`，创建 `Node{creator=caller, peer, transport, status=Connected}`；
+2. 铸造完整根 Node Capability，权限 `{Derive, NodeConnect, NodeDestroy}`，放在 `HeldBy(caller)`；
 3. 追加对象创建与 Capability 铸造 Audit 事件。
 
-`NodeConnect` 由传输/细化层在建立或恢复与该节点的连接时检查；POSIR 的 `send` 仅以本地 `nodes` 表中存在该 Node 作为连接可用性的抽象投影。`NodeDestroy` 授权销毁该 Node 对象。`Node.status` 是传输层健康指示：初始为 `Connected`，`Disconnected`/`PartiallyConnected` 的迁移由传输/细化层维护，不参与 POSIR 授权判定。
+错误：`InvalidNode`（`peer = local_node` 或平台不认识的 `NodeIdentity`）、`AlreadyConnected`（已有同 `peer` 的活动 Node；本规范中表示“该对端已存在活动连接对象”）。
 
-**失败语义：无失败分支。** 除 §6.1 的 Actor 约束外，`node_create` 无前置条件；`transport` 是内核/平台提供的传输实现，其可用性属资源问题（§6.2 排除），不作为抽象层失败。
+`NodeConnect` 授权 `node_attach`；`NodeDestroy` 授权 `node_destroy`。`Node.status` 是传输层健康指示，初始 `Connected`，其迁移由传输/细化层维护，不参与 POSIR 授权判定。
+
+**出站远端 Task 代理：**
+
+```text
+node_attach(node_cap, remote_task_id) -> task_cap
+```
+
+前置条件：
+
+1. `node_cap` 由调用者持有、可用，指向 Node，并含 `NodeConnect`；
+2. `remote_task_id` 是远端 Task 的 opaque ID（本节点不做存在性验证）。
+
+成功动作：
+
+1. 查找本地 `kind = RemoteProxy(peer)` 且 `remote_id = Some(remote_task_id)` 的 Task；
+2. 若不存在，调用内部迁移 `attach_remote_task(node.peer, remote_task_id, caller)` 创建；该迁移铸造 `{Derive, TaskSend}` 根 Capability 给调用者，直接返回它；
+3. 若已存在，扫描 `HeldBy(caller)` 中指向该代理且含 `TaskSend` 的可用 Capability 并返回其中一个；调用者不持有时返回 `NotHeld`（不铸造新的无父根，W14）。
+
+错误：`InvalidNode`、`NotHeld`、`TargetDead`（Node 已销毁）、`MissingRight(NodeConnect)`、`InvalidTask`（代理创建失败）。
 
 **远端 Task 代理（内部迁移）：**
 
 ```text
-attach_remote_task(remote_node: NodeId, remote_task_id: TaskId, holder: TaskId) -> TaskId
+attach_remote_task(peer: NodeIdentity, remote_task_id: TaskId, holder: TaskId) -> TaskId
 ```
 
-这是 `KernelActor` 内部迁移，不计入 §19 的 46 项公开操作。前置条件：`remote_node` 是本地 `nodes` 表中的活动 Node；`holder` 是活动本地 Task；本地 `tasks` 中不存在指向同一 `(remote_node, remote_task_id)` 的代理。成功动作：创建 `Task`，`kind = RemoteProxy(remote_node)`、`node = remote_node`、`remote_id = Some(remote_task_id)`、`creator = KernelActor`、`status = Ready`、`entry = 0`（占位；`RemoteProxy` 不执行）、空 `vspace`/`dev_vspace`/邮箱/等待与异常字段、`root_ns_cap = None`，使用并推进 `next_task`；铸造权限为 `{Derive, TaskSend}` 的根 Capability（分配 CapId 时使用并推进 `next_cap`）放在 `HeldBy(holder)`；追加 `TaskCreated` 与 Capability 铸造事件；返回本地代理 `TaskId`。用户态服务可按普通 Capability 机制把该 `TaskSend` Capability 派生或转交给发送方。
+`KernelActor` 内部迁移，不计入 §19 的公开操作。前置：`holder` 是活动本地 Task；不存在同一 `(peer, remote_task_id)` 的代理。成功：创建 `Task{kind=RemoteProxy(peer), node=peer, remote_id=Some(remote_task_id), creator=KernelActor, status=Ready, entry=0, root_ns_cap=None, 空 vspace/dev_vspace/邮箱/等待/异常字段}`，使用并推进 `next_task`；铸造 `{Derive, TaskSend}` 根 Capability 给 `holder`（使用并推进 `next_cap`）；追加 `TaskCreated` 与 `CapMinted`；返回本地 `TaskId`。该迁移的前置由调用方（`node_attach` 或跨节点投递）保证；不产生用户可返回错误。
 
-**失败语义：** 本迁移的前置条件（`remote_node` 为本地活动 Node、`holder` 为活动本地 Task、同一 `(remote_node, remote_task_id)` 无现有代理）由跨节点协议在调用前保证；前置不成立属传输层/内核缺陷，不产生用户可返回错误。在协议前置成立时无失败分支。
+与 §2.2 一致，`RemoteProxy` 不自动回收：holder 销毁后代理保持活动但不可达，直到 `node_destroy` 清理。
 
-与 §2.2 一致，本规范不建模 `RemoteProxy` 的自动回收：若 `holder` 在转交 `TaskSend` Capability 前被销毁，代理保持活动但不可达，直到 `node_destroy` 清理；这是已登记的资源回收边界，不是授权漏洞。
+**节点销毁：**
 
 ```text
 node_destroy(node_cap) -> ()
 ```
 
-前置条件：`node_cap` 授权 `NodeDestroy`；且所有 `via = 此 Node` 的 `InTransit` Capability 均已满足 §8.5 的超时回退安全条件（源节点能够确定目标节点未提交接收）。若存在安全条件尚未确定的在途传输，`node_destroy` 返回 `TransfersInProgress` 且不改变任何 State；调用者须等待该传输的接收确认或安全回退确定后再重试，不得强制回退。
+前置条件：`node_cap` 由调用者持有、可用，指向 Node，并含 `NodeDestroy`。
 
-成功动作（原子）：对所有 `via = 此 Node` 的 `InTransit` Capability，按 §8.5 的回退/丢弃规则处置——源 Task 仍活动且安全条件满足则回退到 `HeldBy(源)`，源已销毁则删除位置并追加丢弃事件；对所有 `kind = RemoteProxy(此 Node)` 的本地 Task，按 `task_destroy` 的清理动作删除其消息与 Capability 位置并移除 Task 记录（不要求 `TaskDestroy`）；关闭所有通过此 Node 建立的连接；再从活动 Node 表删除目标并追加 `ObjectDestroyed`。该迁移不阻塞、不依赖对端确认（安全性已由前置条件保证）。销毁后的 Node Capability 变为 stale token。
+成功动作（原子）：对所有 `kind = RemoteProxy(node.peer)` 的本地 Task，按 `task_destroy` 的清理动作删除其消息与 Capability 位置并移除 Task 记录（不要求 `TaskDestroy`）；关闭通过此 Node 建立的连接；从活动 Node 表删除目标；追加 `ObjectDestroyed`。销毁后的 Node Capability 变为 stale token。
 
-错误：`InvalidNode`（`node_cap` 未指向有效 Node；本规范中该标识统一表示“Node Capability 参数无效”）、`NotHeld`、`MissingRight(NodeDestroy)`、`TransfersInProgress`（存在安全条件尚未确定的在途传输；本规范中该标识表示“有在途传输未决，稍后重试”）。
+错误：`InvalidNode`、`NotHeld`、`TargetDead`、`MissingRight(NodeDestroy)`。
 
-Node 对象的权限集合纳入 §4.1 的权限表：
+Node 对象的权限集合：`NodeConnect`, `NodeDestroy`（§4.1）。`nodes: NodeId ⇀ Node`，`next_node: NodeId`，初始为空/0。
 
-| 对象类型 | 合法非 Derive 权限 |
-|---|---|
-| Node | `NodeConnect`, `NodeDestroy` |
+**跨节点消息投递：**
 
-Node 对象的 `KernelState` 字段：`nodes: NodeId ⇀ Node`，`next_node: NodeId`，初始状态均为空/0。
+当接收方是本地 `RemoteProxy` 时，`send` 走异步投递：
 
-**跨节点通信模型：**
-
-当发送方 Task `t_s` 和接收方 Task `t_r` 位于不同 Node 时，`send` 扩展为异步两阶段协议。**额外前置：** 本地 `nodes` 表中存在 `NodeId = t_r.node` 的 Node（即到接收方所在节点的连接对象已由 `node_create` 建立且未被销毁）；否则返回 `NodeUnreachable`（本标识表示“本地没有指向接收方节点的 Node 连接”，区别于 `InvalidNode` 的参数无效），`send` 不改变任何 State。目标节点在确认阶段必须存在指向源节点的本地活动 `Node` 对象（由目标节点的 `node_create` 建立）；缺失时拒绝接收并按回退/丢弃规则处置，不向用户返回同步错误。协议步骤：
-
-1. **验证阶段（本地）：** 发送方节点验证 Capability 和权限——与单机 `send` 完全相同；
-2. **InTransit 阶段：** 源节点标记 Capability 为 `InTransit`，将消息序列化并通过 `NodeTransport` 发送到目标节点。承载本次传输的 Node 由接收方 Task 的 `node` 字段（§5.2）绑定：当 `receiver.node ≠ local_node` 时（此时 `receiver` 必须是本地的 `RemoteProxy`，由 `attach_remote_task` 建立），源节点使用本地 Node 表中 `NodeId = receiver.node` 的 Node 建立传输，并把该 `NodeId` 记入 `InTransit.via`；因此 `via` 总指向一个已存在的本地 Node，`node_destroy` 可按 `via` 精确定位受影响的在途传输。跨节点传输使用"携带源节点 ID + 本地 CapId 的全局引用"格式；目标节点在接收时创建本地代理 CapRecord，`parent = None`、`origin = Some((源节点, 源 CapId))`，并以传输接收审计事件记录同样的溯源信息（满足 W2 与 §17.2 不可伪造）；源节点追加 `MessageSent`（目标为本地 `RemoteProxy`），Capability 位置变化追加 `CapMoved`（`HeldBy(sender) → InTransit`）；
-3. **确认阶段（远端）：** 目标节点先为发送方建立本地 `RemoteProxy`（`attach_remote_task`），使 `FromTask` 具有本地创建事件（W10）；验证后以 `FromTask(发送方代理)` 调用 `enqueue_or_deliver` 接受消息。若接收方不是 CPU Task（非 CPU Task 不能作为消息目标，§8.6/§9.1），拒绝接收并按与目标已销毁相同的回退/丢弃规则处置；否则若接收方当前 `BlockedRecv`，直接交付 Capability；否则进入消息队列。若接收方 Task 已被销毁，则拒绝接收，Capability 回退到源位置（源 Task 仍活动时）或丢弃；
-4. **回退：** 若传输超时或网络不可达、源 Task `t_s` 仍活动且满足下述安全条件，Capability 从 `InTransit` 回退到 `HeldBy(t_s)`；若 `t_s` 已销毁，则删除该 Capability 的位置并追加丢弃事件（不回退到已销毁 Task）；若安全条件不满足，则保持 `InTransit` 并重试确认，或由平台退化为阻塞同步（见下）。
-
-`InTransit` 是 CapLocation 的第四种状态，其 `via` 记录承载传输的 Node。在单机同步通信中不存在可观察的 `InTransit`——所有 Capability 移动是即时的。只有在网络通信中，中间状态才在抽象层面暴露。
-
-**超时回退的安全条件：** 回退到 `HeldBy(t_s)` 仅在源节点能够**确定目标节点未提交接收**时合法。可提供该确定性的协议只有两类：
-
-- **显式放弃：** 目标节点在提交前向源节点发送“未接收/放弃”决定，且该决定保证先于任何提交；
-- **原子提交协议：** 平台提供两阶段提交或共识，使“目标节点已提交”与“源节点收到确认”不可能一真一假。
-
-**“目标先发 ack、再本地写入”不是充分条件：** 若 ack 在发送后丢失，目标仍会提交，而源在超时后无法区分“目标未接收”与“目标已提交但 ack 丢失”，此时回退与提交会同时成功。因此在该窗口内源**不得回退**，必须保持 `InTransit` 并重试确认。
-
-如果平台无法提供上述任一协议（例如无状态传输），则 `send` 在跨节点场景中必须退化为**阻塞同步**——源节点阻塞直到目标节点明确确认接收或明确拒绝——此时不存在可观察的 `InTransit` 中间状态。实现选择（原子提交协议 vs 阻塞同步）取决于 COSIR 细化层对网络传输的抽象，但两种选择都必须保证 W3。
-
-**传输有界性：** 在平台能给出确定性的前提下，每个 `InTransit` 必须在其 `started_at` 之后的超时窗口内进入三个终态之一——被目标接受（转为 `HeldBy(t_r)` 或 `InMessage`）、安全回退（转为 `HeldBy(t_s)`）、或被丢弃（删除位置并追加丢弃事件）；安全条件不满足时，源节点通过重试或阻塞同步推进，而不是无限停留。在**永久网络分区**下，`InTransit` 的最终解决可能等待分区恢复或显式运维决策，属活性问题（§2.2 非目标）；本规范在该情形只保证不出现违反 W3 的双份非 `InTransit` 位置——即宁可保持 `InTransit`，也不做不安全的回退或丢弃。若平台完全无法提供确定性与有界解决，必须改用阻塞同步（此时不存在可观察的 `InTransit`）。
-
-违背安全条件将导致同一个 `CapId` 同时出现在源节点和目标节点——直接违反 W3。
+1. **源端：** 验证目标 Capability、`transferred_caps` 为空（否则 `NonPortableCap`）、`data` 长度；使用并推进 `next_msg` 分配本地 `MsgId`；追加 `MessageSent{msg, from=caller, to=本地代理, caps=[], transport_msg=Some(msg)}`；按 `receiver.node` 在本地 `nodes` 中找到 `peer = receiver.node` 的活动 Node（否则 `NodeUnreachable`），通过其 transport 发送序列化消息。源端**不创建**本地 `Message`，也不改变 Capability 位置。
+2. **目标端：** 目标节点按传输层提供源 `NodeIdentity` 与 `transport_msg`；为发送方建立/复用本地 `RemoteProxy`（`attach_remote_task(源 peer, 发送方 TaskId, 接收方)`），使 `FromTask` 有本地创建事件（W10）；分配目标端 `MsgId`，以 `FromTask(发送方代理)` 调用 `enqueue_or_deliver`，并在其 `MessageSent` 事件上记录 `transport_msg`。若接收方不是 CPU Task 或已销毁，目标端追加 `MessageDropped`（记录 `transport_msg`），不投递；源端不回滚（无 Capability 可回滚）。
+3. **语义：** 跨节点 `send` 成功表示消息已交给本地 transport，不表示已送达；投递失败是目标端异步丢弃，源端可通过审计/服务协议获知。§17.5 的“成功即入队/直投”只适用于本地投递。
 
 **分布式不变量：**
 
-- **W3 扩展：** 每个 Capability token 在任意时刻至多有一个非 `InTransit` 位置。`InTransit` 状态内部记录源位置和目标位置，但 token 在传输期间不可授权；
-- **Namespace 约束：** Namespace 不跨节点挂载——跨节点命名通过分布式服务实现，而非内核机制。这一限制避免分布式 Mount 环检测的 CAP 问题；
+- **W3：** 跨节点 `send` 不移动 Capability，因此每个 token 仍只有一个位置；`InTransit` 保留给后续跨节点委托版本，v1 不产生；
+- **Namespace 约束：** Namespace 不跨节点挂载——跨节点命名通过分布式服务实现，而非内核机制；
 - **Timer 约束：** 每个节点拥有独立的 `now` 时钟。跨节点 Timer 语义不在本规范中定义。
 
 ### 8.6 GPU / NPU / FPGA Task
@@ -1076,11 +1065,11 @@ send(to_task_cap, data, transferred_caps) -> ()
 全部验证完成后，内核原子地：
 
 1. 构造来源为 `FromTask(caller)` 的 Message 输入；
-2. 若目标是 `RemoteProxy`，按 §8.5 的跨节点两阶段协议执行：Capability 进入 `InTransit`，消息序列化发送，不调用 `enqueue_or_deliver`；否则使用 `enqueue_or_deliver` 分配 `MsgId`、记录 `MessageSent`，并把全部 Capability 从调用者的位置原子地移动到 Message 或接收者。`MessageSent` 包含来源、目标、payload 长度与摘要以及 Capability ID 列表。
+2. 若目标是 `RemoteProxy`，按 §8.5 的跨节点投递执行：`transferred_caps` 必须为空（否则返回 `NonPortableCap`），使用并推进 `next_msg` 分配本地 `MsgId`，记录 `MessageSent`，序列化发送，不创建本地 `Message`、不调用 `enqueue_or_deliver`、不移动任何 Capability；否则使用 `enqueue_or_deliver` 分配 `MsgId`、记录 `MessageSent`，并把全部 Capability 从调用者的位置原子地移动到 Message 或接收者。`MessageSent` 包含来源、目标、payload 长度与摘要以及 Capability ID 列表；跨节点源端还记录 `transport_msg`（本端 `MsgId`），目标端在接收事件中记录同一 `transport_msg`。
 
 `to_task_cap` 可以同时出现在 `transferred_caps` 中；授权先完成验证，再发生移动。
 
-错误：`InvalidTask`（目标不是有效 Task，或是既非 CPU 也非 `RemoteProxy` 的 Task）、`MissingRight(TaskSend)`、`MsgTooLarge`、`TooManyCaps`、`DuplicateCap`、`InvalidCap`、`StructuralCap`、`NodeUnreachable`（跨节点发送时本地无 `NodeId = t_r.node` 的 Node，§8.5）。
+错误：`InvalidTask`（目标不是有效 Task，或是既非 CPU 也非 `RemoteProxy` 的 Task）、`MissingRight(TaskSend)`、`MsgTooLarge`、`TooManyCaps`、`DuplicateCap`、`InvalidCap`、`StructuralCap`、`NonPortableCap`（发往 `RemoteProxy` 的 `transferred_caps` 非空，§2.2/§8.5）、`NodeUnreachable`（跨节点发送时本地无 `peer = t_r.node` 的活动 Node，§8.5）。
 
 ### 9.2 `recv`
 
@@ -1133,7 +1122,7 @@ timer_set(deadline) -> timer_cap
 
 1. 创建 Timer；
 2. 铸造由调用者持有的根 Timer Capability，权限为 `Derive | TimerCancel | TimerDestroy`；
-3. 追加 `TimerSet(timer_id, caller, deadline)`；
+3. 追加 `TimerSet(timer_id, caller, deadline)` 与根 Timer Capability 的 `CapMinted` 事件；
 4. 若 `deadline > now`，Timer 进入 `Pending`；
 5. 若 `deadline ≤ now`，在同一原子操作中：
    - 追加唯一的 `TimerFired(timer_id, deadline, now)`；
@@ -1177,13 +1166,13 @@ advance_time(new_now) -> ()
 timer_cancel(timer_cap) -> ()
 ```
 
-前置条件：`timer_cap` 授权 `TimerCancel`。
+前置条件：`timer_cap` 由调用者持有、可用，并授权 `TimerCancel`。
 
 - `Pending`：进入 `Cancelled(ByTask(caller))`，追加 `TimerCancelled`，不产生通知；
 - `Fired`：返回 `AlreadyFired`，状态不变；
 - `Cancelled`：返回 `AlreadyCancelled`，状态不变。
 
-错误：`InvalidTimer`（`timer_cap` 不指向有效 Timer）、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(TimerCancel)`。`InvalidTimer` 定义为本规范中“Capability 参数未指向有效 Timer 对象”的失败标识。`AlreadyFired`/`AlreadyCancelled` 是状态返回而非失败，且保持状态不变。
+错误：`InvalidTimer`（`timer_cap` 不指向有效 Timer）、`NotHeld`（不在 `HeldBy(caller)`）、`TargetDead`、`MissingRight(TimerCancel)`。`InvalidTimer` 定义为本规范中“Capability 参数未指向有效 Timer 对象”的失败标识。`AlreadyFired`/`AlreadyCancelled` 是状态返回而非失败，且保持状态不变。
 
 ### 10.5 `timer_destroy`
 
@@ -1191,17 +1180,17 @@ timer_cancel(timer_cap) -> ()
 timer_destroy(timer_cap) -> ()
 ```
 
-前置条件：`timer_cap` 授权 `TimerDestroy`。
+前置条件：`timer_cap` 由调用者持有、可用，并授权 `TimerDestroy`。
 
 成功时从活动 Timer 表删除目标：
 
-- 若仍为 `Pending`，先追加 `TimerCancelled`，不产生通知；
+- 若仍为 `Pending`，先追加 `TimerCancelled(timer_id, ByTask(caller))`，不产生通知；
 - 若已 `Fired`，已经排队或交付的通知不撤回；
 - 若已 `Cancelled`，不产生新的取消事件；
 - 最后追加对象销毁事件并删除活动 Timer；
 - 指向该 Timer 的 Capability 全部成为 stale token。
 
-错误：`InvalidTimer`、`NotHeld`、`MissingRight(TimerDestroy)`。
+错误：`InvalidTimer`、`NotHeld`、`TargetDead`、`MissingRight(TimerDestroy)`。
 
 ### 10.6 Exactly-once 边界
 
@@ -1252,17 +1241,17 @@ ns_bind(ns_cap, path, cap) -> ()
 
 前置条件：
 
-1. `ns_cap` 授权目标 Namespace 的 `NsBind`；
+1. `ns_cap` 由调用者持有、可用，授权目标 Namespace 的 `NsBind`；
 2. `path` 合法且非空；
 3. `cap` 由调用者持有且 `usable`；
 4. `cap` 不是结构性根 Namespace Capability；
 5. `path` 没有现有终端祖先、同名条目或后代条目。
 
-成功动作：将 `cap` 移到 `InNamespace(ns, path)` 并建立 `Bound(cap)`。
+成功动作：将 `cap` 移到 `InNamespace(ns, path)` 并建立 `Bound(cap)`；追加 `CapMoved(HeldBy(caller) → InNamespace(ns, path))` 与 `NsBound(ns, path, cap)` Audit 事件。
 
 绑定项只有在 Capability 含 `Derive` 时才能通过 `ns_resolve` 发放子 Capability。不含 `Derive` 的绑定仍可作为不可导出的保管项，并可由 `ns_unbind` 取回。
 
-错误：`InvalidNamespace`、`MissingRight(NsBind)`、`InvalidPath`（`path` 非法或为空）、`Overlap`（存在终端祖先、同名条目或后代条目）、`InvalidCap`（`cap` 不是有效 CapId）、`NotHeld`、`StructuralCap`。
+错误：`InvalidNamespace`、`NotHeld`、`TargetDead`（目标 Namespace 已销毁）、`MissingRight(NsBind)`、`InvalidPath`（`path` 非法或为空）、`Overlap`（存在终端祖先、同名条目或后代条目）、`InvalidCap`（`cap` 不是有效 CapId）、`StructuralCap`。
 
 ### 11.4 `ns_unbind`
 
@@ -1272,14 +1261,14 @@ ns_unbind(ns_cap, path) -> CapId
 
 前置条件：
 
-- `ns_cap` 授权 `NsUnbind`；
+- `ns_cap` 由调用者持有、可用，授权 `NsUnbind`；
 - `path` 精确指向 `Bound(cap)`。
 
-成功动作：删除条目，并把 `cap` 从 Namespace 移到 `HeldBy(caller)`。
+成功动作：删除条目，把 `cap` 从 `InNamespace(ns, path)` 移到 `HeldBy(caller)`，并追加 `CapMoved(InNamespace(ns, path) → HeldBy(caller))` 与 `NsUnbound(ns, path, cap)` Audit 事件。
 
 被绑定 Capability 的目标可以已经销毁；`ns_unbind` 仍允许取回 stale token 以便 Audit 或清理。
 
-错误：`InvalidNamespace`、`MissingRight(NsUnbind)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Bound(cap)`）。目标已销毁不构成失败。
+错误：`InvalidNamespace`、`NotHeld`、`TargetDead`、`MissingRight(NsUnbind)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Bound(cap)`）。目标已销毁不构成失败。
 
 ### 11.5 `ns_mount`
 
@@ -1289,7 +1278,7 @@ ns_mount(destination_ns_cap, path, source_ns_cap) -> ()
 
 前置条件：
 
-1. `destination_ns_cap` 授权 `NsMount`；
+1. `destination_ns_cap` 由调用者持有、可用，授权 `NsMount`；
 2. `source_ns_cap` 由调用者持有、可用且指向 Namespace；
 3. `source_ns_cap` 具有 `NsResolve` 和 `Derive`；
 4. `path` 没有终端祖先、同名条目或后代条目；
@@ -1301,11 +1290,12 @@ ns_mount(destination_ns_cap, path, source_ns_cap) -> ()
 1. 从 `source_ns_cap` 派生权限恰为 `{NsResolve, Derive}` 的子 Capability；
 2. 子 Capability 直接放入 `InNamespace(destination, path)`；
 3. 建立 `Mount(child_cap)`；
-4. `source_ns_cap` 仍由调用者持有。
+4. `source_ns_cap` 仍由调用者持有；
+5. 追加 `CapDerived(child_cap, parent=source_ns_cap)`（`created_at` 指向该事件）与 `NsMounted(destination, path, child_cap)` Audit 事件。
 
 挂载明确使用 Capability，而不是裸 `NsId`。
 
-错误：`InvalidNamespace`、`MissingRight(NsMount)`、`InvalidCap`（`source_ns_cap` 不是有效 CapId）、`NotHeld`、`NotDelegable`（`source_ns_cap` 缺 `NsResolve`/`Derive`）、`InvalidPath`、`Overlap`（`path` 冲突）、`MountCycle`（新增 `destination → source` 边会形成 Mount 环）、`CrossNodeMount`（目标 Namespace 不在 `local_node`）。`MountCycle` 定义为本规范中“挂载边引入环”的失败标识；`CrossNodeMount` 定义为“目标 Namespace 不在 `local_node`”；它是防御性检查，由 W12 保证在良构状态中不可达。
+错误：`InvalidNamespace`、`NotHeld`、`TargetDead`、`MissingRight(NsMount)`、`InvalidCap`（`source_ns_cap` 不是有效 CapId）、`NotDelegable`（`source_ns_cap` 缺 `NsResolve`/`Derive`）、`InvalidPath`、`Overlap`（`path` 冲突）、`MountCycle`（新增 `destination → source` 边会形成 Mount 环）、`CrossNodeMount`（目标 Namespace 不在 `local_node`）。`MountCycle` 定义为本规范中“挂载边引入环”的失败标识；`CrossNodeMount` 定义为“目标 Namespace 不在 `local_node`”；它是防御性检查，由 W12 保证在良构状态中不可达。
 
 ### 11.6 `ns_unmount`
 
@@ -1315,12 +1305,12 @@ ns_unmount(ns_cap, path) -> ()
 
 前置条件：
 
-- `ns_cap` 授权 `NsUnmount`；
+- `ns_cap` 由调用者持有、可用，授权 `NsUnmount`；
 - `path` 精确指向 `Mount(cap)`。
 
-成功动作：删除挂载条目并删除挂载子 Capability 的位置；源 Namespace、父 Capability 和已经解析出去的子 Capability 均不受影响。即使源 Namespace 已销毁、挂载 Capability 已 stale，也允许清理。
+成功动作：删除挂载条目并删除挂载子 Capability 的位置；追加 `CapDropped(child_cap)` 与 `NsUnmounted(ns, path)` Audit 事件。源 Namespace、父 Capability 和已经解析出去的子 Capability 均不受影响。即使源 Namespace 已销毁、挂载 Capability 已 stale，也允许清理。
 
-错误：`InvalidNamespace`、`MissingRight(NsUnmount)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Mount(cap)`）。源 Namespace 已销毁、挂载 Capability 已 stale 均不构成失败。
+错误：`InvalidNamespace`、`NotHeld`、`TargetDead`、`MissingRight(NsUnmount)`、`InvalidPath`、`NotFound`（`path` 未精确指向 `Mount(cap)`）。源 Namespace 已销毁、挂载 Capability 已 stale 均不构成失败。
 
 ### 11.7 `ns_resolve`
 
@@ -1361,20 +1351,20 @@ ns_destroy(ns_cap) -> ()
 
 前置条件：
 
-- `ns_cap` 授权 `NsDestroy`；
+- `ns_cap` 由调用者持有、可用，授权 `NsDestroy`；
 - 该 Namespace 不是任何活动 Task 的结构性根 Namespace。
 
 成功动作：
 
 1. 删除 Namespace 内全部条目；
-2. 删除这些 Bound/Mount Capability 的位置；
+2. 删除这些 Bound/Mount Capability 的位置，并为每个被删除的位置追加 `CapDropped`；
 3. 从活动 Namespace 表删除目标；
 4. 指向该 Namespace、但位于其他容器中的 Capability 变为 stale token；
 5. 追加 `NsUnbound`/`NsUnmounted`（按条目类型）与 `ObjectDestroyed` Audit 事件。
 
 其他 Namespace 中指向它的挂载项不会被全局扫描删除；解析这些项会得到 `MountTargetDead`，管理者可随后 `ns_unmount`。这一选择避免销毁操作隐式改写无授权的其他 Namespace。
 
-错误：`InvalidNamespace`、`NotHeld`、`MissingRight(NsDestroy)`、`StructuralCap`（是活动 Task 的结构性根 Namespace）。
+错误：`InvalidNamespace`、`NotHeld`、`TargetDead`、`MissingRight(NsDestroy)`、`StructuralCap`（是活动 Task 的结构性根 Namespace）。
 
 ## 12. Exception / Upcall
 
@@ -1470,7 +1460,7 @@ Subscriber {
 }
 
 ExcSourceState = Active {
-                     kind:        ExceptionKind → Type     // 描述此源可产生的异常类别约束
+                     kind:        FiniteSet<ExceptionKindCtor>  // 单一类别的构造子集合；见 §12.6
                      subscribers: FiniteSet<Subscriber>
                  }
                | Destroyed
@@ -1481,10 +1471,10 @@ ExceptionSource {
 }
 ```
 
-`kind` 是此源的"类型签名"——不是具体的异常实例，而是一个约束，限定此源只能产生哪类 `ExceptionKind`。例如：
+`kind` 是此源的"类型签名"——不是具体的异常实例，而是一个构造子集合，限定此源只能产生哪类 `ExceptionKind`。例如：
 
-- 一个订阅了 `PageFault` 的源不能产生 `SyscallTrap`；
-- 一个订阅了 `ExternalInterrupt` 的源不能产生 `DivideError`。
+- `kind` 约束为 `PageFault` 的源不能产生 `SyscallTrap`；
+- `kind` 约束为 `ExternalInterrupt` 的源不能产生 `DivideError`。
 
 `kind` 在创建时固定，不可更改。这种类型安全性由内核在异常路由时强制——尝试在一个不匹配的源上触发异常是一项 panic/内核 bug，不应到达抽象状态机层面。
 
@@ -1544,7 +1534,7 @@ raise_exception(exc_source_id, kind) -> ()
 1. `exc_source_id` 指向活跃的 ExceptionSource；
 2. `kind` 与此源的 `kind` 类型兼容；
 3. 由 COSIR 细化层在合适的线性化点调用（例如页故障在 `iretq` 返回前、syscall trap 在 `syscall` 指令后）；
-4. 若 `kind` 是**硬件执行异常**（§12.2：`PageFault` / `GeneralProtectionFault` / `DivideError` / `InvalidOpcode` / `DoubleFault`），其 `faulting_task` 必须是 `Running` Task；其余类别的 `kind`（`SyscallTrap`、`ExternalInterrupt`、`TaskExit`）不触发状态迁移，无此约束。
+4. 若 `kind` 是**硬件执行异常**（§12.2：`PageFault` / `GeneralProtectionFault` / `DivideError` / `InvalidOpcode` / `DoubleFault`），其 `faulting_task` 必须是 `Running` 的 **CPU Task**（`kind = ComputeTask(CPU)`）；其余类别的 `kind`（`SyscallTrap`、`ExternalInterrupt`、`TaskExit`）不触发状态迁移，无此约束。
 
 成功动作：
 
@@ -1599,7 +1589,7 @@ exc_source_destroy(exc_source_cap) -> ()
 
 前置条件：
 
-- `exc_source_cap` 授权 `ExcSourceDestroy`。
+- `exc_source_cap` 由调用者持有、可用，并授权 `ExcSourceDestroy`。
 
 成功动作：
 
@@ -1613,7 +1603,7 @@ exc_source_destroy(exc_source_cap) -> ()
 
 **Faulted 任务的归宿。** 若某 `Faulted` Task 的 `pending_exc.source_id` 指向被销毁的源，则该 Task 保持 `Faulted` 且**不可再经 `exc_resume` 恢复**（`exc_resume` 的 active-source 前置永不满足）；它构成不可恢复终态，只能经 §8.2 的内核回收路径（`KernelActor`，无需 `task_cap`）回收。源销毁不改变这些 Task 的状态，也不产生额外通知。
 
-错误：`InvalidExcSource`、`NotHeld`、`MissingRight(ExcSourceDestroy)`。
+错误：`InvalidExcSource`、`NotHeld`、`TargetDead`、`MissingRight(ExcSourceDestroy)`。
 
 ### 12.7 与 Send/Recv 的关系
 
@@ -1676,7 +1666,7 @@ Exception 和 Send 是两个正交的通信维度：
 
 **恢复路径（`exc_resume`）：**
 
-- 页故障处理方检查 `faulting_vaddr` 与 `cause`，在用户态决定映射新页、复制 COW 页、重播故障指令、跳转处理程序或终止进程；内核只原子恢复一份经验证的异常上下文帧，不解释该策略。
+- 页故障处理方检查 `faulting_vaddr` 与 `cause`，在用户态决定映射新页、复制 COW 页、跳转处理程序或终止进程；**POSIR v1 的 `exc_resume` 只恢复调用者/细化层提供的已验证帧，不导出原 RIP/RSP，也不承诺重播原指令**（§2.2）。把故障现场导出给用户态并重播原指令属于 COSIR 细化层职责。
 - 恢复入口绑定原异常源、调用者的活跃订阅和调用者自身的待恢复异常。授权与帧语义完整定义于 §12.10，不存在另一个未定义的恢复 ABI。
 
 **当前抽象模型的显式范围：**
@@ -1726,6 +1716,7 @@ CapMinted / CapDerived / CapMoved / CapDropped
 SegmentMapped / SegmentUnmapped
 DeviceMapped / DeviceUnmapped
 TaskCreated / TaskStateChanged / TaskResumed / TaskDestroyed
+ExcSourceCreated / ExcSubscribed / ExcUnsubscribed / ExceptionRaised
 MessageSent / MessageReceived / MessageDropped
 TimerSet / TimerFired / TimerCancelled
 NsBound / NsUnbound / NsMounted / NsUnmounted / NsResolved
@@ -1735,7 +1726,7 @@ UpcallQueued / UpcallReceived
 VspaceProtChanged
 ```
 
-每条事件至少包含 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}`。`kind` 必须记录该操作涉及的对象 ID 和 Capability ID；Capability 位置变化必须记录旧位置与新位置（删除时为 `None`）；受保护操作必须记录用于授权的 Capability ID、被检查的权限和目标对象；创建类环境操作必须记录调用者；`NsResolved` 必须记录起始 Namespace Capability、规范化路径、按顺序经过的 Mount Capability、最终父 Capability和新 Capability。`MessageSent` 固定记录 MsgId、来源、目标、payload 长度和 Capability ID 列表，不记录明文 payload；内容摘要不属于抽象状态。
+每条事件至少包含 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}`；事件 ID 使用并推进 `next_event` 分配，保证 W13 的严格递增。`kind` 必须记录该操作涉及的对象 ID 和 Capability ID；Capability 位置变化必须记录旧位置与新位置（删除时为 `None`）；受保护操作必须记录用于授权的 Capability ID、被检查的权限和目标对象；具体地，`SegmentMapped`/`SegmentUnmapped`/`DeviceMapped`/`DeviceUnmapped` 记录 `seg_cap`/`dev_cap`，并在显式映射/拆除时记录 `task_cap`（`dev_destroy` 的隐式拆除由 `dev_cap` 授权，不要求 `task_cap`）；`VspaceProtChanged` 记录 `task_cap` 与被检查的 Segment Cap ID；创建类环境操作必须记录调用者；`NsResolved` 必须记录起始 Namespace Capability、规范化路径、按顺序经过的 Mount Capability、最终父 Capability和新 Capability。`MessageSent` 固定记录 MsgId、来源、目标、payload 长度和 Capability ID 列表，不记录明文 payload；跨节点投递时源端与目标端还记录 `transport_msg`（源端 `MsgId`）以关联两端事件。内容摘要不属于抽象状态。
 
 `audit` 与 `caps` 都是追加式的；活动对象销毁、Capability 丢弃或消息收取不得删除历史。
 
@@ -1753,7 +1744,7 @@ audit(cap) -> AuditTrace
 2. 每个链上 Capability 的铸造或派生事件；
 3. `cap` 自创建以来的全部位置变化；
 4. 目标对象的创建与销毁事件（若存在）；
-5. 若链上存在 `origin ≠ None` 的跨节点代理根，其源节点、源 CapId 与对应的传输接收审计事件。
+5. （保留）若未来启用跨节点代理根，其 `origin` 指向的源节点、源 CapId 与传输接收审计事件；v1 中该字段恒为 `None`。
 
 `audit` 是纯查询，不参与权限判定，也不改变状态。权限判定只依赖当前活动对象、Capability 描述和位置。
 
@@ -1765,6 +1756,9 @@ audit(cap) -> AuditTrace
 bootstrap(
     frame_universe,
     image_frames,
+    reserved_frames,          // 页表帧/pin 帧等细化层保留帧（W6）
+    gpu_pools,                // Map<GPUArch, FiniteSet<FrameId>>；缺省 arch 视为 ∅
+    gpu_reserved_frames,      // Map<GPUArch, FiniteSet<FrameId>>；缺省 arch 视为 ∅
     image_virtual_base,
     entry
 ) -> ()
@@ -1776,11 +1770,13 @@ Bootstrap 是唯一允许在没有 Task Actor 时铸造初始 Authority 的内�
 
 1. 当前状态严格等于 `EmptyState`；
 2. `image_frames` 非空、无重复且是输入 `frame_universe` 的子集；
-3. `image_virtual_base ≤ page_of(entry) < image_virtual_base + image_frames.length`。
+3. `reserved_frames` 无重复、是 `frame_universe` 的子集，且与 `image_frames` 不交；
+4. 对每个 `arch ∈ GPUArch`，`gpu_reserved_frames[arch] ⊆ gpu_pools[arch]`、无重复；不同 `arch` 的 `gpu_pools[arch]` 两两不交；
+5. `image_virtual_base ≤ page_of(entry) < image_virtual_base + image_frames.length`。
 
 成功动作：
 
-1. 初始化 `frame_universe`，设置 `free_frames = frame_universe \ image_frames`，并把 `local_node` 设为平台提供的本节点 ID；
+1. 初始化 `frame_universe` 与 `reserved_frames`（取自输入），设置 `free_frames = frame_universe \ (image_frames ∪ reserved_frames)`；把 `gpu_pools`/`gpu_reserved_frames` 规范化为以全部 `GPUArch` 为域的全函数（缺键取 ∅），设置 `gpu_frame_universe = gpu_pools`、`gpu_reserved_frames = gpu_reserved_frames`（输入），并对每个 `arch` 设置 `gpu_free_frames[arch] = gpu_pools[arch] \ gpu_reserved_frames[arch]`；把 `local_node` 设为平台提供的本节点身份（`NodeIdentity`）；`next_node` 保持 0（`NodeId` 是本地键，与 `local_node` 无关）；
 2. 使用 `image_frames` 创建只允许 `{R, X}` 的 image Segment，`pool = CPU`，使用并推进 `next_seg`；
 3. 创建空的 init Namespace，`node = local_node`，使用并推进 `next_ns`；
 4. 创建 init Task（`creator = KernelActor`、`kind = ComputeTask(CPU)`、`node = local_node`、`entry = entry`、`dev_vspace = ∅`、`status = Ready`），初始化 `pending_return = None`、`wait_request = None`、`pending_wait_result = None`、`pending_upcalls = []`、`pending_exc = None`、`kernel_resume_frame = None`，其余集合/可选字段为空集或 `None`，使用并推进 `next_task`，并对每个 image 页 `i` 建立 `vspace[image_virtual_base + i] = {segment = image_segment, offset = i, access = {R, X}}`；
@@ -1790,9 +1786,9 @@ Bootstrap 是唯一允许在没有 Task Actor 时铸造初始 Authority 的内�
 8. init Task 初始状态为 `Ready`；
 9. 设置 `booted = true`，并追加 `Bootstrapped`、`ObjectCreated`（image Segment、init Namespace）、`TaskCreated`（init）、每个 image 页的 `SegmentMapped` 与三条 Capability 铸造事件（§13.1）；事件顺序与内核 bootstrap 一致。
 
-Bootstrap 不向“不存在的调用者”返回 Capability。其创建的初始 Capability 直接位于 init Task。Bootstrap 后再次调用必须返回 `AlreadyBooted` 且状态不变。
+Bootstrap 不向“不存在的调用者”返回 Capability。其创建的初始 Capability 直接位于 init Task。Bootstrap 后再次调用必须返回 `AlreadyBooted`（本规范中表示“`booted = true` 后再次调用 bootstrap”）且状态不变。
 
-**失败语义：** 重复调用返回 `AlreadyBooted` 且状态不变；其余前置条件（状态严格为 `EmptyState`、`image_frames` 非空/无重复/是 `frame_universe` 子集、`entry` 位于 image 映射范围）仅在引导路径由 `KernelActor` 调用时检查，失败属平台引导输入/内核缺陷，不产生用户可观察错误，且不改变状态。
+**失败语义：** 重复调用返回 `AlreadyBooted` 且状态不变；其余前置条件（状态严格为 `EmptyState`、`image_frames`/`reserved_frames`/`gpu_pools` 的形状与不交性、`entry` 位于 image 映射范围）仅在引导路径由 `KernelActor` 调用时检查，失败属平台引导输入/内核缺陷，不产生用户可观察错误，且不改变状态。
 
 系统随后通过 `schedule(init)` 首次进入用户态。
 
@@ -1811,7 +1807,11 @@ Bootstrap 不向“不存在的调用者”返回 Capability。其创建的初�
 ### 15.2 I/O 对象类型
 
 ```text
-DeviceKind = MMIORegion | IOPortRange | DMABuffer | InterruptLine
+DeviceKind = MMIORegion(MMIORegion)
+           | IOPortRange(IOPortRange)
+           | DMABuffer(DMABuffer)
+           | InterruptLine(InterruptLine)
+// 载荷即 §15.4–§15.7 定义的对应记录；后文 `MMIORegion.x` 等是 `Device.kind` 载荷的简写。
 
 DevId : Nat
 ```
@@ -1827,7 +1827,7 @@ ObjectRef = Segment(SegId)
           | WaitObject(WaitObjectId) // 见 §5.6
 ```
 
-Node 是一等对象，定义于 §8.5；此处将其并入 ObjectRef 汇总，与 §19 总览列出的机制类别一致。`NodeId : Nat` 的定义见 §8.5。
+Node 是一等对象，定义于 §8.5；此处将本地 Node 键 `Node(NodeId)` 并入 ObjectRef 汇总。`NodeId`/`NodeIdentity` 的定义见 §3，`Node.peer` 使用 `NodeIdentity`。
 
 设备 Capability 的 `target` 使用 `Device(dev, kind)`；`kind` 在设备创建时固定，销毁后仍随 `CapRecord` 保留，供 W2 对 stale token 做类型检查。
 
@@ -1854,7 +1854,7 @@ MMIORegion {
 
 Device {
     creator: TaskId,
-    kind:    DeviceKind,
+    kind:    DeviceKind,   // 携带对应种类的完整记录
 }
 ```
 
@@ -1873,12 +1873,12 @@ dev_mmio_create(base_paddr, size_pages, allowed_access) -> dev_cap
 前置条件：
 
 1. `base_paddr` 和 `size_pages` 由平台的内存发现/设备枚举信息提供；`size_pages > 0`，`base_paddr` 按 `PAGE_SIZE` 对齐，且 `base_paddr + size_pages * PAGE_SIZE` 不溢出；
-2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不与任何现有活动设备的 MMIO 区域重叠，也不与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f) + PAGE_SIZE)` 重叠（覆盖 `free_frames`、活动 Segment 帧与 W6 保留帧，含页表帧；活动 `DMABuffer` 的帧属于 W6 保留帧，因此自动覆盖；W16.1）；
+2. 区间 `[base_paddr, base_paddr + size_pages * PAGE_SIZE)` 不与任何现有活动设备的 MMIO 区域重叠，也不与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f) + PAGE_SIZE)` 重叠（覆盖 `free_frames`、活动 Segment 帧与 `reserved_frames`（含页表帧）；活动 `DMABuffer` 的帧属于 `reserved_frames`，因此自动覆盖；W16.1）；
 3. `allowed_access` 非空且只含 `{R, W}`。
 
 成功动作：
 
-1. 创建 `Device` 对象，`kind = MMIORegion{...}`；
+1. 创建 `Device` 对象，`kind = MMIORegion(MMIORegion{base_paddr, size_pages, allowed_access})`；
 2. 铸造完整根 Capability，权限为 `{Derive, DevMMIOR/W (按 allowed_access), DevDestroy}`，放在 `HeldBy(caller)`；
 3. 追加设备创建与 Capability 铸造 Audit 事件。
 
@@ -1892,14 +1892,14 @@ dev_mmio_map(dev_cap, task_cap, target_base, access) -> ()
 
 前置条件：
 
-1. `dev_cap` 指向 `MMIORegion` 且授权对应 `access` 的 `DevMMIOR`/`DevMMIOW`；
+1. `dev_cap` 由调用者持有、可用，指向 `MMIORegion`，且授权对应 `access` 的 `DevMMIOR`/`DevMMIOW`；
 2. `access ⊆ region.allowed_access` 且非空；
-3. `task_cap` 授权目标 Task 的 `TaskManageVSpace`，且目标 Task 是 CPU Task；
-4. Task 的 `[target_base, target_base + size_pages)` 在 `vspace` 与 `dev_vspace` 中均未映射（跨表互斥，见 W16.4）。
+3. `task_cap` 由调用者持有、可用，授权目标 Task 的 `TaskManageVSpace`，且目标 Task 是 CPU Task；
+4. Task 的 `[target_base, target_base + size_pages)` 不溢出，且在 `vspace` 与 `dev_vspace` 中均未映射（跨表互斥，见 W16.4）。
 
-成功动作：对 region 中每个页在 Task 的 `dev_vspace` 建立 `DeviceMapping { device, offset, access }`（不是 `vspace` 的 Segment `PageMapping`；设备映射不拥有页帧，也不参与 W6），并为每页追加 `DeviceMapped(task_id, target_base + i, dev_cap)` Audit 事件。
+成功动作：对 region 中每个页在 Task 的 `dev_vspace` 建立 `DeviceMapping { device, offset, access }`（不是 `vspace` 的 Segment `PageMapping`；设备映射不拥有页帧，也不参与 W6），并为每页追加 `DeviceMapped(task_id, target_base + i, dev_cap, task_cap)` Audit 事件。
 
-错误：`InvalidDevice`（`dev_cap` 未指向有效设备；本规范中该标识统一表示“设备 Capability 参数无效”）、`MissingRight(DevMMIOR)`/`MissingRight(DevMMIOW)`（按 `access`）、`InvalidAccess`（`access` 为空或超出 `region.allowed_access`）、`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`MissingRight(TaskManageVSpace)`、`Overlap`（该区间已在 `vspace` 或 `dev_vspace` 任一表中被映射）。
+错误：`InvalidDevice`（`dev_cap` 未指向有效设备；本规范中该标识统一表示“设备 Capability 参数无效”）、`MissingRight(DevMMIOR)`/`MissingRight(DevMMIOW)`（按 `access`）、`InvalidAccess`（`access` 为空或超出 `region.allowed_access`）、`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`NotHeld`、`TargetDead`、`MissingRight(TaskManageVSpace)`、`OutOfBounds`、`Overlap`（该区间已在 `vspace` 或 `dev_vspace` 任一表中被映射）。
 
 ```text
 dev_mmio_unmap(task_cap, target_base, size_pages) -> ()
@@ -1907,13 +1907,13 @@ dev_mmio_unmap(task_cap, target_base, size_pages) -> ()
 
 前置条件：
 
-- `task_cap` 授权 `TaskManageVSpace`，且目标 Task 是 CPU Task；
+- `task_cap` 由调用者持有、可用，授权 `TaskManageVSpace`，且目标 Task 是 CPU Task；
 - `size_pages > 0`；
 - `[target_base, target_base + size_pages)` 中的每一页在 `dev_vspace` 中都有 `DeviceMapping`。
 
-成功动作：原子删除区间中的全部 `DeviceMapping`，并为每一页追加 `DeviceUnmapped(task_id, target_base + i)` Audit 事件。
+成功动作：原子删除区间中的全部 `DeviceMapping`，并为每一页追加 `DeviceUnmapped(task_id, target_base + i, task_cap)` Audit 事件。
 
-错误：`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`MissingRight(TaskManageVSpace)`、`NotMapped`、`ZeroSize`。
+错误：`InvalidTask`（`task_cap` 未指向有效 Task，或目标不是 CPU Task）、`NotHeld`、`TargetDead`、`MissingRight(TaskManageVSpace)`、`NotMapped`、`ZeroSize`。
 
 ### 15.5 I/O Port（仅 x86_64）
 
@@ -1937,11 +1937,11 @@ dev_ioport_create(base_port, port_count) -> dev_cap
 
 成功动作：
 
-1. 创建 `Device` 对象，`kind = IOPortRange{base_port, port_count}`；
+1. 创建 `Device` 对象，`kind = IOPortRange(IOPortRange{base_port, port_count})`；
 2. 铸造根 Capability，权限为 `{Derive, DevIORead, DevIOWrite, DevDestroy}`，放在 `HeldBy(caller)`；
 3. 追加设备创建与 Capability 铸造 Audit 事件。
 
-I/O port 授权在 Task 切换时由 COSIR 细化层通过 IOPL 或 TSS I/O bitmap 实现。抽象模型只建模"持有 Capability 的 Task 有权执行 I/O 指令"这一事实。
+I/O port 授权由 COSIR 细化层通过 IOPL 或 TSS I/O bitmap 实现，并在 Task 的 IOPortRange 持有集合发生变化（create/destroy/drop/send/derive）时立即同步，而不是只在 Task 切换时更新。抽象模型只建模"持有 Capability 的 Task 有权执行 I/O 指令"这一事实。
 
 **架构警告：** 在 x86_64 细化中，IOPL（I/O Privilege Level）和 TSS（Task State Segment）I/O bitmap 的授权粒度是 **per-Task** 而非 **per-port**。持有任一 `IOPortRange` Capability 的 Task 在获得 I/O 特权（IOPL=3 或 bitmap 清零对应位）后，硬件层面可以访问其 bitmap 覆盖范围内的所有端口。COSIR 细化层可以将 bitmap 精确配置到每个 Task 实际持有 Capability 的端口范围，确保"超出授权范围的端口指令触发 #GP 异常"。但这一精确性取决于 bitmap 的每端口位控制机制——如果平台在单个 bitmap 中覆盖了 Task 未授权的端口范围，则 Task 在硬件层面可能获得超出 Capability 授权的端口访问能力。
 
@@ -1975,8 +1975,8 @@ dev_dma_create(page_count, direction) -> dev_cap
 
 成功动作：
 
-1. 从 `free_frames` 移除选定的连续页帧；
-2. 创建 `DMABuffer` 对象，分配其页帧和 IO 地址；
+1. 从 `free_frames` 移除选定的连续页帧，并把它们加入 `reserved_frames`；
+2. 创建 `Device` 对象，`kind = DMABuffer(DMABuffer{frames, direction, io_addr})`，分配其页帧和 IO 地址；
 3. 铸造根 Capability，权限为 `{Derive, DevDMAR (if DMAFromDevice/双向), DevDMAW (if DMAToDevice/双向), DevDestroy}`，放在 `HeldBy(caller)`；
 4. 页帧被清零（由平台负责通过 coherent 手段完成）；
 5. 追加对象创建、页帧分配与 Capability 铸造 Audit 事件。
@@ -2009,7 +2009,7 @@ dev_irq_create(irq_number) -> dev_cap
 成功动作：
 
 1. 创建一个 `ExcSource`，`kind` 约束为 `ExternalInterrupt`；
-2. 创建 `Device` 对象，`kind = InterruptLine{irq_number, exc_source_id}`；
+2. 创建 `Device` 对象，`kind = InterruptLine(InterruptLine{irq_number, exc_source_id})`；
 3. 铸造根 Capability，权限为 `{Derive, DevInterruptSubscribe, DevDestroy}`，放在 `HeldBy(caller)`；
 4. 将权限恰为 `{Derive, ExcSubscribe}` 的 Capability 放在 `HeldBy(caller)`，使创建者可以自行委托中断订阅；该 Capability 不含 `ExcSourceDestroy`，关联 `ExcSource` 的生命周期绑定到设备，只能经 `dev_destroy` 销毁，从而保持 W16.3；
 5. 追加 `ExcSource`/设备对象创建与 Capability 铸造 Audit 事件。
@@ -2027,13 +2027,13 @@ dev_irq_create(irq_number) -> dev_cap
 dev_irq_mask(dev_cap) / dev_irq_unmask(dev_cap) -> ()
 ```
 
-前置条件：持有 `DevInterruptSubscribe`。
+前置条件：`dev_cap` 由调用者持有、可用，指向 `InterruptLine`，并含 `DevInterruptSubscribe`。
 
 成功动作：在 COSIR 细化层，这控制中断控制器的屏蔽位。抽象状态机不建模具体的屏蔽状态——它只建模"订阅者仍然可以接收通知"这一事实。
 
-错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(DevInterruptSubscribe)`。
+错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`TargetDead`、`MissingRight(DevInterruptSubscribe)`。
 
-`dev_irq_mask`/`dev_irq_unmask` 是 COSIR 细化层操作：它们改变中断控制器屏蔽位，不改变本规范的抽象 `KernelState`，因此不计入 §19 的 46 项 POSIR 公开操作。上述前置与错误描述细化层在改变屏蔽状态前必须检查的授权边界。
+`dev_irq_mask`/`dev_irq_unmask` 是 COSIR 细化层操作：它们改变中断控制器屏蔽位，不改变本规范的抽象 `KernelState`，因此不计入 §19 的 47 项 POSIR 公开操作。上述前置与错误描述细化层在改变屏蔽状态前必须检查的授权边界。
 
 ### 15.8 设备销毁
 
@@ -2041,18 +2041,18 @@ dev_irq_mask(dev_cap) / dev_irq_unmask(dev_cap) -> ()
 dev_destroy(dev_cap) -> ()
 ```
 
-前置条件：`dev_cap` 授权 `DevDestroy`。
+前置条件：`dev_cap` 由调用者持有、可用，并授权 `DevDestroy`。
 
 成功动作取决于设备类型：
 
 - **MMIORegion：** 删除所有 Task `dev_vspace` 中指向该设备的 `DeviceMapping`，为每个被删除的映射追加 `DeviceUnmapped`，并追加 `ObjectDestroyed`；删除设备对象。该拆除是**内核授权的隐式 unmap 例外**：设备销毁必然使这些映射失效，故无需调用者持有各目标 Task 的 `TaskManageVSpace`（§17.3），也无需先经 `dev_mmio_unmap`。与 `memseg_destroy` 要求先 unmap（`StillMapped`）不同，原因是 `DeviceMapping` 不指向 Segment、不拥有页帧（§15.4），其失效不涉及帧归属或数据泄漏；拆除后对这些 `VirtPage` 的访问按“未映射”处理（细化层典型表现为 `PageFault`，§12.9）；
-- **IOPortRange：** 释放端口范围，追加 `ObjectDestroyed`；删除设备对象；
-- **DMABuffer：** 细化层义务（§15.6，不表现为 POSIR 迁移）：先停止设备对该缓冲区的 DMA 并拆除其 IOMMU 映射，确保不存在 in-flight 写入窗口；随后成功动作为归还全部页帧到 `free_frames`，追加 `ObjectDestroyed`，再删除设备对象。清零由细化层保证（字节内容不属于 POSIR 状态），POSIR 可观察的结果是该帧重新出现在 `free_frames` 中（对齐 W16.2），从而不存在旧 DMA 数据的授权读取路径；
+- **IOPortRange：** 删除对象前，细化层必须撤销该端口范围在所有 Task 的 IOPL/TSS bitmap 中的授权（不等 Task 切换）；随后释放端口范围，追加 `ObjectDestroyed`，删除设备对象；
+- **DMABuffer：** 细化层义务（§15.6，不表现为 POSIR 迁移）：先停止设备对该缓冲区的 DMA 并拆除其 IOMMU 映射，确保不存在 in-flight 写入窗口；随后成功动作为从 `reserved_frames` 移除全部页帧并归还 `free_frames`，追加 `ObjectDestroyed`，再删除设备对象。清零由细化层保证（字节内容不属于 POSIR 状态），POSIR 可观察的结果是该帧重新出现在 `free_frames` 中（对齐 W16.2），从而不存在旧 DMA 数据的授权读取路径；
 - **InterruptLine：** 同时销毁关联的 `ExcSource`（所有订阅被终止，但排队的通知保留；该源的 Capability 全部变为 stale token，同 §12.6），为关联 `ExcSource` 与设备各追加 `ObjectDestroyed`；删除设备对象。
 
 销毁后的设备 Capability 变为 stale token。
 
-错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`MissingRight(DevDestroy)`。
+错误：`InvalidDevice`、`NotHeld`（不在 `HeldBy(caller)`）、`TargetDead`、`MissingRight(DevDestroy)`。
 
 ### 15.9 现有对象模型的扩展
 
@@ -2075,9 +2075,9 @@ KernelState {
 
 新增不变量（对应 §16 全局良构不变量中的 W16，以下为 W16 的四个子条件）：
 
-**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域之间、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；MMIO 区域不得与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f)+PAGE_SIZE)` 重叠（包括 `free_frames`、任何活动 Segment 的帧与 W6 保留帧，含页表帧）。DMA 帧的隔离由 W16.2 与 W6 规定。
+**W16.1 — 设备物理资源唯一：** 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域之间、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；MMIO 区域不得与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f)+PAGE_SIZE)` 重叠（包括 `free_frames`、任何活动 Segment 的帧与 `reserved_frames`，含页表帧）。DMA 帧的隔离由 W16.2 与 W6 规定。
 
-**W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；销毁时必须归还其来源池（§7.5）。清零是细化层义务（§15.6），不进入 POSIR 状态。
+**W16.2 — DMA 帧隔离：** DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中，且属于 `reserved_frames`；销毁时必须从 `reserved_frames` 移除并归还来源池（§7.5/§15.8）。清零是细化层义务（§15.6），不进入 POSIR 状态。
 
 **W16.3 — IRQ 事件源有效：** 每个 `InterruptLine` 的 `exc_source` 指向活动 `ExcSource`，且其 `kind` 约束为 `ExternalInterrupt`。
 
@@ -2097,7 +2097,7 @@ KernelState {
 
 ### W1 — ID 新鲜且不复用
 
-所有活动 ID 和历史 ID 都小于对应 `next_*`；分配只使用当前 `next_*`，随后严格递增。
+所有**本节点分配的**活动 ID 和历史 ID 都小于对应 `next_*`；分配只使用当前 `next_*`，随后严格递增。外来引用（`Task.remote_id`、`Node.peer`、`origin` 中的远端 CapId/NodeIdentity 等）不参与本地 ID 新鲜性。
 
 ### W2 — Capability 描述良构
 
@@ -2106,7 +2106,7 @@ KernelState {
 - 父子目标相同；
 - `child.rights ⊆ parent.rights`；
 - `p < child`；
-- `origin = Some((node, cap))` 时必有 `parent = None`，且存在记录该跨节点传输/接收的审计事件；`origin` 仅供溯源，不参与本节点授权判定。
+- `origin` 在 v1 中恒为 `None`；若未来启用，`origin = Some((node, cap))` 时必有 `parent = None`，且存在记录该跨节点传输/接收的审计事件；`origin` 仅供溯源，不参与本节点授权判定。
 
 ### W3 — Capability 单一位置
 
@@ -2115,7 +2115,7 @@ KernelState {
 ### W4 — 容器与位置双向一致
 
 - `HeldBy(t)` 要求 Task `t` 活动；
-- `InTransit(from, to)`：`from` 若形如 `HeldBy(t)`，则 `t` 是本节点活动 Task；本地 Task `t` 销毁时，`task_destroy` 原子中止以 `t` 为 `from` 的在途传输（§8.2 步骤 4）。`to` 若形如 `HeldBy(t)`，在本节点状态中必须指向本节点活动 Task（跨节点接收方由 `RemoteProxy` 表示）；目标节点上的实际接收位置不由本节点状态判定。以本节点 Task `t` 为 `to` 的在途传输在目标确认时因目标无效被拒，按 §8.5 回退到源位置（源活动时）或丢弃（§8.2）；
+- `InTransit(from, to)`（POSIR v1 不产生，以下规则保留）：`from` 若形如 `HeldBy(t)`，则 `t` 是本节点活动 Task；本地 Task `t` 销毁时，`task_destroy` 原子中止以 `t` 为 `from` 的在途传输（§8.2 步骤 4）。`to` 若形如 `HeldBy(t)`，在本节点状态中必须指向本节点活动 Task（跨节点接收方由 `RemoteProxy` 表示）；目标节点上的实际接收位置不由本节点状态判定。以本节点 Task `t` 为 `to` 的在途传输在目标确认时因目标无效被拒，按 §8.5 回退到源位置（源活动时）或丢弃（§8.2）；
 - `InMessage(m)` 当且仅当活动 Message `m` 的 `caps` 恰好包含该 ID 一次；
 - `InNamespace(n,p)` 当且仅当 Namespace `n` 的 `entries[p]` 引用该 ID；
 - 一个 Message 的 Capability 列表无重复；
@@ -2134,9 +2134,9 @@ KernelState {
 
 ### W6 — 物理页唯一归属
 
-`frame_universe` 划分为三类**两两不交**的帧：`free_frames`、所有活动 CPU Segment 的 frame 集合、以及**保留帧**集合；三者并集等于 `frame_universe`。保留帧由以下来源显式给出，而非事后取补集：所有活动 `DMABuffer` 的 `frames` 之并（§15.6），加上细化层从 `frame_universe` 分配、当前未映射进任何活动 Segment 的页表帧。保留帧必须与 `free_frames` 及所有活动 Segment 帧不交。
+`frame_universe` 划分为三类**两两不交**的帧：`free_frames`、所有活动 CPU Segment 的 frame 集合、以及 `reserved_frames`；三者并集等于 `frame_universe`。`reserved_frames` 是 `KernelState` 的显式集合，由 Bootstrap 输入给出，至少包含所有活动 `DMABuffer` 的 `frames` 之并（§15.6）与细化层为页表/pin 保留的帧；细化层分配或归还保留帧时，必须同步从 `free_frames` 移除或归还，而不是事后取补集。W16.1 用 `reserved_frames` 判定 MMIO 与页表帧/pin 帧的重叠。
 
-对每个 GPU 架构 `arch`：`gpu_frame_universe[arch]` 同样划分为三类互不相交的帧——`gpu_free_frames[arch]`、该架构活动 GPU Segment 的 frame 集合、以及保留帧（该架构上从该池分配的 pin 帧等；无则为空集）；三者并集等于该池。不同 `arch` 和 CPU 池之间页帧完全隔离。
+对每个 GPU 架构 `arch`：`gpu_frame_universe[arch]` 同样划分为三类互不相交的帧——`gpu_free_frames[arch]`、该架构活动 GPU Segment 的 frame 集合、以及 `gpu_reserved_frames[arch]`（该架构上从该池分配的 pin 帧等；无则为空集）；三者并集等于该池。不同 `arch` 和 CPU 池之间页帧完全隔离。
 
 ### W7 — 虚拟映射有效
 
@@ -2155,13 +2155,13 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W9 — 调度状态一致
 
-- `Running` 的 CPU Task 数量 ≤ CPU 核数；每个 CPU 核至多运行一个 Task；
+- `Running` 的 CPU Task 数量 ≤ `cpu_core_count`（平台常量，§3）；每个 CPU 核至多运行一个 CPU Task（核归属不在抽象状态中，由细化层投影保持，§8.4）；
 - GPU/NPU/FPGA Task 的 `Running` 语义由 COSIR 细化定义——同一物理 GPU 上可同时有多个 kernel 在多个 stream 上执行；
 - `BlockedRecv` Task 的邮箱为空、`pending_return = None`、`wait_request = None`、`pending_wait_result = None`；非 CPU Task 不能进入 `BlockedRecv`；
 - 每个 `Running` Task 的 `node = local_node` 且 `kind ≠ RemoteProxy`；`RemoteProxy` 状态恒为 `Ready`，且其 `pending_return`/`wait_request`/`pending_wait_result`/`pending_upcalls`/`pending_exc`/`kernel_resume_frame` 均为空；
 - `BlockedWait` Task 必须为 CPU Task，`wait_request ≠ None`，`pending_return = None`，`pending_wait_result = None`；其邮箱内容不受等待影响；
 - `wait_request ≠ None` 当且仅当 Task 状态为 `BlockedWait`；
-- `Faulted` Task 的 `pending_exc ≠ None`，且不是 `Running`/`Ready`/`BlockedRecv`/`BlockedWait`；非 `Faulted` Task 的 `pending_exc = None`；
+- `Faulted` Task 的 `pending_exc ≠ None`，且不是 `Running`/`Ready`/`BlockedRecv`/`BlockedWait`；非 `Faulted` Task 的 `pending_exc = None`；非 CPU Task 不得为 `Faulted`，其 `pending_exc` 与 `kernel_resume_frame` 恒为空；
 - `Faulted` Task 的 `pending_return = None`、`pending_wait_result = None`、`wait_request = None`；其邮箱内容不受故障影响（已排队消息保留，回收时由 `task_destroy` 一并删除）；
 - `kernel_resume_frame ≠ None` 蕴含该 Task 曾成功执行 `exc_resume` 且自那以后尚未进入 `Running`；
 - `pending_return ≠ None` 的 Task 必须为 `Ready`；`pending_wait_result ≠ None` 的 Task 必须为 `Ready`；
@@ -2184,7 +2184,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 - 每个活动 Timer 的接收 Task 活动；`Pending` Timer 的 `deadline > now`；
 - 每个 `Fired` Timer 恰有一个 `TimerFired` 事件和一个 origin 为 `FromKernel(TimerFired(timer_id))` 的 `MessageSent`；其 `notification` 等于该发送事件的 MsgId；
 - `Cancelled` Timer 没有在取消后产生 Timer 通知；
-- Timer 状态不会从 `Fired/Cancelled` 回到 `Pending`。
+- Timer 状态不会从 `Fired/Cancelled` 回到 `Pending`；已删除 Timer 的已排队/已交付通知不受本节约束，可继续引用该 TimerId。
 
 ### W12 — Namespace 一致性
 
@@ -2208,7 +2208,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 - `booted = false` 时不存在用户可执行迁移；
 - `booted = true` 后不能再次成功 Bootstrap；
-- 所有无父 Capability 都来自 Bootstrap、某个对象创建操作（含内部迁移 `attach_remote_task`），或跨节点传输接收时铸造的代理根（`origin ≠ None`，§4.2/§8.5）。
+- 所有无父 Capability 都来自 Bootstrap、某个对象创建操作或内部迁移 `attach_remote_task`；`origin` 是保留字段，POSIR v1 恒为 `None`（跨节点 Capability 委托不在 v1 内，§2.2/§8.5）。
 
 ### W15 — ExceptionSource 一致性
 
@@ -2220,15 +2220,15 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### W16 — Device 物理资源唯一
 
-- 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域之间、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；MMIO 区域不得与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f)+PAGE_SIZE)` 重叠（包括 `free_frames`、任何活动 Segment 的帧与 W6 保留帧，含页表帧）；DMA 帧的隔离由 W16.2 与 W6 规定；
-- DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中；
+- 所有活动设备的物理资源按资源空间分别两两不交：物理地址空间中的 MMIO 区域之间、I/O port 空间中的 I/O port 范围、IRQ 号空间中的 IRQ 号；MMIO 区域不得与 `frame_universe` 中任何帧 `f` 的物理区间 `[frame_paddr(f), frame_paddr(f)+PAGE_SIZE)` 重叠（包括 `free_frames`、任何活动 Segment 的帧与 `reserved_frames`，含页表帧）；DMA 帧的隔离由 W16.2 与 W6 规定；
+- DMA 缓冲区的帧不在 `free_frames` 中，也不在任何活动 Segment 中，且必须属于 `reserved_frames`；
 - 设备销毁时，其占用的所有物理资源必须被释放（MMIO 区域移除全部 `dev_vspace` 映射、DMA 帧归还来源池、IRQ 号释放）；其中“先停 DMA/拆 IOMMU 并清零”是细化层义务（§15.6），不进入 POSIR 不变量；
 - **W16.4 — 设备映射有效：** 每个 `DeviceMapping` 指向活动 MMIORegion 设备，`offset` 位于该 region 的页范围内，`access` 非空且不超过 region 的 `allowed_access`；同一 Task 的任一 `VirtPage` 不得同时出现在 `vspace` 与 `dev_vspace` 中。
 
 ### W17 — WaitObject 与等待一致性
 
 - 每个活动 `WaitObject` 的 `waiters` 中每个 `TaskId` 都指向活动 CPU Task，且该 Task 状态为 `BlockedWait`、`wait_request.entries` 包含该 WaitObject；
-- 每个 `BlockedWait` Task 的 `wait_request.entries` 非空、无重复；每一项指向活动 WaitObject，且该 WaitObject 的 `waiters` 包含此 Task；
+- 每个 `BlockedWait` Task 的 `wait_request.entries` 非空、无重复；每一项指向活动 WaitObject，且 `observed_generation ≤ 该对象当前 generation`，该 WaitObject 的 `waiters` 包含此 Task；
 - `wait_request != None` 当且仅当 Task 状态为 `BlockedWait`；
 - `BlockedWait` Task 的 `pending_return = None` 且 `pending_wait_result = None`；
 - `BlockedWait` Task 的 `wait_request.deadline` 要么为 `None`，要么严格大于 `now`；
@@ -2250,19 +2250,19 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### 17.2 Capability 安全
 
-**不可伪造：** 任意可达状态中，所有 `present` Capability 都存在 `CapRecord`，并可沿 `parent` 链到达 Bootstrap、对象创建铸造事件，或到达一个跨节点代理根；代理根满足 `origin ≠ None`，再沿 `origin` 到达其传输接收审计事件并回溯源节点。不存在无法溯源的 Capability。
+**不可伪造：** 任意可达状态中，所有 `present` Capability 都存在 `CapRecord`，并可沿 `parent` 链到达 Bootstrap 或对象创建/`attach_remote_task` 铸造事件。不存在无法溯源的 Capability。
 
 **权限单调：** 任意派生链上，后代权限始终是祖先权限的子集。
 
 **位置唯一：** 一个 `CapId` 不会同时被两个 Task 持有，也不会同时位于 Task、Message 或 Namespace。
 
-**无隐式复制：** 除 `cap_derive`、`ns_resolve`、`ns_mount` 和对象创建中的显式派生/铸造外，任何操作都不会增加 `CapRecord` 数量。
+**无隐式复制：** 除 `cap_derive`、`ns_resolve`、`ns_mount`、`node_attach` 和对象创建/`attach_remote_task` 中的显式派生/铸造外，任何操作都不会增加 `CapRecord` 数量。
 
 ### 17.3 Task 与内存隔离
 
-**地址空间完整性：** 除 Bootstrap、新 Task 创建、目标 Task 销毁，以及持有该目标 `TaskManageVSpace` 的调用（含 `memseg_map`、`memseg_unmap`、`memseg_protect`、`dev_mmio_map`/`dev_mmio_unmap`/`dev_destroy` 对 `vspace` 或 `dev_vspace` 的改动）外，任何迁移都不能改变目标 Task 的 `vspace` 或 `dev_vspace`。
+**地址空间完整性：** 除 Bootstrap、新 Task 创建、目标 Task 销毁，以及持有该目标 `TaskManageVSpace` 的调用（`memseg_map`、`memseg_unmap`、`memseg_protect`、`dev_mmio_map`/`dev_mmio_unmap` 对 `vspace` 或 `dev_vspace` 的改动）外，任何迁移都不能改变目标 Task 的 `vspace` 或 `dev_vspace`。`dev_destroy` 对 `dev_vspace` 的隐式拆除是唯一例外：它由 `DevDestroy` 授权，不要求 `TaskManageVSpace`（§15.8）。
 
-**映射授权：** 除 Bootstrap 与新 Task 的初始代码映射外，每个新映射同时具有 Segment 访问权限和目标 Task 地址空间管理权限的成功检查记录；初始映射分别由 Bootstrap 可信迁移和 `task_create` 的代码 Segment Capability 授权。
+**映射授权：** 除 Bootstrap 与新 Task 的初始代码映射外，每个新 **Segment 映射**同时具有 Segment 访问权限和目标 Task 地址空间管理权限的成功检查记录；初始映射分别由 Bootstrap 可信迁移和 `task_create` 的代码 Segment Capability 授权。`DeviceMapping` 的授权是 `DevMMIOR/W` + `TaskManageVSpace`（§15.4），不是 Segment 权限。
 
 **条件式硬件隔离：** 若具体机器保证 Task 只能通过其 `vspace` 访问物理页，则没有相应映射的 Task 不能访问该 Segment。该结论依赖 MMU/IOMMU 细化假设，不由本状态机单独推出。
 
@@ -2285,8 +2285,8 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### 17.5 消息原子性
 
-- 发送成功时，payload 与全部 Capability token 作为一个整体进入队列或直接交付；
-- 发送失败时，调用者仍持有全部 token，且没有 Message 被创建；
+- **本地**发送成功时，payload 与全部 Capability token 作为一个整体进入队列或直接交付；跨节点发送成功仅表示消息已交给本地 transport，不表示已送达（§8.5）；
+- 本地发送失败时，调用者仍持有全部 token，且没有 Message 被创建；跨节点发送不转移 token，因此目标端拒绝只需异步丢弃消息，源端无 token 可回滚；
 - 接收成功时，Message 删除与全部 token 移入接收方是同一原子迁移；
 - token 的目标可在传输期间销毁，因此“原子交付”不等于“接收时仍可用”。
 
@@ -2312,7 +2312,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 - 只有持有 MMIO 区域 Capability 的 Task 可以映射该区域到自己的地址空间；
 - I/O port 访问在 Task 切换时由 COSIR 细化层基于持有的 IOPortRange Capability 授权；
 - DMA 缓冲区页帧被隔离于通用页池——不能通过错误的 `memseg_create` 或 Segment 操作意外访问；
-- IRQ 订阅通过 ExcSource 机制保护——只有持有 `DevInterruptSubscribe` 的 Task 可通过 `exc_subscribe` 订阅对应 IRQ 源；
+- IRQ 订阅通过 ExcSource 机制保护——可订阅性由 `dev_irq_create` 委托的、指向该源的、持有且可用的 `ExcSubscribe` Capability 授权（可再委托）；`DevInterruptSubscribe` 只授权 `dev_irq_mask`/`dev_irq_unmask`，不是订阅的必要条件；设备销毁时源与委托链一并失效；
 - 设备销毁时，所有与该设备相关的权威资源被释放且不可被原 Capability 重新激活。
 
 ### 17.9 WaitObject、定向 upcall 与权限变更安全
@@ -2347,7 +2347,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 18. SMP 核间同步：spinlock/qspinlock 实现、per-CPU 数据结构、RCU 或等效的无锁读路径、核间 TLB shootdown 协议（IPI 发送与确认）；
 19. 多物理内存池管理：GPU 显存帧池 (`gpu_frame_universe`) 与 CPU 帧池的隔离、PCIe BAR 映射一致性、GPU unified memory 页迁移（HMM）与 CPU-GPU 缓存一致性协议；
 20. GPU kernel 调度：CUDA stream / Vulkan command buffer 的接口抽象、kernel 提交与完成中断的集成、GPU 多 stream 并发的安全隔离；
-21. 跨节点网络传输：Capability 序列化/反序列化格式、网络协议（TCP/RDMA/自定义 L4）、`InTransit` 的超时与回退策略、节点发现与健康检查协议；
+21. 跨节点网络传输：消息数据序列化、网络协议（TCP/RDMA/自定义 L4）、节点身份与本地 Node 键的绑定、节点发现与健康检查；Capability 跨节点委托的序列化/回退不属于 v1（§2.2）；
 22. 物理页帧分配器的数据结构选择（buddy allocator / bitmap / free list）及其对碎片化和分配延迟的影响；
 23. ID 计数器溢出后的内核行为（panic / 返回 `ResourceExhausted` / 其他），必须在 COSIR 细化层定义，不能依赖回绕语义；
 24. `MAX_MSG_SIZE`、`MAX_CAPS_PER_MSG`、`MAX_PATH_COMPONENTS` 等常量的具体值，根据目标平台的缓存行大小、内核内存预算和性能目标确定；
@@ -2445,10 +2445,10 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 | Audit         | `audit`                                                        | 纯查询的派生与移动溯源             |
 | Exception     | `exc_source_create / exc_subscribe / exc_unsubscribe / exc_resume / exc_source_destroy` | 异步事件订阅、硬件异常路由与故障恢复 |
 | Device        | `dev_mmio_create / dev_mmio_map / dev_mmio_unmap / dev_ioport_create / dev_dma_create / dev_irq_create / dev_destroy` | 设备 MMIO、IRQ 和 DMA 的对象能力化封装 |
-| Node          | `node_create / node_destroy`                                   | 跨节点通信节点对象              |
+| Node          | `node_create / node_attach / node_destroy`                     | 跨节点通信节点与出站代理        |
 | Bootstrap     | `bootstrap`                                                    | 唯一的初始 Authority 来源      |
 
-> **范围提示：** 本表统计当前冻结的 12 类常规机制。通用等待和定向 upcall 已于 2026-10-14 采纳；进程/线程共享模型、I/O 完成协议和文件/流边界仍未采纳或暂缓，见 §22（信息性附录）。`attach_remote_task` 是跨节点细化层的 `KernelActor` 内部迁移，与 `schedule`/`advance_time` 同类，不计入 46 项公开操作。`dev_irq_mask`/`dev_irq_unmask` 是 COSIR 细化层操作，只改变中断控制器屏蔽状态、不改变抽象状态，同样不计入 46 项（§15.7）。
+> **范围提示：** 本表统计当前冻结的 12 类常规机制。通用等待和定向 upcall 已于 2026-10-14 采纳；进程/线程共享模型、I/O 完成协议和文件/流边界仍未采纳或暂缓，见 §22（信息性附录）。`attach_remote_task` 是跨节点细化层的 `KernelActor` 内部迁移，与 `schedule`/`advance_time` 同类，不计入 47 项公开操作。`dev_irq_mask`/`dev_irq_unmask` 是 COSIR 细化层操作，只改变中断控制器屏蔽状态、不改变抽象状态，同样不计入 47 项（§15.7）。
 
 ## 20. 细化层：MachineState 与抽象函数
 
@@ -2517,7 +2517,7 @@ abstract : MachineState → POSIRState
 
 本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
 
-**时间与 Audit 细化边界**：`cosir` 的 POSIR 状态已建模 §4 的 `now`/`next_event`，以及 §13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}` 信封（不含伪造时钟：字段即规范既有定义）。但 `MachineState` 无时钟来源，α 取 `now = 0`，且本探针**未建模** `time_now`/`time_advance`/Timer 推进，故运行时 `at` 恒为 0（`EventId` 仍随事件严格递增，W13）。真实时间语义属 §18.0 边界清单 #5 的待证义务。
+**时间与 Audit 细化边界**：`cosir` 的 POSIR 状态已建模 §4 的 `now`/`next_event`，以及 §13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}` 信封（不含伪造时钟：字段即规范既有定义）。但 `MachineState` 无时钟来源，α 取 `now = 0`，且本探针**未建模** `time_now`/`time_advance`/Timer 推进，故运行时 `at` 恒为 0（`EventId` 仍随事件严格递增，W13）。真实时间语义属 §18.0 边界清单 #5 的待证义务。**保留帧与 GPU 池的细化边界**：当前 `cosir` 的 `MachineState`/α 尚未投影 `reserved_frames`/`gpu_frame_universe`/`gpu_reserved_frames`；它们的状态语义以 §5/§14/§16 为准，细化模型待后续切片补齐，本节不宣称已覆盖。
 
 ### 20.5 MemorySegment host 四级索引树 ↔ vspace refinement design
 
@@ -2628,7 +2628,8 @@ wait_objects(
 1. 调用者是 Running CPU Task；
 2. `wait_caps` 与 `observed_generations` 长度相同、非空；
 3. 两个列表按下标一一对应，且没有两个 `wait_caps` 指向同一个 WaitObject；
-4. 每个 Capability 由调用者持有，其 `CapRecord` 指向 `WaitObject`，并包含 `WaitWait`；任一目标已销毁则返回 `TargetDead`。
+4. 每个 Capability 由调用者持有，其 `CapRecord` 指向 `WaitObject`，并包含 `WaitWait`；任一目标已销毁则返回 `TargetDead`；
+5. 对每个 `i`，`observed_generations[i] ≤ wait_objects[target(wait_caps[i])].generation`（不允许超前观测）。
 
 设输入条目为 `entry_i = { object: target(wait_caps[i]), observed_generation: observed_generations[i] }`。
 
@@ -2644,7 +2645,7 @@ wait_objects(
 
 若立即返回 `WaitSatisfied`、`WaitTimedOut` 或 `WaitAlerted`，调用者保持 `Running`，不写入 `pending_wait_result` 与 `wait_request`。
 
-错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`、`DuplicateWaitObject`、`EmptyWaitSet`（`wait_caps` 为空）、`LengthMismatch`（`wait_caps` 与 `observed_generations` 长度不一致）。`DuplicateWaitObject` 定义为本规范中“一次 `wait_objects` 中重复等待同一 WaitObject”的失败标识；`EmptyWaitSet` 定义为“等待集合为空”的失败标识；`LengthMismatch` 定义为“两个应等长的输入列表长度不一致”的失败标识。非 CPU Task 的调用由 §6.1 的 Actor 模型排除，不构成可返回错误。
+错误：`InvalidWaitObject`、`NotHeld`、`MissingRight(WaitWait)`、`TargetDead`、`DuplicateWaitObject`、`EmptyWaitSet`（`wait_caps` 为空）、`LengthMismatch`（`wait_caps` 与 `observed_generations` 长度不一致）、`InvalidGeneration`（观测值超前于当前 generation）。`InvalidGeneration` 定义为本规范中“`observed_generation` 大于对应 WaitObject 的当前 `generation`”的失败标识。`DuplicateWaitObject` 定义为本规范中“一次 `wait_objects` 中重复等待同一 WaitObject”的失败标识；`EmptyWaitSet` 定义为“等待集合为空”的失败标识；`LengthMismatch` 定义为“两个应等长的输入列表长度不一致”的失败标识。非 CPU Task 的调用由 §6.1 的 Actor 模型排除，不构成可返回错误。
 
 #### 21.2.2 `signal_object`
 

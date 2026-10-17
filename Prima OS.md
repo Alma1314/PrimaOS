@@ -774,7 +774,7 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - 每项操作有明确成功与失败语义；
 - 形式化工具能够表达状态与迁移。
 
-阶段 0 的逐操作成功/失败语义已由 SPEC-054、DOC-007 增量覆盖报告 SPEC-134、SPEC-139 与 SPEC-140 更正核对；现行 §19 常规操作面为 46 项（旧 26/34/35 口径作废）。Lean 可执行状态模型见 SPEC-019。S0-X1 仍待组织级第三方独立复核；SPEC-139 的 9 项与 SPEC-140 的 12 项已登记并修订，S0-X2 待逐项复核；现有模型、QEMU 与文档证据不构成完整细化证明。当前实现和阶段状态以 [[Prima OS 实现阶段]] 为准。
+阶段 0 的逐操作成功/失败语义已由 SPEC-054、DOC-007 增量覆盖报告 SPEC-134、SPEC-139 与 SPEC-140 更正核对；现行 §19 常规操作面为 **47 项**（SPEC-143 新增 `node_attach`；旧 26/34/35/46 口径作废）。Lean 可执行状态模型见 SPEC-019。**2026-10-17 的第三方组织级阶段 0 复核（SPEC-142）未通过，29 项已由 SPEC-143 整改**：跨节点 Capability 传递收窄为 v1 仅传消息、`Faulted` 原上下文重播显式降级、W6 保留帧/GPU 池进入 `KernelState`；S0-X1/S0-X2 保持未勾选，待下一轮复核；详见 [复核报告](docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md) 与 [整改报告](docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)。SPEC-139 的 9 项与 SPEC-140 的 12 项已登记并修订，S0-X2 待逐项复核；现有模型、QEMU 与文档证据不构成完整细化证明。当前实现和阶段状态以 [[Prima OS 实现阶段]] 为准。
 
 ### 阶段 1 — 启动与最小平台层
 
