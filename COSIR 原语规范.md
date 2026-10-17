@@ -946,8 +946,8 @@ node_attach(node_cap, remote_task_id) -> task_cap
 
 成功动作：
 
-1. 查找本地 `kind = RemoteProxy(peer)` 且 `remote_id = Some(remote_task_id)` 的 Task；
-2. 若不存在，调用内部迁移 `attach_remote_task(node.peer, remote_task_id, caller)` 创建；该迁移铸造 `{Derive, TaskSend}` 根 Capability 给调用者，直接返回它；
+1. 查找本地 `kind = RemoteProxy(node.peer)` 且 `remote_id = Some(remote_task_id)` 的 Task；
+2. 若不存在，调用内部迁移 `attach_remote_task(node.peer, remote_task_id, caller)` 创建；创建后扫描 `HeldBy(caller)` 中指向该新代理的 `{Derive, TaskSend}` 根 Capability 并返回（该迁移不回传 CapId，故以扫描定义为唯一取回路径，不使用 `next_cap-1` 等实现假设）；
 3. 若已存在，扫描 `HeldBy(caller)` 中指向该代理且含 `TaskSend` 的可用 Capability 并返回其中一个；调用者不持有时返回 `NotHeld`（不铸造新的无父根，W14）。
 
 错误：`InvalidNode`、`NotHeld`、`TargetDead`（Node 已销毁）、`MissingRight(NodeConnect)`、`InvalidTask`（代理创建失败）。
@@ -981,7 +981,7 @@ Node 对象的权限集合：`NodeConnect`, `NodeDestroy`（§4.1）。`nodes: N
 当接收方是本地 `RemoteProxy` 时，`send` 走异步投递：
 
 1. **源端：** 验证目标 Capability、`transferred_caps` 为空（否则 `NonPortableCap`）、`data` 长度；使用并推进 `next_msg` 分配本地 `MsgId`；追加 `MessageSent{msg, from=caller, to=本地代理, caps=[], transport_msg=Some(msg)}`；按 `receiver.node` 在本地 `nodes` 中找到 `peer = receiver.node` 的活动 Node（否则 `NodeUnreachable`），通过其 transport 发送序列化消息。源端**不创建**本地 `Message`，也不改变 Capability 位置。
-2. **目标端：** 目标节点按传输层提供源 `NodeIdentity` 与 `transport_msg`；为发送方建立/复用本地 `RemoteProxy`（`attach_remote_task(源 peer, 发送方 TaskId, 接收方)`），使 `FromTask` 有本地创建事件（W10）；分配目标端 `MsgId`，以 `FromTask(发送方代理)` 调用 `enqueue_or_deliver`，并在其 `MessageSent` 事件上记录 `transport_msg`。若接收方不是 CPU Task 或已销毁，目标端追加 `MessageDropped`（记录 `transport_msg`），不投递；源端不回滚（无 Capability 可回滚）。
+2. **目标端：** 目标节点按传输层提供源 `NodeIdentity` 与 `transport_msg`；**先验证接收方是活动 CPU Task**。若接收方不是 CPU Task 或已销毁，追加 `MessageDropped`（记录 `transport_msg`），不创建代理、不投递；源端不回滚（无 Capability 可回滚）。否则为发送方建立/复用本地 `RemoteProxy`（`attach_remote_task(源 peer, 发送方 TaskId, 接收方)`），使 `FromTask` 有本地创建事件（W10）；分配目标端 `MsgId`，以 `FromTask(发送方代理)` 调用 `enqueue_or_deliver`，并在其 `MessageSent` 事件上记录 `transport_msg`。
 3. **语义：** 跨节点 `send` 成功表示消息已交给本地 transport，不表示已送达；投递失败是目标端异步丢弃，源端可通过审计/服务协议获知。§17.5 的“成功即入队/直投”只适用于本地投递。
 
 **分布式不变量：**
