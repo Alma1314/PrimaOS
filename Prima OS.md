@@ -849,6 +849,8 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - 大数据路径可使用共享 Segment；
 - 故障服务不会直接破坏无关应用域。
 
+**2026-10-17：阶段 4 已通过（SPEC-149）。** S4-D1–D5/X1–X4 已勾选；SPEC-130 的 ring3 服务/驱动/原生应用/故障隔离/8 KiB 共享段证据 + QEMU 双次 PASS。阶段 0–4 全部通过；阶段 5/6 未开始。
+
 ### 阶段 5 — POSIX 源码兼容
 
 交付：

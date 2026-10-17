@@ -12,7 +12,7 @@
 | 1 | S1-D1–D5、S1-X1 的构建与 QEMU 证据；SPEC-061/TEST-008 覆盖初始 Authority 和帧归属；**SPEC-146（2026-10-17）复核通过** | S1-X2/X3 已勾选；`ISSUE-FRAME-001/002` 关闭；`ISSUE-AUTH-001` 的 §14 image/vspace 偏差按显式细化分叉接受，保留到阶段 2/4 |
 | 2 | S2-D1–D5 与 X1–X4 的实现侧证据见 SPEC-062–075；**SPEC-147（2026-10-17）复核通过** | S2-D1–D5/X1–X4 已勾选；`ISSUE-TASK-001/003` 关闭、`ISSUE-CAP-002` 已闭合；`ISSUE-CAP-001` 的 host 模型缺口保留（不阻塞），跨任务授权/清零/stale 句柄负例已由 `ipc_ready`/`task_ready`/`memseg_ready` 覆盖 |
 | 3 | SPEC-081–083 的 Namespace、Timer、`audit(cap)` 实现与见证覆盖 D1–D5、X1–X4；SPEC-083 §7 列出逐项映射；**SPEC-148（2026-10-17）复核通过** | S3-D1–D5/X1–X4 已勾选；`namespace_ready`/`timer_ready`/`audit_ready` 与 host 单测为证据；已登记边界不阻塞 |
-| 4 | SPEC-130 覆盖 D1–D5/X1–X4 的技术退出条件，SPEC-131–133/135 继续硬化；本轮 BIOS QEMU 双次通过 | 技术退出条件已具证据；**正式晋级**受 S0-X1 的阶段顺序约束。EXO-3 完整 ring 与静态缓冲退出、EXO-4 其他设备路径、DOC-007 新机制实现与 W17 证明是另列的后续工作，现有阶段 4 退出定义未要求它们 |
+| 4 | SPEC-130 覆盖 D1–D5/X1–X4 的技术退出条件，SPEC-131–133/135 继续硬化；**SPEC-149（2026-10-17）复核通过，阶段 0–4 全部通过** | 阶段 4 已正式晋级；EXO-3 完整 ring、EXO-4 其他设备路径、DOC-007 新机制实现与 W17 证明仍为另列后续硬化，现有阶段 4 退出定义未要求它们 |
 
 ## 本轮可直接闭合的证据漂移
 
