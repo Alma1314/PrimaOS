@@ -166,7 +166,7 @@
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：进行中（BLK-004 C Task 容量门槛已关闭；片 C 的最小 `write(1/2)`+`_exit` 纵向闭环已获 QEMU 见证，见[tty 字节流报告](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)；`PT_LOAD` 写段/BSS 私有装载与 W^X 已完成，见[装载报告](docs/superpowers/reports/2026-10-18-stage5-ptload-wx.md)）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
+**状态：进行中（BLK-004 C Task 容量门槛已关闭；片 C 的最小 `write(1/2)`+`_exit` 纵向闭环已获 QEMU 见证，见[tty 字节流报告](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)；`PT_LOAD` 写段/BSS 私有装载与 W^X 已完成，见[装载报告](docs/superpowers/reports/2026-10-18-stage5-ptload-wx.md)；musl M0 依赖盘点已完成，见[盘点报告](docs/superpowers/reports/2026-10-18-stage5-musl-m0-inventory.md)，发现 P5-LIB-01 符号清单缺口待 profile v1）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
 
 ### 交付检查
 

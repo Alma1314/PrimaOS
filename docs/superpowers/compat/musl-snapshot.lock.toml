@@ -1,0 +1,41 @@
+# 阶段 5 musl 快照锁（M0）
+# 采集日期：2026-10-18
+# 本文件只锁定身份与校验值；源码本身不入 Git（快照位于 git-ignored 的 target/）。
+
+schema = 1
+component = "musl"
+version = "1.2.5"
+tag = "v1.2.5"
+
+# 上游权威地址。本机直连 git.musl-libc.org 超时；实际拉取走下方镜像。
+upstream_url = "https://git.musl-libc.org/git/musl"
+mirror_url = "https://github.com/ifduyue/musl"
+mirror_fetch_url = "https://ghfast.top/https://github.com/ifduyue/musl.git"
+cross_check_url = "https://github.com/kraj/musl"
+
+# 内容寻址身份：两个独立镜像的 v1.2.5 标签与本地 clone 一致。
+commit = "0784374d561435f7c787a555aeab8ede699ed298"
+
+license = "MIT"
+license_file = "COPYRIGHT"
+license_sha256 = "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af"
+version_file_sha256 = "fe2b7c237b5a6e42818aa3e4f7fc5820f49c32289c32c96260ef89a8c8f6d3d7"
+
+# GitHub 对 tag 生成的归档；与 commit 一起记录，作为可重放的传输工件。
+archive_url = "https://ghfast.top/https://github.com/ifduyue/musl/archive/refs/tags/v1.2.5.tar.gz"
+archive_sha256 = "83ff394502d1c334b040ea9bc66ec48bba453585e25b05f4bde3741d8245d883"
+
+snapshot_dir = "target/musl-1.2.5"
+archive_path = "target/musl-v1.2.5.tar.gz"
+
+fetch = "git clone --depth 1 --branch v1.2.5 https://ghfast.top/https://github.com/ifduyue/musl.git target/musl-1.2.5"
+verify_commit = "git -C target/musl-1.2.5 rev-parse HEAD  # 必须等于 commit"
+verify_license = "sha256sum target/musl-1.2.5/COPYRIGHT"
+verify_archive = "sha256sum target/musl-v1.2.5.tar.gz"
+
+# 重新拉取时必须逐项核对；任一不匹配即停止，不得继续构建。
+notes = [
+  "上游 git.musl-libc.org 在本机网络下超时，未直接验证；改用两个 GitHub 镜像互证同一 commit。",
+  "GitHub 归档哈希依赖归档生成方式，不是上游发布 tarball 的哈希；commit 才是权威身份。",
+  "快照与归档只落在 target/（git-ignored）；补丁与 Prima 适配层将单独存放并在 M3 登记。",
+]

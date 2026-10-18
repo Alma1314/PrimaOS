@@ -2,13 +2,13 @@
 
 **日期**：2026-10-18
 
-**性质**：实施计划；尚未移植 musl；BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+**性质**：实施计划；M0 依赖盘点已完成（2026-10-18，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)），尚未移植 musl；BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
-**上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)已通过，通用入口和退出状态仍待完成。
+**上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
 ## 目标与边界
 
-BLK-004 的 C ELF 容量门槛已由[QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；下文 M1 的 POSIX 启动契约仍待实施。
+BLK-004 的 C ELF 容量门槛已由[QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；M1 的固定探针启动栈与返回码已见证，通用 auxv/argv 与 musl 入口仍待实施。
 
 目标是使选定版本的开源 C 程序用 Prima sysroot 重新编译、**静态链接**，在 QEMU 中通过冻结的功能测试。首个可运行程序应验证 C 启动、输出、退出和错误路径；完整 musl 构建与阶段 5 退出须分别验收，不能由一个 hello 程序代替。动态链接器、真实线程、信号、`fork/execve/wait4` 与网络按冻结 profile 排期，不能用成功返回或空实现冒充支持。
 
@@ -29,7 +29,7 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 
 | 步骤 | 实施内容 | 完成证据 |
 |---|---|---|
-| M0：依赖盘点 | 对锁定的 musl 源码，按首版 profile 生成“公开符号 → 内部函数 → syscall/服务 → Prima 机制”清单；标明 Linux 专有 `ioctl`、`procfs`、TLS、futex、signal、loader 和文件路径假设。对每项归类为复用、用户态适配、需新增机制或不支持。审查 DOC-002 的 5 点替换清单与构建开关是否真实可用。 | `compat-state.md` 和符号追溯表覆盖所有首版符号；每个未决依赖有归属、测试 ID 与负责人；无未分类的“链接成功即支持”项。 |
+| M0：依赖盘点 | **已完成（2026-10-18）**：锁定 musl 1.2.5（commit `0784374d…`），按首版 profile 生成“公开符号 → 内部函数 → syscall/服务 → Prima 机制”清单；标明 Linux 专有 `ioctl`、TLS、futex、loader 等假设。结论见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)。 | [compat-state](../compat/compat-state.md) 与[符号追溯表](../compat/symbol-trace.md)覆盖首版闭包；未决依赖均有归属与测试 ID；无“链接成功即支持”项。发现 P5-LIB-01 符号清单缺口，待 profile v1。 |
 | M1：C 程序启动 | 制定 x86_64 C 入口契约：ELF `PT_LOAD` 权限、BSS 清零、栈对齐、`argc/argv/envp/auxv`、初始 fd/Capability、退出状态。先用无 libc 的 C/汇编探针跑通装载、`_start`、用户栈和 `_exit`。解决 BLK-004 后加入现有 boot image/manifest 与 QEMU 启动路径。 | ring3 QEMU 记录入口寄存器、栈布局、读写段权限、退出状态；错 ELF、坏指针、容量耗尽确定失败；旧阶段 1–4 事件不回归。 |
 | M2：系统边界 | 建一个供 C 使用的 Prima syscall/服务适配层：最多六参数、原始负 errno、取消点边界、fd 到 Capability 的用户态映射、字节流 tty 服务。按冻结 profile 实现 `write`/`read`/`close`/退出等首批调用，错误集中转译并保留原始码供调试。不要把内核 Capability token 当成普通有符号返回值解码；`prima-runtime::decode` 的高位 token 特例需单独核对。 | 裸 C 探针验证参数寄存器、返回值、非法 fd、无授权、坏缓冲区和短写；同源 Linux/Prima 结果矩阵；无内核 POSIX 对象或 Linux syscall 号泄漏。 |
 | M3：静态 musl 基座 | 以隔离的 sysroot 构建 musl `libc.a` 与所需 crt 对象；用最小可重放补丁接入 M2，逐项处理启动初始化、初始线程 TLS/`errno`、内部锁、`malloc` 所需内存服务和 `stdio`。不得用假的 `pthread_create` 成功绕过真实线程需求；不支持的路径应明确失败并在 profile 标记。 | 静态 C 探针覆盖 `main` 返回/`exit`、`errno`、`printf`/`fflush`、分配/释放、环境变量及失败路径；`readelf`/`nm` 检查 ELF、未解析符号和宿主 glibc 污染；补丁可从锁定快照重放。 |
@@ -37,6 +37,13 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 | M5：开源程序与扩展 | 以 M0 选定的开源程序做首次源码重编译和冻结功能测试。随后按 profile 的实际需求扩展时间单位、`mmap/mprotect`、TLS/线程、信号、进程、网络；每一组先补机制/服务契约，再开启对应 musl 路径。 | 构建命令、源码/工具链/sysroot 哈希、QEMU 结果和 Linux 参考结果可重复；API 行逐项标 supported/partial/unsupported，偏差有测试与解释。 |
 
 M1–M3 的最小闭环优先保证静态 C 程序可靠启动与退出。M4/M5 对应阶段 5 全部 profile 的后续交付；若选定程序需要线程或路径，必须先实现相应语义，不能跳过依赖。
+
+**M0 结论（2026-10-18）**：echo 的 musl 闭包需要新增 per-task FS base（建议追加
+`SYS_TASK_SET_FS_BASE=38`）；静态 PIE 必须用 Prima crt 跳过 `rcrt1` 的自重定位；stdio 实际走
+`writev`，并需要 `close(1/2)`/`ioctl` 适配；`exit_group` 需要 `prima_ctx` 退出观察；P5-LIB-01
+的符号清单需 v1 补齐（`putc`/`fprintf`/`vfprintf`/`perror`/`strlen`/`strncmp`/`exit`）；
+E1–E6 另需 argv 注入。echo 无 TLS，预计使用 `builtin_tls`，不依赖 `mmap`。详见
+[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)。
 
 ## 构建与验证
 

@@ -31,7 +31,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 | F 网络与库栈 | 冻结“基础网络子集”的地址族、协议和功能测试，建设用户态网络服务/传输；按 profile 所需移植 libc，补 Rust `core/std` 的实际支持矩阵。 | 网络 API 不可用时明确 unsupported；S5-D3/D6 只能按实际程序与测试勾选。自研 C 冒烟仅是中间证据，不能替代开源程序。 |
 | G 出口 | 在固定编译器/sysroot、Linux 参考环境与 Prima QEMU 上重跑完整 profile、差分矩阵和选定开源程序；记录 API 状态、偏差、版本、产物哈希。 | S5-X1 每项映射和重复测试；S5-X2 每项状态；S5-X3 开源程序源码重编译与冻结功能集 PASS。余项未通过则阶段继续进行中。 |
 
-片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；通用 fd 表、按 `PT_LOAD` 权限装载与真实进程退出仍未完成。
+片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；按 `PT_LOAD` 权限的私有写段/BSS 与 W^X 已由[装载报告](../reports/2026-10-18-stage5-ptload-wx.md)见证；musl 的 M0 依赖盘点已完成（见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)）。通用 fd 表、完整 auxv/任意 argv、真实进程退出与 musl 移植仍未完成。
 
 片 C 是首个最小纵向证明，D–G 才构成完整阶段交付。任何新增内核机制先对照 COSIR 与代码现状；语义变化按跟踪规则先改规范，再改实现与证据。
 
