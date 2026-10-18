@@ -602,6 +602,41 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 阶段 5 片 C：C 探针的 tty `write(1/2)` 见证 + tty 服务的 ioport 往返/越界应答 +
+/// 内核在 task 15 faulted 状态下的独立 dump 三者必须同时成立。
+pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
+    let cio: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("CIO|"))
+        .collect();
+    if cio.len() != 1
+        || cio[0].trim_end_matches('\r')
+            != "CIO|task=16;fd=1;ch=104;fd=2;ch=105;out_ok=1;in_magic=1;out_of_range=1"
+    {
+        return Err(format!("stage5 tty write trace mismatch: {cio:?}"));
+    }
+    let ttyin: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("TTYIN|"))
+        .collect();
+    if ttyin.len() != 1
+        || ttyin[0].trim_end_matches('\r') != "TTYIN|task=0;fd=1;ch=104;fd=2;ch=105"
+    {
+        return Err(format!("stage5 tty in trace mismatch: {ttyin:?}"));
+    }
+    let ttyout: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("TTYOUT|"))
+        .collect();
+    if ttyout.len() != 1
+        || ttyout[0].trim_end_matches('\r')
+            != "TTYOUT|task=0;in_magic=1;out_of_range=1;out_ok=1"
+    {
+        return Err(format!("stage5 tty out trace mismatch: {ttyout:?}"));
+    }
+    Ok(())
+}
+
 /// 阶段 5：应用自报的 ID 16 生命周期和内核在收尾时的独立状态必须同时成立。
 pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
     let records = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
@@ -4230,6 +4265,29 @@ mod tests {
             ));
         }
         (output, hex)
+    }
+
+    #[test]
+    fn stage5_tty_requires_c_writes_and_tty_ioport_answers() {
+        let good = concat!(
+            "CIO|task=16;fd=1;ch=104;fd=2;ch=105;out_ok=1;in_magic=1;out_of_range=1\r\n",
+            "TTYIN|task=0;fd=1;ch=104;fd=2;ch=105\r\n",
+            "TTYOUT|task=0;in_magic=1;out_of_range=1;out_ok=1\r\n",
+        );
+        assert_eq!(super::validate_stage5_tty(good), Ok(()));
+        assert!(super::validate_stage5_tty("").is_err());
+        assert!(super::validate_stage5_tty(&good.replace("ch=104", "ch=120")).is_err());
+        assert!(super::validate_stage5_tty(&good.replace("out_ok=1", "out_ok=0")).is_err());
+        assert!(
+            super::validate_stage5_tty(&good.replace("TTYOUT|", "BROKEN|"))
+                .unwrap_err()
+                .contains("tty out")
+        );
+        assert!(
+            super::validate_stage5_tty(&good.replace("fd=1;ch=104;", ""))
+                .unwrap_err()
+                .contains("tty write")
+        );
     }
 
     #[test]

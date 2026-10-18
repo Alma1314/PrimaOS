@@ -57,8 +57,25 @@ pub use prima_abi::boot_image::{
 pub const SERVICE_IMAGE_KIND_SERVICEMGR: u64 = 0x100;
 /// 阶段 5：无 libc C 探针在服务映像目录中的 opaque kind。
 pub const SERVICE_IMAGE_KIND_C_PROBE: u64 = 0x101;
+/// 阶段 5 片 C：用户态 tty 字节流服务在服务映像目录中的 opaque kind。
+pub const SERVICE_IMAGE_KIND_TTY: u64 = 0x102;
 /// C 探针完成消息：低字节是 Task ID，次低字节是 C 见证值，bits 16..23 是 main 返回码。
 pub const STAGE5_C_PROBE_TAG: u64 = 0xc500_0000_0000_5a00;
+
+/// 阶段 5 片 C：tty 服务向服务管理器自报**就绪**的消息 tag；低 8 位是自身 task id。
+pub const STAGE5_TTY_READY_TAG: u64 = 0xc600_0000_0000_0000;
+/// 阶段 5 片 C：tty 服务确认把 ioport 设备移交 C Task 的消息 tag；低 8 位是 C Task id。
+pub const STAGE5_C_HANDOFF_TAG: u64 = 0xc601_0000_0000_0000;
+/// 阶段 5 片 C：服务管理器把要写的字节投递给 C 探针的直投消息 tag；
+/// bits 16..23 是 fd（仅 1/2 合法），bits 24..31 是要写的字节。
+pub const STAGE5_TTY_WRITE_TAG: u64 = 0xc602_0000_0000_0000;
+/// 阶段 5 片 C：tty 服务确认 ioport 往返/越界两条应答的 ack tag（管理器据此收尾）。
+pub const STAGE5_TTY_ACK_TAG: u64 = 0xc603_0000_0000_0000;
+
+/// 阶段 5 片 C：C 探针把 ioport 设备映射到的 VA（其根内的 QEMU isa-debug-exit 出口页）。
+pub const C_IO_VA: u64 = 0x0000_0A00_0000_6000;
+/// 阶段 5 片 C：tty 服务把 ioport 设备映射到的 VA（同设备，独立映射权）。
+pub const TTY_IO_VA: u64 = 0x0000_0A00_0000_6000;
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。
