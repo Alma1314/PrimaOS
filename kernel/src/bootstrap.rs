@@ -2141,10 +2141,11 @@ pub struct PlatformSegmentsRecord {
 
 /// 单个 Segment 的帧向量容量（`memseg_create` 的页数上限）。
 ///
-/// SPEC-109：服务映像段把 6 个独立 ELF + 1 个目录页打包为**单段**，故上限须 ≥ `IMAGE_TOTAL_PAGES`。
-/// `user::install_boot_info` 在装载时检查镜像实际页数。阶段 5 探针使服务映像总量达到 67 页；
-/// 预留 13 页给下一片静态 C 程序，超过上限时显式拒绝，避免向量写越界。
-pub const MAX_SEGMENT_FRAMES: usize = 80;
+/// SPEC-109：服务映像段把 8 个服务 ELF + 1 个 C 探针 ELF + 1 个目录页打包为**单段**，
+/// 故上限须 ≥ `user::install_boot_image` 计算的实际总页数。PT_LOAD 写段装载使
+/// servicemgr 从 17 页增至 20 页，实测总量 82 页（14+8+20+8+8+8+5+6+4+1）；
+/// 预留 14 页给 profile v0 的后续静态程序，超过上限时显式拒绝，避免向量写越界。
+pub const MAX_SEGMENT_FRAMES: usize = 96;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -7098,7 +7099,8 @@ impl BootstrapState {
             ObjectRef::Segment(USER_SEGMENT_ID_FIRST),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        // 服务管理器独立栈段；EXO-3 共享 trace 写入路径需要第二页栈。
+        // 服务管理器独立栈段。阶段 5 PT_LOAD 装载把 `create_service` 的栈帧推过
+        // 8 KiB（实测在 2 页栈底下方 0x40 处缺页），故扩到 4 页（16 KiB）。
         let stack3_id = self
             .alloc_segment_slot()
             .ok_or(MemsegError::CapacityExceeded)?;
@@ -7106,7 +7108,7 @@ impl BootstrapState {
         self.create_segment_object(
             stack3_id,
             KERNEL_ACTOR,
-            2,
+            4,
             stack3_access,
             phys_offset,
             Some((

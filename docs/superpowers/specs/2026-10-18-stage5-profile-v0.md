@@ -33,10 +33,12 @@
   - `envp[0..]`，随后一个 NULL；
   - `auxv`：`{AT_PAGESZ=6, 4096}`、`{AT_NULL=0, 0}`。
 - 当前只冻结 **argc=2、argv=["stage5-probe","stack-ready"]、envp=["PRIMA_ABI=1"]** 的固定探针形态；
-  完整 auxv、任意 argv、按 `PT_LOAD` 权限分别装载仍为 `planned`。
+  完整 auxv 与任意 argv 仍为 `planned`；`PT_LOAD` 写段已按权限分别装载（见
+  [PT_LOAD/W^X 报告](../reports/2026-10-18-stage5-ptload-wx.md)）。
 - 初始 fd/Capability：仅 fd 1/2 的字节流（由服务管理器与 tty 服务提供）；无继承 fd 表，无
   `stdin`。
-- 代码段按 W^X 只读映射；探针不得依赖可写全局变量。
+- 代码段按 W^X 只读映射；可写 `PT_LOAD` 建私有 `R|W` 段并按 vaddr 复制已重定位字节，
+  BSS 清零。探针可使用可写全局变量（`.data`/`.bss`），但不得依赖共享映像页可写。
 
 ## 4. API 矩阵
 
@@ -46,7 +48,7 @@
 | ID | API / 契约 | Linux 参考 | Prima 后端/授权 | 状态 | 冻结边界（partial 必读） | 测试/证据 |
 |---|---|---|---|---|---|---|
 | P5-ABI-01 | 原生 ABI 版本握手 | 不适用（原生行） | `SYS_ABI_CHECK=37` | supported | `major=1, minimum_minor=0, reserved=0`；版本 `0`、其它 major/minor、非零保留位均返回 `-EINVAL`；成功返回 `0x0000000100000000` | [ABI 报告](../reports/2026-10-18-stage5-native-abi-check.md) |
-| P5-BOOT-01 | C 入口 `argc/argv/envp/auxv` | `_start` + auxv | 通用 ELF 装载 + 固定初始栈 | partial | 仅第 3 节固定探针形态；无完整 auxv、无按 `PT_LOAD` 权限/多段装载 | [初始栈](../reports/2026-10-18-stage5-c-start-stack.md) |
+| P5-BOOT-01 | C 入口 `argc/argv/envp/auxv` | `_start` + auxv | 通用 ELF 装载 + 固定初始栈 | partial | 仅第 3 节固定探针形态；无完整 auxv、无任意 argv。`PT_LOAD` 写段/私有 BSS 与 W^X 已实现（每映像最多 4 个写段） | [初始栈](../reports/2026-10-18-stage5-c-start-stack.md)、[PT_LOAD/W^X](../reports/2026-10-18-stage5-ptload-wx.md) |
 | P5-PROC-01 | `main` 返回码与 `_exit` 观察 | `exit_group(status)` | Task 自毁 + 管理器观察 | partial | 仅返回码低 8 位；无 Process/zombie/父子等待/信号终止状态 | [同源返回码](../reports/2026-10-18-stage5-main-return-status.md)、[tty/exit](../reports/2026-10-18-stage5-c-tty-write.md) |
 | P5-PROC-02 | `getpid` | 稳定 PID | 可映射 `SYS_TASK_ID` | planned | 尚未冻结 PID 稳定性、复用与错误边界 | P5-PROC-02 |
 | P5-IO-01 | `write(fd, buf, len)` | 返回写入字节数；`EBADF/EFAULT/EPIPE` | 用户态 tty 字节流服务（`prima-tty`） | partial | **仅 fd 1/2**；逐字节 IPC、**不限长度**（管理器与 tty 逐条流式转发）。成功返回 `len` 表示所有字节已入队，不表示 tty 已完成写；中途 SEND 失败返回 `-1`，可能有前缀已入队。无短写返回值、无 `EPIPE`/非阻塞。**非法 fd 当前被静默丢弃且调用方仍看到成功**，在实现确定错误前不得升为 `supported` | [tty 报告](../reports/2026-10-18-stage5-c-tty-write.md) |
@@ -54,7 +56,7 @@
 | P5-FD-01 | `close(fd)` | 释放 fd；`EBADF` | 用户态 fd 生命周期 + Cap drop | planned | 与共享 offset、`dup` 的关系未冻结 | P5-FD-01 |
 | P5-FS-01 | `openat(dirfd, path, flags, mode)` | 路径解析与错误码 | 路径/目录服务；Namespace 仅作授权入口 | planned | 目录服务不是 VFS；`O_*`/`mode` 子集待评审 | P5-FS-01 |
 | P5-FS-02 | `lseek(fd, off, whence)` | 偏移与不可 seek 错误 | 服务端共享偏移 | planned | `SEEK_*` 子集与共享 offset 未冻结 | P5-FS-02 |
-| P5-MM-01 | `mmap/munmap/mprotect` | 匿名/文件映射、flags | `MemorySegment` + 页表 | planned | 仅承诺匿名子集；W^X 三路径未实现；文件映射不支持 | P5-MM-01 |
+| P5-MM-01 | `mmap/munmap/mprotect` | 匿名/文件映射、flags | `MemorySegment` + 页表 | planned | 仅承诺匿名子集；装载器已按 `PT_LOAD` 做 W^X，但 `mmap` 三路径未实现；文件映射不支持 | P5-MM-01 |
 | P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | 现有 `SYS_TIME_NOW` 为 PIT tick | planned | 时钟 id、单位、精度、超时与 `EINTR` 未冻结 | P5-TIME-01 |
 | P5-THREAD-01 | `pthread_create/join`、mutex/cond | POSIX 线程 | 无 Thread/TLS/WaitObject | unsupported | 阶段 5 不承诺；禁止用成功空实现占位 | P5-THREAD-01 |
 | P5-NET-01 | `socket/bind/sendto/recvfrom` | BSD socket | 无网络服务 | unsupported | 阶段 5 不承诺；loopback IPC 不算网络 | P5-NET-01 |
@@ -70,7 +72,7 @@
 | 参与文件 | `echo.c` `117c10e0e5a5139a80490673a3f14dd1dfcc45856adb84a83b28e3b301f1b48c`；`libutil/putword.c` `5c1c875678f3367489cb9fcf5e76db51f51236710ae3bfcac245ff9640ecff5c`；`libutil/fshut.c` `a5ee307130cfbe8aaace3528f370ef42f0ef16b135e957084f3a5fa42b883773`；`libutil/eprintf.c` `9547578e4e4585bbc8429b580c2db409328214efd383c5be01b0bb9017f1bf1c`；`util.h` `341a70a1f9d449f28c4d65bb594898e2d6cf2eabc21da018abdf024b7f71e7d6`；`arg.h` `5f4ecca1bb057a6d6301aff8f2b403e723af5dc86a5e00e8c7e5c2f56cdb9c79`；`compat.h` `00fc3129294c2ddf3d39dee3b6a2f581d98b565f66250796deabf82d2fe78e07` |
 | 构建 | 阶段 5 用锁定 musl sysroot **静态链接**；不链接宿主 glibc；补丁须可从该 commit 重放 |
 | 依赖闭包 | `echo` 需要 `argc/argv`、`strcmp`、stdio（`fputs`/`fputc`/`putchar`/`fflush`/`fclose`/`ferror`）、`write(1)` 与退出状态；对应 P5-BOOT-01/P5-IO-01/P5-PROC-01/P5-LIB-01 |
-| 已知阻塞 | `putword.c` 的 `static int first` 与 musl stdio 都需要可写 `.data`/`.bss`，而 P5-BOOT-01 尚未按 `PT_LOAD` 权限装载写段；在写段装载（P5-BOOT-01/P5-MM-01）完成前，`echo` 的冻结用例无法在 Prima 上通过。S5-X3 因此继续未完成 |
+| 已知阻塞 | 可写 `.data`/`.bss` 的装载阻塞已解除：管理器为每个可写 `PT_LOAD` 建私有 `R|W` 段并清零 BSS，C 探针的静态变量已实测可写。剩余阻塞是 musl stdio（P5-LIB-01 仍为 `planned`）与完整 auxv/argv（P5-BOOT-01 仍为 `partial`）；`echo` 冻结用例与 S5-X3 仍不能声称通过 |
 | 锁定状态 | 目标已选定并锁定；S5-X3 **未完成**（尚未在 Prima 上重新编译运行） |
 
 ### 冻结用例（Linux 参考已用锁定源码实测）

@@ -232,7 +232,9 @@ pub const TASK3_CODE_LEN: usize = 134;
 /// 复用切片 T 的代码段（1 页 4 KiB，`task3_code()` 仅占 134 字节），故不新增代码段帧——
 /// `frames_ready.segment` 不变。第二次 `SYS_TASK_CREATE` 的 `entry` 指向
 /// `USER3_CODE_VA + TASK4_CODE_OFFSET`（§8.1 只要求 `entry ∈ [load_base, load_base + pages*4KiB)`）。
-pub const TASK4_CODE_OFFSET: u64 = 256;
+/// 页内 0x800：避开 ELF header/program header（首个服务页的 0..0x200 必须保持完整，
+/// 供 ring3 解析可写 `PT_LOAD`）；该处原属 `.rela.dyn`，重定位已在装载期消费。
+pub const TASK4_CODE_OFFSET: u64 = 0x800;
 /// 切片 V：task 4 的代码长度（自报 id → 让出 → 自毁 → 不该到达）。
 ///
 /// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一
@@ -1541,7 +1543,7 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     at += 2;
     put_store_rax(&mut code, at, SERVICEMGR_RECEIPT_MGR as u32);
     at += 7;
-    // 管理器栈向下增长：两页连续映射，栈顶仍为 USER3_STACK_VA+4K。
+    // 管理器栈向下增长：4 页连续映射（栈段容量见内核），栈顶仍为 USER3_STACK_VA+4K。
     put_boot_load(
         &mut code,
         at,
@@ -1559,9 +1561,9 @@ pub fn generate(manifest: &Manifest) -> [u8; USER_CODE_LEN] {
     at += 7;
     put_imm64(&mut code, at, 0x48, 0xBA, 0);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA - FRAME_SIZE);
+    put_imm64(&mut code, at, 0x49, 0xBA, USER3_STACK_VA - 3 * FRAME_SIZE);
     at += 10;
-    put_imm64(&mut code, at, 0x49, 0xB8, 2);
+    put_imm64(&mut code, at, 0x49, 0xB8, 4);
     at += 10;
     put_imm64(&mut code, at, 0x49, 0xB9, MEMSEG_RW_BITS);
     at += 10;

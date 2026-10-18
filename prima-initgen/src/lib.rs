@@ -108,6 +108,8 @@ mod tests {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         // 阶段 2 复核：阻塞接收者的直投见证携带 page-fault-source Capability。
-        assert_eq!(hash, 0xd323_a475_71d5_c45a);
+        // 阶段 5 PT_LOAD/W^X：`TASK4_CODE_OFFSET` 0x100 → 0x800（避开首个服务页的 ELF
+        // program header），生成码立即数改变，指纹随之更新。
+        assert_eq!(hash, 0x3a41_cb06_08e1_4987);
     }
 }

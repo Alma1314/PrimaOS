@@ -94,6 +94,9 @@ static unsigned long write_fd(const probe_ctx *ctx, int fd, const char *s) {
 }
 #endif
 
+/* 放置于可写 PT_LOAD/.bss：装载器必须为它建立私有可写页，且 BSS 必须清零。 */
+static volatile uint64_t bss_probe;
+
 static int same(const char *actual, const char *expected) {
     for (; *expected; actual++, expected++)
         if (*actual != *expected)
@@ -106,6 +109,12 @@ int main(PROBE_CTX_PARAM int argc, char **argv, char **envp) {
         return 2;
     if (!envp || !envp[0] || !same(envp[0], "PRIMA_ABI=1") || envp[1] != 0)
         return 3;
+    /* 写读私有 .bss：BSS 必须初始为零，且数据页可写。 */
+    if (bss_probe != 0)
+        return 5;
+    bss_probe = UINT64_C(0x5a5a);
+    if (bss_probe != UINT64_C(0x5a5a))
+        return 5;
     /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，再向 fd 1 写 5 字节。
      * 后者覆盖 tty 服务在固定两字节见证之后的持续流式转发。 */
     if (write_fd(PROBE_CTX_ARG 1, "h") != 1 ||

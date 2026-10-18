@@ -158,6 +158,31 @@ const RW_DERIVE: Rights = Rights::from_bits((1 << 0) | (1 << 1) | (1 << 2));
 const R_DERIVE: Rights = Rights::from_bits((1 << 0) | (1 << 1));
 /// 只读映射权（`SegMapR`）——自解 ELF 入口与 endpoint 令牌用。
 const R_ONLY: Rights = Rights::from_bits(1 << 1);
+
+/// ELF64 头/程序头字段偏移（相对 ELF 基址）。
+const ELF_PHOFF: u64 = 32;
+const ELF_PHENTSIZE: u64 = 54;
+const ELF_PHNUM: u64 = 56;
+const ELF_PH_SIZE: u64 = 56;
+const PT_LOAD: u32 = 1;
+const PF_W: u32 = 2;
+/// 私有数据段的临时映射 VA（远高于探测映射，避免与任何端点/用户段相交）。
+const DATA_PROBE_VA: u64 = 0x0000_0A20_0000_0000;
+/// 单个 ELF 支持的可写 `PT_LOAD` 数（固定探针与 musl 程序都远小于此）。
+const WRITABLE_SEGMENTS: usize = 4;
+
+/// ELF 中一个可写 `PT_LOAD` 的页对齐范围。
+#[derive(Clone, Copy)]
+struct WritableSegment {
+    /// 页对齐起始（相对 ELF 基址）。
+    start: u64,
+    pages: u64,
+    /// 段内首字节在映像中的 VA：装载器按 vaddr 打包并已应用相对重定位，
+    /// 故复制源和目标都必须以 vaddr 定位，不能用 ELF `p_offset`。
+    vaddr: u64,
+    /// 非 BSS 字节数（`p_filesz`）；其余部分由新段清零。
+    file_size: u64,
+}
 /// 端点初始帧 `initial_cap0` 的权利（仅 `TaskSend`；指向本管理器）。
 const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
 /// 新端点结构性根的 Namespace 权利（仅 `NsResolve`）。
@@ -350,7 +375,7 @@ pub extern "C" fn _start(
     let mut app_pending = false;
     let mut app_cancelled = false;
     let mut finished = false;
-    let mut capacity_probe: Option<(Capability, u64, Capability)> = None;
+    let mut capacity_probe: Option<(Capability, u64, Capability, Option<Capability>)> = None;
     let mut capacity_done = false;
     let mut capacity_exit_status = u64::MAX;
     let mut capacity_id = 0u64;
@@ -586,9 +611,18 @@ pub extern "C" fn _start(
                 capacity_id = message.payload & 0xff;
                 capacity_exit_status = (message.payload >> 16) & 0xff;
             }
-            if let Some((manager, entry_offset, stack)) = capacity_probe {
-                capacity_stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
+            if let Some((manager, entry_offset, stack, data)) = capacity_probe {
+                let stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
+                let data_reclaimed = match data {
+                    Some(data) => runtime.memseg_destroy(data).is_ok(),
+                    None => true,
+                };
+                // 字段沿用 `stack_reclaimed`：C 的栈段与私有数据段都必须被回收。
+                capacity_stack_reclaimed = stack_reclaimed && data_reclaimed;
                 let _ = runtime.cap_drop(stack);
+                if let Some(data) = data {
+                    let _ = runtime.cap_drop(data);
+                }
                 let _ = runtime.cap_drop(manager);
                 if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
                     // Dead 记录仍占 ID 16；合法请求必须确定地返回 ENOSPC。
@@ -675,7 +709,7 @@ pub extern "C" fn _start(
             while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
-                    && let Some((_token, _manager, _entry, stack)) = create_service(
+                    && let Some((_token, _manager, _entry, stack, _data)) = create_service(
                         &runtime,
                         &self_cap,
                         parent_ns,
@@ -910,7 +944,7 @@ pub extern "C" fn _start(
         if pong_sent && app_done && tty.is_some() && !finished {
             if capacity_probe.is_none() && !capacity_done {
                 if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
-                    if let Some((_token, manager, entry, stack)) = create_service(
+                    if let Some((_token, manager, entry, stack, data)) = create_service(
                         &runtime,
                         &self_cap,
                         parent_ns,
@@ -919,7 +953,7 @@ pub extern "C" fn _start(
                         &mut created_slot,
                         true,
                     ) {
-                        capacity_probe = Some((manager, entry, stack));
+                        capacity_probe = Some((manager, entry, stack, data));
                     } else {
                         capacity_done = true; // 后续 trace 记录失败，QEMU 验收拒绝。
                     }
@@ -1191,7 +1225,7 @@ fn create_service(
     slot: usize,
     created_slot: &mut [bool; SERVICES],
     c_stack: bool,
-) -> Option<(Capability, Capability, u64, Capability)> {
+) -> Option<(Capability, Capability, u64, Capability, Option<Capability>)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
         runtime.cap_derive(*self_cap, TASK_SEND_RIGHTS),
@@ -1216,14 +1250,75 @@ fn create_service(
     let e_entry = runtime
         .read_user_u64(ENDPOINT_CODE_PROBE_VA + ELF_ENTRY_OFFSET)
         .unwrap_or(u64::MAX);
-    let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
+    let Some(writable) = parse_writable_segments(runtime, ENDPOINT_CODE_PROBE_VA, spec.pages)
+    else {
+        let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
+        let _ = runtime.cap_drop(initial0);
+        let _ = runtime.cap_drop(initial1);
+        return None;
+    };
     if e_entry == u64::MAX {
+        let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
         let _ = runtime.cap_drop(initial0);
         let _ = runtime.cap_drop(initial1);
         return None;
     }
+    // W^X：可写 `PT_LOAD` 不能映射共享映像页，也不能与可执行页同权。为每个可写范围建一块
+    // **私有**段：按 vaddr 复制已重定位的映像字节、BSS 由新段清零，随后替换掉子任务中的
+    // 只读代码页映射。
+    let mut data_segments: [Option<(Capability, WritableSegment)>; WRITABLE_SEGMENTS] =
+        [None; WRITABLE_SEGMENTS];
+    for (slot, segment) in writable.into_iter().flatten().enumerate() {
+        let Ok(data) = runtime.memseg_create(segment.pages, RW) else {
+            drop_data_segments(runtime, &mut data_segments);
+            let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
+            let _ = runtime.cap_drop(initial0);
+            let _ = runtime.cap_drop(initial1);
+            return None;
+        };
+        if runtime
+            .memseg_map(data, *self_cap, 0, DATA_PROBE_VA, segment.pages, RW)
+            .is_err()
+        {
+            let _ = runtime.memseg_destroy(data);
+            let _ = runtime.cap_drop(data);
+            drop_data_segments(runtime, &mut data_segments);
+            let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
+            let _ = runtime.cap_drop(initial0);
+            let _ = runtime.cap_drop(initial1);
+            return None;
+        }
+        let destination = DATA_PROBE_VA + (segment.vaddr - segment.start);
+        let mut copied = 0u64;
+        let mut chunk = [0u8; 64];
+        while copied < segment.file_size {
+            let count = core::cmp::min(64, (segment.file_size - copied) as usize);
+            let source = ENDPOINT_CODE_PROBE_VA + segment.vaddr + copied;
+            if runtime
+                .read_user_bytes(source, &mut chunk[..count])
+                .is_err()
+                || runtime
+                    .write_user_bytes(destination + copied, &chunk[..count])
+                    .is_err()
+            {
+                let _ = runtime.memseg_unmap(*self_cap, DATA_PROBE_VA, segment.pages);
+                let _ = runtime.memseg_destroy(data);
+                let _ = runtime.cap_drop(data);
+                drop_data_segments(runtime, &mut data_segments);
+                let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
+                let _ = runtime.cap_drop(initial0);
+                let _ = runtime.cap_drop(initial1);
+                return None;
+            }
+            copied += count as u64;
+        }
+        let _ = runtime.memseg_unmap(*self_cap, DATA_PROBE_VA, segment.pages);
+        data_segments[slot] = Some((data, segment));
+    }
+    let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
     // SPEC-108：自建 1 页栈段（`R|W`）。
     let Ok(stack) = runtime.memseg_create(1, RW) else {
+        drop_data_segments(runtime, &mut data_segments);
         return None;
     };
     if c_stack && prepare_c_stack(runtime, self_cap, stack).is_none() {
@@ -1231,6 +1326,7 @@ fn create_service(
         let _ = runtime.cap_drop(stack);
         let _ = runtime.cap_drop(initial0);
         let _ = runtime.cap_drop(initial1);
+        drop_data_segments(runtime, &mut data_segments);
         return None;
     }
     let entry = ENDPOINT_CODE_VA + e_entry;
@@ -1250,6 +1346,7 @@ fn create_service(
         let _ = runtime.cap_drop(stack);
         let _ = runtime.cap_drop(initial0);
         let _ = runtime.cap_drop(initial1);
+        drop_data_segments(runtime, &mut data_segments);
         return None;
     };
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
@@ -1261,10 +1358,117 @@ fn create_service(
         let _ = runtime.memseg_destroy(stack);
         let _ = runtime.cap_drop(stack);
         let _ = runtime.cap_drop(manager);
+        drop_data_segments(runtime, &mut data_segments);
         return None;
     }
+    // 用私有数据段替换子任务中的只读代码页：先解除 RX 映射，再以 RW 映射私有段。
+    for data_slot in 0..WRITABLE_SEGMENTS {
+        let Some((data, segment)) = data_segments[data_slot] else {
+            continue;
+        };
+        let va = ENDPOINT_CODE_VA + segment.start;
+        if runtime.memseg_unmap(manager, va, segment.pages).is_err()
+            || runtime
+                .memseg_map(data, manager, 0, va, segment.pages, RW)
+                .is_err()
+        {
+            let _ = runtime.task_destroy(manager);
+            let _ = runtime.memseg_destroy(stack);
+            let _ = runtime.cap_drop(stack);
+            let _ = runtime.cap_drop(manager);
+            for (data, _) in data_segments.iter().flatten() {
+                let _ = runtime.memseg_destroy(*data);
+                let _ = runtime.cap_drop(*data);
+            }
+            return None;
+        }
+    }
+    let data_cap = data_segments.iter().flatten().next().map(|(cap, _)| *cap);
     write_created_witness(runtime, slot, e_entry, initial1, manager);
-    Some((initial1, manager, e_entry, stack))
+    Some((initial1, manager, e_entry, stack, data_cap))
+}
+
+/// 失败回滚：销毁并归还所有已建的私有数据段（含尚未映射进子任务的那些）。
+fn drop_data_segments(
+    runtime: &Runtime<impl SyscallTransport>,
+    segments: &mut [Option<(Capability, WritableSegment)>; WRITABLE_SEGMENTS],
+) {
+    for (data, _) in segments.iter_mut().flatten() {
+        let _ = runtime.memseg_destroy(*data);
+        let _ = runtime.cap_drop(*data);
+    }
+}
+
+fn read_u16_at(runtime: &Runtime<impl SyscallTransport>, at: u64) -> Option<u16> {
+    let mut bytes = [0u8; 2];
+    runtime.read_user_bytes(at, &mut bytes).ok()?;
+    Some(u16::from_le_bytes(bytes))
+}
+
+fn read_u32_at(runtime: &Runtime<impl SyscallTransport>, at: u64) -> Option<u32> {
+    let mut bytes = [0u8; 4];
+    runtime.read_user_bytes(at, &mut bytes).ok()?;
+    Some(u32::from_le_bytes(bytes))
+}
+
+/// 从映射在 `image_va` 的 ELF 解析可写 `PT_LOAD` 范围。返回 `None` 表示 ELF 结构非法：
+/// 宁可拒绝创建，也不静默丢掉数据段。
+fn parse_writable_segments(
+    runtime: &Runtime<impl SyscallTransport>,
+    image_va: u64,
+    image_pages: u64,
+) -> Option<[Option<WritableSegment>; WRITABLE_SEGMENTS]> {
+    let image_len = image_pages.checked_mul(FRAME_SIZE)?;
+    let phoff = runtime.read_user_u64(image_va + ELF_PHOFF).ok()?;
+    let phentsize = read_u16_at(runtime, image_va + ELF_PHENTSIZE)? as u64;
+    let phnum = read_u16_at(runtime, image_va + ELF_PHNUM)? as u64;
+    if phentsize < ELF_PH_SIZE || phnum > 16 {
+        return None;
+    }
+    let table_end = phoff.checked_add(phnum.checked_mul(phentsize)?)?;
+    if table_end > image_len {
+        return None;
+    }
+    let mut segments: [Option<WritableSegment>; WRITABLE_SEGMENTS] = [None; WRITABLE_SEGMENTS];
+    let mut count = 0usize;
+    for index in 0..phnum {
+        let at = image_va + phoff + index * phentsize;
+        let kind = read_u32_at(runtime, at)?;
+        let flags = read_u32_at(runtime, at + 4)?;
+        if kind != PT_LOAD || flags & PF_W == 0 {
+            continue;
+        }
+        let vaddr = runtime.read_user_u64(at + 16).ok()?;
+        let file_size = runtime.read_user_u64(at + 32).ok()?;
+        let mem_size = runtime.read_user_u64(at + 40).ok()?;
+        if file_size > mem_size || mem_size == 0 {
+            return None;
+        }
+        let start = vaddr & !(FRAME_SIZE - 1);
+        let end = vaddr.checked_add(mem_size)?.checked_add(FRAME_SIZE - 1)? & !(FRAME_SIZE - 1);
+        if end > image_len || vaddr.checked_add(file_size)? > image_len {
+            return None;
+        }
+        let pages = (end - start) / FRAME_SIZE;
+        if pages == 0 || count == WRITABLE_SEGMENTS {
+            return None;
+        }
+        for previous in segments[..count].iter().flatten() {
+            if start < previous.start + previous.pages * FRAME_SIZE
+                && previous.start < start + pages * FRAME_SIZE
+            {
+                return None;
+            }
+        }
+        segments[count] = Some(WritableSegment {
+            start,
+            pages,
+            vaddr,
+            file_size,
+        });
+        count += 1;
+    }
+    Some(segments)
 }
 
 /// 将 C 的 argc/argv/envp/auxv 写入同一栈段，再卸载管理器内的临时映射。
