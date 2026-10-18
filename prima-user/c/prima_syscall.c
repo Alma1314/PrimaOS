@@ -162,24 +162,6 @@ long __syscall6(long number, long a0, long a1, long a2, long a3, long a4,
     return prima_translate(number, a0, a1, a2, a3, a4, a5);
 }
 
-long write(int fd, const void *buf, unsigned long count) {
-    return __syscall3(PRIMA_LINUX_SYS_write, fd, (long)buf, (long)count);
-}
-
-long read(int fd, void *buf, unsigned long count) {
-    return __syscall3(PRIMA_LINUX_SYS_read, fd, (long)buf, (long)count);
-}
-
-long writev(int fd, const struct iovec *iov, int iovcnt) {
-    return __syscall3(PRIMA_LINUX_SYS_writev, fd, (long)iov, iovcnt);
-}
-
-int close(int fd) { return (int)__syscall1(PRIMA_LINUX_SYS_close, fd); }
-
-int ioctl(int fd, unsigned long request, ...) {
-    return (int)__syscall3(PRIMA_LINUX_SYS_ioctl, fd, (long)request, 0);
-}
-
 int arch_prctl(int code, unsigned long addr) {
     return (int)__syscall2(PRIMA_LINUX_SYS_arch_prctl, code, (long)addr);
 }
@@ -187,11 +169,3 @@ int arch_prctl(int code, unsigned long addr) {
 long set_tid_address(int *tidptr) {
     return __syscall1(PRIMA_LINUX_SYS_set_tid_address, (long)tidptr);
 }
-
-void _exit(int status) {
-    (void)__syscall1(PRIMA_LINUX_SYS_exit_group, status);
-    for (;;)
-        ;
-}
-
-void exit(int status) { _exit(status); }

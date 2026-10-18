@@ -1,7 +1,8 @@
 # 阶段 5 兼容状态台账（M0）
 
-**日期**：2026-10-18。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺。冻结 profile 仍是
-[profile v0](../specs/2026-10-18-stage5-profile-v0.md)；本片**没有**把任何 API 从 `planned` 升为
+**日期**：2026-10-18。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3 完成后
+补充了 musl 基座证据，但不改变任何 profile 行的支持状态。冻结 profile 仍是
+[profile v0](../specs/2026-10-18-stage5-profile-v0.md)；**没有**把任何 API 从 `planned` 升为
 `supported`/`partial`，也没有勾选 S5-D*/S5-X*。
 
 符号级 `UNTEST` 沿用候选规格的术语：musl 会把它链接进来，但本阶段不承诺其行为。`UNTEST`
@@ -23,7 +24,7 @@
 | P5-TIME-01 | planned | 不在 echo 闭包 |
 | P5-THREAD-01 | unsupported | 不变；单线程锁在 `libc.need_locks=0` 时为空操作 |
 | P5-NET-01 | unsupported | 不变 |
-| P5-LIB-01 | planned | v0 行的符号清单不完整；见第 2 节与 v1 提案 |
+| P5-LIB-01 | planned | v0 行的符号清单不完整；见第 2 节与 v1 提案。M3 已用静态 musl 跑通 `snprintf`/`getenv`/errno 与 `exit`，但 `malloc/free` 仍未实现，不升级状态 |
 
 ## 2. P5-LIB-01 符号级状态（M0 盘点）
 
@@ -60,13 +61,17 @@ v1 前，上述符号不得对外宣称可用。
 |---|---|
 | 可复用（用户态现有机制） | fd 1/2 的逐字节 `SYS_SEND` 到服务管理器、管理器转发 tty；`SYS_TASK_ID`；`SYS_TASK_DESTROY`；私有可写 `PT_LOAD` |
 | 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传（取消点适配层路径就绪）；`__stdio_*`、`fputs`/`fputc`/`fflush` 等 musl 路径 |
-| 需新增内核机制（已落地 M2） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，并在调度切换保存/恢复 per-task FS base |
+| 需新增内核机制（已落地 M2/M3） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR |
+| musl 静态基座（M3 已落地） | 锁定快照 + 两个可重放补丁（`syscall_arch.h`、`__set_thread_area.s`）；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot 由 `prima-user/musl/build.sh` 构建；`snprintf`/`getenv`/errno 已验 |
 | 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、通用 `mmap`/文件映射 |
 | 仅链接、不执行（E1–E6） | mallocng `free`/`calloc`（`brk`/`mmap`/`munmap`/`madvise`）、futex/`__wait`（`libc.need_locks=0`）、`lseek`（无读缓冲）、`poll`/`ppoll`/`open`（非 secure auxv 早退） |
 
 ## 4. 非承诺
 
-- 本文件不表示 musl 已移植、stdio 已可用或 echo 已通过 E1–E6。
-- 本片没有新的 QEMU 运行证据；所有结论来自锁定源码、锁定 sbase 对象与宿主测量。
+- 本文件不表示 musl 已完整移植、stdio 已可用或 echo 已通过 E1–E6。M3 只覆盖静态
+  启动、`exit`、`snprintf`/`getenv`/errno 与既有适配层调用集；`malloc/free`、stdio
+  输出路径、线程/信号/网络未验收。
+- M3 有新的 QEMU 运行证据（双轮 `cargo xtask test`），但既有 h/i/xyz 字节流与
+  容量事件逐字节未变；这不是 profile 升级证据。
 - SSP/fortify 在 Prima 构建中预计关闭（避免 `AT_RANDOM` 与 glibc 专有 `*_chk` 符号）；
   这不是安全承诺，需在 M3 中作为已知边界登记。

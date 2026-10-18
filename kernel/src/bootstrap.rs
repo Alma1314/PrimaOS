@@ -2273,7 +2273,11 @@ pub struct VspaceEntry {
 /// 其 4 页探测映射需要 130 > 128，`memseg_map` 以 `CapacityExceeded`（errno `ENOENT`）失败，
 /// 表现为管理器无法创建 C 探针。按该常量注明的设计意图（与 `MAX_CAPABILITY_SLOTS = 144`
 /// 对齐）扩容；计数为真实增长，非泄漏。
-pub const MAX_VSPACE_ENTRIES: usize = 144;
+///
+/// **M3 扩容 144 → 192**：C 探针改用静态 musl 后，ELF 代码段 10 页、可写段 2 个、入口栈
+/// 8 页（musl 启动 + `snprintf` 栈用量超过 4 页），创建期逻辑映射条目越过 144
+/// （`CapacityExceeded`）。这是真实增长，非泄漏；容量证据随 M3 重测。
+pub const MAX_VSPACE_ENTRIES: usize = 192;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]

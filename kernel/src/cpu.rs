@@ -85,6 +85,35 @@ pub fn read_cr0_wp() -> bool {
     wp_of(prima_ostd::arch::read_cr0())
 }
 
+/// CR0.EM：置位时 SSE 指令非法（#UD）。
+pub const CR0_EM: u64 = 1 << 2;
+/// CR0.TS：置位时首次 SSE 指令触发 #NM（本内核无 #NM 处理）。
+pub const CR0_TS: u64 = 1 << 3;
+/// CR4.OSFXSR：允许 FXSAVE/FXRSTOR 与 SSE 指令。
+pub const CR4_OSFXSR: u64 = 1 << 9;
+/// CR4.OSXMMEXCPT：SSE 异常经 #XF 交付（本内核未处理，但置位是常规契约）。
+pub const CR4_OSXMMEXCPT: u64 = 1 << 10;
+
+/// 纯算术：清掉阻止 SSE 的 CR0.EM/TS，保留其余位。
+pub fn cr0_for_sse(cr0: u64) -> u64 {
+    cr0 & !(CR0_EM | CR0_TS)
+}
+
+/// 纯算术：置 CR4.OSFXSR/OSXMMEXCPT，保留其余位（尤其 PAE）。
+pub fn cr4_for_sse(cr4: u64) -> u64 {
+    cr4 | CR4_OSFXSR | CR4_OSXMMEXCPT
+}
+
+/// 启用 x87/SSE 指令并允许 FXSAVE/FXRSTOR。
+///
+/// 在进入 CPL3 之前调用一次；per-task 状态切换见 [`crate::sched`]。
+pub fn enable_sse() {
+    let cr0 = prima_ostd::arch::read_cr0();
+    prima_ostd::arch::write_cr0(cr0_for_sse(cr0));
+    let cr4 = prima_ostd::arch::read_cr4();
+    prima_ostd::arch::write_cr4(cr4_for_sse(cr4));
+}
+
 /// 读一个 `PageTableEntry` 数组的第 `index` 项。
 /// `table_mapped_va` 是页表页已映射到虚拟地址空间中的地址（调用方负责转换）。
 fn read_entry(table_mapped_va: u64, index: usize) -> Result<PageTableEntry, TranslateError> {
@@ -318,5 +347,27 @@ mod tests {
         let b = wp_of(0x112_0000u64);
         assert_eq!(a, b);
         assert!(!a); // 0x0000_0011_2000_0000 未含 bit16
+    }
+
+    /// M3：SSE 契约只清 EM/TS、只置 OSFXSR/OSXMMEXCPT；PAE 与 WP 等既有位必须保留
+    /// （清掉 PAE 会立即改变分页模式，清掉 WP 会破坏 W^X 的 supervisor 写保护证据）。
+    #[test]
+    fn sse_bit_masks_preserve_unrelated_control_bits() {
+        assert_eq!(CR0_EM, 1 << 2);
+        assert_eq!(CR0_TS, 1 << 3);
+        assert_eq!(CR4_OSFXSR, 1 << 9);
+        assert_eq!(CR4_OSXMMEXCPT, 1 << 10);
+
+        // bootloader 观察值：CR4 只有 PAE（0x20）。
+        assert_eq!(cr4_for_sse(0x20), 0x20 | 0x200 | 0x400);
+        assert!(cr4_for_sse(0x20) & 0x20 != 0);
+
+        // CR0：保留 WP(16)、PE(0)、PG(31)，只清 EM/TS。
+        let cr0 = 0x8000_0001 | CR0_WP | CR0_EM | CR0_TS;
+        assert_eq!(cr0_for_sse(cr0), 0x8000_0001 | CR0_WP);
+        assert_eq!(cr0_for_sse(0), 0);
+        // 幂等。
+        assert_eq!(cr0_for_sse(cr0_for_sse(cr0)), cr0_for_sse(cr0));
+        assert_eq!(cr4_for_sse(cr4_for_sse(0x20)), cr4_for_sse(0x20));
     }
 }

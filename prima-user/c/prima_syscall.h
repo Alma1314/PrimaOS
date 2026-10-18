@@ -22,14 +22,13 @@ long __syscall6(long number, long a0, long a1, long a2, long a3, long a4, long a
 long prima_native_syscall0(long number);
 long prima_native_syscall3(long number, long a0, long a1, long a2);
 
-long write(int fd, const void *buf, unsigned long count);
-long read(int fd, void *buf, unsigned long count);
-long writev(int fd, const struct iovec *iov, int iovcnt);
-int close(int fd);
-int ioctl(int fd, unsigned long request, ...);
+/* `write`/`read`/`writev`/`close`/`ioctl`/`_exit`/`exit` 由 libc（musl）提供，
+ * 它们最终经上面的 `__syscallN` 进入本适配层；这里不再定义同名符号，避免覆盖
+ * musl 的 stdio/exit 语义。`arch_prctl` 与 `set_tid_address` 不是 musl 的公开
+ * 函数符号，故保留给探针使用。 */
 int arch_prctl(int code, unsigned long addr);
 long set_tid_address(int *tidptr);
+/* libc 提供实现；探针的 Prima 入口需要声明。 */
 void _exit(int status) __attribute__((noreturn));
-void exit(int status) __attribute__((noreturn));
 
 #endif

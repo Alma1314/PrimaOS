@@ -87,7 +87,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     let rsp0 =
                                         boot_info.kernel_stack_bottom + boot_info.kernel_stack_len;
                                     match kernel::gdt::init_kernel_gdt(rsp0) {
-                                        Ok(()) => protocol::gdt_tss_ready(),
+                                        Ok(()) => {
+                                            // M3：进入 CPL3 前启用 x87/SSE（musl 的 C 闭包需要）；
+                                            // per-task 状态由 sched 的 FXSAVE/FXRSTOR 接管。
+                                            kernel::cpu::enable_sse();
+                                            protocol::gdt_tss_ready();
+                                        }
                                         Err(()) => {
                                             protocol::gdt_tss_error();
                                             serial::flush();
@@ -373,9 +378,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+fn panic(info: &PanicInfo<'_>) -> ! {
     serial::init();
     protocol::panic_event();
+    if let Some(location) = info.location() {
+        serial::write_bytes(b"[panic] ");
+        serial::write_bytes(location.file().as_bytes());
+        serial::write_bytes(b":");
+        let mut line = location.line();
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        loop {
+            digits[count] = b'0' + (line % 10) as u8;
+            line /= 10;
+            count += 1;
+            if line == 0 {
+                break;
+            }
+        }
+        for index in (0..count).rev() {
+            serial::write_bytes(&digits[index..index + 1]);
+        }
+        serial::write_bytes(b"\n");
+    }
     serial::flush();
     qemu::exit(qemu::PANIC)
 }

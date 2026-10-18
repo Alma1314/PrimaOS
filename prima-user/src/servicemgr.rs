@@ -148,8 +148,11 @@ fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32>
 
 /// 端点用户栈的页大小（`stack_top = ENDPOINT_STACK_VA + 0x1000`）。
 const FRAME_SIZE: u64 = 0x1000;
-/// C 入口栈从页内 0xf00 开始，保持 16 字节对齐。
-const C_STACK_OFFSET: u64 = 0xf00;
+/// C 入口栈页数：musl 的 `__libc_start_main` 与 `snprintf` 调用链合计超过 4 页；
+/// 8 页容纳启动初始化与格式化路径，同时把映射条目控制在新的 vspace 预算内。
+const C_STACK_PAGES: u64 = 8;
+/// C 入口栈顶从最高页的页内 0xf00 开始，保持 16 字节对齐。
+const C_STACK_OFFSET: u64 = C_STACK_PAGES * FRAME_SIZE - 0x100;
 /// 只读 + 可写映射权（`SegMapR|SegMapW`）。
 const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// 段 cap 的子集：`SegMapR|SegMapW` + `Derive`（`memseg_map` 前置要求段 cap 含 `Derive`）。
@@ -1316,8 +1319,9 @@ fn create_service(
         data_segments[slot] = Some((data, segment));
     }
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
-    // SPEC-108：自建 1 页栈段（`R|W`）。
-    let Ok(stack) = runtime.memseg_create(1, RW) else {
+    // SPEC-108：自建栈段（`R|W`）；C 入口用多页，musl 初始化需要。
+    let stack_pages = if c_stack { C_STACK_PAGES } else { 1 };
+    let Ok(stack) = runtime.memseg_create(stack_pages, RW) else {
         drop_data_segments(runtime, &mut data_segments);
         return None;
     };
@@ -1351,7 +1355,7 @@ fn create_service(
     };
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
     if runtime
-        .memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW)
+        .memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, stack_pages, RW)
         .is_err()
     {
         let _ = runtime.task_destroy(manager);
@@ -1478,14 +1482,16 @@ fn prepare_c_stack(
     stack: Capability,
 ) -> Option<()> {
     let alias = ENDPOINT_CODE_PROBE_VA;
-    runtime.memseg_map(stack, *self_cap, 0, alias, 1, RW).ok()?;
-    let base = ENDPOINT_STACK_VA;
+    runtime
+        .memseg_map(stack, *self_cap, 0, alias, C_STACK_PAGES, RW)
+        .ok()?;
+    let base = ENDPOINT_STACK_VA + C_STACK_OFFSET;
     let words = [
         2,
-        base + 0xf80,
-        base + 0xf90,
+        base + 0x80,
+        base + 0x90,
         0,
-        base + 0xfa0,
+        base + 0xa0,
         0,
         6,
         FRAME_SIZE,
@@ -1502,15 +1508,17 @@ fn prepare_c_stack(
             .is_ok();
     }
     written &= runtime
-        .write_user_bytes(alias + 0xf80, b"stage5-probe\0")
+        .write_user_bytes(alias + C_STACK_OFFSET + 0x80, b"stage5-probe\0")
         .is_ok();
     written &= runtime
-        .write_user_bytes(alias + 0xf90, b"stack-ready\0")
+        .write_user_bytes(alias + C_STACK_OFFSET + 0x90, b"stack-ready\0")
         .is_ok();
     written &= runtime
-        .write_user_bytes(alias + 0xfa0, b"PRIMA_ABI=1\0")
+        .write_user_bytes(alias + C_STACK_OFFSET + 0xa0, b"PRIMA_ABI=1\0")
         .is_ok();
-    let unmapped = runtime.memseg_unmap(*self_cap, alias, 1).is_ok();
+    let unmapped = runtime
+        .memseg_unmap(*self_cap, alias, C_STACK_PAGES)
+        .is_ok();
     (written && unmapped).then_some(())
 }
 

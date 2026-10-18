@@ -102,8 +102,27 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
                 .map_err(|error| format!("failed to read {}: {error}", source.display()))?,
         ));
     }
+    // M3：从锁定快照构建静态 musl 基座（脚本按补丁/快照哈希缓存）。
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let musl_script = workspace.join("prima-user").join("musl").join("build.sh");
+    let musl_status = Command::new("sh")
+        .arg(&musl_script)
+        .status()
+        .map_err(|error| format!("failed to run {}: {error}", musl_script.display()))?;
+    if !musl_status.success() {
+        return Err(format!(
+            "failed to build Prima musl sysroot: {}",
+            musl_script.display()
+        ));
+    }
+    let musl_prefix = workspace.join("target").join("musl-prefix");
+
     let source = stage5_probe_source();
-    let start = source.with_file_name("stage5_start.S");
+    let crt = source.with_file_name("prima_crt.c");
+    let start = source.with_file_name("prima_crt_start.S");
     let adapter = source.with_file_name("prima_syscall.c");
     let binary = path.with_file_name("stage5-probe.elf");
     let compiled = Command::new("clang")
@@ -115,19 +134,30 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
             "-Werror",
             "-ffreestanding",
             "-fno-stack-protector",
-            // 内核尚未置 CR4.OSFXSR/OSXMMEXCPT：C 代码只能用通用寄存器，避免
-            // clang 生成 SSE 拷贝（曾以 movaps 触发 #UD → 故障级联）。
+            // musl 构建：跳过会覆盖 musl TLS 基址的 M2 FS 实验。
+            "-DPRIMA_WITH_LIBC",
+            // 探针/适配层 TU 仍只用通用寄存器：SSE 路径由 libc.a 提供，这里保持
+            // M2 的 XMM 往返断言不被编译器自身的 XMM 使用干扰。
             "-mgeneral-regs-only",
-            "-fPIE",
+            "-fPIC",
             "-nostdlib",
             "-fuse-ld=lld",
             "-static-pie",
             "-Wl,-e,_start",
             "-Wl,--build-id=none",
+            "-Wl,--gc-sections",
+            "-nostdinc",
         ])
+        .arg("-isystem")
+        .arg(musl_prefix.join("include"))
         .arg(&source)
-        .arg(&adapter)
+        .arg(&crt)
         .arg(&start)
+        .arg(&adapter)
+        .arg("-L")
+        .arg(musl_prefix.join("lib"))
+        .arg("-lc")
+        .arg("-lgcc")
         .arg("-o")
         .arg(&binary)
         .output()

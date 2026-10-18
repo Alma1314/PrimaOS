@@ -34,6 +34,31 @@ static KSTACK_TOPS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS
 /// M2/T-MUSL-02：每个 Task 的 `%fs` 基址（0 = 无 TLS 上下文）。索引即 Task id。
 static FS_BASES: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
+/// FXSAVE 区域大小（x87 + SSE + MXCSR）。
+const FXSAVE_SIZE: usize = 512;
+
+/// 一个 Task 的 x87/SSE 状态镜像；`FXSAVE` 要求 16 字节对齐。
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+struct FpuArea([u8; FXSAVE_SIZE]);
+
+impl FpuArea {
+    /// `FXRSTOR` 可接受的初始状态：x87 控制字 `0x037F`（扩展精度、异常屏蔽），
+    /// MXCSR `0x1F80`（屏蔽全部 SSE 异常、就近舍入）。全零控制字会把 x87 精度
+    /// 降为单精度，不能作为默认值。
+    const DEFAULT: Self = {
+        let mut bytes = [0u8; FXSAVE_SIZE];
+        bytes[0] = 0x7F;
+        bytes[1] = 0x03;
+        bytes[24] = 0x80;
+        bytes[25] = 0x1F;
+        Self(bytes)
+    };
+}
+
+/// M3：每个 Task 的 x87/SSE 状态。索引即 Task id。
+static FPU_AREAS: StaticCell<[FpuArea; MAX_TASKS]> = StaticCell::new([FpuArea::DEFAULT; MAX_TASKS]);
+
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
 static SCRATCH: StaticCell<SretFrame> = StaticCell::new(SretFrame::ZERO);
 
@@ -200,6 +225,24 @@ pub fn fs_base(task_id: u32) -> Option<u64> {
     None
 }
 
+/// 把当前硬件 x87/SSE 状态保存到 `task_id` 的槽位。
+fn save_fpu(task_id: u32) {
+    FPU_AREAS.with_mut(|areas| {
+        if let Some(area) = areas.get_mut(task_id as usize) {
+            prima_ostd::arch::fxsave(area.0.as_mut_ptr());
+        }
+    });
+}
+
+/// 用 `task_id` 的槽位覆盖硬件 x87/SSE 状态。
+fn restore_fpu(task_id: u32) {
+    FPU_AREAS.with_mut(|areas| {
+        if let Some(area) = areas.get_mut(task_id as usize) {
+            prima_ostd::arch::fxrstor(area.0.as_ptr());
+        }
+    });
+}
+
 /// 把 `task_id` 的 FS 选择子与基址装入硬件。
 ///
 /// 顺序固定：先装用户数据选择子（长模式下会把 FS.base 归零），再写 `IA32_FS_BASE`。
@@ -218,6 +261,7 @@ pub fn clear_task(task_id: u32) {
         ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
         FS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
+        FPU_AREAS.with_mut(|areas| areas[task_id as usize] = FpuArea::DEFAULT);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
         clear_recv_out(task_id);
     }
@@ -238,6 +282,7 @@ pub fn switch_to(next: u32) -> ! {
     assert_ne!(cur, next, "switch_to must target a different task");
     bootstrap::yield_task_global(cur).expect("current task must be Running to yield");
     bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    save_fpu(cur);
     set_current(next);
     resume(next)
 }
@@ -249,6 +294,7 @@ pub fn block_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "block_to must target a different task");
     bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    save_fpu(cur);
     set_current(next);
     resume(next)
 }
@@ -261,6 +307,7 @@ pub fn exit_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "exit_to must target a different task");
     bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    save_fpu(cur);
     set_current(next);
     resume(next)
 }
@@ -270,6 +317,7 @@ pub fn fault_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "fault_to must target a different task");
     bootstrap::schedule_task_global(next).expect("fault successor must be Ready");
+    save_fpu(cur);
     set_current(next);
     resume(next)
 }
@@ -324,6 +372,8 @@ pub fn resume(task_id: u32) -> ! {
     }
     // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
     activate_fs(task_id);
+    // M3：x87/SSE 状态按 Task 恢复（保存发生在各切换函数的 set_current 之前）。
+    restore_fpu(task_id);
     // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
     flush_deferred_frames();
     SCRATCH.with_mut(|scratch| {
@@ -410,6 +460,21 @@ mod tests {
         assert_eq!(fs_base(MAX_TASKS as u32), None);
         // 清理测试留下的状态，避免影响其他用例（全局静态在测试间共享）。
         clear_task(3);
+    }
+
+    /// M3：初始 FPU 状态必须是可用的 x87/SSE 默认值；`clear_task` 复位 id 复用的槽位。
+    #[test]
+    fn fpu_default_state_and_task_clear() {
+        let default = FpuArea::DEFAULT.0;
+        assert_eq!(&default[0..2], &[0x7F, 0x03], "x87 FCW 扩展精度");
+        assert_eq!(&default[24..26], &[0x80, 0x1F], "MXCSR 默认掩码");
+        assert!(default[2..24].iter().all(|byte| *byte == 0));
+
+        FPU_AREAS.with_mut(|areas| areas[4].0[100] = 0xAB);
+        clear_task(4);
+        FPU_AREAS.with(|areas| assert_eq!(areas[4].0, default));
+        // 越界 id 不 panic、不越界写。
+        clear_task(MAX_TASKS as u32);
     }
 
     /// 切片 V：页表帧的归还被推迟到 `flush_deferred_frames`——入队期间 `count > 0`

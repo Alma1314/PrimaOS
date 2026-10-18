@@ -33,9 +33,20 @@ verify_commit = "git -C target/musl-1.2.5 rev-parse HEAD  # 必须等于 commit"
 verify_license = "sha256sum target/musl-1.2.5/COPYRIGHT"
 verify_archive = "sha256sum target/musl-v1.2.5.tar.gz"
 
+# M3 移植补丁（以完整替换文件保存，构建脚本复制进工作副本）。
+patch_dir = "prima-user/musl/patches"
+patches = [
+  "arch/x86_64/syscall_arch.h",
+  "src/thread/x86_64/__set_thread_area.s",
+]
+build_script = "prima-user/musl/build.sh"
+sysroot_dir = "target/musl-prefix"
+build_cache = "target/musl-prefix/.stamp  # 快照 commit + 补丁内容的 sha256"
+
 # 重新拉取时必须逐项核对；任一不匹配即停止，不得继续构建。
 notes = [
   "上游 git.musl-libc.org 在本机网络下超时，未直接验证；改用两个 GitHub 镜像互证同一 commit。",
   "GitHub 归档哈希依赖归档生成方式，不是上游发布 tarball 的哈希；commit 才是权威身份。",
-  "快照与归档只落在 target/（git-ignored）；补丁与 Prima 适配层将单独存放并在 M3 登记。",
+  "快照与归档只落在 target/（git-ignored）；M3 的两个移植补丁在 prima-user/musl/patches/ 下。",
+  "构建脚本要求 clang、llvm-ar；静态库以 -fPIC -O2 构建，产物不入 Git。",
 ]

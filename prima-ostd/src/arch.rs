@@ -109,6 +109,61 @@ pub fn read_cr0() -> u64 {
     value
 }
 
+/// 写 CR0。
+///
+/// 契约：特权指令，仅 CPL0；调用方负责保留必须置位的位（如 PE/PG/WP）。
+#[inline]
+pub fn write_cr0(value: u64) {
+    // SAFETY: 见函数契约。
+    unsafe {
+        asm!("mov cr0, {}", in(reg) value, options(nostack, preserves_flags));
+    }
+}
+
+/// 读 CR4。
+#[inline]
+pub fn read_cr4() -> u64 {
+    let mut value: u64;
+    // SAFETY: 读控制寄存器无副作用；`mov reg, cr4` 在 CPL0 下合法。
+    unsafe {
+        asm!("mov {}, cr4", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+/// 写 CR4。
+///
+/// 契约：特权指令，仅 CPL0；调用方负责保留必须置位的位（如 PAE）。
+#[inline]
+pub fn write_cr4(value: u64) {
+    // SAFETY: 见函数契约。
+    unsafe {
+        asm!("mov cr4, {}", in(reg) value, options(nostack, preserves_flags));
+    }
+}
+
+/// 用 `FXSAVE` 保存 x87/SSE 状态到 512 字节区域（必须 16 字节对齐）。
+///
+/// 契约：CR4.OSFXSR 已置位；`area` 指向可写、16 字节对齐的 512 字节缓冲区。
+#[inline]
+pub fn fxsave(area: *mut u8) {
+    // SAFETY: 见函数契约。
+    unsafe {
+        asm!("fxsave [{}]", in(reg) area, options(nostack));
+    }
+}
+
+/// 用 `FXRSTOR` 恢复 512 字节区域里的 x87/SSE 状态（必须 16 字节对齐）。
+///
+/// 契约：CR4.OSFXSR 已置位；`area` 指向可读、16 字节对齐的 512 字节缓冲区。
+#[inline]
+pub fn fxrstor(area: *const u8) {
+    // SAFETY: 见函数契约。
+    unsafe {
+        asm!("fxrstor [{}]", in(reg) area, options(nostack));
+    }
+}
+
 /// 使 `va` 的单条 TLB 项失效。
 ///
 /// 契约：特权指令，仅 CPL0。`va` 无需已映射——`invlpg` 对未映射地址是空操作，不产生 UB。

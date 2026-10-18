@@ -74,11 +74,41 @@ static long probe_raw6(long number, long a0, long a1, long a2, long a3,
 
 /* 放置于可写 PT_LOAD/.bss：装载器必须为它建立私有可写页，且 BSS 必须清零。 */
 static volatile uint64_t bss_probe;
-#ifndef PRIMA_HOST
-/* M2/T-MUSL-02：FS base 指向本变量；write 内的 yield 之后必须仍能读到同一值。 */
+#if !defined(PRIMA_HOST) && !defined(PRIMA_WITH_LIBC)
+/* M2/T-MUSL-02：FS base 指向本变量；yield 之后必须仍能读到同一值。
+ * musl 构建跳过：不能覆盖 musl 的 TLS 基址；M3 的 TLS 由 musl 启动本身见证。 */
 static volatile uint64_t fs_probe;
 #endif
 static int tid_sink;
+
+#ifndef PRIMA_HOST
+/* M3：不走 stdio 输出的 libc 断言——证明 musl 的格式化、环境变量与 errno 语义
+ * 都经适配层工作，同时不改变既有 h/i/xyz 串口字节流。 */
+extern int snprintf(char *buffer, unsigned long size, const char *format, ...);
+extern char *getenv(const char *name);
+extern int *__errno_location(void);
+extern long write(int fd, const void *buffer, unsigned long count);
+
+static int musl_runtime_probe(void) {
+    char buffer[64];
+    int written = snprintf(buffer, sizeof buffer, "%d-%s-%x", 42, "musl", 0xabc);
+    if (written != 11)
+        return 0;
+    const char expect[] = "42-musl-abc";
+    for (int i = 0; i < written; i++)
+        if (buffer[i] != expect[i])
+            return 0;
+    if (buffer[written] != 0)
+        return 0;
+    char *value = getenv("PRIMA_ABI");
+    if (!value || value[0] != '1' || value[1] != 0)
+        return 0;
+    *__errno_location() = 0;
+    if (write(99, "x", 1) != -1 || *__errno_location() != PRIMA_ERRNO_EBADF)
+        return 0;
+    return 1;
+}
+#endif
 
 static int same(const char *actual, const char *expected) {
     for (; *expected; actual++, expected++)
@@ -98,11 +128,32 @@ static long probe_write_fd(int fd, const char *s) {
     return probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)s, (long)text_len(s));
 }
 
-#ifndef PRIMA_HOST
+#if !defined(PRIMA_HOST) && !defined(PRIMA_WITH_LIBC)
 static uint64_t read_fs_zero(void) {
     uint64_t value;
     __asm__ volatile("mov %%fs:0, %0" : "=r"(value));
     return value;
+}
+#endif
+
+#ifndef PRIMA_HOST
+/* M3：本任务先把可辨识值放进 XMM0，经过 write 内部的协作切换后读回。
+ * 内核必须在切换时 FXSAVE/FXRSTOR；否则其他任务（或残留状态）会串改 XMM。
+ * write 走适配层的 `__syscallN`（不经过 libc），因此不会引入 libc 自身的 XMM 使用。
+ * Linux 参考侧不跑：glibc 自己在调用间使用 XMM，不能作为保留性基线。 */
+static int xmm_round_trip_survives_yield(void) {
+    const uint64_t lo = UINT64_C(0x0123456789abcdef);
+    const uint64_t hi = UINT64_C(0xfedcba9876543210);
+    uint64_t got_lo = 0, got_hi = 0;
+    __asm__ volatile("movq %0, %%xmm0" ::"r"(lo) : "xmm0");
+    __asm__ volatile("movq %0, %%xmm1" ::"r"(hi) : "xmm1");
+    __asm__ volatile("punpcklqdq %%xmm1, %%xmm0" ::: "xmm0");
+    if (probe_write_fd(1, "h") != 1 || probe_write_fd(2, "i") != 1)
+        return 0;
+    __asm__ volatile("movq %%xmm0, %0" : "=r"(got_lo));
+    __asm__ volatile("punpckhqdq %%xmm0, %%xmm0" ::: "xmm0");
+    __asm__ volatile("movq %%xmm0, %0" : "=r"(got_hi));
+    return got_lo == lo && got_hi == hi;
 }
 #endif
 
@@ -118,7 +169,7 @@ int main(int argc, char **argv, char **envp) {
     if (bss_probe != UINT64_C(0x5a5a))
         return 5;
 
-#ifndef PRIMA_HOST
+#if !defined(PRIMA_HOST) && !defined(PRIMA_WITH_LIBC)
     /* T-MUSL-02：设置本任务 FS base；GET_FS 与 `%fs:0` 必须立即读回同一值。 */
     fs_probe = UINT64_C(0x4d325f52505f5346);
     if (arch_prctl(PRIMA_ARCH_SET_FS, (unsigned long)&fs_probe) != 0)
@@ -133,13 +184,18 @@ int main(int argc, char **argv, char **envp) {
 
     /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，再用两个 iovec 写 5 字节。
      * 后者证明 stdio 实际依赖的 writev 路径与 write 走同一条字节流。 */
+#ifdef PRIMA_HOST
     if (probe_write_fd(1, "h") != 1 || probe_write_fd(2, "i") != 1)
         return 4;
-
-#ifndef PRIMA_HOST
+#else
+    /* M3：同两次写同时验证 x87/SSE 状态跨协作切换保留。 */
+    if (!xmm_round_trip_survives_yield())
+        return 9;
+#ifndef PRIMA_WITH_LIBC
     /* write 内部逐字节 yield 过；恢复后 FS base 不得被其他任务串改。 */
     if (read_fs_zero() != fs_probe)
         return 6;
+#endif
 #endif
 
     {
@@ -190,6 +246,12 @@ int main(int argc, char **argv, char **envp) {
                               (long)prima_ctx.code_cap, 0) !=
         -PRIMA_ERRNO_EACCES)
         return 8;
+#endif
+
+#ifndef PRIMA_HOST
+    /* M3：musl 的格式化、环境变量与 errno（不产生输出）。 */
+    if (!musl_runtime_probe())
+        return 10;
 #endif
 
     /* Linux `exit`(60) 与 `exit_group`(231) 都是终止路径；用 60 退出并要求它不返回。
