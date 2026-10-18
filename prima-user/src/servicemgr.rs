@@ -51,15 +51,15 @@ use prima_runtime::{
         NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
         SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER,
-        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_MAGIC,
-        SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA,
-        SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK,
-        SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG,
-        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
-        SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
-        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, native_app_hash, native_app_reply,
-        pack_service_name, pack_service_request,
+        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_SERVICEMGR,
+        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
+        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG,
+        SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE,
+        SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
+        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW,
+        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG,
+        SERVICE_SETUP_TAG, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG,
+        native_app_hash, native_app_reply, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
@@ -318,15 +318,16 @@ pub extern "C" fn _start(
     let mut finished = false;
     let mut capacity_probe: Option<(Capability, u64, Capability)> = None;
     let mut capacity_done = false;
-    let mut capacity_destroyed = false;
+    let mut capacity_exit_reported = false;
     let mut capacity_stack_reclaimed = false;
     let mut capacity_rejected = false;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut isolated_ns: Option<Capability> = None;
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
+    let mut c_probe: Option<Pending> = None;
     // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
-    let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending);
+    let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending, &mut c_probe);
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
     // EXO-3M：端点栈段句柄（本管理器创建），供原始 trace 的通用活对象判定。
@@ -430,43 +431,6 @@ pub extern "C" fn _start(
             }
         } else if message.payload >> 48 == SERVICE_ID_TAG >> 48 {
             // ② 端点/服务自报（cap0 = 自管理凭据，管理器据此回送转发/路由探针）。
-            let reported_id = message.payload & 0xff;
-            // 阶段 5：第七个端点复用驱动 ELF，只作一次 ring3 容量探针；原驱动仍在服务表中。
-            if reported_id == 16
-                && let Some((manager, entry_offset, stack)) = capacity_probe
-            {
-                let mut destroyed = runtime.task_destroy(manager);
-                if destroyed == Err(Error::Denied) {
-                    // 探针仍在发 marker 时先让它跑到阻塞接收，再销毁。
-                    let _ = runtime.yield_task();
-                    destroyed = runtime.task_destroy(manager);
-                }
-                capacity_destroyed = destroyed.is_ok();
-                if let Some(authority) = message.capabilities[0] {
-                    let _ = runtime.cap_drop(authority);
-                }
-                if capacity_destroyed {
-                    capacity_stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
-                    let _ = runtime.cap_drop(stack);
-                    let _ = runtime.cap_drop(manager);
-                    if let (Some(spec), Some(parent_ns)) = (pending[DRIVER_SLOT], isolated_ns) {
-                        // Dead 记录仍占 ID 16；合法请求必须确定地返回 ENOSPC。
-                        capacity_rejected = runtime.task_create(&TaskSpec {
-                            code_segment: spec.code,
-                            code_offset: spec.offset_pages,
-                            code_pages: spec.pages,
-                            load_base: ENDPOINT_CODE_VA,
-                            entry: ENDPOINT_CODE_VA + entry_offset,
-                            stack_top: ENDPOINT_STACK_VA + FRAME_SIZE,
-                            parent_namespace: Some(parent_ns),
-                            root_rights: NS_RESOLVE_RIGHTS,
-                            initial_capabilities: [None, None],
-                            name: spec.name,
-                        }) == Err(Error::ResourceExhausted);
-                    }
-                }
-                capacity_done = true;
-            }
             let name = (message.payload >> 8) & SERVICE_NAME_MASK;
             let behavior = behavior_for(name);
             let slot = behavior.wrapping_sub(1) as usize;
@@ -500,6 +464,31 @@ pub extern "C" fn _start(
                     let _ = seg;
                 }
             }
+        } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
+            // C 程序自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
+            // Dead 与根清理，不能只相信这条消息。
+            capacity_exit_reported = message.payload == (STAGE5_C_PROBE_TAG | 16);
+            if let Some((manager, entry_offset, stack)) = capacity_probe {
+                capacity_stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
+                let _ = runtime.cap_drop(stack);
+                let _ = runtime.cap_drop(manager);
+                if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
+                    // Dead 记录仍占 ID 16；合法请求必须确定地返回 ENOSPC。
+                    capacity_rejected = runtime.task_create(&TaskSpec {
+                        code_segment: spec.code,
+                        code_offset: spec.offset_pages,
+                        code_pages: spec.pages,
+                        load_base: ENDPOINT_CODE_VA,
+                        entry: ENDPOINT_CODE_VA + entry_offset,
+                        stack_top: ENDPOINT_STACK_VA + FRAME_SIZE,
+                        parent_namespace: Some(parent_ns),
+                        root_rights: NS_RESOLVE_RIGHTS,
+                        initial_capabilities: [None, None],
+                        name: spec.name,
+                    }) == Err(Error::ResourceExhausted);
+                }
+            }
+            capacity_done = true;
         } else if message.payload >> 48 == SERVICE_DONE_TAG >> 48 {
             // ③ 端点完成协商。先转发的是 `ALPHA`，故首个 done 属 `ALPHA`。
             if !alpha_done {
@@ -784,7 +773,7 @@ pub extern "C" fn _start(
         }
         if pong_sent && app_done && !finished {
             if capacity_probe.is_none() && !capacity_done {
-                if let (Some(spec), Some(parent_ns)) = (pending[DRIVER_SLOT], isolated_ns) {
+                if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
                     if let Some((_token, manager, entry, stack)) = create_service(
                         &runtime,
                         &self_cap,
@@ -941,10 +930,10 @@ pub extern "C" fn _start(
                 &runtime,
                 EVENT_STAGE5_CAPACITY,
                 16,
-                u64::from(capacity_destroyed),
+                STAGE5_C_PROBE_TAG >> 8 & 0xff,
+                u64::from(capacity_exit_reported),
                 u64::from(capacity_stack_reclaimed),
                 u64::from(capacity_rejected),
-                created,
             );
             // 三段**连发**（中间不让出）：唤醒先于带 cap 消息，宿主的 `BlockedRecv` 约束不触发。
             let _ = runtime.send(init_id, init_cap, SERVICEMGR_WAKE_TAG, &[]);
@@ -966,6 +955,7 @@ fn read_image_directory(
     self_cap: &Capability,
     image: Capability,
     pending: &mut [Option<Pending>; SERVICES],
+    c_probe: &mut Option<Pending>,
 ) -> Result<(), ()> {
     runtime
         .memseg_map(image, *self_cap, 0, ENDPOINT_CODE_PROBE_VA, 1, R_ONLY)
@@ -984,7 +974,14 @@ fn read_image_directory(
             let kind = runtime.read_user_u64(at).unwrap_or(0);
             let offset_pages = runtime.read_user_u64(at + 8).unwrap_or(0);
             let pages = runtime.read_user_u64(at + 16).unwrap_or(0);
-            if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
+            if kind == SERVICE_IMAGE_KIND_C_PROBE && pages != 0 {
+                *c_probe = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name: pack_service_name(b"cprog"),
+                });
+            } else if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
                 let Some(slot) = (kind as usize).checked_sub(1) else {
                     index += 1;
                     continue;

@@ -55,6 +55,10 @@ pub use prima_abi::boot_image::{
 /// 服务 kind 复用既有 `SERVICE_BEHAVIOR_*`（`ALPHA=1`…`DRIVER=6`），故服务管理器只按
 /// `kind` 建端点，不再依赖目录顺序或内核预排。
 pub const SERVICE_IMAGE_KIND_SERVICEMGR: u64 = 0x100;
+/// 阶段 5：无 libc C 探针在服务映像目录中的 opaque kind。
+pub const SERVICE_IMAGE_KIND_C_PROBE: u64 = 0x101;
+/// C 探针自报 tag；低字节是实际 Task ID，次低字节是 C 见证值。
+pub const STAGE5_C_PROBE_TAG: u64 = 0xc500_0000_0000_5a00;
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。

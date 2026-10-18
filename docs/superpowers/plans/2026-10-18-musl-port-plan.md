@@ -8,6 +8,8 @@
 
 ## 目标与边界
 
+BLK-004 的 C ELF 容量门槛已由[QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；下文 M1 的 POSIX 启动契约仍待实施。
+
 目标是使选定版本的开源 C 程序用 Prima sysroot 重新编译、**静态链接**，在 QEMU 中通过冻结的功能测试。首个可运行程序应验证 C 启动、输出、退出和错误路径；完整 musl 构建与阶段 5 退出须分别验收，不能由一个 hello 程序代替。动态链接器、真实线程、信号、`fork/execve/wait4` 与网络按冻结 profile 排期，不能用成功返回或空实现冒充支持。
 
 musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明确以 Linux syscall 接口为运行前提；[移植资料](https://wiki.musl-libc.org/porting)主要讨论新 CPU 架构，并建议使用 libc-test。Prima 是另一套 OS 语义，因此本项目需要逐函数核对 musl 对进程、内存、fd、时间、线程及信号的依赖。DOC-002 所称“仅 5 个替换点”是待验证估计，不作为改动范围上限；尤其不能把替换 syscall 汇编桩等同于完成 libc 移植。

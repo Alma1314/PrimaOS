@@ -14,3 +14,5 @@
 Task ID 16 的 ring3 创建、自报、销毁、根清理及重复创建 `ENOSPC` 由前述 QEMU 见证覆盖。服务映像 67 / 80 页；为首个 C ELF 预留的 13 页仍需用实际产物验证。
 
 验证：`cargo test --workspace --quiet`、`cargo xtask lint`、`cargo xtask test` 均 PASS。**BLK-004 保持 Open**，直到首个静态 C ELF 在全量服务场景中实际创建、运行、退出并回收；届时复测上表水位。此报告不证明长期运行时 Audit 永不耗尽，亦不签署 S5-D1–D7/X1–X3。
+
+后续真实 C ELF 替换了驱动复用探针，现行水位与 BLK-004 结论见 [C ELF QEMU 报告](2026-10-18-stage5-c-elf-qemu.md)；本表保留当时运行的历史值。

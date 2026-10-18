@@ -2,6 +2,7 @@ use bootloader::{BiosBoot, UefiBoot};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 const KERNEL_BINARY: &str = env!("CARGO_BIN_FILE_KERNEL_prima-kernel");
@@ -97,6 +98,45 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
                 .map_err(|error| format!("failed to read {}: {error}", source.display()))?,
         ));
     }
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .join("prima-user/c/stage5_probe.c");
+    let binary = path.with_file_name("stage5-probe.elf");
+    let compiled = Command::new("clang")
+        .args([
+            "-target",
+            "x86_64-unknown-none",
+            "-O2",
+            "-std=c11",
+            "-Werror",
+            "-ffreestanding",
+            "-fno-stack-protector",
+            "-fno-pie",
+            "-nostdlib",
+            "-fuse-ld=lld",
+            "-static-pie",
+            "-Wl,-e,_start",
+            "-Wl,--build-id=none",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run clang for {}: {error}", source.display()))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    ensure_non_empty(&binary, "stage5 C probe ELF")?;
+    manifest.push((
+        prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE,
+        fs::read(&binary)
+            .map_err(|error| format!("failed to read {}: {error}", binary.display()))?,
+    ));
 
     // EXO-2D：manifest 条目带 opaque `kind`。内核只按 kind 找 init，其余条目按
     // manifest 顺序做通用页打包/目录；服务语义只在用户态解释。
