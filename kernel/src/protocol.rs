@@ -37,14 +37,16 @@ pub(crate) fn trace_bytes_dump(page: u64, slot: u8) {
     serial::write_bytes(b"\r\n");
 }
 
-/// 阶段 5：内核独立确认 ID 16 已销毁且调度根清空；记录收尾时活动容量。
+/// 阶段 5：内核独立确认 C 探针 Task 已销毁且调度根清空；记录收尾时活动容量。
+///
+/// 片 C 加入 tty 服务后 C 探针 ID 从 16 变为 17；此前 16 的见证保留在历史报告里。
 pub(crate) fn stage5_task_capacity_dump() {
-    serial::write_bytes(b"TASKCAP|id=16;dead=");
+    serial::write_bytes(b"TASKCAP|id=17;dead=");
     write_u32(u32::from(
-        kernel::bootstrap::task_status(16) == Some(kernel::bootstrap::TaskStatus::Dead),
+        kernel::bootstrap::task_status(17) == Some(kernel::bootstrap::TaskStatus::Dead),
     ));
     serial::write_bytes(b";root_cleared=");
-    write_u32(u32::from(kernel::sched::root(16).is_none()));
+    write_u32(u32::from(kernel::sched::root(17).is_none()));
     serial::write_bytes(b";tasks=");
     write_u64(kernel::bootstrap::live_task_count() as u64);
     serial::write_bytes(b";caps=");

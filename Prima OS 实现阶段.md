@@ -13,7 +13,7 @@
 | 项目 | 状态与依据 |
 |---|---|
 | 阶段 0–4 | 已满足退出条件；签署报告依次为 [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)。阶段 0 的结论限规范文本；实现、模型和 QEMU 各按报告范围解释。 |
-| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)、[固定 C 初始栈](docs/superpowers/reports/2026-10-18-stage5-c-start-stack.md)与[同源 `main` 返回码](docs/superpowers/reports/2026-10-18-stage5-main-return-status.md)获见证。BLK-004 已关闭、BLK-003 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
+| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)、[固定 C 初始栈](docs/superpowers/reports/2026-10-18-stage5-c-start-stack.md)与[同源 `main` 返回码](docs/superpowers/reports/2026-10-18-stage5-main-return-status.md)、[同源 `write(1/2)`/`_exit` 的 tty 字节流](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)获见证。BLK-004 已关闭、BLK-003 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
 | 下一阶段 | 阶段 6 未开始；阶段 7 范围未冻结。 |
 | 近期复核 | [阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)、[阶段 2 IPC 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3 整改](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)；后两者已通过 workspace 测试、lint 和 BIOS QEMU 双跑。 |
 | TCB | 基线与历次统计见压缩前版本；最新数值应以 `cargo xtask tcb` 现跑结果为准，`kernel/src` 仍要求零 `unsafe`。 |
@@ -166,7 +166,7 @@
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：进行中（BLK-004 C Task 容量门槛已关闭）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
+**状态：进行中（BLK-004 C Task 容量门槛已关闭；片 C 的最小 `write(1/2)`+`_exit` 纵向闭环已获 QEMU 见证，见[tty 字节流报告](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
 
 ### 交付检查
 
@@ -188,7 +188,7 @@
 | futex / wait_multi 内核化 | 决策 D-02 | 未实现 | 阶段 4/5 |
 | 基础信号 | 规格 §4.5.1 结构 + 号段 `0x03A–0x03D`（`sigaction`/`kill`/`sigreturn`/`abort`） | 抽象层已有 `exc_subscribe`/`exc_unsubscribe`（COSIR §12）与 `exc_resume`；用户可调仅 `SYS_TRAP`/`SYS_EXC_WAIT`（SPEC-052） | 阶段 5 |
 | `fork`/`execve`/`wait4` | 规格 §5.11（V1 仅单线程 fork，多线程返 `EAGAIN`，决策 D-13） | 未实现 | 阶段 5 |
-| tty / console 通路 | 规格 §5.12 | 未实现 | 阶段 4/5 |
+| tty / console 通路 | 规格 §5.12 | 片 C 已实现 fd 1/2 到 COM1 的 ring3 字节流服务（`prima-tty`）与受控端口自检；无行规程、无通用 fd/console API | 阶段 4/5 |
 | 匿名页池与 `mmap` flag、W^X | 规格 §4.14（W^X，决策 D-18） | 未实现；在册“image 段 `{R,X}` 与可写 `.data`/`.bss` 冲突”仍待链接脚本级段切分 | 阶段 4/5 |
 | 号段 / 命名对齐 | `0x0xx` 号段、`NT_RUXOS_ABI`、`x86_64-ruxos-none` | `prima-abi` 的 `SYS_*` 编号（1–37 已占用，37 为原生 ABI 握手） | 余项待决策 |
 

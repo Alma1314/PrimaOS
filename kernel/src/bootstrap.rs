@@ -109,8 +109,10 @@ pub const INTERNAL_TASK_ROOT_SLOT_COUNT: u32 = 8;
 /// `register_created_task` 会确定性失败（`NoSpace`）而非带着空内核栈调度。
 /// SPEC-106：S4-D3 的服务表扩到 5 项——`servicemgr`8 + 客户端 9 + 五个服务端点 10..14，故上限
 /// 12→**16**。阶段 5 为全量服务之后的首个 C Task 预留 id 16。
-/// `sched` 复用此常量；`user::USER_TASK_KSTACK_COUNT` 已覆盖 id 3..18。
-pub(crate) const MAX_TASKS: usize = 17;
+/// 阶段 5 片 C：tty 服务占 id 16，C 探针因此改占 id 17，表容量 17→**18**；内核栈数组
+/// （`user::USER_TASK_KSTACK_COUNT = 16`，覆盖 id 3..18）仍足用。
+/// `sched` 复用此常量。
+pub(crate) const MAX_TASKS: usize = 18;
 /// Audit 容量。
 ///
 /// SPEC-071（`ISSUE-TASK-003`）：§13.1/W13 要求**每次** Task 状态迁移都追加 `TaskStateChanged`。
@@ -2265,7 +2267,12 @@ pub struct VspaceEntry {
 /// 以 `CapacityExceeded` 失败，症状是内核按 `USER_HELLO2_VA` 读共享段**全部读成「地址」**、
 /// `service_reply_ready.map` 变 `ENOENT`。该计数是**真实增长而非泄漏**（`teardown_vspace` 确有
 /// `vspace.remove`），故仍按其设计意图扩容到 128。
-pub const MAX_VSPACE_ENTRIES: usize = 128;
+///
+/// **阶段 5 片 C 扩容 128 → 144**：加入 tty 服务后，C 探针创建前的实测逻辑映射条目为 **126**，
+/// 其 4 页探测映射需要 130 > 128，`memseg_map` 以 `CapacityExceeded`（errno `ENOENT`）失败，
+/// 表现为管理器无法创建 C 探针。按该常量注明的设计意图（与 `MAX_CAPABILITY_SLOTS = 144`
+/// 对齐）扩容；计数为真实增长，非泄漏。
+pub const MAX_VSPACE_ENTRIES: usize = 144;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
@@ -11708,11 +11715,12 @@ mod tests {
     #[test]
     fn stage5_has_one_task_id_after_existing_services() {
         let mut table = super::TaskTable::with_init();
-        for id in 2..=15 {
+        // 现有服务（含片 C 的 tty）占 2..=16；C 探针取最后一个 id 17。
+        for id in 2..=16 {
             table.create(id).unwrap();
         }
-        assert_eq!(table.next_free_id(), Some(16));
-        table.create(16).unwrap();
+        assert_eq!(table.next_free_id(), Some(17));
+        table.create(17).unwrap();
         assert_eq!(table.next_free_id(), None);
     }
 

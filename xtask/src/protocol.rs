@@ -125,7 +125,10 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// **SPEC-151（ISSUE-AUTH-003/004）再 +3**：task 2 的结构性根、仍活动的 Faulted 见证 Task 的
 /// 结构性根、以及 init 移交管理器后仍在册的派生 Namespace 副本。前两者落在预留槽区
 /// （120..127）；后者取代原先直接移交根本身（根本身仍由 init 持有，总数 +1）。
-const TASK_READY_LIVE_CAPS: usize = 114;
+///
+/// 阶段 5 片 C：tty 服务的自管理凭据/代码令牌/设备 cap 与 C 探针创建和销毁的净变化后，
+/// 实测 114 → **123**。
+const TASK_READY_LIVE_CAPS: usize = 123;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -609,10 +612,7 @@ pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
         .lines()
         .filter(|line| line.starts_with("CIO|"))
         .collect();
-    if cio.len() != 1
-        || cio[0].trim_end_matches('\r')
-            != "CIO|task=16;fd=1;ch=104;fd=2;ch=105;out_ok=1;in_magic=1;out_of_range=1"
-    {
+    if cio.len() != 1 || cio[0].trim_end_matches('\r') != "CIO|task=17;fd=1;ch=104;fd=2;ch=105" {
         return Err(format!("stage5 tty write trace mismatch: {cio:?}"));
     }
     let ttyin: Vec<_> = output
@@ -620,7 +620,7 @@ pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
         .filter(|line| line.starts_with("TTYIN|"))
         .collect();
     if ttyin.len() != 1
-        || ttyin[0].trim_end_matches('\r') != "TTYIN|task=0;fd=1;ch=104;fd=2;ch=105"
+        || ttyin[0].trim_end_matches('\r') != "TTYIN|task=17;fd=1;ch=104;fd=2;ch=105"
     {
         return Err(format!("stage5 tty in trace mismatch: {ttyin:?}"));
     }
@@ -629,8 +629,7 @@ pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
         .filter(|line| line.starts_with("TTYOUT|"))
         .collect();
     if ttyout.len() != 1
-        || ttyout[0].trim_end_matches('\r')
-            != "TTYOUT|task=0;in_magic=1;out_of_range=1;out_ok=1"
+        || ttyout[0].trim_end_matches('\r') != "TTYOUT|task=17;in_magic=1;out_of_range=1;out_ok=1"
     {
         return Err(format!("stage5 tty out trace mismatch: {ttyout:?}"));
     }
@@ -644,7 +643,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .iter()
         .filter(|record| record.id == prima_abi::trace::EVENT_STAGE5_CAPACITY)
         .collect();
-    if capacity.len() != 1 || capacity[0].args != [16, 0x5a, 37, 1, 1] {
+    if capacity.len() != 1 || capacity[0].args != [17, 0x5a, 37, 1, 1] {
         return Err(format!("stage5 capacity trace mismatch: {capacity:?}"));
     }
     let lines: Vec<_> = output
@@ -653,7 +652,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if lines.len() != 1
         || lines[0].trim_end_matches('\r')
-            != "TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114"
+            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=123"
     {
         return Err(format!("stage5 kernel task state mismatch: {lines:?}"));
     }
@@ -663,7 +662,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=114;caps_peak=119;caps_limit=144;segment_slots=31;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=629;audit_limit=768"
+            != "CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=686;audit_limit=768"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -2964,9 +2963,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 45 || direct != 39 || blocks != 46 {
+    if queued != 45 || direct != 46 || blocks != 54 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 45/39/46; stage5 C Task 16 adds one queued report and then self-destroys"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 45/46/54; stage5 片 C adds the C Task 17 write/exit reports (each followed by a yield) and the tty service's device handoff/ack"
         ));
     }
     Ok(())
@@ -3145,9 +3144,10 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     // SPEC-092：再加**第二个独立服务端点**（id 10，各自独立任务与独立根）。
     // SPEC-103：再加 ring3 **服务管理器**任务（id 11）。
     // SPEC-114：再加 **ring3 用户态驱动**（`ioprt`）。
-    if tasks != 11 {
+    // 阶段 5 片 C：再加 **tty 服务**任务（`kind 0x102`）。
+    if tasks != 12 {
         return Err(format!(
-            "task_ready tasks is {tasks}, expected 11 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt) — the created child must be gone from the task table"
+            "task_ready tasks is {tasks}, expected 12 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt + the tty service) — the created child must be gone from the task table"
         ));
     }
     if root_cleared != 1 {
@@ -3181,9 +3181,9 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
             "task_ready task4_map_dead (0x{task4_map_dead:x}) must be ENOENT — task 4 destroyed itself, so mapping into its address space must be denied"
         ));
     }
-    if tasks_after != 11 {
+    if tasks_after != 12 {
         return Err(format!(
-            "task_ready tasks_after is {tasks_after}, expected 11 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt) — the self-destroyed task must be gone from the task table"
+            "task_ready tasks_after is {tasks_after}, expected 12 (init + task 2 + the reserved Faulted witness task + the surviving Rust client + the ring3 servicemgr + the six service-table endpoints: alpha/beta/log/ns/store/ioprt + the tty service) — the self-destroyed task must be gone from the task table"
         ));
     }
     if root4_cleared != 1 {
@@ -4226,7 +4226,7 @@ mod tests {
                 0x5ec9000600000000,
                 0,
             ],
-            [7, 16, 0x5a, 37, 1, 1],
+            [7, 17, 0x5a, 37, 1, 1],
         ];
 
         let mut output = String::new();
@@ -4270,9 +4270,9 @@ mod tests {
     #[test]
     fn stage5_tty_requires_c_writes_and_tty_ioport_answers() {
         let good = concat!(
-            "CIO|task=16;fd=1;ch=104;fd=2;ch=105;out_ok=1;in_magic=1;out_of_range=1\r\n",
-            "TTYIN|task=0;fd=1;ch=104;fd=2;ch=105\r\n",
-            "TTYOUT|task=0;in_magic=1;out_of_range=1;out_ok=1\r\n",
+            "CIO|task=17;fd=1;ch=104;fd=2;ch=105\r\n",
+            "TTYIN|task=17;fd=1;ch=104;fd=2;ch=105\r\n",
+            "TTYOUT|task=17;in_magic=1;out_of_range=1;out_ok=1\r\n",
         );
         assert_eq!(super::validate_stage5_tty(good), Ok(()));
         assert!(super::validate_stage5_tty("").is_err());
@@ -4293,8 +4293,8 @@ mod tests {
     #[test]
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
-        output.push_str("TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114\r\n");
-        output.push_str("CAPACITY|caps_live=114;caps_peak=119;caps_limit=144;segment_slots=31;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=629;audit_limit=768\r\n");
+        output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=123\r\n");
+        output.push_str("CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=686;audit_limit=768\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);
@@ -4302,7 +4302,7 @@ mod tests {
         assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
         assert!(
-            super::validate_stage5_capacity(&output.replace("caps_peak=119", "caps_peak=144"))
+            super::validate_stage5_capacity(&output.replace("caps_peak=128", "caps_peak=144"))
                 .is_err()
         );
     }
@@ -4398,8 +4398,8 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=45;direct=39;blocks=46\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=114;root_cleared=1;grandchild=4;tasks_after=11;caps_after=114;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=45;direct=46;blocks=54\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=123;root_cleared=1;grandchild=4;tasks_after=12;caps_after=123;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=2;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4470,7 +4470,7 @@ mod tests {
         // SPEC-070/072/073 + SPEC-087 + SPEC-088 + SPEC-092 + SPEC-103：合法值为 7（init + task 2 +
         // 保留槽位的 Faulted 见证任务 + 存活的 Rust 客户端 + **两个**独立 Rust 服务端点 + ring3
         // 服务管理器）；9 表示子任务未清除。
-        let output = VALID.replace(";tasks=11;", ";tasks=9;");
+        let output = VALID.replace(";tasks=12;", ";tasks=9;");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("must be gone from the task table"),
@@ -4490,7 +4490,7 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=114;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=123;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
             error.contains("self/root-ns caps must be revoked"),
@@ -4588,9 +4588,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=39;", ";direct=0;");
+        let output = VALID.replace(";direct=46;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 45/39/46"), "{error}");
+        assert!(error.contains("expected 45/46/54"), "{error}");
     }
 
     #[test]

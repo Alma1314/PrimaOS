@@ -50,6 +50,13 @@ path = "src/driver.rs"
 test = false
 bench = false
 
+# 阶段 5 片 C：用户态 tty 字节流服务（把 C 的 write(1/2) 落到串口）。
+[[bin]]
+name = "prima-tty"
+path = "src/tty.rs"
+test = false
+bench = false
+
 [dependencies]
 prima-runtime = { path = "../prima-runtime" }
 prima-ostd = { path = "../prima-ostd" }

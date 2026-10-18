@@ -68,6 +68,7 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_stage5_capacity(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
@@ -89,6 +90,7 @@ pub(crate) fn run_bios_capture(image: &Path) -> Result<String, String> {
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_stage5_capacity(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
     Ok(output.stdout)

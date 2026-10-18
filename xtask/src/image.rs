@@ -11,7 +11,7 @@ const UEFI_IMAGE_NAME: &str = "prima-os-uefi.img";
 const RAMDISK_IMAGE_NAME: &str = "prima-os-ramdisk.img";
 
 /// 用户态服务映像及其 opaque manifest kind；内核只复制 kind，不解释服务角色。
-const SERVICE_IMAGES: [(&str, u64); 7] = [
+const SERVICE_IMAGES: [(&str, u64); 8] = [
     (
         env!("CARGO_BIN_FILE_PRIMA_USER_prima-smoke"),
         prima_runtime::protocol::SERVICE_BEHAVIOR_ALPHA,
@@ -39,6 +39,10 @@ const SERVICE_IMAGES: [(&str, u64); 7] = [
     (
         env!("CARGO_BIN_FILE_PRIMA_USER_prima-driver"),
         prima_runtime::protocol::SERVICE_BEHAVIOR_DRIVER,
+    ),
+    (
+        env!("CARGO_BIN_FILE_PRIMA_USER_prima-tty"),
+        prima_runtime::protocol::SERVICE_IMAGE_KIND_TTY,
     ),
 ];
 
@@ -110,7 +114,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
             "-Werror",
             "-ffreestanding",
             "-fno-stack-protector",
-            "-fno-pie",
+            "-fPIE",
             "-nostdlib",
             "-fuse-ld=lld",
             "-static-pie",
@@ -197,6 +201,9 @@ fn stage5_probe_source() -> PathBuf {
 }
 
 /// 同一 C 源码在 Linux 宿主上的 main 返回码参考：成功及两个输入拒绝。
+///
+/// 片 C：另断言同源探针在 Linux 上 `write(1)`/`write(2)` 各输出一个字节——与 Prima QEMU
+/// 侧 `CIO|` 见证（同一 `main` 路径写的 'h'/'i'）构成同源差分。
 pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
     let source = stage5_probe_source();
     let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -204,7 +211,7 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
         .expect("xtask must be directly under the workspace root")
         .join("target/prima-os/stage5-probe-linux");
     let compiled = Command::new("clang")
-        .args(["-O2", "-std=c11", "-Werror"])
+        .args(["-O2", "-std=c11", "-Werror", "-DPRIMA_HOST"])
         .arg(&source)
         .arg("-o")
         .arg(&binary)
@@ -226,17 +233,25 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
         if environment {
             command.env("PRIMA_ABI", "1");
         }
-        let status = command
-            .status()
+        let output = command
+            .output()
             .map_err(|error| format!("failed to run Linux C probe: {error}"))?;
-        if status.code() != Some(expected) {
+        if output.status.code() != Some(expected) {
             return Err(format!(
                 "Linux C probe exit mismatch: expected {expected}, got {:?}",
-                status.code()
+                output.status.code()
+            ));
+        }
+        // 成功路径与 Prima 同源：fd 1 写 'h'、fd 2 写 'i'。
+        if expected == 37 && (output.stdout != b"h" || output.stderr != b"i") {
+            return Err(format!(
+                "Linux C probe write mismatch: stdout {:?}, stderr {:?}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             ));
         }
     }
-    println!("PASS linux stage5 C main exits 37/2/3");
+    println!("PASS linux stage5 C main exits 37/2/3 and writes h>i via write(1)/write(2)");
     Ok(())
 }
 

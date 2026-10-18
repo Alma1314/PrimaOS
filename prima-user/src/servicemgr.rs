@@ -52,14 +52,16 @@ use prima_runtime::{
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
         SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER,
         SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_SERVICEMGR,
-        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
-        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG,
-        SERVICE_NAME_MASK, SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE,
-        SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B,
-        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW,
-        SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG,
-        SERVICE_SETUP_TAG, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG,
-        native_app_hash, native_app_reply, pack_service_name, pack_service_request,
+        SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
+        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
+        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
+        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
+        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
+        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
+        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_TTY_ACK_TAG,
+        STAGE5_TTY_READY_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply,
+        pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
@@ -83,6 +85,36 @@ fn trace_emit(
 ) -> prima_runtime::Result<()> {
     runtime.trace_append_shared(TRACE_BASE, [id, a, b, c, d, e])
 }
+/// 阶段 5 片 C：经受控端口路径把见证行写到 COM1。
+fn serial_puts(
+    runtime: &Runtime<impl SyscallTransport>,
+    cap: Capability,
+    bytes: &[u8],
+) -> prima_runtime::Result<()> {
+    for &byte in bytes {
+        runtime.dev_ioport_out(cap, IOPORT_BASE, byte)?;
+    }
+    Ok(())
+}
+
+fn serial_dec(
+    runtime: &Runtime<impl SyscallTransport>,
+    cap: Capability,
+    mut value: u64,
+) -> prima_runtime::Result<()> {
+    let mut buf = [0u8; 20];
+    let mut index = buf.len();
+    loop {
+        index -= 1;
+        buf[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    serial_puts(runtime, cap, &buf[index..])
+}
+
 /// 客户端把 `PONG` 的 payload 写回共享段内的偏移（与 `prima-user`/内核一致）。
 const SERVICE_REPLY_OFFSET: u64 = 64;
 /// 协商结果/负例码在共享段内的偏移（与 `prima-user/src/main.rs` 一致）。
@@ -321,15 +353,31 @@ pub extern "C" fn _start(
     let mut capacity_probe: Option<(Capability, u64, Capability)> = None;
     let mut capacity_done = false;
     let mut capacity_exit_status = u64::MAX;
+    let mut capacity_id = 0u64;
     let mut capacity_stack_reclaimed = false;
     let mut capacity_rejected = false;
+    // 阶段 5 片 C：tty 服务自己注册、管理器的串口见证设备、C 的两条 write 与本轮 ACK。
+    let mut tty: Option<Endpoint> = None;
+    let mut tty_created = false;
+    let mut mgr_serial: Option<Capability> = None;
+    let mut tty_writes = [(0u64, 0u64); 2];
+    let mut tty_write_count = 0;
+    let mut tty_ack = false;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut isolated_ns: Option<Capability> = None;
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
     let mut c_probe: Option<Pending> = None;
+    let mut tty_pending: Option<Pending> = None;
     // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
-    let _ = read_image_directory(&runtime, &self_cap, image_cap, &mut pending, &mut c_probe);
+    let _ = read_image_directory(
+        &runtime,
+        &self_cap,
+        image_cap,
+        &mut pending,
+        &mut c_probe,
+        &mut tty_pending,
+    );
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
     // EXO-3M：端点栈段句柄（本管理器创建），供原始 trace 的通用活对象判定。
@@ -342,7 +390,6 @@ pub extern "C" fn _start(
     // SPEC-110：每个基础服务已收到的应答条数（0..3）与**已答完 3 条**的服务数。
     let mut reply_count: [u64; SERVICES] = [0; SERVICES];
     let mut served = 0u64;
-
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
@@ -466,10 +513,69 @@ pub extern "C" fn _start(
                     let _ = seg;
                 }
             }
+        } else if message.payload >> 48 == STAGE5_TTY_READY_TAG >> 48 {
+            // 阶段 5 片 C：tty 服务就绪。管理器铸一块 COM1 设备给它做字节流后端，另铸一块
+            // 只留给自己的见证行输出（两块独立权威，互不转移）。
+            if let Some(authority) = message.capabilities[0]
+                && tty.is_none()
+            {
+                let id = message.payload & 0xff;
+                tty = Some(Endpoint {
+                    id,
+                    authority,
+                    behavior: 0,
+                });
+                if let Ok(dev) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
+                    let _ = runtime.send(
+                        TaskId::from_raw(id as u32),
+                        authority,
+                        SERVICE_DEV_CAP_TAG,
+                        &[dev],
+                    );
+                }
+                if let Ok(serial) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
+                    mgr_serial = Some(serial);
+                }
+            }
+        } else if message.payload >> 48 == STAGE5_TTY_WRITE_TAG >> 48 {
+            // C 的 write(1/2)：管理器记录并原样转发给 tty；两条齐备后独立打印 CIO 见证。
+            let fd = (message.payload >> 16) & 0xff;
+            let byte = (message.payload >> 24) & 0xff;
+            if (fd == 1 || fd == 2) && tty_write_count < 2 {
+                tty_writes[tty_write_count] = (fd, byte);
+                tty_write_count += 1;
+                if let Some(endpoint) = tty {
+                    let _ = runtime.send(
+                        TaskId::from_raw(endpoint.id as u32),
+                        endpoint.authority,
+                        message.payload,
+                        &[],
+                    );
+                }
+                if tty_write_count == 2
+                    && let Some(serial) = mgr_serial
+                {
+                    let sender = (message.payload >> 32) & 0xff;
+                    // tty 的数据字节没有换行；先换行，避免见证行被 'h'/'i' 前缀。
+                    let _ = serial_puts(&runtime, serial, b"\r\nCIO|task=");
+                    let _ = serial_dec(&runtime, serial, sender);
+                    for (fd, byte) in tty_writes {
+                        let _ = serial_puts(&runtime, serial, b";fd=");
+                        let _ = serial_dec(&runtime, serial, fd);
+                        let _ = serial_puts(&runtime, serial, b";ch=");
+                        let _ = serial_dec(&runtime, serial, byte);
+                    }
+                    let _ = serial_puts(&runtime, serial, b"\r\n");
+                }
+            }
+        } else if message.payload >> 48 == STAGE5_TTY_ACK_TAG >> 48 {
+            tty_ack = true;
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
             // C 程序自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
             // Dead 与根清理，不能只相信这条消息。
-            if message.payload & !(0xff << 16) == (STAGE5_C_PROBE_TAG | 16) {
+            // 屏蔽状态字节与 ID 字节后必须等于固定标签（含 0x5a 见证），再记录两者。
+            if message.payload & !((0xff << 16) | 0xff) == (STAGE5_C_PROBE_TAG & !0xff) {
+                capacity_id = message.payload & 0xff;
                 capacity_exit_status = (message.payload >> 16) & 0xff;
             }
             if let Some((manager, entry_offset, stack)) = capacity_probe {
@@ -577,6 +683,20 @@ pub extern "C" fn _start(
                         .write_user_bytes(USER_SEG_VA + OFF_MGR_CREATED, &created.to_le_bytes());
                 }
                 slot += 1;
+            }
+            // 阶段 5 片 C：tty 服务在建端点阶段创建，早于 C 探针；它随后自报就绪。
+            if !tty_created && let Some(spec) = tty_pending {
+                let mut tty_slot = [false; SERVICES];
+                tty_created = create_service(
+                    &runtime,
+                    &self_cap,
+                    parent_ns,
+                    &spec,
+                    DRIVER_SLOT,
+                    &mut tty_slot,
+                    false,
+                )
+                .is_some();
             }
         }
 
@@ -776,7 +896,9 @@ pub extern "C" fn _start(
             pong_sent = true;
             let _ = trace_emit(&runtime, EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
         }
-        if pong_sent && app_done && !finished {
+        // tty 必须先完成注册并拿到设备，C 探针的 write 才有后端；未注册时继续事件循环，
+        // 让 tty 在管理器阻塞于 receive 时被调度。
+        if pong_sent && app_done && tty.is_some() && !finished {
             if capacity_probe.is_none() && !capacity_done {
                 if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
                     if let Some((_token, manager, entry, stack)) = create_service(
@@ -796,7 +918,9 @@ pub extern "C" fn _start(
                     capacity_done = true;
                 }
             }
-            if !capacity_done {
+            // 除 C 探针退出外，还要等 tty 完成两条 write 的处理与 ioport 正反例，否则收尾
+            // 会先于 tty 的串口见证。
+            if !capacity_done || !tty_ack {
                 continue;
             }
             // 两次成功的数据读回、一次执行前取消、一次越界拒绝与客户端的四项检查，
@@ -935,7 +1059,7 @@ pub extern "C" fn _start(
             let _ = trace_emit(
                 &runtime,
                 EVENT_STAGE5_CAPACITY,
-                16,
+                capacity_id,
                 STAGE5_C_PROBE_TAG >> 8 & 0xff,
                 capacity_exit_status,
                 u64::from(capacity_stack_reclaimed),
@@ -962,6 +1086,7 @@ fn read_image_directory(
     image: Capability,
     pending: &mut [Option<Pending>; SERVICES],
     c_probe: &mut Option<Pending>,
+    tty_pending: &mut Option<Pending>,
 ) -> Result<(), ()> {
     runtime
         .memseg_map(image, *self_cap, 0, ENDPOINT_CODE_PROBE_VA, 1, R_ONLY)
@@ -986,6 +1111,13 @@ fn read_image_directory(
                     offset_pages,
                     pages,
                     name: pack_service_name(b"cprog"),
+                });
+            } else if kind == SERVICE_IMAGE_KIND_TTY && pages != 0 {
+                *tty_pending = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name: pack_service_name(b"tty"),
                 });
             } else if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
                 let Some(slot) = (kind as usize).checked_sub(1) else {
