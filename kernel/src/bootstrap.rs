@@ -105,11 +105,12 @@ pub const INTERNAL_TASK_ROOT_SLOT_COUNT: u32 = 8;
 ///
 /// SPEC-087：普通 id 空间 `2..8` 被保留的 Dead（3/4）与 Faulted（5/6/7）记录占满，
 /// `next_free_id` 返回 `None`，故上调至 12 使存活的 Rust 客户端拿到 id 8。
-/// SPEC-088：`user::USER_TASK_KSTACK_COUNT` 覆盖 id 3..9；若将来分配 id ≥ 10，
+/// `user::USER_TASK_KSTACK_COUNT` 覆盖 id 3..18；超过覆盖范围时，
 /// `register_created_task` 会确定性失败（`NoSpace`）而非带着空内核栈调度。
 /// SPEC-106：S4-D3 的服务表扩到 5 项——`servicemgr`8 + 客户端 9 + 五个服务端点 10..14，故上限
-/// 12→**16**（须与 `sched::MAX_TASKS`、`user::USER_TASK_KSTACK_COUNT` 同步）。
-const MAX_TASKS: usize = 16;
+/// 12→**16**。阶段 5 为全量服务之后的首个 C Task 预留 id 16。
+/// `sched` 复用此常量；`user::USER_TASK_KSTACK_COUNT` 已覆盖 id 3..18。
+pub(crate) const MAX_TASKS: usize = 17;
 /// Audit 容量。
 ///
 /// SPEC-071（`ISSUE-TASK-003`）：§13.1/W13 要求**每次** Task 状态迁移都追加 `TaskStateChanged`。
@@ -586,39 +587,21 @@ pub struct TaskTable {
 
 impl TaskTable {
     const fn with_init() -> Self {
-        Self {
-            entries: [
-                Some(TaskRecord {
-                    id: INIT_TASK_ID,
-                    // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
-                    status: TaskStatus::Ready,
-                    // §14 步骤 4：init 由 KernelActor 创建，CPU Task，本节点。
-                    creator: KERNEL_ACTOR,
-                    kind: TaskKind::Cpu,
-                    node: LOCAL_NODE,
-                    root_ns_cap: NAMESPACE_CAP_HANDLE,
-                    entry: 0,
-                    pending_exc: None,
-                    pending: None,
-                }),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ],
-            count: 1,
-        }
+        let mut entries = [None; MAX_TASKS];
+        entries[0] = Some(TaskRecord {
+            id: INIT_TASK_ID,
+            // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
+            status: TaskStatus::Ready,
+            // §14 步骤 4：init 由 KernelActor 创建，CPU Task，本节点。
+            creator: KERNEL_ACTOR,
+            kind: TaskKind::Cpu,
+            node: LOCAL_NODE,
+            root_ns_cap: NAMESPACE_CAP_HANDLE,
+            entry: 0,
+            pending_exc: None,
+            pending: None,
+        });
+        Self { entries, count: 1 }
     }
 
     fn find(&self, task_id: u32) -> Option<&TaskRecord> {
@@ -11639,6 +11622,17 @@ mod tests {
         assert!(table.remove(2));
         assert_eq!(table.next_free_id(), Some(2));
         assert!(!table.remove(9));
+    }
+
+    #[test]
+    fn stage5_has_one_task_id_after_existing_services() {
+        let mut table = super::TaskTable::with_init();
+        for id in 2..=15 {
+            table.create(id).unwrap();
+        }
+        assert_eq!(table.next_free_id(), Some(16));
+        table.create(16).unwrap();
+        assert_eq!(table.next_free_id(), None);
     }
 
     #[test]
