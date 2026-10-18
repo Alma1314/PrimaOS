@@ -17,3 +17,5 @@
 | `cargo xtask test` | PASS，BIOS QEMU 两轮、UEFI 镜像构建与既有启动验收 |
 
 BLK-004 仍 Open：本次取得 Task 生命周期和 Task/Capability 收尾计数，尚未记录 Cap、Segment、消息队列和 Audit 的**全程峰值**及耗尽负例；当前审计收尾已用 638/768。下一片须补容量水位与确定性失败语义，并验证真正的 C ELF 装载。BLK-003 的 ABI 裁决与 musl 移植不在本见证范围，S5-D1–D7/X1–X3 仍未勾选。
+
+后续四类静态池实测水位见[容量水位报告](2026-10-18-stage5-capacity-watermarks.md)。

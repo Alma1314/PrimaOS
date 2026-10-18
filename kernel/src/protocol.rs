@@ -52,6 +52,34 @@ pub(crate) fn stage5_task_capacity_dump() {
     serial::write_bytes(b"\r\n");
 }
 
+/// 阶段 5：从内核池的实际计数输出服务后容量水位。
+pub(crate) fn stage5_capacity_dump() {
+    let Some(usage) = kernel::bootstrap::capacity_usage() else {
+        return;
+    };
+    serial::write_bytes(b"CAPACITY|caps_live=");
+    write_u64(usage.cap_live as u64);
+    serial::write_bytes(b";caps_peak=");
+    write_u64(usage.cap_peak as u64);
+    serial::write_bytes(b";caps_limit=");
+    write_u64(usage.cap_limit as u64);
+    serial::write_bytes(b";segment_slots=");
+    write_u64(usage.segment_slots as u64);
+    serial::write_bytes(b";segment_limit=");
+    write_u64(usage.segment_limit as u64);
+    serial::write_bytes(b";messages_queued=");
+    write_u64(usage.message_queued as u64);
+    serial::write_bytes(b";messages_peak=");
+    write_u64(usage.message_peak as u64);
+    serial::write_bytes(b";messages_limit=");
+    write_u64(usage.message_limit as u64);
+    serial::write_bytes(b";audit_used=");
+    write_u64(usage.audit_used as u64);
+    serial::write_bytes(b";audit_limit=");
+    write_u64(usage.audit_limit as u64);
+    serial::write_bytes(b"\r\n");
+}
+
 /// 硬件故障原始证据；与应用 trace 一样放在 PRIMA 事件序列之外。
 pub(crate) fn user_fault_dump() {
     let Some(record) = kernel::cow::user_fault_record() else {

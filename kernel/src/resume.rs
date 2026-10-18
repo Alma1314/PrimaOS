@@ -101,6 +101,7 @@ extern "C" fn after_resume() -> ! {
         Some(witness) => protocol::resume_ready(&witness),
         None => protocol::panic_event(),
     }
+    protocol::stage5_capacity_dump();
     protocol::boot_complete();
     protocol::user_fault_dump();
     serial::flush();

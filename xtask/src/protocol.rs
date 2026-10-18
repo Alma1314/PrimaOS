@@ -622,6 +622,16 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
     {
         return Err(format!("stage5 kernel task state mismatch: {lines:?}"));
     }
+    let capacity: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("CAPACITY|"))
+        .collect();
+    if capacity.len() != 1
+        || capacity[0].trim_end_matches('\r')
+            != "CAPACITY|caps_live=114;caps_peak=120;caps_limit=144;segment_slots=31;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=638;audit_limit=768"
+    {
+        return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
+    }
     Ok(())
 }
 
@@ -4226,9 +4236,14 @@ mod tests {
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
         output.push_str("TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114\r\n");
+        output.push_str("CAPACITY|caps_live=114;caps_peak=120;caps_limit=144;segment_slots=31;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=638;audit_limit=768\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
+        assert!(
+            super::validate_stage5_capacity(&output.replace("caps_peak=120", "caps_peak=144"))
+                .is_err()
+        );
     }
 
     #[test]

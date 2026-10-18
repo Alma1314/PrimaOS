@@ -839,6 +839,7 @@ pub enum IpcError {
 pub struct IpcQueue {
     pub entries: [Option<IpcMessage>; MAX_MESSAGES],
     pub count: usize,
+    peak_count: usize,
     next_id: u32,
 }
 
@@ -847,6 +848,7 @@ impl IpcQueue {
         Self {
             entries: [None; MAX_MESSAGES],
             count: 0,
+            peak_count: 0,
             next_id: 1,
         }
     }
@@ -863,6 +865,7 @@ impl IpcQueue {
         }
         self.entries[self.count] = Some(message);
         self.count += 1;
+        self.peak_count = self.peak_count.max(self.count);
         Ok(())
     }
 
@@ -1078,6 +1081,7 @@ pub struct SlotEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapabilitySlotTable {
     pub entries: [SlotEntry; MAX_CAPABILITY_SLOTS],
+    peak_live: usize,
 }
 
 impl CapabilitySlotTable {
@@ -1087,6 +1091,7 @@ impl CapabilitySlotTable {
                 generation: Handle::FIRST_GENERATION,
                 in_use: false,
             }; MAX_CAPABILITY_SLOTS],
+            peak_live: 0,
         }
     }
 
@@ -1096,6 +1101,7 @@ impl CapabilitySlotTable {
     /// 复活（违反 S2-X4）。调用方须先以 [`Self::slot_free`] 确认槽可用。
     fn reserve(&mut self, slot: u32) -> Handle {
         self.entries[slot as usize].in_use = true;
+        self.peak_live = self.peak_live.max(self.live_count());
         cap_handle(slot, self.entries[slot as usize].generation)
     }
 
@@ -1118,6 +1124,7 @@ impl CapabilitySlotTable {
             }
             if !self.entries[index].in_use {
                 self.entries[index].in_use = true;
+                self.peak_live = self.peak_live.max(self.live_count());
                 return Handle::new(index as u32, self.entries[index].generation).ok();
             }
             index += 1;
@@ -8027,6 +8034,39 @@ pub fn live_cap_count() -> usize {
     })
 }
 
+/// 阶段 5 容量水位。Segment 表不回收槽位，故 `segment_slots` 是该池的全程高水位；
+/// Audit 只追加，`audit_used` 同样是高水位。Capability 与消息队列可回收，单独记录峰值。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapacityUsage {
+    pub cap_live: usize,
+    pub cap_peak: usize,
+    pub cap_limit: usize,
+    pub segment_slots: usize,
+    pub segment_limit: usize,
+    pub message_queued: usize,
+    pub message_peak: usize,
+    pub message_limit: usize,
+    pub audit_used: usize,
+    pub audit_limit: usize,
+}
+
+pub fn capacity_usage() -> Option<CapacityUsage> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref().map(|state| CapacityUsage {
+            cap_live: state.slots.live_count(),
+            cap_peak: state.slots.peak_live,
+            cap_limit: MAX_CAPABILITY_SLOTS,
+            segment_slots: state.segment_count,
+            segment_limit: MAX_SEGMENT_OBJECTS,
+            message_queued: state.ipc.count,
+            message_peak: state.ipc.peak_count,
+            message_limit: MAX_MESSAGES,
+            audit_used: state.audit.count,
+            audit_limit: MAX_AUDIT_EVENTS,
+        })
+    })
+}
+
 /// S2-D2：全局 `cap_derive`（§4.4）。
 pub fn derive_capability(
     caller: u32,
@@ -9721,6 +9761,7 @@ mod tests {
             state.slots.live_count(),
             MAX_CAPABILITY_SLOTS - 1 - INTERNAL_TASK_ROOT_SLOT_COUNT as usize
         );
+        assert_eq!(state.slots.peak_live, state.slots.live_count());
     }
 
     #[test]
@@ -10899,6 +10940,47 @@ mod tests {
             state.segment_count += 1;
         }
         assert_eq!(state.alloc_segment_slot(), Some(USER_SEGMENT_ID_FIRST));
+    }
+
+    #[test]
+    fn stage5_segment_table_exhaustion_is_atomic() {
+        let mut state = fresh_state();
+        state.segment_count = super::MAX_SEGMENT_OBJECTS;
+        let audit_before = state.audit.count;
+        assert_eq!(
+            state.create_segment_object(
+                USER_SEGMENT_ID_FIRST,
+                INIT_TASK_ID,
+                1,
+                rights("SegMapR"),
+                0,
+                None,
+            ),
+            Err(MemsegError::CapacityExceeded)
+        );
+        assert_eq!(state.segment_count, super::MAX_SEGMENT_OBJECTS);
+        assert_eq!(state.audit.count, audit_before);
+    }
+
+    #[test]
+    fn stage5_message_queue_high_water_survives_full_rejection_and_receive() {
+        let mut queue = super::IpcQueue::empty();
+        let message = super::IpcMessage {
+            id: 1,
+            sender: INIT_TASK_ID,
+            receiver: 2,
+            payload: 0,
+            capabilities: [Handle::ZERO; super::MAX_MESSAGE_CAPABILITIES],
+            capability_count: 0,
+        };
+        for _ in 0..super::MAX_MESSAGES {
+            queue.send(message).unwrap();
+        }
+        assert_eq!(queue.send(message), Err(IpcError::QueueFull));
+        assert_eq!(queue.count, super::MAX_MESSAGES);
+        assert_eq!(queue.peak_count, super::MAX_MESSAGES);
+        queue.receive(2).unwrap();
+        assert_eq!(queue.peak_count, super::MAX_MESSAGES);
     }
 
     #[test]
