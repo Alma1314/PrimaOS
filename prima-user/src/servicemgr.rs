@@ -543,11 +543,14 @@ pub extern "C" fn _start(
                 }
             }
         } else if message.payload >> 48 == STAGE5_TTY_WRITE_TAG >> 48 {
-            // C 的 write(1/2)：管理器记录并原样转发给 tty；两条齐备后独立打印 CIO 见证。
+            // C 的 write(1/2)：管理器逐字节转发给 tty。字节流不设长度上限；只保留前两条用于
+            // 固定探针的 CIO 见证。
             let fd = (message.payload >> 16) & 0xff;
             let byte = (message.payload >> 24) & 0xff;
-            if (fd == 1 || fd == 2) && tty_write_count < 2 {
-                tty_writes[tty_write_count] = (fd, byte);
+            if fd == 1 || fd == 2 {
+                if tty_write_count < 2 {
+                    tty_writes[tty_write_count] = (fd, byte);
+                }
                 tty_write_count += 1;
                 if let Some(endpoint) = tty {
                     let _ = runtime.send(

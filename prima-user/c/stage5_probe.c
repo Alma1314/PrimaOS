@@ -106,9 +106,11 @@ int main(PROBE_CTX_PARAM int argc, char **argv, char **envp) {
         return 2;
     if (!envp || !envp[0] || !same(envp[0], "PRIMA_ABI=1") || envp[1] != 0)
         return 3;
-    /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，两端都要求各写 1 字节。 */
+    /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，再向 fd 1 写 5 字节。
+     * 后者覆盖 tty 服务在固定两字节见证之后的持续流式转发。 */
     if (write_fd(PROBE_CTX_ARG 1, "h") != 1 ||
-        write_fd(PROBE_CTX_ARG 2, "i") != 1)
+        write_fd(PROBE_CTX_ARG 2, "i") != 1 ||
+        write_fd(PROBE_CTX_ARG 1, "\nxyz\n") != 5)
         return 4;
     return 37;
 }

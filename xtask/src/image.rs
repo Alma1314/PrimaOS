@@ -242,8 +242,8 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
                 output.status.code()
             ));
         }
-        // 成功路径与 Prima 同源：fd 1 写 'h'、fd 2 写 'i'。
-        if expected == 37 && (output.stdout != b"h" || output.stderr != b"i") {
+        // 成功路径与 Prima 同源：fd 1 写 'h' 与 5 字节 "\nxyz\n"，fd 2 写 'i'。
+        if expected == 37 && (output.stdout != b"h\nxyz\n" || output.stderr != b"i") {
             return Err(format!(
                 "Linux C probe write mismatch: stdout {:?}, stderr {:?}",
                 String::from_utf8_lossy(&output.stdout),
@@ -251,7 +251,9 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
             ));
         }
     }
-    println!("PASS linux stage5 C main exits 37/2/3 and writes h>i via write(1)/write(2)");
+    println!(
+        "PASS linux stage5 C main exits 37/2/3 and streams h/i plus 5-byte xyz via write(1/2)"
+    );
     Ok(())
 }
 

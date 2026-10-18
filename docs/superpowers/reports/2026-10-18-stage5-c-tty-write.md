@@ -18,6 +18,8 @@ POSIX fd 表、通用 `_exit`/`wait` 或文件系统。
 - `_exit(status)`：C 探针把 `main` 返回码随 `STAGE5_C_PROBE_TAG` 发给管理器，随后
   `SYS_TASK_DESTROY(self)`。这是当前原型的最小退出语义，不是 Process/父子等待。
 - tty 服务与管理器各自持有一块独立的 COM1 设备 Capability，互不转移。
+- 字节流不限长度：管理器与 tty 对 fd 1/2 的每条消息都转发/写出，只有前两条进入固定探针的
+  `CIO`/`TTYIN` 见证。`write` 返回 `len` 表示所有字节已入队；非法 fd 目前仍被静默丢弃。
 
 ## QEMU 见证（`cargo xtask test` 两轮校验；下列为串口原文）
 
@@ -26,7 +28,7 @@ CIO|task=17;fd=1;ch=104;fd=2;ch=105
 TTYIN|task=17;fd=1;ch=104;fd=2;ch=105
 TTYOUT|task=17;in_magic=1;out_of_range=1;out_ok=1
 TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=123
-CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=686;audit_limit=768
+CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=746;audit_limit=768
 ```
 
 - `CIO|`：管理器观察到 C 探针写的 `fd=1,ch=104('h')` 与 `fd=2,ch=105('i')`。
@@ -39,7 +41,7 @@ CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_lim
 一行 `h` 与 `i`。
 
 Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`）并断言：成功输入退出 37
-且 stdout=`h`、stderr=`i`；缺参数退出 2、缺环境变量退出 3。
+且 stdout=`h\nxyz\n`、stderr=`i`；缺参数退出 2、缺环境变量退出 3。
 
 ## 容量与既有证据变化（逐条登记）
 
@@ -48,10 +50,10 @@ Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`�
 | C 探针 task id | 16 | 17 | tty 服务占用 id 16 |
 | 任务表上限 `MAX_TASKS` | 17 | 18 | C 探针需要最后一个 id |
 | 逻辑 vspace 上限 `MAX_VSPACE_ENTRIES` | 128 | 144 | 实测 126 条 + C 探针 4 页探测映射 = 130 |
-| `ipc_ready` queued/direct/blocks | 45/39/46 | 45/46/54 | tty 注册/设备移交/ACK 与 C 两条 write 的直投/阻塞 |
+| `ipc_ready` queued/direct/blocks | 45/39/46 | 45/56/64 | tty 注册/设备移交/ACK 与 C 七个字节 write 的直投/阻塞 |
 | `task_ready` / `TASKCAP` 存活 Task | 11 | 12 | 新增 tty 服务 |
 | `task_ready` 活用 Capability | 114 | 123 | tty 服务与设备交接 |
-| `CAPACITY` caps_peak / segment_slots / audit_used | 119 / 31 / 629 | 128 / 32 / 686 | 同上 |
+| `CAPACITY` caps_peak / segment_slots / audit_used | 119 / 31 / 629 | 128 / 32 / 746 | 同上；Audit 余量仅 22，长时间运行需单独的容量策略 |
 
 服务映像共 **78 / 80 页**（8 个 Rust 服务 74 页 + C 探针 3 页 + 目录 1 页）。C 探针仍无
 `PT_INTERP`、无动态依赖、无重定位（`readelf -r` 为空）。
@@ -68,6 +70,7 @@ Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`�
 ## 未覆盖
 
 - 没有 libc、`openat`/`read`/`close`、用户态 fd 表或真实 tty 行规程；只有 fd 1/2 的字节流。
+- 非法 fd 没有确定错误：管理器/tty 静默丢弃，调用方仍看到成功；P5-IO-01 因此保持 partial。
 - `_exit` 不建立 Process/zombie/父子等待，退出状态只由服务管理器观察。
 - 未验证通用 ELF `PT_LOAD` 权限（BSS 可写、W^X 全路径）；探针通过“不使用可写段”回避，
   仍未实现按 program header 装载。

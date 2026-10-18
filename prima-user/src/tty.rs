@@ -78,13 +78,16 @@ pub extern "C" fn _start(
             let fd = ((message.payload >> 16) & 0xff) as u8;
             let byte = ((message.payload >> 24) & 0xff) as u8;
             let sender = (message.payload >> 32) & 0xff;
-            if (fd != 1 && fd != 2) || received >= 2 {
+            if fd != 1 && fd != 2 {
                 continue;
             }
             if runtime.dev_ioport_out(cap, IOPORT_BASE, byte).is_err() {
                 continue;
             }
-            wire[received as usize] = (fd, byte);
+            // 字节流不设上限；只有前两条进入固定探针的 TTYIN 见证。
+            if received < 2 {
+                wire[received as usize] = (fd, byte);
+            }
             received += 1;
             if received == 2 {
                 let out_ok = runtime
