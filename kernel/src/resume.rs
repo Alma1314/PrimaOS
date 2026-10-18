@@ -155,6 +155,7 @@ pub extern "C" fn user_trap_exit() -> ! {
     }
     protocol::trace_bytes_dump(kernel::user::USER_HELLO_VA, 0);
     protocol::trace_bytes_dump(kernel::user::USER_HELLO2_VA, 1);
+    protocol::stage5_task_capacity_dump();
     protocol::trace_live_handles_dump(kernel::user::USER_HELLO_VA, 0);
     protocol::trace_live_handles_dump(kernel::user::USER_HELLO2_VA, 1);
     protocol::y_bytes_dump(kernel::user::USER_Y_VA);

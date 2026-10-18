@@ -13,7 +13,7 @@
 | 项目 | 状态与依据 |
 |---|---|
 | 阶段 0–4 | 已满足退出条件；签署报告依次为 [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)。阶段 0 的结论限规范文本；实现、模型和 QEMU 各按报告范围解释。 |
-| 当前阶段 | 阶段 5 已启动：profile 草案与首个 Task 容量切片完成 host/既有 QEMU 回归；BLK-003/004 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[启动报告](docs/superpowers/reports/2026-10-18-stage5-kickoff.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)及[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)和[musl 移植计划](docs/superpowers/plans/2026-10-18-musl-port-plan.md)。 |
+| 当前阶段 | 阶段 5 已启动：服务后 Task 16 已获 ring3 QEMU 双轮生命周期见证；BLK-003/004 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[Task 16 QEMU 见证](docs/superpowers/reports/2026-10-18-stage5-task16-qemu.md)、[启动报告](docs/superpowers/reports/2026-10-18-stage5-kickoff.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)及[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)和[musl 移植计划](docs/superpowers/plans/2026-10-18-musl-port-plan.md)。 |
 | 下一阶段 | 阶段 6 未开始；阶段 7 范围未冻结。 |
 | 近期复核 | [阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)、[阶段 2 IPC 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3 整改](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)；后两者已通过 workspace 测试、lint 和 BIOS QEMU 双跑。 |
 | TCB | 基线与历次统计见压缩前版本；最新数值应以 `cargo xtask tcb` 现跑结果为准，`kernel/src` 仍要求零 `unsafe`。 |
@@ -38,7 +38,7 @@
 | ISSUE-COW-001/002 | [SPEC-015](docs/superpowers/specs/2026-08-14-cow-refinement-design.md) 的 COW 边界澄清；用户态显式换映射及并发协调责任，非阻断缺陷。 | 若扩大 COW 语义，再做真实路径验证。 |
 | ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
 | BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决；现有编号只追加，空洞不复用。 |
-| BLK-004 | `MAX_TASKS` 已扩至 17，但全量服务后 ID 16 的实际创建/运行/退出/回收及其他静态容量尚未获 QEMU 见证。 | 全量服务存活时创建、运行、退出、回收新 Task，记录峰值和失败语义并经 QEMU 复验。 |
+| BLK-004 | `MAX_TASKS` 已扩至 17；全量服务后 ID 16 的创建、ring3 自报、销毁与根清理由 QEMU 双轮见证，但各静态池全程峰值尚未量化。 | 补齐 Cap/Segment/消息/Audit 全程峰值与耗尽负例，再用真实 C ELF 复验。 |
 
 其余已关闭问题的发现、修复与复核记录见相应报告和压缩前版本。`ISSUE-IPC-001` 已由阶段 2 整改关闭。
 
@@ -166,7 +166,7 @@
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：进行中（准入与首个容量切片已启动）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003/004 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
+**状态：进行中（准入与 Task 16 QEMU 生命周期见证已完成）；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003/004 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
 
 ### 交付检查
 

@@ -602,11 +602,34 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 阶段 5：应用自报的 ID 16 生命周期和内核在收尾时的独立状态必须同时成立。
+pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
+    let records = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
+    let capacity: Vec<_> = records
+        .iter()
+        .filter(|record| record.id == prima_abi::trace::EVENT_STAGE5_CAPACITY)
+        .collect();
+    if capacity.len() != 1 || capacity[0].args != [16, 1, 1, 1, 6] {
+        return Err(format!("stage5 capacity trace mismatch: {capacity:?}"));
+    }
+    let lines: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("TASKCAP|"))
+        .collect();
+    if lines.len() != 1
+        || lines[0].trim_end_matches('\r')
+            != "TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114"
+    {
+        return Err(format!("stage5 kernel task state mismatch: {lines:?}"));
+    }
+    Ok(())
+}
+
 /// EXO-3M：内核只输出原始 trace 字节、Y 页字节与活句柄扫描；服务语义在此判定。
 pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     use prima_abi::trace::{
         EVENT_NATIVE_APP, EVENT_RUNTIME_HELLO, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY,
-        EVENT_SERVICE_SELECTED, EVENT_SERVICEMGR,
+        EVENT_SERVICE_SELECTED, EVENT_SERVICEMGR, EVENT_STAGE5_CAPACITY,
     };
 
     let expected = [
@@ -624,6 +647,7 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
         EVENT_SERVICEMGR,
         EVENT_SERVICEMGR,
         EVENT_SERVICEMGR,
+        EVENT_STAGE5_CAPACITY,
     ];
     if output
         .lines()
@@ -2895,9 +2919,9 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 45 || direct != 38 || blocks != 45 {
+    if queued != 47 || direct != 39 || blocks != 47 {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 45/38/45 — slice S's pair, S2-D4's new-task message plus the end-of-run wake of task 2, slice V's self-destroying task 4 report plus the re-wake of task 2 before the preemption phase, SPEC-087's client Hello (queued) / client reply + re-wake of task 2 (direct), SPEC-088's service id report + forwarded request (queued) / no-cap wake of the service (direct) plus the service/inits blocking recvs, SPEC-090's second no-cap prepare route to the service (direct) plus the extra service/init blocking recvs, SPEC-092's second endpoint self-report + hello forward (queued) plus its extra blocking recvs, SPEC-103's ring3 servicemgr liveness report (queued) plus its extra blocking recv, SPEC-104's migration: the client Hello (queued) and the two endpoint self-reports (queued) now go to the manager, plus their no-cap wakes and the manager's forwards + PONG + segment handback (direct), the client's PONG receive, and the extra blocking recvs of the client/manager/endpoints/init, and SPEC-105's migration: init hands the endpoint-creation caps to the manager in three messages, each preceded by a no-cap wake (6 sends; queued 10→16, direct/blocks unchanged; SPEC-109: one service image segment replaces the six per-service code segments and is handed to the manager as its initial_cap1, dropping 5 no-cap wakes + 5 cap messages (queued 10→18); SPEC-110: each base service's ordered probe grows from 1 to 3 requests (advance/advance/query), adding 2 requests + 2 replies per service × 3 services (queued 18→30, direct/blocks unchanged); SPEC-111: the manager hands a NsResolve Namespace copy to the namespace service (no-cap wake + cap message) and that service proxies one SYS_NS_RESOLVE (+2 sends +2 replies, queued 30→34, direct/blocks unchanged); SPEC-112: the manager creates a storage segment per log/store service and hands it over (no-cap wake + cap message each: +4 sends, queued 34→38, direct/blocks unchanged); SPEC-114: the user-mode driver self-reports (no-cap wake = direct, id report + existence marker = queued) and then runs a second time for the controlled-port handshake (manager's no-cap wake + device cap + two port requests = direct + 3 queued; the driver's two port replies = direct + queued), plus the two extra driver blocking recvs and the manager's own blocking recv while it waits for the driver: queued 38→44, direct 23→26, blocks 30→34); SPEC-129: six application requests and six replies plus completion add one queued and twelve direct deliveries, with twelve additional blocking receives (45/38/45)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 47/39/47; stage5 Task 16 probe adds two queued reports, one direct wake and two blocking receives"
         ));
     }
     Ok(())
@@ -4079,7 +4103,7 @@ mod tests {
 
     fn service_trace_fixture() -> (String, String) {
         let first_args = [0u64, 0x14d495250, 0x300000001, 0x100000018, 0x100000010001];
-        let shared_records: [[u64; 6]; 14] = [
+        let shared_records: [[u64; 6]; 15] = [
             [
                 1,
                 first_args[0],
@@ -4157,6 +4181,7 @@ mod tests {
                 0x5ec9000600000000,
                 0,
             ],
+            [7, 16, 1, 1, 1, 6],
         ];
 
         let mut output = String::new();
@@ -4171,7 +4196,7 @@ mod tests {
             .flat_map(|record| record.iter().flat_map(|word| word.to_le_bytes()))
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        output.push_str(&format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n"));
+        output.push_str(&format!("TRACEBYTES|slot=1;count=0xf;data={hex}\r\n"));
 
         let mut y = [0u8; 4096];
         let mut put = |offset: usize, value: u64| {
@@ -4198,16 +4223,25 @@ mod tests {
     }
 
     #[test]
+    fn stage5_capacity_requires_ring3_and_kernel_evidence() {
+        let (mut output, _) = service_trace_fixture();
+        output.push_str("TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114\r\n");
+        assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
+        assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
+        assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
+    }
+
+    #[test]
     fn service_trace_rejects_missing_duplicate_malformed_and_divergent_records() {
         let (output, hex) = service_trace_fixture();
         assert_eq!(validate_service_traces(&output), Ok(()));
-        assert!(validate_service_traces(&output.replace("count=0xe", "count=0xd")).is_err());
+        assert!(validate_service_traces(&output.replace("count=0xf", "count=0xe")).is_err());
         assert!(validate_service_traces(&output.replacen("data=01", "data=zz", 1)).is_err());
         assert!(validate_service_traces(&output.replacen("data=01", "data=03", 1)).is_err());
         assert!(validate_service_traces(&output.replace("TRACEBYTES|", "BROKEN|")).is_err());
         assert!(validate_service_traces(&output.replace("slot=0", "slot=1")).is_err());
         assert!(
-            validate_service_traces(&format!("{output}TRACEBYTES|slot=1;count=0xe;data={hex}\n"))
+            validate_service_traces(&format!("{output}TRACEBYTES|slot=1;count=0xf;data={hex}\n"))
                 .is_err()
         );
         assert!(validate_service_traces(&output.replace("YBYTES|", "BROKEN|")).is_err());
@@ -4251,7 +4285,7 @@ mod tests {
             chunk.copy_from_slice(&word.to_le_bytes());
         }
         let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        let good = format!("TRACEBYTES|slot=1;count=0xe;data={hex}\r\n");
+        let good = format!("TRACEBYTES|slot=1;count=0xf;data={hex}\r\n");
         assert_eq!(validate_native_app_trace(&good), Ok(()));
         assert!(
             validate_native_app_trace(&good.replace("0f00000000000000", "0700000000000000"))
@@ -4288,7 +4322,7 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=45;direct=38;blocks=45\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=47;direct=39;blocks=47\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=11;caps=114;root_cleared=1;grandchild=4;tasks_after=11;caps_after=114;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=2;binds=3;unbinds=2;mounts=2;unmounts=1;resolves=3;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
@@ -4478,9 +4512,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=38;", ";direct=0;");
+        let output = VALID.replace(";direct=39;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 45/38/45"), "{error}");
+        assert!(error.contains("expected 47/39/47"), "{error}");
     }
 
     #[test]

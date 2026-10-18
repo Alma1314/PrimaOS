@@ -42,7 +42,7 @@
 
 use core::panic::PanicInfo;
 use prima_runtime::{
-    Capability, Rights, Runtime, SyscallTransport, TaskId,
+    Capability, Error, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
         ELF_ENTRY_OFFSET, ENDPOINT_CODE_PROBE_VA, ENDPOINT_CODE_VA, ENDPOINT_STACK_VA, IOPORT_BASE,
         IOPORT_COUNT, NATIVE_APP_BAD_LENGTH, NATIVE_APP_BYTES, NATIVE_APP_CANCELLED,
@@ -64,7 +64,7 @@ use prima_runtime::{
     task::TaskSpec,
     trace::{
         EVENT_NATIVE_APP, EVENT_SERVICE_NEGOTIATED, EVENT_SERVICE_REPLY, EVENT_SERVICE_SELECTED,
-        EVENT_SERVICEMGR,
+        EVENT_SERVICEMGR, EVENT_STAGE5_CAPACITY,
     },
 };
 
@@ -316,6 +316,11 @@ pub extern "C" fn _start(
     let mut app_pending = false;
     let mut app_cancelled = false;
     let mut finished = false;
+    let mut capacity_probe: Option<(Capability, u64, Capability)> = None;
+    let mut capacity_done = false;
+    let mut capacity_destroyed = false;
+    let mut capacity_stack_reclaimed = false;
+    let mut capacity_rejected = false;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut isolated_ns: Option<Capability> = None;
@@ -425,6 +430,43 @@ pub extern "C" fn _start(
             }
         } else if message.payload >> 48 == SERVICE_ID_TAG >> 48 {
             // ② 端点/服务自报（cap0 = 自管理凭据，管理器据此回送转发/路由探针）。
+            let reported_id = message.payload & 0xff;
+            // 阶段 5：第七个端点复用驱动 ELF，只作一次 ring3 容量探针；原驱动仍在服务表中。
+            if reported_id == 16
+                && let Some((manager, entry_offset, stack)) = capacity_probe
+            {
+                let mut destroyed = runtime.task_destroy(manager);
+                if destroyed == Err(Error::Denied) {
+                    // 探针仍在发 marker 时先让它跑到阻塞接收，再销毁。
+                    let _ = runtime.yield_task();
+                    destroyed = runtime.task_destroy(manager);
+                }
+                capacity_destroyed = destroyed.is_ok();
+                if let Some(authority) = message.capabilities[0] {
+                    let _ = runtime.cap_drop(authority);
+                }
+                if capacity_destroyed {
+                    capacity_stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
+                    let _ = runtime.cap_drop(stack);
+                    let _ = runtime.cap_drop(manager);
+                    if let (Some(spec), Some(parent_ns)) = (pending[DRIVER_SLOT], isolated_ns) {
+                        // Dead 记录仍占 ID 16；合法请求必须确定地返回 ENOSPC。
+                        capacity_rejected = runtime.task_create(&TaskSpec {
+                            code_segment: spec.code,
+                            code_offset: spec.offset_pages,
+                            code_pages: spec.pages,
+                            load_base: ENDPOINT_CODE_VA,
+                            entry: ENDPOINT_CODE_VA + entry_offset,
+                            stack_top: ENDPOINT_STACK_VA + FRAME_SIZE,
+                            parent_namespace: Some(parent_ns),
+                            root_rights: NS_RESOLVE_RIGHTS,
+                            initial_capabilities: [None, None],
+                            name: spec.name,
+                        }) == Err(Error::ResourceExhausted);
+                    }
+                }
+                capacity_done = true;
+            }
             let name = (message.payload >> 8) & SERVICE_NAME_MASK;
             let behavior = behavior_for(name);
             let slot = behavior.wrapping_sub(1) as usize;
@@ -741,6 +783,27 @@ pub extern "C" fn _start(
             let _ = trace_emit(&runtime, EVENT_SERVICE_REPLY, client_id, echo, 0, 0, 0);
         }
         if pong_sent && app_done && !finished {
+            if capacity_probe.is_none() && !capacity_done {
+                if let (Some(spec), Some(parent_ns)) = (pending[DRIVER_SLOT], isolated_ns) {
+                    if let Some((_token, manager, entry, stack)) = create_service(
+                        &runtime,
+                        &self_cap,
+                        parent_ns,
+                        &spec,
+                        DRIVER_SLOT,
+                        &mut created_slot,
+                    ) {
+                        capacity_probe = Some((manager, entry, stack));
+                    } else {
+                        capacity_done = true; // 后续 trace 记录失败，QEMU 验收拒绝。
+                    }
+                } else {
+                    capacity_done = true;
+                }
+            }
+            if !capacity_done {
+                continue;
+            }
             // 两次成功的数据读回、一次执行前取消、一次越界拒绝与客户端的四项检查，
             // 均由独立 ring3 管理器提交为原始 trace，xtask 负责判断其含义。
             let _ = trace_emit(
@@ -873,6 +936,15 @@ pub extern "C" fn _start(
                 read_shared(&runtime, OFF_DRIVER_REPLY),
                 read_shared(&runtime, OFF_DRIVER_REPLY + 8),
                 0,
+            );
+            let _ = trace_emit(
+                &runtime,
+                EVENT_STAGE5_CAPACITY,
+                16,
+                u64::from(capacity_destroyed),
+                u64::from(capacity_stack_reclaimed),
+                u64::from(capacity_rejected),
+                created,
             );
             // 三段**连发**（中间不让出）：唤醒先于带 cap 消息，宿主的 `BlockedRecv` 约束不触发。
             let _ = runtime.send(init_id, init_cap, SERVICEMGR_WAKE_TAG, &[]);

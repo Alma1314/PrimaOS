@@ -2,7 +2,7 @@
 
 **日期**：2026-10-18
 **基线**：`master` `eba03c4`；依据[阶段 1–4 实现复核](../reports/2026-10-18-stage1-4-implementation-review.md)及[准入分析](../reports/2026-10-18-stage5-entry-analysis.md)
-**状态**：执行计划；S5-D1–D7/X1–X3 均未完成。DOC-002 仍为外部候选，BLK-003/004 未关闭；ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
+**状态**：执行计划；片 B 的 Task 16 生命周期已获 [QEMU 见证](../reports/2026-10-18-stage5-task16-qemu.md)，峰值核算待续；S5-D1–D7/X1–X3 均未完成。DOC-002 仍为外部候选，BLK-003/004 未关闭；ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
 
 ## 1. 目标与取舍
 

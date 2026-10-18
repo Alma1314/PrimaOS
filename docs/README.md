@@ -7,7 +7,7 @@
 | 项目架构与研究目标 | [Prima OS 白皮书](../Prima%20OS.md) |
 | 平台无关操作语义 | [COSIR 原语规范](../COSIR%20原语规范.md) |
 | 当前阶段状态、阻塞与证据 | [实现阶段跟踪](../Prima%20OS%20实现阶段.md) |
-| 阶段 5 的顺序、验收与风险 | [准入分析](superpowers/reports/2026-10-18-stage5-entry-analysis.md)、[修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)、[musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)、[profile 草案](superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)、[启动报告](superpowers/reports/2026-10-18-stage5-kickoff.md) |
+| 阶段 5 的顺序、验收与风险 | [准入分析](superpowers/reports/2026-10-18-stage5-entry-analysis.md)、[修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)、[musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)、[profile 草案](superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)、[启动报告](superpowers/reports/2026-10-18-stage5-kickoff.md)、[Task 16 QEMU 见证](superpowers/reports/2026-10-18-stage5-task16-qemu.md) |
 | 阶段 0–4 退出复核 | [阶段 0](superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md) · [1](superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) · [2](superpowers/reports/2026-10-17-stage2-exit-review-spec147.md) · [3](superpowers/reports/2026-10-17-stage3-exit-review-spec148.md) · [4](superpowers/reports/2026-10-17-stage4-exit-review-spec149.md) |
 | 最新实现整改 | [阶段 1](superpowers/reports/2026-10-18-stage1-open-issues-spec151.md) · [2](superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md) · [3](superpowers/reports/2026-10-18-stage3-review-remediation.md) |
 
