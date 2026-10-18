@@ -609,7 +609,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .iter()
         .filter(|record| record.id == prima_abi::trace::EVENT_STAGE5_CAPACITY)
         .collect();
-    if capacity.len() != 1 || capacity[0].args != [16, 0x5a, 1, 1, 1] {
+    if capacity.len() != 1 || capacity[0].args != [16, 0x5a, 37, 1, 1] {
         return Err(format!("stage5 capacity trace mismatch: {capacity:?}"));
     }
     let lines: Vec<_> = output
@@ -4191,7 +4191,7 @@ mod tests {
                 0x5ec9000600000000,
                 0,
             ],
-            [7, 16, 0x5a, 1, 1, 1],
+            [7, 16, 0x5a, 37, 1, 1],
         ];
 
         let mut output = String::new();
@@ -4238,6 +4238,9 @@ mod tests {
         output.push_str("TASKCAP|id=16;dead=1;root_cleared=1;tasks=11;caps=114\r\n");
         output.push_str("CAPACITY|caps_live=114;caps_peak=119;caps_limit=144;segment_slots=31;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=629;audit_limit=768\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
+        let wrong_status = output.replace("2500000000000000", "0200000000000000");
+        assert_ne!(wrong_status, output);
+        assert!(super::validate_stage5_capacity(&wrong_status).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
         assert!(

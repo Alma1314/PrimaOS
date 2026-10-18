@@ -50,6 +50,7 @@ fn build_and_report() -> Result<image::Images, String> {
 
 fn test_boot_slice() -> Result<(), String> {
     let images = build_and_report()?;
+    image::check_stage5_linux_probe()?;
     for run in 1..=2 {
         qemu::run_bios_test(&images.bios)
             .map_err(|error| format!("BIOS run {run} failed: {error}"))?;

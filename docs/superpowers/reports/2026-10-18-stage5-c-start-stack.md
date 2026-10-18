@@ -9,3 +9,5 @@ C ELF 的汇编 `_start` 从实际 `rsp` 获取栈地址，再按 x86_64 C 调�
 `cargo test --workspace --quiet`、`cargo xtask lint`、`cargo xtask test` 通过；后者在 BIOS QEMU 双轮核验原有阶段 1–4 trace、C 标记、Task 16 回收和容量水位。
 
 边界：目前只构造这一个探针的固定参数；未实现通用参数/env 传递、完整 auxv、退出码、fd 字节流、libc 或 ELF 各段权限验收。BLK-003 保持 Open，S5-D1–D7/X1–X3 均未勾选。
+
+后续固定探针的 `main` 返回码见[独立报告](2026-10-18-stage5-main-return-status.md)；本报告保留当时的启动栈验收范围。

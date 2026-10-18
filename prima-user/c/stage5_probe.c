@@ -29,10 +29,18 @@ static int same(const char *actual, const char *expected) {
     return *actual == 0;
 }
 
-__attribute__((noreturn)) void stage5_main(uint64_t self, uint64_t send_cap,
-                                           uint64_t code_cap, uint64_t name,
-                                           uint64_t manager_id,
-                                           const uint64_t *stack) {
+int main(int argc, char **argv, char **envp) {
+    if (argc != 2 || !same(argv[1], "stack-ready"))
+        return 2;
+    if (!envp || !envp[0] || !same(envp[0], "PRIMA_ABI=1") || envp[1] != 0)
+        return 3;
+    return 37;
+}
+
+__attribute__((noreturn)) void stage5_entry(uint64_t self, uint64_t send_cap,
+                                            uint64_t code_cap, uint64_t name,
+                                            uint64_t manager_id,
+                                            const uint64_t *stack) {
     (void)code_cap;
     (void)name;
     uint64_t received[3];
@@ -50,8 +58,10 @@ __attribute__((noreturn)) void stage5_main(uint64_t self, uint64_t send_cap,
         prima_call(SYS_ABI_CHECK, 1, 1, 0) != ERR_INVALID ||
         prima_call(SYS_ABI_CHECK, 1, 0, 1) != ERR_INVALID)
         goto failed;
+    int status = main((int)stack[0], (char **)&stack[1], (char **)&stack[4]);
     uint64_t id = prima_call(SYS_TASK_ID, 0, 0, 0);
-    if (prima_call(SYS_SEND, manager_id, send_cap, PROBE_TAG | (id & 0xff)) == 0)
+    uint64_t payload = PROBE_TAG | ((uint64_t)(uint8_t)status << 16) | (id & 0xff);
+    if (prima_call(SYS_SEND, manager_id, send_cap, payload) == 0)
         prima_call(SYS_TASK_DESTROY, self, 0, 0);
     /* A failed exit remains blocked so the manager's QEMU witness fails. */
 failed:

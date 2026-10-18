@@ -98,10 +98,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
                 .map_err(|error| format!("failed to read {}: {error}", source.display()))?,
         ));
     }
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask must be directly under the workspace root")
-        .join("prima-user/c/stage5_probe.c");
+    let source = stage5_probe_source();
     let start = source.with_file_name("stage5_start.S");
     let binary = path.with_file_name("stage5-probe.elf");
     let compiled = Command::new("clang")
@@ -189,6 +186,57 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     ensure_ramdisk_layout(&ramdisk, next_offset)?;
     fs::write(path, &ramdisk)
         .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    Ok(())
+}
+
+fn stage5_probe_source() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .join("prima-user/c/stage5_probe.c")
+}
+
+/// 同一 C 源码在 Linux 宿主上的 main 返回码参考：成功及两个输入拒绝。
+pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
+    let source = stage5_probe_source();
+    let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .join("target/prima-os/stage5-probe-linux");
+    let compiled = Command::new("clang")
+        .args(["-O2", "-std=c11", "-Werror"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux clang: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux C probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    for (argument, environment, expected) in [(true, true, 37), (false, true, 2), (true, false, 3)]
+    {
+        let mut command = Command::new(&binary);
+        command.env_clear();
+        if argument {
+            command.arg("stack-ready");
+        }
+        if environment {
+            command.env("PRIMA_ABI", "1");
+        }
+        let status = command
+            .status()
+            .map_err(|error| format!("failed to run Linux C probe: {error}"))?;
+        if status.code() != Some(expected) {
+            return Err(format!(
+                "Linux C probe exit mismatch: expected {expected}, got {:?}",
+                status.code()
+            ));
+        }
+    }
+    println!("PASS linux stage5 C main exits 37/2/3");
     Ok(())
 }
 

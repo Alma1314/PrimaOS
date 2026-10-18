@@ -320,7 +320,7 @@ pub extern "C" fn _start(
     let mut finished = false;
     let mut capacity_probe: Option<(Capability, u64, Capability)> = None;
     let mut capacity_done = false;
-    let mut capacity_exit_reported = false;
+    let mut capacity_exit_status = u64::MAX;
     let mut capacity_stack_reclaimed = false;
     let mut capacity_rejected = false;
     // SPEC-105/106：建端点状态。
@@ -469,7 +469,9 @@ pub extern "C" fn _start(
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
             // C 程序自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
             // Dead 与根清理，不能只相信这条消息。
-            capacity_exit_reported = message.payload == (STAGE5_C_PROBE_TAG | 16);
+            if message.payload & !(0xff << 16) == (STAGE5_C_PROBE_TAG | 16) {
+                capacity_exit_status = (message.payload >> 16) & 0xff;
+            }
             if let Some((manager, entry_offset, stack)) = capacity_probe {
                 capacity_stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
                 let _ = runtime.cap_drop(stack);
@@ -935,7 +937,7 @@ pub extern "C" fn _start(
                 EVENT_STAGE5_CAPACITY,
                 16,
                 STAGE5_C_PROBE_TAG >> 8 & 0xff,
-                u64::from(capacity_exit_reported),
+                capacity_exit_status,
                 u64::from(capacity_stack_reclaimed),
                 u64::from(capacity_rejected),
             );

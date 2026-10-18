@@ -3,7 +3,7 @@
 .type _start,@function
 _start:
     mov %rsp, %r9
-    call stage5_main
+    call stage5_entry
     ud2
 .size _start, .-_start
 .section .note.GNU-stack,"",@progbits

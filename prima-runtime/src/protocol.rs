@@ -57,7 +57,7 @@ pub use prima_abi::boot_image::{
 pub const SERVICE_IMAGE_KIND_SERVICEMGR: u64 = 0x100;
 /// 阶段 5：无 libc C 探针在服务映像目录中的 opaque kind。
 pub const SERVICE_IMAGE_KIND_C_PROBE: u64 = 0x101;
-/// C 探针自报 tag；低字节是实际 Task ID，次低字节是 C 见证值。
+/// C 探针完成消息：低字节是 Task ID，次低字节是 C 见证值，bits 16..23 是 main 返回码。
 pub const STAGE5_C_PROBE_TAG: u64 = 0xc500_0000_0000_5a00;
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
