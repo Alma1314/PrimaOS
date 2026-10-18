@@ -16,3 +16,5 @@
 原 IPC 计数更新为 queued/direct/blocks = 45/39/46。上述数值由 `xtask` 对 BIOS QEMU **两轮**逐字段核对；宿主侧 Cap、Segment、消息、Audit 耗尽负例见[前一水位报告](2026-10-18-stage5-capacity-watermarks.md)。`cargo test --workspace --quiet`、`cargo xtask lint`、`cargo xtask test` 均通过。旧阶段 1–4 的 43 个启动事件仍由同一验收器核对。
 
 **结论**：BLK-004 所需的全量服务后新增 C Task 创建、执行、自毁、栈回收、容量水位与确定性耗尽已具备证据，按此范围关闭。此 C 入口仍是 Prima 原生五寄存器约定；没有 `argc/argv/envp/auxv`、POSIX `_exit` 状态、`write(1/2)`、ELF 页权限/W^X 验证，也没有 libc 或 Linux/Prima 同源码差分。它们留在阶段 5 的 M1/片 C 及后续交付，BLK-003 仍 Open。
+
+后续固定探针的初始栈见[独立报告](2026-10-18-stage5-c-start-stack.md)；本报告保留当时的容量验收范围。

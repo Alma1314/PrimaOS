@@ -102,6 +102,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .join("prima-user/c/stage5_probe.c");
+    let start = source.with_file_name("stage5_start.S");
     let binary = path.with_file_name("stage5-probe.elf");
     let compiled = Command::new("clang")
         .args([
@@ -120,6 +121,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
             "-Wl,--build-id=none",
         ])
         .arg(&source)
+        .arg(&start)
         .arg("-o")
         .arg(&binary)
         .output()

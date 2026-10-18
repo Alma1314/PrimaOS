@@ -8,7 +8,7 @@
 
 | API / 契约 | Prima 后端与待定边界 | 状态 | 拟定测试 |
 |---|---|---|---|
-| C 入口 `argc/argv/envp/auxv` | 通用 ELF 装载、初始栈、段权限；入口寄存器与 auxv 尚未冻结 | planned | P5-BOOT-01 |
+| C 入口 `argc/argv/envp/auxv` | 固定 C 探针已有 16 字节对齐初始栈、2 个 argv、1 个 env 与 `AT_PAGESZ/AT_NULL`；通用参数传递、完整 auxv 和段权限未完成 | partial（仅固定探针） | P5-BOOT-01：[QEMU 见证](../reports/2026-10-18-stage5-c-start-stack.md) |
 | `_exit` / `exit` | Task 自毁已有；退出码观察、父子关系和资源回收契约待定 | planned | P5-PROC-01 |
 | `getpid` | 可映射现有 `SYS_TASK_ID`，PID 稳定性和错误边界待定 | planned | P5-PROC-02 |
 | `write` | fd→Capability 与用户态 tty 字节流服务待建；短写和错误码待冻结 | planned | P5-IO-01 |

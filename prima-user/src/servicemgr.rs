@@ -116,6 +116,8 @@ fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32>
 
 /// 端点用户栈的页大小（`stack_top = ENDPOINT_STACK_VA + 0x1000`）。
 const FRAME_SIZE: u64 = 0x1000;
+/// C 入口栈从页内 0xf00 开始，保持 16 字节对齐。
+const C_STACK_OFFSET: u64 = 0xf00;
 /// 只读 + 可写映射权（`SegMapR|SegMapW`）。
 const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// 段 cap 的子集：`SegMapR|SegMapW` + `Derive`（`memseg_map` 前置要求段 cap 含 `Derive`）。
@@ -564,6 +566,7 @@ pub extern "C" fn _start(
                         &spec,
                         slot,
                         &mut created_slot,
+                        false,
                     )
                 {
                     created += 1;
@@ -781,6 +784,7 @@ pub extern "C" fn _start(
                         &spec,
                         DRIVER_SLOT,
                         &mut created_slot,
+                        true,
                     ) {
                         capacity_probe = Some((manager, entry, stack));
                     } else {
@@ -1043,6 +1047,7 @@ fn create_service(
     spec: &Pending,
     slot: usize,
     created_slot: &mut [bool; SERVICES],
+    c_stack: bool,
 ) -> Option<(Capability, Capability, u64, Capability)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
@@ -1074,6 +1079,13 @@ fn create_service(
     let Ok(stack) = runtime.memseg_create(1, RW) else {
         return None;
     };
+    if c_stack && prepare_c_stack(runtime, self_cap, stack).is_none() {
+        let _ = runtime.memseg_destroy(stack);
+        let _ = runtime.cap_drop(stack);
+        let _ = runtime.cap_drop(initial0);
+        let _ = runtime.cap_drop(initial1);
+        return None;
+    }
     let entry = ENDPOINT_CODE_VA + e_entry;
     let Ok(manager) = runtime.task_create(&TaskSpec {
         code_segment: spec.code,
@@ -1081,18 +1093,74 @@ fn create_service(
         code_pages: spec.pages,
         load_base: ENDPOINT_CODE_VA,
         entry,
-        stack_top: ENDPOINT_STACK_VA + FRAME_SIZE,
+        stack_top: ENDPOINT_STACK_VA + if c_stack { C_STACK_OFFSET } else { FRAME_SIZE },
         parent_namespace: Some(ns_cap),
         root_rights: NS_RESOLVE_RIGHTS,
         initial_capabilities: [Some(initial0), Some(initial1)],
         name: spec.name,
     }) else {
+        let _ = runtime.memseg_destroy(stack);
+        let _ = runtime.cap_drop(stack);
+        let _ = runtime.cap_drop(initial0);
+        let _ = runtime.cap_drop(initial1);
         return None;
     };
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
-    let _ = runtime.memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW);
+    if runtime
+        .memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, 1, RW)
+        .is_err()
+    {
+        let _ = runtime.task_destroy(manager);
+        let _ = runtime.memseg_destroy(stack);
+        let _ = runtime.cap_drop(stack);
+        let _ = runtime.cap_drop(manager);
+        return None;
+    }
     write_created_witness(runtime, slot, e_entry, initial1, manager);
     Some((initial1, manager, e_entry, stack))
+}
+
+/// 将 C 的 argc/argv/envp/auxv 写入同一栈段，再卸载管理器内的临时映射。
+fn prepare_c_stack(
+    runtime: &Runtime<impl SyscallTransport>,
+    self_cap: &Capability,
+    stack: Capability,
+) -> Option<()> {
+    let alias = ENDPOINT_CODE_PROBE_VA;
+    runtime.memseg_map(stack, *self_cap, 0, alias, 1, RW).ok()?;
+    let base = ENDPOINT_STACK_VA;
+    let words = [
+        2,
+        base + 0xf80,
+        base + 0xf90,
+        0,
+        base + 0xfa0,
+        0,
+        6,
+        FRAME_SIZE,
+        0,
+        0,
+    ];
+    let mut written = true;
+    for (index, word) in words.iter().enumerate() {
+        written &= runtime
+            .write_user_bytes(
+                alias + C_STACK_OFFSET + index as u64 * 8,
+                &word.to_le_bytes(),
+            )
+            .is_ok();
+    }
+    written &= runtime
+        .write_user_bytes(alias + 0xf80, b"stage5-probe\0")
+        .is_ok();
+    written &= runtime
+        .write_user_bytes(alias + 0xf90, b"stack-ready\0")
+        .is_ok();
+    written &= runtime
+        .write_user_bytes(alias + 0xfa0, b"PRIMA_ABI=1\0")
+        .is_ok();
+    let unmapped = runtime.memseg_unmap(*self_cap, alias, 1).is_ok();
+    (written && unmapped).then_some(())
 }
 
 /// SPEC-105：把「管理器确实创建了端点」的证据、收到的建端点参数与**自解出的 ELF 入口**

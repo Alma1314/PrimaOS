@@ -2,7 +2,7 @@
 
 **日期**：2026-10-18
 **基线**：`master` `eba03c4`；依据[阶段 1–4 实现复核](../reports/2026-10-18-stage1-4-implementation-review.md)及[准入分析](../reports/2026-10-18-stage5-entry-analysis.md)
-**状态**：执行计划；片 B 的 C ELF 容量门槛已关闭，片 A 的[原生 ABI 1.0 握手](../reports/2026-10-18-stage5-native-abi-check.md)已获 QEMU 见证；POSIX profile 与片 C 仍待完成。S5-D1–D7/X1–X3 均未完成，BLK-003 仍 Open；DOC-002 仍为外部候选。ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
+**状态**：执行计划；片 B 的 C ELF 容量门槛已关闭，片 A 的[原生 ABI 1.0 握手](../reports/2026-10-18-stage5-native-abi-check.md)和片 C 的[固定 C 初始栈](../reports/2026-10-18-stage5-c-start-stack.md)已获 QEMU 见证；POSIX profile 与片 C 仍待完成。S5-D1–D7/X1–X3 均未完成，BLK-003 仍 Open；DOC-002 仍为外部候选。ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
 
 ## 1. 目标与取舍
 
