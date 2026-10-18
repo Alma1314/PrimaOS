@@ -2277,7 +2277,11 @@ pub struct VspaceEntry {
 /// **M3 扩容 144 → 192**：C 探针改用静态 musl 后，ELF 代码段 10 页、可写段 2 个、入口栈
 /// 8 页（musl 启动 + `snprintf` 栈用量超过 4 页），创建期逻辑映射条目越过 144
 /// （`CapacityExceeded`）。这是真实增长，非泄漏；容量证据随 M3 重测。
-pub const MAX_VSPACE_ENTRIES: usize = 192;
+///
+/// **M3b 扩容 192 → 256**：mallocng 的匿名内存经 `memseg_map` 逐页计入本视图——16 页 brk
+/// 区加上一次 140000 字节（35 页）的独立 mmap，峰值已超过 M3 余量。单次匿名映射上限仍是
+/// `MAX_SEGMENT_FRAMES = 96` 页；扩容量而非放宽任何检查。
+pub const MAX_VSPACE_ENTRIES: usize = 256;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]

@@ -2,11 +2,11 @@
 
 **日期**：2026-10-18
 
-**性质**：M3 首个完整切片。启用 x87/SSE 与 per-task `FXSAVE/FXRSTOR`，从锁定快照
-构建 Prima 的静态 `libc.a` 与 sysroot，用 Prima crt 接 `__libc_start_main`，并把 C
-探针改为链接 musl。**未实现 `mmap`/`brk`，因此 `malloc/free` 未验收；未移植线程、
-信号、完整 auxv/任意 argv、取消点 musl 侧替换与动态链接。** S5-D*/S5-X* 仍未勾选，
-profile v0 未修改。
+**性质**：M3 完整切片（含 M3b 续片）。启用 x87/SSE 与 per-task `FXSAVE/FXRSTOR`，从
+锁定快照构建 Prima 的静态 `libc.a` 与 sysroot，用 Prima crt 接 `__libc_start_main`，
+把 C 探针改为链接 musl，并以用户态匿名 arena 支撑 `malloc/free/realloc`。**未移植
+线程、信号、完整 auxv/任意 argv、stdio 输出路径、取消点 musl 侧替换与动态链接。**
+S5-D*/S5-X* 仍未勾选，profile v0 未修改。
 
 **上位计划**：[musl 移植计划](../plans/2026-10-18-musl-port-plan.md)；
 **前序**：[M0 盘点](2026-10-18-stage5-musl-m0-inventory.md)、
@@ -125,6 +125,74 @@ cargo xtask test
 - 入口栈从 4 页增至 8 页后，创建期 vspace 条目超限，必须同时扩容到 192；只加栈或
   只加 vspace 都会失败。
 
+## 4.1 M3b：mallocng 的匿名内存（2026-10-18 续片）
+
+musl 的 `malloc` 不直接调用 `mmap`，而是由 mallocng 先 `brk` 取元数据区、再对
+分组调用匿名 `mmap`，`free` 对独立映射调用 `munmap`，`realloc` 优先尝试 `mremap`。
+因此 T-MUSL-05 需要的是完整的这几个系统边界，而不是一个 `malloc` 符号。
+
+### 4.1.1 实现
+
+- **服务管理器预映射**：创建 C 任务时，栈段从 8 页扩为 **72 页**——前 8 页仍是入口栈，
+  后 64 页作为固定 VA `C_HEAP_VA = 0x0000_0C00_0000_0000` 的匿名 arena，以 `RW`
+  映射进子任务根。它与栈**同一次 `memseg_create`**，不增加 Segment 槽位或 audit
+  事件；C 探针运行期的容量快照是 segment 41/48、audit 757/768。
+- **适配层**（`prima_syscall.c`）：
+  - `brk`：arena 首 16 页；`brk(0)` 返回当前断点，`brk(new)` 只在区间内前进，
+    超出时按 Linux 约定返回当前断点，让 mallocng 永久转用 `mmap`；
+  - 匿名 `mmap`：只接受 `MAP_PRIVATE|MAP_ANONYMOUS`、`fd=-1`、`offset=0`，从arena
+    的 mmap 区 bump 分配；单次上限 48 页；`MAP_FIXED` 只为 brk guard 页返回原地址；
+  - `mprotect` 返回成功但不改变权限（匿名页一律 `RW`）；
+  - `munmap` 是空操作（bump 区不回收），`mremap` 保持 `ENOSYS`，`realloc` 走
+    malloc + copy + free 回退。
+- **内核容量**：
+  - `MAX_VSPACE_ENTRIES` 192 → **256**：`memseg_map` 逐页记逻辑条目，arena 一次
+    贡献 64 条；
+  - `MAX_FRAME_OWNERS` 192 → **256**：72 页栈+arena 合计需要 72 个逐帧归属项，旧
+    上限在 `allocate_for_segment` 处以 `NoMemory` 失败；
+  - 归属表从 `FrameRegistry` **移入 `OWNER_ARENA`**：256 项内联会让注册表按值大小
+    超过既有的 32 KiB 预算；与 vspace/audit 使用同一 arena 模式，结构体只留区段句柄。
+    该重构不改变 W6 的逐帧守恒/不交判定，也不能通过放宽预算测试来替代。
+
+### 4.1.2 探针断言
+
+`musl_heap_probe` 在既有 `snprintf`/`getenv`/errno 之后运行，不产生串口输出：
+
+- `malloc(64)`：非空、16 字节对齐、写入/读回 64 字节后 `free`；
+- `malloc(4096)`：首页与末页可写；
+- `malloc(140000)`：超过 `MMAP_THRESHOLD = 131052`，走独立匿名 `mmap`；写入首末
+  字节后 `free`（触发 `munmap`）；
+- `malloc(32)` + `realloc(128)`：覆盖 `mremap` 返回 `ENOSYS` 后的复制回退。
+
+任一失败会以不同退出码上报（31 = 首个 malloc，32–39 = 后续阶段），而不是笼统的
+退出 10。
+
+### 4.1.3 证据
+
+```
+cargo test --workspace   15 组 test result: ok（kernel 402 通过）
+cargo xtask lint         fmt / clippy -D warnings / 裸机 deny(unsafe_code) / 零 unsafe 全 PASS
+cargo xtask test         8 项全 PASS
+```
+
+- `EVENT_STAGE5_CAPACITY` 仍为 `[17, 0x5a, 37, 1, 1]`：C 探针在 malloc 探针之后
+  以退出码 37 结束；
+- 串口既有见证逐字节未变：`CIO|task=17;fd=1;ch=104;fd=2;ch=105`、`TTYOUT`、
+  h/i 与 5 字节 `xyz`；
+- `CAPACITY` 行仍为 `segment_slots=41;segment_limit=48;audit_used=757;audit_limit=768`；
+- `state_audit_ready` 仍为 `used=757;cap=768`；
+- `frames_ready` 的 `image` 随内核重构变化（1158），free 相应变化；这是真实帧数，
+  事件结构与不变量检查未变。
+
+### 4.1.4 已知边界（不宣称通用 mmap）
+
+- arena 每个 C 任务 64 页（16 页 brk + 48 页 mmap），由服务管理器在任务创建时
+  一次映射；只有 `c_stack` 路径的 C 任务具备该映射；
+- 无逐映射回收：`munmap` 空操作；arena 用尽后 `mmap` 返回 `ENOMEM`；
+- 无权限变更：`mprotect` 不改变 PTE 权限；`MAP_FIXED` 不重映射；
+- 无文件映射、共享映射、`mremap`、超过 48 页的单次匿名映射；
+- 该实现是 mallocng 的**用户态适配**，不是对任意 POSIX 程序的 `mmap` 承诺。
+
 ## 5. 测试 ID 状态
 
 | ID | 状态 | 证据 |
@@ -134,12 +202,13 @@ cargo xtask test
 | T-MUSL-02 | **通过** | FS 由 `__set_thread_area` 驱动；per-task FPU 契约新增 host 单测 + QEMU 变异 RED |
 | T-MUSL-03 | **通过** | 探针为静态 PIE、仅 RELATIVE；Prima crt 接 `__libc_start_main`；musl `libc.a` 链接 |
 | T-MUSL-04 | **部分通过** | `snprintf` 格式化、`getenv`、errno 语义；stdio 输出路径（`printf`→`writev`）未直接断言 |
-| T-MUSL-05 | 未执行 | `malloc/free` 需要匿名内存服务（`mmap`/`brk`），未实现 |
+| T-MUSL-05 | **通过（M3b）** | `malloc/free/realloc` 经匿名 arena 完成；含 140000 字节独立 mmap 与 `munmap` 路径 |
 | T-MUSL-06–09 | 未执行 | 依赖线程/信号/fork/网络或动态链接 |
 
 ## 6. 已知边界（不得据此宣称支持）
 
-- **无 `malloc/free`**：musl mallocng 需要 `mmap`/`brk`；适配层未实现，未验收。
+- **匿名内存是用户态 arena**：64 页、无回收、无权限变更、无文件/共享映射，
+  单次上限 48 页；见 §4.1.4。`malloc/free` 通过不等于通用 `mmap` 支持。
 - **stdio 输出路径未直接测**：`snprintf` 覆盖格式化引擎，但没有用 `printf`+`fflush`
   走 `writev`；既有 h/i/xyz 仍走适配层的原生 fd 写。
 - **无完整 auxv/任意 argv**：`AT_PAGESZ`/`AT_NULL` 与固定 argv 不变；musl 的
@@ -172,3 +241,13 @@ cargo xtask test
 - **M3-D8**：musl 构建使用 `-fPIC -O2` 静态库；探针/适配层 TU 仍加
   `-mgeneral-regs-only`，避免编译器自身的 XMM 使用干扰 SSE 断言。代价：musl 与
   TU 的编译选项不同，需在构建脚本中分别维护。
+- **M3b-D1**：匿名内存由服务管理器在创建 C 任务时**预映射**（栈+arena 同段），
+  适配层只做 bump 分配。代价：该 arena 只对 `c_stack` 任务存在；C 程序不能自行
+  扩大匿名内存。
+- **M3b-D2**：不引入新的内核匿名映射 syscall，复用 `memseg_create/map` 语义。
+  代价：`mmap` 的保护/回收语义是适配层的 partial 实现，必须逐项登记。
+- **M3b-D3**：`MAX_FRAME_OWNERS` 提到 256 并把归属表移入 `OWNER_ARENA`，而不是
+  放宽 32 KiB 注册表预算。代价：普通内存多一处静态 arena；换来既有不变量测试
+  仍然是硬门槛。
+- **M3b-D4**：`MAX_VSPACE_ENTRIES` 提到 256。代价：vspace arena 段内多 64 条
+  容量；这是真实增长，不是放宽重叠/权限检查。

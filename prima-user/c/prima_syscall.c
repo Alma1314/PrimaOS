@@ -32,6 +32,85 @@ long prima_native_syscall3(long number, long a0, long a1, long a2) {
     return prima_raw(number, a0, a1, a2, 0, 0, 0);
 }
 
+/* M3b：musl mallocng 的匿名内存。
+ *
+ * 服务管理器在创建 C 任务时把 64 页 arena 与栈作为**同一 Segment** 的两段映射
+ * 进本任务根：首 16 页作 `brk` 区（mallocng 的元数据区），其余作匿名 `mmap`
+ * 的 bump 区。适配层只做指针推进，不再发 `memseg_create`——C 探针运行期容量
+ * 快照已是 segment 槽位 41/48、audit 757/768，任务内建段会立即触顶。
+ *
+ * 已知边界（M3 报告登记，不得据此宣称通用 mmap）：
+ * - 只支持 `MAP_PRIVATE|MAP_ANONYMOUS`、fd=-1、offset=0；
+ * - `MAP_FIXED` 只为 mallocng 的 brk guard 页返回原地址，不改变权限；
+ * - `mprotect` 返回成功但不改变权限（匿名页一律 RW）；
+ * - `munmap` 是空操作，bump 区不回收；无 `mremap`；
+ * - 单次匿名映射上限 48 页，arena 用尽后 `mmap` 返回 `ENOMEM`。
+ */
+#define PRIMA_HEAP_VA UINT64_C(0x00000c0000000000)
+#define PRIMA_HEAP_PAGES 64UL
+#define PRIMA_BRK_PAGES 16UL
+#define PRIMA_MMAP_PAGES (PRIMA_HEAP_PAGES - PRIMA_BRK_PAGES)
+#define PRIMA_PAGE_SIZE 4096UL
+
+#define PRIMA_MAP_SHARED 0x01
+#define PRIMA_MAP_PRIVATE 0x02
+#define PRIMA_MAP_FIXED 0x10
+#define PRIMA_MAP_ANONYMOUS 0x20
+
+static uint64_t prima_heap_pages;
+static uint64_t prima_brk_cur;
+static uint64_t prima_mmap_next;
+
+/* arena 由服务管理器预先映射；这里只初始化 bump 指针。 */
+static void prima_heap_ready(void) {
+    if (prima_heap_pages != 0)
+        return;
+    prima_heap_pages = PRIMA_HEAP_PAGES;
+    prima_brk_cur = PRIMA_HEAP_VA;
+    prima_mmap_next = PRIMA_HEAP_VA + PRIMA_BRK_PAGES * PRIMA_PAGE_SIZE;
+}
+
+static long prima_brk(uint64_t requested) {
+    prima_heap_ready();
+    if (requested == 0)
+        return (long)prima_brk_cur;
+    if (requested < PRIMA_HEAP_VA ||
+        requested > PRIMA_HEAP_VA + PRIMA_BRK_PAGES * PRIMA_PAGE_SIZE)
+        return (long)prima_brk_cur;
+    prima_brk_cur = requested;
+    return (long)requested;
+}
+
+static long prima_mmap_anon(long requested_address, uint64_t length,
+                            long flags, long fd, long offset) {
+    if ((flags & PRIMA_MAP_FIXED) != 0) {
+        /* mallocng 在 brk 区首页安装 guard；该区已映射，返回请求地址即可。 */
+        return requested_address;
+    }
+    if ((flags & PRIMA_MAP_ANONYMOUS) == 0 ||
+        (flags & PRIMA_MAP_SHARED) != 0 || (flags & PRIMA_MAP_PRIVATE) == 0 ||
+        fd != -1 || offset != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    if (length == 0)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t pages = (length + PRIMA_PAGE_SIZE - 1) / PRIMA_PAGE_SIZE;
+    if (pages == 0 || pages > PRIMA_MMAP_PAGES)
+        return -PRIMA_ERRNO_ENOMEM;
+    prima_heap_ready();
+    uint64_t base = prima_mmap_next;
+    uint64_t limit = PRIMA_HEAP_VA + PRIMA_HEAP_PAGES * PRIMA_PAGE_SIZE;
+    if (base + pages * PRIMA_PAGE_SIZE > limit)
+        return -PRIMA_ERRNO_ENOMEM;
+    prima_mmap_next = base + pages * PRIMA_PAGE_SIZE;
+    return (long)base;
+}
+
+static long prima_munmap_anon(uint64_t address) {
+    /* bump arena 不回收单个映射；`free` 仍能复用 mallocng 自己的分组。 */
+    (void)address;
+    return 0;
+}
+
 /* fd 1/2 的逐个字节转发；返回字节数或原始负 errno。 */
 static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
     const unsigned char *bytes = buf;
@@ -76,10 +155,17 @@ __attribute__((noreturn)) static void prima_exit_group(int status) {
  * 少传参数会静默丢参。未列出的号一律 -ENOSYS（不在本阶段承诺）。 */
 static long prima_translate(long number, long a0, long a1, long a2, long a3,
                             long a4, long a5) {
-    (void)a3;
-    (void)a4;
-    (void)a5;
     switch (number) {
+    case PRIMA_LINUX_SYS_mmap:
+        /* Linux 顺序：addr, len, prot, flags, fd, offset；prot 不参与判定。 */
+        return prima_mmap_anon(a0, (uint64_t)a1, a3, a4, a5);
+    case PRIMA_LINUX_SYS_munmap:
+        return prima_munmap_anon((uint64_t)a0);
+    case PRIMA_LINUX_SYS_mprotect:
+        /* 匿名页一律 RW；mallocng 只对已 RW 的元数据页调用。 */
+        return 0;
+    case PRIMA_LINUX_SYS_brk:
+        return prima_brk((uint64_t)a0);
     case PRIMA_LINUX_SYS_write:
         return prima_write_bytes((int)a0, (const void *)a1,
                                  (unsigned long)a2);

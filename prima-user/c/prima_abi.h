@@ -21,15 +21,20 @@
 #define PRIMA_LINUX_SYS_read 0
 #define PRIMA_LINUX_SYS_write 1
 #define PRIMA_LINUX_SYS_close 3
-#define PRIMA_LINUX_SYS_exit 60
+#define PRIMA_LINUX_SYS_mmap 9
+#define PRIMA_LINUX_SYS_mprotect 10
+#define PRIMA_LINUX_SYS_munmap 11
+#define PRIMA_LINUX_SYS_brk 12
 #define PRIMA_LINUX_SYS_ioctl 16
 #define PRIMA_LINUX_SYS_writev 20
+#define PRIMA_LINUX_SYS_exit 60
 #define PRIMA_LINUX_SYS_arch_prctl 158
 #define PRIMA_LINUX_SYS_set_tid_address 218
 #define PRIMA_LINUX_SYS_exit_group 231
 
 /* 原始负 errno。 */
 #define PRIMA_ERRNO_EBADF 9
+#define PRIMA_ERRNO_ENOMEM 12
 #define PRIMA_ERRNO_EACCES 13
 #define PRIMA_ERRNO_EFAULT 14
 #define PRIMA_ERRNO_EINVAL 22

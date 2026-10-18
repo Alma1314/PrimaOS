@@ -54,7 +54,11 @@ pub const MAX_TABLE_FRAMES: usize = 256;
 /// 服务端点各占一个代码段与一个栈段，段表在 32 时触顶使后续 `memseg_create` 失败。
 pub const MAX_SEGMENTS: usize = 48;
 /// 非 image 数据帧的逐帧归属条目上限（S2-D3 的 frame → owner 查询）。
-pub const MAX_FRAME_OWNERS: usize = 192;
+///
+/// **M3b 192 → 256**：C 任务的栈与匿名 arena 合并为一个 72 页 Segment。旧上限
+/// 192 下 8 页栈段仍可创建，故创建前的已用条目 ≤ 184；栈 + arena 的 72 页使
+/// 256 成为可证明的上界。存储已移至 [`OWNER_ARENA`]，不占结构体预算。
+pub const MAX_FRAME_OWNERS: usize = 256;
 /// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
 ///
 /// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`
@@ -62,6 +66,16 @@ pub const MAX_FRAME_OWNERS: usize = 192;
 /// boot 早期安装的静态，不占结构体守卫额度）。超出即 `CapacityExceeded`——内核镜像
 /// 超过 8 MiB 时启动失败，显式报错而非静默截断。
 pub const MAX_IMAGE_FRAMES: usize = 2048;
+
+/// 归属表 arena 的区段数：内核 1 段，host 单测并行构造多个注册表。
+#[cfg(not(test))]
+const OWNER_REGIONS: usize = 1;
+#[cfg(test)]
+const OWNER_REGIONS: usize = 1024;
+
+/// 非 image 帧归属表的静态存储（每注册表实例一段，见 [`FrameRegistry`]）。
+static OWNER_ARENA: crate::arena::Arena<(u64, u32), MAX_FRAME_OWNERS, OWNER_REGIONS> =
+    crate::arena::Arena::new();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pool {
@@ -125,13 +139,29 @@ pub struct FrameRegistry {
     table_frames: [u64; MAX_TABLE_FRAMES],
     table_count: usize,
     /// 非 image 数据帧的 `(frame, segment_label)` 归属表（逐帧 owner 查询与不交性判定）。
-    owners: [Option<(u64, u32)>; MAX_FRAME_OWNERS],
+    ///
+    /// 存储移出结构体（与 vspace/audit 同一 arena 模式）：256 项内联会把
+    /// `FrameRegistry` 推过 32 KiB 按值预算；arena 的段数只在 host 单测放大。
+    owner_slice: Option<crate::arena::ArenaSlice>,
     owner_count: usize,
     segments: [Option<(u32, Pool)>; MAX_SEGMENTS],
     segment_count: usize,
 }
 
 impl FrameRegistry {
+    /// 第 `index` 项归属（未初始化或越界返回 `None`）。
+    fn owner(&self, index: usize) -> Option<(u64, u32)> {
+        self.owner_slice
+            .and_then(|slice| OWNER_ARENA.get(slice, index))
+    }
+
+    /// 写第 `index` 项归属（越界为 no-op）。
+    fn set_owner(&mut self, index: usize, value: Option<(u64, u32)>) {
+        if let Some(slice) = self.owner_slice {
+            OWNER_ARENA.set(slice, index, value);
+        }
+    }
+
     /// 空注册表（`const`；供 [`install`] 在静态上**就地**构造）。
     ///
     /// SPEC-068：image 向量使注册表达 ~27 KiB。`FrameRegistry` 若是"构造后按值返回"，
@@ -146,7 +176,7 @@ impl FrameRegistry {
             segment_frames: 0,
             table_frames: [0; MAX_TABLE_FRAMES],
             table_count: 0,
-            owners: [None; MAX_FRAME_OWNERS],
+            owner_slice: None,
             owner_count: 0,
             segments: [None; MAX_SEGMENTS],
             segment_count: 0,
@@ -182,6 +212,9 @@ impl FrameRegistry {
             .enumerate()
         {
             *slot = inventory.kernel_phys_start + (index as u64) * crate::mem::FRAME_SIZE;
+        }
+        if self.owner_slice.is_none() {
+            self.owner_slice = Some(OWNER_ARENA.claim());
         }
         self.segment_frames = 0;
         self.table_count = 0;
@@ -225,12 +258,10 @@ impl FrameRegistry {
         else {
             return Err(FrameError::UnknownSegment);
         };
-        if self.owners[..self.owner_count]
-            .iter()
-            .flatten()
-            .any(|(_, owner)| *owner == id)
-        {
-            return Err(FrameError::NotOwned);
+        for index in 0..self.owner_count {
+            if self.owner(index).is_some_and(|(_, owner)| owner == id) {
+                return Err(FrameError::NotOwned);
+            }
         }
         for shift in index..self.segment_count - 1 {
             self.segments[shift] = self.segments[shift + 1];
@@ -253,7 +284,7 @@ impl FrameRegistry {
             return Err(FrameError::CapacityExceeded);
         }
         let frame = self.alloc.allocate().map_err(|_| FrameError::NoFrame)?;
-        self.owners[self.owner_count] = Some((frame, id));
+        self.set_owner(self.owner_count, Some((frame, id)));
         self.owner_count += 1;
         self.segment_frames += 1;
         Ok(frame)
@@ -272,9 +303,8 @@ impl FrameRegistry {
 
     /// `Segment` 销毁时归还一帧：撤销 owner 登记并放回空闲池（W6 守恒仍成立）。
     pub fn release_frame(&mut self, id: u32, frame: u64) -> Result<(), FrameError> {
-        let Some(index) = self.owners[..self.owner_count]
-            .iter()
-            .position(|entry| *entry == Some((frame, id)))
+        let Some(index) =
+            (0..self.owner_count).find(|&index| self.owner(index) == Some((frame, id)))
         else {
             return Err(FrameError::NotOwned);
         };
@@ -283,9 +313,9 @@ impl FrameRegistry {
             .release(frame)
             .map_err(|_| FrameError::NotOwned)?;
         for shift in index..self.owner_count - 1 {
-            self.owners[shift] = self.owners[shift + 1];
+            self.set_owner(shift, self.owner(shift + 1));
         }
-        self.owners[self.owner_count - 1] = None;
+        self.set_owner(self.owner_count - 1, None);
         self.owner_count -= 1;
         self.segment_frames -= 1;
         Ok(())
@@ -316,12 +346,12 @@ impl FrameRegistry {
         if self.image_frame_ids[..self.image_count].contains(&frame) {
             return FrameOwner::Image;
         }
-        if let Some((_, id)) = self.owners[..self.owner_count]
-            .iter()
-            .flatten()
-            .find(|(owned, _)| *owned == frame)
-        {
-            return FrameOwner::Segment(*id);
+        for index in 0..self.owner_count {
+            if let Some((owned, id)) = self.owner(index)
+                && owned == frame
+            {
+                return FrameOwner::Segment(id);
+            }
         }
         if self.table_frames[..self.table_count].contains(&frame) {
             return FrameOwner::Table;
@@ -344,19 +374,22 @@ impl FrameRegistry {
         }
         index = 0;
         while index < self.owner_count {
-            let frame = self.owners[index].map(|(frame, _)| frame).unwrap_or(0);
+            let frame = self.owner(index).map(|(frame, _)| frame).unwrap_or(0);
             if self.image_frame_ids[..self.image_count].contains(&frame) {
                 return Err(FrameError::Overlap);
             }
             if self.table_frames[..self.table_count].contains(&frame) {
                 return Err(FrameError::Overlap);
             }
-            if self.owners[..index]
-                .iter()
-                .flatten()
-                .any(|(previous, _)| *previous == frame)
-            {
-                return Err(FrameError::Overlap);
+            let mut previous = 0;
+            while previous < index {
+                if self
+                    .owner(previous)
+                    .is_some_and(|(owned, _)| owned == frame)
+                {
+                    return Err(FrameError::Overlap);
+                }
+                previous += 1;
             }
             index += 1;
         }
@@ -684,7 +717,7 @@ mod tests {
         let mut registry = registry();
         registry.open_segment(1, Pool::Cpu).unwrap();
         registry.allocate_for_segment(1).unwrap();
-        registry.owners[0] = Some((0xdead_0000, 1));
+        registry.set_owner(0, Some((0xdead_0000, 1)));
         let before = registry;
         assert_eq!(
             registry.release_frame(1, 0xdead_0000),
@@ -738,7 +771,7 @@ mod tests {
 
         // 构造外错误：同一帧被两个 Segment 认领 → 不交性判定可检出。
         let index = registry.owner_count;
-        registry.owners[index] = Some((b, 1));
+        registry.set_owner(index, Some((b, 1)));
         registry.owner_count += 1;
         assert_eq!(registry.check_disjoint(), Err(FrameError::Overlap));
         assert!(!registry.witness().disjoint);

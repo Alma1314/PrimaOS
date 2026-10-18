@@ -88,25 +88,86 @@ extern int snprintf(char *buffer, unsigned long size, const char *format, ...);
 extern char *getenv(const char *name);
 extern int *__errno_location(void);
 extern long write(int fd, const void *buffer, unsigned long count);
+extern void *malloc(unsigned long size);
+extern void free(void *pointer);
+extern void *realloc(void *pointer, unsigned long size);
+
+/* M3b：mallocng 的匿名内存。依次覆盖 brk 元数据区、小对象的 mmap 分组、
+ * >= MMAP_THRESHOLD（131052）的独立 mmap + free 的 munmap，以及 realloc 的
+ * 复制回退（mremap 明确返回 ENOSYS）。返回 0 表示通过；正数是失败阶段
+ * （映射到退出码，便于 QEMU 定位）。 */
+static int musl_heap_probe(void) {
+    unsigned char *small = malloc(64);
+    if (!small || ((uintptr_t)small & 15) != 0)
+        return 1;
+    for (int i = 0; i < 64; i++)
+        small[i] = (unsigned char)(i + 1);
+    for (int i = 0; i < 64; i++)
+        if (small[i] != (unsigned char)(i + 1)) {
+            free(small);
+            return 2;
+        }
+    free(small);
+
+    unsigned char *page = malloc(4096);
+    if (!page)
+        return 3;
+    page[0] = 0x5a;
+    page[4095] = 0xa5;
+    if (page[0] != 0x5a || page[4095] != 0xa5) {
+        free(page);
+        return 4;
+    }
+    free(page);
+
+    const unsigned long big_len = 140000;
+    unsigned char *big = malloc(big_len);
+    if (!big)
+        return 5;
+    big[0] = 1;
+    big[big_len - 1] = 2;
+    if (big[0] != 1 || big[big_len - 1] != 2) {
+        free(big);
+        return 6;
+    }
+    free(big);
+
+    unsigned char *grown = malloc(32);
+    if (!grown)
+        return 7;
+    grown[0] = 7;
+    unsigned char *grown_more = realloc(grown, 128);
+    if (!grown_more)
+        return 8;
+    if (grown_more[0] != 7) {
+        free(grown_more);
+        return 9;
+    }
+    free(grown_more);
+    return 0;
+}
 
 static int musl_runtime_probe(void) {
     char buffer[64];
     int written = snprintf(buffer, sizeof buffer, "%d-%s-%x", 42, "musl", 0xabc);
     if (written != 11)
-        return 0;
+        return 11;
     const char expect[] = "42-musl-abc";
     for (int i = 0; i < written; i++)
         if (buffer[i] != expect[i])
-            return 0;
+            return 11;
     if (buffer[written] != 0)
-        return 0;
+        return 11;
     char *value = getenv("PRIMA_ABI");
     if (!value || value[0] != '1' || value[1] != 0)
-        return 0;
+        return 11;
     *__errno_location() = 0;
     if (write(99, "x", 1) != -1 || *__errno_location() != PRIMA_ERRNO_EBADF)
-        return 0;
-    return 1;
+        return 11;
+    {
+        int heap = musl_heap_probe();
+        return heap ? 30 + heap : 0;
+    }
 }
 #endif
 
@@ -249,9 +310,13 @@ int main(int argc, char **argv, char **envp) {
 #endif
 
 #ifndef PRIMA_HOST
-    /* M3：musl 的格式化、环境变量与 errno（不产生输出）。 */
-    if (!musl_runtime_probe())
-        return 10;
+    /* M3：musl 的格式化、环境变量、errno 与 mallocng（不产生输出）。
+     * 失败原因编码进退出码（11 = 既有断言；31..39 = 堆阶段），便于 QEMU 定位。 */
+    {
+        int reason = musl_runtime_probe();
+        if (reason)
+            return reason;
+    }
 #endif
 
     /* Linux `exit`(60) 与 `exit_group`(231) 都是终止路径；用 60 退出并要求它不返回。

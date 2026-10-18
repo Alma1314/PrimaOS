@@ -153,6 +153,14 @@ const FRAME_SIZE: u64 = 0x1000;
 const C_STACK_PAGES: u64 = 8;
 /// C 入口栈顶从最高页的页内 0xf00 开始，保持 16 字节对齐。
 const C_STACK_OFFSET: u64 = C_STACK_PAGES * FRAME_SIZE - 0x100;
+/// M3b：C 任务的匿名内存 arena（64 页 RW），与栈**同一 Segment** 的不同偏移。
+///
+/// 适配层按固定 VA bump 分配（首 16 页 brk、其余 mmap），因此映射必须在任务运行前
+/// 就位。与栈合并创建可复用同一次 `memseg_create`——C 探针运行期的容量快照已是
+/// segment 41/48、audit 757/768，不能为堆再增一次审计与段槽。
+/// 该常量必须与 `prima_syscall.c` 的 `PRIMA_HEAP_VA/PRIMA_HEAP_PAGES` 一致。
+const C_HEAP_VA: u64 = 0x0000_0C00_0000_0000;
+const C_HEAP_PAGES: u64 = 64;
 /// 只读 + 可写映射权（`SegMapR|SegMapW`）。
 const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// 段 cap 的子集：`SegMapR|SegMapW` + `Derive`（`memseg_map` 前置要求段 cap 含 `Derive`）。
@@ -1320,8 +1328,14 @@ fn create_service(
     }
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
     // SPEC-108：自建栈段（`R|W`）；C 入口用多页，musl 初始化需要。
+    // M3b：C 任务的匿名 arena 与栈同段，见 `C_HEAP_VA`。
     let stack_pages = if c_stack { C_STACK_PAGES } else { 1 };
-    let Ok(stack) = runtime.memseg_create(stack_pages, RW) else {
+    let segment_pages = if c_stack {
+        C_STACK_PAGES + C_HEAP_PAGES
+    } else {
+        1
+    };
+    let Ok(stack) = runtime.memseg_create(segment_pages, RW) else {
         drop_data_segments(runtime, &mut data_segments);
         return None;
     };
@@ -1354,10 +1368,15 @@ fn create_service(
         return None;
     };
     // 独立栈段映射进新端点根（`memseg_map` 的目标根由 `manager` cap 的目标 task 派生）。
-    if runtime
+    // M3b：C 任务把同段的后续 64 页映射为固定 VA 的匿名 arena（无额外 create/audit）。
+    let heap_mapped = !c_stack
+        || runtime
+            .memseg_map(stack, manager, C_STACK_PAGES, C_HEAP_VA, C_HEAP_PAGES, RW)
+            .is_ok();
+    let stack_mapped = runtime
         .memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, stack_pages, RW)
-        .is_err()
-    {
+        .is_ok();
+    if !stack_mapped || !heap_mapped {
         let _ = runtime.task_destroy(manager);
         let _ = runtime.memseg_destroy(stack);
         let _ = runtime.cap_drop(stack);
