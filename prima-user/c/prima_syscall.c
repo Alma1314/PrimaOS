@@ -135,6 +135,184 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
     return (long)len;
 }
 
+/* ---------- M4：文件 fd 生命周期 ----------
+ *
+ * fd 3..6 由本适配层拥有，服务端持有打开句柄与共享 offset。单条 IPC 最多携带
+ * `PRIMA_FILE_CHUNK` 字节，故 read/write 在这里分片——调用者仍看到完整的
+ * `read`/`write` 语义（短读只在 EOF/服务端容量边界出现）。
+ */
+static unsigned char prima_file_open[PRIMA_FILE_HANDLES];
+
+static int prima_file_fd(int fd) {
+    return fd >= PRIMA_FILE_FIRST_FD && fd <= PRIMA_FILE_LAST_FD &&
+           prima_file_open[fd - PRIMA_FILE_FIRST_FD] != 0;
+}
+
+/* 同步请求：发送一帧、让出、阻塞接收文件应答；返回应答 payload 或原始负 errno。 */
+static long prima_file_call(long op, long fd, uint64_t arg) {
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    uint64_t payload = PRIMA_STAGE5_FILE_REQUEST_TAG |
+                       ((uint64_t)(op & 0xf) << PRIMA_FILE_OP_SHIFT) |
+                       ((uint64_t)(fd & 0xf) << PRIMA_FILE_FD_SHIFT) |
+                       ((uint64_t)(id & 0xff) << PRIMA_FILE_CLIENT_SHIFT) |
+                       (arg & PRIMA_FILE_ARG_MASK);
+    long sent = prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                          (long)prima_ctx.send_cap, (long)payload, 0, 0, 0);
+    if (sent != 0)
+        return sent < 0 ? sent : -PRIMA_ERRNO_EFAULT;
+    /* 不显式 yield：紧随其后的 RECV 在队列为空时阻塞并切走；显式 yield 会在
+     * 抢占窗口里与任务状态迁移竞争。 */
+    uint64_t caps[3];
+    for (;;) {
+        long raw = prima_raw(PRIMA_SYS_RECV, (long)caps, 0, 0, 0, 0, 0);
+        if (raw < 0)
+            return raw;
+        if (((uint64_t)raw >> 48) == (PRIMA_STAGE5_FILE_REPLY_TAG >> 48))
+            return raw;
+        /* 文件请求是同步的；非文件消息不属于本通道，继续等待。 */
+    }
+}
+
+static long prima_reply_status(uint64_t reply) {
+    return (long)((reply >> PRIMA_FILE_STATUS_SHIFT) & 0xff);
+}
+
+/* openat 的冻结子集：单层短名（≤3 字节、无 '/'）、AT_FDCWD、access/CREAT/TRUNC。 */
+static long prima_openat(long dirfd, const char *path, long flags, long mode) {
+    (void)mode;
+    if (dirfd != PRIMA_AT_FDCWD)
+        return -PRIMA_ERRNO_EINVAL;
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    unsigned long len = 0;
+    while (path[len] != 0) {
+        if (path[len] == '/' || len >= 3)
+            return -PRIMA_ERRNO_ENOENT;
+        len++;
+    }
+    if (len == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    long access = flags & PRIMA_O_ACCMODE;
+    if (access == 3)
+        return -PRIMA_ERRNO_EINVAL;
+    long allowed = PRIMA_O_ACCMODE | PRIMA_O_CREAT | PRIMA_O_TRUNC |
+                   PRIMA_O_LARGEFILE | PRIMA_O_CLOEXEC;
+    if ((flags & ~allowed) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t internal = (uint64_t)access << PRIMA_FILE_ACCESS_SHIFT;
+    if (flags & PRIMA_O_CREAT)
+        internal |= PRIMA_FILE_FLAG_CREAT;
+    if (flags & PRIMA_O_TRUNC)
+        internal |= PRIMA_FILE_FLAG_TRUNC;
+    uint64_t arg = ((internal & 0xf) << PRIMA_FILE_OPEN_FLAGS_SHIFT) |
+                   (((uint64_t)len & 3) << PRIMA_FILE_OPEN_PATH_LEN_SHIFT);
+    for (unsigned long i = 0; i < len; i++)
+        arg |= (uint64_t)(unsigned char)path[i] << (8 * i);
+    long reply = prima_file_call(PRIMA_FILE_OP_OPEN, 0, arg);
+    if (reply < 0)
+        return reply;
+    long status = prima_reply_status((uint64_t)reply);
+    if (status != 0)
+        return -status;
+    long fd = (long)(((uint64_t)reply >> PRIMA_FILE_FD_SHIFT) & 0xf);
+    if (fd < PRIMA_FILE_FIRST_FD || fd > PRIMA_FILE_LAST_FD)
+        return -PRIMA_ERRNO_EINVAL;
+    prima_file_open[fd - PRIMA_FILE_FIRST_FD] = 1;
+    return fd;
+}
+
+static long prima_file_read(int fd, void *buf, unsigned long len) {
+    if (!prima_file_fd(fd))
+        return -PRIMA_ERRNO_EBADF;
+    if (len == 0)
+        return 0;
+    if (!buf)
+        return -PRIMA_ERRNO_EFAULT;
+    unsigned char *out = buf;
+    unsigned long done = 0;
+    while (done < len) {
+        unsigned long chunk = len - done;
+        if (chunk > PRIMA_FILE_CHUNK)
+            chunk = PRIMA_FILE_CHUNK;
+        long reply = prima_file_call(PRIMA_FILE_OP_READ, fd, chunk);
+        if (reply < 0)
+            return done != 0 ? (long)done : reply;
+        uint64_t raw = (uint64_t)reply;
+        long status = prima_reply_status(raw);
+        if (status != 0)
+            return done != 0 ? (long)done : -status;
+        unsigned long count = (raw >> PRIMA_FILE_WRITE_COUNT_SHIFT) & 0xff;
+        uint64_t data = raw & PRIMA_FILE_ARG_MASK;
+        if (count > chunk)
+            count = chunk;
+        for (unsigned long i = 0; i < count; i++)
+            out[done + i] = (unsigned char)(data >> (8 * i));
+        done += count;
+        if (count < chunk)
+            break; /* EOF 或服务端可用字节不足 */
+    }
+    return (long)done;
+}
+
+static long prima_file_write(int fd, const void *buf, unsigned long len) {
+    if (!prima_file_fd(fd))
+        return -PRIMA_ERRNO_EBADF;
+    if (len == 0)
+        return 0;
+    if (!buf)
+        return -PRIMA_ERRNO_EFAULT;
+    const unsigned char *in = buf;
+    unsigned long done = 0;
+    while (done < len) {
+        unsigned long chunk = len - done;
+        if (chunk > PRIMA_FILE_CHUNK)
+            chunk = PRIMA_FILE_CHUNK;
+        uint64_t arg = (uint64_t)chunk << PRIMA_FILE_WRITE_COUNT_SHIFT;
+        for (unsigned long i = 0; i < chunk; i++)
+            arg |= (uint64_t)in[done + i] << (8 * i);
+        long reply = prima_file_call(PRIMA_FILE_OP_WRITE, fd, arg);
+        if (reply < 0)
+            return done != 0 ? (long)done : reply;
+        long status = prima_reply_status((uint64_t)reply);
+        if (status != 0)
+            return done != 0 ? (long)done : -status;
+        done += chunk;
+    }
+    return (long)len;
+}
+
+static long prima_file_lseek(int fd, long offset, int whence) {
+    if (!prima_file_fd(fd))
+        return -PRIMA_ERRNO_EBADF;
+    if (whence < PRIMA_SEEK_SET || whence > PRIMA_SEEK_END)
+        return -PRIMA_ERRNO_EINVAL;
+    if (offset < -0x20000000L || offset > 0x1fffffffL)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t arg = ((uint64_t)(whence & 3) << PRIMA_FILE_SEEK_WHENCE_SHIFT) |
+                   ((uint64_t)offset & PRIMA_FILE_SEEK_OFFSET_MASK);
+    long reply = prima_file_call(PRIMA_FILE_OP_LSEEK, fd, arg);
+    if (reply < 0)
+        return reply;
+    uint64_t raw = (uint64_t)reply;
+    long status = prima_reply_status(raw);
+    if (status != 0)
+        return -status;
+    return (long)(raw & PRIMA_FILE_ARG_MASK);
+}
+
+static long prima_file_close(int fd) {
+    if (!prima_file_fd(fd))
+        return -PRIMA_ERRNO_EBADF;
+    long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, fd, 0);
+    if (reply < 0)
+        return reply;
+    long status = prima_reply_status((uint64_t)reply);
+    if (status != 0)
+        return -status;
+    prima_file_open[fd - PRIMA_FILE_FIRST_FD] = 0;
+    return 0;
+}
+
 __attribute__((noreturn)) static void prima_exit_group(int status) {
     long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
     uint64_t payload = PRIMA_STAGE5_C_PROBE_TAG |
@@ -167,8 +345,10 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
     case PRIMA_LINUX_SYS_brk:
         return prima_brk((uint64_t)a0);
     case PRIMA_LINUX_SYS_write:
-        return prima_write_bytes((int)a0, (const void *)a1,
-                                 (unsigned long)a2);
+        if (a0 == 1 || a0 == 2)
+            return prima_write_bytes((int)a0, (const void *)a1,
+                                     (unsigned long)a2);
+        return prima_file_write((int)a0, (const void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_writev: {
         const struct iovec *iov = (const struct iovec *)a1;
         long count = a2;
@@ -191,9 +371,15 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return (long)total;
     }
     case PRIMA_LINUX_SYS_close:
-        return (a0 == 1 || a0 == 2) ? 0 : -PRIMA_ERRNO_EBADF;
+        if (a0 == 1 || a0 == 2)
+            return 0;
+        return prima_file_close((int)a0);
     case PRIMA_LINUX_SYS_read:
-        return -PRIMA_ERRNO_ENOSYS;
+        return prima_file_read((int)a0, (void *)a1, (unsigned long)a2);
+    case PRIMA_LINUX_SYS_lseek:
+        return prima_file_lseek((int)a0, (long)a1, (int)a2);
+    case PRIMA_LINUX_SYS_openat:
+        return prima_openat(a0, (const char *)a1, a2, a3);
     case PRIMA_LINUX_SYS_ioctl:
         return -PRIMA_ERRNO_ENOSYS;
     case PRIMA_LINUX_SYS_set_tid_address:

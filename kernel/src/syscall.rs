@@ -791,11 +791,13 @@ impl NsWitness {
             // 审计侧：每类成功操作各留一条事件，三类拒绝各计一次。
             // SPEC-111：`binds` 2→3、`resolves` 2→3——服务管理器把共享段副本绑到 `svc`（+1 bind），
             // Namespace 服务据此代理解析一次（+1 resolve），两者都是 ring3 真实触发的内核操作。
-            && self.audit.binds == 3
+            // M4：管理器把文件访问令牌绑到隔离域的 `f`（+1 bind），C 的两次 `open` 各经
+            // Namespace 授权解析一次（+2 resolves）；计数随真实操作增长，不是放宽检查。
+            && self.audit.binds == 4
             && self.audit.unbinds == 2
             && self.audit.mounts == 2
             && self.audit.unmounts == 1
-            && self.audit.resolves == 3
+            && self.audit.resolves == 5
             && self.audit.cycles_rejected == 1
             && self.audit.overlaps_rejected == 1
             && self.audit.invalid_path_rejected == 1

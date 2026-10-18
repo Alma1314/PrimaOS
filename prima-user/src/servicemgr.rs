@@ -50,7 +50,10 @@ use prima_runtime::{
         NATIVE_APP_OP_DATA, NATIVE_APP_OP_EXECUTE, NATIVE_APP_OP_SUBMIT, NATIVE_APP_QUEUED,
         NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
-        SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_IMAGE_DIR_HEADER,
+        SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_FILE_CLIENT_SHIFT,
+        SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT,
+        SERVICE_FILE_OPEN_PATH_LEN_SHIFT, SERVICE_FILE_OPEN_PATH_MASK, SERVICE_FILE_PATH,
+        SERVICE_FILE_REPLY_TAG, SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER,
         SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_SERVICEMGR,
         SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
@@ -61,7 +64,7 @@ use prima_runtime::{
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_TTY_ACK_TAG,
         STAGE5_TTY_READY_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply,
-        pack_service_name, pack_service_request,
+        pack_file_reply, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
@@ -196,6 +199,9 @@ struct WritableSegment {
 }
 /// 端点初始帧 `initial_cap0` 的权利（仅 `TaskSend`；指向本管理器）。
 const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
+/// M4：绑定到 Namespace 路径的文件访问令牌。`NsResolve` 要求被绑定项含 `Derive`
+/// 才能派生子集，故令牌本身除 `TaskSend` 外必须带 `Derive`。
+const TASK_SEND_DERIVE: Rights = Rights::from_bits((1 << 0) | (1 << 5));
 /// 新端点结构性根的 Namespace 权利（仅 `NsResolve`）。
 const NS_RESOLVE_RIGHTS: Rights = Rights::from_bits(1 << 8);
 
@@ -399,6 +405,11 @@ pub extern "C" fn _start(
     let mut tty_writes = [(0u64, 0u64); 2];
     let mut tty_write_count = 0;
     let mut tty_ack = false;
+    // M4：文件授权入口（store 的 TaskSend 副本绑定到 isolated_ns 的 "f"）、同步请求的
+    // 客户端 id，以及管理器→C 任务的发送凭据（C 创建后派生，退出时回收）。
+    let mut file_bound = false;
+    let mut file_client: Option<u32> = None;
+    let mut c_send: Option<Capability> = None;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut isolated_ns: Option<Capability> = None;
@@ -614,6 +625,44 @@ pub extern "C" fn _start(
             }
         } else if message.payload >> 48 == STAGE5_TTY_ACK_TAG >> 48 {
             tty_ack = true;
+        } else if message.payload >> 48 == SERVICE_FILE_REQUEST_TAG >> 48 {
+            // M4：C 适配层 → 管理器 → 存储服务。`open` 先经 Namespace 授权（路径必须已绑定）；
+            // 其余操作依赖服务端句柄，句柄只能由已授权的 open 产生。管理器只做路由与授权，
+            // 不解释文件内容，不是 VFS。
+            let op = (message.payload >> SERVICE_FILE_OP_SHIFT) & 0xf;
+            let client = ((message.payload >> SERVICE_FILE_CLIENT_SHIFT) & 0xff) as u32;
+            let auth_code = if op != SERVICE_FILE_OP_OPEN {
+                0
+            } else {
+                isolated_ns.map_or(1, |ns| file_path_authorized(&runtime, ns, message.payload))
+            };
+            let authorized = auth_code == 0;
+            if authorized
+                && let Some(store) = registry[STORE_SLOT]
+                && runtime
+                    .send(
+                        TaskId::from_raw(store.id as u32),
+                        store.authority,
+                        message.payload,
+                        &[],
+                    )
+                    .is_ok()
+            {
+                file_client = Some(client);
+            } else if let Some(send) = c_send {
+                let fd = (message.payload >> SERVICE_FILE_FD_SHIFT) & 0xf;
+                let _ = runtime.send(
+                    TaskId::from_raw(client),
+                    send,
+                    pack_file_reply(op, fd, SERVICE_FILE_ENOENT, 0),
+                    &[],
+                );
+            }
+        } else if message.payload >> 48 == SERVICE_FILE_REPLY_TAG >> 48 {
+            // M4：存储服务的应答按同步请求记录回送 C 任务；无等待者时丢弃。
+            if let (Some(client), Some(send)) = (file_client.take(), c_send) {
+                let _ = runtime.send(TaskId::from_raw(client), send, message.payload, &[]);
+            }
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
             // C 程序（id 17）自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
             // Dead 与根清理，不能只相信这条消息。
@@ -633,6 +682,9 @@ pub extern "C" fn _start(
                 let _ = runtime.cap_drop(stack);
                 if let Some(data) = data {
                     let _ = runtime.cap_drop(data);
+                }
+                if let Some(send) = c_send.take() {
+                    let _ = runtime.cap_drop(send);
                 }
                 let _ = runtime.cap_drop(manager);
                 if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
@@ -964,6 +1016,24 @@ pub extern "C" fn _start(
                         &mut created_slot,
                         true,
                     ) {
+                        // M4：把文件访问令牌绑定到 C 任务根继承的 Namespace 路径 "f"。
+                        // 必须在 C 创建之后做——创建前多占一个 cap 槽会让 `task_create`
+                        // 的 `live + 3 + initial` 越过 144 而返回 ENOSPC。管理器在让出 CPU
+                        // 前完成绑定，C 的首个 open 请求到达时路径已可解析。
+                        if !file_bound
+                            && let Some(ns_cap) = isolated_ns
+                            && let Ok(copy) = runtime.cap_derive(self_cap, TASK_SEND_DERIVE)
+                        {
+                            let result = runtime.namespace_bind(ns_cap, SERVICE_FILE_PATH, copy);
+                            file_bound = result.is_ok();
+                            if !file_bound {
+                                let _ = runtime.cap_drop(copy);
+                            }
+                        }
+                        // M4：派生「管理器 → C 任务」的发送凭据，供文件应答回送；C 退出时回收。
+                        if let Ok(send) = runtime.cap_derive(manager, TASK_SEND_RIGHTS) {
+                            c_send = Some(send);
+                        }
                         capacity_probe = Some((manager, entry, stack, data));
                     } else {
                         capacity_done = true; // 后续 trace 记录失败，QEMU 验收拒绝。
@@ -1217,6 +1287,51 @@ fn base_reply_offset(slot: usize) -> u64 {
 /// SPEC-112：日志/存储服务的**持久化段句柄**在共享段内的见证偏移（Namespace 服务不持段，槽位空）。
 fn base_seg_offset(slot: usize) -> u64 {
     [OFF_LOG_SEG, 0, OFF_STORE_SEG][slot - BASE_FIRST]
+}
+
+/// M4：`open` 的 Namespace 授权。路径来自请求 payload；管理器在 `ns_cap` 上解析并请求
+/// `TaskSend` 子集，成功才把请求转发给存储服务。解析出的 Capability 立即归还，不长期持有。
+fn file_path_authorized(
+    runtime: &Runtime<impl SyscallTransport>,
+    ns_cap: Capability,
+    payload: u64,
+) -> u64 {
+    let arg = payload & 0xffff_ffff;
+    let len = ((arg >> SERVICE_FILE_OPEN_PATH_LEN_SHIFT) & 0x3) as usize;
+    let path_bits = arg & SERVICE_FILE_OPEN_PATH_MASK;
+    if len == 0 || len > 3 {
+        return 2;
+    }
+    let mut bytes = [0u8; 3];
+    for (index, byte) in bytes[..len].iter_mut().enumerate() {
+        *byte = ((path_bits >> (8 * index)) & 0xff) as u8;
+    }
+    let Ok(path) = core::str::from_utf8(&bytes[..len]) else {
+        return 3;
+    };
+    let Ok(resolve) = runtime.cap_derive(ns_cap, NS_RESOLVE_RIGHTS) else {
+        return 4;
+    };
+    let resolved = runtime.namespace_resolve(resolve, path, TASK_SEND_RIGHTS);
+    let _ = runtime.cap_drop(resolve);
+    match resolved {
+        Ok(cap) => {
+            let _ = runtime.cap_drop(cap);
+            0
+        }
+        Err(error) => {
+            10 + match error {
+                Error::NotFound => 1,
+                Error::NotDirectory => 2,
+                Error::Denied => 3,
+                Error::InvalidInput => 4,
+                Error::ResourceExhausted => 5,
+                Error::Unsupported => 6,
+                Error::Fault => 7,
+                _ => 8,
+            }
+        }
+    }
 }
 
 /// SPEC-105/108：表驱动地创建一个端点——自解 ELF 入口 → **自建栈段** → `task_create` → 映射栈。

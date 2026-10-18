@@ -171,6 +171,92 @@ static int musl_runtime_probe(void) {
 }
 #endif
 
+/* M4：stdio 输出路径（M3 遗留）。`printf` 走 musl/glibc 的缓冲与 `writev`，
+ * `fflush` 强制下发；两端都执行，串口/stdout 出现同一行。 */
+extern int printf(const char *format, ...);
+extern int fflush(void *stream);
+extern void *stdout;
+
+/* M4：文件 API 的 Linux/Prima 同源差分。Prima 侧路径 "f" 由 Namespace 授权入口解析；
+ * Linux 侧 xtask 把 cwd 指向一次性目录。返回 0 通过，正数为失败阶段。 */
+static int same_bytes(const void *left, const void *right, unsigned long count) {
+    const unsigned char *a = left;
+    const unsigned char *b = right;
+    for (unsigned long i = 0; i < count; i++)
+        if (a[i] != b[i])
+            return 0;
+    return 1;
+}
+
+static int file_api_probe(void) {
+    char buffer[8];
+    long fd = probe_raw4(PRIMA_LINUX_SYS_openat, PRIMA_AT_FDCWD, (long)"f",
+                         PRIMA_O_RDWR | PRIMA_O_CREAT | PRIMA_O_TRUNC, 0600);
+    if (fd < 3)
+        return 1;
+    if (probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)"abcdef", 6) != 6)
+        return 2;
+    if (probe_raw3(PRIMA_LINUX_SYS_lseek, fd, 0, PRIMA_SEEK_SET) != 0)
+        return 3;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, fd, (long)buffer, 4) != 4)
+        return 4;
+    if (!same_bytes(buffer, "abcd", 4))
+        return 5;
+    if (probe_raw3(PRIMA_LINUX_SYS_lseek, fd, -2, PRIMA_SEEK_END) != 4)
+        return 6;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, fd, (long)buffer, 8) != 2)
+        return 7;
+    if (!same_bytes(buffer, "ef", 2))
+        return 8;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, fd, (long)buffer, 1) != 0)
+        return 9; /* EOF */
+    if (probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)"g", 1) != 1)
+        return 10;
+    if (probe_raw3(PRIMA_LINUX_SYS_lseek, fd, 0, PRIMA_SEEK_SET) != 0)
+        return 11;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, fd, (long)buffer, 8) != 7)
+        return 12;
+    if (!same_bytes(buffer, "abcdefg", 7))
+        return 13;
+    if (probe_raw3(PRIMA_LINUX_SYS_close, fd, 0, 0) != 0)
+        return 14;
+    /* 句柄失效后 read/write/close 都必须确定失败，而不是静默成功。 */
+    if (probe_raw3(PRIMA_LINUX_SYS_read, fd, (long)buffer, 1) !=
+        -PRIMA_ERRNO_EBADF)
+        return 15;
+    if (probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)"x", 1) !=
+        -PRIMA_ERRNO_EBADF)
+        return 16;
+    if (probe_raw3(PRIMA_LINUX_SYS_close, fd, 0, 0) != -PRIMA_ERRNO_EBADF)
+        return 17;
+    if (probe_raw4(PRIMA_LINUX_SYS_openat, PRIMA_AT_FDCWD, (long)"nope",
+                   PRIMA_O_RDONLY, 0) != -PRIMA_ERRNO_ENOENT)
+        return 18;
+    /* 非法 flag 不做同源差分：Linux 接受 `O_ACCMODE==3` 且对 `O_DIRECTORY` 返回
+     * ENOTDIR，与 Prima 的冻结子集错误码不同；该项只在 Prima 侧登记边界。 */
+    /* 句柄关闭后立即复用；新句柄 offset 从 0 开始（每次 open 独立偏移）。 */
+    long read_only = probe_raw4(PRIMA_LINUX_SYS_openat, PRIMA_AT_FDCWD,
+                                (long)"f", PRIMA_O_RDONLY, 0);
+    if (read_only < 3)
+        return 20;
+    if (probe_raw3(PRIMA_LINUX_SYS_write, read_only, (long)"x", 1) !=
+        -PRIMA_ERRNO_EBADF)
+        return 21;
+    if (probe_raw3(PRIMA_LINUX_SYS_lseek, read_only, -1, PRIMA_SEEK_SET) !=
+        -PRIMA_ERRNO_EINVAL)
+        return 22;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, read_only, 0, 1) !=
+        -PRIMA_ERRNO_EFAULT)
+        return 23;
+    if (probe_raw3(PRIMA_LINUX_SYS_read, read_only, (long)buffer, 3) != 3)
+        return 24;
+    if (!same_bytes(buffer, "abc", 3))
+        return 25;
+    if (probe_raw3(PRIMA_LINUX_SYS_close, read_only, 0, 0) != 0)
+        return 26;
+    return 0;
+}
+
 static int same(const char *actual, const char *expected) {
     for (; *expected; actual++, expected++)
         if (*actual != *expected)
@@ -280,6 +366,16 @@ int main(int argc, char **argv, char **envp) {
         if (probe_raw3(PRIMA_LINUX_SYS_write, 1, 0, 1) != -PRIMA_ERRNO_EFAULT)
             return 7;
 #endif
+        /* M4：文件 API 与 stdio 输出必须在 close(1) **之前**——Linux 侧 close(1) 会把
+         * 下一次 open 的 fd 变成 1，与 Prima 的 fd 1/2 固定语义分叉。文件失败编码为
+         * 40..66；stdio 输出经 libc 的 writev 路径。 */
+        {
+            int file = file_api_probe();
+            if (file)
+                return 40 + file;
+        }
+        if (printf("M4STDIO\n") != 8 || fflush(stdout) != 0)
+            return 60;
         /* fd 1/2 的 close 成功；其他 fd 已在上面拒绝。 */
         if (probe_raw3(PRIMA_LINUX_SYS_close, 1, 0, 0) != 0)
             return 7;

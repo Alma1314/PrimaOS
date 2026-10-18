@@ -51,16 +51,16 @@
 | P5-BOOT-01 | C 入口 `argc/argv/envp/auxv` | `_start` + auxv | 通用 ELF 装载 + 固定初始栈 | partial | 仅第 3 节固定探针形态；无完整 auxv、无任意 argv。`PT_LOAD` 写段/私有 BSS 与 W^X 已实现（每映像最多 4 个写段） | [初始栈](../reports/2026-10-18-stage5-c-start-stack.md)、[PT_LOAD/W^X](../reports/2026-10-18-stage5-ptload-wx.md) |
 | P5-PROC-01 | `main` 返回码与 `_exit` 观察 | `exit_group(status)` | Task 自毁 + 管理器观察 | partial | 仅返回码低 8 位；无 Process/zombie/父子等待/信号终止状态 | [同源返回码](../reports/2026-10-18-stage5-main-return-status.md)、[tty/exit](../reports/2026-10-18-stage5-c-tty-write.md) |
 | P5-PROC-02 | `getpid` | 稳定 PID | 可映射 `SYS_TASK_ID` | planned | 尚未冻结 PID 稳定性、复用与错误边界 | P5-PROC-02 |
-| P5-IO-01 | `write(fd, buf, len)` | 返回写入字节数；`EBADF/EFAULT/EPIPE` | 用户态 tty 字节流服务（`prima-tty`） | partial | **仅 fd 1/2**；逐字节 IPC、**不限长度**（管理器与 tty 逐条流式转发）。成功返回 `len` 表示所有字节已入队，不表示 tty 已完成写；中途 SEND 失败返回 `-1`，可能有前缀已入队。无短写返回值、无 `EPIPE`/非阻塞。**非法 fd 当前被静默丢弃且调用方仍看到成功**，在实现确定错误前不得升为 `supported` | [tty 报告](../reports/2026-10-18-stage5-c-tty-write.md) |
-| P5-IO-02 | `read(fd, buf, len)` | 阻塞/EOF/中断 | 待建字节流服务 | planned | EOF、阻塞、`EINTR`、坏指针语义未冻结 | P5-IO-02 |
-| P5-FD-01 | `close(fd)` | 释放 fd；`EBADF` | 用户态 fd 生命周期 + Cap drop | planned | 与共享 offset、`dup` 的关系未冻结 | P5-FD-01 |
-| P5-FS-01 | `openat(dirfd, path, flags, mode)` | 路径解析与错误码 | 路径/目录服务；Namespace 仅作授权入口 | planned | 目录服务不是 VFS；`O_*`/`mode` 子集待评审 | P5-FS-01 |
-| P5-FS-02 | `lseek(fd, off, whence)` | 偏移与不可 seek 错误 | 服务端共享偏移 | planned | `SEEK_*` 子集与共享 offset 未冻结 | P5-FS-02 |
+| P5-IO-01 | `write(fd, buf, len)` | 返回写入字节数；`EBADF/EFAULT/EPIPE` | tty 字节流（fd 1/2）；存储服务（fd 3..6） | partial | fd 1/2：逐字节 IPC、不限长度、非法 fd 拒绝。**M4**：fd 3..6 经存储服务写，单条 IPC 3 字节、由适配层分片；无短写/`EPIPE`/非阻塞 | [tty 报告](../reports/2026-10-18-stage5-c-tty-write.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
+| P5-IO-02 | `read(fd, buf, len)` | 阻塞/EOF/中断 | 存储服务（fd 3..6） | partial | **M4**：fd 3..6 读，EOF 与短读由服务端容量决定；tty `read`/`readv`/阻塞/EINTR 未实现 | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
+| P5-FD-01 | `close(fd)` | 释放 fd；`EBADF` | 用户态 fd 表 + 存储服务句柄 | partial | **M4**：fd 3..6 的 open/close、失效句柄 `EBADF`、关闭后句柄复用；无 `dup`、无 `CLOEXEC`、无进程退出自动关闭 | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
+| P5-FS-01 | `openat(dirfd, path, flags, mode)` | 路径解析与错误码 | 存储服务；Namespace `f` 仅作授权入口 | partial | **M4**：`AT_FDCWD`、唯一文件名 `f`（≤3 字节、无 `/`）、access/CREAT/TRUNC；无目录/枚举/多级路径/`O_APPEND` | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
+| P5-FS-02 | `lseek(fd, off, whence)` | 偏移与不可 seek 错误 | 服务端共享偏移 | partial | **M4**：SET/CUR/END、服务端 offset、每次 open 独立；无跨句柄共享 offset | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
 | P5-MM-01 | `mmap/munmap/mprotect` | 匿名/文件映射、flags | `MemorySegment` + 页表 | planned | 仅承诺匿名子集；装载器已按 `PT_LOAD` 做 W^X，但 `mmap` 三路径未实现；文件映射不支持 | P5-MM-01 |
 | P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | 现有 `SYS_TIME_NOW` 为 PIT tick | planned | 时钟 id、单位、精度、超时与 `EINTR` 未冻结 | P5-TIME-01 |
 | P5-THREAD-01 | `pthread_create/join`、mutex/cond | POSIX 线程 | 无 Thread/TLS/WaitObject | unsupported | 阶段 5 不承诺；禁止用成功空实现占位 | P5-THREAD-01 |
 | P5-NET-01 | `socket/bind/sendto/recvfrom` | BSD socket | 无网络服务 | unsupported | 阶段 5 不承诺；loopback IPC 不算网络 | P5-NET-01 |
-| P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3） | planned | 依赖 P5-IO-01；未移植前不得声称可用 | [musl 计划](../plans/2026-10-18-musl-port-plan.md) |
+| P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3/M4） | partial | **M4**：`printf`+`fflush` 经 `writev` 已验收；stdio 文件 API（`fopen`/`fread`/`fwrite`/`fclose`）未验收 | [musl 计划](../plans/2026-10-18-musl-port-plan.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
 
 ## 5. 目标程序冻结：sbase `echo`
 

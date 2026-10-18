@@ -22,9 +22,18 @@
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
-        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_MARKER_MASK,
-        SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_OP_ADVANCE,
-        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG,
+        SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_FILE_ACCESS_SHIFT,
+        SERVICE_FILE_ARG_MASK, SERVICE_FILE_CAPACITY, SERVICE_FILE_CHUNK, SERVICE_FILE_DATA_OFFSET,
+        SERVICE_FILE_EAGAIN, SERVICE_FILE_EBADF, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL,
+        SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_FD_SHIFT,
+        SERVICE_FILE_FLAG_TRUNC, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE,
+        SERVICE_FILE_OP_LSEEK, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_READ, SERVICE_FILE_OP_SHIFT,
+        SERVICE_FILE_OP_WRITE, SERVICE_FILE_OPEN_FLAGS_SHIFT, SERVICE_FILE_OPEN_PATH_LEN_SHIFT,
+        SERVICE_FILE_OPEN_PATH_MASK, SERVICE_FILE_PATH, SERVICE_FILE_REQUEST_TAG,
+        SERVICE_FILE_SEEK_OFFSET_MASK, SERVICE_FILE_SEEK_WHENCE_SHIFT, SERVICE_FILE_SIZE_OFFSET,
+        SERVICE_FILE_WRITE_COUNT_SHIFT, SERVICE_MARKER_MASK, SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG,
+        SERVICE_SEG_TAG, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_RESOLVE,
+        SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG, SERVICE_WAKE_TAG, pack_file_reply,
         pack_service_marker, pack_service_reply,
     },
 };
@@ -95,6 +104,8 @@ pub fn run(
     // SPEC-112：管理器**运行期移交**的持久化段（仅日志/存储服务会收到）。收到后映射进自身根，
     // 此后状态**落盘于该内核 MemorySegment**——日志服务据此落日志、存储服务据此落数据。
     let mut data_seg: Option<Capability> = None;
+    // M4：存储服务的文件句柄表。fd 3..6 一一对应下标 0..3；close 立即释放并可复用。
+    let mut files = [FileHandle::EMPTY; SERVICE_FILE_HANDLES];
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
@@ -138,7 +149,205 @@ pub fn run(
                 }
             };
             let _ = runtime.send(peer, send_cap, pack_service_reply(kind, result), &[]);
+        } else if tag == SERVICE_FILE_REQUEST_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M4：文件后端只在存储服务、且持久化段已映射后处理；否则明确拒绝而不是假装成功。
+            let response = if data_seg.is_some() {
+                file_request(&runtime, &mut files, message.payload)
+            } else {
+                pack_file_reply(
+                    (message.payload >> SERVICE_FILE_OP_SHIFT) & 0xf,
+                    (message.payload >> SERVICE_FILE_FD_SHIFT) & 0xf,
+                    SERVICE_FILE_ENOSYS,
+                    0,
+                )
+            };
+            let _ = runtime.send(peer, send_cap, response, &[]);
         }
+    }
+}
+
+/// M4：一个打开的文件句柄。offset 归服务端所有（Linux 的共享偏移语义），
+/// `access` 为 0=只读、1=只写、2=读写。
+#[derive(Clone, Copy)]
+struct FileHandle {
+    open: bool,
+    offset: u64,
+    access: u8,
+}
+
+impl FileHandle {
+    const EMPTY: Self = Self {
+        open: false,
+        offset: 0,
+        access: 0,
+    };
+}
+
+fn file_size<T: SyscallTransport>(runtime: &Runtime<T>) -> u64 {
+    runtime
+        .read_user_u64(SERVICE_DATA_VA + SERVICE_FILE_SIZE_OFFSET)
+        .unwrap_or(0)
+}
+
+fn file_set_size<T: SyscallTransport>(runtime: &Runtime<T>, size: u64) {
+    let _ = runtime.write_user_bytes(
+        SERVICE_DATA_VA + SERVICE_FILE_SIZE_OFFSET,
+        &size.to_le_bytes(),
+    );
+}
+
+/// M4：按 `fd` 取**已打开**的句柄；fd 3 起，越界/未打开统一 `None`（调用方回 `EBADF`）。
+fn file_handle(files: &mut [FileHandle; SERVICE_FILE_HANDLES], fd: u64) -> Option<&mut FileHandle> {
+    let index = fd.checked_sub(3)? as usize;
+    if index >= SERVICE_FILE_HANDLES || !files[index].open {
+        return None;
+    }
+    Some(&mut files[index])
+}
+
+/// M4：处理一条文件请求，返回应答 payload。调用方已确认持久化段可用。
+///
+/// 单条消息的数据上限是 [`SERVICE_FILE_CHUNK`] 字节；适配层分片后，调用者的
+/// `read`/`write` 仍覆盖完整缓冲区。文件内容区从 `SERVICE_DATA_OFFSET` 开始，
+/// 偏移 0..8 保留给 SPEC-112 的状态见证。
+fn file_request<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    files: &mut [FileHandle; SERVICE_FILE_HANDLES],
+    payload: u64,
+) -> u64 {
+    let op = (payload >> SERVICE_FILE_OP_SHIFT) & 0xf;
+    let fd = (payload >> SERVICE_FILE_FD_SHIFT) & 0xf;
+    let arg = payload & SERVICE_FILE_ARG_MASK;
+    let reply = |status: u64, data: u64| pack_file_reply(op, fd, status, data);
+    match op {
+        SERVICE_FILE_OP_OPEN => {
+            let flags = (arg >> SERVICE_FILE_OPEN_FLAGS_SHIFT) & 0xf;
+            let path_len = ((arg >> SERVICE_FILE_OPEN_PATH_LEN_SHIFT) & 0x3) as usize;
+            let path_bits = arg & SERVICE_FILE_OPEN_PATH_MASK;
+            let expected = SERVICE_FILE_PATH.as_bytes();
+            if path_len != expected.len() {
+                return reply(SERVICE_FILE_ENOENT, 0);
+            }
+            for (index, byte) in expected.iter().enumerate() {
+                if ((path_bits >> (8 * index)) & 0xff) as u8 != *byte {
+                    return reply(SERVICE_FILE_ENOENT, 0);
+                }
+            }
+            let access = (flags >> SERVICE_FILE_ACCESS_SHIFT) & 3;
+            if access > 2 {
+                return reply(SERVICE_FILE_EINVAL, 0);
+            }
+            // 唯一文件名始终存在：O_CREAT 不需创建动作；O_TRUNC 清空内容。
+            if flags & SERVICE_FILE_FLAG_TRUNC != 0 {
+                file_set_size(runtime, 0);
+            }
+            let Some(index) = files.iter().position(|handle| !handle.open) else {
+                return reply(SERVICE_FILE_EAGAIN, 0);
+            };
+            files[index] = FileHandle {
+                open: true,
+                offset: 0,
+                access: access as u8,
+            };
+            // open 的应答必须携带**新分配的 fd**，而不是请求里的占位 fd=0。
+            pack_file_reply(op, index as u64 + 3, 0, file_size(runtime))
+        }
+        SERVICE_FILE_OP_READ => {
+            let Some(handle) = file_handle(files, fd) else {
+                return reply(SERVICE_FILE_EBADF, 0);
+            };
+            if handle.access != 0 && handle.access != 2 {
+                return reply(SERVICE_FILE_EBADF, 0);
+            }
+            let wanted = arg & 0xff;
+            let size = file_size(runtime);
+            let available = size.saturating_sub(handle.offset);
+            let count = wanted.min(SERVICE_FILE_CHUNK).min(available);
+            let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
+            if count != 0
+                && runtime
+                    .read_user_bytes(
+                        SERVICE_DATA_VA + SERVICE_FILE_DATA_OFFSET + handle.offset,
+                        &mut bytes[..count as usize],
+                    )
+                    .is_err()
+            {
+                return reply(SERVICE_FILE_EFAULT, 0);
+            }
+            let mut data = 0u64;
+            for (index, byte) in bytes[..count as usize].iter().enumerate() {
+                data |= (*byte as u64) << (8 * index);
+            }
+            handle.offset += count;
+            reply(0, (count << SERVICE_FILE_WRITE_COUNT_SHIFT) | data)
+        }
+        SERVICE_FILE_OP_WRITE => {
+            let Some(handle) = file_handle(files, fd) else {
+                return reply(SERVICE_FILE_EBADF, 0);
+            };
+            if handle.access != 1 && handle.access != 2 {
+                return reply(SERVICE_FILE_EBADF, 0);
+            }
+            let wanted = (arg >> SERVICE_FILE_WRITE_COUNT_SHIFT) & 0xff;
+            let data = arg & 0x00ff_ffff;
+            let room = SERVICE_FILE_CAPACITY.saturating_sub(handle.offset);
+            let count = wanted.min(SERVICE_FILE_CHUNK).min(room);
+            if count == 0 {
+                return reply(SERVICE_FILE_ENOSPC, 0);
+            }
+            let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
+            for (index, byte) in bytes[..count as usize].iter_mut().enumerate() {
+                *byte = ((data >> (8 * index)) & 0xff) as u8;
+            }
+            if runtime
+                .write_user_bytes(
+                    SERVICE_DATA_VA + SERVICE_FILE_DATA_OFFSET + handle.offset,
+                    &bytes[..count as usize],
+                )
+                .is_err()
+            {
+                return reply(SERVICE_FILE_EFAULT, 0);
+            }
+            handle.offset += count;
+            if handle.offset > file_size(runtime) {
+                file_set_size(runtime, handle.offset);
+            }
+            reply(0, count)
+        }
+        SERVICE_FILE_OP_LSEEK => {
+            let Some(handle) = file_handle(files, fd) else {
+                return reply(SERVICE_FILE_EBADF, 0);
+            };
+            let whence = (arg >> SERVICE_FILE_SEEK_WHENCE_SHIFT) & 0x3;
+            let raw = (arg & SERVICE_FILE_SEEK_OFFSET_MASK) as i64;
+            let offset = if raw & 0x2000_0000 != 0 {
+                raw - 0x4000_0000
+            } else {
+                raw
+            };
+            let base = match whence {
+                0 => 0,
+                1 => handle.offset as i64,
+                2 => file_size(runtime) as i64,
+                _ => return reply(SERVICE_FILE_EINVAL, 0),
+            };
+            let Some(next) = base.checked_add(offset) else {
+                return reply(SERVICE_FILE_EINVAL, 0);
+            };
+            if next < 0 || next as u64 > SERVICE_FILE_CAPACITY {
+                return reply(SERVICE_FILE_EINVAL, 0);
+            }
+            handle.offset = next as u64;
+            reply(0, next as u64)
+        }
+        SERVICE_FILE_OP_CLOSE => {
+            let Some(handle) = file_handle(files, fd) else {
+                return reply(SERVICE_FILE_EBADF, 0);
+            };
+            handle.open = false;
+            reply(0, 0)
+        }
+        _ => reply(SERVICE_FILE_EINVAL, 0),
     }
 }
 

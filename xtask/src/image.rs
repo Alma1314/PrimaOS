@@ -257,10 +257,18 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
             String::from_utf8_lossy(&compiled.stderr)
         ));
     }
+    // M4：文件探针在 cwd 下创建 "f"。用一次性目录，避免污染仓库或并行运行互相干扰。
+    let probe_cwd = binary
+        .parent()
+        .expect("probe binary has a parent directory")
+        .join("linux-probe-cwd");
+    fs::create_dir_all(&probe_cwd)
+        .map_err(|error| format!("failed to create {}: {error}", probe_cwd.display()))?;
+    let _ = fs::remove_file(probe_cwd.join("f"));
     for (argument, environment, expected) in [(true, true, 37), (false, true, 2), (true, false, 3)]
     {
         let mut command = Command::new(&binary);
-        command.env_clear();
+        command.env_clear().current_dir(&probe_cwd);
         if argument {
             command.arg("stack-ready");
         }
@@ -276,8 +284,9 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
                 output.status.code()
             ));
         }
-        // 成功路径与 Prima 同源：fd 1 写 'h' 与 5 字节 "\nxyz\n"，fd 2 写 'i'。
-        if expected == 37 && (output.stdout != b"h\nxyz\n" || output.stderr != b"i") {
+        // 成功路径与 Prima 同源：fd 1 写 'h' 与 5 字节 "\nxyz\n"，fd 2 写 'i'，
+        // 最后 printf+fflush 输出 "M4STDIO\n"（stdio → writev）。
+        if expected == 37 && (output.stdout != b"h\nxyz\nM4STDIO\n" || output.stderr != b"i") {
             return Err(format!(
                 "Linux C probe write mismatch: stdout {:?}, stderr {:?}",
                 String::from_utf8_lossy(&output.stdout),
@@ -286,7 +295,7 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
         }
     }
     println!(
-        "PASS linux stage5 C main exits 37/2/3 and streams h/i plus 5-byte xyz via write(1/2)"
+        "PASS linux stage5 C main exits 37/2/3, streams h/i plus xyz, passes file API and stdio probes"
     );
     Ok(())
 }

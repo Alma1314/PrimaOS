@@ -155,6 +155,95 @@ pub const SERVICE_SEG_TAG: u64 = 0x5ECE_0000_0000_0000;
 /// 落在端点代码基址（`ENDPOINT_CODE_VA`）之上一页对齐的独立区域，不与代码/栈映射相交。
 pub const SERVICE_DATA_VA: u64 = 0x0000_0B00_0020_0000;
 
+/// 阶段 5 / M4：**存储服务文件后端**的请求 tag。C 适配层 → 服务管理器 → 存储服务。
+///
+/// payload 布局：`tag(48..63) | op(44..47) | fd(40..43) | client(32..39) | arg(0..31)`。
+/// `client` 是发起请求的 Task id 低 8 位；管理器据此把应答回送给同一个 C 任务。
+/// 单条消息不携带数据缓冲：write/read 每次最多 3 字节（[`SERVICE_FILE_CHUNK`]），由适配层分片，
+/// 调用者仍看到完整的 `write`/`read` 语义。
+pub const SERVICE_FILE_REQUEST_TAG: u64 = 0x5ED4_0000_0000_0000;
+/// M4：存储服务的文件应答 tag（管理器据 `op`/`fd`/`status` 回送）。
+pub const SERVICE_FILE_REPLY_TAG: u64 = 0x5ED5_0000_0000_0000;
+pub const SERVICE_FILE_OP_SHIFT: u64 = 44;
+pub const SERVICE_FILE_FD_SHIFT: u64 = 40;
+pub const SERVICE_FILE_CLIENT_SHIFT: u64 = 32;
+/// 应答布局复用 `32..39` 作为 `status`（0 或正 errno）。
+pub const SERVICE_FILE_STATUS_SHIFT: u64 = 32;
+pub const SERVICE_FILE_ARG_MASK: u64 = 0xffff_ffff;
+
+pub const SERVICE_FILE_OP_OPEN: u64 = 0;
+pub const SERVICE_FILE_OP_READ: u64 = 1;
+pub const SERVICE_FILE_OP_WRITE: u64 = 2;
+pub const SERVICE_FILE_OP_LSEEK: u64 = 3;
+pub const SERVICE_FILE_OP_CLOSE: u64 = 4;
+
+/// M4：open 的 `arg` 布局——`flags(28..31) | path_len(26..27) | path(0..23)`。
+pub const SERVICE_FILE_OPEN_FLAGS_SHIFT: u64 = 28;
+pub const SERVICE_FILE_OPEN_PATH_LEN_SHIFT: u64 = 26;
+pub const SERVICE_FILE_OPEN_PATH_MASK: u64 = 0x00ff_ffff;
+/// M4：适配层归一化后的 open flags。access 位于 bit 2..3（0=只读、1=只写、2=读写）。
+pub const SERVICE_FILE_FLAG_CREAT: u64 = 1;
+pub const SERVICE_FILE_FLAG_TRUNC: u64 = 2;
+pub const SERVICE_FILE_ACCESS_SHIFT: u64 = 2;
+
+/// M4：write 的 `arg` 布局——`count(24..31) | data(0..23)`。
+pub const SERVICE_FILE_WRITE_COUNT_SHIFT: u64 = 24;
+/// M4：lseek 的 `arg` 布局——`whence(30..31) | offset(0..29，二补码)`。
+pub const SERVICE_FILE_SEEK_WHENCE_SHIFT: u64 = 30;
+pub const SERVICE_FILE_SEEK_OFFSET_MASK: u64 = 0x3fff_ffff;
+
+/// M4：单条消息可携带的字节数；适配层负责把更长的调用分片。
+pub const SERVICE_FILE_CHUNK: u64 = 3;
+/// M4：存储在共享段内的布局——偏移 0..8 仍是 SPEC-112 的 `u64` 状态，
+/// 8..16 是文件长度，16 起是文件内容。
+pub const SERVICE_FILE_SIZE_OFFSET: u64 = 8;
+pub const SERVICE_FILE_DATA_OFFSET: u64 = 16;
+pub const SERVICE_FILE_CAPACITY: u64 = 4096 - SERVICE_FILE_DATA_OFFSET;
+/// M4：首批冻结的文件名（单层、≤3 字节、无 `/`）。Namespace 授权入口绑定同一路径。
+pub const SERVICE_FILE_PATH: &str = "f";
+/// M4：同时打开的文件句柄上限（fd 3..6）。
+pub const SERVICE_FILE_HANDLES: usize = 4;
+
+/// M4：文件服务的 errno（Linux x86_64 数值，profile v0 已冻结）。
+pub const SERVICE_FILE_ENOENT: u64 = 2;
+pub const SERVICE_FILE_EBADF: u64 = 9;
+pub const SERVICE_FILE_EAGAIN: u64 = 11;
+pub const SERVICE_FILE_EFAULT: u64 = 14;
+pub const SERVICE_FILE_EINVAL: u64 = 22;
+pub const SERVICE_FILE_ENOSPC: u64 = 28;
+pub const SERVICE_FILE_ENOSYS: u64 = 38;
+
+/// M4：打包文件服务请求。
+pub const fn pack_file_request(op: u64, fd: u64, client: u64, arg: u64) -> u64 {
+    SERVICE_FILE_REQUEST_TAG
+        | ((op & 0xf) << SERVICE_FILE_OP_SHIFT)
+        | ((fd & 0xf) << SERVICE_FILE_FD_SHIFT)
+        | ((client & 0xff) << SERVICE_FILE_CLIENT_SHIFT)
+        | (arg & SERVICE_FILE_ARG_MASK)
+}
+
+/// M4：打包文件服务应答；`status` 为 0 或正 errno。
+pub const fn pack_file_reply(op: u64, fd: u64, status: u64, data: u64) -> u64 {
+    SERVICE_FILE_REPLY_TAG
+        | ((op & 0xf) << SERVICE_FILE_OP_SHIFT)
+        | ((fd & 0xf) << SERVICE_FILE_FD_SHIFT)
+        | ((status & 0xff) << SERVICE_FILE_STATUS_SHIFT)
+        | (data & SERVICE_FILE_ARG_MASK)
+}
+
+/// M4：打包 open 的 `arg`（`flags` 为适配层归一化后的 4 位）。
+pub fn pack_file_open_arg(flags: u64, path: &[u8]) -> u64 {
+    let mut path_bits = 0u64;
+    let mut index = 0;
+    while index < path.len() && index < 3 {
+        path_bits |= (path[index] as u64) << (8 * index);
+        index += 1;
+    }
+    ((flags & 0xf) << SERVICE_FILE_OPEN_FLAGS_SHIFT)
+        | (((path.len() as u64) & 0x3) << SERVICE_FILE_OPEN_PATH_LEN_SHIFT)
+        | (path_bits & SERVICE_FILE_OPEN_PATH_MASK)
+}
+
 /// 原生应用共享段的第 1..3 页在客户端和管理器中的独立映射，避开 Hello 页与 ELF 探针。
 pub const NATIVE_APP_DATA_VA: u64 = 0x0000_0A10_0000_0000;
 pub const NATIVE_APP_BYTES: usize = 8192;

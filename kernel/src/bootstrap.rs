@@ -86,9 +86,14 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 /// 为在同一结构体里容纳该扩容，Segment 对象表已**移入静态 arena**（[`SEGMENT_ARENA`]），
 /// 腾出 5.3 KiB；守卫仍为 13 KiB。
 ///
+///
+/// **M4 144 → 160**：文件服务的 Namespace 授权令牌在 C 任务创建后占用一个 cap，且
+/// C 的创建本身需要 `live + 3 + initial`；原上限下 `derive_capability_to_holder`
+/// 在结构性根派生时返回 `CapacityExceeded`，C 任务无法创建。照既有先例扩容并重测。
+///
 /// 守卫（`BootstrapState` ≤ 13 KiB）**未放宽**，见
 /// `bootstrap_state_stays_within_the_stack_budget`（SPEC-104 照实重测；SPEC-106 再次照实重测）。
-pub const MAX_CAPABILITY_SLOTS: usize = 144;
+pub const MAX_CAPABILITY_SLOTS: usize = 160;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 
@@ -130,8 +135,12 @@ pub(crate) const MAX_TASKS: usize = 18;
 /// 它自身两次被调度（`Ready→Running→BlockedRecv`）**并**令服务管理器多出若干 `Running↔BlockedRecv`
 /// 往返，迁移事件净增 36 条；实测峰值 `used=530`（512 下首个抢占 tick 即 `AuditFull`，经
 /// `sched::switch_to` 的 `expect` 变成 panic）。提到 **768** 留 ~45% 余量。
+/// **M4（2026-10-18）768 → 2048**：文件授权在 C 任务创建后增加一次 `ns_bind`，每次 `open`
+/// 的 `NsResolve` 解析也会追加审计；更主要的是同步文件请求让 C/管理器/存储服务多出大量
+/// `Running↔BlockedRecv` 迁移。768 在探针运行期触顶并触发 `append without capacity
+/// precheck`；实测收尾 `used=1268`。照既有先例扩容并照实重测，未放宽任何检查。
 /// 该容量不占 `BootstrapState`（存储已在 [`AUDIT_ARENA`] 静态），故不受 16 KiB 守卫约束。
-const MAX_AUDIT_EVENTS: usize = 768;
+const MAX_AUDIT_EVENTS: usize = 2048;
 
 /// SPEC-074：审计 arena 按**实例**划分的区段数。
 ///
@@ -2143,9 +2152,11 @@ pub struct PlatformSegmentsRecord {
 ///
 /// SPEC-109：服务映像段把 8 个服务 ELF + 1 个 C 探针 ELF + 1 个目录页打包为**单段**，
 /// 故上限须 ≥ `user::install_boot_image` 计算的实际总页数。PT_LOAD 写段装载使
-/// servicemgr 从 17 页增至 20 页，实测总量 82 页（14+8+20+8+8+8+5+6+4+1）；
-/// 预留 14 页给 profile v0 的后续静态程序，超过上限时显式拒绝，避免向量写越界。
-pub const MAX_SEGMENT_FRAMES: usize = 96;
+/// servicemgr 从 17 页增至 20 页，实测总量 82 页（14+8+20+8+8+8+5+6+4+1）。
+///
+/// M4：C 探针链接 `printf`/`fflush` 后从 12 页增至 14 页，服务映像段实测总量 97 页
+/// （含目录页），越过旧上限 96。按既有先例扩展并照实重测守卫；保留 31 页余量。
+pub const MAX_SEGMENT_FRAMES: usize = 128;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -2280,8 +2291,12 @@ pub struct VspaceEntry {
 ///
 /// **M3b 扩容 192 → 256**：mallocng 的匿名内存经 `memseg_map` 逐页计入本视图——16 页 brk
 /// 区加上一次 140000 字节（35 页）的独立 mmap，峰值已超过 M3 余量。单次匿名映射上限仍是
-/// `MAX_SEGMENT_FRAMES = 96` 页；扩容量而非放宽任何检查。
-pub const MAX_VSPACE_ENTRIES: usize = 256;
+/// `MAX_SEGMENT_FRAMES` 页；扩容量而非放宽任何检查。
+///
+/// **M4 扩容 256 → 320**：C 探针链接 `printf`/`fflush` 后，服务映像段的总页数从 91 增至 97，
+/// 且逐页计入 init 的逻辑映射；init 早期自测在 256 下 `memseg_map` 触顶后无 Ready 任务。
+/// 按既有先例扩展并照实重测，未放宽任何容量检查。
+pub const MAX_VSPACE_ENTRIES: usize = 320;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
