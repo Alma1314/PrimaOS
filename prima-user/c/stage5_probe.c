@@ -5,6 +5,9 @@
 #define SYS_SEND 17
 #define SYS_RECV 18
 #define SYS_TASK_DESTROY 20
+#define SYS_ABI_CHECK 37
+#define ABI_VERSION UINT64_C(0x0000000100000000)
+#define ERR_INVALID ((uint64_t)-22)
 #define PROBE_TAG UINT64_C(0xc500000000005a00)
 
 static inline uint64_t prima_call(uint64_t number, uint64_t a0, uint64_t a1,
@@ -24,11 +27,17 @@ __attribute__((noreturn)) void _start(uint64_t self, uint64_t send_cap,
                                       uint64_t manager_id) {
     (void)code_cap;
     (void)name;
+    uint64_t received[3];
+    if (prima_call(SYS_ABI_CHECK, 1, 0, 0) != ABI_VERSION ||
+        prima_call(SYS_ABI_CHECK, 2, 0, 0) != ERR_INVALID ||
+        prima_call(SYS_ABI_CHECK, 1, 1, 0) != ERR_INVALID ||
+        prima_call(SYS_ABI_CHECK, 1, 0, 1) != ERR_INVALID)
+        goto failed;
     uint64_t id = prima_call(SYS_TASK_ID, 0, 0, 0);
     if (prima_call(SYS_SEND, manager_id, send_cap, PROBE_TAG | (id & 0xff)) == 0)
         prima_call(SYS_TASK_DESTROY, self, 0, 0);
     /* A failed exit remains blocked so the manager's QEMU witness fails. */
-    uint64_t received[3];
+failed:
     for (;;)
         prima_call(SYS_RECV, (uint64_t)received, 0, 0);
 }

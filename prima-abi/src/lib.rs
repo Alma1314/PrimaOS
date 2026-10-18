@@ -173,4 +173,13 @@ pub mod syscall {
     pub const SYS_DEV_IOPORT_IN: u64 = 35;
     /// EXO-4A / §15.8：销毁 `Device` 对象 `dev_destroy(dev_cap)`。
     pub const SYS_DEV_DESTROY: u64 = 36;
+    /// Stage 5: check the native Prima syscall ABI version before using it.
+    pub const SYS_ABI_CHECK: u64 = 37;
+}
+
+/// Native syscall ABI version; independent of `prima-runtime`'s source API version.
+pub mod native_abi {
+    pub const MAJOR: u64 = 1;
+    pub const MINOR: u64 = 0;
+    pub const VERSION: u64 = (MAJOR << 32) | MINOR;
 }

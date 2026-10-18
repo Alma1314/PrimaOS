@@ -13,7 +13,7 @@
 | 项目 | 状态与依据 |
 |---|---|
 | 阶段 0–4 | 已满足退出条件；签署报告依次为 [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)。阶段 0 的结论限规范文本；实现、模型和 QEMU 各按报告范围解释。 |
-| 当前阶段 | 阶段 5 已启动：首个无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收，容量水位获 QEMU 双轮见证；BLK-004 已关闭、BLK-003 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[C ELF 见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
+| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)获 QEMU 见证。BLK-004 已关闭、BLK-003 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
 | 下一阶段 | 阶段 6 未开始；阶段 7 范围未冻结。 |
 | 近期复核 | [阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)、[阶段 2 IPC 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3 整改](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)；后两者已通过 workspace 测试、lint 和 BIOS QEMU 双跑。 |
 | TCB | 基线与历次统计见压缩前版本；最新数值应以 `cargo xtask tcb` 现跑结果为准，`kernel/src` 仍要求零 `unsafe`。 |
@@ -37,7 +37,7 @@
 | ISSUE-CAP-001 | host 模型缺少完整 Capability 派生/位置溯源；非当前内核缺陷。见[差距分析](docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md)。 | 模型独立切片按不可伪造、权限单调和位置唯一验证。 |
 | ISSUE-COW-001/002 | [SPEC-015](docs/superpowers/specs/2026-08-14-cow-refinement-design.md) 的 COW 边界澄清；用户态显式换映射及并发协调责任，非阻断缺陷。 | 若扩大 COW 语义，再做真实路径验证。 |
 | ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
-| BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决；现有编号只追加，空洞不复用。 |
+| BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 原生版本握手已按追加号 `37` 落地；POSIX profile、C 入口栈、退出状态及错误映射仍按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决，阻塞项保持 Open。 |
 | BLK-004（已关闭） | 全量服务后 C ELF Task 16 创建、执行、自毁、栈回收、复建 `ENOSPC` 和四类容量水位获 QEMU 双轮见证，见[C ELF 报告](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。 | POSIX 启动/退出状态及 `write` 仍属片 C，不由此门槛代签。 |
 
 其余已关闭问题的发现、修复与复核记录见相应报告和压缩前版本。`ISSUE-IPC-001` 已由阶段 2 整改关闭。
@@ -190,7 +190,7 @@
 | `fork`/`execve`/`wait4` | 规格 §5.11（V1 仅单线程 fork，多线程返 `EAGAIN`，决策 D-13） | 未实现 | 阶段 5 |
 | tty / console 通路 | 规格 §5.12 | 未实现 | 阶段 4/5 |
 | 匿名页池与 `mmap` flag、W^X | 规格 §4.14（W^X，决策 D-18） | 未实现；在册“image 段 `{R,X}` 与可写 `.data`/`.bss` 冲突”仍待链接脚本级段切分 | 阶段 4/5 |
-| 号段 / 命名对齐 | `0x0xx` 号段、`NT_RUXOS_ABI`、`x86_64-ruxos-none` | `prima-abi` 的 `SYS_*` 编号（1–36 已占用） | 决策 |
+| 号段 / 命名对齐 | `0x0xx` 号段、`NT_RUXOS_ABI`、`x86_64-ruxos-none` | `prima-abi` 的 `SYS_*` 编号（1–37 已占用，37 为原生 ABI 握手） | 余项待决策 |
 
 **候选里程碑（规格 §19，提案，未纳入本仓库排期）**：M1 ABI 基座 → M2 裸通路 → M3 IPC 通路 → M4 libc 主体 → M5 动态链接 → M6 线程/TLS/基础信号 → M7 Rust 基座 → M8 韧性 → M9 出口；M1/M3/M4 可三线并行、M5/M6 须串行；规格侧估算约 22 周 / 26 人周。
 

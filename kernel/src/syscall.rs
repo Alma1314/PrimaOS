@@ -38,13 +38,13 @@ use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
 pub use prima_abi::syscall::{
-    SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN, SYS_DEV_DESTROY,
-    SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO, SYS_EXC_SUBSCRIBE,
-    SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
-    SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE,
-    SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
-    SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP,
-    SYS_YIELD,
+    SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN,
+    SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
+    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
+    SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
+    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
+    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
+    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -2093,6 +2093,19 @@ pub const fn echo_expected(arg: u64) -> u64 {
 /// [`SYS_COPY_IN`] 需要校验页表，由 [`handle`] 先行处理，不进入本函数。
 pub const fn dispatch_plain(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     match num {
+        SYS_ABI_CHECK => {
+            if args[0] != prima_abi::native_abi::MAJOR
+                || args[1] > prima_abi::native_abi::MINOR
+                || args[2] != 0
+                || args[3] != 0
+                || args[4] != 0
+                || args[5] != 0
+            {
+                encode_errno(Errno::Invalid)
+            } else {
+                prima_abi::native_abi::VERSION
+            }
+        }
         SYS_ECHO => echo_expected(args[0]),
         SYS_SUM4 => args[0]
             .wrapping_add(args[1])
@@ -2868,6 +2881,32 @@ mod tests {
         let args = [1u64; MAX_ARGS];
         assert_eq!(dispatch_plain(SYS_BAD, &args), encode_errno(Errno::NoSys));
         assert_eq!(dispatch_plain(u64::MAX, &args), encode_errno(Errno::NoSys));
+    }
+
+    #[test]
+    fn abi_check_accepts_compatible_version_and_rejects_other_requests() {
+        let mut args = [prima_abi::native_abi::MAJOR, 0, 0, 0, 0, 0];
+        assert_eq!(
+            dispatch_plain(SYS_ABI_CHECK, &args),
+            prima_abi::native_abi::VERSION
+        );
+        args[0] += 1;
+        assert_eq!(
+            dispatch_plain(SYS_ABI_CHECK, &args),
+            encode_errno(Errno::Invalid)
+        );
+        args[0] -= 1;
+        args[1] = 1;
+        assert_eq!(
+            dispatch_plain(SYS_ABI_CHECK, &args),
+            encode_errno(Errno::Invalid)
+        );
+        args[1] = 0;
+        args[2] = 1;
+        assert_eq!(
+            dispatch_plain(SYS_ABI_CHECK, &args),
+            encode_errno(Errno::Invalid)
+        );
     }
 
     #[test]

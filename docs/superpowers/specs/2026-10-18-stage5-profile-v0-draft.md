@@ -2,6 +2,8 @@
 
 **状态**：草案，尚未冻结；S5-D1/X1–X3 未通过。权威目标见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)，实施顺序见[修订计划](../plans/2026-10-18-stage5-revised-plan.md)。
 
+原生 Prima syscall ABI 已先冻结一项机器契约：保留调用号 1–36，新增 `SYS_ABI_CHECK=37`。参数为 `major, minimum_minor, reserved0..3`；内核接受 `major=1`、`minimum_minor<=0` 且保留参数全零，返回 `(major<<32)|minor = 0x0000000100000000`；其余请求返回 `-EINVAL`。未登记号继续返回 `-ENOSYS`。这与 `prima-runtime::API_MAJOR=0` 的 Rust 源码 API 版本相互独立。它只验证原生调用表的兼容性，**不**代表本表的 POSIX profile 已冻结。
+
 首个应用候选为 [sbase `echo`](https://git.suckless.org/sbase/file/echo.c.html)（[MIT 许可证](https://git.suckless.org/sbase/file/LICENSE.html)）。它需要 `argc/argv`、`strcmp`、`stdout`/`putchar`/刷新及退出状态。锁定上游 commit、源码哈希和冻结用例之后，才能把它定为 S5-X3 的目标程序；自写 C 探针仅验证启动链路。
 
 | API / 契约 | Prima 后端与待定边界 | 状态 | 拟定测试 |
