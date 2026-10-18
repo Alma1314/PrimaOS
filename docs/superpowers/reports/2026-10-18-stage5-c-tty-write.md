@@ -19,7 +19,7 @@ POSIX fd 表、通用 `_exit`/`wait` 或文件系统。
   `SYS_TASK_DESTROY(self)`。这是当前原型的最小退出语义，不是 Process/父子等待。
 - tty 服务与管理器各自持有一块独立的 COM1 设备 Capability，互不转移。
 
-## QEMU 见证（`cargo xtask run`，串口原文）
+## QEMU 见证（`cargo xtask test` 两轮校验；下列为串口原文）
 
 ```
 CIO|task=17;fd=1;ch=104;fd=2;ch=105
@@ -31,8 +31,12 @@ CAPACITY|caps_live=123;caps_peak=128;caps_limit=144;segment_slots=32;segment_lim
 
 - `CIO|`：管理器观察到 C 探针写的 `fd=1,ch=104('h')` 与 `fd=2,ch=105('i')`。
 - `TTYIN|`：tty 服务实际收到并写入串口的同一对 fd/字节。
+- 原始数据行 `h` / `i`：`outb` 写出的字节真实出现在 QEMU 串口流中，不是服务自报计数。
 - `TTYOUT|`：tty 服务对 COM1 设备的写成功、Scratch 写回读等于魔数、区间外写被内核拒绝。
 - `TASKCAP|`：内核独立确认 C 探针（id 17）已 Dead、调度根已清空。
+
+`xtask::validate_stage5_tty` 同时要求：唯一的 CIO/TTYIN/TTYOUT 行，以及串口流中恰好各出现
+一行 `h` 与 `i`。
 
 Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`）并断言：成功输入退出 37
 且 stdout=`h`、stderr=`i`；缺参数退出 2、缺环境变量退出 3。
@@ -49,7 +53,7 @@ Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`�
 | `task_ready` 活用 Capability | 114 | 123 | tty 服务与设备交接 |
 | `CAPACITY` caps_peak / segment_slots / audit_used | 119 / 31 / 629 | 128 / 32 / 686 | 同上 |
 
-服务映像共 **78 / 80 页**（7 个 Rust 服务 74 页 + C 探针 3 页 + 目录 1 页）。C 探针仍无
+服务映像共 **78 / 80 页**（8 个 Rust 服务 74 页 + C 探针 3 页 + 目录 1 页）。C 探针仍无
 `PT_INTERP`、无动态依赖、无重定位（`readelf -r` 为空）。
 
 ## 开发中暴露并保留的反例
@@ -68,3 +72,11 @@ Linux 宿主侧由 `cargo xtask test` 自动编译同一源码（`-DPRIMA_HOST`�
 - 未验证通用 ELF `PT_LOAD` 权限（BSS 可写、W^X 全路径）；探针通过“不使用可写段”回避，
   仍未实现按 program header 装载。
 - 未声明 S5-D2/D6/X3 完成；未引入 musl、sysroot 或动态链接器。
+
+## 已知边界（不在本切片关闭）
+
+- `dev_ioport_create` 目前只校验调用者存活，任何 ring3 任务都可铸任意 `IOPortRange`（含
+  `0xF4`/`0xCF8`）。本切片中「管理器与 tty 各持独立权威」是用户态分工，不是内核强制；
+  该缺口先于本切片（S4 驱动路径已存在），须在设备授权契约中单独整改。
+- `CIO`/`TTYIN`/`TTYOUT` 的 `task=` 值来自消息 payload 的自报字段；C 探针身份另由内核
+  `TASKCAP` 的 id 17 兜底，但消息层未在内核校验发送者身份。

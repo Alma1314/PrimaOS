@@ -525,13 +525,18 @@ pub extern "C" fn _start(
                     authority,
                     behavior: 0,
                 });
-                if let Ok(dev) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
-                    let _ = runtime.send(
-                        TaskId::from_raw(id as u32),
-                        authority,
-                        SERVICE_DEV_CAP_TAG,
-                        &[dev],
-                    );
+                if let Ok(dev) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT)
+                    && runtime
+                        .send(
+                            TaskId::from_raw(id as u32),
+                            authority,
+                            SERVICE_DEV_CAP_TAG,
+                            &[dev],
+                        )
+                        .is_err()
+                {
+                    // 发送失败时 cap 未被移动，仍由管理器持有；显式归还避免泄漏。
+                    let _ = runtime.cap_drop(dev);
                 }
                 if let Ok(serial) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
                     mgr_serial = Some(serial);
@@ -571,7 +576,7 @@ pub extern "C" fn _start(
         } else if message.payload >> 48 == STAGE5_TTY_ACK_TAG >> 48 {
             tty_ack = true;
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
-            // C 程序自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
+            // C 程序（id 17）自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
             // Dead 与根清理，不能只相信这条消息。
             // 屏蔽状态字节与 ID 字节后必须等于固定标签（含 0x5a 见证），再记录两者。
             if message.payload & !((0xff << 16) | 0xff) == (STAGE5_C_PROBE_TAG & !0xff) {
@@ -685,9 +690,10 @@ pub extern "C" fn _start(
                 slot += 1;
             }
             // 阶段 5 片 C：tty 服务在建端点阶段创建，早于 C 探针；它随后自报就绪。
+            // 只尝试一次：失败后重试只会重复铸造/回滚 cap，缺失的证据由 QEMU 验收暴露。
             if !tty_created && let Some(spec) = tty_pending {
                 let mut tty_slot = [false; SERVICES];
-                tty_created = create_service(
+                let _ = create_service(
                     &runtime,
                     &self_cap,
                     parent_ns,
@@ -695,8 +701,8 @@ pub extern "C" fn _start(
                     DRIVER_SLOT,
                     &mut tty_slot,
                     false,
-                )
-                .is_some();
+                );
+                tty_created = true;
             }
         }
 
@@ -1200,6 +1206,8 @@ fn create_service(
         spec.pages,
         R_ONLY,
     ) else {
+        let _ = runtime.cap_drop(initial0);
+        let _ = runtime.cap_drop(initial1);
         return None;
     };
     let e_entry = runtime
@@ -1207,6 +1215,8 @@ fn create_service(
         .unwrap_or(u64::MAX);
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
     if e_entry == u64::MAX {
+        let _ = runtime.cap_drop(initial0);
+        let _ = runtime.cap_drop(initial1);
         return None;
     }
     // SPEC-108：自建 1 页栈段（`R|W`）。

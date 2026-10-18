@@ -6292,7 +6292,7 @@ impl BootstrapState {
             let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
             // SPEC-107：逐个挑出该任务的映射并拆除——不复制 VA 到栈上快照，去掉「容量常量放大
             // 即挤压内核栈」的隐式耦合（SPEC-106 §5.4 的 `SYS_TASK_DESTROY` 栈溢出）。
-            // ponytail: O(n²) 扫描（n ≤ MAX_VSPACE_ENTRIES = 96），只在内核销毁路径，可忽略。
+            // ponytail: O(n²) 扫描（n ≤ MAX_VSPACE_ENTRIES = 144），只在内核销毁路径，可忽略。
             while let Some(entry_va) = self.vspace.first_mapping(caller) {
                 crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                     crate::sched::defer_table_frame(frame)

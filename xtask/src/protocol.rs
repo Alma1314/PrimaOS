@@ -606,7 +606,10 @@ pub(crate) fn validate_native_app_trace(output: &str) -> Result<(), String> {
 }
 
 /// 阶段 5 片 C：C 探针的 tty `write(1/2)` 见证 + tty 服务的 ioport 往返/越界应答 +
-/// 内核在 task 15 faulted 状态下的独立 dump 三者必须同时成立。
+/// **串口上真实出现的 `h`/`i` 数据行**三者必须同时成立。
+///
+/// `TTYIN`/`TTYOUT` 是 tty 服务的自报；原始数据行来自 QEMU 串口流，证明字节确实经
+/// `outb` 写到了 COM1，而不是只在用户态计数。
 pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
     let cio: Vec<_> = output
         .lines()
@@ -633,10 +636,23 @@ pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
     {
         return Err(format!("stage5 tty out trace mismatch: {ttyout:?}"));
     }
+    // 原始数据行：tty 的 `outb` 结果必须真的出现在 QEMU 串口流里，而不是仅由服务自报。
+    for byte in ["h", "i"] {
+        let rows: Vec<_> = output
+            .lines()
+            .filter(|line| line.trim_end_matches('\r') == byte)
+            .collect();
+        if rows.len() != 1 {
+            return Err(format!(
+                "stage5 tty raw byte {byte:?} rows are {}, expected exactly 1",
+                rows.len()
+            ));
+        }
+    }
     Ok(())
 }
 
-/// 阶段 5：应用自报的 ID 16 生命周期和内核在收尾时的独立状态必须同时成立。
+/// 阶段 5：应用自报的 C 探针生命周期和内核在收尾时的独立状态必须同时成立。
 pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
     let records = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
     let capacity: Vec<_> = records
@@ -4270,7 +4286,9 @@ mod tests {
     #[test]
     fn stage5_tty_requires_c_writes_and_tty_ioport_answers() {
         let good = concat!(
+            "h\r\n",
             "CIO|task=17;fd=1;ch=104;fd=2;ch=105\r\n",
+            "i\r\n",
             "TTYIN|task=17;fd=1;ch=104;fd=2;ch=105\r\n",
             "TTYOUT|task=17;in_magic=1;out_of_range=1;out_ok=1\r\n",
         );
@@ -4287,6 +4305,11 @@ mod tests {
             super::validate_stage5_tty(&good.replace("fd=1;ch=104;", ""))
                 .unwrap_err()
                 .contains("tty write")
+        );
+        assert!(
+            super::validate_stage5_tty(&good.replace("i\r\n", ""))
+                .unwrap_err()
+                .contains("raw byte")
         );
     }
 

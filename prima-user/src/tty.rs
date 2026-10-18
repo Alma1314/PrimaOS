@@ -63,8 +63,13 @@ pub extern "C" fn _start(
         };
         let tag = message.payload >> 48;
         if tag == SERVICE_DEV_CAP_TAG >> 48 {
+            // 只接受一块设备权威；重复移交时归还新 cap，避免泄漏或静默替换。
             if let Some(cap) = message.capabilities[0] {
-                dev = Some(cap);
+                if dev.is_none() {
+                    dev = Some(cap);
+                } else {
+                    let _ = runtime.cap_drop(cap);
+                }
             }
         } else if tag == STAGE5_TTY_WRITE_TAG >> 48 {
             let Some(cap) = dev else {
