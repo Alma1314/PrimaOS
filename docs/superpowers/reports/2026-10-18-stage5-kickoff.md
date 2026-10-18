@@ -9,7 +9,7 @@
 - `kernel::bootstrap::MAX_TASKS` 从 16 扩至 17，允许既有 Task 1–15 占位之后分配 ID 16；`TaskTable::with_init` 按常量初始化，避免手写数组长度漂移。
 - 调度器直接复用该常量，保证 Task 表与上下文表范围一致。现有内核栈池覆盖 ID 3–18，不需扩容。
 - `stage5_has_one_task_id_after_existing_services` 验证 ID 2–15 占用后可分配 16，再次分配被拒绝。
-- [profile v0 草案](../specs/2026-10-18-stage5-profile-v0-draft.md)登记首批 C/POSIX 契约和拟定测试，未冻结 ABI。
+- [profile v0](../specs/2026-10-18-stage5-profile-v0.md) 已冻结首批 C/POSIX 契约、BLK-003 裁决、sbase `echo` 锁定快照与 E1–E6 冻结用例。
 
 ## 已验证
 

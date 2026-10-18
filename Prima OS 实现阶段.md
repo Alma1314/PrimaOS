@@ -13,7 +13,7 @@
 | 项目 | 状态与依据 |
 |---|---|
 | 阶段 0–4 | 已满足退出条件；签署报告依次为 [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)。阶段 0 的结论限规范文本；实现、模型和 QEMU 各按报告范围解释。 |
-| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)、[固定 C 初始栈](docs/superpowers/reports/2026-10-18-stage5-c-start-stack.md)与[同源 `main` 返回码](docs/superpowers/reports/2026-10-18-stage5-main-return-status.md)、[同源 `write(1/2)`/`_exit` 的 tty 字节流](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)获见证。BLK-004 已关闭、BLK-003 仍 Open，S5-D1–D7/X1–X3 均未勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile 草案](docs/superpowers/specs/2026-10-18-stage5-profile-v0-draft.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
+| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)、[固定 C 初始栈](docs/superpowers/reports/2026-10-18-stage5-c-start-stack.md)与[同源 `main` 返回码](docs/superpowers/reports/2026-10-18-stage5-main-return-status.md)、[同源 `write(1/2)`/`_exit` 的 tty 字节流](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)获见证。BLK-004 已关闭、BLK-003 仍 Open；POSIX profile v0 已冻结（S5-D1 待组织级确认后勾选），S5-D2–D7/X1–X3 均未勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile v0（冻结）](docs/superpowers/specs/2026-10-18-stage5-profile-v0.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
 | 下一阶段 | 阶段 6 未开始；阶段 7 范围未冻结。 |
 | 近期复核 | [阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)、[阶段 2 IPC 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3 整改](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)；后两者已通过 workspace 测试、lint 和 BIOS QEMU 双跑。 |
 | TCB | 基线与历次统计见压缩前版本；最新数值应以 `cargo xtask tcb` 现跑结果为准，`kernel/src` 仍要求零 `unsafe`。 |
@@ -170,7 +170,7 @@
 
 ### 交付检查
 
-- [ ] S5-D1：冻结且版本化的 POSIX profile。
+- [ ] S5-D1：冻结且版本化的 POSIX profile。**v0 已冻结（2026-10-18），等待组织级确认后勾选。**
 - [ ] S5-D2：libc 适配（候选分解 M01–M12：`abi`+IDL 生成器、`ipc`、桩层双模板、crt/`__libc_start_main`、musl 五个边界替换点、`ld.so`、`fd↔capability`、线程/TLS、信号、`fork`/`execve`/`wait4`、tty/console）。
 - [ ] S5-D3：文件描述符、路径、线程和基础网络子集。
 - [ ] S5-D4：逐 API 语义映射矩阵。

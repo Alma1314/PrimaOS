@@ -1,25 +1,98 @@
-# 阶段 5 POSIX profile v0 草案
+# 阶段 5 POSIX profile v0（冻结）
 
-**状态**：草案，尚未冻结；S5-D1/X1–X3 未通过。权威目标见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)，实施顺序见[修订计划](../plans/2026-10-18-stage5-revised-plan.md)。
+**状态**：**冻结 v0**（2026-10-18，独立技术复核后定稿）。这是阶段 5 的 API 准入契约；S5-D1 的组织级确认仍属阶段出口程序，未经组织级确认前不在跟踪页勾选。权威目标见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)，实施顺序见[修订计划](../plans/2026-10-18-stage5-revised-plan.md)。
 
-原生 Prima syscall ABI 已先冻结一项机器契约：保留调用号 1–36，新增 `SYS_ABI_CHECK=37`。参数为 `major, minimum_minor, reserved0..3`；内核接受 `major=1`、`minimum_minor<=0` 且保留参数全零，返回 `(major<<32)|minor = 0x0000000100000000`；其余请求返回 `-EINVAL`。未登记号继续返回 `-ENOSYS`。这与 `prima-runtime::API_MAJOR=0` 的 Rust 源码 API 版本相互独立。它只验证原生调用表的兼容性，**不**代表本表的 POSIX profile 已冻结。
+**变更控制**：本文件的 API 行、参数、错误边界与状态定义一经冻结，修改必须发布 v1 并重新评审。实现状态可以在**不改变冻结边界**的前提下由 `planned` 推进到 `supported`/`partial`，但必须同时提交 Linux/Prima 差分证据与测试 ID；不得只改状态字。
 
-首个应用候选为 [sbase `echo`](https://git.suckless.org/sbase/file/echo.c.html)（[MIT 许可证](https://git.suckless.org/sbase/file/LICENSE.html)）。它需要 `argc/argv`、`strcmp`、`stdout`/`putchar`/刷新及退出状态。锁定上游 commit、源码哈希和冻结用例之后，才能把它定为 S5-X3 的目标程序；自写 C 探针仅验证启动链路。
+## 1. 范围与不变量
 
-| API / 契约 | Prima 后端与待定边界 | 状态 | 拟定测试 |
+- 阶段 5 只承诺**静态链接**的 C/POSIX 源码兼容；动态链接、`ld.so`、`PT_INTERP` 与共享库不在本 profile。
+- 本 profile **不是** Linux ABI 仿真：POSIX 名称只出现在 libc/适配层，内核仍使用 Prima 原生 `SYS_*` 与 Capability。
+- 已有调用号 **1–37 保留、只追加、空洞不复用**。新增内核可见调用从 38 起追加；用户态服务之间使用消息 tag，不占用 syscall 号。
+- 不采用 DOC-002 的 `0x0xx` 号表、`NT_RUXOS_ABI`、`x86_64-ruxos-none`；原生 ABI 版本为 `(major<<32)|minor = 0x0000000100000000`，与 `prima-runtime::API_MAJOR=0` 的 Rust 源码版本无关。
+- 未登记调用返回 `-ENOSYS`。错误采用 Linux x86_64 数值的二补码负值；libc 适配层负责转换为 `-1`/`errno`。已实现集合见第 2 节；`EBADF=9`、`EINTR=4`、`EPIPE=32` 的**数值已冻结但实现未承诺**，进入对应 API 时才落地。
+
+## 2. BLK-003 裁决（冻结）
+
+| 事项 | 裁决 |
+|---|---|
+| 调用号 | 保留 1–37；POSIX 首批实现优先走用户态服务，只有确实需要内核机制时才追加 38+ |
+| 命名 | 内核/原生运行时用 Prima 命名（`SYS_*`、`Task`、`MemorySegment`）；POSIX 名称仅存在于 libc/适配层 |
+| 错误码 | 已实现并冻结：`ENOENT=2`、`EAGAIN=11`、`EACCES=13`、`EFAULT=14`、`EEXIST=17`、`ENOTDIR=20`、`EINVAL=22`、`ENOSPC=28`、`ENOSYS=38`。数值已冻结、实现待落地：`EINTR=4`、`EBADF=9`、`EPIPE=32`。其余错误在进入 profile 前必须逐项登记，禁止用相邻码“近似” |
+| C 入口 | 采用第 3 节的 Prima 入口契约；`argc/argv/envp/auxv` 由装载器写入初始栈，不伪造 Linux `_start` |
+| 动态链接 | 归入阶段 7 候选；阶段 5 不支持，静态 ELF 中不得有 `PT_INTERP`/`DT_NEEDED`，证据须由 `readelf` 核验 |
+| 退出观察 | 退出状态由服务管理器/父 Task 观察；本 profile 不承诺 `wait4` 或进程组 |
+
+## 3. C 入口与初始栈（冻结）
+
+- 内核在进入 CPL3 时只设置 `rsp`；探针的汇编 `_start` 自行把 `rsp` 移入 `r9` 再调用 C 入口。`r9` 是**探针内部约定**，不是内核 ABI。入口寄存器沿用现有五参数原生约定
+  `rdi=self_cap, rsi=initial_cap0, rdx=initial_cap1, rcx=name, r8=peer_task_id`。
+- 初始栈 16 字节对齐，布局：
+  - `[0] = argc`；
+  - `argv[0..argc]`，随后一个 NULL；
+  - `envp[0..]`，随后一个 NULL；
+  - `auxv`：`{AT_PAGESZ=6, 4096}`、`{AT_NULL=0, 0}`。
+- 当前只冻结 **argc=2、argv=["stage5-probe","stack-ready"]、envp=["PRIMA_ABI=1"]** 的固定探针形态；
+  完整 auxv、任意 argv、按 `PT_LOAD` 权限分别装载仍为 `planned`。
+- 初始 fd/Capability：仅 fd 1/2 的字节流（由服务管理器与 tty 服务提供）；无继承 fd 表，无
+  `stdin`。
+- 代码段按 W^X 只读映射；探针不得依赖可写全局变量。
+
+## 4. API 矩阵
+
+状态定义：`supported` = 冻结边界内已实现并有重复 Linux/Prima 证据；`partial` = 仅列出的子集可用；
+`planned` = 契约已冻结但未实现；`unsupported` = 阶段 5 明确不承诺。
+
+| ID | API / 契约 | Linux 参考 | Prima 后端/授权 | 状态 | 冻结边界（partial 必读） | 测试/证据 |
+|---|---|---|---|---|---|---|
+| P5-ABI-01 | 原生 ABI 版本握手 | 不适用（原生行） | `SYS_ABI_CHECK=37` | supported | `major=1, minimum_minor=0, reserved=0`；版本 `0`、其它 major/minor、非零保留位均返回 `-EINVAL`；成功返回 `0x0000000100000000` | [ABI 报告](../reports/2026-10-18-stage5-native-abi-check.md) |
+| P5-BOOT-01 | C 入口 `argc/argv/envp/auxv` | `_start` + auxv | 通用 ELF 装载 + 固定初始栈 | partial | 仅第 3 节固定探针形态；无完整 auxv、无按 `PT_LOAD` 权限/多段装载 | [初始栈](../reports/2026-10-18-stage5-c-start-stack.md) |
+| P5-PROC-01 | `main` 返回码与 `_exit` 观察 | `exit_group(status)` | Task 自毁 + 管理器观察 | partial | 仅返回码低 8 位；无 Process/zombie/父子等待/信号终止状态 | [同源返回码](../reports/2026-10-18-stage5-main-return-status.md)、[tty/exit](../reports/2026-10-18-stage5-c-tty-write.md) |
+| P5-PROC-02 | `getpid` | 稳定 PID | 可映射 `SYS_TASK_ID` | planned | 尚未冻结 PID 稳定性、复用与错误边界 | P5-PROC-02 |
+| P5-IO-01 | `write(fd, buf, len)` | 返回写入字节数；`EBADF/EFAULT/EPIPE` | 用户态 tty 字节流服务（`prima-tty`） | partial | **仅 fd 1/2**；逐字节 IPC、**不限长度**（管理器与 tty 逐条流式转发）。成功返回 `len` 表示所有字节已入队，不表示 tty 已完成写；中途 SEND 失败返回 `-1`，可能有前缀已入队。无短写返回值、无 `EPIPE`/非阻塞。**非法 fd 当前被静默丢弃且调用方仍看到成功**，在实现确定错误前不得升为 `supported` | [tty 报告](../reports/2026-10-18-stage5-c-tty-write.md) |
+| P5-IO-02 | `read(fd, buf, len)` | 阻塞/EOF/中断 | 待建字节流服务 | planned | EOF、阻塞、`EINTR`、坏指针语义未冻结 | P5-IO-02 |
+| P5-FD-01 | `close(fd)` | 释放 fd；`EBADF` | 用户态 fd 生命周期 + Cap drop | planned | 与共享 offset、`dup` 的关系未冻结 | P5-FD-01 |
+| P5-FS-01 | `openat(dirfd, path, flags, mode)` | 路径解析与错误码 | 路径/目录服务；Namespace 仅作授权入口 | planned | 目录服务不是 VFS；`O_*`/`mode` 子集待评审 | P5-FS-01 |
+| P5-FS-02 | `lseek(fd, off, whence)` | 偏移与不可 seek 错误 | 服务端共享偏移 | planned | `SEEK_*` 子集与共享 offset 未冻结 | P5-FS-02 |
+| P5-MM-01 | `mmap/munmap/mprotect` | 匿名/文件映射、flags | `MemorySegment` + 页表 | planned | 仅承诺匿名子集；W^X 三路径未实现；文件映射不支持 | P5-MM-01 |
+| P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | 现有 `SYS_TIME_NOW` 为 PIT tick | planned | 时钟 id、单位、精度、超时与 `EINTR` 未冻结 | P5-TIME-01 |
+| P5-THREAD-01 | `pthread_create/join`、mutex/cond | POSIX 线程 | 无 Thread/TLS/WaitObject | unsupported | 阶段 5 不承诺；禁止用成功空实现占位 | P5-THREAD-01 |
+| P5-NET-01 | `socket/bind/sendto/recvfrom` | BSD socket | 无网络服务 | unsupported | 阶段 5 不承诺；loopback IPC 不算网络 | P5-NET-01 |
+| P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3） | planned | 依赖 P5-IO-01；未移植前不得声称可用 | [musl 计划](../plans/2026-10-18-musl-port-plan.md) |
+
+## 5. 目标程序冻结：sbase `echo`
+
+| 项 | 冻结值 |
+|---|---|
+| 上游 | `https://git.suckless.org/sbase` |
+| commit | `c546c3a5724c81cee9a11d816a38ccdf17472129`（master） |
+| 许可 | MIT；`LICENSE` SHA-256 `eb0b719b3327af6c4b480cd21f7944e944a5ddf571c04572eb8d025f52e056c6` |
+| 参与文件 | `echo.c` `117c10e0e5a5139a80490673a3f14dd1dfcc45856adb84a83b28e3b301f1b48c`；`libutil/putword.c` `5c1c875678f3367489cb9fcf5e76db51f51236710ae3bfcac245ff9640ecff5c`；`libutil/fshut.c` `a5ee307130cfbe8aaace3528f370ef42f0ef16b135e957084f3a5fa42b883773`；`libutil/eprintf.c` `9547578e4e4585bbc8429b580c2db409328214efd383c5be01b0bb9017f1bf1c`；`util.h` `341a70a1f9d449f28c4d65bb594898e2d6cf2eabc21da018abdf024b7f71e7d6`；`arg.h` `5f4ecca1bb057a6d6301aff8f2b403e723af5dc86a5e00e8c7e5c2f56cdb9c79`；`compat.h` `00fc3129294c2ddf3d39dee3b6a2f581d98b565f66250796deabf82d2fe78e07` |
+| 构建 | 阶段 5 用锁定 musl sysroot **静态链接**；不链接宿主 glibc；补丁须可从该 commit 重放 |
+| 依赖闭包 | `echo` 需要 `argc/argv`、`strcmp`、stdio（`fputs`/`fputc`/`putchar`/`fflush`/`fclose`/`ferror`）、`write(1)` 与退出状态；对应 P5-BOOT-01/P5-IO-01/P5-PROC-01/P5-LIB-01 |
+| 已知阻塞 | `putword.c` 的 `static int first` 与 musl stdio 都需要可写 `.data`/`.bss`，而 P5-BOOT-01 尚未按 `PT_LOAD` 权限装载写段；在写段装载（P5-BOOT-01/P5-MM-01）完成前，`echo` 的冻结用例无法在 Prima 上通过。S5-X3 因此继续未完成 |
+| 锁定状态 | 目标已选定并锁定；S5-X3 **未完成**（尚未在 Prima 上重新编译运行） |
+
+### 冻结用例（Linux 参考已用锁定源码实测）
+
+| # | 参数 | 期望 stdout（hex） | 期望退出码 |
 |---|---|---|---|
-| C 入口 `argc/argv/envp/auxv` | 固定 C 探针已有 16 字节对齐初始栈、2 个 argv、1 个 env 与 `AT_PAGESZ/AT_NULL`；通用参数传递、完整 auxv 和段权限未完成 | partial（仅固定探针） | P5-BOOT-01：[QEMU 见证](../reports/2026-10-18-stage5-c-start-stack.md) |
-| `main` 返回码 | 固定 C 探针的返回值低 8 位经 IPC 交服务管理器；同源 Linux 宿主成功/失败输入返回 37/2/3，Prima QEMU 只核验成功输入 37 | partial（仅固定探针） | P5-PROC-01a：[同源差分](../reports/2026-10-18-stage5-main-return-status.md) |
-| `_exit` / `exit` | Task 自毁已有；退出码观察、父子关系和资源回收契约待定 | planned | P5-PROC-01 |
-| `getpid` | 可映射现有 `SYS_TASK_ID`，PID 稳定性和错误边界待定 | planned | P5-PROC-02 |
-| `write` | fd→Capability 与用户态 tty 字节流服务待建；短写和错误码待冻结 | planned | P5-IO-01 |
-| `read` | 字节流服务、EOF/阻塞/中断语义待建 | planned | P5-IO-02 |
-| `close` | 用户态 fd 生命周期、Capability drop/共享对象关系待定 | planned | P5-FD-01 |
-| `openat` | 路径/目录服务待建；Namespace 仅作为授权入口 | planned | P5-FS-01 |
-| `lseek` | 服务端共享偏移及不可 seek 对象错误待定 | planned | P5-FS-02 |
-| `mmap` / `munmap` / `mprotect` | Segment 可复用；匿名页、flags、权限转换和 W^X 尚无完整契约 | planned | P5-MM-01 |
-| `clock_gettime` / `nanosleep` | 现有 `SYS_TIME_NOW` 为 PIT tick；单位/精度/超时待定义 | planned | P5-TIME-01 |
-| `pthread_create` / `pthread_join`、mutex/cond | 无真实 Thread/TLS 与等待语义；不得以成功空实现占位 | unsupported | P5-THREAD-01 |
-| `socket` / `bind` / `sendto` / `recvfrom` | 无基础网络服务及地址族承诺 | unsupported | P5-NET-01 |
+| E1 | （无参数） | `0a` | 0 |
+| E2 | `-n` | （空） | 0 |
+| E3 | `hello` | `68656c6c6f0a` | 0 |
+| E4 | `-n hello` | `68656c6c6f` | 0 |
+| E5 | `a b c` | `61206220630a` | 0 |
+| E6 | `-- -n` | `2d2d202d6e0a` | 0 |
 
-`strcmp` 等纯 C 函数和 stdio 符号由[静态 musl 移植计划](../plans/2026-10-18-musl-port-plan.md)逐项追溯；表中 `planned` 只表示目标，不表示实现。`partial` 必须列出支持的参数/flag、错误和未覆盖行为；每行在变为 `supported` 前须补 Linux 参考输出、Prima QEMU 正反例和可重复命令。BLK-003 的 POSIX ABI、错误映射与后续调用号仍待裁决；原生版本握手已完成，不作为 POSIX profile 冻结。
+上表由锁定 commit 在 Linux 宿主以 `cc -O2 -std=c99 echo.c libutil/{putword,fshut,eprintf}.c -I.` 实测。
+Prima 侧须逐字节比较 stdout 与退出码，并另测 `write` 的坏指针/非法 fd 失败路径（当前
+P5-IO-01 仍为 partial，见矩阵）。
+
+**ID 说明**：片 C 加入 tty 服务后 C 探针由 task 16 改为 17；早期报告中的 16 是历史见证，
+当前 QEMU 校验一律使用 17。
+
+## 6. 本冻结不代表的结论
+
+- 不勾选 S5-D2/D3/D6/X1–X3；不表示 musl 已完成、文件系统/线程/网络可用。
+- 不把自写 C 探针当作开源程序验收；`echo` 必须在 Prima 上重新编译并通过 E1–E6 才算 S5-X3。
+- 动态链接、`fork/execve/wait4`、完整信号与 Rust `std` 全量覆盖仍待各自契约。

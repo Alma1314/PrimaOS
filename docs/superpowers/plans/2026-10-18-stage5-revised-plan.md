@@ -23,7 +23,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 
 | 片 | 工作与依赖 | 验收证据 |
 |---|---|---|
-| A 准入冻结 | 冻结 profile v0 的 API、具体参数/错误/partial 边界；逐项裁决 BLK-003（保留已用 1–37，仅追加新号；Prima 命名；错误码与 C 入口；动态链接阶段归属）；选定开源程序的版本、许可证与冻结用例。原生 ABI 1.0 握手已完成。 | S5-D1 的版本化 profile 草案经评审后冻结；每行有 planned/supported/partial/unsupported、Linux 参考行为、Prima 后端和测试 ID。未评审的 DOC-002 条目不得混入 ABI。 |
+| A 准入冻结 | 冻结 profile v0 的 API、具体参数/错误/partial 边界；逐项裁决 BLK-003（保留已用 1–37，仅追加新号；Prima 命名；错误码与 C 入口；动态链接阶段归属）；选定开源程序的版本、许可证与冻结用例。原生 ABI 1.0 握手已完成。 | S5-D1 的版本化 profile [v0](../specs/2026-10-18-stage5-profile-v0.md) 已冻结（待组织级确认勾选）；每行有 planned/supported/partial/unsupported、Linux 参考行为、Prima 后端和测试 ID。未评审的 DOC-002 条目不得混入 ABI。 |
 | B 容量 | 解决 BLK-004，保证全量现有服务启动后还可建、运行、退出、回收新 Task；沿用已修复的带 Cap 直投作为 IPC 基线。 | host 状态机 + ring3 QEMU 正反例；峰值容量/错误语义记录；旧阶段 1–4 事件不回归。通用 Cap IPC 的 supported 范围仍限已实现的消息大小与 2 Cap 上限。 |
 | C 首个 C 程序 | 用当前用户 ELF 机制构建最小静态 C crt/syscall 适配；定义 ABI 版本、退出状态与观察者；接入新 tty 字节流服务，先覆盖 `_start`、`write(1/2)`、`_exit`。 | 同一 C 源码在 Linux/Prima 编译运行；输出和退出状态与冻结预期一致；非法 fd/坏指针确定失败；不宣称已有 libc/文件系统。 |
 | D 文件与路径 | 在用户态建立 fd 生命周期、`openat/read/write/close/lseek` 的冻结子集、目录/路径服务与真实字节存储；利用 Namespace 做授权入口，不把它当文件树。 | 每个支持的 API 有 Linux/Prima 差分；`dup`/`CLOEXEC`/目录等未实现者标 partial/unsupported；服务崩溃/失效句柄有确定行为。 |
