@@ -43,8 +43,8 @@ pub use prima_abi::syscall::{
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
     SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
     SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
-    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TIME_NOW, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
+    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_TIME_NOW, SYS_TIMER_CANCEL,
+    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -2128,6 +2128,26 @@ pub const fn copy_in_bounds(ptr: u64, len: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// M2/T-MUSL-02：FS base 必须是低半区规范地址。
+///
+/// 非规范值写入 `IA32_FS_BASE` 会触发 #GP；与用户指针一样，只接受 `[0, 2^47)`。
+pub const fn validate_fs_base(base: u64) -> Result<(), Errno> {
+    if base >= (1u64 << 47) {
+        return Err(Errno::Invalid);
+    }
+    Ok(())
+}
+
+/// `SYS_TASK_SET_FS_BASE`：保存到当前 Task 的调度槽并立即写入硬件（syscall 不经过 resume）。
+fn set_fs_base_call(base: u64) -> u64 {
+    if let Err(errno) = validate_fs_base(base) {
+        return encode_errno(errno);
+    }
+    crate::sched::set_fs_base(crate::sched::current(), base);
+    crate::msr::wrmsr(crate::msr::IA32_FS_BASE, base);
+    0
+}
+
 /// 从用户缓冲读入 `len` 字节并组装为 little-endian u64（内核/QEMU 专用）。
 fn copy_in(ptr: u64, len: u64) -> Result<u64, Errno> {
     copy_in_bounds(ptr, len)?;
@@ -2223,6 +2243,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         exc_unsubscribe_call(args[0])
     } else if num == SYS_TASK_ID {
         sched::current() as u64
+    } else if num == SYS_TASK_SET_FS_BASE {
+        set_fs_base_call(args[0])
     } else if num == SYS_YIELD {
         yield_call()
     } else if num == SYS_EXC_WAIT {
@@ -2874,6 +2896,17 @@ mod tests {
     fn reserved_number_is_einval() {
         let args = [0u64; MAX_ARGS];
         assert_eq!(dispatch_plain(0, &args), encode_errno(Errno::Invalid));
+    }
+
+    /// M2/T-MUSL-02：FS base 只接受低半区规范地址；非规范值必须确定性 EINVAL，
+    /// 不能把会触发 #GP 的值写进 MSR。
+    #[test]
+    fn fs_base_validation_rejects_non_canonical_and_kernel_addresses() {
+        assert_eq!(validate_fs_base(0), Ok(()));
+        assert_eq!(validate_fs_base(0x0000_0A00_0000_2000), Ok(()));
+        assert_eq!(validate_fs_base(0x0000_8000_0000_0000), Err(Errno::Invalid));
+        assert_eq!(validate_fs_base(u64::MAX), Err(Errno::Invalid));
+        assert_eq!(validate_fs_base(0xFFFF_8000_0000_0000), Err(Errno::Invalid));
     }
 
     #[test]

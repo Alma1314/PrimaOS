@@ -104,6 +104,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     }
     let source = stage5_probe_source();
     let start = source.with_file_name("stage5_start.S");
+    let adapter = source.with_file_name("prima_syscall.c");
     let binary = path.with_file_name("stage5-probe.elf");
     let compiled = Command::new("clang")
         .args([
@@ -114,6 +115,9 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
             "-Werror",
             "-ffreestanding",
             "-fno-stack-protector",
+            // 内核尚未置 CR4.OSFXSR/OSXMMEXCPT：C 代码只能用通用寄存器，避免
+            // clang 生成 SSE 拷贝（曾以 movaps 触发 #UD → 故障级联）。
+            "-mgeneral-regs-only",
             "-fPIE",
             "-nostdlib",
             "-fuse-ld=lld",
@@ -122,6 +126,7 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
             "-Wl,--build-id=none",
         ])
         .arg(&source)
+        .arg(&adapter)
         .arg(&start)
         .arg("-o")
         .arg(&binary)
@@ -135,11 +140,10 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
         ));
     }
     ensure_non_empty(&binary, "stage5 C probe ELF")?;
-    manifest.push((
-        prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE,
-        fs::read(&binary)
-            .map_err(|error| format!("failed to read {}: {error}", binary.display()))?,
-    ));
+    let probe = fs::read(&binary)
+        .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
+    validate_static_pie(&probe)?;
+    manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, probe));
 
     // EXO-2D：manifest 条目带 opaque `kind`。内核只按 kind 找 init，其余条目按
     // manifest 顺序做通用页打包/目录；服务语义只在用户态解释。
@@ -255,6 +259,92 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
         "PASS linux stage5 C main exits 37/2/3 and streams h/i plus 5-byte xyz via write(1/2)"
     );
     Ok(())
+}
+
+/// M2/T-MUSL-03：Prima crt 依赖内核已完成 RELATIVE 重定位，因此产物必须是**静态 PIE**：
+/// `ET_DYN`、无 `PT_INTERP`、无非 `R_X86_64_RELATIVE` 的重定位、无 `DT_RELR`。
+///
+/// 只解析 ELF64 头/程序头/节头；解析不了的结构即确定性失败，不把「没看到」当成通过。
+fn validate_static_pie(elf: &[u8]) -> Result<(), String> {
+    if elf.len() < 64 || &elf[0..4] != b"\x7fELF" || elf[4] != 2 || elf[5] != 1 {
+        return Err("C probe is not an ELF64 little-endian file".to_owned());
+    }
+    let e_type = read_u16(elf, 16)?;
+    if e_type != 3 {
+        return Err(format!("C probe e_type is {e_type}, expected ET_DYN (3)"));
+    }
+    let phoff = read_u64(elf, 32)? as usize;
+    let phentsize = read_u16(elf, 54)? as usize;
+    let phnum = read_u16(elf, 56)? as usize;
+    for index in 0..phnum {
+        let at = phoff
+            .checked_add(index * phentsize)
+            .ok_or_else(|| "program header offset overflow".to_owned())?;
+        if read_u32(elf, at)? == 3 {
+            return Err("C probe has PT_INTERP; dynamic linking is out of scope".to_owned());
+        }
+    }
+    let shoff = read_u64(elf, 40)? as usize;
+    let shentsize = read_u16(elf, 58)? as usize;
+    let shnum = read_u16(elf, 60)? as usize;
+    if shnum == 0 || shentsize < 64 {
+        return Err("C probe has no usable section headers".to_owned());
+    }
+    for index in 0..shnum {
+        let at = shoff
+            .checked_add(index * shentsize)
+            .ok_or_else(|| "section header offset overflow".to_owned())?;
+        let sh_type = read_u32(elf, at + 4)?;
+        let sh_offset = read_u64(elf, at + 24)? as usize;
+        let sh_size = read_u64(elf, at + 32)? as usize;
+        let sh_entsize = read_u64(elf, at + 56)? as usize;
+        match sh_type {
+            4 => {
+                // SHT_RELA：每个条目 24 字节，r_info 低 32 位是类型。
+                let entsize = if sh_entsize == 0 { 24 } else { sh_entsize };
+                if entsize < 24 || !sh_size.is_multiple_of(entsize) {
+                    return Err("malformed .rela section".to_owned());
+                }
+                for entry in 0..sh_size / entsize {
+                    let r_info = read_u64(elf, sh_offset + entry * entsize + 8)?;
+                    let kind = (r_info & 0xffff_ffff) as u32;
+                    if kind != 8 {
+                        return Err(format!(
+                            "C probe relocation type {kind}; only R_X86_64_RELATIVE (8) is supported"
+                        ));
+                    }
+                }
+            }
+            9 => return Err("C probe has SHT_REL; only RELA is accepted".to_owned()),
+            19 => return Err("C probe has SHT_RELR; DT_RELR is not supported".to_owned()),
+            _ => {}
+        }
+    }
+    println!("PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only");
+    Ok(())
+}
+
+fn read_u16(bytes: &[u8], at: usize) -> Result<u16, String> {
+    let slice = bytes
+        .get(at..at + 2)
+        .ok_or_else(|| format!("ELF read out of bounds at {at}"))?;
+    Ok(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+fn read_u32(bytes: &[u8], at: usize) -> Result<u32, String> {
+    let slice = bytes
+        .get(at..at + 4)
+        .ok_or_else(|| format!("ELF read out of bounds at {at}"))?;
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
+}
+
+fn read_u64(bytes: &[u8], at: usize) -> Result<u64, String> {
+    let slice = bytes
+        .get(at..at + 8)
+        .ok_or_else(|| format!("ELF read out of bounds at {at}"))?;
+    let mut word = [0u8; 8];
+    word.copy_from_slice(slice);
+    Ok(u64::from_le_bytes(word))
 }
 
 fn manifest_index(manifest: &[(u64, Vec<u8>)], kind: u64) -> Result<usize, String> {
@@ -382,7 +472,52 @@ fn ensure_non_empty(path: &PathBuf, label: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::manifest_index;
+    use super::*;
+
+    fn synthetic_static_pie(relocation_type: u32, section_type: u32) -> Vec<u8> {
+        // 64-byte header + 2 × 64-byte section headers + one 24-byte RELA entry.
+        let mut elf = vec![0u8; 64 + 128 + 24];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        put_u16(&mut elf, 16, 3); // ET_DYN
+        put_u64(&mut elf, 40, 64); // e_shoff
+        put_u16(&mut elf, 58, 64); // e_shentsize
+        put_u16(&mut elf, 60, 2); // e_shnum
+        // Section 1 (at 128): relocation section.
+        put_u32(&mut elf, 128 + 4, section_type);
+        put_u64(&mut elf, 128 + 24, 192); // sh_offset
+        put_u64(&mut elf, 128 + 32, 24); // sh_size
+        put_u64(&mut elf, 128 + 56, 24); // sh_entsize
+        // Relocation entry at 192: r_offset, r_info.
+        put_u64(&mut elf, 192 + 8, relocation_type as u64);
+        elf
+    }
+
+    #[test]
+    fn static_pie_accepts_only_relative_rela() {
+        assert_eq!(validate_static_pie(&synthetic_static_pie(8, 4)), Ok(()));
+        let wrong_type = validate_static_pie(&synthetic_static_pie(4, 4)).unwrap_err();
+        assert!(wrong_type.contains("relocation type 4"));
+        let relr = validate_static_pie(&synthetic_static_pie(8, 19)).unwrap_err();
+        assert!(relr.contains("SHT_RELR"));
+        let rel = validate_static_pie(&synthetic_static_pie(8, 9)).unwrap_err();
+        assert!(rel.contains("SHT_REL"));
+    }
+
+    #[test]
+    fn static_pie_rejects_non_dyn_and_missing_sections() {
+        let mut exec = synthetic_static_pie(8, 4);
+        put_u16(&mut exec, 16, 2); // ET_EXEC
+        assert!(validate_static_pie(&exec).unwrap_err().contains("ET_DYN"));
+        let mut no_sections = synthetic_static_pie(8, 4);
+        put_u16(&mut no_sections, 60, 0);
+        assert!(
+            validate_static_pie(&no_sections)
+                .unwrap_err()
+                .contains("section headers")
+        );
+    }
 
     #[test]
     fn manifest_index_follows_entry_order_and_rejects_missing_kind() {

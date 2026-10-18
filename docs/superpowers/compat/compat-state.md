@@ -59,8 +59,8 @@ v1 前，上述符号不得对外宣称可用。
 | 类别 | 结论 |
 |---|---|
 | 可复用（用户态现有机制） | fd 1/2 的逐字节 `SYS_SEND` 到服务管理器、管理器转发 tty；`SYS_TASK_ID`；`SYS_TASK_DESTROY`；私有可写 `PT_LOAD` |
-| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl`/`lseek` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit_group` → 退出消息 + 自毁；`__stdio_*`、`fputs`/`fputc`/`fflush` 等 musl 路径 |
-| 需新增内核机制 | `arch_prctl(ARCH_SET_FS)` → 建议追加 `SYS_TASK_SET_FS_BASE=38`，并在调度切换保存/恢复 per-task FS base |
+| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传（取消点适配层路径就绪）；`__stdio_*`、`fputs`/`fputc`/`fflush` 等 musl 路径 |
+| 需新增内核机制（已落地 M2） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，并在调度切换保存/恢复 per-task FS base |
 | 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、通用 `mmap`/文件映射 |
 | 仅链接、不执行（E1–E6） | mallocng `free`/`calloc`（`brk`/`mmap`/`munmap`/`madvise`）、futex/`__wait`（`libc.need_locks=0`）、`lseek`（无读缓冲）、`poll`/`ppoll`/`open`（非 secure auxv 早退） |
 

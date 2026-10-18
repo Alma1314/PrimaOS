@@ -1,101 +1,84 @@
 /* Freestanding C task: the assembler entry passes the initial stack in r9.
  *
- * 片 C：同一份源码在 Linux 宿主与 Prima QEMU 上编译运行。
- * - Linux：`write(1/2)` 走宿主 syscall。
- * - Prima：无 libc；fd 1/2 由 STAGE5_TTY_WRITE_TAG 直投服务管理器，管理器转发给
- *   用户态 tty 服务写串口。`_exit` 先把 main 返回码发给管理器，再自毁 Task。
- * `main` 在两端收到相同的 argv[1]="stack-ready" / PRIMA_ABI=1，控制流逐字节同源。
+ * 片 C / M2：同一份 `main` 在 Linux 宿主与 Prima QEMU 上逐字节同源。
+ * - 两端都用**原始 Linux 调用号**走系统边界：Linux 用宿主 `syscall()`，Prima 用
+ *   `prima_syscall.c` 的 `__syscallN` 翻译成原生号，失败保持原始负 errno。
+ * - Prima 的 fd 1/2 由适配层逐字节发往服务管理器，再转发给 tty 服务写串口；
+ *   `_exit` 先把状态发给管理器再自毁。
+ * - `main` 在两端收到相同的 argv[1]="stack-ready" / PRIMA_ABI=1。
  *
- * 探针的代码段按 W^X 以只读映射，故**不使用可写全局变量**：Prima 侧的对端/凭据通过
- * 栈上的 `probe_ctx` 传递，宏在 Linux 侧展开为空。
+ * 探针的代码段按 W^X 以只读映射，故**不使用可写全局变量**做控制流；`bss_probe` 与
+ * `fs_probe` 只验证可写段/BSS 清零和 `%fs` 基址。Prima 侧的凭据由 `stage5_start.S`
+ * 写入 `.bss` 的 `prima_ctx`。
  */
-#include <stdint.h>
-
-#define SYS_TASK_ID 7
-#define SYS_YIELD 8
-#define SYS_SEND 17
-#define SYS_RECV 18
-#define SYS_TASK_DESTROY 20
-#define SYS_ABI_CHECK 37
-#define ABI_VERSION UINT64_C(0x0000000100000000)
-#define ERR_INVALID ((uint64_t)-22)
-#define PROBE_TAG UINT64_C(0xc500000000005a00)
-#define TTY_WRITE_TAG UINT64_C(0xc602000000000000)
+#include "prima_abi.h"
 
 #ifdef PRIMA_HOST
-/* Linux 参考路径使用的宿主 syscall（write=1）。 */
-static uint64_t host_call(uint64_t number, uint64_t a0, uint64_t a1,
-                          uint64_t a2) {
-    register uint64_t r_number __asm__("rax") = number;
-    __asm__ volatile("syscall"
-                     : "+r"(r_number)
-                     : "D"(a0), "S"(a1), "d"(a2)
-                     : "rcx", "r11", "memory");
-    return r_number;
+/* 宿主参考：只声明所需 glibc 符号，避免依赖宿主头文件（Lean clang 资源目录缺
+ * stddef.h）。struct iovec 由 prima_abi.h 提供，与 x86_64 SysV 布局一致。 */
+extern long syscall(long number, ...);
+extern int *__errno_location(void) __attribute__((const));
+
+/* glibc 的 `syscall()` 在失败时返回 -1 并设置 errno；转回原始负值，才能与 Prima
+ * 适配层做同源断言。musl 原生就返回负 errno，不受此影响。 */
+static long probe_errno_result(long result) {
+    return result == -1 ? -(long)*__errno_location() : result;
 }
 
-static long host_write(int fd, const void *buf, unsigned long len) {
-    return (long)host_call(1, (uint64_t)fd, (uint64_t)buf, len);
+static long probe_raw1(long number, long a0) {
+    return probe_errno_result(syscall(number, a0));
 }
 
-#define PROBE_CTX_PARAM
-#define PROBE_CTX_ARG
+static long probe_raw3(long number, long a0, long a1, long a2) {
+    return probe_errno_result(syscall(number, a0, a1, a2));
+}
 
-static unsigned long write_fd(int fd, const char *s) {
-    unsigned long n = 0;
-    while (s[n] != 0)
-        n++;
-    return (unsigned long)host_write(fd, s, n);
+static long probe_raw4(long number, long a0, long a1, long a2, long a3) {
+    return probe_errno_result(syscall(number, a0, a1, a2, a3));
+}
+
+static long probe_raw5(long number, long a0, long a1, long a2, long a3,
+                       long a4) {
+    return probe_errno_result(syscall(number, a0, a1, a2, a3, a4));
+}
+
+static long probe_raw6(long number, long a0, long a1, long a2, long a3,
+                       long a4, long a5) {
+    return probe_errno_result(syscall(number, a0, a1, a2, a3, a4, a5));
 }
 #else
-#define PRIMA_CALL3(nr, a0, a1, a2)                                            \
-    ({                                                                         \
-        register uint64_t _n __asm__("rax") = (nr);                            \
-        register uint64_t _d __asm__("r10") = 0;                               \
-        register uint64_t _e __asm__("r8") = 0;                                \
-        register uint64_t _f __asm__("r9") = 0;                                \
-        __asm__ volatile("syscall"                                             \
-                         : "+a"(_n)                                            \
-                         : "D"(a0), "S"(a1), "d"(a2), "r"(_d), "r"(_e),        \
-                           "r"(_f)                                             \
-                         : "rcx", "r11", "memory");                            \
-        _n;                                                                    \
-    })
+#include "prima_syscall.h"
 
-typedef struct {
-    uint64_t peer;
-    uint64_t send_cap;
-} probe_ctx;
-
-#define PROBE_CTX_PARAM const probe_ctx *ctx,
-#define PROBE_CTX_ARG ctx,
-
-/* Prima 路径：fd 1/2 的每个字节直投服务管理器（tag + fd + byte + sender id）。 */
-static long prima_write(const probe_ctx *ctx, int fd, const void *buf,
-                        unsigned long len) {
-    const unsigned char *p = buf;
-    for (unsigned long i = 0; i < len; i++) {
-        uint64_t id = PRIMA_CALL3(SYS_TASK_ID, 0, 0, 0);
-        uint64_t payload = TTY_WRITE_TAG | ((uint64_t)(uint8_t)fd << 16) |
-                           ((uint64_t)p[i] << 24) | ((id & 0xff) << 32);
-        if (PRIMA_CALL3(SYS_SEND, ctx->peer, ctx->send_cap, payload) != 0)
-            return -1;
-        /* 让管理器先取走这条消息：自毁会清掉本任务仍在队列里未取的消息。 */
-        (void)PRIMA_CALL3(SYS_YIELD, 0, 0, 0);
-    }
-    return (long)len;
+static long probe_raw1(long number, long a0) {
+    return __syscall1(number, a0);
 }
 
-static unsigned long write_fd(const probe_ctx *ctx, int fd, const char *s) {
-    unsigned long n = 0;
-    while (s[n] != 0)
-        n++;
-    return (unsigned long)prima_write(ctx, fd, s, n);
+static long probe_raw3(long number, long a0, long a1, long a2) {
+    return __syscall3(number, a0, a1, a2);
+}
+
+static long probe_raw4(long number, long a0, long a1, long a2, long a3) {
+    return __syscall4(number, a0, a1, a2, a3);
+}
+
+static long probe_raw5(long number, long a0, long a1, long a2, long a3,
+                       long a4) {
+    return __syscall5(number, a0, a1, a2, a3, a4);
+}
+
+static long probe_raw6(long number, long a0, long a1, long a2, long a3,
+                       long a4, long a5) {
+    return __syscall6(number, a0, a1, a2, a3, a4, a5);
 }
 #endif
 
 /* 放置于可写 PT_LOAD/.bss：装载器必须为它建立私有可写页，且 BSS 必须清零。 */
 static volatile uint64_t bss_probe;
+#ifndef PRIMA_HOST
+/* M2/T-MUSL-02：FS base 指向本变量；write 内的 yield 之后必须仍能读到同一值。 */
+static volatile uint64_t fs_probe;
+#endif
+static int tid_sink;
 
 static int same(const char *actual, const char *expected) {
     for (; *expected; actual++, expected++)
@@ -104,7 +87,26 @@ static int same(const char *actual, const char *expected) {
     return *actual == 0;
 }
 
-int main(PROBE_CTX_PARAM int argc, char **argv, char **envp) {
+static unsigned long text_len(const char *s) {
+    unsigned long n = 0;
+    while (s[n] != 0)
+        n++;
+    return n;
+}
+
+static long probe_write_fd(int fd, const char *s) {
+    return probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)s, (long)text_len(s));
+}
+
+#ifndef PRIMA_HOST
+static uint64_t read_fs_zero(void) {
+    uint64_t value;
+    __asm__ volatile("mov %%fs:0, %0" : "=r"(value));
+    return value;
+}
+#endif
+
+int main(int argc, char **argv, char **envp) {
     if (argc != 2 || !same(argv[1], "stack-ready"))
         return 2;
     if (!envp || !envp[0] || !same(envp[0], "PRIMA_ABI=1") || envp[1] != 0)
@@ -115,37 +117,98 @@ int main(PROBE_CTX_PARAM int argc, char **argv, char **envp) {
     bss_probe = UINT64_C(0x5a5a);
     if (bss_probe != UINT64_C(0x5a5a))
         return 5;
-    /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，再向 fd 1 写 5 字节。
-     * 后者覆盖 tty 服务在固定两字节见证之后的持续流式转发。 */
-    if (write_fd(PROBE_CTX_ARG 1, "h") != 1 ||
-        write_fd(PROBE_CTX_ARG 2, "i") != 1 ||
-        write_fd(PROBE_CTX_ARG 1, "\nxyz\n") != 5)
+
+#ifndef PRIMA_HOST
+    /* T-MUSL-02：设置本任务 FS base；GET_FS 与 `%fs:0` 必须立即读回同一值。 */
+    fs_probe = UINT64_C(0x4d325f52505f5346);
+    if (arch_prctl(PRIMA_ARCH_SET_FS, (unsigned long)&fs_probe) != 0)
+        return 6;
+    unsigned long got = 0;
+    if (arch_prctl(PRIMA_ARCH_GET_FS, (unsigned long)&got) != 0 ||
+        got != (unsigned long)&fs_probe)
+        return 6;
+    if (read_fs_zero() != fs_probe)
+        return 6;
+#endif
+
+    /* 同源差分：fd 1 写 'h'、fd 2 写 'i'，再用两个 iovec 写 5 字节。
+     * 后者证明 stdio 实际依赖的 writev 路径与 write 走同一条字节流。 */
+    if (probe_write_fd(1, "h") != 1 || probe_write_fd(2, "i") != 1)
         return 4;
-    return 37;
+
+#ifndef PRIMA_HOST
+    /* write 内部逐字节 yield 过；恢复后 FS base 不得被其他任务串改。 */
+    if (read_fs_zero() != fs_probe)
+        return 6;
+#endif
+
+    {
+        struct iovec iov[2] = {{(void *)"\nxy", 3}, {(void *)"z\n", 2}};
+        if (probe_raw3(PRIMA_LINUX_SYS_writev, 1, (long)iov, 2) != 5)
+            return 4;
+
+        /* 非法 fd：write/writev 在适配层前置拒绝，不产生任何消息。 */
+        if (probe_raw3(PRIMA_LINUX_SYS_write, 99, (long)"x", 1) !=
+            -PRIMA_ERRNO_EBADF)
+            return 7;
+        if (probe_raw3(PRIMA_LINUX_SYS_writev, 99, (long)iov, 2) !=
+            -PRIMA_ERRNO_EBADF)
+            return 7;
+        if (probe_raw3(PRIMA_LINUX_SYS_close, 99, 0, 0) != -PRIMA_ERRNO_EBADF)
+            return 7;
+#ifndef PRIMA_HOST
+        /* 坏缓冲区：适配层在用户态读指针前先拒绝 NULL，返回原始 -EFAULT。
+         * Linux 参考路径不跑这一项：当前宿主内核对 `write(1, ptr=1, 1)` 的返回
+         * 与环境相关，不能作为稳定的差分基线。 */
+        if (probe_raw3(PRIMA_LINUX_SYS_write, 1, 0, 1) != -PRIMA_ERRNO_EFAULT)
+            return 7;
+#endif
+        /* fd 1/2 的 close 成功；其他 fd 已在上面拒绝。 */
+        if (probe_raw3(PRIMA_LINUX_SYS_close, 1, 0, 0) != 0)
+            return 7;
+        /* ioctl 本阶段不实现：只断言失败（Linux 为 -ENOTTY，Prima 为 -ENOSYS）。 */
+        if (probe_raw3(PRIMA_LINUX_SYS_ioctl, 1, 0, 0) >= 0)
+            return 7;
+        /* 未知号必须确定性地失败，且不得把 Linux 号泄漏给内核。4–6 参数路径
+         * 另测：musl 的取消点经 `__syscall6` 进入适配层，不能少传参数。 */
+        if (probe_raw3(999, 0, 0, 0) != -PRIMA_ERRNO_ENOSYS)
+            return 7;
+        if (probe_raw4(999, 0, 0, 0, 0) != -PRIMA_ERRNO_ENOSYS)
+            return 7;
+        if (probe_raw5(999, 0, 0, 0, 0, 0) != -PRIMA_ERRNO_ENOSYS)
+            return 7;
+        if (probe_raw6(999, 0, 0, 0, 0, 0, 0) != -PRIMA_ERRNO_ENOSYS)
+            return 7;
+        if (probe_raw1(PRIMA_LINUX_SYS_set_tid_address, (long)&tid_sink) <= 0)
+            return 7;
+    }
+
+#ifndef PRIMA_HOST
+    /* 无授权：代码段 cap 只有 R 权限，不能用于 TaskSend，内核必须先拒绝。 */
+    if (prima_native_syscall3(PRIMA_SYS_SEND,
+                              (long)prima_ctx.manager_id,
+                              (long)prima_ctx.code_cap, 0) !=
+        -PRIMA_ERRNO_EACCES)
+        return 8;
+#endif
+
+    /* Linux `exit`(60) 与 `exit_group`(231) 都是终止路径；用 60 退出并要求它不返回。
+     * Linux 参考侧同样走 syscall(60)，因此两端退出码仍是 37。 */
+    (void)probe_raw1(PRIMA_LINUX_SYS_exit, 37);
+    return 7;
 }
 
 #ifndef PRIMA_HOST
 /* Prima 路径 `_exit(status)`：上报 main 返回码后自毁；失败则永阻塞，使 QEMU 见证失败。 */
-__attribute__((noreturn)) static void prima_exit(const probe_ctx *ctx,
-                                                 uint64_t self, int status) {
-    uint64_t id = PRIMA_CALL3(SYS_TASK_ID, 0, 0, 0);
-    uint64_t payload =
-        PROBE_TAG | ((uint64_t)(uint8_t)status << 16) | (id & 0xff);
-    /* 此刻管理器阻塞在 recv，退出状态走 pending 直投；随即自毁不会丢掉它。 */
-    if (PRIMA_CALL3(SYS_SEND, ctx->peer, ctx->send_cap, payload) == 0)
-        PRIMA_CALL3(SYS_TASK_DESTROY, self, 0, 0);
-    uint64_t sink[3];
-    for (;;)
-        (void)PRIMA_CALL3(SYS_RECV, (uint64_t)sink, 0, 0);
-}
-
-/* Prima 的汇编入口只存在于裸机目标；Linux 参考路径由宿主 libc 调用 main 并退出。 */
 __attribute__((noreturn)) void stage5_entry(uint64_t self, uint64_t send_cap,
                                             uint64_t code_cap, uint64_t name,
                                             uint64_t manager_id,
                                             const uint64_t *stack) {
+    (void)self;
+    (void)send_cap;
     (void)code_cap;
     (void)name;
+    (void)manager_id;
     uint64_t received[3];
     if (((uint64_t)stack & 15) != 0 || stack[0] != 2 ||
         stack[1] != (uint64_t)stack + 0x80 ||
@@ -156,19 +219,18 @@ __attribute__((noreturn)) void stage5_entry(uint64_t self, uint64_t send_cap,
         !same((const char *)stack[2], "stack-ready") ||
         !same((const char *)stack[4], "PRIMA_ABI=1"))
         goto failed;
-    {
-        const probe_ctx ctx = {manager_id, send_cap};
-        if (PRIMA_CALL3(SYS_ABI_CHECK, 1, 0, 0) != ABI_VERSION ||
-            PRIMA_CALL3(SYS_ABI_CHECK, 2, 0, 0) != ERR_INVALID ||
-            PRIMA_CALL3(SYS_ABI_CHECK, 1, 1, 0) != ERR_INVALID ||
-            PRIMA_CALL3(SYS_ABI_CHECK, 1, 0, 1) != ERR_INVALID)
-            goto failed;
-        prima_exit(&ctx, self,
-                   main(&ctx, (int)stack[0], (char **)&stack[1],
-                        (char **)&stack[4]));
-    }
+    if (prima_native_syscall3(PRIMA_SYS_ABI_CHECK, 1, 0, 0) !=
+            UINT64_C(0x0000000100000000) ||
+        prima_native_syscall3(PRIMA_SYS_ABI_CHECK, 2, 0, 0) !=
+            -PRIMA_ERRNO_EINVAL ||
+        prima_native_syscall3(PRIMA_SYS_ABI_CHECK, 1, 1, 0) !=
+            -PRIMA_ERRNO_EINVAL ||
+        prima_native_syscall3(PRIMA_SYS_ABI_CHECK, 1, 0, 1) !=
+            -PRIMA_ERRNO_EINVAL)
+        goto failed;
+    _exit(main((int)stack[0], (char **)&stack[1], (char **)&stack[4]));
 failed:
     for (;;)
-        (void)PRIMA_CALL3(SYS_RECV, (uint64_t)received, 0, 0);
+        (void)prima_native_syscall3(PRIMA_SYS_RECV, (long)received, 0, 0);
 }
 #endif

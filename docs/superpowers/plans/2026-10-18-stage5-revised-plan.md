@@ -31,7 +31,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 | F 网络与库栈 | 冻结“基础网络子集”的地址族、协议和功能测试，建设用户态网络服务/传输；按 profile 所需移植 libc，补 Rust `core/std` 的实际支持矩阵。 | 网络 API 不可用时明确 unsupported；S5-D3/D6 只能按实际程序与测试勾选。自研 C 冒烟仅是中间证据，不能替代开源程序。 |
 | G 出口 | 在固定编译器/sysroot、Linux 参考环境与 Prima QEMU 上重跑完整 profile、差分矩阵和选定开源程序；记录 API 状态、偏差、版本、产物哈希。 | S5-X1 每项映射和重复测试；S5-X2 每项状态；S5-X3 开源程序源码重编译与冻结功能集 PASS。余项未通过则阶段继续进行中。 |
 
-片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；按 `PT_LOAD` 权限的私有写段/BSS 与 W^X 已由[装载报告](../reports/2026-10-18-stage5-ptload-wx.md)见证；musl 的 M0 依赖盘点已完成（见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)）。通用 fd 表、完整 auxv/任意 argv、真实进程退出与 musl 移植仍未完成。
+片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；按 `PT_LOAD` 权限的私有写段/BSS 与 W^X 已由[装载报告](../reports/2026-10-18-stage5-ptload-wx.md)见证；musl 的 M0 依赖盘点已完成（见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)）；M2 首个系统边界切片已完成（追加 `SYS_TASK_SET_FS_BASE=38`、C 适配层与同源探针，见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)）。通用 fd 表、完整 auxv/任意 argv、真实进程退出与 musl 移植仍未完成。
 
 片 C 是首个最小纵向证明，D–G 才构成完整阶段交付。任何新增内核机制先对照 COSIR 与代码现状；语义变化按跟踪规则先改规范，再改实现与证据。
 
@@ -41,7 +41,7 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 
 每行至少包含 `API | Linux 参考语义 | Prima 后端/权限 | 状态 | 已知偏差 | 正反测试 ID | 证据命令`。只有真实实现和重复测试后才能从 planned 改为 supported；partial 必须列出保留的边界。差分既比较成功结果，也比较失败码、数据、顺序和资源回收；现有 `cargo xtask compat` 只是 COW 单场景先例。
 
-musl 的依赖盘点、静态链接闭环和逐步验收见 [musl 移植计划](2026-10-18-musl-port-plan.md)。
+musl 的依赖盘点、静态链接闭环和逐步验收见 [musl 移植计划](2026-10-18-musl-port-plan.md)。M2 已将 `write`/`writev`/`close(1/2)`/`ioctl`/`set_tid_address`/`arch_prctl`/`exit(60)`/`exit_group` 接入适配层，并透传 `__syscall4..6` 全部参数（取消点适配层路径就绪，musl 侧替换属 M3）；`read` 与通用 fd 表仍未实现，不得据此升级 profile 状态。
 
 ## 5. 暂缓裁决
 

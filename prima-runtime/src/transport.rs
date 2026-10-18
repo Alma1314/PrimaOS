@@ -88,6 +88,13 @@ impl<T: SyscallTransport> Runtime<T> {
         self.call_unit(syscall::YIELD, [0; 6])
     }
 
+    /// 设置当前 Task 的 `%fs` 基址（M2/T-MUSL-02）。
+    ///
+    /// 基址必须是用户态低半区规范地址；切换任务时调度器恢复各任务自己的值。
+    pub fn task_set_fs_base(&self, base: u64) -> Result<()> {
+        self.call_unit(syscall::TASK_SET_FS_BASE, [base, 0, 0, 0, 0, 0])
+    }
+
     /// 将不透明记录追加到已映射的共享页；计数最后写入，供读者判定完整前缀。
     pub fn trace_append_shared(&self, base: u64, words: [u64; 6]) -> Result<()> {
         let count = self.read_user_u64(base)? as usize;

@@ -31,6 +31,9 @@ static ROOTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 /// 每个 Task 的内核栈顶虚拟地址（0 = 未设置）。索引即 Task id。
 static KSTACK_TOPS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
+/// M2/T-MUSL-02：每个 Task 的 `%fs` 基址（0 = 无 TLS 上下文）。索引即 Task id。
+static FS_BASES: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
+
 /// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
 static SCRATCH: StaticCell<SretFrame> = StaticCell::new(SretFrame::ZERO);
 
@@ -176,13 +179,45 @@ pub fn kstack_top(task_id: u32) -> Option<u64> {
     None
 }
 
+/// M2/T-MUSL-02：记录某 Task 的 `%fs` 基址。
+///
+/// 调用方必须先校验地址为低半区规范地址（[`crate::syscall::validate_fs_base`]）；本函数
+/// 不做校验，因为任务回收等内部路径需要把任意已保存值清零。
+pub fn set_fs_base(task_id: u32, base: u64) {
+    if (task_id as usize) < MAX_TASKS {
+        FS_BASES.with_mut(|bases| bases[task_id as usize] = base);
+    }
+}
+
+/// 读取某 Task 的 `%fs` 基址；0 表示没有 TLS 上下文。
+pub fn fs_base(task_id: u32) -> Option<u64> {
+    if (task_id as usize) < MAX_TASKS {
+        let value = FS_BASES.with(|bases| bases[task_id as usize]);
+        if value != 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// 把 `task_id` 的 FS 选择子与基址装入硬件。
+///
+/// 顺序固定：先装用户数据选择子（长模式下会把 FS.base 归零），再写 `IA32_FS_BASE`。
+/// 无 TLS 的任务写入 0，保证任务之间不继承对方的基址。
+fn activate_fs(task_id: u32) {
+    let base = FS_BASES.with(|bases| bases.get(task_id as usize).copied().unwrap_or(0));
+    prima_ostd::arch::load_fs_selector(crate::gdt::USER_DS);
+    crate::msr::wrmsr(crate::msr::IA32_FS_BASE, base);
+}
+
 /// S2-D4：`task_destroy` 拆除目标后清除其调度登记，使该 id 不再可被恢复。
 ///
-/// 清理 root、内核栈、保存帧及阻塞接收缓冲指针。
+/// 清理 root、内核栈、FS base、保存帧及阻塞接收缓冲指针。
 pub fn clear_task(task_id: u32) {
     if (task_id as usize) < MAX_TASKS {
         ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
+        FS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
         clear_recv_out(task_id);
     }
@@ -287,6 +322,8 @@ pub fn resume(task_id: u32) -> ! {
     if let Some(root) = root(task_id) {
         crate::cpu::write_cr3(root);
     }
+    // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
+    activate_fs(task_id);
     // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
     flush_deferred_frames();
     SCRATCH.with_mut(|scratch| {
@@ -350,6 +387,29 @@ mod tests {
 
         // 越界 id 安全忽略。
         clear_task(MAX_TASKS as u32);
+    }
+
+    /// M2/T-MUSL-02：FS base 按 Task id 独立保存；`task_destroy` 清零，避免 id 复用后
+    /// 继承上一个任务的 TLS 上下文。
+    #[test]
+    fn fs_bases_are_per_task_and_cleared_with_task() {
+        init();
+        set_fs_base(2, 0x0000_0A00_0000_2000);
+        set_fs_base(3, 0x0000_0A00_0000_3000);
+        assert_eq!(fs_base(2), Some(0x0000_0A00_0000_2000));
+        assert_eq!(fs_base(3), Some(0x0000_0A00_0000_3000));
+        // 0 表示无 TLS 上下文，不返回 Some(0)。
+        set_fs_base(3, 0);
+        assert_eq!(fs_base(3), None);
+        assert_eq!(fs_base(2), Some(0x0000_0A00_0000_2000));
+
+        clear_task(2);
+        assert_eq!(fs_base(2), None);
+        // 越界 id 安全忽略。
+        set_fs_base(MAX_TASKS as u32, 0xDEAD);
+        assert_eq!(fs_base(MAX_TASKS as u32), None);
+        // 清理测试留下的状态，避免影响其他用例（全局静态在测试间共享）。
+        clear_task(3);
     }
 
     /// 切片 V：页表帧的归还被推迟到 `flush_deferred_frames`——入队期间 `count > 0`

@@ -2,7 +2,7 @@
 
 **日期**：2026-10-18
 
-**性质**：实施计划；M0 依赖盘点已完成（2026-10-18，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)），尚未移植 musl；BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+**性质**：实施计划；M0 依赖盘点与 M2 系统边界已完成（2026-10-18，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)与[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)），尚未移植 musl；BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -31,7 +31,7 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 |---|---|---|
 | M0：依赖盘点 | **已完成（2026-10-18）**：锁定 musl 1.2.5（commit `0784374d…`），按首版 profile 生成“公开符号 → 内部函数 → syscall/服务 → Prima 机制”清单；标明 Linux 专有 `ioctl`、TLS、futex、loader 等假设。结论见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)。 | [compat-state](../compat/compat-state.md) 与[符号追溯表](../compat/symbol-trace.md)覆盖首版闭包；未决依赖均有归属与测试 ID；无“链接成功即支持”项。发现 P5-LIB-01 符号清单缺口，待 profile v1。 |
 | M1：C 程序启动 | 制定 x86_64 C 入口契约：ELF `PT_LOAD` 权限、BSS 清零、栈对齐、`argc/argv/envp/auxv`、初始 fd/Capability、退出状态。先用无 libc 的 C/汇编探针跑通装载、`_start`、用户栈和 `_exit`。解决 BLK-004 后加入现有 boot image/manifest 与 QEMU 启动路径。 | ring3 QEMU 记录入口寄存器、栈布局、读写段权限、退出状态；错 ELF、坏指针、容量耗尽确定失败；旧阶段 1–4 事件不回归。 |
-| M2：系统边界 | 建一个供 C 使用的 Prima syscall/服务适配层：最多六参数、原始负 errno、取消点边界、fd 到 Capability 的用户态映射、字节流 tty 服务。按冻结 profile 实现 `write`/`read`/`close`/退出等首批调用，错误集中转译并保留原始码供调试。不要把内核 Capability token 当成普通有符号返回值解码；`prima-runtime::decode` 的高位 token 特例需单独核对。 | 裸 C 探针验证参数寄存器、返回值、非法 fd、无授权、坏缓冲区和短写；同源 Linux/Prima 结果矩阵；无内核 POSIX 对象或 Linux syscall 号泄漏。 |
+| M2：系统边界 | **首个纵向切片已完成（2026-10-18）**：追加 `SYS_TASK_SET_FS_BASE=38` + per-task FS base；C 适配层 `__syscall0..6`（Linux 号只在适配层翻译、原始负 errno）实现 `write`/`writev`/`close(1/2)`/`ioctl`/`set_tid_address`/`arch_prctl`/退出；`read` 与通用 fd 表明确未实现；Prima crt 骨架保存 `prima_ctx`。边界收尾已补齐 `exit(60)` 与 `__syscall4..6` 全参数透传（取消点的适配层路径就绪，musl 侧替换属 M3）；通用 fd→Capability 映射仍待后续切片。见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)。 | 裸 C 探针验证写入/短写（writev）、非法 fd、无授权、NULL 缓冲区、未知号与 FS base 往返；同源 Linux/Prima 结果矩阵；无内核 POSIX 对象或 Linux syscall 号泄漏；静态 PIE 在构建期校验。 |
 | M3：静态 musl 基座 | 以隔离的 sysroot 构建 musl `libc.a` 与所需 crt 对象；用最小可重放补丁接入 M2，逐项处理启动初始化、初始线程 TLS/`errno`、内部锁、`malloc` 所需内存服务和 `stdio`。不得用假的 `pthread_create` 成功绕过真实线程需求；不支持的路径应明确失败并在 profile 标记。 | 静态 C 探针覆盖 `main` 返回/`exit`、`errno`、`printf`/`fflush`、分配/释放、环境变量及失败路径；`readelf`/`nm` 检查 ELF、未解析符号和宿主 glibc 污染；补丁可从锁定快照重放。 |
 | M4：文件与路径 | 在用户态建立 fd 生命周期和 `openat/read/write/close/lseek` 的冻结子集，接入真实字节流存储/目录服务。Namespace 只作授权入口，不能当作 VFS；`dup`、`CLOEXEC`、共享 offset 等须按选定 profile 明确支持或保留。 | 每个支持 API 的 Linux/Prima 正反例差分：内容、偏移、错误码、句柄失效、资源回收；失败时不留下 Cap 或服务端状态泄漏。 |
 | M5：开源程序与扩展 | 以 M0 选定的开源程序做首次源码重编译和冻结功能测试。随后按 profile 的实际需求扩展时间单位、`mmap/mprotect`、TLS/线程、信号、进程、网络；每一组先补机制/服务契约，再开启对应 musl 路径。 | 构建命令、源码/工具链/sysroot 哈希、QEMU 结果和 Linux 参考结果可重复；API 行逐项标 supported/partial/unsupported，偏差有测试与解释。 |
@@ -44,6 +44,14 @@ M1–M3 的最小闭环优先保证静态 C 程序可靠启动与退出。M4/M5 
 的符号清单需 v1 补齐（`putc`/`fprintf`/`vfprintf`/`perror`/`strlen`/`strncmp`/`exit`）；
 E1–E6 另需 argv 注入。echo 无 TLS，预计使用 `builtin_tls`，不依赖 `mmap`。详见
 [盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)。
+
+**M2 切片（2026-10-18）**：per-task FS base 与追加号 `38` 已落地；C 适配层提供
+`write`/`writev`/`close(1/2)`/`ioctl`/`set_tid_address`/`arch_prctl`/`exit(60)`/`exit_group`，
+Linux 号只在适配层翻译并保持原始负 errno；`__syscall4..6` 全参数透传，取消点的适配层路径
+就绪（musl 侧替换属 M3）；`read`/通用 fd 表仍未实现。C 探针在 Linux 与 QEMU
+均通过同一 `main`（退出 37），静态 PIE 由 `xtask` 在构建期校验。内核未启用 SSE，Prima C
+构建固定 `-mgeneral-regs-only`；M3 需裁决是否补 FPU 契约。详见
+[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)。
 
 ## 构建与验证
 

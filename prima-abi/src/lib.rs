@@ -175,6 +175,10 @@ pub mod syscall {
     pub const SYS_DEV_DESTROY: u64 = 36;
     /// Stage 5: check the native Prima syscall ABI version before using it.
     pub const SYS_ABI_CHECK: u64 = 37;
+    /// Stage 5 / M2：设置当前 Task 的 FS base（`%fs` 基址，用于 musl TLS/errno）。
+    ///
+    /// 追加号；只影响调用者自己的保存帧，切换任务时由调度器恢复各自的基址。
+    pub const SYS_TASK_SET_FS_BASE: u64 = 38;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

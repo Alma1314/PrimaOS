@@ -14,6 +14,8 @@ pub const IA32_STAR: u32 = 0xC000_0081;
 pub const IA32_LSTAR: u32 = 0xC000_0082;
 /// IA32_FMASK：`syscall` 进入时在 RFLAGS 中屏蔽的位。
 pub const IA32_FMASK: u32 = 0xC000_0084;
+/// IA32_FS_BASE：`%fs` 段基址（M2/T-MUSL-02）。
+pub const IA32_FS_BASE: u32 = 0xC000_0100;
 
 /// EFER.SCE（System Call Extensions，bit 0）：置位后 `syscall`/`sysret` 可用。
 pub const EFER_SCE: u64 = 1;

@@ -185,6 +185,19 @@ pub fn reload_data_segments(selector: u16) {
     }
 }
 
+/// 装载用户数据段到 `fs`（M2/T-MUSL-02）。
+///
+/// 契约：`selector` 必须是当前 GDT 中 DPL3 的数据段选择子（本内核为 `USER_DS = 0x2b`）。
+/// 在长模式下该指令把 FS.base 置为描述符基址（本内核为 0）；随后必须用
+/// `wrmsr(IA32_FS_BASE, base)` 设置实际基址——两者顺序不可颠倒。
+#[inline]
+pub fn load_fs_selector(selector: u16) {
+    // SAFETY: 见函数契约——非法选择子只会 #GP，不构成 UB；该指令读取 GDT。
+    unsafe {
+        asm!("mov fs, cx", in("cx") selector, options(nostack, preserves_flags));
+    }
+}
+
 /// 关中断（`cli`）。
 #[inline]
 pub fn cli() {
