@@ -17,7 +17,8 @@ use prima_runtime::{
     Capability, Rights, Runtime, TaskId,
     protocol::{
         IOPORT_BASE, IOPORT_MAGIC, IOPORT_OUT_OF_RANGE, IOPORT_SCRATCH, SERVICE_DEV_CAP_TAG,
-        STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_WRITE_TAG,
+        STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG,
+        STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG,
     },
 };
 
@@ -71,6 +72,19 @@ pub extern "C" fn _start(
                     let _ = runtime.cap_drop(cap);
                 }
             }
+        } else if tag == STAGE5_ECHO_WRITE_TAG >> 48 {
+            // M5：echo 的字节只落到串口，不做探针专用的自检/见证行。
+            let Some(cap) = dev else {
+                continue;
+            };
+            let fd = ((message.payload >> 16) & 0xff) as u8;
+            let byte = ((message.payload >> 24) & 0xff) as u8;
+            if (fd == 1 || fd == 2) && runtime.dev_ioport_out(cap, IOPORT_BASE, byte).is_err() {
+                continue;
+            }
+        } else if tag == STAGE5_TTY_SYNC_TAG >> 48 {
+            // 管理器在 echo 退出后发送；此前的字节消息已按序处理完。
+            let _ = runtime.send(peer, send_cap, STAGE5_TTY_SYNC_ACK_TAG, &[]);
         } else if tag == STAGE5_TTY_WRITE_TAG >> 48 {
             let Some(cap) = dev else {
                 continue;

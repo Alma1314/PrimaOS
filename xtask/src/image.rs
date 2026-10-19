@@ -51,7 +51,56 @@ pub(crate) struct Images {
     pub(crate) bios: PathBuf,
 }
 
+/// M5 冻结用例（profile v0 §5）：argv 不含程序名以外的解释，stdout 逐字节冻结。
+pub(crate) struct EchoCase {
+    pub(crate) name: &'static str,
+    pub(crate) args: &'static [&'static str],
+    pub(crate) stdout: &'static [u8],
+}
+
+pub(crate) const ECHO_CASES: [EchoCase; 6] = [
+    EchoCase {
+        name: "E1",
+        args: &["echo"],
+        stdout: b"\n",
+    },
+    EchoCase {
+        name: "E2",
+        args: &["echo", "-n"],
+        stdout: b"",
+    },
+    EchoCase {
+        name: "E3",
+        args: &["echo", "hello"],
+        stdout: b"hello\n",
+    },
+    EchoCase {
+        name: "E4",
+        args: &["echo", "-n", "hello"],
+        stdout: b"hello",
+    },
+    EchoCase {
+        name: "E5",
+        args: &["echo", "a", "b", "c"],
+        stdout: b"a b c\n",
+    },
+    EchoCase {
+        name: "E6",
+        args: &["echo", "--", "-n"],
+        stdout: b"-- -n\n",
+    },
+];
+
 pub(crate) fn build_images() -> Result<Images, String> {
+    build_images_with_echo(None)
+}
+
+/// M5：用 sbase `echo` 替换 C 探针映像，并打包本次用例的 argv。
+pub(crate) fn build_images_for_echo(args: &[&str]) -> Result<Images, String> {
+    build_images_with_echo(Some(args))
+}
+
+fn build_images_with_echo(echo_args: Option<&[&str]>) -> Result<Images, String> {
     let kernel = PathBuf::from(KERNEL_BINARY);
     ensure_non_empty(&kernel, "kernel ELF")?;
 
@@ -64,7 +113,7 @@ pub(crate) fn build_images() -> Result<Images, String> {
         .map_err(|error| format!("failed to create {}: {error}", output.display()))?;
 
     let ramdisk = output.join(RAMDISK_IMAGE_NAME);
-    build_ramdisk(&ramdisk)?;
+    build_ramdisk(&ramdisk, echo_args)?;
 
     let bios = output.join(BIOS_IMAGE_NAME);
     let uefi = output.join(UEFI_IMAGE_NAME);
@@ -90,7 +139,7 @@ pub(crate) fn build_images() -> Result<Images, String> {
 ///
 /// 格式只含 magic/version/count + `(offset, len)` 表；内核不解释块名，块里的 ELF
 /// program header 由内核通用解析器读取。
-fn build_ramdisk(path: &Path) -> Result<(), String> {
+fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> {
     let mut manifest = Vec::with_capacity(SERVICE_IMAGES.len() + 1);
     manifest.push((prima_abi::boot_image::KIND_INIT, Vec::new()));
     for (binary, kind) in SERVICE_IMAGES {
@@ -120,37 +169,69 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     }
     let musl_prefix = workspace.join("target").join("musl-prefix");
 
-    let source = stage5_probe_source();
-    let crt = source.with_file_name("prima_crt.c");
-    let start = source.with_file_name("prima_crt_start.S");
-    let adapter = source.with_file_name("prima_syscall.c");
-    let binary = path.with_file_name("stage5-probe.elf");
-    let compiled = Command::new("clang")
-        .args([
-            "-target",
-            "x86_64-unknown-none",
-            "-O2",
-            "-std=c11",
-            "-Werror",
-            "-ffreestanding",
-            "-fno-stack-protector",
-            // musl 构建：跳过会覆盖 musl TLS 基址的 M2 FS 实验。
-            "-DPRIMA_WITH_LIBC",
-            // 探针/适配层 TU 仍只用通用寄存器：SSE 路径由 libc.a 提供，这里保持
-            // M2 的 XMM 往返断言不被编译器自身的 XMM 使用干扰。
-            "-mgeneral-regs-only",
-            "-fPIC",
-            "-nostdlib",
-            "-fuse-ld=lld",
-            "-static-pie",
-            "-Wl,-e,_start",
-            "-Wl,--build-id=none",
-            "-Wl,--gc-sections",
-            "-nostdinc",
-        ])
-        .arg("-isystem")
-        .arg(musl_prefix.join("include"))
-        .arg(&source)
+    let c_dir = workspace.join("prima-user").join("c");
+    let crt = c_dir.join("prima_crt.c");
+    let start = c_dir.join("prima_crt_start.S");
+    let adapter = c_dir.join("prima_syscall.c");
+    let (binary, sources, label) = match echo_args {
+        Some(_) => {
+            let sbase = workspace.join("target").join("sbase");
+            ensure_sbase(&sbase)?;
+            (
+                path.with_file_name("echo.elf"),
+                vec![
+                    sbase.join("echo.c"),
+                    sbase.join("libutil").join("putword.c"),
+                    sbase.join("libutil").join("fshut.c"),
+                    sbase.join("libutil").join("eprintf.c"),
+                    c_dir.join("echo_harness.c"),
+                ],
+                "sbase echo",
+            )
+        }
+        None => (
+            path.with_file_name("stage5-probe.elf"),
+            vec![stage5_probe_source()],
+            "stage5 C probe",
+        ),
+    };
+    let mut clang = Command::new("clang");
+    clang.args([
+        "-target",
+        "x86_64-unknown-none",
+        "-O2",
+        "-std=c11",
+        "-Werror",
+        "-ffreestanding",
+        "-fno-stack-protector",
+        // musl 构建：跳过会覆盖 musl TLS 基址的 M2 FS 实验。
+        "-DPRIMA_WITH_LIBC",
+        // 探针/适配层 TU 仍只用通用寄存器：SSE 路径由 libc.a 提供，这里保持
+        // M2 的 XMM 往返断言不被编译器自身的 XMM 使用干扰。
+        "-mgeneral-regs-only",
+        "-fPIC",
+        "-nostdlib",
+        "-fuse-ld=lld",
+        "-static-pie",
+        "-Wl,-e,_start",
+        "-Wl,--build-id=none",
+        "-Wl,--gc-sections",
+        "-nostdinc",
+    ]);
+    clang.arg("-isystem").arg(musl_prefix.join("include"));
+    if echo_args.is_some() {
+        clang
+            .arg("-DPRIMA_ECHO_HARNESS")
+            .arg("-I")
+            .arg(workspace.join("target").join("sbase"))
+            // `echo_harness.c` 引用 c/ 下的 `prima_abi.h`（同目录已可找到，显式补一次）。
+            .arg("-I")
+            .arg(&c_dir);
+    }
+    for source in &sources {
+        clang.arg(source);
+    }
+    clang
         .arg(&crt)
         .arg(&start)
         .arg(&adapter)
@@ -159,21 +240,27 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
         .arg("-lc")
         .arg("-lgcc")
         .arg("-o")
-        .arg(&binary)
+        .arg(&binary);
+    let compiled = clang
         .output()
-        .map_err(|error| format!("failed to run clang for {}: {error}", source.display()))?;
+        .map_err(|error| format!("failed to run clang for {label}: {error}"))?;
     if !compiled.status.success() {
         return Err(format!(
-            "failed to build {}: {}",
-            source.display(),
+            "failed to build {label}: {}",
             String::from_utf8_lossy(&compiled.stderr)
         ));
     }
-    ensure_non_empty(&binary, "stage5 C probe ELF")?;
-    let probe = fs::read(&binary)
+    ensure_non_empty(&binary, "stage5 C ELF")?;
+    let c_image = fs::read(&binary)
         .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
-    validate_static_pie(&probe)?;
-    manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, probe));
+    validate_static_pie(&c_image)?;
+    manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
+    if let Some(args) = echo_args {
+        manifest.push((
+            prima_runtime::protocol::SERVICE_IMAGE_KIND_ECHO_ARGS,
+            pack_echo_args(args)?,
+        ));
+    }
 
     // EXO-2D：manifest 条目带 opaque `kind`。内核只按 kind 找 init，其余条目按
     // manifest 顺序做通用页打包/目录；服务语义只在用户态解释。
@@ -225,6 +312,71 @@ fn build_ramdisk(path: &Path) -> Result<(), String> {
     fs::write(path, &ramdisk)
         .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
     Ok(())
+}
+
+/// sbase 快照只落在 git-ignored 的 `target/`；按 profile v0 冻结的 commit 校验身份。
+fn ensure_sbase(sbase: &Path) -> Result<(), String> {
+    if !sbase.join("echo.c").is_file() {
+        return Err(format!(
+            "sbase snapshot missing: {} (restore commit c546c3a5724c81cee9a11d816a38ccdf17472129)",
+            sbase.display()
+        ));
+    }
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(sbase)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|error| format!("failed to verify sbase snapshot: {error}"))?;
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || commit != "c546c3a5724c81cee9a11d816a38ccdf17472129" {
+        return Err(format!(
+            "sbase snapshot commit mismatch: expected c546c3a5724c81cee9a11d816a38ccdf17472129, got {commit:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// argv 参数块：`[count][len, bytes]...`。内核把每个 manifest 条目都当 ELF 解析，
+/// 故参数块放进一个单页 ET_DYN（一个覆盖全页的 `PT_LOAD`）的固定偏移之后。
+fn pack_echo_args(args: &[&str]) -> Result<Vec<u8>, String> {
+    if args.is_empty() || args.len() > 8 {
+        return Err(format!("echo argv count {} is outside 1..=8", args.len()));
+    }
+    let mut payload = Vec::new();
+    payload.push(args.len() as u8);
+    for arg in args {
+        if arg.len() > 127 {
+            return Err(format!("echo argument too long: {} bytes", arg.len()));
+        }
+        payload.push(arg.len() as u8);
+        payload.extend_from_slice(arg.as_bytes());
+    }
+    let offset = prima_runtime::protocol::SERVICE_ECHO_ARGS_OFFSET as usize;
+    let total = offset + payload.len();
+    if total > 0x1000 {
+        return Err("echo argv block exceeds one page".to_owned());
+    }
+    let mut image = vec![0u8; total];
+    image[0..4].copy_from_slice(b"\x7fELF");
+    image[4] = 2; // ELF64
+    image[5] = 1; // little-endian
+    image[6] = 1;
+    image[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
+    image[18..20].copy_from_slice(&62u16.to_le_bytes()); // x86_64
+    image[20..24].copy_from_slice(&1u32.to_le_bytes());
+    image[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+    image[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+    image[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+    image[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+    let ph = 64;
+    image[ph..ph + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    image[ph + 4..ph + 8].copy_from_slice(&5u32.to_le_bytes()); // R|X
+    image[ph + 32..ph + 40].copy_from_slice(&(total as u64).to_le_bytes()); // p_filesz
+    image[ph + 40..ph + 48].copy_from_slice(&(total as u64).to_le_bytes()); // p_memsz
+    image[ph + 48..ph + 56].copy_from_slice(&0x1000u64.to_le_bytes()); // p_align
+    image[offset..].copy_from_slice(&payload);
+    Ok(image)
 }
 
 fn stage5_probe_source() -> PathBuf {
@@ -297,6 +449,54 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
     println!(
         "PASS linux stage5 C main exits 37/2/3, streams h/i plus xyz, passes file API and stdio probes"
     );
+    Ok(())
+}
+
+/// M5：用冻结的编译命令在 Linux 宿主重建 sbase `echo`，并在同一份 E1–E6 输入上取得
+/// stdout/退出码基线。Prima 侧必须逐字节一致。
+pub(crate) fn check_stage5_linux_echo() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let sbase = workspace.join("target").join("sbase");
+    ensure_sbase(&sbase)?;
+    let binary = workspace.join("target/prima-os/echo-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c99"])
+        .arg(sbase.join("echo.c"))
+        .arg(sbase.join("libutil").join("putword.c"))
+        .arg(sbase.join("libutil").join("fshut.c"))
+        .arg(sbase.join("libutil").join("eprintf.c"))
+        .arg("-I")
+        .arg(&sbase)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for sbase echo: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux sbase echo: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    for case in &ECHO_CASES {
+        let output = Command::new(&binary)
+            .env_clear()
+            .args(&case.args[1..])
+            .output()
+            .map_err(|error| format!("failed to run Linux echo {}: {error}", case.name))?;
+        if output.status.code() != Some(0) || output.stdout != case.stdout {
+            return Err(format!(
+                "Linux echo {} mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+                case.name,
+                output.status.code(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(case.stdout)
+            ));
+        }
+    }
+    println!("PASS linux sbase echo E1-E6 stdout/exit references");
     Ok(())
 }
 

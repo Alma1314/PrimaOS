@@ -72,6 +72,29 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
+/// M5：`echo` 用例轮。除通用事件序列外，只校验 echo 证据——探针专用的
+/// `CIO|`/`TTYIN|`/`TTYOUT|` 与容量高水位不应出现。
+pub(crate) fn run_bios_test_echo(
+    image: &Path,
+    case: &crate::image::EchoCase,
+    expected_ipc: Option<(u64, u64, u64)>,
+) -> Result<(u64, u64, u64), String> {
+    let output = run_captured(image)?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    let ipc = protocol::validate_output_echo(&output.stdout, expected_ipc)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_user_fault_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_echo(&output.stdout, case.name, case.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    Ok(ipc)
+}
+
 /// 用固定 BIOS 参数捕获一次运行（切片 A/B 的既有路径）。
 fn run_captured(image: &Path) -> Result<CapturedOutput, String> {
     run_captured_with(qemu_args(image), TEST_TIMEOUT)

@@ -59,6 +59,11 @@ pub const SERVICE_IMAGE_KIND_SERVICEMGR: u64 = 0x100;
 pub const SERVICE_IMAGE_KIND_C_PROBE: u64 = 0x101;
 /// 阶段 5 片 C：用户态 tty 字节流服务在服务映像目录中的 opaque kind。
 pub const SERVICE_IMAGE_KIND_TTY: u64 = 0x102;
+/// M5：`echo` 的一次性 argv 参数块。格式 `[count][len, bytes]...`，由 xtask 按冻结用例生成。
+pub const SERVICE_IMAGE_KIND_ECHO_ARGS: u64 = 0x104;
+/// M5：argv 块在参数载体页内的偏移。内核要求每个 manifest 条目都是合法 ELF，
+/// 故参数块包在一个单页 `PT_LOAD` 的 ET_DYN 头之后；读方只看这个固定偏移。
+pub const SERVICE_ECHO_ARGS_OFFSET: u64 = 0x100;
 /// C 探针完成消息：低字节是 Task ID，次低字节是 C 见证值，bits 16..23 是 main 返回码。
 pub const STAGE5_C_PROBE_TAG: u64 = 0xc500_0000_0000_5a00;
 
@@ -69,6 +74,13 @@ pub const STAGE5_TTY_READY_TAG: u64 = 0xc600_0000_0000_0000;
 pub const STAGE5_TTY_WRITE_TAG: u64 = 0xc602_0000_0000_0000;
 /// 阶段 5 片 C：tty 服务完成收发与 ioport 正反例后的 ack tag（管理器据此收尾）。
 pub const STAGE5_TTY_ACK_TAG: u64 = 0xc603_0000_0000_0000;
+/// M5：`echo` 用例的字节流 tag。与探针的 `STAGE5_TTY_WRITE_TAG` 分开，tty 只为探针做
+/// `TTYIN|`/`TTYOUT|` 自检和两字节 ACK，避免诊断行混入 `echo` 的冻结 stdout。
+pub const STAGE5_ECHO_WRITE_TAG: u64 = 0xc606_0000_0000_0000;
+/// M5：管理器在 `echo` 退出后发给 tty 的**排空屏障**；tty 按序处理完此前所有字节后回 ACK。
+pub const STAGE5_TTY_SYNC_TAG: u64 = 0xc604_0000_0000_0000;
+/// M5：tty 对排空屏障的应答（管理器据此才输出 `ECHO|` 见证并收尾）。
+pub const STAGE5_TTY_SYNC_ACK_TAG: u64 = 0xc605_0000_0000_0000;
 
 /// SPEC-090：客户端在共享段内写入**请求服务名**的偏移（位于 20 B 头 + 24 B offer 之后）。
 /// 内核侧 init（服务管理器）从同一物理帧的映射读回该名字以解析端点。

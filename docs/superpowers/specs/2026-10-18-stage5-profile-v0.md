@@ -60,7 +60,7 @@
 | P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | 现有 `SYS_TIME_NOW` 为 PIT tick | planned | 时钟 id、单位、精度、超时与 `EINTR` 未冻结 | P5-TIME-01 |
 | P5-THREAD-01 | `pthread_create/join`、mutex/cond | POSIX 线程 | 无 Thread/TLS/WaitObject | unsupported | 阶段 5 不承诺；禁止用成功空实现占位 | P5-THREAD-01 |
 | P5-NET-01 | `socket/bind/sendto/recvfrom` | BSD socket | 无网络服务 | unsupported | 阶段 5 不承诺；loopback IPC 不算网络 | P5-NET-01 |
-| P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3/M4） | partial | **M4**：`printf`+`fflush` 经 `writev` 已验收；stdio 文件 API（`fopen`/`fread`/`fwrite`/`fclose`）未验收 | [musl 计划](../plans/2026-10-18-musl-port-plan.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
+| P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3/M4/M5） | supported | **M5**：上述冻结符号由 sbase `echo` E1–E6 双轮验收（含 `fclose(stdout)` 与 `exit`）；stdio **文件** API（`fopen`/`fread`/`fwrite`）仍不在本行 | [musl 计划](../plans/2026-10-18-musl-port-plan.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md) |
 
 ## 5. 目标程序冻结：sbase `echo`
 
@@ -72,8 +72,8 @@
 | 参与文件 | `echo.c` `117c10e0e5a5139a80490673a3f14dd1dfcc45856adb84a83b28e3b301f1b48c`；`libutil/putword.c` `5c1c875678f3367489cb9fcf5e76db51f51236710ae3bfcac245ff9640ecff5c`；`libutil/fshut.c` `a5ee307130cfbe8aaace3528f370ef42f0ef16b135e957084f3a5fa42b883773`；`libutil/eprintf.c` `9547578e4e4585bbc8429b580c2db409328214efd383c5be01b0bb9017f1bf1c`；`util.h` `341a70a1f9d449f28c4d65bb594898e2d6cf2eabc21da018abdf024b7f71e7d6`；`arg.h` `5f4ecca1bb057a6d6301aff8f2b403e723af5dc86a5e00e8c7e5c2f56cdb9c79`；`compat.h` `00fc3129294c2ddf3d39dee3b6a2f581d98b565f66250796deabf82d2fe78e07` |
 | 构建 | 阶段 5 用锁定 musl sysroot **静态链接**；不链接宿主 glibc；补丁须可从该 commit 重放 |
 | 依赖闭包 | `echo` 需要 `argc/argv`、`strcmp`、stdio（`fputs`/`fputc`/`putchar`/`fflush`/`fclose`/`ferror`）、`write(1)` 与退出状态；对应 P5-BOOT-01/P5-IO-01/P5-PROC-01/P5-LIB-01 |
-| 已知阻塞 | 可写 `.data`/`.bss` 的装载阻塞已解除：管理器为每个可写 `PT_LOAD` 建私有 `R|W` 段并清零 BSS，C 探针的静态变量已实测可写。剩余阻塞是 musl stdio（P5-LIB-01 仍为 `planned`）与完整 auxv/argv（P5-BOOT-01 仍为 `partial`）；`echo` 冻结用例与 S5-X3 仍不能声称通过 |
-| 锁定状态 | 目标已选定并锁定；S5-X3 **未完成**（尚未在 Prima 上重新编译运行） |
+| 已知阻塞 | 可写 `.data`/`.bss` 的装载阻塞已解除；M5 已用冻结源码重编译并双轮通过 E1–E6。剩余边界是完整 auxv/任意 argv（P5-BOOT-01 仍为 `partial`，当前 argv 上限 8 项/32 字节）与 stdio 文件 API |
+| 锁定状态 | 目标已选定并锁定；S5-X3 **证据已具备**（2026-10-19：E1–E6 双轮 QEMU PASS，见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)），待组织级复核后勾选 |
 
 ### 冻结用例（Linux 参考已用锁定源码实测）
 

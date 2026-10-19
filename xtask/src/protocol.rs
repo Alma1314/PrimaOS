@@ -281,7 +281,24 @@ const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
+    validate_output_impl(output, Some((45, 152, 160))).map(|_| ())
+}
+
+/// M5：echo 用例的 IPC 高水位依赖该程序实际的字节数，不是固定探针基线。
+/// 第一轮结构化校验并返回计数，第二轮用同一组计数做可重复性断言。
+pub(crate) fn validate_output_echo(
+    output: &str,
+    expected_ipc: Option<(u64, u64, u64)>,
+) -> Result<(u64, u64, u64), String> {
+    validate_output_impl(output, expected_ipc)
+}
+
+fn validate_output_impl(
+    output: &str,
+    expected_ipc: Option<(u64, u64, u64)>,
+) -> Result<(u64, u64, u64), String> {
     let mut events = Vec::new();
+    let mut ipc_counts = (0, 0, 0);
 
     for raw_line in output.split_inclusive('\n') {
         let Some(line) = raw_line.strip_suffix('\n') else {
@@ -470,7 +487,7 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
         .iter()
         .find(|event| event.kind == EventKind::IpcReady)
     {
-        validate_ipc_data(ipc.data.as_deref())?;
+        ipc_counts = validate_ipc_data(ipc.data.as_deref(), expected_ipc)?;
     }
 
     if let Some(task) = events
@@ -572,7 +589,7 @@ pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     {
         validate_timer_data(timer.data.as_deref())?;
     }
-    Ok(())
+    Ok(ipc_counts)
 }
 
 /// 共享 trace 的应用层判定；内核只负责透传字节。
@@ -650,6 +667,82 @@ pub(crate) fn validate_stage5_tty(output: &str) -> Result<(), String> {
             return Err(format!(
                 "stage5 tty raw byte {byte:?} rows are {}, expected exactly 1",
                 rows.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// M5：sbase `echo` 的冻结用例。管理器上报它从 C 任务逐字节转发的 stdout 长度/FNV-1a 值
+/// 与退出码；串口原始流还必须包含期望字节，且不得混入探针专用 `CIO|`/`TTYIN|`/`TTYOUT|`。
+pub(crate) fn validate_stage5_echo(
+    output: &str,
+    case: &str,
+    expected_stdout: &[u8],
+) -> Result<(), String> {
+    let records = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
+    let capacity: Vec<_> = records
+        .iter()
+        .filter(|record| record.id == prima_abi::trace::EVENT_STAGE5_CAPACITY)
+        .collect();
+    if capacity.len() != 1 || capacity[0].args != [17, 0x5a, 0, 1, 1] {
+        return Err(format!(
+            "{case} stage5 capacity trace mismatch: {capacity:?}"
+        ));
+    }
+    let lines: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("TASKCAP|"))
+        .collect();
+    if lines.len() != 1
+        || lines[0].trim_end_matches('\r')
+            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132"
+    {
+        return Err(format!("{case} kernel task state mismatch: {lines:?}"));
+    }
+    let capacity: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("CAPACITY|"))
+        .collect();
+    if capacity.len() != 1
+        || !capacity[0].contains("caps_limit=160")
+        || !capacity[0].contains("segment_limit=48")
+        || !capacity[0].contains("messages_limit=32")
+        || !capacity[0].contains("audit_limit=2048")
+    {
+        return Err(format!("{case} capacity high-water mismatch: {capacity:?}"));
+    }
+    let echo: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("ECHO|"))
+        .collect();
+    if echo.len() != 1 {
+        return Err(format!(
+            "{case} ECHO witness rows are {}, expected 1",
+            echo.len()
+        ));
+    }
+    let mut hash = 2_166_136_261u32;
+    for &byte in expected_stdout {
+        hash = prima_runtime::protocol::native_app_hash(hash, byte);
+    }
+    let expected = format!("ECHO|status=0;len={};hash={hash}", expected_stdout.len());
+    if echo[0].trim_end_matches('\r') != expected {
+        return Err(format!(
+            "{case} ECHO witness mismatch: expected {expected:?}, got {:?}",
+            echo[0]
+        ));
+    }
+    for probe_only in ["CIO|", "TTYIN|", "TTYOUT|"] {
+        if output.lines().any(|line| line.starts_with(probe_only)) {
+            return Err(format!("{case} leaked probe-only witness {probe_only:?}"));
+        }
+    }
+    if !expected_stdout.is_empty() {
+        let bytes = String::from_utf8_lossy(expected_stdout);
+        if !output.contains(bytes.as_ref()) {
+            return Err(format!(
+                "{case} serial output does not contain expected stdout {bytes:?}"
             ));
         }
     }
@@ -2874,7 +2967,10 @@ fn validate_platform_segments_data(data: Option<&str>) -> Result<(), String> {
 }
 
 /// 切片 S：校验 IPC 用户化与两任务共享 Segment 见证（S2-D5/S2-X2）。
-fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
+fn validate_ipc_data(
+    data: Option<&str>,
+    expected_ipc: Option<(u64, u64, u64)>,
+) -> Result<(u64, u64, u64), String> {
     let data = data.ok_or_else(|| "ipc_ready event is missing its data field".to_owned())?;
     let mut create = None;
     let mut map1 = None;
@@ -2984,12 +3080,14 @@ fn validate_ipc_data(data: Option<&str>) -> Result<(), String> {
             "ipc_ready recv2 (0x{recv2:x}) must be the direct-delivered payload 0x{IPC_DIRECT_PAYLOAD:x}"
         ));
     }
-    if queued != 45 || direct != 152 || blocks != 160 {
+    if let Some((expected_queued, expected_direct, expected_blocks)) = expected_ipc
+        && (queued != expected_queued || direct != expected_direct || blocks != expected_blocks)
+    {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected 45/152/160; stage5 片 C adds the C Task 17 write stream, and M4 adds the synchronous file request/reply round trips (each one blocks the C task and direct-delivers the reply)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected {expected_queued}/{expected_direct}/{expected_blocks}; stage5 片 C adds the C Task 17 write stream, and M4 adds the synchronous file request/reply round trips (each one blocks the C task and direct-delivers the reply)"
         ));
     }
-    Ok(())
+    Ok((queued, direct, blocks))
 }
 
 /// S2-D4：校验 `task_ready` —— `task_create`（完整 §8.1）/`task_destroy`（§8.2）三个用户原语

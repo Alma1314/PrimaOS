@@ -50,11 +50,12 @@ use prima_runtime::{
         NATIVE_APP_OP_DATA, NATIVE_APP_OP_EXECUTE, NATIVE_APP_OP_SUBMIT, NATIVE_APP_QUEUED,
         NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
-        SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_FILE_CLIENT_SHIFT,
-        SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT,
-        SERVICE_FILE_OPEN_PATH_LEN_SHIFT, SERVICE_FILE_OPEN_PATH_MASK, SERVICE_FILE_PATH,
-        SERVICE_FILE_REPLY_TAG, SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER,
-        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_SERVICEMGR,
+        SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_ECHO_ARGS_OFFSET,
+        SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT,
+        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OPEN_PATH_LEN_SHIFT,
+        SERVICE_FILE_OPEN_PATH_MASK, SERVICE_FILE_PATH, SERVICE_FILE_REPLY_TAG,
+        SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
+        SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_SERVICEMGR,
         SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
         SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
@@ -62,9 +63,10 @@ use prima_runtime::{
         SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_TTY_ACK_TAG,
-        STAGE5_TTY_READY_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply,
-        pack_file_reply, pack_service_name, pack_service_request,
+        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG,
+        STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
+        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply,
+        pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
@@ -416,6 +418,13 @@ pub extern "C" fn _start(
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
     let mut c_probe: Option<Pending> = None;
     let mut tty_pending: Option<Pending> = None;
+    // M5：存在 args 块时，本轮 C 映像按 sbase `echo` 用例运行；否则是固定探针。
+    let mut echo_args_pending: Option<(u64, u64)> = None;
+    let mut echo_mode = false;
+    let mut echo_len = 0u64;
+    let mut echo_hash = 2_166_136_261u32;
+    let mut tty_sync_requested = false;
+    let mut tty_sync_ack = false;
     // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
     let _ = read_image_directory(
         &runtime,
@@ -424,6 +433,7 @@ pub extern "C" fn _start(
         &mut pending,
         &mut c_probe,
         &mut tty_pending,
+        &mut echo_args_pending,
     );
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
@@ -595,19 +605,30 @@ pub extern "C" fn _start(
             let fd = (message.payload >> 16) & 0xff;
             let byte = (message.payload >> 24) & 0xff;
             if fd == 1 || fd == 2 {
+                if echo_mode {
+                    echo_len += 1;
+                    echo_hash = native_app_hash(echo_hash, byte as u8);
+                }
                 if tty_write_count < 2 {
                     tty_writes[tty_write_count] = (fd, byte);
                 }
                 tty_write_count += 1;
                 if let Some(endpoint) = tty {
+                    // M5：echo 走独立 tag，tty 不输出探针诊断行。
+                    let payload = if echo_mode {
+                        (message.payload & 0x0000_ffff_ffff_ffff) | STAGE5_ECHO_WRITE_TAG
+                    } else {
+                        message.payload
+                    };
                     let _ = runtime.send(
                         TaskId::from_raw(endpoint.id as u32),
                         endpoint.authority,
-                        message.payload,
+                        payload,
                         &[],
                     );
                 }
-                if tty_write_count == 2
+                if !echo_mode
+                    && tty_write_count == 2
                     && let Some(serial) = mgr_serial
                 {
                     let sender = (message.payload >> 32) & 0xff;
@@ -625,6 +646,8 @@ pub extern "C" fn _start(
             }
         } else if message.payload >> 48 == STAGE5_TTY_ACK_TAG >> 48 {
             tty_ack = true;
+        } else if message.payload >> 48 == STAGE5_TTY_SYNC_ACK_TAG >> 48 {
+            tty_sync_ack = true;
         } else if message.payload >> 48 == SERVICE_FILE_REQUEST_TAG >> 48 {
             // M4：C 适配层 → 管理器 → 存储服务。`open` 先经 Namespace 授权（路径必须已绑定）；
             // 其余操作依赖服务端句柄，句柄只能由已授权的 open 产生。管理器只做路由与授权，
@@ -704,6 +727,20 @@ pub extern "C" fn _start(
                 }
             }
             capacity_done = true;
+            // M5：C 已退出，说明全部字节已发给 tty；用屏障消息确认它们已落到串口，
+            // 之后才允许输出 `ECHO|` 见证并收尾。
+            if echo_mode
+                && !tty_sync_requested
+                && let Some(endpoint) = tty
+            {
+                let _ = runtime.send(
+                    TaskId::from_raw(endpoint.id as u32),
+                    endpoint.authority,
+                    STAGE5_TTY_SYNC_TAG,
+                    &[],
+                );
+                tty_sync_requested = true;
+            }
         } else if message.payload >> 48 == SERVICE_DONE_TAG >> 48 {
             // ③ 端点完成协商。先转发的是 `ALPHA`，故首个 done 属 `ALPHA`。
             if !alpha_done {
@@ -780,6 +817,7 @@ pub extern "C" fn _start(
                         slot,
                         &mut created_slot,
                         false,
+                        None,
                     )
                 {
                     created += 1;
@@ -801,6 +839,7 @@ pub extern "C" fn _start(
                     DRIVER_SLOT,
                     &mut tty_slot,
                     false,
+                    None,
                 );
                 tty_created = true;
             }
@@ -1006,7 +1045,20 @@ pub extern "C" fn _start(
         // 让 tty 在管理器阻塞于 receive 时被调度。
         if pong_sent && app_done && tty.is_some() && !finished {
             if capacity_probe.is_none() && !capacity_done {
-                if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
+                let c_args = match echo_args_pending {
+                    Some((offset_pages, pages)) => {
+                        read_c_args(&runtime, &self_cap, image_cap, offset_pages, pages)
+                    }
+                    None => None,
+                };
+                echo_mode = c_args.is_some();
+                if echo_args_pending.is_some() && c_args.is_none() {
+                    // argv 块不可解析：让本轮确定地失败，而不是退回探针参数。
+                    echo_mode = true;
+                    capacity_done = true;
+                    echo_len = u64::MAX;
+                    tty_sync_ack = true;
+                } else if let (Some(spec), Some(parent_ns)) = (c_probe, isolated_ns) {
                     if let Some((_token, manager, entry, stack, data)) = create_service(
                         &runtime,
                         &self_cap,
@@ -1015,6 +1067,7 @@ pub extern "C" fn _start(
                         DRIVER_SLOT,
                         &mut created_slot,
                         true,
+                        c_args.as_ref(),
                     ) {
                         // M4：把文件访问令牌绑定到 C 任务根继承的 Namespace 路径 "f"。
                         // 必须在 C 创建之后做——创建前多占一个 cap 槽会让 `task_create`
@@ -1042,10 +1095,19 @@ pub extern "C" fn _start(
                     capacity_done = true;
                 }
             }
-            // 除 C 探针退出外，还要等 tty 完成两条 write 的处理与 ioport 正反例，否则收尾
-            // 会先于 tty 的串口见证。
-            if !capacity_done || !tty_ack {
+            // 探针：还要等 tty 完成两条 write 的处理与 ioport 正反例。
+            // echo：等 tty 处理完排空屏障，确保冻结 stdout 已全部落到串口。
+            if !capacity_done || (!echo_mode && !tty_ack) || (echo_mode && !tty_sync_ack) {
                 continue;
+            }
+            if echo_mode && let Some(serial) = mgr_serial {
+                let _ = serial_puts(&runtime, serial, b"\r\nECHO|status=");
+                let _ = serial_dec(&runtime, serial, capacity_exit_status);
+                let _ = serial_puts(&runtime, serial, b";len=");
+                let _ = serial_dec(&runtime, serial, echo_len);
+                let _ = serial_puts(&runtime, serial, b";hash=");
+                let _ = serial_dec(&runtime, serial, echo_hash as u64);
+                let _ = serial_puts(&runtime, serial, b"\r\n");
             }
             // 两次成功的数据读回、一次执行前取消、一次越界拒绝与客户端的四项检查，
             // 均由独立 ring3 管理器提交为原始 trace，xtask 负责判断其含义。
@@ -1211,6 +1273,7 @@ fn read_image_directory(
     pending: &mut [Option<Pending>; SERVICES],
     c_probe: &mut Option<Pending>,
     tty_pending: &mut Option<Pending>,
+    echo_args: &mut Option<(u64, u64)>,
 ) -> Result<(), ()> {
     runtime
         .memseg_map(image, *self_cap, 0, ENDPOINT_CODE_PROBE_VA, 1, R_ONLY)
@@ -1243,6 +1306,8 @@ fn read_image_directory(
                     pages,
                     name: pack_service_name(b"tty"),
                 });
+            } else if kind == SERVICE_IMAGE_KIND_ECHO_ARGS && pages != 0 {
+                *echo_args = Some((offset_pages, pages));
             } else if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
                 let Some(slot) = (kind as usize).checked_sub(1) else {
                     index += 1;
@@ -1351,6 +1416,7 @@ fn create_service(
     slot: usize,
     created_slot: &mut [bool; SERVICES],
     c_stack: bool,
+    c_args: Option<&CArgs>,
 ) -> Option<(Capability, Capability, u64, Capability, Option<Capability>)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
@@ -1454,7 +1520,8 @@ fn create_service(
         drop_data_segments(runtime, &mut data_segments);
         return None;
     };
-    if c_stack && prepare_c_stack(runtime, self_cap, stack).is_none() {
+    if c_stack && prepare_c_stack(runtime, self_cap, stack, c_args.unwrap_or(&PROBE_ARGS)).is_none()
+    {
         let _ = runtime.memseg_destroy(stack);
         let _ = runtime.cap_drop(stack);
         let _ = runtime.cap_drop(initial0);
@@ -1609,31 +1676,118 @@ fn parse_writable_segments(
     Some(segments)
 }
 
+/// M5：C 程序的 argv 集合（不含 envp；envp 固定为 `PRIMA_ABI=1`）。
+#[derive(Clone, Copy)]
+struct CArgs {
+    count: u8,
+    lens: [u8; 8],
+    starts: [u8; 8],
+    bytes: [u8; 32],
+}
+
+/// 固定探针的 argv：布局必须与 `stage5_probe.c` 的 `stage5_entry` 断言一致。
+const PROBE_ARGS: CArgs = CArgs {
+    count: 2,
+    lens: [12, 11, 0, 0, 0, 0, 0, 0],
+    starts: [0, 13, 0, 0, 0, 0, 0, 0],
+    bytes: *b"stage5-probe\0stack-ready\0\0\0\0\0\0\0\0",
+};
+
+/// 读取 xtask 打包的 argv 块：`[count][len, bytes]...`。只映射一页，读毕即卸载。
+fn read_c_args(
+    runtime: &Runtime<impl SyscallTransport>,
+    self_cap: &Capability,
+    image: Capability,
+    offset_pages: u64,
+    pages: u64,
+) -> Option<CArgs> {
+    if pages == 0 {
+        return None;
+    }
+    let alias = ENDPOINT_CODE_PROBE_VA;
+    runtime
+        .memseg_map(image, *self_cap, offset_pages, alias, 1, R_ONLY)
+        .ok()?;
+    let blob = alias + SERVICE_ECHO_ARGS_OFFSET;
+    let result = (|| {
+        let mut header = [0u8; 1];
+        runtime.read_user_bytes(blob, &mut header).ok()?;
+        let count = header[0] as usize;
+        if count == 0 || count > 8 {
+            return None;
+        }
+        let mut args = CArgs {
+            count: count as u8,
+            lens: [0; 8],
+            starts: [0; 8],
+            bytes: [0; 32],
+        };
+        let mut at = 1u64;
+        let mut used = 0usize;
+        for index in 0..count {
+            let mut length = [0u8; 1];
+            runtime.read_user_bytes(blob + at, &mut length).ok()?;
+            let len = length[0] as usize;
+            if len == 0 || used + len > args.bytes.len() {
+                return None;
+            }
+            runtime
+                .read_user_bytes(blob + at + 1, &mut args.bytes[used..used + len])
+                .ok()?;
+            args.lens[index] = len as u8;
+            args.starts[index] = used as u8;
+            used += len;
+            at += 1 + len as u64;
+        }
+        Some(args)
+    })();
+    let _ = runtime.memseg_unmap(*self_cap, alias, 1);
+    result
+}
+
 /// 将 C 的 argc/argv/envp/auxv 写入同一栈段，再卸载管理器内的临时映射。
+///
+/// 布局冻结：rsp 指向 `[argc, argv...NULL, envp...NULL, auxv]`；字符串从栈顶页内
+/// 偏移 0x80 起按 16 字节对齐排列，envp 固定为 `PRIMA_ABI=1`，auxv 仅
+/// `AT_PAGESZ` + `AT_NULL`。
 fn prepare_c_stack(
     runtime: &Runtime<impl SyscallTransport>,
     self_cap: &Capability,
     stack: Capability,
+    args: &CArgs,
 ) -> Option<()> {
     let alias = ENDPOINT_CODE_PROBE_VA;
     runtime
         .memseg_map(stack, *self_cap, 0, alias, C_STACK_PAGES, RW)
         .ok()?;
     let base = ENDPOINT_STACK_VA + C_STACK_OFFSET;
-    let words = [
-        2,
-        base + 0x80,
-        base + 0x90,
-        0,
-        base + 0xa0,
-        0,
-        6,
-        FRAME_SIZE,
-        0,
-        0,
-    ];
-    let mut written = true;
-    for (index, word) in words.iter().enumerate() {
+    let count = args.count as usize;
+    let mut words = [0u64; 16];
+    if count + 8 > words.len() {
+        let _ = runtime.memseg_unmap(*self_cap, alias, C_STACK_PAGES);
+        return None;
+    }
+    words[0] = count as u64;
+    let mut cursor = 0x80u64;
+    let mut offsets = [0u64; 8];
+    for index in 0..count {
+        offsets[index] = cursor;
+        words[1 + index] = base + cursor;
+        cursor += args.lens[index] as u64 + 1;
+        cursor = (cursor + 15) & !15;
+    }
+    words[1 + count] = 0;
+    let env_offset = cursor;
+    words[2 + count] = base + cursor;
+    cursor += b"PRIMA_ABI=1\0".len() as u64;
+    words[3 + count] = 0;
+    words[4 + count] = 6;
+    words[5 + count] = FRAME_SIZE;
+    words[6 + count] = 0;
+    words[7 + count] = 0;
+    let limit = C_STACK_PAGES * FRAME_SIZE - C_STACK_OFFSET;
+    let mut written = cursor <= limit;
+    for (index, word) in words[..count + 8].iter().enumerate() {
         written &= runtime
             .write_user_bytes(
                 alias + C_STACK_OFFSET + index as u64 * 8,
@@ -1641,14 +1795,21 @@ fn prepare_c_stack(
             )
             .is_ok();
     }
+    for (index, offset) in offsets.iter().take(count).enumerate() {
+        let len = args.lens[index] as usize;
+        let start = args.starts[index] as usize;
+        written &= runtime
+            .write_user_bytes(
+                alias + C_STACK_OFFSET + *offset,
+                &args.bytes[start..start + len],
+            )
+            .is_ok();
+        written &= runtime
+            .write_user_bytes(alias + C_STACK_OFFSET + *offset + len as u64, &[0])
+            .is_ok();
+    }
     written &= runtime
-        .write_user_bytes(alias + C_STACK_OFFSET + 0x80, b"stage5-probe\0")
-        .is_ok();
-    written &= runtime
-        .write_user_bytes(alias + C_STACK_OFFSET + 0x90, b"stack-ready\0")
-        .is_ok();
-    written &= runtime
-        .write_user_bytes(alias + C_STACK_OFFSET + 0xa0, b"PRIMA_ABI=1\0")
+        .write_user_bytes(alias + C_STACK_OFFSET + env_offset, b"PRIMA_ABI=1\0")
         .is_ok();
     let unmapped = runtime
         .memseg_unmap(*self_cap, alias, C_STACK_PAGES)

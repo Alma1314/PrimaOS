@@ -3,14 +3,15 @@
 **日期**：2026-10-18。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3/M3b 补充了
 musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命周期与 `printf` 输出证据。
 冻结 profile 仍是 [profile v0](../specs/2026-10-18-stage5-profile-v0.md)；M4 把
-`P5-IO-02`/`P5-FD-01`/`P5-FS-01`/`P5-FS-02`/`P5-LIB-01` 推进到 `partial`，**没有**升为
-`supported`，也没有勾选 S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 64 页 arena 上工作，
+`P5-IO-02`/`P5-FD-01`/`P5-FS-01`/`P5-FS-02`/`P5-LIB-01` 推进到 `partial`；M5 的
+sbase `echo` E1–E6 把 `P5-LIB-01` 的冻结符号集推进到 `supported`（见
+[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)），但**没有**勾选 S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 64 页 arena 上工作，
 不代表通用 `mmap`；文件支持只覆盖固定的单文件 `f`，不代表 VFS/目录。
 
 符号级 `UNTEST` 沿用候选规格的术语：musl 会把它链接进来，但本阶段不承诺其行为。`UNTEST`
 不进入 profile 支持表。
 
-## 1. 冻结 profile v0 行（未改状态）
+## 1. 冻结 profile v0 行（M5 更新 P5-LIB-01）
 
 | ID | 当前状态 | M0 结论 |
 |---|---|---|
@@ -27,7 +28,7 @@ musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命�
 | P5-TIME-01 | planned | 不在 echo 闭包 |
 | P5-THREAD-01 | unsupported | 不变；单线程锁在 `libc.need_locks=0` 时为空操作 |
 | P5-NET-01 | unsupported | 不变 |
-| P5-LIB-01 | partial | **M4**：`printf`+`fflush` 经 `writev` 输出已验收；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`exit` 已验。stdio 文件 API（`fopen`/`fread`/`fwrite`/`fclose`）未验收 |
+| P5-LIB-01 | supported | **M5**：sbase `echo` E1–E6 双轮验收了 `strcmp`、`fputs`、`fputc`/`putc`、`putchar`、`fflush`、`fclose(stdout)`、`ferror` 与 `exit`；M4 的 `printf`+`fflush`、`snprintf`/`getenv`/errno、`malloc/free/realloc` 仍成立。stdio **文件** API（`fopen`/`fread`/`fwrite`）未验收 |
 
 ## 2. P5-LIB-01 符号级状态（M0 盘点）
 
@@ -41,22 +42,22 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 
 | 符号 | 状态 | 说明 |
 |---|---|---|
-| `strcmp` | planned | 纯函数，无 syscall；仍未有 Prima QEMU 证据 |
-| `fputs` | planned | `fwrite` → `__fwritex` → `stdout` 的 `write` |
-| `fputc` / `putc` | planned | `putc.h` → `__overflow`（换行/满缓冲时）/ 缓冲写入 |
-| `putchar` | planned | 编译器可降为 `putc`；两符号都要提供 |
-| `fflush` | planned | 缓冲非空时调用 `f->write` |
-| `fclose` | planned | `fflush` + `__stdio_close`（fd 1/2 必须返回成功）；`F_PERM` 提前返回 |
-| `ferror` | planned | 单线程下锁为空操作 |
+| `strcmp` | supported | M5 E1–E6 的 `-n`/`--` 判定经 Prima QEMU 双轮验证 |
+| `fputs` | supported | `fwrite` → `__fwritex` → `stdout`；M5 E3–E6 输出经 tty |
+| `fputc` / `putc` | supported | 词间空格由 `putword` 的 `fputc` 输出；M5 E5 验证 |
+| `putchar` | supported | 换行由 `putchar` 输出；M5 E1/E3/E5/E6 验证 |
+| `fflush` | supported | `fshut` → `fflush` → `writev`；M5 每个用例经 `fclose`/退出前冲刷 |
+| `fclose` | supported | `fshut` → `fflush` + `fclose(stdout)`；M5 六个用例均返回 0 |
+| `ferror` | supported | `fshut` 的错误检查；M5 成功路径返回 0 |
 | `fprintf` | UNTEST | 仅错误路径；v0 行未列，需 v1 登记 |
 | `vfprintf` | UNTEST | 同上；链接闭包远大于 v0 行 |
 | `perror` | UNTEST | 仅错误路径 |
 | `strlen` / `strncmp` | UNTEST | 纯函数；`fputs`/`xvprintf` 引用 |
-| `exit` | UNTEST | 正常终止路径；`exit_group` 适配是 P5-PROC-01 的前置 |
+| `exit` | supported | M5 六个用例经 musl `exit` 退出码 0，管理器与内核双重观察 |
 
-**v1 提案**：把 `putc`、`fprintf`、`vfprintf`、`perror`、`strlen`、`strncmp`、`exit` 增列为
-`planned`/`UNTEST`，并把 P5-IO-01 的 Prima 后端注记为“stdio 使用 `writev`”。在本文件发布
-v1 前，上述符号不得对外宣称可用。
+**v1 提案**：`putc` 与 `exit` 已由 M5 升为 `supported`；`fprintf`、`vfprintf`、`perror`、
+`strlen`、`strncmp` 仍为 `UNTEST`（只被 `fshut` 的错误路径链接，成功路径未执行），不得对外
+宣称可用。P5-IO-01 的 Prima 后端仍注记“stdio 使用 `writev`”。
 
 ## 3. 已确认可复用 / 必须新建 / 不支持（M0）
 

@@ -3,7 +3,7 @@
 **日期**：2026-10-18
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
-（`malloc/free/realloc`）与 M4 文件首切片已完成（2026-10-18，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)与 [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)）。`printf`+`fflush` 输出路径已验收；完整 auxv/argv 仍待后续。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+（`malloc/free/realloc`）、M4 文件首切片与 M5 sbase `echo` 首切片已完成（2026-10-18/19，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)与 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -35,7 +35,7 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 | M2：系统边界 | **首个纵向切片已完成（2026-10-18）**：追加 `SYS_TASK_SET_FS_BASE=38` + per-task FS base；C 适配层 `__syscall0..6`（Linux 号只在适配层翻译、原始负 errno）实现 `write`/`writev`/`close(1/2)`/`ioctl`/`set_tid_address`/`arch_prctl`/退出；`read` 与通用 fd 表明确未实现；Prima crt 骨架保存 `prima_ctx`。边界收尾已补齐 `exit(60)` 与 `__syscall4..6` 全参数透传（取消点的适配层路径就绪，musl 侧替换属 M3）；通用 fd→Capability 映射仍待后续切片。见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)。 | 裸 C 探针验证写入/短写（writev）、非法 fd、无授权、NULL 缓冲区、未知号与 FS base 往返；同源 Linux/Prima 结果矩阵；无内核 POSIX 对象或 Linux syscall 号泄漏；静态 PIE 在构建期校验。 |
 | M3：静态 musl 基座 | **已完成（2026-10-18，含 M3b）**：SSE/FPU 契约（`CR4.OSFXSR/OSXMMEXCPT`、per-task `FXSAVE/FXRSTOR`）、锁定快照 + 两个可重放补丁（`syscall_arch.h`、`__set_thread_area.s`）、Prima crt 接 `__libc_start_main`、静态 `libc.a`/sysroot 构建脚本；M3b 由服务管理器预映射 64 页匿名 arena（栈同段），适配层实现 `brk`/匿名 `mmap`/`mprotect`/`munmap`，`malloc/free/realloc` 通过。`printf`+`fflush` 输出路径由 M4 验收。见[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)。 | 静态 C 探针覆盖 `main` 返回/`exit`、`errno`、`snprintf` 格式化、环境变量、`malloc/free/realloc`（含 140000 字节独立 mmap）及失败路径；`readelf` 检查静态 PIE/RELATIVE-only；补丁可从锁定快照重放。 |
 | M4：文件与路径 | **首切片已完成（2026-10-18）**：用户态 fd 3..6 生命周期、`openat/read/write/lseek/close` 的冻结子集、存储服务的单文件字节流、Namespace `f` 授权入口；`printf`+`fflush` 输出路径一并验收。无目录/多级路径/`dup`/`CLOEXEC`/共享 offset，逐项标 partial。见[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)。 | 每个支持 API 的 Linux/Prima 同源正反例差分：内容、偏移、错误码、句柄失效、句柄复用；失败时不泄漏 cap（授权解析 cap 立即归还）。**目录/多级路径与完整 fd 表仍待后续切片。** |
-| M5：开源程序与扩展 | 以 M0 选定的开源程序做首次源码重编译和冻结功能测试。随后按 profile 的实际需求扩展时间单位、`mmap/mprotect`、TLS/线程、信号、进程、网络；每一组先补机制/服务契约，再开启对应 musl 路径。 | 构建命令、源码/工具链/sysroot 哈希、QEMU 结果和 Linux 参考结果可重复；API 行逐项标 supported/partial/unsupported，偏差有测试与解释。 |
+| M5：开源程序与扩展 | **首切片已完成（2026-10-19）**：锁定 commit 的 sbase `echo` 源码用 Prima sysroot 重编译，E1–E6 六用例各双轮 QEMU 通过；随后按 profile 的实际需求扩展时间单位、`mmap/mprotect`、TLS/线程、信号、进程、网络；每一组先补机制/服务契约，再开启对应 musl 路径。 | 首切片证据见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)；构建命令、源码哈希、QEMU 结果和 Linux 参考可重复；API 行仍按实际覆盖逐项标 supported/partial/unsupported。 |
 
 M1–M3 的最小闭环优先保证静态 C 程序可靠启动与退出。M4/M5 对应阶段 5 全部 profile 的后续交付；若选定程序需要线程或路径，必须先实现相应语义，不能跳过依赖。
 
@@ -74,6 +74,12 @@ Prima 同源文件差分通过，`printf`+`fflush` 走 `writev` 输出 `M4STDIO`
 （`MAX_SEGMENT_FRAMES=128`、`MAX_VSPACE_ENTRIES=320`、`MAX_CAPABILITY_SLOTS=160`、
 `MAX_AUDIT_EVENTS=2048`）；既有容量/IPC/Namespace 事件的变化逐条登记。详见
 [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)。
+
+**M5 首切片（2026-10-19）**：每个 echo 用例以 sbase `echo.elf` 替换 C 探针映像，并追加单页
+ET_DYN 参数载体；服务管理器从固定偏移读取 argv、构造冻结初始栈。`prima_crt` 在 echo 构建下
+先跑两次静默 `openat("f")/close`，保持 `NsWitness` 的 M4 授权解析计数不因换程序而放宽；tty
+对 echo 字节走独立 tag，echo 退出后用排空屏障确认串口收尾。E1–E6 双轮通过，Linux/Prima
+stdout 与退出码逐字节一致。详见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)。
 
 ## 构建与验证
 

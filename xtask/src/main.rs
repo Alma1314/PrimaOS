@@ -49,12 +49,27 @@ fn build_and_report() -> Result<image::Images, String> {
 }
 
 fn test_boot_slice() -> Result<(), String> {
+    // 既有探针路径保持不变：两次 BIOS 运行逐字节校验阶段 1–5 的既有事件。
     let images = build_and_report()?;
     image::check_stage5_linux_probe()?;
     for run in 1..=2 {
         qemu::run_bios_test(&images.bios)
             .map_err(|error| format!("BIOS run {run} failed: {error}"))?;
         println!("PASS qemu bios run={run}");
+    }
+    // M5：sbase `echo` 的六个冻结用例各跑两轮；每个用例单独构建一次 ramdisk，
+    // 使被冻结的 argv 成为该次启动输入。
+    image::check_stage5_linux_echo()?;
+    for case in &image::ECHO_CASES {
+        let images = image::build_images_for_echo(case.args)?;
+        let mut ipc_baseline = None;
+        for run in 1..=2 {
+            ipc_baseline = Some(
+                qemu::run_bios_test_echo(&images.bios, case, ipc_baseline)
+                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
+            );
+            println!("PASS qemu bios {} run={run}", case.name);
+        }
     }
     println!("PASS stage1 boot slice");
     Ok(())
