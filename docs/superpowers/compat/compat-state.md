@@ -5,8 +5,10 @@ musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命�
 冻结 profile 仍是 [profile v0](../specs/2026-10-18-stage5-profile-v0.md)；M4 把
 `P5-IO-02`/`P5-FD-01`/`P5-FS-01`/`P5-FS-02`/`P5-LIB-01` 推进到 `partial`；M5 的
 sbase `echo` E1–E6 把 `P5-LIB-01` 的冻结符号集推进到 `supported`（见
-[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)），但**没有**勾选 S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 64 页 arena 上工作，
-不代表通用 `mmap`；文件支持只覆盖固定的单文件 `f`，不代表 VFS/目录。
+[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)）；M6 把 `P5-TIME-01` 推进到
+`partial`（`CLOCK_MONOTONIC` + 轮询睡眠，见 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)），但**没有**勾选 S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 64 页 arena 上工作，
+不代表通用 `mmap`；文件支持只覆盖固定的单文件 `f`，不代表 VFS/目录；时间只是 10 ms
+粒度的 PIT 轮询，不是阻塞时钟服务。
 
 符号级 `UNTEST` 沿用候选规格的术语：musl 会把它链接进来，但本阶段不承诺其行为。`UNTEST`
 不进入 profile 支持表。
@@ -25,7 +27,7 @@ sbase `echo` E1–E6 把 `P5-LIB-01` 的冻结符号集推进到 `supported`（�
 | P5-FS-01 | partial | **M4**：`openat(AT_FDCWD, "f", ...)` 单文件、单层 ≤3 字节路径、Namespace `f` 授权；无目录/多级路径/其他 `O_*` |
 | P5-FS-02 | partial | **M4**：`lseek` 的 SET/CUR/END、服务端 offset、每次 open 独立偏移；无跨句柄共享 offset |
 | P5-MM-01 | planned | echo 的 TLS 预计走 `builtin_tls`，不需要 `mmap`；mallocng 仅链接、不执行 |
-| P5-TIME-01 | planned | 不在 echo 闭包 |
+| P5-TIME-01 | partial | **M6**：`clock_gettime(CLOCK_MONOTONIC)` 与相对/绝对 `nanosleep` 可用；PIT 10 ms 粒度，用户态轮询，无 `EINTR`/阻塞等待；`CLOCK_REALTIME` 查询 `EINVAL` |
 | P5-THREAD-01 | unsupported | 不变；单线程锁在 `libc.need_locks=0` 时为空操作 |
 | P5-NET-01 | unsupported | 不变 |
 | P5-LIB-01 | supported | **M5**：sbase `echo` E1–E6 双轮验收了 `strcmp`、`fputs`、`fputc`/`putc`、`putchar`、`fflush`、`fclose(stdout)`、`ferror` 与 `exit`；M4 的 `printf`+`fflush`、`snprintf`/`getenv`/errno、`malloc/free/realloc` 仍成立。stdio **文件** API（`fopen`/`fread`/`fwrite`）未验收 |
@@ -65,7 +67,7 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 |---|---|
 | 可复用（用户态现有机制） | fd 1/2 的逐字节 `SYS_SEND` 到服务管理器、管理器转发 tty；`SYS_TASK_ID`；`SYS_TASK_DESTROY`；私有可写 `PT_LOAD` |
 | 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena 的 bump 分配（partial，见 M3b）；**M4**：fd 3..6 表与 `openat/read/write/lseek/close` 翻译、3 字节分片、Namespace `f` 授权、存储服务单文件后端；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
-| 需新增内核机制（已落地 M2/M3） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR |
+| 需新增内核机制（已落地 M2/M3/M6） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR；M6 追加 `SYS_TIME_ENABLE=39`（只编程 PIT 通道 0，不配置 PIC/IF）与 `SYS_TIME_TICKS=40`（锁存并累计硬件倒计数） |
 | musl 静态基座（M3/M3b/M4 已落地） | 锁定快照 + 两个可重放补丁；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`printf`+`fflush` 已验；C 任务由服务管理器预映射 64 页匿名 arena（与栈同段） |
 | 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、通用 `mmap`/文件映射、目录/多级路径、`dup`、`O_APPEND` |
 | 仅链接、不执行（E1–E6） | mallocng `calloc`、futex/`__wait`（`libc.need_locks=0`）、`poll`/`ppoll`（非 secure auxv 早退）；`open`/`lseek` 已由 M4 适配层承接，但不在 echo 闭包 |
@@ -76,6 +78,9 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
   `f` 的 fd 生命周期与 `printf`+`fflush` 输出；stdio 文件 API、线程/信号/网络未验收。
 - 匿名 `mmap` 是 64 页用户态 arena 的 partial 适配：无逐映射回收、无权限变更、
   无文件/共享映射，单次上限 48 页；不得据此宣称通用 `mmap`。
+- M6 的时间是 PIT 自由运行计数 + 用户态轮询：10 ms 粒度，无 `EINTR`、无阻塞睡眠、
+  无墙上时钟；相邻 `SYS_TIME_TICKS` 间隔超过约 55 ms 会少计。不得据此宣称完整
+  `clock_gettime`/`nanosleep` 或 POSIX 定时器。
 - 文件服务是**单文件字节流**：路径 `f`、单层 ≤3 字节、4 个句柄、服务端 offset；
   无目录/枚举/多级路径/`dup`/`CLOEXEC`/`O_APPEND`/进程退出自动关闭。管理器只做
   Namespace 授权与路由，不是 VFS。

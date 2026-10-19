@@ -79,6 +79,16 @@ pub(crate) fn run_bios_test_echo(
     case: &crate::image::EchoCase,
     expected_ipc: Option<(u64, u64, u64)>,
 ) -> Result<(u64, u64, u64), String> {
+    run_bios_test_program(image, case.name, case.stdout, expected_ipc)
+}
+
+/// M5/M6：托管程序轮（echo、时间探针共用同一证据通道）。
+pub(crate) fn run_bios_test_program(
+    image: &Path,
+    name: &str,
+    expected_stdout: &[u8],
+    expected_ipc: Option<(u64, u64, u64)>,
+) -> Result<(u64, u64, u64), String> {
     let output = run_captured(image)?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
@@ -90,7 +100,7 @@ pub(crate) fn run_bios_test_echo(
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
-    protocol::validate_stage5_echo(&output.stdout, case.name, case.stdout)
+    protocol::validate_stage5_echo(&output.stdout, name, expected_stdout)
         .map_err(|error| with_output(error, &output))?;
     Ok(ipc)
 }

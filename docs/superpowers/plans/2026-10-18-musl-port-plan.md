@@ -3,7 +3,7 @@
 **日期**：2026-10-18
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
-（`malloc/free/realloc`）、M4 文件首切片与 M5 sbase `echo` 首切片已完成（2026-10-18/19，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)与 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+（`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片与 M6 POSIX 时间首切片已完成（2026-10-18/19，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)与 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -81,6 +81,13 @@ ET_DYN 参数载体；服务管理器从固定偏移读取 argv、构造冻结�
 对 echo 字节走独立 tag，echo 退出后用排空屏障确认串口收尾。E1–E6 双轮通过，Linux/Prima
 stdout 与退出码逐字节一致。详见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)。
 
+**M6 时间首切片（2026-10-19）**：追加 `SYS_TIME_ENABLE=39`/`SYS_TIME_TICKS=40`——只编程
+8254 通道 0 的自由运行计数，不配置 PIC、不打开 IF；适配层把 `clock_gettime(CLOCK_MONOTONIC)`、
+`nanosleep`、`clock_nanosleep` 翻译为 10 ms 粒度的轮询。时间探针经托管程序通道双轮运行，
+Linux/Prima 输出逐字节一致。中断驱动的 tick-only 方案在协作阶段触发 `#DF`，已放弃并记录。
+P5-TIME-01 仍为 `partial`（轮询、无 `EINTR`、无墙上时钟）。详见
+[M6 报告](../reports/2026-10-19-stage5-m6-time.md)。
+
 ## 构建与验证
 
 - 将上游快照、补丁、Prima 适配层和生成的 sysroot 分开存放；构建产物不入 Git。宿主编译器只用于交叉构建，不得混入宿主 libc 头文件或库。
@@ -92,4 +99,6 @@ stdout 与退出码逐字节一致。详见 [M5 报告](../reports/2026-10-19-st
 
 - **动态链接**：DOC-002 将 `ld.so` 列为阶段 5 P0，白皮书列为阶段 7 候选。先裁决阶段归属，再评审 `PT_INTERP`、重定位、共享库/TLS 与加载器测试；本计划不把它混进静态闭环。
 - **线程和信号**：musl 内部可能在单线程场景使用 TLS、锁和取消点；M0 必须做真实调用图审查。对外 `pthread_*`、futex、POSIX signal 不能由当前 Task/Timer/Exception 接口直接推定支持。
-- **时间和内存**：当前 `SYS_TIME_NOW` 是 PIT tick，尚无 POSIX 时间单位；`memseg_map` 也未覆盖 `mmap` flags 或 W^X 全路径。两者只能在语义与错误边界冻结后进入支持表。
+- **时间和内存**：M6 已冻结 `CLOCK_MONOTONIC` 的 10 ms PIT 轮询子集并落地；`SYS_TIME_NOW` 仍是
+  供 Timer 使用的抽象时钟，与 POSIX 时间分离。墙上时钟、`EINTR`、阻塞睡眠仍未冻结；
+  `memseg_map` 也未覆盖 `mmap` flags 或 W^X 全路径。两者只能在语义与错误边界冻结后进入支持表。

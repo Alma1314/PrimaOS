@@ -43,8 +43,8 @@ pub use prima_abi::syscall::{
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
     SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
     SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
-    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_TIME_NOW, SYS_TIMER_CANCEL,
-    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
+    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_TIME_ENABLE, SYS_TIME_NOW,
+    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -915,6 +915,15 @@ fn dev_destroy_call(raw_cap: u64) -> u64 {
 /// SPEC-082：`time_now` 服务（§10.1，纯查询）。
 fn time_now_call() -> u64 {
     bootstrap::time_now().unwrap_or(0)
+}
+
+/// M6：`time_enable` 服务——启动 PIT 通道 0 的自由运行计数（幂等）。
+///
+/// 不配置 PIC、不打开 IF：既有协作阶段用户帧仍不可被中断，时间由
+/// [`SYS_TIME_TICKS`] 轮询硬件计数获得。
+fn time_enable_call() -> u64 {
+    crate::preempt::start_time_counter();
+    0
 }
 
 /// SPEC-082：`timer_set` 服务——`args[0]=deadline`。
@@ -2289,6 +2298,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         ns_destroy_call(args[0])
     } else if num == SYS_TIME_NOW {
         time_now_call()
+    } else if num == SYS_TIME_ENABLE {
+        time_enable_call()
+    } else if num == SYS_TIME_TICKS {
+        crate::preempt::time_ticks()
     } else if num == SYS_TIMER_SET {
         timer_set_call(args[0])
     } else if num == SYS_TIMER_CANCEL {

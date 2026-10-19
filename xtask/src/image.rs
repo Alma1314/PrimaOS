@@ -91,16 +91,38 @@ pub(crate) const ECHO_CASES: [EchoCase; 6] = [
     },
 ];
 
+/// 本次启动里替换 C 探针映像的托管程序。
+enum Stage5Program<'a> {
+    /// 既有固定 C 探针（argv 冻结在服务管理器里）。
+    Probe,
+    /// M5：sbase `echo` 冻结用例，argv 由单页参数块传入。
+    Echo(&'a [&'a str]),
+    /// M6：POSIX 时间探针（无 argv 语义，走同一托管程序通道）。
+    Time,
+}
+
+impl Stage5Program<'_> {
+    /// 是否走「服务管理器托管程序」通道（参数块 + ECHO tag + 排空屏障）。
+    fn is_managed(&self) -> bool {
+        !matches!(self, Self::Probe)
+    }
+}
+
 pub(crate) fn build_images() -> Result<Images, String> {
-    build_images_with_echo(None)
+    build_images_with_program(Stage5Program::Probe)
 }
 
 /// M5：用 sbase `echo` 替换 C 探针映像，并打包本次用例的 argv。
 pub(crate) fn build_images_for_echo(args: &[&str]) -> Result<Images, String> {
-    build_images_with_echo(Some(args))
+    build_images_with_program(Stage5Program::Echo(args))
 }
 
-fn build_images_with_echo(echo_args: Option<&[&str]>) -> Result<Images, String> {
+/// M6：用时间探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_time() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Time)
+}
+
+fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, String> {
     let kernel = PathBuf::from(KERNEL_BINARY);
     ensure_non_empty(&kernel, "kernel ELF")?;
 
@@ -113,7 +135,7 @@ fn build_images_with_echo(echo_args: Option<&[&str]>) -> Result<Images, String> 
         .map_err(|error| format!("failed to create {}: {error}", output.display()))?;
 
     let ramdisk = output.join(RAMDISK_IMAGE_NAME);
-    build_ramdisk(&ramdisk, echo_args)?;
+    build_ramdisk(&ramdisk, program)?;
 
     let bios = output.join(BIOS_IMAGE_NAME);
     let uefi = output.join(UEFI_IMAGE_NAME);
@@ -139,7 +161,7 @@ fn build_images_with_echo(echo_args: Option<&[&str]>) -> Result<Images, String> 
 ///
 /// 格式只含 magic/version/count + `(offset, len)` 表；内核不解释块名，块里的 ELF
 /// program header 由内核通用解析器读取。
-fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> {
+fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> {
     let mut manifest = Vec::with_capacity(SERVICE_IMAGES.len() + 1);
     manifest.push((prima_abi::boot_image::KIND_INIT, Vec::new()));
     for (binary, kind) in SERVICE_IMAGES {
@@ -173,8 +195,8 @@ fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> 
     let crt = c_dir.join("prima_crt.c");
     let start = c_dir.join("prima_crt_start.S");
     let adapter = c_dir.join("prima_syscall.c");
-    let (binary, sources, label) = match echo_args {
-        Some(_) => {
+    let (binary, sources, label) = match &program {
+        Stage5Program::Echo(_) => {
             let sbase = workspace.join("target").join("sbase");
             ensure_sbase(&sbase)?;
             (
@@ -189,7 +211,12 @@ fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> 
                 "sbase echo",
             )
         }
-        None => (
+        Stage5Program::Time => (
+            path.with_file_name("stage5-time.elf"),
+            vec![c_dir.join("stage5_time.c"), c_dir.join("echo_harness.c")],
+            "stage5 time probe",
+        ),
+        Stage5Program::Probe => (
             path.with_file_name("stage5-probe.elf"),
             vec![stage5_probe_source()],
             "stage5 C probe",
@@ -219,14 +246,12 @@ fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> 
         "-nostdinc",
     ]);
     clang.arg("-isystem").arg(musl_prefix.join("include"));
-    if echo_args.is_some() {
-        clang
-            .arg("-DPRIMA_ECHO_HARNESS")
-            .arg("-I")
-            .arg(workspace.join("target").join("sbase"))
-            // `echo_harness.c` 引用 c/ 下的 `prima_abi.h`（同目录已可找到，显式补一次）。
-            .arg("-I")
-            .arg(&c_dir);
+    if program.is_managed() {
+        // M5/M6 共用的前置文件授权冒烟：保持 NsWitness 的两次 open 解析计数。
+        clang.arg("-DPRIMA_ECHO_HARNESS").arg("-I").arg(&c_dir);
+        if matches!(program, Stage5Program::Echo(_)) {
+            clang.arg("-I").arg(workspace.join("target").join("sbase"));
+        }
     }
     for source in &sources {
         clang.arg(source);
@@ -255,10 +280,16 @@ fn build_ramdisk(path: &Path, echo_args: Option<&[&str]>) -> Result<(), String> 
         .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
     validate_static_pie(&c_image)?;
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
-    if let Some(args) = echo_args {
+    let program_args: Option<&[&str]> = match &program {
+        Stage5Program::Echo(args) => Some(args),
+        // 时间探针不需要参数；托管程序通道仍要求一个非空 argv。
+        Stage5Program::Time => Some(&["stage5-time"]),
+        Stage5Program::Probe => None,
+    };
+    if let Some(args) = program_args {
         manifest.push((
             prima_runtime::protocol::SERVICE_IMAGE_KIND_ECHO_ARGS,
-            pack_echo_args(args)?,
+            pack_program_args(args)?,
         ));
     }
 
@@ -339,15 +370,18 @@ fn ensure_sbase(sbase: &Path) -> Result<(), String> {
 
 /// argv 参数块：`[count][len, bytes]...`。内核把每个 manifest 条目都当 ELF 解析，
 /// 故参数块放进一个单页 ET_DYN（一个覆盖全页的 `PT_LOAD`）的固定偏移之后。
-fn pack_echo_args(args: &[&str]) -> Result<Vec<u8>, String> {
+fn pack_program_args(args: &[&str]) -> Result<Vec<u8>, String> {
     if args.is_empty() || args.len() > 8 {
-        return Err(format!("echo argv count {} is outside 1..=8", args.len()));
+        return Err(format!(
+            "program argv count {} is outside 1..=8",
+            args.len()
+        ));
     }
     let mut payload = Vec::new();
     payload.push(args.len() as u8);
     for arg in args {
         if arg.len() > 127 {
-            return Err(format!("echo argument too long: {} bytes", arg.len()));
+            return Err(format!("program argument too long: {} bytes", arg.len()));
         }
         payload.push(arg.len() as u8);
         payload.extend_from_slice(arg.as_bytes());
@@ -355,7 +389,7 @@ fn pack_echo_args(args: &[&str]) -> Result<Vec<u8>, String> {
     let offset = prima_runtime::protocol::SERVICE_ECHO_ARGS_OFFSET as usize;
     let total = offset + payload.len();
     if total > 0x1000 {
-        return Err("echo argv block exceeds one page".to_owned());
+        return Err("program argv block exceeds one page".to_owned());
     }
     let mut image = vec![0u8; total];
     image[0..4].copy_from_slice(b"\x7fELF");
@@ -497,6 +531,48 @@ pub(crate) fn check_stage5_linux_echo() -> Result<(), String> {
         }
     }
     println!("PASS linux sbase echo E1-E6 stdout/exit references");
+    Ok(())
+}
+
+/// M6 冻结的 Linux 参考输出：同一份 `stage5_time.c` 在宿主上必须全项通过。
+pub(crate) const TIME_EXPECTED_STDOUT: &[u8] =
+    b"TIME|ok=1;clock=1;nsec=1;mono=1;badclk=1;badptr=1;badnsec=1;zero=1;rel=1;abs=1;past=1\n";
+
+/// M6：用宿主 glibc 重建 `stage5_time.c`，取得 clock_gettime/nanosleep 的成功、错误与
+/// 单调性基线。Prima 侧必须逐字节一致并以退出码 0 结束。
+pub(crate) fn check_stage5_linux_time() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_time.c");
+    let binary = workspace.join("target/prima-os/time-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 time: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 time probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 time probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != TIME_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 time mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(TIME_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 time clock/nanosleep references");
     Ok(())
 }
 

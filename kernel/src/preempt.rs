@@ -40,6 +40,15 @@ const PREEMPT_THRESHOLD: u64 = 2;
 
 static PREEMPT_ENABLE: AtomicBool = AtomicBool::new(false);
 static TICKS: AtomicU64 = AtomicU64::new(0);
+/// M6：自由运行的 PIT 计数（不依赖 IRQ0）。
+static TIME_COUNTER: StaticCell<Option<TimeCounter>> = StaticCell::new(None);
+
+struct TimeCounter {
+    /// 上次读到的硬件倒计数（0..=PIT_DIVISOR）。
+    last: u16,
+    /// 累计经过的 PIT 时钟数。
+    clocks: u64,
+}
 /// 各任务被时钟抢占的次数（索引即 Task id）。
 static PREEMPTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 /// 各任务在时钟入口观测到的 CR3 根物理地址。
@@ -57,6 +66,60 @@ pub fn set_finish_handler(handler: fn() -> !) {
 /// 发 EOI 给主片（IRQ0 只需主片）。
 fn eoi() {
     prima_ostd::arch::outb(PIC1_CMD, 0x20);
+}
+
+/// M6：启动 PIT 通道 0 的自由运行计数（约 10 ms 周期），**不**放行 IRQ0。
+///
+/// 只编程 8254；PIC 保持屏蔽，用户帧保持 IF=0。时间由 [`time_ticks`] 轮询硬件
+/// 计数得到，因此既有协作阶段的执行模型与中断见证完全不变。
+pub fn start_time_counter() {
+    TIME_COUNTER.with_mut(|slot| {
+        if slot.is_some() {
+            return;
+        }
+        // 通道 0、先低后高、模式 2（rate generator）。
+        prima_ostd::arch::outb(PIT_CMD, 0x34);
+        prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR & 0xff) as u8);
+        prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR >> 8) as u8);
+        let now = read_pit_count();
+        *slot = Some(TimeCounter {
+            last: now,
+            clocks: 0,
+        });
+    });
+}
+
+/// 锁存并读取通道 0 的当前倒计数（先低字节后高字节）。
+fn read_pit_count() -> u16 {
+    prima_ostd::arch::outb(PIT_CMD, 0x00);
+    let low = prima_ostd::arch::inb(PIT_CH0) as u16;
+    let high = prima_ostd::arch::inb(PIT_CH0) as u16;
+    (high << 8) | low
+}
+
+/// M6：返回自启动以来经过的 PIT tick（约 100 Hz，向下取整）。
+///
+/// 每次调用把硬件倒计数折算为经过的 PIT 时钟并累计；调用间隔需短于一个计数周期
+/// （约 55 ms）才能无歧义地跨过重装，睡眠轮询路径满足这一条件。
+pub fn time_ticks() -> u64 {
+    TIME_COUNTER.with_mut(|slot| match slot {
+        Some(counter) => {
+            let now = read_pit_count();
+            counter.clocks += counter_delta(counter.last, now) as u64;
+            counter.last = now;
+            counter.clocks / PIT_DIVISOR as u64
+        }
+        None => 0,
+    })
+}
+
+/// 两个倒计数采样之间经过的 PIT 时钟数（含一次重装的回绕）。
+const fn counter_delta(last: u16, now: u16) -> u16 {
+    if last >= now {
+        last - now
+    } else {
+        last + PIT_DIVISOR - now
+    }
 }
 
 /// 重映射 8259、只放行 IRQ0，并启动 8254 通道 0（~100 Hz）。
@@ -343,5 +406,13 @@ mod tests {
     #[test]
     fn timer_vector_is_master_pic_base() {
         assert_eq!(TIMER_VECTOR, 0x20);
+    }
+
+    #[test]
+    fn counter_delta_handles_reload_and_same_sample() {
+        assert_eq!(counter_delta(100, 100), 0);
+        assert_eq!(counter_delta(100, 40), 60);
+        // 倒计数 3 → 重装后 11930：经过 3 + (11932 - 11930) 个时钟。
+        assert_eq!(counter_delta(3, 11930), 5);
     }
 }

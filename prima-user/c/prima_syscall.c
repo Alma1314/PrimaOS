@@ -313,6 +313,98 @@ static long prima_file_close(int fd) {
     return 0;
 }
 
+/* ---------- M6：POSIX 时间（PIT tick，10 ms 粒度） ----------
+ *
+ * `SYS_TIME_ENABLE` 启动 PIT 通道 0 的自由运行计数（不打开中断）；`SYS_TIME_TICKS`
+ * 轮询硬件计数，与抽象 `SYS_TIME_NOW`（Timer 时钟）分离，不会提前触发既有 Timer 见证。
+ *
+ * 已知边界（P5-TIME-01 partial）：
+ * - 仅 `CLOCK_MONOTONIC` 可查询；`CLOCK_REALTIME` 无墙上时钟，返回 `EINVAL`。
+ * - `nanosleep` 是 CPU 轮询，不阻塞接收；无信号，故不会返回 `EINTR`，`rem` 不写回。
+ * - 未知时钟 id/flag 返回 `EINVAL`；非 NULL 坏指针由用户态缺页终止，适配层只保证
+ *   NULL → `EFAULT`。
+ */
+#define PRIMA_CLOCK_REALTIME 0
+#define PRIMA_CLOCK_MONOTONIC 1
+#define PRIMA_TIMER_ABSTIME 1
+#define PRIMA_TICK_NS UINT64_C(10000000)
+#define PRIMA_TICKS_PER_SEC UINT64_C(100)
+
+static int prima_time_enabled;
+
+static long prima_time_ready(void) {
+    if (prima_time_enabled)
+        return 0;
+    long result = prima_raw(PRIMA_SYS_TIME_ENABLE, 0, 0, 0, 0, 0, 0);
+    if (result != 0)
+        return result < 0 ? result : -PRIMA_ERRNO_EINVAL;
+    prima_time_enabled = 1;
+    return 0;
+}
+
+static long prima_ticks(void) {
+    return prima_raw(PRIMA_SYS_TIME_TICKS, 0, 0, 0, 0, 0, 0);
+}
+
+static long prima_clock_gettime(long clock_id, void *ts) {
+    if (clock_id != PRIMA_CLOCK_MONOTONIC)
+        return -PRIMA_ERRNO_EINVAL;
+    if (!ts)
+        return -PRIMA_ERRNO_EFAULT;
+    long ready = prima_time_ready();
+    if (ready < 0)
+        return ready;
+    long ticks = prima_ticks();
+    if (ticks < 0)
+        return ticks;
+    unsigned long *out = ts;
+    out[0] = (unsigned long)ticks / PRIMA_TICKS_PER_SEC;
+    out[1] = ((unsigned long)ticks % PRIMA_TICKS_PER_SEC) * PRIMA_TICK_NS;
+    return 0;
+}
+
+static long prima_sleep_ns(long clock_id, long flags, const void *req,
+                           void *rem) {
+    (void)rem;
+    if (!req)
+        return -PRIMA_ERRNO_EFAULT;
+    const long *times = req;
+    long sec = times[0];
+    long nsec = times[1];
+    if (sec < 0 || nsec < 0 || nsec >= 1000000000L)
+        return -PRIMA_ERRNO_EINVAL;
+    if ((flags & ~PRIMA_TIMER_ABSTIME) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    /* 相对睡眠接受 REALTIME/MONOTONIC（musl 的 nanosleep 传入 REALTIME）；
+     * 绝对睡眠只对 MONOTONIC 有意义。 */
+    if (clock_id != PRIMA_CLOCK_MONOTONIC &&
+        !(clock_id == PRIMA_CLOCK_REALTIME && flags == 0))
+        return -PRIMA_ERRNO_EINVAL;
+    if (sec > (0x7fffffffffffffffL - nsec) / 1000000000L)
+        return -PRIMA_ERRNO_EINVAL;
+    unsigned long long ns =
+        (unsigned long long)sec * 1000000000ULL + (unsigned long long)nsec;
+    unsigned long long ticks = (ns + PRIMA_TICK_NS - 1) / PRIMA_TICK_NS;
+    long ready = prima_time_ready();
+    if (ready < 0)
+        return ready;
+    long now = prima_ticks();
+    if (now < 0)
+        return now;
+    unsigned long long deadline =
+        (flags & PRIMA_TIMER_ABSTIME) ? ticks : (unsigned long long)now + ticks;
+    for (;;) {
+        long current = prima_ticks();
+        if (current < 0)
+            return current;
+        if ((unsigned long long)current >= deadline)
+            break;
+        /* PIT 计数独立于中断推进。这里不 `yield`：协作调度器在无其他 Ready
+         * 任务时会让 `SYS_YIELD` 直接 panic；轮询间隔远小于 PIT 周期。 */
+    }
+    return 0;
+}
+
 __attribute__((noreturn)) static void prima_exit_group(int status) {
     long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
     uint64_t payload = PRIMA_STAGE5_C_PROBE_TAG |
@@ -382,6 +474,13 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_openat(a0, (const char *)a1, a2, a3);
     case PRIMA_LINUX_SYS_ioctl:
         return -PRIMA_ERRNO_ENOSYS;
+    case PRIMA_LINUX_SYS_clock_gettime:
+        return prima_clock_gettime(a0, (void *)a1);
+    case PRIMA_LINUX_SYS_clock_nanosleep:
+        return prima_sleep_ns(a0, a1, (const void *)a2, (void *)a3);
+    case PRIMA_LINUX_SYS_nanosleep:
+        return prima_sleep_ns(PRIMA_CLOCK_REALTIME, 0, (const void *)a0,
+                              (void *)a1);
     case PRIMA_LINUX_SYS_set_tid_address:
         (void)a0;
         return prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);

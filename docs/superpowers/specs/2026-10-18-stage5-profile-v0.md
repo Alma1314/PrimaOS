@@ -57,7 +57,7 @@
 | P5-FS-01 | `openat(dirfd, path, flags, mode)` | 路径解析与错误码 | 存储服务；Namespace `f` 仅作授权入口 | partial | **M4**：`AT_FDCWD`、唯一文件名 `f`（≤3 字节、无 `/`）、access/CREAT/TRUNC；无目录/枚举/多级路径/`O_APPEND` | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
 | P5-FS-02 | `lseek(fd, off, whence)` | 偏移与不可 seek 错误 | 服务端共享偏移 | partial | **M4**：SET/CUR/END、服务端 offset、每次 open 独立；无跨句柄共享 offset | [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md) |
 | P5-MM-01 | `mmap/munmap/mprotect` | 匿名/文件映射、flags | `MemorySegment` + 页表 | planned | 仅承诺匿名子集；装载器已按 `PT_LOAD` 做 W^X，但 `mmap` 三路径未实现；文件映射不支持 | P5-MM-01 |
-| P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | 现有 `SYS_TIME_NOW` 为 PIT tick | planned | 时钟 id、单位、精度、超时与 `EINTR` 未冻结 | P5-TIME-01 |
+| P5-TIME-01 | `clock_gettime/nanosleep` | CLOCK_MONOTONIC 等 | PIT 自由运行计数（`SYS_TIME_ENABLE=39`/`SYS_TIME_TICKS=40`）+ 用户态轮询 | partial | **M6**：仅 `CLOCK_MONOTONIC` 可查询；10 ms 分辨率；`nanosleep`/`clock_nanosleep` 为轮询实现，无 `EINTR`、`rem` 不写回；`CLOCK_REALTIME` 查询返回 `EINVAL`；无 `clock_getres`/`clock_settime`/`gettimeofday`。相邻 tick 读取间隔须 <55 ms | [M6 报告](../reports/2026-10-19-stage5-m6-time.md) |
 | P5-THREAD-01 | `pthread_create/join`、mutex/cond | POSIX 线程 | 无 Thread/TLS/WaitObject | unsupported | 阶段 5 不承诺；禁止用成功空实现占位 | P5-THREAD-01 |
 | P5-NET-01 | `socket/bind/sendto/recvfrom` | BSD socket | 无网络服务 | unsupported | 阶段 5 不承诺；loopback IPC 不算网络 | P5-NET-01 |
 | P5-LIB-01 | `strcmp`、`fputs`、`fputc`、`putchar`、`fflush`、`fclose`、`ferror` | musl/stdio | 静态 musl 基座（M3/M4/M5） | supported | **M5**：上述冻结符号由 sbase `echo` E1–E6 双轮验收（含 `fclose(stdout)` 与 `exit`）；stdio **文件** API（`fopen`/`fread`/`fwrite`）仍不在本行 | [musl 计划](../plans/2026-10-18-musl-port-plan.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md) |

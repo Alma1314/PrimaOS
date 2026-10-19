@@ -71,6 +71,22 @@ fn test_boot_slice() -> Result<(), String> {
             println!("PASS qemu bios {} run={run}", case.name);
         }
     }
+    // M6：POSIX 时间探针走同一托管程序通道，各跑两轮并逐轮比较 IPC 计数。
+    image::check_stage5_linux_time()?;
+    let images = image::build_images_for_time()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "T1",
+                image::TIME_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS T1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios T1 run={run}");
+    }
     println!("PASS stage1 boot slice");
     Ok(())
 }

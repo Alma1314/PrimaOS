@@ -179,6 +179,15 @@ pub mod syscall {
     ///
     /// 追加号；只影响调用者自己的保存帧，切换任务时由调度器恢复各自的基址。
     pub const SYS_TASK_SET_FS_BASE: u64 = 38;
+    /// Stage 5 / M6：启动 PIT 通道 0 的自由运行计数（约 10 ms 周期）。
+    ///
+    /// 不配置 PIC、不打开 IF：既有协作阶段用户帧保持不可中断。追加号。
+    pub const SYS_TIME_ENABLE: u64 = 39;
+    /// Stage 5 / M6：轮询并返回自 `SYS_TIME_ENABLE` 起的 PIT tick 数（约 100 Hz）。
+    ///
+    /// 与抽象 `SYS_TIME_NOW`（`advance_time` 时钟，仅用于 Timer）分离：本号直接折算
+    /// 硬件倒计数，不推进 Timer 状态，故不会提前触发既有 Timer 见证。
+    pub const SYS_TIME_TICKS: u64 = 40;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

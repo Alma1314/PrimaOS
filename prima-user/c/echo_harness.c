@@ -1,8 +1,8 @@
-/* M5 echo 用例的前置文件授权冒烟。
+/* M5 echo / M6 时间探针共用的前置文件授权冒烟。
  *
- * `NsWitness::evidence_ok` 冻结了 M4 的两次 `open("f")` 授权解析；echo 本身不做文件
- * I/O，故在 `__libc_start_main` 之前用适配层的原始 syscall 走同一路径两次，使每轮
- * 启动的业务授权证据仍然成立。本函数不写 stdout/stderr，失败编码进退出码 70。
+ * `NsWitness::evidence_ok` 冻结了 M4 的两次 `open("f")` 授权解析；托管程序本身不做
+ * 文件 I/O，故在 `__libc_start_main` 之前用适配层的原始 syscall 走同一路径两次，使
+ * 每轮启动的业务授权证据仍然成立。本函数不写 stdout/stderr，失败编码进退出码 70。
  */
 #include "prima_abi.h"
 
