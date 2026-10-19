@@ -99,13 +99,8 @@ enum Stage5Program<'a> {
     Echo(&'a [&'a str]),
     /// M6：POSIX 时间探针（无 argv 语义，走同一托管程序通道）。
     Time,
-}
-
-impl Stage5Program<'_> {
-    /// 是否走「服务管理器托管程序」通道（参数块 + ECHO tag + 排空屏障）。
-    fn is_managed(&self) -> bool {
-        !matches!(self, Self::Probe)
-    }
+    /// M7：fd 表 / dup / getpid 探针；自行执行两次 open，故不预置 harness。
+    Fd,
 }
 
 pub(crate) fn build_images() -> Result<Images, String> {
@@ -120,6 +115,11 @@ pub(crate) fn build_images_for_echo(args: &[&str]) -> Result<Images, String> {
 /// M6：用时间探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_time() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Time)
+}
+
+/// M7：用 fd 表探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_fd() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Fd)
 }
 
 fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, String> {
@@ -216,6 +216,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_time.c"), c_dir.join("echo_harness.c")],
             "stage5 time probe",
         ),
+        Stage5Program::Fd => (
+            path.with_file_name("stage5-fd.elf"),
+            vec![c_dir.join("stage5_fd.c")],
+            "stage5 fd probe",
+        ),
         Stage5Program::Probe => (
             path.with_file_name("stage5-probe.elf"),
             vec![stage5_probe_source()],
@@ -246,8 +251,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         "-nostdinc",
     ]);
     clang.arg("-isystem").arg(musl_prefix.join("include"));
-    if program.is_managed() {
-        // M5/M6 共用的前置文件授权冒烟：保持 NsWitness 的两次 open 解析计数。
+    // M5/M6 共用的前置文件授权冒烟：保持 NsWitness 的两次 open 解析计数。
+    // M7 的 fd 探针自行执行两次 open，不再叠加 harness。
+    if matches!(program, Stage5Program::Echo(_) | Stage5Program::Time) {
         clang.arg("-DPRIMA_ECHO_HARNESS").arg("-I").arg(&c_dir);
         if matches!(program, Stage5Program::Echo(_)) {
             clang.arg("-I").arg(workspace.join("target").join("sbase"));
@@ -282,8 +288,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
     let program_args: Option<&[&str]> = match &program {
         Stage5Program::Echo(args) => Some(args),
-        // 时间探针不需要参数；托管程序通道仍要求一个非空 argv。
+        // 时间/fd 探针不需要参数；托管程序通道仍要求一个非空 argv。
         Stage5Program::Time => Some(&["stage5-time"]),
+        Stage5Program::Fd => Some(&["stage5-fd"]),
         Stage5Program::Probe => None,
     };
     if let Some(args) = program_args {
@@ -573,6 +580,53 @@ pub(crate) fn check_stage5_linux_time() -> Result<(), String> {
         ));
     }
     println!("PASS linux stage5 time clock/nanosleep references");
+    Ok(())
+}
+
+/// M7 冻结的 Linux 参考输出：同一份 `stage5_fd.c` 在宿主上必须全项通过。
+pub(crate) const FD_EXPECTED_STDOUT: &[u8] =
+    b"FD|ok=1;pid=1;open=1;dup=1;share=1;dup2=1;dup3=1;close=1;self=1;reuse=1;bad=1\n";
+
+/// M7：用宿主 glibc 重建 `stage5_fd.c`，取得 dup/dup2/dup3/getpid 的参考结果。
+/// 在一次性 cwd 中运行，使探针的路径 `f` 与 Prima 的单文件服务等价。
+pub(crate) fn check_stage5_linux_fd() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_fd.c");
+    let binary = workspace.join("target/prima-os/fd-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 fd: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 fd probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/fd-linux-run");
+    fs::create_dir_all(&run_dir)
+        .map_err(|error| format!("failed to create {}: {error}", run_dir.display()))?;
+    let _ = fs::remove_file(run_dir.join("f"));
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 fd probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != FD_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 fd mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(FD_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 fd dup/getpid references");
     Ok(())
 }
 

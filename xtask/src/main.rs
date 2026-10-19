@@ -87,6 +87,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios T1 run={run}");
     }
+    // M7：本地 fd 表 / dup / getpid 探针，各跑两轮并逐轮比较 IPC 计数。
+    image::check_stage5_linux_fd()?;
+    let images = image::build_images_for_fd()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "F1",
+                image::FD_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS F1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios F1 run={run}");
+    }
     println!("PASS stage1 boot slice");
     Ok(())
 }

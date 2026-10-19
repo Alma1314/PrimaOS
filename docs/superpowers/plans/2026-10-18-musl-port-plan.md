@@ -3,7 +3,8 @@
 **日期**：2026-10-18
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
-（`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片与 M6 POSIX 时间首切片已完成（2026-10-18/19，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)与 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+（`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片、M6 POSIX 时间首切片与
+M7 完整本地 fd 表已完成（2026-10-18/19，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)与 [M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，仍无目录/多级路径/进程退出自动关闭。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -34,7 +35,7 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 | M1：C 程序启动 | 制定 x86_64 C 入口契约：ELF `PT_LOAD` 权限、BSS 清零、栈对齐、`argc/argv/envp/auxv`、初始 fd/Capability、退出状态。先用无 libc 的 C/汇编探针跑通装载、`_start`、用户栈和 `_exit`。解决 BLK-004 后加入现有 boot image/manifest 与 QEMU 启动路径。 | ring3 QEMU 记录入口寄存器、栈布局、读写段权限、退出状态；错 ELF、坏指针、容量耗尽确定失败；旧阶段 1–4 事件不回归。 |
 | M2：系统边界 | **首个纵向切片已完成（2026-10-18）**：追加 `SYS_TASK_SET_FS_BASE=38` + per-task FS base；C 适配层 `__syscall0..6`（Linux 号只在适配层翻译、原始负 errno）实现 `write`/`writev`/`close(1/2)`/`ioctl`/`set_tid_address`/`arch_prctl`/退出；`read` 与通用 fd 表明确未实现；Prima crt 骨架保存 `prima_ctx`。边界收尾已补齐 `exit(60)` 与 `__syscall4..6` 全参数透传（取消点的适配层路径就绪，musl 侧替换属 M3）；通用 fd→Capability 映射仍待后续切片。见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)。 | 裸 C 探针验证写入/短写（writev）、非法 fd、无授权、NULL 缓冲区、未知号与 FS base 往返；同源 Linux/Prima 结果矩阵；无内核 POSIX 对象或 Linux syscall 号泄漏；静态 PIE 在构建期校验。 |
 | M3：静态 musl 基座 | **已完成（2026-10-18，含 M3b）**：SSE/FPU 契约（`CR4.OSFXSR/OSXMMEXCPT`、per-task `FXSAVE/FXRSTOR`）、锁定快照 + 两个可重放补丁（`syscall_arch.h`、`__set_thread_area.s`）、Prima crt 接 `__libc_start_main`、静态 `libc.a`/sysroot 构建脚本；M3b 由服务管理器预映射 64 页匿名 arena（栈同段），适配层实现 `brk`/匿名 `mmap`/`mprotect`/`munmap`，`malloc/free/realloc` 通过。`printf`+`fflush` 输出路径由 M4 验收。见[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)。 | 静态 C 探针覆盖 `main` 返回/`exit`、`errno`、`snprintf` 格式化、环境变量、`malloc/free/realloc`（含 140000 字节独立 mmap）及失败路径；`readelf` 检查静态 PIE/RELATIVE-only；补丁可从锁定快照重放。 |
-| M4：文件与路径 | **首切片已完成（2026-10-18）**：用户态 fd 3..6 生命周期、`openat/read/write/lseek/close` 的冻结子集、存储服务的单文件字节流、Namespace `f` 授权入口；`printf`+`fflush` 输出路径一并验收。无目录/多级路径/`dup`/`CLOEXEC`/共享 offset，逐项标 partial。见[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)。 | 每个支持 API 的 Linux/Prima 同源正反例差分：内容、偏移、错误码、句柄失效、句柄复用；失败时不泄漏 cap（授权解析 cap 立即归还）。**目录/多级路径与完整 fd 表仍待后续切片。** |
+| M4：文件与路径 | **首切片已完成（2026-10-18）**：用户态 fd 3..6 生命周期、`openat/read/write/lseek/close` 的冻结子集、存储服务的单文件字节流、Namespace `f` 授权入口；`printf`+`fflush` 输出路径一并验收。无目录/多级路径/`dup`/`CLOEXEC`/共享 offset，逐项标 partial。见[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)。 | 每个支持 API 的 Linux/Prima 同源正反例差分：内容、偏移、错误码、句柄失效、句柄复用；失败时不泄漏 cap（授权解析 cap 立即归还）。**目录/多级路径仍待后续切片；完整 fd 表已由 M7 补齐。** |
 | M5：开源程序与扩展 | **首切片已完成（2026-10-19）**：锁定 commit 的 sbase `echo` 源码用 Prima sysroot 重编译，E1–E6 六用例各双轮 QEMU 通过；随后按 profile 的实际需求扩展时间单位、`mmap/mprotect`、TLS/线程、信号、进程、网络；每一组先补机制/服务契约，再开启对应 musl 路径。 | 首切片证据见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)；构建命令、源码哈希、QEMU 结果和 Linux 参考可重复；API 行仍按实际覆盖逐项标 supported/partial/unsupported。 |
 
 M1–M3 的最小闭环优先保证静态 C 程序可靠启动与退出。M4/M5 对应阶段 5 全部 profile 的后续交付；若选定程序需要线程或路径，必须先实现相应语义，不能跳过依赖。
@@ -87,6 +88,13 @@ stdout 与退出码逐字节一致。详见 [M5 报告](../reports/2026-10-19-st
 Linux/Prima 输出逐字节一致。中断驱动的 tick-only 方案在协作阶段触发 `#DF`，已放弃并记录。
 P5-TIME-01 仍为 `partial`（轮询、无 `EINTR`、无墙上时钟）。详见
 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)。
+
+**M7 fd 表切片（2026-10-19）**：适配层把 M4 的固定 fd 3..6 扩为本地 fd 表 3..10，
+文件项指向服务端句柄并做引用计数；`dup`/`dup2`/`dup3` 共享打开描述与 offset，最后一个
+引用才发 `CLOSE`；`getpid` 映射 `SYS_TASK_ID`。新探针使用 libc `open()` 时发现
+musl/x86_64 走 `SYS_open=2`（非 `openat`），适配层补上同号翻译。Linux/Prima 同源输出
+逐字节一致，F1 双轮 QEMU PASS。P5-FD-01/P5-PROC-02 仍为 `partial`，详见
+[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)。
 
 ## 构建与验证
 

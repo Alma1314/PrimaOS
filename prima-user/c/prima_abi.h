@@ -22,6 +22,7 @@
 /* Linux x86_64 syscall numbers：只在 prima_syscall.c 内翻译，绝不进入内核。 */
 #define PRIMA_LINUX_SYS_read 0
 #define PRIMA_LINUX_SYS_write 1
+#define PRIMA_LINUX_SYS_open 2
 #define PRIMA_LINUX_SYS_close 3
 #define PRIMA_LINUX_SYS_lseek 8
 #define PRIMA_LINUX_SYS_mmap 9
@@ -30,9 +31,13 @@
 #define PRIMA_LINUX_SYS_brk 12
 #define PRIMA_LINUX_SYS_ioctl 16
 #define PRIMA_LINUX_SYS_writev 20
+#define PRIMA_LINUX_SYS_dup 32
+#define PRIMA_LINUX_SYS_dup2 33
+#define PRIMA_LINUX_SYS_getpid 39
 #define PRIMA_LINUX_SYS_nanosleep 35
 #define PRIMA_LINUX_SYS_exit 60
 #define PRIMA_LINUX_SYS_clock_gettime 228
+#define PRIMA_LINUX_SYS_dup3 292
 #define PRIMA_LINUX_SYS_clock_nanosleep 230
 #define PRIMA_LINUX_SYS_arch_prctl 158
 #define PRIMA_LINUX_SYS_set_tid_address 218
@@ -103,6 +108,13 @@
 #define PRIMA_FILE_HANDLES 4
 #define PRIMA_FILE_FIRST_FD 3
 #define PRIMA_FILE_LAST_FD (PRIMA_FILE_FIRST_FD + PRIMA_FILE_HANDLES - 1)
+
+/* M7：本地 fd 表（3..10）。文件项指向服务端句柄（3..6），dup 出的多项共享同一
+ * 句柄与 offset；tty 项（fd 1/2 的副本）不占服务端句柄。表满返回 EAGAIN，沿用
+ * M4 服务端的容量错误，不引入未冻结的 EMFILE。 */
+#define PRIMA_LOCAL_FD_FIRST 3
+#define PRIMA_LOCAL_FD_COUNT 8
+#define PRIMA_LOCAL_FD_LAST (PRIMA_LOCAL_FD_FIRST + PRIMA_LOCAL_FD_COUNT - 1)
 
 /* 入口寄存器 → prima_ctx 的布局（由 stage5_start.S 写入）。 */
 struct prima_entry_ctx {

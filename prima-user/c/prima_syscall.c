@@ -3,7 +3,7 @@
  * 边界规则：
  * - Linux 调用号只在本文件出现，翻译后只向内核发 Prima 原生号；
  * - 所有失败返回原始负 errno（不设置 errno，musl 的 syscall 约定）；
- * - fd 1/2 固定映射到管理器的 tty 字节流；通用 fd 表属 P5-FD-01，未实现；
+ * - fd 1/2 固定映射到管理器的 tty 字节流；fd 3..10 是本地表，文件项经存储服务；
  * - 每次 SEND 后显式 YIELD：自毁会清掉仍在接收队列里的消息，退出状态必须先被取走。
  */
 #include "prima_syscall.h"
@@ -135,17 +135,73 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
     return (long)len;
 }
 
-/* ---------- M4：文件 fd 生命周期 ----------
+/* ---------- M4/M7：本地 fd 表 ----------
  *
- * fd 3..6 由本适配层拥有，服务端持有打开句柄与共享 offset。单条 IPC 最多携带
- * `PRIMA_FILE_CHUNK` 字节，故 read/write 在这里分片——调用者仍看到完整的
- * `read`/`write` 语义（短读只在 EOF/服务端容量边界出现）。
+ * 本地 fd 3..10 由适配层拥有；文件项指向服务端句柄（3..6，最多 4 个并发 open），
+ * `dup*` 出的多项共享同一句柄与 offset，最后一个引用关闭时才向服务端发 CLOSE。
+ * 单条 IPC 最多携带 `PRIMA_FILE_CHUNK` 字节，故 read/write 在这里分片——调用者
+ * 仍看到完整的 `read`/`write` 语义（短读只在 EOF/服务端容量边界出现）。
+ *
+ * 已知边界（P5-FD-01 partial）：无 fd 0；`dup2`/`dup3` 的目标只接受 3..10；
+ * 无 exec，故 `O_CLOEXEC` 被接受但无语义效果；本地表满返回 EAGAIN。
  */
-static unsigned char prima_file_open[PRIMA_FILE_HANDLES];
+#define PRIMA_FD_FREE 0
+#define PRIMA_FD_TTY 1
+#define PRIMA_FD_FILE 2
 
-static int prima_file_fd(int fd) {
-    return fd >= PRIMA_FILE_FIRST_FD && fd <= PRIMA_FILE_LAST_FD &&
-           prima_file_open[fd - PRIMA_FILE_FIRST_FD] != 0;
+static long prima_file_call(long op, long fd, uint64_t arg);
+static long prima_reply_status(uint64_t reply);
+
+struct prima_fd_entry {
+    unsigned char kind;
+    unsigned char object; /* tty fd（1/2）或服务端句柄（3..6） */
+};
+
+static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT];
+static unsigned char prima_file_refs[PRIMA_FILE_HANDLES];
+
+static struct prima_fd_entry *prima_fd_entry(int fd) {
+    if (fd < PRIMA_LOCAL_FD_FIRST || fd > PRIMA_LOCAL_FD_LAST)
+        return 0;
+    struct prima_fd_entry *entry = &prima_fds[fd - PRIMA_LOCAL_FD_FIRST];
+    return entry->kind == PRIMA_FD_FREE ? 0 : entry;
+}
+
+static int prima_fd_has_room(void) {
+    for (int i = 0; i < PRIMA_LOCAL_FD_COUNT; i++)
+        if (prima_fds[i].kind == PRIMA_FD_FREE)
+            return 1;
+    return 0;
+}
+
+/* 返回最低空闲本地 fd；表满返回 -1。 */
+static int prima_fd_install(unsigned char kind, unsigned char object) {
+    for (int i = 0; i < PRIMA_LOCAL_FD_COUNT; i++) {
+        if (prima_fds[i].kind == PRIMA_FD_FREE) {
+            prima_fds[i].kind = kind;
+            prima_fds[i].object = object;
+            return i + PRIMA_LOCAL_FD_FIRST;
+        }
+    }
+    return -1;
+}
+
+/* 释放一项；文件句柄的最后一个引用负责通知服务端。返回服务端状态（tty 为 0）。 */
+static long prima_fd_drop(int fd) {
+    struct prima_fd_entry *entry = &prima_fds[fd - PRIMA_LOCAL_FD_FIRST];
+    long status = 0;
+    if (entry->kind == PRIMA_FD_FILE) {
+        unsigned char handle = entry->object;
+        if (--prima_file_refs[handle - PRIMA_FILE_FIRST_FD] == 0) {
+            long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
+            if (reply < 0)
+                status = reply;
+            else if (prima_reply_status((uint64_t)reply) != 0)
+                status = -prima_reply_status((uint64_t)reply);
+        }
+    }
+    entry->kind = PRIMA_FD_FREE;
+    return status;
 }
 
 /* 同步请求：发送一帧、让出、阻塞接收文件应答；返回应答 payload 或原始负 errno。 */
@@ -199,6 +255,8 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
                    PRIMA_O_LARGEFILE | PRIMA_O_CLOEXEC;
     if ((flags & ~allowed) != 0)
         return -PRIMA_ERRNO_EINVAL;
+    if (!prima_fd_has_room())
+        return -PRIMA_ERRNO_EAGAIN;
     uint64_t internal = (uint64_t)access << PRIMA_FILE_ACCESS_SHIFT;
     if (flags & PRIMA_O_CREAT)
         internal |= PRIMA_FILE_FLAG_CREAT;
@@ -214,16 +272,14 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     long status = prima_reply_status((uint64_t)reply);
     if (status != 0)
         return -status;
-    long fd = (long)(((uint64_t)reply >> PRIMA_FILE_FD_SHIFT) & 0xf);
-    if (fd < PRIMA_FILE_FIRST_FD || fd > PRIMA_FILE_LAST_FD)
+    long handle = (long)(((uint64_t)reply >> PRIMA_FILE_FD_SHIFT) & 0xf);
+    if (handle < PRIMA_FILE_FIRST_FD || handle > PRIMA_FILE_LAST_FD)
         return -PRIMA_ERRNO_EINVAL;
-    prima_file_open[fd - PRIMA_FILE_FIRST_FD] = 1;
-    return fd;
+    prima_file_refs[handle - PRIMA_FILE_FIRST_FD] = 1;
+    return prima_fd_install(PRIMA_FD_FILE, (unsigned char)handle);
 }
 
-static long prima_file_read(int fd, void *buf, unsigned long len) {
-    if (!prima_file_fd(fd))
-        return -PRIMA_ERRNO_EBADF;
+static long prima_handle_read(int handle, void *buf, unsigned long len) {
     if (len == 0)
         return 0;
     if (!buf)
@@ -234,7 +290,7 @@ static long prima_file_read(int fd, void *buf, unsigned long len) {
         unsigned long chunk = len - done;
         if (chunk > PRIMA_FILE_CHUNK)
             chunk = PRIMA_FILE_CHUNK;
-        long reply = prima_file_call(PRIMA_FILE_OP_READ, fd, chunk);
+        long reply = prima_file_call(PRIMA_FILE_OP_READ, handle, chunk);
         if (reply < 0)
             return done != 0 ? (long)done : reply;
         uint64_t raw = (uint64_t)reply;
@@ -254,9 +310,7 @@ static long prima_file_read(int fd, void *buf, unsigned long len) {
     return (long)done;
 }
 
-static long prima_file_write(int fd, const void *buf, unsigned long len) {
-    if (!prima_file_fd(fd))
-        return -PRIMA_ERRNO_EBADF;
+static long prima_handle_write(int handle, const void *buf, unsigned long len) {
     if (len == 0)
         return 0;
     if (!buf)
@@ -270,7 +324,7 @@ static long prima_file_write(int fd, const void *buf, unsigned long len) {
         uint64_t arg = (uint64_t)chunk << PRIMA_FILE_WRITE_COUNT_SHIFT;
         for (unsigned long i = 0; i < chunk; i++)
             arg |= (uint64_t)in[done + i] << (8 * i);
-        long reply = prima_file_call(PRIMA_FILE_OP_WRITE, fd, arg);
+        long reply = prima_file_call(PRIMA_FILE_OP_WRITE, handle, arg);
         if (reply < 0)
             return done != 0 ? (long)done : reply;
         long status = prima_reply_status((uint64_t)reply);
@@ -281,16 +335,14 @@ static long prima_file_write(int fd, const void *buf, unsigned long len) {
     return (long)len;
 }
 
-static long prima_file_lseek(int fd, long offset, int whence) {
-    if (!prima_file_fd(fd))
-        return -PRIMA_ERRNO_EBADF;
+static long prima_handle_lseek(int handle, long offset, int whence) {
     if (whence < PRIMA_SEEK_SET || whence > PRIMA_SEEK_END)
         return -PRIMA_ERRNO_EINVAL;
     if (offset < -0x20000000L || offset > 0x1fffffffL)
         return -PRIMA_ERRNO_EINVAL;
     uint64_t arg = ((uint64_t)(whence & 3) << PRIMA_FILE_SEEK_WHENCE_SHIFT) |
                    ((uint64_t)offset & PRIMA_FILE_SEEK_OFFSET_MASK);
-    long reply = prima_file_call(PRIMA_FILE_OP_LSEEK, fd, arg);
+    long reply = prima_file_call(PRIMA_FILE_OP_LSEEK, handle, arg);
     if (reply < 0)
         return reply;
     uint64_t raw = (uint64_t)reply;
@@ -300,17 +352,84 @@ static long prima_file_lseek(int fd, long offset, int whence) {
     return (long)(raw & PRIMA_FILE_ARG_MASK);
 }
 
-static long prima_file_close(int fd) {
-    if (!prima_file_fd(fd))
+static long prima_fd_read(int fd, void *buf, unsigned long len) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry || entry->kind != PRIMA_FD_FILE)
         return -PRIMA_ERRNO_EBADF;
-    long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, fd, 0);
-    if (reply < 0)
-        return reply;
-    long status = prima_reply_status((uint64_t)reply);
-    if (status != 0)
-        return -status;
-    prima_file_open[fd - PRIMA_FILE_FIRST_FD] = 0;
-    return 0;
+    return prima_handle_read(entry->object, buf, len);
+}
+
+static long prima_fd_write(int fd, const void *buf, unsigned long len) {
+    if (fd == 1 || fd == 2)
+        return prima_write_bytes(fd, buf, len);
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    if (entry->kind == PRIMA_FD_TTY)
+        return prima_write_bytes(entry->object, buf, len);
+    return prima_handle_write(entry->object, buf, len);
+}
+
+static long prima_fd_lseek(int fd, long offset, int whence) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry || entry->kind != PRIMA_FD_FILE)
+        return -PRIMA_ERRNO_EBADF;
+    return prima_handle_lseek(entry->object, offset, whence);
+}
+
+static long prima_fd_close(int fd) {
+    if (fd == 1 || fd == 2)
+        return 0;
+    if (!prima_fd_entry(fd))
+        return -PRIMA_ERRNO_EBADF;
+    return prima_fd_drop(fd);
+}
+
+static long prima_fd_dup(int oldfd) {
+    struct prima_fd_entry *entry = prima_fd_entry(oldfd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    int newfd = prima_fd_install(entry->kind, entry->object);
+    if (newfd < 0)
+        return -PRIMA_ERRNO_EAGAIN;
+    if (entry->kind == PRIMA_FD_FILE)
+        prima_file_refs[entry->object - PRIMA_FILE_FIRST_FD]++;
+    return newfd;
+}
+
+/* dup2/dup3 共用：oldfd 已校验；newfd 必须落在本地表内。先为新引用加计数，
+ * 再关闭目标项——即使两者指向同一服务端句柄，也不会在中途误发 CLOSE。 */
+static long prima_fd_dup_to(int oldfd, int newfd) {
+    struct prima_fd_entry *source = prima_fd_entry(oldfd);
+    unsigned char kind = source->kind;
+    unsigned char object = source->object;
+    if (kind == PRIMA_FD_FILE)
+        prima_file_refs[object - PRIMA_FILE_FIRST_FD]++;
+    if (prima_fd_entry(newfd))
+        (void)prima_fd_drop(newfd);
+    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].kind = kind;
+    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].object = object;
+    return newfd;
+}
+
+static long prima_fd_dup2(int oldfd, int newfd) {
+    if (oldfd == newfd)
+        return prima_fd_entry(oldfd) ? oldfd : -PRIMA_ERRNO_EBADF;
+    if (!prima_fd_entry(oldfd))
+        return -PRIMA_ERRNO_EBADF;
+    if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
+        return -PRIMA_ERRNO_EBADF;
+    return prima_fd_dup_to(oldfd, newfd);
+}
+
+static long prima_fd_dup3(int oldfd, int newfd, long flags) {
+    if (oldfd == newfd || (flags & ~(long)PRIMA_O_CLOEXEC) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    if (!prima_fd_entry(oldfd))
+        return -PRIMA_ERRNO_EBADF;
+    if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
+        return -PRIMA_ERRNO_EBADF;
+    return prima_fd_dup_to(oldfd, newfd);
 }
 
 /* ---------- M6：POSIX 时间（PIT tick，10 ms 粒度） ----------
@@ -437,15 +556,10 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
     case PRIMA_LINUX_SYS_brk:
         return prima_brk((uint64_t)a0);
     case PRIMA_LINUX_SYS_write:
-        if (a0 == 1 || a0 == 2)
-            return prima_write_bytes((int)a0, (const void *)a1,
-                                     (unsigned long)a2);
-        return prima_file_write((int)a0, (const void *)a1, (unsigned long)a2);
+        return prima_fd_write((int)a0, (const void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_writev: {
         const struct iovec *iov = (const struct iovec *)a1;
         long count = a2;
-        if (a0 != 1 && a0 != 2)
-            return -PRIMA_ERRNO_EBADF;
         if (count <= 0)
             return -PRIMA_ERRNO_EINVAL;
         if (!iov)
@@ -455,7 +569,7 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
             unsigned long len = iov[i].iov_len;
             if (len > ~(unsigned long)0 - total)
                 return -PRIMA_ERRNO_EINVAL;
-            long written = prima_write_bytes((int)a0, iov[i].iov_base, len);
+            long written = prima_fd_write((int)a0, iov[i].iov_base, len);
             if (written < 0)
                 return written;
             total += (unsigned long)written;
@@ -463,13 +577,22 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return (long)total;
     }
     case PRIMA_LINUX_SYS_close:
-        if (a0 == 1 || a0 == 2)
-            return 0;
-        return prima_file_close((int)a0);
+        return prima_fd_close((int)a0);
     case PRIMA_LINUX_SYS_read:
-        return prima_file_read((int)a0, (void *)a1, (unsigned long)a2);
+        return prima_fd_read((int)a0, (void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_lseek:
-        return prima_file_lseek((int)a0, (long)a1, (int)a2);
+        return prima_fd_lseek((int)a0, (long)a1, (int)a2);
+    case PRIMA_LINUX_SYS_dup:
+        return prima_fd_dup((int)a0);
+    case PRIMA_LINUX_SYS_dup2:
+        return prima_fd_dup2((int)a0, (int)a1);
+    case PRIMA_LINUX_SYS_dup3:
+        return prima_fd_dup3((int)a0, (int)a1, a2);
+    case PRIMA_LINUX_SYS_getpid:
+        return prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    /* musl/x86_64 的 `open()` 走 SYS_open(2)，不是 openat(257)；两者落到同一子集。 */
+    case PRIMA_LINUX_SYS_open:
+        return prima_openat(PRIMA_AT_FDCWD, (const char *)a0, a1, a2);
     case PRIMA_LINUX_SYS_openat:
         return prima_openat(a0, (const char *)a1, a2, a3);
     case PRIMA_LINUX_SYS_ioctl:
