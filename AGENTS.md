@@ -4,6 +4,28 @@
 
 This is a Rust workspace for a research OS. `cosir/` contains the executable, platform-independent model; `kernel/` implements x86_64 mechanisms; `prima-ostd/` owns privileged hardware support. Shared syscall definitions live in `prima-abi/`, native user APIs in `prima-runtime/`, and user programs and services in `prima-user/`. `prima-initgen/` builds boot inputs, while `xtask/` provides build and validation commands. Formal models are in `lean/`; plans, specifications, and evidence reports are under `docs/superpowers/`. Rust tests sit beside their modules and in crate-level `tests/` directories. Boot images are generated artifacts, not source assets.
 
+## How to Read the Documentation
+
+Start with the repository-level sources, then use the indexes under `docs/`:
+
+1. `docs/README.md` — the unified documentation entry point and reading paths.
+2. `Prima OS.md` — architecture, research hypotheses, compatibility roadmap, and design boundaries.
+3. `COSIR 原语规范.md` — authoritative POSIR/COSIR operation semantics.
+4. `Prima OS 实现阶段.md` — authoritative current stage, exit conditions, blockers, and evidence links.
+5. `docs/superpowers/README.md` — document conventions and stage-by-stage navigation.
+
+Use the document type to interpret its claims:
+
+- `docs/superpowers/specs/` contains designs and specifications: expected behavior, not proof that behavior is implemented.
+- `docs/superpowers/plans/` contains execution plans and task breakdowns: historical process records, not current status.
+- `docs/superpowers/reports/` contains implementation, review, remediation, and test evidence. Read each report's stated scope; later remediation reports may supersede earlier findings.
+- `docs/superpowers/compat/` contains the stage 5 API/symbol compatibility ledger and symbol-to-syscall trace. It is not a claim of complete POSIX or Linux compatibility.
+- `docs/architecture/` contains explanatory synthesis such as `primaos-architecture-qa.md`; these are non-normative reader guides.
+
+When several documents disagree, resolve the conflict in this order: the implementation-stage tracker for current status, `COSIR 原语规范.md` for abstract semantics, `docs/superpowers/specs/` for the frozen design contract, and the latest linked report for actual evidence. Do not cite a historical report as a current capability without checking the tracker and any later remediation report.
+
+Before changing behavior, read the relevant spec, plan, and report chain rather than only the latest summary. Preserve failed cases and explicit limitations in reports. If a change affects phase status or evidence, update `Prima OS 实现阶段.md` and add or update the relevant index under `docs/superpowers/`. New documents must be filed under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`, not left loose in `docs/`.
+
 ## Build, Test, and Development Commands
 
 Use the pinned nightly toolchain in `rust-toolchain.toml`. From the repository root:
