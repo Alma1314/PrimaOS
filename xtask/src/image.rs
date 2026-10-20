@@ -2,7 +2,7 @@ use bootloader::{BiosBoot, UefiBoot};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 const KERNEL_BINARY: &str = env!("CARGO_BIN_FILE_KERNEL_prima-kernel");
@@ -101,6 +101,8 @@ enum Stage5Program<'a> {
     Time,
     /// M7：fd 表 / dup / getpid 探针；自行执行两次 open，故不预置 harness。
     Fd,
+    /// M8：用户态 VFS/rootfs、通用 fd、多级路径与目录枚举探针。
+    Vfs,
 }
 
 pub(crate) fn build_images() -> Result<Images, String> {
@@ -120,6 +122,11 @@ pub(crate) fn build_images_for_time() -> Result<Images, String> {
 /// M7：用 fd 表探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_fd() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Fd)
+}
+
+/// M8：用 VFS/rootfs 探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_vfs() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Vfs)
 }
 
 fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, String> {
@@ -221,6 +228,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_fd.c")],
             "stage5 fd probe",
         ),
+        Stage5Program::Vfs => (
+            path.with_file_name("stage5-vfs.elf"),
+            vec![c_dir.join("stage5_vfs.c")],
+            "stage5 vfs probe",
+        ),
         Stage5Program::Probe => (
             path.with_file_name("stage5-probe.elf"),
             vec![stage5_probe_source()],
@@ -291,6 +303,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         // 时间/fd 探针不需要参数；托管程序通道仍要求一个非空 argv。
         Stage5Program::Time => Some(&["stage5-time"]),
         Stage5Program::Fd => Some(&["stage5-fd"]),
+        Stage5Program::Vfs => Some(&["stage5-vfs"]),
         Stage5Program::Probe => None,
     };
     if let Some(args) = program_args {
@@ -627,6 +640,87 @@ pub(crate) fn check_stage5_linux_fd() -> Result<(), String> {
         ));
     }
     println!("PASS linux stage5 fd dup/getpid references");
+    Ok(())
+}
+
+/// M8 冻结的 Linux 参考输出：同一份 `stage5_vfs.c` 在宿主上必须全项通过。
+pub(crate) const VFS_EXPECTED_STDOUT: &[u8] = b"VFS|ok=1;motd=1;multi=1;parent=1;dirfd=1;dupdir=1;enoent=1;enotdir=1;eacces=1;eexist=1;create=1;append=1;null=1;getdents=1;fd0=1\n";
+
+#[cfg(unix)]
+fn set_probe_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|error| format!("failed to set mode {mode:o} on {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_probe_mode(path: &Path, mode: u32) -> Result<(), String> {
+    let _ = (path, mode);
+    Ok(())
+}
+
+/// M8：用宿主 glibc 重建 `stage5_vfs.c`，在一次性目录中布置与 Prima rootfs 同形的树，
+/// 取得多级路径/目录枚举/fd 语义的参考结果。stdin 接 `/dev/null`，使 fd 0 的 EOF 断言一致。
+pub(crate) fn check_stage5_linux_vfs() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_vfs.c");
+    let binary = workspace.join("target/prima-os/vfs-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 vfs: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 vfs probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/vfs-linux-run");
+    if run_dir.exists() {
+        fs::remove_dir_all(&run_dir)
+            .map_err(|error| format!("failed to clean {}: {error}", run_dir.display()))?;
+    }
+    fs::create_dir_all(run_dir.join("etc"))
+        .map_err(|error| format!("failed to create {}: {error}", run_dir.display()))?;
+    fs::create_dir_all(run_dir.join("usr/lib"))
+        .map_err(|error| format!("failed to create usr/lib: {error}"))?;
+    fs::create_dir_all(run_dir.join("tmp"))
+        .map_err(|error| format!("failed to create tmp: {error}"))?;
+    fs::write(run_dir.join("etc/motd"), b"welcome\n")
+        .map_err(|error| format!("failed to write motd: {error}"))?;
+    fs::write(run_dir.join("etc/hostname"), b"prima\n")
+        .map_err(|error| format!("failed to write hostname: {error}"))?;
+    fs::write(run_dir.join("usr/lib/version"), b"1.0\n")
+        .map_err(|error| format!("failed to write version: {error}"))?;
+    fs::write(run_dir.join("README"), b"prima rootfs\n")
+        .map_err(|error| format!("failed to write README: {error}"))?;
+    fs::write(run_dir.join("f"), b"").map_err(|error| format!("failed to write f: {error}"))?;
+    for file in ["etc/motd", "etc/hostname", "usr/lib/version", "README"] {
+        set_probe_mode(&run_dir.join(file), 0o444)?;
+    }
+    set_probe_mode(&run_dir.join("f"), 0o666)?;
+    set_probe_mode(&run_dir.join("tmp"), 0o777)?;
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 vfs probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != VFS_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 vfs mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(VFS_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 vfs multi-level path and directory references");
     Ok(())
 }
 

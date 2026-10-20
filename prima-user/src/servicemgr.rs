@@ -52,8 +52,7 @@ use prima_runtime::{
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
         SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_ECHO_ARGS_OFFSET,
         SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT,
-        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OPEN_PATH_LEN_SHIFT,
-        SERVICE_FILE_OPEN_PATH_MASK, SERVICE_FILE_PATH, SERVICE_FILE_REPLY_TAG,
+        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_REPLY_TAG,
         SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
         SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_SERVICEMGR,
         SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
@@ -63,10 +62,11 @@ use prima_runtime::{
         SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG,
-        STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
-        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply,
-        pack_service_name, pack_service_request,
+        SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_OPEN_TAG,
+        SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG,
+        STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG,
+        STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash,
+        native_app_reply, pack_file_reply, pack_service_name, pack_service_request,
     },
     task::TaskSpec,
     trace::{
@@ -151,8 +151,11 @@ fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32>
     Some(hash)
 }
 
-/// 端点用户栈的页大小（`stack_top = ENDPOINT_STACK_VA + 0x1000`）。
+/// 端点用户栈的页大小。
 const FRAME_SIZE: u64 = 0x1000;
+/// 普通服务端点的栈页数。M8 保持既有 1 页布局，并把 VFS 解析栈帧压回该预算
+/// （名称 ≤16、分量 ≤6）；没有改用 2 页。
+const SERVICE_STACK_PAGES: u64 = 1;
 /// C 入口栈页数：musl 的 `__libc_start_main` 与 `snprintf` 调用链合计超过 4 页；
 /// 8 页容纳启动初始化与格式化路径，同时把映射条目控制在新的 vspace 预算内。
 const C_STACK_PAGES: u64 = 8;
@@ -407,9 +410,10 @@ pub extern "C" fn _start(
     let mut tty_writes = [(0u64, 0u64); 2];
     let mut tty_write_count = 0;
     let mut tty_ack = false;
-    // M4：文件授权入口（store 的 TaskSend 副本绑定到 isolated_ns 的 "f"）、同步请求的
-    // 客户端 id，以及管理器→C 任务的发送凭据（C 创建后派生，退出时回收）。
-    let mut file_bound = false;
+    // M8：rootfs 授权入口（store 的 TaskSend 副本绑定到 isolated_ns 的 "fs"）、一次授权
+    // 解析的结果、同步请求的客户端 id，以及管理器→C 任务的发送凭据（C 创建后派生，退出时回收）。
+    let mut rootfs_bound = false;
+    let mut file_authorized = false;
     let mut file_client: Option<u32> = None;
     let mut c_send: Option<Capability> = None;
     // SPEC-105/106：建端点状态。
@@ -648,29 +652,66 @@ pub extern "C" fn _start(
             tty_ack = true;
         } else if message.payload >> 48 == STAGE5_TTY_SYNC_ACK_TAG >> 48 {
             tty_sync_ack = true;
+        } else if matches!(
+            message.payload >> 48,
+            tag if tag == SERVICE_VFS_OPEN_TAG >> 48
+                || tag == SERVICE_VFS_PATH_TAG >> 48
+                || tag == SERVICE_VFS_COMMIT_TAG >> 48
+        ) {
+            // M8：C 适配层 → 管理器 → 存储服务。rootfs 授权在 C 创建时一次建立；这里只做
+            // 路由，不解析文件路径。OPEN/PATH/COMMIT 都同步转发，只有 COMMIT 会设置应答槽。
+            let is_commit = message.payload >> 48 == SERVICE_VFS_COMMIT_TAG >> 48;
+            let client = if is_commit {
+                ((message.payload >> SERVICE_VFS_COMMIT_CLIENT_SHIFT) & 0xff) as u32
+            } else {
+                0
+            };
+            let forwarded = if file_authorized {
+                registry[STORE_SLOT].is_some_and(|store| {
+                    runtime
+                        .send(
+                            TaskId::from_raw(store.id as u32),
+                            store.authority,
+                            message.payload,
+                            &[],
+                        )
+                        .is_ok()
+                })
+            } else {
+                false
+            };
+            if forwarded {
+                if is_commit {
+                    file_client = Some(client);
+                }
+            } else if let Some(send) = c_send {
+                let _ = runtime.send(
+                    TaskId::from_raw(client),
+                    send,
+                    pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOENT, 0),
+                    &[],
+                );
+            }
         } else if message.payload >> 48 == SERVICE_FILE_REQUEST_TAG >> 48 {
-            // M4：C 适配层 → 管理器 → 存储服务。`open` 先经 Namespace 授权（路径必须已绑定）；
-            // 其余操作依赖服务端句柄，句柄只能由已授权的 open 产生。管理器只做路由与授权，
-            // 不解释文件内容，不是 VFS。
+            // M4/M8：已授权的读/写/lseek/close。句柄只能由一次成功的 open 产生；管理器
+            // 不解释文件内容或目录，VFS 完全在存储服务侧。
             let op = (message.payload >> SERVICE_FILE_OP_SHIFT) & 0xf;
             let client = ((message.payload >> SERVICE_FILE_CLIENT_SHIFT) & 0xff) as u32;
-            let auth_code = if op != SERVICE_FILE_OP_OPEN {
-                0
+            let forwarded = if file_authorized {
+                registry[STORE_SLOT].is_some_and(|store| {
+                    runtime
+                        .send(
+                            TaskId::from_raw(store.id as u32),
+                            store.authority,
+                            message.payload,
+                            &[],
+                        )
+                        .is_ok()
+                })
             } else {
-                isolated_ns.map_or(1, |ns| file_path_authorized(&runtime, ns, message.payload))
+                false
             };
-            let authorized = auth_code == 0;
-            if authorized
-                && let Some(store) = registry[STORE_SLOT]
-                && runtime
-                    .send(
-                        TaskId::from_raw(store.id as u32),
-                        store.authority,
-                        message.payload,
-                        &[],
-                    )
-                    .is_ok()
-            {
+            if forwarded {
                 file_client = Some(client);
             } else if let Some(send) = c_send {
                 let fd = (message.payload >> SERVICE_FILE_FD_SHIFT) & 0xf;
@@ -1069,18 +1110,36 @@ pub extern "C" fn _start(
                         true,
                         c_args.as_ref(),
                     ) {
-                        // M4：把文件访问令牌绑定到 C 任务根继承的 Namespace 路径 "f"。
-                        // 必须在 C 创建之后做——创建前多占一个 cap 槽会让 `task_create`
-                        // 的 `live + 3 + initial` 越过 144 而返回 ENOSPC。管理器在让出 CPU
-                        // 前完成绑定，C 的首个 open 请求到达时路径已可解析。
-                        if !file_bound
+                        // M8：把存储服务的访问令牌绑定到 C 任务根继承的 Namespace 路径 "fs"，
+                        // 并**一次**解析成功作为 rootfs 授权。必须在 C 创建之后做——创建前多占
+                        // 一个 cap 槽会让 `task_create` 的 `live + 3 + initial` 越过上限而返回
+                        // ENOSPC。授权只在创建时建立；后续 VFS 操作沿用该授权，不逐次解析文件
+                        // 路径（Namespace 是授权入口，文件树在用户态存储服务里）。
+                        if !rootfs_bound
                             && let Some(ns_cap) = isolated_ns
                             && let Ok(copy) = runtime.cap_derive(self_cap, TASK_SEND_DERIVE)
                         {
-                            let result = runtime.namespace_bind(ns_cap, SERVICE_FILE_PATH, copy);
-                            file_bound = result.is_ok();
-                            if !file_bound {
+                            let result =
+                                runtime.namespace_bind(ns_cap, SERVICE_VFS_ROOT_PATH, copy);
+                            rootfs_bound = result.is_ok();
+                            if !rootfs_bound {
                                 let _ = runtime.cap_drop(copy);
+                            } else if let Ok(resolve) =
+                                runtime.cap_derive(ns_cap, NS_RESOLVE_RIGHTS)
+                            {
+                                let resolved = runtime.namespace_resolve(
+                                    resolve,
+                                    SERVICE_VFS_ROOT_PATH,
+                                    TASK_SEND_RIGHTS,
+                                );
+                                let _ = runtime.cap_drop(resolve);
+                                file_authorized = match resolved {
+                                    Ok(cap) => {
+                                        let _ = runtime.cap_drop(cap);
+                                        true
+                                    }
+                                    Err(_) => false,
+                                };
                             }
                         }
                         // M4：派生「管理器 → C 任务」的发送凭据，供文件应答回送；C 退出时回收。
@@ -1354,51 +1413,6 @@ fn base_seg_offset(slot: usize) -> u64 {
     [OFF_LOG_SEG, 0, OFF_STORE_SEG][slot - BASE_FIRST]
 }
 
-/// M4：`open` 的 Namespace 授权。路径来自请求 payload；管理器在 `ns_cap` 上解析并请求
-/// `TaskSend` 子集，成功才把请求转发给存储服务。解析出的 Capability 立即归还，不长期持有。
-fn file_path_authorized(
-    runtime: &Runtime<impl SyscallTransport>,
-    ns_cap: Capability,
-    payload: u64,
-) -> u64 {
-    let arg = payload & 0xffff_ffff;
-    let len = ((arg >> SERVICE_FILE_OPEN_PATH_LEN_SHIFT) & 0x3) as usize;
-    let path_bits = arg & SERVICE_FILE_OPEN_PATH_MASK;
-    if len == 0 || len > 3 {
-        return 2;
-    }
-    let mut bytes = [0u8; 3];
-    for (index, byte) in bytes[..len].iter_mut().enumerate() {
-        *byte = ((path_bits >> (8 * index)) & 0xff) as u8;
-    }
-    let Ok(path) = core::str::from_utf8(&bytes[..len]) else {
-        return 3;
-    };
-    let Ok(resolve) = runtime.cap_derive(ns_cap, NS_RESOLVE_RIGHTS) else {
-        return 4;
-    };
-    let resolved = runtime.namespace_resolve(resolve, path, TASK_SEND_RIGHTS);
-    let _ = runtime.cap_drop(resolve);
-    match resolved {
-        Ok(cap) => {
-            let _ = runtime.cap_drop(cap);
-            0
-        }
-        Err(error) => {
-            10 + match error {
-                Error::NotFound => 1,
-                Error::NotDirectory => 2,
-                Error::Denied => 3,
-                Error::InvalidInput => 4,
-                Error::ResourceExhausted => 5,
-                Error::Unsupported => 6,
-                Error::Fault => 7,
-                _ => 8,
-            }
-        }
-    }
-}
-
 /// SPEC-105/108：表驱动地创建一个端点——自解 ELF 入口 → **自建栈段** → `task_create` → 映射栈。
 ///
 /// 创建者（本管理器）从自身 `self_cap` 派生指向自己的 `TaskSend` 凭据作 `initial_cap0`（端点据此
@@ -1510,11 +1524,15 @@ fn create_service(
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
     // SPEC-108：自建栈段（`R|W`）；C 入口用多页，musl 初始化需要。
     // M3b：C 任务的匿名 arena 与栈同段，见 `C_HEAP_VA`。
-    let stack_pages = if c_stack { C_STACK_PAGES } else { 1 };
+    let stack_pages = if c_stack {
+        C_STACK_PAGES
+    } else {
+        SERVICE_STACK_PAGES
+    };
     let segment_pages = if c_stack {
         C_STACK_PAGES + C_HEAP_PAGES
     } else {
-        1
+        SERVICE_STACK_PAGES
     };
     let Ok(stack) = runtime.memseg_create(segment_pages, RW) else {
         drop_data_segments(runtime, &mut data_segments);
@@ -1536,7 +1554,12 @@ fn create_service(
         code_pages: spec.pages,
         load_base: ENDPOINT_CODE_VA,
         entry,
-        stack_top: ENDPOINT_STACK_VA + if c_stack { C_STACK_OFFSET } else { FRAME_SIZE },
+        stack_top: ENDPOINT_STACK_VA
+            + if c_stack {
+                C_STACK_OFFSET
+            } else {
+                SERVICE_STACK_PAGES * FRAME_SIZE
+            },
         parent_namespace: Some(ns_cap),
         root_rights: NS_RESOLVE_RIGHTS,
         initial_capabilities: [Some(initial0), Some(initial1)],

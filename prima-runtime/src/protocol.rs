@@ -211,16 +211,100 @@ pub const SERVICE_FILE_CHUNK: u64 = 3;
 pub const SERVICE_FILE_SIZE_OFFSET: u64 = 8;
 pub const SERVICE_FILE_DATA_OFFSET: u64 = 16;
 pub const SERVICE_FILE_CAPACITY: u64 = 4096 - SERVICE_FILE_DATA_OFFSET;
-/// M4：首批冻结的文件名（单层、≤3 字节、无 `/`）。Namespace 授权入口绑定同一路径。
+/// M4：首批冻结的文件名（单层、≤3 字节、无 `/`）。保留为历史常量；M8 起 Namespace
+/// 授权入口绑定的是根文件系统授权路径 [`SERVICE_VFS_ROOT_PATH`]。
 pub const SERVICE_FILE_PATH: &str = "f";
-/// M4：同时打开的文件句柄上限（fd 3..6）。
-pub const SERVICE_FILE_HANDLES: usize = 4;
+/// M8：C 任务根 Namespace 中的 **rootfs 授权入口**。管理器在创建 C 任务后把存储服务的
+/// `TaskSend` 令牌绑到该路径并解析一次；此后 VFS 操作由这次授权放行，不再逐次解析文件
+/// 路径——Namespace 是授权入口，文件树在用户态存储服务里。
+pub const SERVICE_VFS_ROOT_PATH: &str = "fs";
+/// M8：rootfs 路径字节上限（含 `/`，不含结尾 NUL）。
+pub const SERVICE_VFS_PATH_MAX: usize = 64;
+/// M8：rootfs 节点上限（与 `prima_runtime::vfs::MAX_NODES` 一致）。
+pub const SERVICE_VFS_NODES: usize = 16;
+
+/// M8：`openat` 的分阶段路径传输——先 OPEN 元数据，再若干 PATH 片段，最后 COMMIT。
+///
+/// 64 位 payload 只有 48 位可用，路径上限 64 字节，故不能塞进单条消息：
+/// - [`SERVICE_VFS_OPEN_TAG`]：`tag | flags(40..47) | path_len(32..39) | start(24..31) |`
+///   `前 3 字节(0..23)`，清空暂存路径并写入第一段；
+/// - [`SERVICE_VFS_PATH_TAG`]：`tag | offset(40..47) | 5 字节(0..39)`；
+/// - [`SERVICE_VFS_COMMIT_TAG`]：`tag | client(32..39)`，解析暂存路径并回复。
+///
+/// 三条消息都经服务管理器同步转发；每条都有应答，避免一次性灌满全局消息队列。
+pub const SERVICE_VFS_OPEN_TAG: u64 = 0x5ED6_0000_0000_0000;
+pub const SERVICE_VFS_PATH_TAG: u64 = 0x5ED7_0000_0000_0000;
+pub const SERVICE_VFS_COMMIT_TAG: u64 = 0x5ED8_0000_0000_0000;
+pub const SERVICE_VFS_FLAGS_SHIFT: u64 = 40;
+pub const SERVICE_VFS_PATH_LEN_SHIFT: u64 = 32;
+pub const SERVICE_VFS_START_SHIFT: u64 = 24;
+pub const SERVICE_VFS_FIRST_BYTES_MASK: u64 = 0x00ff_ffff;
+pub const SERVICE_VFS_PATH_OFFSET_SHIFT: u64 = 40;
+pub const SERVICE_VFS_PATH_BYTES_MASK: u64 = 0x0000_00ff_ffff_ffff;
+pub const SERVICE_VFS_COMMIT_CLIENT_SHIFT: u64 = 32;
+
+/// M8：适配层归一化后的 open flags（低 7 位）。access 位于 bit 2..3。
+pub const SERVICE_VFS_FLAG_CREATE: u64 = 1 << 0;
+pub const SERVICE_VFS_FLAG_TRUNC: u64 = 1 << 1;
+pub const SERVICE_VFS_ACCESS_SHIFT: u64 = 2;
+pub const SERVICE_VFS_FLAG_APPEND: u64 = 1 << 4;
+pub const SERVICE_VFS_FLAG_EXCLUSIVE: u64 = 1 << 5;
+pub const SERVICE_VFS_FLAG_DIRECTORY: u64 = 1 << 6;
+
+/// M8：open 成功应答的 `data` 布局——`node(0..7) | kind(8..9) | size(16..31)`。
+pub const SERVICE_VFS_REPLY_NODE_MASK: u64 = 0xff;
+pub const SERVICE_VFS_REPLY_KIND_SHIFT: u64 = 8;
+pub const SERVICE_VFS_REPLY_KIND_MASK: u64 = 0x3;
+pub const SERVICE_VFS_REPLY_SIZE_SHIFT: u64 = 16;
+
+/// M8：打包 OPEN 元数据（`first` 至多 3 字节）。
+pub fn pack_vfs_open(flags: u64, path_len: usize, start: u64, first: &[u8]) -> u64 {
+    let mut bytes = 0u64;
+    let mut index = 0;
+    while index < first.len() && index < 3 {
+        bytes |= (first[index] as u64) << (8 * index);
+        index += 1;
+    }
+    SERVICE_VFS_OPEN_TAG
+        | ((flags & 0x7f) << SERVICE_VFS_FLAGS_SHIFT)
+        | (((path_len as u64) & 0xff) << SERVICE_VFS_PATH_LEN_SHIFT)
+        | ((start & 0xff) << SERVICE_VFS_START_SHIFT)
+        | bytes
+}
+
+/// M8：打包 PATH 片段（`bytes` 至多 5 字节）。
+pub fn pack_vfs_path(offset: usize, bytes: &[u8]) -> u64 {
+    let mut packed = 0u64;
+    let mut index = 0;
+    while index < bytes.len() && index < 5 {
+        packed |= (bytes[index] as u64) << (8 * index);
+        index += 1;
+    }
+    SERVICE_VFS_PATH_TAG | (((offset as u64) & 0xff) << SERVICE_VFS_PATH_OFFSET_SHIFT) | packed
+}
+
+/// M8：打包 COMMIT，`client` 是发起 open 的 Task id 低 8 位。
+pub const fn pack_vfs_commit(client: u64) -> u64 {
+    SERVICE_VFS_COMMIT_TAG | ((client & 0xff) << SERVICE_VFS_COMMIT_CLIENT_SHIFT)
+}
+
+/// M8：打包 open 应答的 `data` 字段。
+pub const fn pack_vfs_node(node: u64, kind: u64, size: u64) -> u64 {
+    (node & SERVICE_VFS_REPLY_NODE_MASK)
+        | ((kind & SERVICE_VFS_REPLY_KIND_MASK) << SERVICE_VFS_REPLY_KIND_SHIFT)
+        | ((size & 0xffff) << SERVICE_VFS_REPLY_SIZE_SHIFT)
+}
+/// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
+pub const SERVICE_FILE_HANDLES: usize = 8;
 
 /// M4：文件服务的 errno（Linux x86_64 数值，profile v0 已冻结）。
 pub const SERVICE_FILE_ENOENT: u64 = 2;
 pub const SERVICE_FILE_EBADF: u64 = 9;
 pub const SERVICE_FILE_EAGAIN: u64 = 11;
+pub const SERVICE_FILE_EACCES: u64 = 13;
 pub const SERVICE_FILE_EFAULT: u64 = 14;
+pub const SERVICE_FILE_EEXIST: u64 = 17;
+pub const SERVICE_FILE_ENOTDIR: u64 = 20;
 pub const SERVICE_FILE_EINVAL: u64 = 22;
 pub const SERVICE_FILE_ENOSPC: u64 = 28;
 pub const SERVICE_FILE_ENOSYS: u64 = 38;

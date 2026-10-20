@@ -8,6 +8,8 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-20 | [2026-10-20-stage5-user-vfs-design.md](2026-10-20-stage5-user-vfs-design.md) | 阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计） |
+| 2026-10-20 | [2026-10-20-stage5-profile-v1.md](2026-10-20-stage5-profile-v1.md) | 阶段 5 POSIX profile v1（delta，提案） |
 | 2026-10-18 | [2026-10-18-stage5-profile-v0.md](2026-10-18-stage5-profile-v0.md) | 阶段 5 POSIX profile v0（冻结） |
 | 2026-10-11 | [2026-10-11-baselib-stack-walkthrough.md](2026-10-11-baselib-stack-walkthrough.md) | RuxOS 基础库栈 — 走查与扫雷审查记录 |
 | 2026-10-11 | [2026-10-11-baselib-stack-spec-v1.1.md](2026-10-11-baselib-stack-spec-v1.1.md) | RuxOS 基础库栈（基座库）技术规格书 v1.1 |

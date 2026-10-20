@@ -139,8 +139,11 @@ pub(crate) const MAX_TASKS: usize = 18;
 /// 的 `NsResolve` 解析也会追加审计；更主要的是同步文件请求让 C/管理器/存储服务多出大量
 /// `Running↔BlockedRecv` 迁移。768 在探针运行期触顶并触发 `append without capacity
 /// precheck`；实测收尾 `used=1268`。照既有先例扩容并照实重测，未放宽任何检查。
+/// **M8（2026-10-20）2048 → 8192**：用户态 VFS 的多级路径用 OPEN/PATH/COMMIT 三段式传输，
+/// 目录枚举又把一段 listing 按 3 字节分片；探针的同步文件 IPC 与迁移事件显著多于 M7。
+/// 2048 在 M7 已用到 1969，本片必然触顶。按既有先例扩容并照实重测，未放宽任何检查。
 /// 该容量不占 `BootstrapState`（存储已在 [`AUDIT_ARENA`] 静态），故不受 16 KiB 守卫约束。
-const MAX_AUDIT_EVENTS: usize = 2048;
+const MAX_AUDIT_EVENTS: usize = 8192;
 
 /// SPEC-074：审计 arena 按**实例**划分的区段数。
 ///
@@ -2156,7 +2159,12 @@ pub struct PlatformSegmentsRecord {
 ///
 /// M4：C 探针链接 `printf`/`fflush` 后从 12 页增至 14 页，服务映像段实测总量 97 页
 /// （含目录页），越过旧上限 96。按既有先例扩展并照实重测守卫；保留 31 页余量。
-pub const MAX_SEGMENT_FRAMES: usize = 128;
+///
+/// M8：存储服务加入用户态 VFS 后实测 19 页，C 探针 15 页，服务映像段总量 129 页
+/// （另加目录页 = 130），越过旧上限 128。只扩到 136（保留 6 页余量）：先扩到 192 时在
+/// 驱动故障切换/退出收尾处触发三重故障，具体根因未定位；`SegmentFrames` 会按值出现在
+/// 内核栈帧里，扩容会增加栈占用，故 192 不作为可用配置。
+pub const MAX_SEGMENT_FRAMES: usize = 136;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =

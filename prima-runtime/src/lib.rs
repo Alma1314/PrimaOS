@@ -8,6 +8,9 @@
 //! Capability 包装只做格式检查，所有授权仍由内核验证。关闭包装值不会自动释放内核
 //! Capability；调用 [`Runtime::cap_drop`] 才会明确请求释放当前位置。
 
+#[cfg(test)]
+extern crate std;
+
 mod syscall;
 
 pub mod capability;
@@ -19,6 +22,7 @@ pub mod namespace;
 pub mod protocol;
 pub mod task;
 pub mod transport;
+pub mod vfs;
 
 pub use capability::{Capability, Rights};
 pub use error::{Error, Result, TransportError};

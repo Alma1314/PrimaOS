@@ -103,6 +103,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios F1 run={run}");
     }
+    // M8：用户态 VFS/rootfs、通用 fd、多级路径与目录枚举探针，各跑两轮。
+    image::check_stage5_linux_vfs()?;
+    let images = image::build_images_for_vfs()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "V1",
+                image::VFS_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS V1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios V1 run={run}");
+    }
     println!("PASS stage1 boot slice");
     Ok(())
 }
