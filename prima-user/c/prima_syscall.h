@@ -21,6 +21,7 @@ long __syscall6(long number, long a0, long a1, long a2, long a3, long a4, long a
 /* 原生号直通：只用于探测/诊断，不参与 Linux 号翻译。 */
 long prima_native_syscall0(long number);
 long prima_native_syscall3(long number, long a0, long a1, long a2);
+long prima_native_syscall4(long number, long a0, long a1, long a2, long a3);
 
 /* `write`/`read`/`writev`/`close`/`ioctl`/`_exit`/`exit` 由 libc（musl）提供，
  * 它们最终经上面的 `__syscallN` 进入本适配层；这里不再定义同名符号，避免覆盖

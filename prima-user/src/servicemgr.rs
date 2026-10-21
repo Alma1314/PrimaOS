@@ -63,10 +63,11 @@ use prima_runtime::{
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_OPEN_TAG,
-        SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG,
-        STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG,
-        STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash,
-        native_app_reply, pack_file_reply, pack_service_name, pack_service_request,
+        SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH, SERVICE_VMA_CAP_REQUEST_TAG,
+        SERVICE_VMA_CLIENT_SHIFT, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG,
+        STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG,
+        STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply,
+        pack_file_reply, pack_service_name, pack_service_request, pack_vma_cap_reply,
     },
     task::TaskSpec,
     trace::{
@@ -212,6 +213,9 @@ const TASK_SEND_RIGHTS: Rights = Rights::from_bits(1 << 5);
 const TASK_SEND_DERIVE: Rights = Rights::from_bits((1 << 0) | (1 << 5));
 /// 新端点结构性根的 Namespace 权利（仅 `NsResolve`）。
 const NS_RESOLVE_RIGHTS: Rights = Rights::from_bits(1 << 8);
+/// M10：交给 C 任务的 arena 映射授权（`Derive|SegMapR|SegMapW`，不含 `SegMapX`）。
+/// 只允许对同一 Segment 重映射/改权，不允许执行，也不含 `SegDestroy`。
+const ARENA_MAP_RIGHTS: Rights = Rights::from_bits((1 << 0) | (1 << 1) | (1 << 2));
 
 /// 端点自报 id 的消息 tag（高 16 位；与 `prima-runtime::protocol`/内核一致）。
 const SERVICE_ID_TAG: u64 = 0x5EC1_0000_0000_0000;
@@ -729,6 +733,40 @@ pub extern "C" fn _start(
             // M4：存储服务的应答按同步请求记录回送 C 任务；无等待者时丢弃。
             if let (Some(client), Some(send)) = (file_client.take(), c_send) {
                 let _ = runtime.send(TaskId::from_raw(client), send, message.payload, &[]);
+            }
+        } else if message.payload >> 48 == SERVICE_VMA_CAP_REQUEST_TAG >> 48 {
+            // M10：C 任务首次 mmap 时申请 arena Segment 的映射授权。只有 C 程序运行期
+            // (`capacity_probe`) 才有可派生的 stack cap；不能回执时由 C 侧退化为
+            // “只 free 不 unmap”，不得让 C 阻塞在 RECV。
+            let client = ((message.payload >> SERVICE_VMA_CLIENT_SHIFT) & 0xff) as u32;
+            let mut delivered = false;
+            if let Some((manager, _, stack, _)) = capacity_probe {
+                let authority = c_send.unwrap_or(manager);
+                if let Ok(arena) = runtime.cap_derive(stack, ARENA_MAP_RIGHTS) {
+                    if runtime
+                        .send(
+                            TaskId::from_raw(client),
+                            authority,
+                            pack_vma_cap_reply(0),
+                            &[arena],
+                        )
+                        .is_ok()
+                    {
+                        delivered = true;
+                    } else {
+                        let _ = runtime.cap_drop(arena);
+                    }
+                }
+                if !delivered {
+                    let _ = runtime.send(
+                        TaskId::from_raw(client),
+                        authority,
+                        pack_vma_cap_reply(1),
+                        &[],
+                    );
+                }
+            } else if let Some(send) = c_send {
+                let _ = runtime.send(TaskId::from_raw(client), send, pack_vma_cap_reply(1), &[]);
             }
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
             // C 程序（id 17）自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验

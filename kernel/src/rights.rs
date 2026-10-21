@@ -257,6 +257,11 @@ impl Rights {
         Self(self.0 | other.0)
     }
 
+    /// 差集 `self \ other`（`memseg_protect` 判断“新增了哪些权限”，§7.4 前置 6）。
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// 类型匹配：非 `Derive` 权限必须落在该对象类型的合法集合内（`Derive` 可用于任何类型）。
     pub fn well_typed(self, kind: ObjectKind) -> bool {
         let allowed = kind.allowed();
@@ -380,6 +385,11 @@ mod tests {
         assert!(parent.superset_of(child));
         assert!(!parent.subset_of(child));
         assert_eq!(render(parent.intersection(child)), "SegMapR");
+        assert_eq!(render(parent.difference(child)), "Derive,SegMapW");
+        assert_eq!(
+            parent.difference(parse("Derive,SegMapR,SegMapW")),
+            Rights::EMPTY
+        );
     }
 
     #[test]

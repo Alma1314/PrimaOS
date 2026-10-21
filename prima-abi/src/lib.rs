@@ -188,6 +188,11 @@ pub mod syscall {
     /// 与抽象 `SYS_TIME_NOW`（`advance_time` 时钟，仅用于 Timer）分离：本号直接折算
     /// 硬件倒计数，不推进 Timer 状态，故不会提前触发既有 Timer 见证。
     pub const SYS_TIME_TICKS: u64 = 40;
+    /// Stage 5 / M10：`memseg_protect(task_cap, target_base, page_count, new_access)`（COSIR §7.4）。
+    ///
+    /// 追加号；把区间内已映射页的逻辑访问集原子地改为 `new_access`，并同步叶 PTE 的
+    /// 可写位。新增权限要求调用者持有对应 Segment 的映射授权；入口页不得失去 `X`。
+    pub const SYS_MEMSEG_PROTECT: u64 = 41;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

@@ -53,15 +53,18 @@
 
 Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出者统一 `-ENOSYS`（38）。
 
+> 本表是 M0 盘点时的快照；M4–M10 已把 fd、路径、时间与内存行推进到实现。内存行按 M10 更新，其余以 [profile v1](../specs/2026-10-20-stage5-profile-v1.md) 与各 M 报告为准。
+
 | Linux x86_64 | musl 名称 | Prima 动作 | E1–E6 是否执行 | 错误 |
 |---:|---|---|---|---|
 | 0 | `read` | 未实现 | 否（`stdin` 未链接） | `-ENOSYS` |
 | 1 | `write` | fd 1/2 逐字节 `SYS_SEND` 到管理器 | stdio 实际走 20；直接调用时执行 | 非法 fd `-EBADF=9` |
 | 3 | `close` | fd 1/2 成功；其余失败 | `fclose(stdout)` 会执行 | `-EBADF=9` |
 | 8 | `lseek` | 未实现 | 否 | `-ENOSYS` |
-| 9 | `mmap` | 未实现（echo 的 TLS 用 `builtin_tls`） | 否；mallocng 仅链接 | `-ENOSYS` |
-| 11 | `munmap` | 未实现 | 否 | `-ENOSYS` |
-| 12 | `brk` | 未实现 | 否；mallocng 仅链接 | `-ENOSYS` |
+| 9 | `mmap` | M10：56 页匿名 arena 内按页 first-fit 分配/清零（`MAP_PRIVATE\|MAP_ANONYMOUS`） | 否；A1 与 mallocng 执行 | `EINVAL`/`ENOMEM`/`EACCES`（`PROT_EXEC`） |
+| 10 | `mprotect` | M10：`SYS_MEMSEG_PROTECT=41` 改逻辑访问集与叶 PTE 可写位；`PROT_NONE` 近似只读 | 否；A1 执行 | `EINVAL`/`ENOMEM`/`EACCES`（`PROT_EXEC`） |
+| 11 | `munmap` | M10：真正 `SYS_MEMSEG_UNMAP` 拆 PTE，VA 可复用 | 否；mallocng `free` 执行 | `EINVAL` |
+| 12 | `brk` | M3b：40 页 brk 区指针推进（不拆映射） | 否；mallocng 元数据执行 | 超界返回当前 brk |
 | 16 | `ioctl` | 恒失败，触发 `stdout` 全缓冲 | 首次 stdout 写 | `-ENOSYS` |
 | 20 | `writev` | 逐 iovec 走 fd 1/2 字节流 | 是 | 非法 fd `-EBADF=9` |
 | 28 | `madvise` | 未实现 | 否 | `-ENOSYS` |

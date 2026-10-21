@@ -160,6 +160,22 @@ fn test_boot_slice() -> Result<(), String> {
             println!("PASS qemu bios {} run={run}", case.name);
         }
     }
+    // M10：匿名 mmap/munmap/mprotect 与原生 memseg_protect 探针，各跑两轮。
+    image::check_stage5_linux_mem()?;
+    let images = image::build_images_for_mem()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "A1",
+                image::MEM_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS A1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios A1 run={run}");
+    }
     println!("PASS stage1 boot slice");
     Ok(())
 }

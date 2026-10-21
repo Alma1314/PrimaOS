@@ -335,6 +335,17 @@ pub enum AuditEvent {
         timer_id: u32,
         reason: TimerCancelReason,
     },
+    /// COSIR §7.4 / M10：一次成功的 `memseg_protect`。
+    ///
+    /// 规范以 `(target_base, page_count)` 表达整段区间的原子改权，故一次调用一条事件。
+    /// `access` 是新的逻辑访问集。
+    VspaceProtChanged {
+        task_id: u32,
+        base: u64,
+        page_count: u32,
+        access: Rights,
+        task_cap: Handle,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -2451,6 +2462,24 @@ impl TaskVspaceTable {
         });
         found
     }
+
+    /// §7.4：把已存在条目的 `access` 原位改写（Segment 与 offset 不变）。
+    ///
+    /// 前置由调用方先行验证；找不到条目返回 `false` 且不改动。
+    fn set_access(&mut self, task_id: u32, va: u64, access: Rights) -> bool {
+        let mut index = 0;
+        while index < self.count {
+            if let Some(entry) = self.entry(index)
+                && entry.task_id.get() == task_id
+                && entry.va == va
+            {
+                VSPACE_ARENA.set(self.slice, index, Some(VspaceEntry { access, ..entry }));
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
 }
 
 /// S2-D3：`memseg_*` 的失败原因（对齐 §7.1~§7.4 的错误名）。
@@ -2469,6 +2498,8 @@ pub enum MemsegError {
     RightsExceeded,
     WrongRightType,
     TargetDead,
+    /// COSIR §7.3/§7.4：`task_cap` 未指向有效 Task，或目标不是 CPU Task。
+    InvalidTask,
     OutOfBounds,
     Overlap,
     EntryMapping,
@@ -7471,6 +7502,155 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// COSIR §7.4 / M10：`memseg_protect(task_cap, target_base, page_count, new_access)`。
+    ///
+    /// 前置按规范逐条验证后才改动任何状态（失败原子）：区间全部已映射、访问集非空且
+    /// 不超过每页 Segment 的 `allowed_access`、新增权限有对应映射授权、入口页保持 `X`。
+    /// 成功动作只改每页的 `access` 与叶 PTE 的可写位，Segment/offset 不变，并追加一条
+    /// [`AuditEvent::VspaceProtChanged`]。
+    #[allow(clippy::too_many_arguments)]
+    pub fn memseg_protect(
+        &mut self,
+        caller: u32,
+        task_cap: Handle,
+        target_base: u64,
+        page_count: usize,
+        new_access: Rights,
+        root_phys: u64,
+        phys_offset: u64,
+    ) -> Result<(), MemsegError> {
+        if page_count == 0 {
+            return Err(MemsegError::ZeroSize);
+        }
+        if new_access.is_empty()
+            || !new_access.well_typed(ObjectKind::Segment)
+            || !new_access.subset_of(SEGMENT_ACCESS_RIGHTS)
+        {
+            return Err(MemsegError::InvalidAccess);
+        }
+        let task_id = match self.authorize(caller, task_cap, Right::TaskManageVSpace) {
+            Ok(_) => match self.target_of(task_cap) {
+                Some(ObjectRef::Task(id)) => id,
+                _ => return Err(MemsegError::InvalidTask),
+            },
+            Err(error) => return Err(map_auth_error(error)),
+        };
+        // §7.4 前置 1：目标必须是 CPU Task（非 CPU Task 的 `entry` 是介质句柄）。
+        if self
+            .tasks
+            .find(task_id)
+            .is_none_or(|task| task.kind != TaskKind::Cpu)
+        {
+            return Err(MemsegError::InvalidTask);
+        }
+        if !target_base.is_multiple_of(crate::mem::FRAME_SIZE) {
+            return Err(MemsegError::OutOfBounds);
+        }
+        let span = (page_count as u64)
+            .checked_mul(crate::mem::FRAME_SIZE)
+            .ok_or(MemsegError::OutOfBounds)?;
+        let end = target_base
+            .checked_add(span)
+            .ok_or(MemsegError::OutOfBounds)?;
+        let entry_page = self
+            .tasks
+            .find(task_id)
+            .filter(|task| task.entry != 0)
+            .map(|task| task.entry & !(crate::mem::FRAME_SIZE - 1));
+        // 第一遍：只验证，不写状态。
+        let mut va = target_base;
+        while va < end {
+            let entry = self
+                .vspace
+                .find(task_id, va)
+                .ok_or(MemsegError::NotMapped)?;
+            let segment = self.segment(entry.seg_id).ok_or(MemsegError::TargetDead)?;
+            if !new_access.subset_of(segment.allowed_access) {
+                return Err(MemsegError::InvalidAccess);
+            }
+            let added = new_access.difference(entry.access);
+            for (needed, mapping) in [
+                (Right::SegMapR, Right::SegMapR),
+                (Right::SegMapW, Right::SegMapW),
+                (Right::SegMapX, Right::SegMapX),
+            ] {
+                if added.contains(needed)
+                    && !self.caller_holds_segment_right(caller, entry.seg_id, mapping)
+                {
+                    return Err(MemsegError::MissingMapRight);
+                }
+            }
+            // §7.4 前置 7 / W8：入口页不得失去执行权限。
+            if entry_page == Some(va) && !new_access.contains(Right::SegMapX) {
+                return Err(MemsegError::EntryMapping);
+            }
+            va += crate::mem::FRAME_SIZE;
+        }
+        if !self.audit.can_append(1) {
+            return Err(MemsegError::AuditFull);
+        }
+        // 第二遍：原子提交——逻辑访问集与叶 PTE 同步改写。
+        let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
+        let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+        let writable = new_access.contains(Right::SegMapW);
+        let mut va = target_base;
+        while va < end {
+            let pte =
+                crate::vspace::read_leaf(root_phys, va, map).map_err(|_| MemsegError::NotMapped)?;
+            if pte & crate::vspace::PT_PRESENT == 0 {
+                return Err(MemsegError::NotMapped);
+            }
+            let frame = pte & crate::vspace::PT_ADDR_MASK;
+            crate::vspace::set_leaf(root_phys, va, map, frame, writable, true)
+                .map_err(|_| MemsegError::NotMapped)?;
+            if flush_local {
+                prima_ostd::arch::invlpg(va);
+            }
+            if !self.vspace.set_access(task_id, va, new_access) {
+                return Err(MemsegError::NotMapped);
+            }
+            va += crate::mem::FRAME_SIZE;
+        }
+        self.audit.append(AuditEvent::VspaceProtChanged {
+            task_id,
+            base: target_base,
+            page_count: page_count as u32,
+            access: new_access,
+            task_cap,
+        });
+        Ok(())
+    }
+
+    /// 调用者是否持有**某条**指向 `seg_id`、含 `right` 的活动 Capability。
+    ///
+    /// §7.4 前置 6 只要求“至少一个”对应 Segment 的映射授权；缩小权限不需要它。
+    fn caller_holds_segment_right(&self, caller: u32, seg_id: u32, right: Right) -> bool {
+        for capability in self.capabilities.iter() {
+            if capability.rights.contains(right)
+                && capability.object.target() == ObjectRef::Segment(seg_id)
+                && self.holder_of(capability.handle) == Some(caller)
+                && self.target_live(capability.object.target())
+            {
+                return true;
+            }
+        }
+        let mut index = 0;
+        while index < MAX_CAPABILITY_SLOTS {
+            if let Some(record) = self.records.get_index(index)
+                && record.rights.contains(right)
+                && record.target == ObjectRef::Segment(seg_id)
+                && self.slots.check(record.handle) == SlotState::Live
+                // `record.holder` 是**派生时的**属主，cap 随消息移动后由位置表决定当前持有者。
+                && self.holder_of(record.handle) == Some(caller)
+                && self.target_live(record.target)
+            {
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
+
     /// §7.4 `memseg_destroy`：无活动映射时删除 Segment 并把全部帧归还来源池。
     pub fn memseg_destroy(&mut self, caller: u32, seg_cap: Handle) -> Result<(), MemsegError> {
         let seg_id = match self.authorize(caller, seg_cap, Right::SegDestroy) {
@@ -8352,7 +8532,32 @@ pub fn memseg_unmap(
     })
 }
 
-/// S2-D3：全局 `memseg_destroy`（§7.4）。
+/// COSIR §7.4 / M10：全局 `memseg_protect`。
+#[allow(clippy::too_many_arguments)]
+pub fn memseg_protect(
+    caller: u32,
+    task_cap: Handle,
+    target_base: u64,
+    page_count: usize,
+    new_access: Rights,
+    root_phys: u64,
+    phys_offset: u64,
+) -> Result<(), MemsegError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.memseg_protect(
+            caller,
+            task_cap,
+            target_base,
+            page_count,
+            new_access,
+            root_phys,
+            phys_offset,
+        ),
+        None => Err(MemsegError::NotInstalled),
+    })
+}
+
+/// S2-D3：全局 `memseg_destroy`（§7.5）。
 pub fn memseg_destroy(caller: u32, seg_cap: Handle) -> Result<(), MemsegError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.memseg_destroy(caller, seg_cap),
@@ -11941,5 +12146,313 @@ mod tests {
             state.validate_authority(),
             Err(AuthorityError::MissingPosition)
         );
+    }
+
+    /// M10 / COSIR §7.4：`memseg_protect` 同步改写逻辑访问集与叶 PTE 可写位；
+    /// 新增权限缺 Segment 映射授权时整段失败且不改状态。
+    #[test]
+    fn memseg_protect_atomically_updates_access_and_write_bit() {
+        let mut pool = crate::test_support::PagePool::new();
+        let root = pool.alloc().unwrap();
+        let frame = pool.alloc().unwrap();
+        let va = 0x0000_0D00_0000_0000;
+        let map = |phys: u64| phys;
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true).unwrap();
+
+        let mut state = fresh_state();
+        state.set_segment_at(
+            0,
+            Some(SegmentObject {
+                id: 40,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector {
+                    frames: [0; MAX_SEGMENT_FRAMES],
+                    count: 0,
+                },
+                allowed_access: rights("SegMapR,SegMapW"),
+                active: true,
+            }),
+        );
+        state.segment_count = 1;
+        state
+            .vspace
+            .insert(VspaceEntry {
+                task_id: core::num::NonZeroU32::new(INIT_TASK_ID).expect("task id is nonzero"),
+                va,
+                seg_id: 40,
+                seg_offset: 0,
+                access: rights("SegMapR,SegMapW"),
+            })
+            .unwrap();
+
+        // 缩小权限（RW → R）不需要任何 Segment 映射授权。
+        let audit_before = state.audit.count;
+        state
+            .memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                1,
+                rights("SegMapR"),
+                root,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            crate::vspace::read_leaf(root, va, map).unwrap() & crate::vspace::PT_WRITABLE,
+            0
+        );
+        assert_eq!(
+            state.vspace.find(INIT_TASK_ID, va).unwrap().access,
+            rights("SegMapR")
+        );
+        assert_eq!(state.audit.count, audit_before + 1);
+        assert!(matches!(
+            state.audit.entry(audit_before),
+            Some(AuditEvent::VspaceProtChanged {
+                task_id: INIT_TASK_ID,
+                base,
+                page_count: 1,
+                access,
+                task_cap: TASK_CAP_HANDLE,
+            }) if base == va && access == rights("SegMapR")
+        ));
+
+        // 增加 W 需要指向同一 Segment 的 SegMapW 授权；失败必须不改变 PTE/访问集。
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                1,
+                rights("SegMapR,SegMapW"),
+                root,
+                0,
+            ),
+            Err(MemsegError::MissingMapRight)
+        );
+        assert_eq!(
+            crate::vspace::read_leaf(root, va, map).unwrap() & crate::vspace::PT_WRITABLE,
+            0
+        );
+        assert_eq!(
+            state.vspace.find(INIT_TASK_ID, va).unwrap().access,
+            rights("SegMapR")
+        );
+
+        // 铸一条映射授权后可恢复 RW。
+        state
+            .mint_root_capability(
+                INIT_TASK_ID,
+                rights("Derive,SegMapR,SegMapW"),
+                ObjectRef::Segment(40),
+            )
+            .unwrap();
+        state
+            .memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                1,
+                rights("SegMapR,SegMapW"),
+                root,
+                0,
+            )
+            .unwrap();
+        assert_ne!(
+            crate::vspace::read_leaf(root, va, map).unwrap() & crate::vspace::PT_WRITABLE,
+            0
+        );
+        assert_eq!(
+            state.vspace.find(INIT_TASK_ID, va).unwrap().access,
+            rights("SegMapR,SegMapW")
+        );
+    }
+
+    /// M10：随消息移动到目标 Task 的 Segment cap 才能满足“新增权限”的映射授权，
+    /// 判定必须读位置表的当前持有者，而不是派生时的 `CapRecord.holder`。
+    #[test]
+    fn memseg_protect_authorizes_a_moved_segment_capability() {
+        let mut pool = crate::test_support::PagePool::new();
+        let root = pool.alloc().unwrap();
+        let frame = pool.alloc().unwrap();
+        let va = 0x0000_0D00_0000_0000;
+        let map = |phys: u64| phys;
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, false, true).unwrap();
+
+        let mut state = fresh_state();
+        state.tasks.create_with_entry(2, 0).unwrap();
+        state.set_segment_at(
+            0,
+            Some(SegmentObject {
+                id: 40,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector {
+                    frames: [0; MAX_SEGMENT_FRAMES],
+                    count: 0,
+                },
+                allowed_access: rights("SegMapR,SegMapW"),
+                active: true,
+            }),
+        );
+        state.segment_count = 1;
+        state
+            .vspace
+            .insert(VspaceEntry {
+                task_id: core::num::NonZeroU32::new(2).expect("task id is nonzero"),
+                va,
+                seg_id: 40,
+                seg_offset: 0,
+                access: rights("SegMapR"),
+            })
+            .unwrap();
+        let task_cap = state
+            .mint_root_capability(2, rights("TaskManageVSpace"), ObjectRef::Task(2))
+            .unwrap();
+        let segment_cap = state
+            .mint_root_capability(
+                INIT_TASK_ID,
+                rights("Derive,SegMapR,SegMapW"),
+                ObjectRef::Segment(40),
+            )
+            .unwrap();
+
+        // 尚未移动：task 2 不持有 Segment cap → 新增 W 被拒。
+        assert_eq!(
+            state.memseg_protect(2, task_cap, va, 1, rights("SegMapR,SegMapW"), root, 0,),
+            Err(MemsegError::MissingMapRight)
+        );
+        state.move_capability(segment_cap, INIT_TASK_ID, 2).unwrap();
+        state
+            .memseg_protect(2, task_cap, va, 1, rights("SegMapR,SegMapW"), root, 0)
+            .unwrap();
+        assert_eq!(
+            state.vspace.find(2, va).unwrap().access,
+            rights("SegMapR,SegMapW")
+        );
+    }
+
+    /// M10 / COSIR §7.4：逐条前置失败都保持状态不变。
+    #[test]
+    fn memseg_protect_rejects_bad_ranges_and_access_atomically() {
+        let mut pool = crate::test_support::PagePool::new();
+        let root = pool.alloc().unwrap();
+        let frame = pool.alloc().unwrap();
+        let va = 0x0000_0D00_0000_0000;
+        let map = |phys: u64| phys;
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true).unwrap();
+
+        let mut state = fresh_state();
+        state.set_segment_at(
+            0,
+            Some(SegmentObject {
+                id: 40,
+                generation: INITIAL_CAP_GENERATION,
+                creator: KERNEL_ACTOR,
+                pool: crate::frames::Pool::Cpu,
+                frames: SegmentFrames::Vector {
+                    frames: [0; MAX_SEGMENT_FRAMES],
+                    count: 0,
+                },
+                allowed_access: rights("SegMapR,SegMapW"),
+                active: true,
+            }),
+        );
+        state.segment_count = 1;
+        state
+            .vspace
+            .insert(VspaceEntry {
+                task_id: core::num::NonZeroU32::new(INIT_TASK_ID).expect("task id is nonzero"),
+                va,
+                seg_id: 40,
+                seg_offset: 0,
+                access: rights("SegMapR,SegMapW"),
+            })
+            .unwrap();
+
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                0,
+                rights("SegMapR"),
+                root,
+                0,
+            ),
+            Err(MemsegError::ZeroSize)
+        );
+        let audit_before = state.audit.count;
+        assert_eq!(
+            state.memseg_protect(INIT_TASK_ID, TASK_CAP_HANDLE, va, 1, Rights::EMPTY, root, 0,),
+            Err(MemsegError::InvalidAccess)
+        );
+        // X 不在该 Segment 的 allowed_access 内。
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                1,
+                rights("SegMapR,SegMapX"),
+                root,
+                0,
+            ),
+            Err(MemsegError::InvalidAccess)
+        );
+        // 区间中有一页未映射：整段拒绝。
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                2,
+                rights("SegMapR"),
+                root,
+                0,
+            ),
+            Err(MemsegError::NotMapped)
+        );
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va + 8,
+                1,
+                rights("SegMapR"),
+                root,
+                0,
+            ),
+            Err(MemsegError::OutOfBounds)
+        );
+        // 入口页不得失去 X（W8）：把 init 入口临时指向该页，R 集不含 X。
+        state.tasks.entries[0].as_mut().unwrap().entry = va;
+        assert_eq!(
+            state.memseg_protect(
+                INIT_TASK_ID,
+                TASK_CAP_HANDLE,
+                va,
+                1,
+                rights("SegMapR"),
+                root,
+                0,
+            ),
+            Err(MemsegError::EntryMapping)
+        );
+        state.tasks.entries[0].as_mut().unwrap().entry = 0;
+        // 全部失败后状态未动：PTE 仍可写、访问集仍为 RW、审计未增。
+        assert_ne!(
+            crate::vspace::read_leaf(root, va, map).unwrap() & crate::vspace::PT_WRITABLE,
+            0
+        );
+        assert_eq!(
+            state.vspace.find(INIT_TASK_ID, va).unwrap().access,
+            rights("SegMapR,SegMapW")
+        );
+        assert_eq!(state.audit.count, audit_before);
     }
 }

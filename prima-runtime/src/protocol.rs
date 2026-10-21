@@ -307,6 +307,27 @@ pub const fn pack_vfs_node(node: u64, kind: u64, size: u64, writable: bool) -> u
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
 pub const SERVICE_FILE_HANDLES: usize = 8;
 
+/// M10：C 任务向服务管理器申请 arena Segment 的派生映射授权。
+///
+/// 请求 `tag | client(16..23)`；应答 `tag | status(0..7)`，成功时随消息转移一条
+/// `Derive|SegMapR|SegMapW` 的派生 Capability。C 任务只在首次 `mmap` 时申请一次，
+/// 之后 `memseg_map`/`memseg_unmap`/`memseg_protect` 直接走原生号。
+pub const SERVICE_VMA_CAP_REQUEST_TAG: u64 = 0x5ED9_0000_0000_0000;
+pub const SERVICE_VMA_CAP_REPLY_TAG: u64 = 0x5EDA_0000_0000_0000;
+pub const SERVICE_VMA_CLIENT_SHIFT: u64 = 16;
+pub const SERVICE_VMA_STATUS_OK: u64 = 0;
+pub const SERVICE_VMA_STATUS_UNAVAILABLE: u64 = 1;
+
+/// M10：打包 arena 映射授权请求，`client` 是发起 mmap 的 Task id 低 8 位。
+pub const fn pack_vma_cap_request(client: u64) -> u64 {
+    SERVICE_VMA_CAP_REQUEST_TAG | ((client & 0xff) << SERVICE_VMA_CLIENT_SHIFT)
+}
+
+/// M10：打包 arena 映射授权应答（成功时由发送方附加 Capability）。
+pub const fn pack_vma_cap_reply(status: u64) -> u64 {
+    SERVICE_VMA_CAP_REPLY_TAG | (status & 0xff)
+}
+
 /// M4：文件服务的 errno（Linux x86_64 数值，profile v0 已冻结）。
 pub const SERVICE_FILE_ENOENT: u64 = 2;
 pub const SERVICE_FILE_EBADF: u64 = 9;

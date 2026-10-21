@@ -105,6 +105,8 @@ enum Stage5Program<'a> {
     Vfs,
     /// M9：statx / chdir / getcwd 元数据与工作目录探针。
     Meta,
+    /// M10：匿名 mmap/munmap/mprotect 与原生 memseg_protect 探针。
+    Mem,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -138,6 +140,11 @@ pub(crate) fn build_images_for_vfs() -> Result<Images, String> {
 /// M9：用 statx / chdir / getcwd 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_meta() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Meta)
+}
+
+/// M10：用匿名内存/保护探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_mem() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Mem)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -258,6 +265,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             path.with_file_name("stage5-meta.elf"),
             vec![c_dir.join("stage5_meta.c")],
             "stage5 meta probe",
+        ),
+        Stage5Program::Mem => (
+            path.with_file_name("stage5-mem.elf"),
+            vec![c_dir.join("stage5_mem.c")],
+            "stage5 mem probe",
         ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
@@ -384,6 +396,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Fd => Some(&["stage5-fd"]),
         Stage5Program::Vfs => Some(&["stage5-vfs"]),
         Stage5Program::Meta => Some(&["stage5-meta"]),
+        Stage5Program::Mem => Some(&["stage5-mem"]),
         Stage5Program::Cat(args) => Some(args),
         Stage5Program::Ls(args) => Some(args),
         Stage5Program::Probe => None,
@@ -838,6 +851,10 @@ fn make_tree_removable(_path: &Path) {}
 /// M9 冻结的元数据/工作目录探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const META_EXPECTED_STDOUT: &[u8] = b"META|ok=1;motd=1;hostname=1;readme=1;version=1;etc=1;tmp=1;f=1;null=1;lstat=1;fstat=1;fstatat=1;enoent=1;enotdir=1;empty=1;chdir=1;cwd_abs=1;cwd_etc=1;cwd_parent=1;openrel=1;chdir_file=1;erange=1\n";
 
+/// M10 冻结的匿名内存/保护探针输出（Linux 与 Prima 逐字节相同；`exec`/`native`
+/// 是各平台的冻结期望，不是同一实现）。
+pub(crate) const MEM_EXPECTED_STDOUT: &[u8] = b"MEM|ok=1;map=1;zero=1;write=1;protect=1;protect_back=1;fixed=1;reuse=1;none=1;exec=1;mmap_err=1;munmap_err=1;mprotect_err=1;unmapped=1;big=1;native=1\n";
+
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
     pub(crate) name: &'static str,
@@ -909,6 +926,44 @@ pub(crate) fn check_stage5_linux_meta() -> Result<(), String> {
         ));
     }
     println!("PASS linux stage5 statx/chdir/getcwd references");
+    Ok(())
+}
+
+/// M10：用宿主 glibc 重建 `stage5_mem.c`，取得 mmap/munmap/mprotect 参考。
+pub(crate) fn check_stage5_linux_mem() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_mem.c");
+    let binary = workspace.join("target/prima-os/mem-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 mem: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 mem probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 mem probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != MEM_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 mem mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(MEM_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 mmap/munmap/mprotect references");
     Ok(())
 }
 

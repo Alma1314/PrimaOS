@@ -8,6 +8,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-21 | [2026-10-21-stage5-m10-anon-memory-design.md](2026-10-21-stage5-m10-anon-memory-design.md) | 阶段 5 / M10：匿名内存与保护（设计） |
 | 2026-10-20 | [2026-10-20-stage5-user-vfs-design.md](2026-10-20-stage5-user-vfs-design.md) | 阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计） |
 | 2026-10-20 | [2026-10-20-stage5-profile-v1.md](2026-10-20-stage5-profile-v1.md) | 阶段 5 POSIX profile v1（delta，提案） |
 | 2026-10-18 | [2026-10-18-stage5-profile-v0.md](2026-10-18-stage5-profile-v0.md) | 阶段 5 POSIX profile v0（冻结） |

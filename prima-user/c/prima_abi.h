@@ -18,6 +18,15 @@
 #define PRIMA_SYS_TASK_SET_FS_BASE 38
 #define PRIMA_SYS_TIME_ENABLE 39
 #define PRIMA_SYS_TIME_TICKS 40
+/* M10：memseg_protect(task_cap, target_base, page_count, new_access)。 */
+#define PRIMA_SYS_MEMSEG_MAP 14
+#define PRIMA_SYS_MEMSEG_UNMAP 15
+#define PRIMA_SYS_MEMSEG_PROTECT 41
+
+/* COSIR Segment 访问权限位（kernel/src/rights.rs 的 Right 位序）。 */
+#define PRIMA_ACCESS_R 2
+#define PRIMA_ACCESS_W 4
+#define PRIMA_ACCESS_X 8
 
 /* Linux x86_64 syscall numbers：只在 prima_syscall.c 内翻译，绝不进入内核。 */
 #define PRIMA_LINUX_SYS_read 0
@@ -156,6 +165,13 @@
 #define PRIMA_VFS_KIND_DIR 0
 #define PRIMA_VFS_KIND_FILE 1
 #define PRIMA_VFS_KIND_NULL 2
+
+/* M10：C 任务向管理器申请 arena Segment 的映射授权。REPLY 携带一条派生 cap
+ * （Derive|SegMapR|SegMapW），之后 mmap/munmap/mprotect 直接走原生号。 */
+#define PRIMA_STAGE5_VMA_CAP_REQUEST_TAG UINT64_C(0x5ed9000000000000)
+#define PRIMA_STAGE5_VMA_CAP_REPLY_TAG UINT64_C(0x5eda000000000000)
+#define PRIMA_VMA_CLIENT_SHIFT 16
+#define PRIMA_VMA_STATUS_SHIFT 0
 #define PRIMA_DIR_CACHE_BYTES 32
 
 /* M8：本地 fd 表（0..18）。fd 0 预置 `/dev/null` 语义（读 EOF、写丢弃），1/2 预置

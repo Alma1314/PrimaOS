@@ -33,43 +33,77 @@ long prima_native_syscall3(long number, long a0, long a1, long a2) {
     return prima_raw(number, a0, a1, a2, 0, 0, 0);
 }
 
-/* M3b：musl mallocng 的匿名内存。
+long prima_native_syscall4(long number, long a0, long a1, long a2, long a3) {
+    return prima_raw(number, a0, a1, a2, a3, 0, 0);
+}
+
+/* M3b/M10：musl 的匿名内存与保护。
  *
- * 服务管理器在创建 C 任务时把 96 页 arena 与栈作为**同一 Segment** 的两段映射
- * 进本任务根：首 40 页作 `brk` 区（mallocng 的元数据区），其余 56 页作匿名
- * `mmap` 的 bump 区。适配层只做指针推进，不再发 `memseg_create`——C 探针运行期
- * 容量快照已是 segment 槽位 41/48、audit 757/768，任务内建段会立即触顶。
- * M9 的 96 页是给 sbase `ls` 的 64 KiB `PATH_MAX` visited 表留出 brk 余量。
+ * 服务管理器在创建 C 任务时把 104 页 arena 与栈作为**同一 Segment** 的两段映射进本
+ * 任务根：前 8 页是 C 栈，随后 96 页堆（heap page 0..95）。适配层把堆切成两个区：
+ * 首 40 页作 `brk` 区（mallocng 的元数据区），其余 56 页作匿名 `mmap` 区。
  *
- * 已知边界（M3 报告登记，不得据此宣称通用 mmap）：
- * - 只支持 `MAP_PRIVATE|MAP_ANONYMOUS`、fd=-1、offset=0；
- * - `MAP_FIXED` 只为 mallocng 的 brk guard 页返回原地址，不改变权限；
- * - `mprotect` 返回成功但不改变权限（匿名页一律 RW）；
- * - `munmap` 是空操作，bump 区不回收；无 `mremap`；
- * - 单次匿名映射上限 56 页，arena 用尽后 `mmap` 返回 `ENOMEM`。
+ * M10 起 `mmap/munmap/mprotect` 不再只是指针推进：
+ * - `mmap` 在 56 页区里做按页 first-fit 分配；新页清零；`MAP_FIXED` 只接受堆区
+ *   （mallocng 的 brk guard 页）或 mmap 区内的地址。
+ * - 首次 mmap 会向管理器申请 arena Segment 的派生映射授权（`Derive|SegMapR|SegMapW`），
+ *   之后 `munmap` 用 `SYS_MEMSEG_UNMAP` 真正拆 PTE，`mmap` 复用地址时用
+ *   `SYS_MEMSEG_MAP` 重新映射。
+ * - `mprotect` 走内核 `SYS_MEMSEG_PROTECT=41`；RW→R 的收缩不需要额外授权，R→RW
+ *   需要上面的 Segment cap。W^X：匿名段 allowed_access 只有 RW，故任何 `PROT_EXEC`
+ *   请求返回 `EACCES`。
+ *
+ * 已知边界（M10 报告登记）：
+ * - `PROT_NONE` 近似为只读（内核 `memseg_protect` 的访问集不可为空），页仍可读；
+ * - 无文件映射、无 `MAP_SHARED`、无 `mremap`；`MAP_FIXED` 的地址必须在本 arena 内；
+ * - 单次匿名映射上限 56 页；brk 区不在本 mmap 分配器内，`brk` 仍是 40 页上限；
+ * - 管理器未授予 Segment cap 时退化为“只 free 不 unmap”，R→RW 的 mprotect 返回 `EACCES`。
  */
 #define PRIMA_HEAP_VA UINT64_C(0x00000c0000000000)
 #define PRIMA_HEAP_PAGES 96UL
 #define PRIMA_BRK_PAGES 40UL
 #define PRIMA_MMAP_PAGES (PRIMA_HEAP_PAGES - PRIMA_BRK_PAGES)
 #define PRIMA_PAGE_SIZE 4096UL
+#define PRIMA_MMAP_BASE (PRIMA_HEAP_VA + PRIMA_BRK_PAGES * PRIMA_PAGE_SIZE)
+#define PRIMA_MMAP_LIMIT (PRIMA_HEAP_VA + PRIMA_HEAP_PAGES * PRIMA_PAGE_SIZE)
+/* heap page i 对应 arena Segment 偏移 i + 8；8 是 servicemgr 的 C_STACK_PAGES。 */
+#define PRIMA_SEG_HEAP_OFFSET 8UL
+#define PRIMA_MMAP_BYTES ((PRIMA_MMAP_PAGES + 7) / 8)
 
 #define PRIMA_MAP_SHARED 0x01
 #define PRIMA_MAP_PRIVATE 0x02
 #define PRIMA_MAP_FIXED 0x10
 #define PRIMA_MAP_ANONYMOUS 0x20
+#define PRIMA_PROT_READ 0x1
+#define PRIMA_PROT_WRITE 0x2
+#define PRIMA_PROT_EXEC 0x4
 
-static uint64_t prima_heap_pages;
 static uint64_t prima_brk_cur;
-static uint64_t prima_mmap_next;
+static unsigned char prima_mmap_used[PRIMA_MMAP_BYTES];
+static unsigned char prima_mmap_present[PRIMA_MMAP_BYTES];
+static uint64_t prima_arena_cap;
+static int prima_arena_state; /* 0 = 未申请，1 = 已获得，-1 = 不可用 */
 
-/* arena 由服务管理器预先映射；这里只初始化 bump 指针。 */
+static int prima_bit_get(const unsigned char *map, unsigned page) {
+    return (map[page / 8] >> (page % 8)) & 1;
+}
+
+static void prima_bit_set(unsigned char *map, unsigned page, int value) {
+    if (value)
+        map[page / 8] |= (unsigned char)(1u << (page % 8));
+    else
+        map[page / 8] &= (unsigned char)~(1u << (page % 8));
+}
+
+/* arena 由服务管理器预先映射；这里只初始化分配位图。 */
 static void prima_heap_ready(void) {
-    if (prima_heap_pages != 0)
+    if (prima_brk_cur != 0)
         return;
-    prima_heap_pages = PRIMA_HEAP_PAGES;
     prima_brk_cur = PRIMA_HEAP_VA;
-    prima_mmap_next = PRIMA_HEAP_VA + PRIMA_BRK_PAGES * PRIMA_PAGE_SIZE;
+    for (unsigned i = 0; i < PRIMA_MMAP_BYTES; i++) {
+        prima_mmap_used[i] = 0;
+        prima_mmap_present[i] = 0xff;
+    }
 }
 
 static long prima_brk(uint64_t requested) {
@@ -83,34 +117,272 @@ static long prima_brk(uint64_t requested) {
     return (long)requested;
 }
 
-static long prima_mmap_anon(long requested_address, uint64_t length,
-                            long flags, long fd, long offset) {
-    if ((flags & PRIMA_MAP_FIXED) != 0) {
-        /* mallocng 在 brk 区首页安装 guard；该区已映射，返回请求地址即可。 */
-        return requested_address;
+/* 首次 mmap 向管理器申请 arena 的派生 cap；失败后本任务退化为“只 free 不 unmap”。 */
+static int prima_arena_acquire(void) {
+    if (prima_arena_state != 0)
+        return prima_arena_state > 0;
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    uint64_t payload =
+        PRIMA_STAGE5_VMA_CAP_REQUEST_TAG |
+        ((uint64_t)(id & 0xff) << PRIMA_VMA_CLIENT_SHIFT);
+    long sent = prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                          (long)prima_ctx.send_cap, (long)payload, 0, 0, 0);
+    if (sent != 0) {
+        prima_arena_state = -1;
+        return 0;
     }
-    if ((flags & PRIMA_MAP_ANONYMOUS) == 0 ||
-        (flags & PRIMA_MAP_SHARED) != 0 || (flags & PRIMA_MAP_PRIVATE) == 0 ||
-        fd != -1 || offset != 0)
+    uint64_t caps[3];
+    for (;;) {
+        long raw = prima_raw(PRIMA_SYS_RECV, (long)caps, 0, 0, 0, 0, 0);
+        if (raw < 0) {
+            prima_arena_state = -1;
+            return 0;
+        }
+        uint64_t reply = (uint64_t)raw;
+        if ((reply >> 48) == (PRIMA_STAGE5_VMA_CAP_REPLY_TAG >> 48)) {
+            if (((reply >> PRIMA_VMA_STATUS_SHIFT) & 0xff) == 0 &&
+                caps[2] >= 1 && caps[0] != 0) {
+                prima_arena_cap = caps[0];
+                prima_arena_state = 1;
+                return 1;
+            }
+            prima_arena_state = -1;
+            return 0;
+        }
+        /* 申请期间到达的非 VMA 消息不属于本通道；当前协议无并发请求，直接忽略。 */
+    }
+}
+
+/* PROT 位 → COSIR 访问集；PROT_NONE 取最小非空访问集 R，PROT_EXEC 在匿名段不可满足。 */
+static long prima_prot_access(long prot) {
+    if ((prot & ~(long)(PRIMA_PROT_READ | PRIMA_PROT_WRITE | PRIMA_PROT_EXEC)) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    if ((prot & PRIMA_PROT_EXEC) != 0)
+        return -PRIMA_ERRNO_EACCES;
+    long access = 0;
+    if ((prot & PRIMA_PROT_READ) != 0)
+        access |= PRIMA_ACCESS_R;
+    if ((prot & PRIMA_PROT_WRITE) != 0)
+        access |= PRIMA_ACCESS_W;
+    if (access == 0)
+        access = PRIMA_ACCESS_R;
+    return access;
+}
+
+/* 映射 index 起的连续 pages 页；返回 0 或原始负 errno。 */
+static long prima_arena_map_pages(unsigned index, unsigned pages, long access) {
+    if (pages == 0)
+        return 0;
+    if (prima_arena_cap == 0)
+        return -PRIMA_ERRNO_ENOMEM;
+    uint64_t va = PRIMA_MMAP_BASE + (uint64_t)index * PRIMA_PAGE_SIZE;
+    uint64_t seg_offset =
+        PRIMA_SEG_HEAP_OFFSET + PRIMA_BRK_PAGES + (uint64_t)index;
+    return prima_raw(PRIMA_SYS_MEMSEG_MAP, (long)prima_arena_cap,
+                     (long)prima_ctx.self_cap, (long)seg_offset, (long)va,
+                     (long)pages, access);
+}
+
+/* 真正拆除 index 起的连续 pages 页；无 cap 时保留映射（退化模式）。 */
+static long prima_arena_unmap_pages(unsigned index, unsigned pages) {
+    if (pages == 0 || prima_arena_cap == 0)
+        return 0;
+    uint64_t va = PRIMA_MMAP_BASE + (uint64_t)index * PRIMA_PAGE_SIZE;
+    return prima_raw(PRIMA_SYS_MEMSEG_UNMAP, (long)prima_ctx.self_cap, (long)va,
+                     (long)pages, 0, 0, 0);
+}
+
+/* 释放 mmap 区 [index, index+pages) 的占用；present 页整段拆映射。 */
+static long prima_arena_release(unsigned index, unsigned pages) {
+    for (unsigned page = index; page < index + pages; page++)
+        prima_bit_set(prima_mmap_used, page, 0);
+    unsigned cursor = index;
+    while (cursor < index + pages) {
+        if (!prima_bit_get(prima_mmap_present, cursor)) {
+            cursor++;
+            continue;
+        }
+        unsigned start = cursor;
+        while (cursor < index + pages &&
+               prima_bit_get(prima_mmap_present, cursor))
+            cursor++;
+        long result = prima_arena_unmap_pages(start, cursor - start);
+        if (result != 0)
+            return result;
+        /* 退化模式（无 cap）没有真正拆映射，present 必须保持 1。 */
+        if (prima_arena_cap != 0) {
+            for (unsigned page = start; page < cursor; page++)
+                prima_bit_set(prima_mmap_present, page, 0);
+        }
+    }
+    return 0;
+}
+
+static int prima_find_free_run(unsigned pages) {
+    unsigned run = 0;
+    for (unsigned page = 0; page < PRIMA_MMAP_PAGES; page++) {
+        if (!prima_bit_get(prima_mmap_used, page)) {
+            run++;
+            if (run == pages)
+                return (int)(page + 1 - pages);
+        } else {
+            run = 0;
+        }
+    }
+    return -1;
+}
+
+static void prima_zero(uint64_t address, uint64_t length) {
+    for (uint64_t offset = 0; offset < length; offset += 8)
+        *(volatile uint64_t *)(address + offset) = 0;
+}
+
+static long prima_mmap_anon(long requested_address, uint64_t length, long prot,
+                            long flags, long fd, long offset) {
+    if ((flags & PRIMA_MAP_ANONYMOUS) == 0 || (flags & PRIMA_MAP_SHARED) != 0 ||
+        (flags & PRIMA_MAP_PRIVATE) == 0 || fd != -1 || offset != 0)
         return -PRIMA_ERRNO_EINVAL;
     if (length == 0)
         return -PRIMA_ERRNO_EINVAL;
-    uint64_t pages = (length + PRIMA_PAGE_SIZE - 1) / PRIMA_PAGE_SIZE;
-    if (pages == 0 || pages > PRIMA_MMAP_PAGES)
+    if (length > UINT64_MAX - (PRIMA_PAGE_SIZE - 1))
         return -PRIMA_ERRNO_ENOMEM;
+    uint64_t pages64 = (length + PRIMA_PAGE_SIZE - 1) / PRIMA_PAGE_SIZE;
+    if (pages64 == 0 || pages64 > PRIMA_MMAP_PAGES)
+        return -PRIMA_ERRNO_ENOMEM;
+    unsigned pages = (unsigned)pages64;
+    long access = prima_prot_access(prot);
+    if (access < 0)
+        return access;
     prima_heap_ready();
-    uint64_t base = prima_mmap_next;
-    uint64_t limit = PRIMA_HEAP_VA + PRIMA_HEAP_PAGES * PRIMA_PAGE_SIZE;
-    if (base + pages * PRIMA_PAGE_SIZE > limit)
-        return -PRIMA_ERRNO_ENOMEM;
-    prima_mmap_next = base + pages * PRIMA_PAGE_SIZE;
+    (void)prima_arena_acquire();
+    /* 没有 Segment cap 时无法先 R 再补 W；PROT_NONE 直接按 RW 返回（近似）。 */
+    if (prima_arena_cap == 0 && (access & (PRIMA_ACCESS_R | PRIMA_ACCESS_W)) !=
+                                     (PRIMA_ACCESS_R | PRIMA_ACCESS_W))
+        access = PRIMA_ACCESS_R | PRIMA_ACCESS_W;
+
+    unsigned index;
+    uint64_t base;
+    if ((flags & PRIMA_MAP_FIXED) != 0) {
+        if (((uint64_t)requested_address & (PRIMA_PAGE_SIZE - 1)) != 0)
+            return -PRIMA_ERRNO_EINVAL;
+        base = (uint64_t)requested_address;
+        /* mallocng 在 brk 区首页安装 guard：该区已映射，按原地址成功返回。 */
+        if (base >= PRIMA_HEAP_VA && base < PRIMA_MMAP_BASE &&
+            base + pages64 * PRIMA_PAGE_SIZE <= PRIMA_MMAP_BASE)
+            return requested_address;
+        if (base < PRIMA_MMAP_BASE || base >= PRIMA_MMAP_LIMIT ||
+            base + pages64 * PRIMA_PAGE_SIZE > PRIMA_MMAP_LIMIT ||
+            base + pages64 * PRIMA_PAGE_SIZE < base)
+            return -PRIMA_ERRNO_ENOMEM;
+        index = (unsigned)((base - PRIMA_MMAP_BASE) / PRIMA_PAGE_SIZE);
+        long released = prima_arena_release(index, pages);
+        if (released != 0)
+            return released;
+    } else {
+        int found = prima_find_free_run(pages);
+        if (found < 0)
+            return -PRIMA_ERRNO_ENOMEM;
+        index = (unsigned)found;
+        base = PRIMA_MMAP_BASE + (uint64_t)index * PRIMA_PAGE_SIZE;
+    }
+
+    unsigned char was_present[PRIMA_MMAP_BYTES];
+    for (unsigned i = 0; i < PRIMA_MMAP_BYTES; i++)
+        was_present[i] = prima_mmap_present[i];
+    unsigned cursor = index;
+    while (cursor < index + pages) {
+        if (prima_bit_get(prima_mmap_present, cursor)) {
+            cursor++;
+            continue;
+        }
+        unsigned start = cursor;
+        while (cursor < index + pages &&
+               !prima_bit_get(prima_mmap_present, cursor))
+            cursor++;
+        long mapped = prima_arena_map_pages(start, cursor - start, access);
+        if (mapped != 0) {
+            /* 失败原子：把本次新映射的页拆回映射前状态。 */
+            for (unsigned page = index; page < index + pages; page++) {
+                if (!prima_bit_get(was_present, page) &&
+                    prima_bit_get(prima_mmap_present, page)) {
+                    (void)prima_arena_unmap_pages(page, 1);
+                    prima_bit_set(prima_mmap_present, page, 0);
+                }
+            }
+            return mapped;
+        }
+        for (unsigned page = start; page < cursor; page++)
+            prima_bit_set(prima_mmap_present, page, 1);
+    }
+    for (unsigned page = index; page < index + pages; page++)
+        prima_bit_set(prima_mmap_used, page, 1);
+    prima_zero(base, pages64 * PRIMA_PAGE_SIZE);
+    /* mmap 的初始 prot 也必须生效（新页由服务管理器预映射为 RW）。 */
+    if (access != (PRIMA_ACCESS_R | PRIMA_ACCESS_W)) {
+        long protected = prima_raw(PRIMA_SYS_MEMSEG_PROTECT,
+                                   (long)prima_ctx.self_cap, (long)base,
+                                   (long)pages, access, 0, 0);
+        if (protected != 0) {
+            (void)prima_arena_release(index, pages);
+            return protected;
+        }
+    }
     return (long)base;
 }
 
-static long prima_munmap_anon(uint64_t address) {
-    /* bump arena 不回收单个映射；`free` 仍能复用 mallocng 自己的分组。 */
-    (void)address;
-    return 0;
+static long prima_munmap_anon(uint64_t address, uint64_t length) {
+    if ((address & (PRIMA_PAGE_SIZE - 1)) != 0 || length == 0 ||
+        length > UINT64_MAX - (PRIMA_PAGE_SIZE - 1))
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t pages64 = (length + PRIMA_PAGE_SIZE - 1) / PRIMA_PAGE_SIZE;
+    if (pages64 > PRIMA_MMAP_PAGES)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t span = pages64 * PRIMA_PAGE_SIZE;
+    if (address < PRIMA_MMAP_BASE || address + span > PRIMA_MMAP_LIMIT ||
+        address + span < address)
+        return -PRIMA_ERRNO_EINVAL;
+    unsigned index = (unsigned)((address - PRIMA_MMAP_BASE) / PRIMA_PAGE_SIZE);
+    unsigned pages = (unsigned)pages64;
+    prima_heap_ready();
+    if (prima_arena_state == 0)
+        (void)prima_arena_acquire();
+    /* Linux 允许 munmap 未映射页；这里同样只释放“占用”位。 */
+    for (unsigned page = index; page < index + pages; page++)
+        prima_bit_set(prima_mmap_used, page, 0);
+    return prima_arena_release(index, pages);
+}
+
+static long prima_mprotect_anon(uint64_t address, uint64_t length, long prot) {
+    if ((address & (PRIMA_PAGE_SIZE - 1)) != 0 || length == 0 ||
+        length > UINT64_MAX - (PRIMA_PAGE_SIZE - 1))
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t pages64 = (length + PRIMA_PAGE_SIZE - 1) / PRIMA_PAGE_SIZE;
+    if (pages64 == 0 || pages64 > PRIMA_MMAP_PAGES)
+        return -PRIMA_ERRNO_ENOMEM;
+    uint64_t span = pages64 * PRIMA_PAGE_SIZE;
+    if (address < PRIMA_MMAP_BASE || address + span > PRIMA_MMAP_LIMIT ||
+        address + span < address)
+        return -PRIMA_ERRNO_ENOMEM;
+    unsigned index = (unsigned)((address - PRIMA_MMAP_BASE) / PRIMA_PAGE_SIZE);
+    unsigned pages = (unsigned)pages64;
+    prima_heap_ready();
+    if (prima_arena_state == 0)
+        (void)prima_arena_acquire();
+    long access = prima_prot_access(prot);
+    if (access < 0)
+        return access;
+    /* 只有仍被占用的已映射页可以改保护；缩权不要求 Segment cap。 */
+    for (unsigned page = index; page < index + pages; page++) {
+        if (!prima_bit_get(prima_mmap_used, page) ||
+            !prima_bit_get(prima_mmap_present, page))
+            return -PRIMA_ERRNO_ENOMEM;
+    }
+    long result = prima_raw(PRIMA_SYS_MEMSEG_PROTECT,
+                            (long)prima_ctx.self_cap, (long)address, (long)pages,
+                            access, 0, 0);
+    if (result == -PRIMA_ERRNO_ENOENT)
+        return -PRIMA_ERRNO_ENOMEM;
+    return result;
 }
 
 /* fd 1/2 的逐个字节转发；返回字节数或原始负 errno。 */
@@ -1144,13 +1416,12 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
                             long a4, long a5) {
     switch (number) {
     case PRIMA_LINUX_SYS_mmap:
-        /* Linux 顺序：addr, len, prot, flags, fd, offset；prot 不参与判定。 */
-        return prima_mmap_anon(a0, (uint64_t)a1, a3, a4, a5);
+        /* Linux 顺序：addr, len, prot, flags, fd, offset。 */
+        return prima_mmap_anon(a0, (uint64_t)a1, a2, a3, a4, a5);
     case PRIMA_LINUX_SYS_munmap:
-        return prima_munmap_anon((uint64_t)a0);
+        return prima_munmap_anon((uint64_t)a0, (uint64_t)a1);
     case PRIMA_LINUX_SYS_mprotect:
-        /* 匿名页一律 RW；mallocng 只对已 RW 的元数据页调用。 */
-        return 0;
+        return prima_mprotect_anon((uint64_t)a0, (uint64_t)a1, a2);
     case PRIMA_LINUX_SYS_brk:
         return prima_brk((uint64_t)a0);
     case PRIMA_LINUX_SYS_write:

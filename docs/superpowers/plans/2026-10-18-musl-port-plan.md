@@ -4,7 +4,7 @@
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
 （`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片、M6 POSIX 时间首切片、
-M7 完整本地 fd 表与 M8 用户态 VFS/rootfs 已完成（2026-10-18/20，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)、[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)与 [M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，M8 补上 fd 0..18、多级路径、目录枚举与用户态 rootfs；仍无符号链接、cwd、进程退出自动关闭与持久化。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+M7 完整本地 fd 表、M8 用户态 VFS/rootfs、M9 元数据/工作目录与 M10 匿名内存/保护已完成（2026-10-18/21，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)、[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)、[M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)与 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，M8 补上 fd 0..18、多级路径、目录枚举与用户态 rootfs；仍无符号链接、进程退出自动关闭与持久化；`mmap` 只覆盖 56 页匿名 arena 子集。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -106,6 +106,17 @@ rootfs（`/etc`、`/usr/lib`、`/tmp`、`/dev/null` 等 12 个节点），实现
 三重故障，具体根因未定位）、`MAX_AUDIT_EVENTS=8192`（V1 实测 4120）。详见
 [M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M8 设计](../specs/2026-10-20-stage5-user-vfs-design.md)
 与 [profile v1 delta](../specs/2026-10-20-stage5-profile-v1.md)。
+
+**M10 匿名内存/保护切片（2026-10-21）**：内核追加 `SYS_MEMSEG_PROTECT=41`，按
+COSIR §7.4 实现逐页前置校验、`VspaceProtChanged` 审计、叶 PTE 可写位同步与入口页
+`X` 保护；C 适配层把 56 页 mmap 区改为按页 first-fit 分配（`used`/`present` 位图），
+首次 mmap 向管理器申请 arena Segment 的 `Derive|SegMapR|SegMapW` 派生 cap，之后
+`munmap` 用 `memseg_unmap` 真正拆 PTE、复用时用 `memseg_map` 重映射，`mprotect`
+经内核改权。`PROT_NONE` 近似为只读、匿名 `PROT_EXEC` 返回 `EACCES`（W^X）。
+A1 探针在 Linux/Prima 同源输出逐字节一致并双轮 QEMU 通过；`P5-MM-01` 由 planned
+推进为 `partial`。已知边界：无文件映射/`MAP_SHARED`/`mremap`，brk 仍 40 页，
+无硬件 NX。详见 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)与
+[M10 设计](../specs/2026-10-21-stage5-m10-anon-memory-design.md)。
 
 ## 构建与验证
 

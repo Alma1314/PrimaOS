@@ -41,10 +41,11 @@ pub use prima_abi::syscall::{
     SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN,
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
-    SYS_MEMSEG_MAP, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
-    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE,
-    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_TIME_ENABLE, SYS_TIME_NOW,
-    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
+    SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE,
+    SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
+    SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
+    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
+    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -438,6 +439,7 @@ pub const fn memseg_errno(error: crate::bootstrap::MemsegError) -> Errno {
         | E::StaleHandle
         | E::NotInstalled
         | E::CapacityExceeded
+        | E::InvalidTask
         | E::NotMapped => Errno::NoEnt,
         E::NotHolder
         | E::MissingRight
@@ -1432,6 +1434,34 @@ fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
     }
 }
 
+/// COSIR §7.4 / M10：`memseg_protect` 服务。
+fn memseg_protect_call(raw_task: u64, target_base: u64, page_count: u64, access_bits: u64) -> u64 {
+    let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let (Some(task_id), Some((_, offset))) = (
+        bootstrap::task_of_cap(task_cap),
+        crate::cow::root_and_offset(),
+    ) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    let Some(root) = sched::root(task_id) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    match bootstrap::memseg_protect(
+        sched::current(),
+        task_cap,
+        target_base,
+        page_count as usize,
+        Rights::from_bits(access_bits as u32),
+        root,
+        offset,
+    ) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(memseg_errno(error)),
+    }
+}
+
 /// S2-D3：`memseg_destroy` 服务。
 fn memseg_destroy_call(raw_seg: u64) -> u64 {
     let Ok(seg_cap) = bootstrap::decode_handle(raw_seg) else {
@@ -2273,6 +2303,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         memseg_map_call(args[0], args[1], args[2], args[3], args[4], args[5])
     } else if num == SYS_MEMSEG_UNMAP {
         memseg_unmap_call(args[0], args[1], args[2])
+    } else if num == SYS_MEMSEG_PROTECT {
+        memseg_protect_call(args[0], args[1], args[2], args[3])
     } else if num == SYS_MEMSEG_DESTROY {
         memseg_destroy_call(args[0])
     } else if num == SYS_SEND {
