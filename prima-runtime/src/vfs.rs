@@ -46,6 +46,16 @@ pub const VERSION: u16 = 1;
 /// 根节点编号。
 pub const ROOT: NodeId = 0;
 
+/// 已删除节点的 `parent` 哨兵。`MAX_NODES` 远小于 255，故不会与真实父节点冲突。
+/// 删除只标记、不清零 `kind/data`：未关闭句柄在槽位被复用前仍可读到旧内容；目录
+/// 查找与枚举一律跳过该节点。
+pub const FREE_PARENT: NodeId = 0xff;
+
+/// 节点是否已被删除（槽位可复用）。
+fn is_free(node: &Node) -> bool {
+    node.parent == FREE_PARENT
+}
+
 /// 节点编号（0..MAX_NODES）。
 pub type NodeId = u8;
 
@@ -534,7 +544,7 @@ fn lookup<S: Storage>(
     let header = read_header(storage)?;
     for id in 1..header.count {
         let node = read_node(storage, id)?;
-        if node.parent == directory && node.name_bytes() == name {
+        if !is_free(&node) && node.parent == directory && node.name_bytes() == name {
             return Ok(Some(id));
         }
     }
@@ -616,12 +626,9 @@ pub fn open<S: Storage>(
         let id = walk(storage, start, &parsed)?;
         return finish_open(storage, id, flags);
     }
-    let mut header = read_header(storage)?;
-    if header.count as usize >= MAX_NODES {
-        return Err(VfsError::NoSpace);
-    }
-    let data = header.data_used;
-    let id = header.count;
+    // M11：新建文件同样复用已删除槽，避免删除后节点表高水位仍把创建挡在 ENOSPC。
+    let id = alloc_node(storage)?;
+    let data = read_header(storage)?.data_used;
     let mut name = [0u8; MAX_NAME];
     name[..last.len as usize].copy_from_slice(last.as_bytes());
     let node = Node {
@@ -634,10 +641,6 @@ pub fn open<S: Storage>(
         name,
     };
     store_node(storage, id, &node)?;
-    header.count += 1;
-    if !header.write(storage) {
-        return Err(VfsError::Io);
-    }
     Ok(Opened { id, node })
 }
 
@@ -669,6 +672,136 @@ fn finish_open<S: Storage>(
         write_node(storage, id, &node)?;
     }
     Ok(Opened { id, node })
+}
+
+/// 分配一个节点槽：优先复用已删除槽，否则追加到高水位；`MAX_NODES` 用尽返回 `ENOSPC`。
+fn alloc_node<S: Storage>(storage: &mut S) -> Result<NodeId, VfsError> {
+    let mut header = read_header(storage)?;
+    for id in 1..header.count {
+        if is_free(&read_node(storage, id)?) {
+            return Ok(id);
+        }
+    }
+    if header.count as usize >= MAX_NODES {
+        return Err(VfsError::NoSpace);
+    }
+    let id = header.count;
+    header.count += 1;
+    if !header.write(storage) {
+        return Err(VfsError::Io);
+    }
+    Ok(id)
+}
+
+/// 标记节点删除。内容区不回收（首版没有内容空闲表），槽位可被后续创建复用。
+fn free_node<S: Storage>(storage: &mut S, id: NodeId) -> Result<(), VfsError> {
+    let mut node = read_node(storage, id)?;
+    node.parent = FREE_PARENT;
+    node.name_len = 0;
+    node.name = [0u8; MAX_NAME];
+    node.size = 0;
+    node.data = 0;
+    store_node(storage, id, &node)
+}
+
+/// 目录是否仍有子节点（跳过已删除槽）。
+fn has_children<S: Storage>(storage: &mut S, id: NodeId) -> Result<bool, VfsError> {
+    let header = read_header(storage)?;
+    for child in 1..header.count {
+        let node = read_node(storage, child)?;
+        if !is_free(&node) && node.parent == id {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// `mkdir`：在可写目录中创建一个空目录（mode 由调用方忽略，统一 0777/可写）。
+pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<NodeId, VfsError> {
+    let parsed = ParsedPath::parse(path)?;
+    if parsed.count == 0 {
+        return Err(VfsError::Exist);
+    }
+    let last = parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if last.is_dot() || last.is_dot_dot() {
+        return Err(VfsError::Exist);
+    }
+    let directory = walk(storage, start, &parsed.prefix())?;
+    let parent = read_node(storage, directory)?;
+    if parent.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if !parent.writable {
+        return Err(VfsError::Access);
+    }
+    if lookup(storage, directory, last.as_bytes())?.is_some() {
+        return Err(VfsError::Exist);
+    }
+    let id = alloc_node(storage)?;
+    let mut name = [0u8; MAX_NAME];
+    name[..last.len as usize].copy_from_slice(last.as_bytes());
+    let node = Node {
+        kind: NodeKind::Directory,
+        parent: directory,
+        writable: true,
+        size: 0,
+        data: 0,
+        name_len: last.len,
+        name,
+    };
+    store_node(storage, id, &node)?;
+    Ok(id)
+}
+
+/// `unlink`/`rmdir`：删除末项。目录必须为空（`remove_dir`），普通文件/设备按文件删除；
+/// 根、`.`、`..` 与只读父目录确定失败。打开句柄的检查由存储服务在调用前完成。
+pub fn unlink<S: Storage>(
+    storage: &mut S,
+    start: NodeId,
+    path: &[u8],
+    remove_dir: bool,
+) -> Result<NodeId, VfsError> {
+    let parsed = ParsedPath::parse(path)?;
+    if parsed.count == 0 {
+        return Err(VfsError::Access);
+    }
+    let last = parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if last.is_dot() || last.is_dot_dot() {
+        return Err(VfsError::Invalid);
+    }
+    let directory = walk(storage, start, &parsed.prefix())?;
+    let parent = read_node(storage, directory)?;
+    if parent.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if !parent.writable {
+        return Err(VfsError::Access);
+    }
+    let id = lookup(storage, directory, last.as_bytes())?.ok_or(VfsError::NoEnt)?;
+    let node = read_node(storage, id)?;
+    // 尾随 `/` 要求目标是目录（Linux `unlink("file/")` → ENOTDIR）。
+    if parsed.trailing_slash && node.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if remove_dir {
+        if node.kind != NodeKind::Directory {
+            return Err(VfsError::NotDir);
+        }
+        if has_children(storage, id)? {
+            // 冻结错误集没有 ENOTEMPTY；用 EACCES 表达“目录非空不可删”。
+            return Err(VfsError::Access);
+        }
+    } else {
+        if node.kind == NodeKind::Directory {
+            // 冻结错误集没有 EISDIR；用 EACCES 表达“目录不能用 unlink 删除”。
+            return Err(VfsError::Access);
+        }
+        if node.kind == NodeKind::Null {
+            return Err(VfsError::Access);
+        }
+    }
+    free_node(storage, id)?;
+    Ok(id)
 }
 
 /// 读文件/设备。目录读取由 [`dir_bytes`] 单独提供，避免把目录当普通文件暴露给 `read(2)`。
@@ -762,7 +895,8 @@ pub fn dir_entry_count<S: Storage>(storage: &mut S, id: NodeId) -> Result<usize,
     let header = read_header(storage)?;
     let mut count = 2usize;
     for child in 1..header.count {
-        if read_node(storage, child)?.parent == id {
+        let node = read_node(storage, child)?;
+        if !is_free(&node) && node.parent == id {
             count += 1;
         }
     }
@@ -800,7 +934,7 @@ pub fn dir_entry<S: Storage>(
     let mut seen = 2usize;
     for child in 1..header.count {
         let child_node = read_node(storage, child)?;
-        if child_node.parent != id {
+        if is_free(&child_node) || child_node.parent != id {
             continue;
         }
         if seen == index {
@@ -1170,5 +1304,163 @@ mod tests {
         }
         assert_eq!(offset, (CONTENT_CAPACITY / 512) * 512);
         assert_eq!(node.size as usize, offset);
+    }
+
+    #[test]
+    fn file_creation_reuses_a_freed_slot() {
+        let mut storage = mounted();
+        let flags = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        let mut last: Option<(NodeId, u8)> = None;
+        let mut index = 0u8;
+        loop {
+            let digit = b'0' + index;
+            let path = [b'/', b't', b'm', b'p', b'/', b'f', digit];
+            match open(&mut storage, ROOT, &path, flags) {
+                Ok(opened) => {
+                    last = Some((opened.id, digit));
+                    index += 1;
+                }
+                Err(VfsError::NoSpace) => break,
+                Err(error) => panic!("unexpected open result {error:?}"),
+            }
+        }
+        let (id, digit) = last.expect("at least one file was created");
+        let path = [b'/', b't', b'm', b'p', b'/', b'f', digit];
+        assert_eq!(unlink(&mut storage, ROOT, &path, false), Ok(id));
+        // 删除后计数仍为高水位，但创建应复用同一槽而不是 ENOSPC。
+        let again = open(&mut storage, ROOT, b"/tmp/g1", flags).unwrap();
+        assert_eq!(again.id, id);
+        assert_eq!(again.node.name_bytes(), b"g1");
+    }
+
+    #[test]
+    fn mkdir_creates_writable_empty_directories() {
+        let mut storage = mounted();
+        let a = mkdir(&mut storage, ROOT, b"/tmp/a").expect("mkdir in writable dir");
+        let node = read_node(&mut storage, a).unwrap();
+        assert_eq!(node.kind, NodeKind::Directory);
+        assert_eq!(node.parent, resolve(&mut storage, ROOT, b"tmp").unwrap());
+        assert!(node.writable);
+        assert_eq!(mkdir(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::Exist));
+        assert_eq!(mkdir(&mut storage, ROOT, b"/etc/x"), Err(VfsError::Access));
+        assert_eq!(mkdir(&mut storage, ROOT, b"/nope/x"), Err(VfsError::NoEnt));
+        assert_eq!(
+            mkdir(&mut storage, ROOT, b"/etc/motd/x"),
+            Err(VfsError::NotDir)
+        );
+        assert_eq!(mkdir(&mut storage, ROOT, b"/"), Err(VfsError::Exist));
+        assert_eq!(mkdir(&mut storage, ROOT, b"."), Err(VfsError::Exist));
+        assert!(mkdir(&mut storage, ROOT, b"/tmp/a/b").is_ok());
+    }
+
+    #[test]
+    fn unlink_and_rmdir_enforce_kind_empty_and_parent_rights() {
+        let mut storage = mounted();
+        let a = mkdir(&mut storage, ROOT, b"/tmp/a").unwrap();
+        let f = open(
+            &mut storage,
+            ROOT,
+            b"/tmp/a/f",
+            OpenFlags {
+                access: 2,
+                create: true,
+                ..OpenFlags::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/f", false), Ok(f.id));
+        assert_eq!(
+            resolve(&mut storage, ROOT, b"/tmp/a/f"),
+            Err(VfsError::NoEnt)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/tmp/a/f", false),
+            Err(VfsError::NoEnt)
+        );
+        // 非空目录不能 rmdir；目录不能用 unlink 删除；普通文件不能 rmdir。
+        let _g = open(
+            &mut storage,
+            ROOT,
+            b"/tmp/a/g",
+            OpenFlags {
+                access: 2,
+                create: true,
+                ..OpenFlags::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/tmp/a", true),
+            Err(VfsError::Access)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/tmp/a", false),
+            Err(VfsError::Access)
+        );
+        let f2 = open(
+            &mut storage,
+            ROOT,
+            b"/tmp/a/f2",
+            OpenFlags {
+                access: 2,
+                create: true,
+                ..OpenFlags::default()
+            },
+        )
+        .unwrap();
+        // 普通文件不能 rmdir；只读父目录上的任何删除都是 EACCES。
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/tmp/a/f2", true),
+            Err(VfsError::NotDir)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/etc/motd", true),
+            Err(VfsError::Access)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/etc/motd", false),
+            Err(VfsError::Access)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/", true),
+            Err(VfsError::Access)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b".", false),
+            Err(VfsError::Invalid)
+        );
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"..", true),
+            Err(VfsError::Invalid)
+        );
+        // 清空后可删除。
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/g", false), Ok(_g.id));
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/f2", false), Ok(f2.id));
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a", true), Ok(a));
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::NoEnt));
+    }
+
+    #[test]
+    fn deleted_nodes_are_skipped_and_reused() {
+        let mut storage = mounted();
+        let tmp = resolve(&mut storage, ROOT, b"tmp").unwrap();
+        let a = mkdir(&mut storage, ROOT, b"/tmp/a").unwrap();
+        assert_eq!(dir_entry_count(&mut storage, tmp), Ok(3));
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a", true), Ok(a));
+        assert_eq!(dir_entry_count(&mut storage, tmp), Ok(2));
+        // 已删除节点不出现在目录枚举里。
+        for index in 0..dir_entry_count(&mut storage, tmp).unwrap() {
+            let entry = dir_entry(&mut storage, tmp, index).unwrap().unwrap();
+            assert_ne!(entry.name_bytes(), b"a");
+        }
+        // 槽位被复用，且新名字覆盖旧名字。
+        let b = mkdir(&mut storage, ROOT, b"/tmp/b").unwrap();
+        assert_eq!(b, a);
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::NoEnt));
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/b"), Ok(b));
     }
 }

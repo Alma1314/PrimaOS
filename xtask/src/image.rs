@@ -107,6 +107,8 @@ enum Stage5Program<'a> {
     Meta,
     /// M10：匿名 mmap/munmap/mprotect 与原生 memseg_protect 探针。
     Mem,
+    /// M11：mkdir/rmdir/unlink（含 *at）文件树变更探针。
+    Mut,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -145,6 +147,11 @@ pub(crate) fn build_images_for_meta() -> Result<Images, String> {
 /// M10：用匿名内存/保护探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_mem() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Mem)
+}
+
+/// M11：用文件树变更探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_mut() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Mut)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -270,6 +277,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             path.with_file_name("stage5-mem.elf"),
             vec![c_dir.join("stage5_mem.c")],
             "stage5 mem probe",
+        ),
+        Stage5Program::Mut => (
+            path.with_file_name("stage5-mut.elf"),
+            vec![c_dir.join("stage5_mut.c")],
+            "stage5 mut probe",
         ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
@@ -397,6 +409,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Vfs => Some(&["stage5-vfs"]),
         Stage5Program::Meta => Some(&["stage5-meta"]),
         Stage5Program::Mem => Some(&["stage5-mem"]),
+        Stage5Program::Mut => Some(&["stage5-mut"]),
         Stage5Program::Cat(args) => Some(args),
         Stage5Program::Ls(args) => Some(args),
         Stage5Program::Probe => None,
@@ -855,6 +868,10 @@ pub(crate) const META_EXPECTED_STDOUT: &[u8] = b"META|ok=1;motd=1;hostname=1;rea
 /// 是各平台的冻结期望，不是同一实现）。
 pub(crate) const MEM_EXPECTED_STDOUT: &[u8] = b"MEM|ok=1;map=1;zero=1;write=1;protect=1;protect_back=1;fixed=1;reuse=1;none=1;exec=1;mmap_err=1;munmap_err=1;mprotect_err=1;unmapped=1;big=1;native=1\n";
 
+/// M11 冻结的文件树变更探针输出（Linux 与 Prima 逐字节相同；`nonempty`/`unlink_dir`
+/// 是各平台冻结期望）。
+pub(crate) const MUT_EXPECTED_STDOUT: &[u8] = b"MUT|ok=1;mkdir=1;exists=1;stat_dir=1;nested=1;nonempty=1;rmdir=1;unlink_file=1;unlink_dir=1;rmdir_file=1;readonly=1;missing=1;enoent=1;at=1\n";
+
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
     pub(crate) name: &'static str,
@@ -964,6 +981,55 @@ pub(crate) fn check_stage5_linux_mem() -> Result<(), String> {
         ));
     }
     println!("PASS linux stage5 mmap/munmap/mprotect references");
+    Ok(())
+}
+
+/// M11：用宿主 glibc 重建 `stage5_mut.c`，在一次性目录（含只读 `ro/`）中取得参考。
+pub(crate) fn check_stage5_linux_mut() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_mut.c");
+    let binary = workspace.join("target/prima-os/mut-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 mut: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 mut probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/mut-linux-run");
+    let _ = fs::remove_dir_all(&run_dir);
+    fs::create_dir_all(run_dir.join("ro"))
+        .map_err(|error| format!("failed to create {}: {error}", run_dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(run_dir.join("ro"), fs::Permissions::from_mode(0o555))
+            .map_err(|error| format!("failed to set ro permissions: {error}"))?;
+    }
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 mut probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != MUT_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 mut mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(MUT_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 mkdir/rmdir/unlink references");
     Ok(())
 }
 

@@ -4,7 +4,7 @@
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
 （`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片、M6 POSIX 时间首切片、
-M7 完整本地 fd 表、M8 用户态 VFS/rootfs、M9 元数据/工作目录与 M10 匿名内存/保护已完成（2026-10-18/21，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)、[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)、[M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)与 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，M8 补上 fd 0..18、多级路径、目录枚举与用户态 rootfs；仍无符号链接、进程退出自动关闭与持久化；`mmap` 只覆盖 56 页匿名 arena 子集。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
+M7 完整本地 fd 表、M8 用户态 VFS/rootfs、M9 元数据/工作目录、M10 匿名内存/保护与 M11 文件树变更已完成（2026-10-18/22，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)、[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)、[M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)、[M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)与 [M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，M8 补上 fd 0..18、多级路径、目录枚举与用户态 rootfs；仍无符号链接、进程退出自动关闭与持久化；`mmap` 只覆盖 56 页匿名 arena 子集，文件树仅支持单路径 mkdir/unlink/rmdir。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
 **上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
 
@@ -117,6 +117,16 @@ A1 探针在 Linux/Prima 同源输出逐字节一致并双轮 QEMU 通过；`P5-
 推进为 `partial`。已知边界：无文件映射/`MAP_SHARED`/`mremap`，brk 仍 40 页，
 无硬件 NX。详见 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)与
 [M10 设计](../specs/2026-10-21-stage5-m10-anon-memory-design.md)。
+
+**M11 文件树变更切片（2026-10-22）**：用户态 VFS 增加删除标记（`parent=0xFF`）与
+槽位复用，`mkdir`/`unlink`/`rmdir` 在存储服务内完成，`open(O_CREAT)` 也复用已删除槽；
+C 适配层新增 `mkdir(83)`/`mkdirat(258)`/`unlink(87)`/`unlinkat(263)`/`rmdir(84)`，
+经 `MUTATE + PATH + COMMIT` 分段协议到达存储服务。删除带打开句柄的节点、非空目录
+与目录 `unlink` 在冻结错误集内返回 `EACCES`（代替 `ENOTEMPTY`/`EISDIR`）。D1 探针
+在 Linux/Prima 同源输出逐字节一致并双轮 QEMU 通过；`P5-FS-06` 新增为 `partial`。
+无 `rename`/`mv`、链接、权限位、内容区回收或跨启动持久化。详见
+[M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)与
+[M11 设计](../specs/2026-10-22-stage5-m11-file-mutation-design.md)。
 
 ## 构建与验证
 

@@ -62,12 +62,13 @@ use prima_runtime::{
         SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_OPEN_TAG,
-        SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH, SERVICE_VMA_CAP_REQUEST_TAG,
-        SERVICE_VMA_CLIENT_SHIFT, SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG,
-        STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG,
-        STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply,
-        pack_file_reply, pack_service_name, pack_service_request, pack_vma_cap_reply,
+        SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_MUTATE_TAG,
+        SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH,
+        SERVICE_VMA_CAP_REQUEST_TAG, SERVICE_VMA_CLIENT_SHIFT, SERVICE_WAKE_TAG,
+        SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG,
+        STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG, STAGE5_TTY_WRITE_TAG,
+        native_app_hash, native_app_reply, pack_file_reply, pack_service_name,
+        pack_service_request, pack_vma_cap_reply,
     },
     task::TaskSpec,
     trace::{
@@ -663,6 +664,7 @@ pub extern "C" fn _start(
             message.payload >> 48,
             tag if tag == SERVICE_VFS_OPEN_TAG >> 48
                 || tag == SERVICE_VFS_PATH_TAG >> 48
+                || tag == SERVICE_VFS_MUTATE_TAG >> 48
                 || tag == SERVICE_VFS_COMMIT_TAG >> 48
         ) {
             // M8：C 适配层 → 管理器 → 存储服务。rootfs 授权在 C 创建时一次建立；这里只做

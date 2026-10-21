@@ -814,6 +814,76 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     return local;
 }
 
+/* M11：发送一次单路径变更（MUTATE + PATH + COMMIT），成功返回 0 或原始负 errno。 */
+static long prima_vfs_mutate_request(unsigned char op, unsigned char start,
+                                     const char *path, unsigned long len,
+                                     uint64_t *reply) {
+    uint64_t meta = PRIMA_STAGE5_VFS_MUTATE_TAG |
+                    ((uint64_t)(op & 0xf) << PRIMA_VFS_MUTATE_OP_SHIFT) |
+                    (((uint64_t)len & 0xff) << PRIMA_VFS_PATH_LEN_SHIFT) |
+                    (((uint64_t)start & 0xff) << PRIMA_VFS_START_SHIFT);
+    for (unsigned long i = 0; i < len && i < 3; i++)
+        meta |= (uint64_t)(unsigned char)path[i] << (8 * i);
+    long sent = prima_vfs_send(meta);
+    if (sent < 0)
+        return sent;
+    for (unsigned long offset = 3; offset < len; offset += 5) {
+        uint64_t chunk = PRIMA_STAGE5_VFS_PATH_TAG |
+                         (((uint64_t)offset & 0xff) << PRIMA_VFS_PATH_OFFSET_SHIFT);
+        for (unsigned long i = 0; i < 5 && offset + i < len; i++)
+            chunk |= (uint64_t)(unsigned char)path[offset + i] << (8 * i);
+        sent = prima_vfs_send(chunk);
+        if (sent < 0)
+            return sent;
+    }
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    long raw = prima_vfs_call(PRIMA_STAGE5_VFS_COMMIT_TAG |
+                              (((uint64_t)id & 0xff)
+                               << PRIMA_VFS_COMMIT_CLIENT_SHIFT));
+    if (raw < 0)
+        return raw;
+    *reply = (uint64_t)raw;
+    return 0;
+}
+
+/* M11：解析 dirfd + path，发变更请求并翻译服务端状态。 */
+static long prima_mutate_path(long dirfd, const char *path, unsigned char op) {
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    if (path[0] == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    char resolved[PRIMA_VFS_PATH_MAX + 1];
+    const char *send = path;
+    unsigned char start = 0;
+    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    if (target < 0)
+        return target;
+    unsigned long len = prima_strlen_bounded(send, PRIMA_VFS_PATH_MAX);
+    if (len > PRIMA_VFS_PATH_MAX)
+        return -PRIMA_ERRNO_EINVAL;
+    if (len == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    uint64_t reply = 0;
+    long request = prima_vfs_mutate_request(op, start, send, len, &reply);
+    if (request < 0)
+        return request;
+    long status = prima_reply_status(reply);
+    return status == 0 ? 0 : -status;
+}
+
+static long prima_mkdirat(long dirfd, const char *path, long mode) {
+    (void)mode; /* 首版 VFS 无权限位：新建目录统一 0777/可写。 */
+    return prima_mutate_path(dirfd, path, PRIMA_VFS_OP_MKDIR);
+}
+
+static long prima_unlinkat(long dirfd, const char *path, long flags) {
+    if ((flags & ~(long)PRIMA_AT_REMOVEDIR) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    unsigned char op = (flags & PRIMA_AT_REMOVEDIR) != 0 ? PRIMA_VFS_OP_RMDIR
+                                                        : PRIMA_VFS_OP_UNLINK;
+    return prima_mutate_path(dirfd, path, op);
+}
+
 /* Linux x86_64 `struct statx`（256 字节）。x86_64 musl 的 stat 家族实际走下方
  * kstat 号 4/5/6/262，只有直接调用 `statx(332)` 的程序用本布局；适配层只填
  * profile 冻结的字段，其余清零。 */
@@ -1453,6 +1523,17 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_getdents64((int)a0, (void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_lseek:
         return prima_fd_lseek((int)a0, (long)a1, (int)a2);
+    case PRIMA_LINUX_SYS_mkdir:
+        return prima_mkdirat(PRIMA_AT_FDCWD, (const char *)a0, a1);
+    case PRIMA_LINUX_SYS_mkdirat:
+        return prima_mkdirat(a0, (const char *)a1, a2);
+    case PRIMA_LINUX_SYS_rmdir:
+        return prima_unlinkat(PRIMA_AT_FDCWD, (const char *)a0,
+                              PRIMA_AT_REMOVEDIR);
+    case PRIMA_LINUX_SYS_unlink:
+        return prima_unlinkat(PRIMA_AT_FDCWD, (const char *)a0, 0);
+    case PRIMA_LINUX_SYS_unlinkat:
+        return prima_unlinkat(a0, (const char *)a1, a2);
     case PRIMA_LINUX_SYS_dup:
         return prima_fd_dup((int)a0);
     case PRIMA_LINUX_SYS_dup2:

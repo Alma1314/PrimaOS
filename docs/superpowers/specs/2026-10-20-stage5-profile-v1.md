@@ -1,12 +1,12 @@
-# 阶段 5 POSIX profile v1（delta，M8/M9/M10 提案）
+# 阶段 5 POSIX profile v1（delta，M8/M9/M10/M11 提案）
 
-**日期**：2026-10-21（M8 于 2026-10-20 提交，M9 追加元数据/工作目录行，M10 追加匿名内存/保护行）
+**日期**：2026-10-22（M8 于 2026-10-20 提交，M9 追加元数据/工作目录行，M10 追加匿名内存/保护行，M11 追加文件树变更行）
 **状态**：**提案**。v0 仍是当前冻结契约；本文件只列出 M8/M9 需要变更/新增的行，
 供组织级评审后发布为 v1。S5-D1 的组织级确认仍未完成，因此本文件不自行勾选任何
 S5-D*/S5-X*。
 
 **与 v0 的关系**：不删除、不重编号 v0 的任何行；`P5-FS-01`/`P5-FD-01`/`P5-FS-02`
-只更新 partial 边界与证据，新增 `P5-FS-03`/`P5-FS-04`/`P5-FS-05`；M10 新增 `P5-MM-01` 的 partial 边界。未列出的行继续按
+只更新 partial 边界与证据，新增 `P5-FS-03`/`P5-FS-04`/`P5-FS-05`；M10 新增 `P5-MM-01` 的 partial 边界，M11 新增 `P5-FS-06` 的 partial 边界。未列出的行继续按
 v0 执行。
 
 ## 1. 变更行
@@ -19,6 +19,7 @@ v0 执行。
 | P5-FS-04 | `stat`/`lstat`/`fstat`/`fstatat`（x86_64 musl 经 kstat 4/5/6/262；`statx(332)` 亦实现） | partial | **M9**：x86_64 musl 的 stat 家族走 144 B kstat 布局，同一字段集也用于 256 B `statx(332)` 布局：`stx_mask=STATX_BASIC_STATS`、`stx_blksize=4096`、`stx_nlink`（目录 2、其余 1）、`stx_ino`（节点+1）、`stx_size`、`stx_blocks`、`stx_mode`（目录 0555/0777、普通文件 0444/0666、`/dev/null` 为 `S_IFCHR\|0666`）；接受 `AT_NO_AUTOMOUNT`（忽略）、`AT_SYMLINK_NOFOLLOW`（无符号链接，等价）与 `AT_EMPTY_PATH`（按 fd 取元数据）；其它 flag `EINVAL`。时间戳、`st_dev`/`st_rdev` 恒 0，`stx_attributes` 未实现；不实现 `statx` 的 sync/mount 语义。证据同下 |
 | P5-FS-05 | `chdir`/`getcwd` | partial | **M9**：每任务独立 cwd，初始 `/`；`chdir` 只接受存在的目录（文件→`ENOTDIR`），成功后保存**词法规范化**的绝对路径（无符号链接，故 `..` 按字面回退，根处钳制）；`getcwd` 返回含 NUL 的长度，缓冲不足 `ERANGE`；无 `fchdir`、无 cwd 继承、无 `getcwd` 分配形式（`buf=NULL`）。证据同下 |
 | P5-MM-01 | `mmap/munmap/mprotect` | partial | **M10**：仅 `MAP_PRIVATE|MAP_ANONYMOUS`、fd=-1、offset=0；56 页固定 arena 内按页 first-fit 分配、`munmap` 真正拆 PTE、复用地址时复映射；`mprotect` 经内核 `memseg_protect(41)` 改权，RW↔R 等收缩/恢复可用；初始 prot 生效。`PROT_NONE` 近似为只读（COSIR 访问集不可为空）；匿名 `PROT_EXEC` 返回 `EACCES`（W^X）；无文件映射/`MAP_SHARED`/`mremap`/`madvise`；`MAP_FIXED` 仅限 arena（brk guard 页例外），区外 `ENOMEM`；无硬件 NX。证据：[M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md) A1 双轮与 M10 设计 |
+| P5-FS-06 | `mkdir`/`mkdirat`/`unlink`/`unlinkat`/`rmdir` | partial | **M11**：单路径创建空目录与删除文件/空目录；`AT_FDCWD` 相对路径与 cwd 合成，`dirfd` 形式以目录节点为起点；`AT_REMOVEDIR` 支持，其它 `unlinkat` flags 返回 `EINVAL`。节点表 16 槽、删除后槽位复用；删除不回收内容区；带打开句柄的节点拒绝删除（`EACCES`）；非空目录/目录 `unlink` 用 `EACCES` 代替 `ENOTEMPTY`/`EISDIR`；`mode`/`umask`/`chmod` 不建模。无 `rename`/`renameat`/`mv`、硬链接、符号链接；无跨启动持久化。证据：[M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md) D1 双轮与 M11 设计 |
 | P5-FD-01 | `close(fd)`、`dup/dup2/dup3` | partial | **M8**：本地 fd 0..18；fd 0=null、1/2=tty、file/dir 项指向服务端句柄 3..10（8 个并发）；`dup*` 共享服务端句柄/offset/目录游标，最后引用才关闭；`dup2`/`dup3` 目标接受 0..18；无 fd 0 的 tty 输入；表满 `EAGAIN`；无 exec，`O_CLOEXEC` 无语义；无进程退出自动关闭 |
 | P5-IO-01 | `write(fd, buf, len)` | partial | **M8**：fd 0 写丢弃（返回长度）；fd 1/2 tty；fd 3..18 file/dir。目录写 `EBADF`；文件写经 VFS，3 字节分片；无短写/`EPIPE`/非阻塞 |
 | P5-IO-02 | `read(fd, buf, len)` | partial | **M8**：fd 0 `/dev/null` 语义返回 EOF；fd 3..18 文件读；目录不暴露给 `read`（`EBADF`），只经 `P5-FS-03`；tty `read`/`readv` 未实现 |
@@ -36,7 +37,7 @@ v0 执行。
 M9 新增 `ERANGE=34`（仅 `getcwd` 缓冲不足；POSIX 语义，v0 未登记）。其余沿用 v0 已冻结的
 `ENOENT=2`、`EBADF=9`、`EAGAIN=11`、`ENOMEM=12`（M10：mmap 区耗尽/mprotect 未映射）、`EACCES=13`、`EFAULT=14`、`EEXIST=17`、`ENOTDIR=20`、
 `EINVAL=22`、`ENOSPC=28`、`ENOSYS=38`。
-未冻结的 `EISDIR=21`、`ENAMETOOLONG=36`、`ELOOP=40`、`ESPIPE=29`、`EMFILE=24` 不出现。
+未冻结的 `EISDIR=21`、`ENOTEMPTY=39`、`ENAMETOOLONG=36`、`ELOOP=40`、`ESPIPE=29`、`EMFILE=24` 不出现；M11 把非空目录/目录 `unlink` 映射为 `EACCES`。
 
 ## 4. 冻结用例（M8/M9）
 
@@ -49,6 +50,7 @@ M9 新增 `ERANGE=34`（仅 `getcwd` 缓冲不足；POSIX 语义，v0 未登记�
 | L2 | sbase `ls .` | 退出 0，stdout `README\ndev\netc\nf\ntmp\nusr\n` | 逐字节一致；双轮 QEMU |
 | L3 | sbase `ls etc/motd` | 退出 0，stdout `etc/motd\n` | 逐字节一致；双轮 QEMU |
 | A1 | `stage5_mem.c` 的 mmap/munmap/mprotect 全项 | 退出 0，stdout `MEM|ok=1;...` | 逐字节一致（`exec`/`native` 为各平台冻结期望）；双轮 QEMU |
+| D1 | `stage5_mut.c` 的 mkdir/rmdir/unlink 全项 | 退出 0，stdout `MUT|ok=1;...` | 逐字节一致（`nonempty`/`unlink_dir` 为各平台冻结期望）；双轮 QEMU |
 
 Linux 参考在一次性 cwd 中布置同形树（`etc/motd`、`etc/hostname`、`usr/lib/version`、
 `README`、`f`、`tmp`、`dev`）并设置与 Prima 相同的 0444/0555/0666/0777 权限，
@@ -62,4 +64,5 @@ Linux 参考在一次性 cwd 中布置同形树（`etc/motd`、`etc/hostname`、
   持久化、文件映射或并发写锁。
 - 不表示时间戳、`st_dev`/`st_rdev`、`statx` mount/sync 字段可用。
 - 不表示动态链接、`fork/execve/wait4`、线程、信号、网络、完整 POSIX `mmap` 可用；`P5-MM-01` 只是 56 页匿名 arena 子集。
+- 不表示完整文件系统：M11 只支持单路径 `mkdir`/`unlink`/`rmdir`，无 `rename`/`mv`、链接、权限位、内容区回收或跨启动持久化。
 - 不勾选 S5-D3/S5-X1–X3；S5-D1 仍需组织级确认。

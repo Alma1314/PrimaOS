@@ -40,7 +40,9 @@ use prima_runtime::{
         SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_FIRST_BYTES_MASK,
         SERVICE_VFS_FLAG_APPEND, SERVICE_VFS_FLAG_CREATE, SERVICE_VFS_FLAG_DIRECTORY,
         SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_STAT, SERVICE_VFS_FLAG_TRUNC,
-        SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT, SERVICE_VFS_OPEN_TAG,
+        SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT, SERVICE_VFS_MUTATE_OP_MASK,
+        SERVICE_VFS_MUTATE_OP_SHIFT, SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OP_MKDIR,
+        SERVICE_VFS_OP_RMDIR, SERVICE_VFS_OP_UNLINK, SERVICE_VFS_OPEN_TAG,
         SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT, SERVICE_VFS_PATH_MAX,
         SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG, SERVICE_VFS_START_SHIFT,
         SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker, pack_service_reply, pack_vfs_node,
@@ -67,6 +69,10 @@ const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 const BOOTSTRAP_TASK: u32 = 1;
 /// M8：VFS 镜像在持久化段内的起点。偏移 0..8 留给 SPEC-112 的状态字。
 const SERVICE_VFS_BASE: u64 = SERVICE_FILE_SIZE_OFFSET;
+/// M11：暂存操作码（0 保留给 open/stat；线上 0..2 映射为 1..3）。
+const STAGED_MKDIR: u8 = SERVICE_VFS_OP_MKDIR as u8 + 1;
+const STAGED_UNLINK: u8 = SERVICE_VFS_OP_UNLINK as u8 + 1;
+const STAGED_RMDIR: u8 = SERVICE_VFS_OP_RMDIR as u8 + 1;
 /// M8：文件/目录服务端句柄的编号起点。
 const SERVICE_FILE_FIRST_FD: u64 = 3;
 
@@ -212,7 +218,9 @@ pub fn run(
         } else if tag == SERVICE_VFS_COMMIT_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
             let reply = if vfs_ready {
-                if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
+                if staged.op != 0 {
+                    mutate_staged(&runtime, &mut staged, &mut files)
+                } else if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
                     stat_staged(&runtime, &mut staged)
                 } else {
                     open_staged(&runtime, &mut staged, &mut files)
@@ -221,6 +229,18 @@ pub fn run(
                 pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOSYS, 0)
             };
             let _ = runtime.send(peer, send_cap, reply, &[]);
+        } else if tag == SERVICE_VFS_MUTATE_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M11：mkdir/unlink/rmdir 复用 OPEN/PATH/COMMIT 的分段路径传输。
+            let op = ((message.payload >> SERVICE_VFS_MUTATE_OP_SHIFT) & SERVICE_VFS_MUTATE_OP_MASK)
+                as u8;
+            let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
+            let start = ((message.payload >> SERVICE_VFS_START_SHIFT) & 0xff) as u8;
+            let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
+            if vfs_ready {
+                let _ = staged.begin_mutate(op + 1, len, start, first);
+            } else {
+                staged.active = false;
+            }
         } else if tag == SERVICE_FILE_REQUEST_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M4/M8：读/写/lseek/close 只在存储服务、且持久化段已映射后处理；否则明确拒绝。
             let response = if vfs_ready {
@@ -263,6 +283,8 @@ impl FileHandle {
 #[derive(Clone, Copy)]
 struct OpenStaging {
     active: bool,
+    /// 0 = open/stat；1 = mkdir；2 = unlink；3 = rmdir（M11）。
+    op: u8,
     flags: u8,
     len: u8,
     got: u8,
@@ -273,6 +295,7 @@ struct OpenStaging {
 impl OpenStaging {
     const EMPTY: Self = Self {
         active: false,
+        op: 0,
         flags: 0,
         len: 0,
         got: 0,
@@ -288,6 +311,7 @@ impl OpenStaging {
             return SERVICE_FILE_EINVAL;
         }
         self.active = true;
+        self.op = 0;
         self.flags = flags;
         self.len = len as u8;
         self.got = len.min(3) as u8;
@@ -297,6 +321,19 @@ impl OpenStaging {
             *byte = ((first >> (8 * index)) & 0xff) as u8;
         }
         0
+    }
+
+    /// M11：开始一次单路径变更（mkdir/unlink/rmdir）；空路径一律拒绝。
+    fn begin_mutate(&mut self, op: u8, len: usize, start: u8, first: u64) -> u64 {
+        if len == 0 || len > SERVICE_VFS_PATH_MAX {
+            self.active = false;
+            return SERVICE_FILE_EINVAL;
+        }
+        let status = self.begin(0, len, start, first);
+        if status == 0 {
+            self.op = op;
+        }
+        status
     }
 
     fn append(&mut self, offset: usize, bytes: u64) -> u64 {
@@ -338,6 +375,45 @@ fn vfs_status(error: vfs::VfsError) -> u64 {
         vfs::VfsError::NoSpace => SERVICE_FILE_ENOSPC,
         vfs::VfsError::Unformatted => SERVICE_FILE_ENOSYS,
         vfs::VfsError::Io => SERVICE_FILE_EFAULT,
+    }
+}
+
+/// M11：执行一次变更；打开中的节点拒绝删除（返回 `EACCES`，避免句柄指向被复用槽）。
+fn mutate_staged<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    staged: &mut OpenStaging,
+    files: &mut [FileHandle; SERVICE_FILE_HANDLES],
+) -> u64 {
+    let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
+    if !staged.active || staged.got != staged.len {
+        staged.active = false;
+        return reply(SERVICE_FILE_EINVAL);
+    }
+    let op = staged.op;
+    let start = staged.start;
+    let len = staged.len as usize;
+    staged.active = false;
+    let mut storage = SegmentStorage { runtime };
+    let path = &staged.path[..len];
+    match op {
+        STAGED_MKDIR => match vfs::mkdir(&mut storage, start, path) {
+            Ok(_) => reply(0),
+            Err(error) => reply(vfs_status(error)),
+        },
+        STAGED_UNLINK | STAGED_RMDIR => {
+            let id = match vfs::resolve(&mut storage, start, path) {
+                Ok(id) => id,
+                Err(error) => return reply(vfs_status(error)),
+            };
+            if files.iter().any(|handle| handle.open && handle.node == id) {
+                return reply(SERVICE_FILE_EACCES);
+            }
+            match vfs::unlink(&mut storage, start, path, op == STAGED_RMDIR) {
+                Ok(_) => reply(0),
+                Err(error) => reply(vfs_status(error)),
+            }
+        }
+        _ => reply(SERVICE_FILE_EINVAL),
     }
 }
 

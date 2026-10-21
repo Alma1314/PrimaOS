@@ -43,6 +43,9 @@
 #define PRIMA_LINUX_SYS_brk 12
 #define PRIMA_LINUX_SYS_ioctl 16
 #define PRIMA_LINUX_SYS_writev 20
+#define PRIMA_LINUX_SYS_mkdir 83
+#define PRIMA_LINUX_SYS_rmdir 84
+#define PRIMA_LINUX_SYS_unlink 87
 #define PRIMA_LINUX_SYS_dup 32
 #define PRIMA_LINUX_SYS_dup2 33
 #define PRIMA_LINUX_SYS_getpid 39
@@ -55,6 +58,8 @@
 #define PRIMA_LINUX_SYS_set_tid_address 218
 #define PRIMA_LINUX_SYS_exit_group 231
 #define PRIMA_LINUX_SYS_openat 257
+#define PRIMA_LINUX_SYS_mkdirat 258
+#define PRIMA_LINUX_SYS_unlinkat 263
 #define PRIMA_LINUX_SYS_getdents64 217
 #define PRIMA_LINUX_SYS_getcwd 79
 #define PRIMA_LINUX_SYS_chdir 80
@@ -89,6 +94,8 @@
 #define PRIMA_O_DIRECTORY 0200000
 #define PRIMA_O_CLOEXEC 02000000
 #define PRIMA_AT_FDCWD (-100)
+/* M11：unlinkat 的 AT_REMOVEDIR；rename 等未实现。 */
+#define PRIMA_AT_REMOVEDIR 0x200
 /* M9：statx 接受的 flag 子集；无符号链接，故 SYMLINK_NOFOLLOW 仅被接受。 */
 #define PRIMA_AT_SYMLINK_NOFOLLOW 0x100
 #define PRIMA_AT_NO_AUTOMOUNT 0x800
@@ -172,6 +179,13 @@
 #define PRIMA_STAGE5_VMA_CAP_REPLY_TAG UINT64_C(0x5eda000000000000)
 #define PRIMA_VMA_CLIENT_SHIFT 16
 #define PRIMA_VMA_STATUS_SHIFT 0
+
+/* M11：单路径文件树变更（mkdir/unlink/rmdir），复用 PATH/COMMIT 分段。 */
+#define PRIMA_STAGE5_VFS_MUTATE_TAG UINT64_C(0x5edb000000000000)
+#define PRIMA_VFS_MUTATE_OP_SHIFT 44
+#define PRIMA_VFS_OP_MKDIR 0
+#define PRIMA_VFS_OP_UNLINK 1
+#define PRIMA_VFS_OP_RMDIR 2
 #define PRIMA_DIR_CACHE_BYTES 32
 
 /* M8：本地 fd 表（0..18）。fd 0 预置 `/dev/null` 语义（读 EOF、写丢弃），1/2 预置

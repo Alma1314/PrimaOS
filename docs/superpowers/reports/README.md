@@ -8,6 +8,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-22 | [2026-10-22-stage5-m11-file-mutation.md](2026-10-22-stage5-m11-file-mutation.md) | 阶段 5 M11：文件树变更（`mkdir`/`rmdir`/`unlink`） |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |

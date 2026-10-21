@@ -15,7 +15,7 @@ M8 把文件后端推进到用户态 VFS/rootfs，新增通用 fd 0..18、多级
 （x86_64 musl 走 kstat 4/5/6/262，另实现 `statx(332)`）与 `chdir`/`getcwd`，并用 sbase `cat`/`ls` 做端到端
 验收（见 [M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)）；M10 追加
 `SYS_MEMSEG_PROTECT=41` 与 C 侧 56 页匿名 mmap 区的按页分配/真正 unmap/复映射/改权，
-把 `P5-MM-01` 推进到 `partial`（见 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)），
+把 `P5-MM-01` 推进到 `partial`（见 [M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)）；M11 追加单路径 `mkdir`/`unlink`/`rmdir` 与删除槽位复用，把 `P5-FS-06` 推进到 `partial`（见 [M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)），
 但**没有**勾选 S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 96 页 arena 上工作，不代表通用 `mmap`；
 VFS 仍无符号链接、`mkdir`/`unlink`/`rename`、进程退出自动关闭与持久化；时间只是 10 ms
 粒度的 PIT 轮询，不是阻塞时钟服务。
@@ -39,6 +39,7 @@ VFS 仍无符号链接、`mkdir`/`unlink`/`rename`、进程退出自动关闭与
 | P5-FS-03 | partial | **M8/M9**：`getdents64(217)` 返回 `linux_dirent64` 子集（`.`/`..`、`d_ino`、`d_type`、8 字节对齐 `d_reclen`）；非目录 `ENOTDIR`、缓冲不足 `EINVAL`；M9 经 musl `opendir`/`readdir` 的 sbase `ls` 端到端验收；`d_off` 非稳定 cookie，`telldir`/`seekdir` 未验收 |
 | P5-FS-04 | partial | **M9**：x86_64 musl 经 kstat 4/5/6/262 提供类型/权限/大小/inode/nlink/blksize/blocks（同一字段集经 `statx(332)`）；目录 0555/0777、文件 0444/0666、`/dev/null` 为 `S_IFCHR\|0666`；接受 `AT_NO_AUTOMOUNT`/`AT_SYMLINK_NOFOLLOW`/`AT_EMPTY_PATH`；时间戳与 `st_dev`/`st_rdev` 恒 0，无 `statx` sync/mount 语义 |
 | P5-FS-05 | partial | **M9**：每任务 cwd，初始 `/`；`chdir` 确认目录后保存词法规范化的绝对路径（无符号链接，`..` 按字面回退、根处钳制）；`getcwd` 返回含 NUL 长度，缓冲不足 `ERANGE`；无 `fchdir`/cwd 继承/`buf=NULL` 分配形式 |
+| P5-FS-06 | partial | **M11**：`mkdir`/`mkdirat`/`unlink`/`unlinkat`/`rmdir` 单路径；`AT_FDCWD` 相对路径合成 cwd，`dirfd` 以目录节点为起点；`AT_REMOVEDIR` 支持，其它 flags `EINVAL`；节点删除标记 `parent=0xFF` 与槽位复用；删除不回收内容区；打开句柄中的节点拒绝删除（`EACCES`）；非空目录/目录 `unlink` 用 `EACCES` 代替 `ENOTEMPTY`/`EISDIR`；无 `rename`/`mv`、链接、权限位、跨启动持久化 |
 | P5-MM-01 | partial | **M10**：匿名 `MAP_PRIVATE` 子集在 56 页固定 arena 内按页 first-fit 分配，`munmap` 真正拆 PTE、复用地址时复映射；`mprotect` 经内核 `memseg_protect(41)` 改权（RW↔R 等）；`PROT_NONE` 近似只读，匿名 `PROT_EXEC` 返回 `EACCES`（W^X）；无文件/`MAP_SHARED`/`mremap`、无硬件 NX |
 | P5-TIME-01 | partial | **M6**：`clock_gettime(CLOCK_MONOTONIC)` 与相对/绝对 `nanosleep` 可用；PIT 10 ms 粒度，用户态轮询，无 `EINTR`/阻塞等待；`CLOCK_REALTIME` 查询 `EINVAL` |
 | P5-THREAD-01 | unsupported | 不变；单线程锁在 `libc.need_locks=0` 时为空操作 |
@@ -79,7 +80,7 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 类别 | 结论 |
 |---|---|
 | 可复用（用户态现有机制） | fd 1/2 的逐字节 `SYS_SEND` 到服务管理器、管理器转发 tty；`SYS_TASK_ID`；`SYS_TASK_DESTROY`；私有可写 `PT_LOAD` |
-| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena（M10 起按页分配、真正 unmap/复映射，`mprotect` 走内核 `SYS_MEMSEG_PROTECT=41`；partial）；**M8/M9**：本地 fd 0..18 与 `open`/`openat`/`read`/`write`/`lseek`/`close`/`dup`/`dup2`/`dup3`/`getdents64` 翻译、句柄引用计数与共享 offset/目录游标、3 字节分片、OPEN/PATH/COMMIT 三段式路径、Namespace `fs` 一次授权、用户态 VFS/rootfs；M9 增加 STAT 请求（不占句柄）与 `statx`/`chdir`/`getcwd`；`getpid` → `SYS_TASK_ID`；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
+| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena（M10 起按页分配、真正 unmap/复映射，`mprotect` 走内核 `SYS_MEMSEG_PROTECT=41`；partial）；**M8/M9**：本地 fd 0..18 与 `open`/`openat`/`read`/`write`/`lseek`/`close`/`dup`/`dup2`/`dup3`/`getdents64` 翻译、句柄引用计数与共享 offset/目录游标、3 字节分片、OPEN/PATH/COMMIT 三段式路径、Namespace `fs` 一次授权、用户态 VFS/rootfs；M9 增加 STAT 请求（不占句柄）与 `statx`/`chdir`/`getcwd`；M11 增加 MUTATE 请求（mkdir/unlink/rmdir，复用 PATH/COMMIT）；`getpid` → `SYS_TASK_ID`；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
 | 需新增内核机制（已落地 M2/M3/M6） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR；M6 追加 `SYS_TIME_ENABLE=39`（只编程 PIT 通道 0，不配置 PIC/IF）与 `SYS_TIME_TICKS=40`（锁存并累计硬件倒计数） |
 | musl 静态基座（M3/M3b/M4 已落地） | 锁定快照 + 两个可重放补丁；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`printf`+`fflush` 已验；C 任务由服务管理器预映射 96 页匿名 arena（与栈同段；M9 起 40 页 brk + 56 页 mmap；M10 起 mmap 区按页分配/回收） |
 | 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、完整 POSIX `mmap`/文件映射、符号链接、`mkdir`/`unlink`/`rename`/`fchdir`、持久化、进程退出自动关闭 fd |
@@ -89,6 +90,9 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 
 - 本文件不表示 musl 已完整移植、stdio 已可用或 echo 已通过 E1–E6。M4 只覆盖单文件
   `f` 的 fd 生命周期与 `printf`+`fflush` 输出；stdio 文件 API、线程/信号/网络未验收。
+- 文件树变更（M11）只支持单路径 `mkdir`/`unlink`/`rmdir`：无 `rename`/`mv`、链接、
+  权限位/`umask`/`chmod`、内容区回收或跨启动持久化；带打开句柄的删除返回 `EACCES`；
+  非空目录/目录 `unlink` 用 `EACCES` 代替 `ENOTEMPTY`/`EISDIR`。
 - 匿名 `mmap` 是 96 页用户态 arena 的 partial 适配：40 页 brk + 56 页 mmap；M10 起
   mmap 区按页分配、`munmap` 真正拆 PTE、复用地址时复映射，`mprotect` 经内核 `memseg_protect`；
   但 `PROT_NONE` 近似只读、匿名不可执行（无硬件 NX）、无文件/共享映射，单次上限 56 页；

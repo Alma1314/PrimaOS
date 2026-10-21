@@ -65,6 +65,11 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 | 10 | `mprotect` | M10：`SYS_MEMSEG_PROTECT=41` 改逻辑访问集与叶 PTE 可写位；`PROT_NONE` 近似只读 | 否；A1 执行 | `EINVAL`/`ENOMEM`/`EACCES`（`PROT_EXEC`） |
 | 11 | `munmap` | M10：真正 `SYS_MEMSEG_UNMAP` 拆 PTE，VA 可复用 | 否；mallocng `free` 执行 | `EINVAL` |
 | 12 | `brk` | M3b：40 页 brk 区指针推进（不拆映射） | 否；mallocng 元数据执行 | 超界返回当前 brk |
+| 83 | `mkdir` | M11：`mkdirat(AT_FDCWD, ...)` → MUTATE/PATH/COMMIT | 否；D1 执行 | `EEXIST`/`ENOENT`/`ENOTDIR`/`EACCES`/`ENOSPC` |
+| 84 | `rmdir` | M11：`unlinkat(AT_FDCWD, ..., AT_REMOVEDIR)` | 否；D1 执行 | `ENOENT`/`ENOTDIR`/`EACCES` |
+| 87 | `unlink` | M11：`unlinkat(AT_FDCWD, ..., 0)` | 否；D1 执行 | `ENOENT`/`EACCES` |
+| 258 | `mkdirat` | M11：MUTATE/PATH/COMMIT，`dirfd` 起始目录 | 否；D1 执行 | 同 `mkdir` |
+| 263 | `unlinkat` | M11：`AT_REMOVEDIR` 选择 rmdir；其它 flags `EINVAL` | 否；D1 执行 | 同 `unlink`/`rmdir` |
 | 16 | `ioctl` | 恒失败，触发 `stdout` 全缓冲 | 首次 stdout 写 | `-ENOSYS` |
 | 20 | `writev` | 逐 iovec 走 fd 1/2 字节流 | 是 | 非法 fd `-EBADF=9` |
 | 28 | `madvise` | 未实现 | 否 | `-ENOSYS` |

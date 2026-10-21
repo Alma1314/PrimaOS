@@ -22,6 +22,7 @@
 - [POSIX profile v1 delta（M8/M9 提案）](superpowers/specs/2026-10-20-stage5-profile-v1.md)
 - [M8 用户态 VFS 设计](superpowers/specs/2026-10-20-stage5-user-vfs-design.md)
 - [M10 匿名内存/保护设计](superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md)
+- [M11 文件树变更设计](superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md)
 - [阶段 5 修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)
 - [兼容状态台账](superpowers/compat/compat-state.md)
@@ -33,6 +34,7 @@
   - [M8 用户态 VFS / rootfs / 多级路径](superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)
   - [M9 statx / chdir / getcwd + sbase cat/ls](superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)
   - [M10 匿名内存 / 保护](superpowers/reports/2026-10-21-stage5-m10-anon-memory.md)
+  - [M11 文件树变更](superpowers/reports/2026-10-22-stage5-m11-file-mutation.md)
 
 ## 阶段 0–4 签署入口
 

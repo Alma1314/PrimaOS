@@ -304,6 +304,30 @@ pub const fn pack_vfs_node(node: u64, kind: u64, size: u64, writable: bool) -> u
         | ((writable as u64) << SERVICE_VFS_REPLY_WRITABLE_SHIFT)
         | ((size & 0xffff) << SERVICE_VFS_REPLY_SIZE_SHIFT)
 }
+/// M11：单路径文件树变更（`mkdir`/`unlink`/`rmdir`）。
+///
+/// `tag | op(44..47) | path_len(32..39) | start(24..31) | 前 3 字节`，随后复用
+/// [`SERVICE_VFS_PATH_TAG`] 片段；COMMIT 触发变更并回复一条 `FILE_REPLY`。
+pub const SERVICE_VFS_MUTATE_TAG: u64 = 0x5EDB_0000_0000_0000;
+pub const SERVICE_VFS_MUTATE_OP_SHIFT: u64 = 44;
+pub const SERVICE_VFS_MUTATE_OP_MASK: u64 = 0xf;
+pub const SERVICE_VFS_OP_MKDIR: u64 = 0;
+pub const SERVICE_VFS_OP_UNLINK: u64 = 1;
+pub const SERVICE_VFS_OP_RMDIR: u64 = 2;
+
+/// M11：打包一次变更请求的元数据（`first` 至多 3 字节）。
+pub fn pack_vfs_mutate(op: u64, path_len: usize, start: u64, first: &[u8]) -> u64 {
+    let mut bytes = 0u64;
+    for (index, byte) in first.iter().take(3).enumerate() {
+        bytes |= (*byte as u64) << (8 * index);
+    }
+    SERVICE_VFS_MUTATE_TAG
+        | ((op & SERVICE_VFS_MUTATE_OP_MASK) << SERVICE_VFS_MUTATE_OP_SHIFT)
+        | (((path_len as u64) & 0xff) << SERVICE_VFS_PATH_LEN_SHIFT)
+        | ((start & 0xff) << SERVICE_VFS_START_SHIFT)
+        | bytes
+}
+
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
 pub const SERVICE_FILE_HANDLES: usize = 8;
 

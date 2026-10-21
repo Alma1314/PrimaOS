@@ -160,6 +160,22 @@ fn test_boot_slice() -> Result<(), String> {
             println!("PASS qemu bios {} run={run}", case.name);
         }
     }
+    // M11：mkdir/rmdir/unlink（含 *at）文件树变更探针，各跑两轮。
+    image::check_stage5_linux_mut()?;
+    let images = image::build_images_for_mut()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "D1",
+                image::MUT_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS D1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios D1 run={run}");
+    }
     // M10：匿名 mmap/munmap/mprotect 与原生 memseg_protect 探针，各跑两轮。
     image::check_stage5_linux_mem()?;
     let images = image::build_images_for_mem()?;
