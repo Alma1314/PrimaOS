@@ -161,14 +161,17 @@ const SERVICE_STACK_PAGES: u64 = 1;
 const C_STACK_PAGES: u64 = 8;
 /// C 入口栈顶从最高页的页内 0xf00 开始，保持 16 字节对齐。
 const C_STACK_OFFSET: u64 = C_STACK_PAGES * FRAME_SIZE - 0x100;
-/// M3b：C 任务的匿名内存 arena（64 页 RW），与栈**同一 Segment** 的不同偏移。
+/// M3b/M9：C 任务的匿名内存 arena（96 页 RW），与栈**同一 Segment** 的不同偏移。
 ///
-/// 适配层按固定 VA bump 分配（首 16 页 brk、其余 mmap），因此映射必须在任务运行前
-/// 就位。与栈合并创建可复用同一次 `memseg_create`——C 探针运行期的容量快照已是
+/// 适配层按固定 VA bump 分配（首 40 页 brk、其余 56 页 mmap），因此映射必须在任务运行
+/// 前就位。与栈合并创建可复用同一次 `memseg_create`——C 探针运行期的容量快照已是
 /// segment 41/48、audit 757/768，不能为堆再增一次审计与段槽。
-/// 该常量必须与 `prima_syscall.c` 的 `PRIMA_HEAP_VA/PRIMA_HEAP_PAGES` 一致。
+/// **M9**：从 64 页扩到 96 页——sbase `ls` 启动时按 `PATH_MAX` 分配 64 KiB 的 visited
+/// 表，64 页布局的 16 页 brk 无法容纳；brk 扩到 40 页，mmap 区保留 56 页供 140000
+/// 字节的独立映射。该常量必须与 `prima_syscall.c` 的 `PRIMA_HEAP_VA/PRIMA_HEAP_PAGES`
+/// 一致。
 const C_HEAP_VA: u64 = 0x0000_0C00_0000_0000;
-const C_HEAP_PAGES: u64 = 64;
+const C_HEAP_PAGES: u64 = 96;
 /// 只读 + 可写映射权（`SegMapR|SegMapW`）。
 const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 /// 段 cap 的子集：`SegMapR|SegMapW` + `Derive`（`memseg_map` 前置要求段 cap 含 `Derive`）。

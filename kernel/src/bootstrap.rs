@@ -2164,7 +2164,10 @@ pub struct PlatformSegmentsRecord {
 /// （另加目录页 = 130），越过旧上限 128。只扩到 136（保留 6 页余量）：先扩到 192 时在
 /// 驱动故障切换/退出收尾处触发三重故障，具体根因未定位；`SegmentFrames` 会按值出现在
 /// 内核栈帧里，扩容会增加栈占用，故 192 不作为可用配置。
-pub const MAX_SEGMENT_FRAMES: usize = 136;
+/// **M9 扩容 136 → 144**：sbase `ls` 的 C 映像 24 页，使 boot manifest 的服务映像段
+/// 合计 137 页（含目录页），越过 136。只扩到 144（8 页余量），不重复 M8 试过的 192；
+/// 仍按 `>` 拒绝越界，且不改变 `SegmentFrames` 的逐帧归属检查。
+pub const MAX_SEGMENT_FRAMES: usize = 144;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -2304,7 +2307,11 @@ pub struct VspaceEntry {
 /// **M4 扩容 256 → 320**：C 探针链接 `printf`/`fflush` 后，服务映像段的总页数从 91 增至 97，
 /// 且逐页计入 init 的逻辑映射；init 早期自测在 256 下 `memseg_map` 触顶后无 Ready 任务。
 /// 按既有先例扩展并照实重测，未放宽任何容量检查。
-pub const MAX_VSPACE_ENTRIES: usize = 320;
+///
+/// **M9 扩容 320 → 384**：C 任务堆从 64 页扩到 96 页（sbase `ls` 的 64 KiB visited 表），
+/// 同一 Segment 的映射条目增加 32；VFS 探针的 130 页映像段 + 104 页栈/堆仍可容纳。
+/// 这是真实增长而非放宽检查；`memseg_map` 的容量判定保持 `>` 语义。
+pub const MAX_VSPACE_ENTRIES: usize = 384;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]

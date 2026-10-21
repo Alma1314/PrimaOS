@@ -103,6 +103,12 @@ enum Stage5Program<'a> {
     Fd,
     /// M8：用户态 VFS/rootfs、通用 fd、多级路径与目录枚举探针。
     Vfs,
+    /// M9：statx / chdir / getcwd 元数据与工作目录探针。
+    Meta,
+    /// M9：sbase `cat`（文件读取）冻结用例。
+    Cat(&'a [&'a str]),
+    /// M9：sbase `ls`（目录枚举 + statx + cwd）。
+    Ls(&'a [&'a str]),
 }
 
 pub(crate) fn build_images() -> Result<Images, String> {
@@ -127,6 +133,21 @@ pub(crate) fn build_images_for_fd() -> Result<Images, String> {
 /// M8：用 VFS/rootfs 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_vfs() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Vfs)
+}
+
+/// M9：用 statx / chdir / getcwd 探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_meta() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Meta)
+}
+
+/// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
+pub(crate) fn build_images_for_cat(args: &[&str]) -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Cat(args))
+}
+
+/// M9：用 sbase `ls` 替换 C 探针映像并打包本次用例的 argv。
+pub(crate) fn build_images_for_ls(args: &[&str]) -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Ls(args))
 }
 
 fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, String> {
@@ -202,9 +223,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     let crt = c_dir.join("prima_crt.c");
     let start = c_dir.join("prima_crt_start.S");
     let adapter = c_dir.join("prima_syscall.c");
+    let sbase = workspace.join("target").join("sbase");
     let (binary, sources, label) = match &program {
         Stage5Program::Echo(_) => {
-            let sbase = workspace.join("target").join("sbase");
             ensure_sbase(&sbase)?;
             (
                 path.with_file_name("echo.elf"),
@@ -233,14 +254,60 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_vfs.c")],
             "stage5 vfs probe",
         ),
+        Stage5Program::Meta => (
+            path.with_file_name("stage5-meta.elf"),
+            vec![c_dir.join("stage5_meta.c")],
+            "stage5 meta probe",
+        ),
+        Stage5Program::Cat(_) => {
+            ensure_sbase(&sbase)?;
+            (
+                path.with_file_name("cat.elf"),
+                vec![
+                    sbase.join("cat.c"),
+                    sbase.join("libutil").join("concat.c"),
+                    sbase.join("libutil").join("writeall.c"),
+                    sbase.join("libutil").join("eprintf.c"),
+                    sbase.join("libutil").join("fshut.c"),
+                ],
+                "sbase cat",
+            )
+        }
+        Stage5Program::Ls(_) => {
+            ensure_sbase(&sbase)?;
+            (
+                path.with_file_name("ls.elf"),
+                vec![
+                    sbase.join("ls.c"),
+                    sbase.join("libutil").join("ealloc.c"),
+                    sbase.join("libutil").join("eprintf.c"),
+                    sbase.join("libutil").join("fshut.c"),
+                    sbase.join("libutil").join("reallocarray.c"),
+                    sbase.join("libutil").join("human.c"),
+                    sbase.join("libutf").join("rune.c"),
+                    sbase.join("libutf").join("runetype.c"),
+                    sbase.join("libutf").join("utf.c"),
+                    sbase.join("libutf").join("isprintrune.c"),
+                    sbase.join("libutf").join("iscntrlrune.c"),
+                ],
+                "sbase ls",
+            )
+        }
         Stage5Program::Probe => (
             path.with_file_name("stage5-probe.elf"),
             vec![stage5_probe_source()],
             "stage5 C probe",
         ),
     };
+    let uses_sbase = matches!(
+        program,
+        Stage5Program::Echo(_) | Stage5Program::Cat(_) | Stage5Program::Ls(_)
+    );
+    // `ls` 的 human.c 需要 double 转换；x86_64 libgcc 不提供 __floatdidf，故该程序
+    // 允许编译器使用 SSE（M3 已启用 ring3 SSE 与 per-task FXSAVE/FXRSTOR）。
+    let allow_sse = matches!(program, Stage5Program::Ls(_));
     let mut clang = Command::new("clang");
-    clang.args([
+    let mut flags = vec![
         "-target",
         "x86_64-unknown-none",
         "-O2",
@@ -250,9 +317,6 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         "-fno-stack-protector",
         // musl 构建：跳过会覆盖 musl TLS 基址的 M2 FS 实验。
         "-DPRIMA_WITH_LIBC",
-        // 探针/适配层 TU 仍只用通用寄存器：SSE 路径由 libc.a 提供，这里保持
-        // M2 的 XMM 往返断言不被编译器自身的 XMM 使用干扰。
-        "-mgeneral-regs-only",
         "-fPIC",
         "-nostdlib",
         "-fuse-ld=lld",
@@ -261,15 +325,30 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         "-Wl,--build-id=none",
         "-Wl,--gc-sections",
         "-nostdinc",
-    ]);
+    ];
+    if !allow_sse {
+        // 探针/适配层 TU 只用通用寄存器：SSE 路径由 libc.a 提供，这里保持 M2 的
+        // XMM 往返断言不被编译器自身的 XMM 使用干扰。
+        flags.push("-mgeneral-regs-only");
+    }
+    clang.args(&flags);
     clang.arg("-isystem").arg(musl_prefix.join("include"));
+    if uses_sbase {
+        // 与 sbase Makefile 的 CPPFLAGS 对齐（PATH_MAX、strdup、_FILE_OFFSET_BITS）。
+        clang.args([
+            "-DPREFIX=\"/usr/local\"",
+            "-D_DEFAULT_SOURCE",
+            "-D_NETBSD_SOURCE",
+            "-D_BSD_SOURCE",
+            "-D_XOPEN_SOURCE=700",
+            "-D_FILE_OFFSET_BITS=64",
+        ]);
+        clang.arg("-I").arg(&sbase);
+    }
     // M5/M6 共用的前置文件授权冒烟：保持 NsWitness 的两次 open 解析计数。
-    // M7 的 fd 探针自行执行两次 open，不再叠加 harness。
+    // M7/M8/M9 的探针自行执行业务 open，不再叠加 harness。
     if matches!(program, Stage5Program::Echo(_) | Stage5Program::Time) {
         clang.arg("-DPRIMA_ECHO_HARNESS").arg("-I").arg(&c_dir);
-        if matches!(program, Stage5Program::Echo(_)) {
-            clang.arg("-I").arg(workspace.join("target").join("sbase"));
-        }
     }
     for source in &sources {
         clang.arg(source);
@@ -300,10 +379,13 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
     let program_args: Option<&[&str]> = match &program {
         Stage5Program::Echo(args) => Some(args),
-        // 时间/fd 探针不需要参数；托管程序通道仍要求一个非空 argv。
+        // 时间/fd/vfs/meta 探针不需要参数；托管程序通道仍要求一个非空 argv。
         Stage5Program::Time => Some(&["stage5-time"]),
         Stage5Program::Fd => Some(&["stage5-fd"]),
         Stage5Program::Vfs => Some(&["stage5-vfs"]),
+        Stage5Program::Meta => Some(&["stage5-meta"]),
+        Stage5Program::Cat(args) => Some(args),
+        Stage5Program::Ls(args) => Some(args),
         Stage5Program::Probe => None,
     };
     if let Some(args) = program_args {
@@ -682,30 +764,7 @@ pub(crate) fn check_stage5_linux_vfs() -> Result<(), String> {
         ));
     }
     let run_dir = workspace.join("target/prima-os/vfs-linux-run");
-    if run_dir.exists() {
-        fs::remove_dir_all(&run_dir)
-            .map_err(|error| format!("failed to clean {}: {error}", run_dir.display()))?;
-    }
-    fs::create_dir_all(run_dir.join("etc"))
-        .map_err(|error| format!("failed to create {}: {error}", run_dir.display()))?;
-    fs::create_dir_all(run_dir.join("usr/lib"))
-        .map_err(|error| format!("failed to create usr/lib: {error}"))?;
-    fs::create_dir_all(run_dir.join("tmp"))
-        .map_err(|error| format!("failed to create tmp: {error}"))?;
-    fs::write(run_dir.join("etc/motd"), b"welcome\n")
-        .map_err(|error| format!("failed to write motd: {error}"))?;
-    fs::write(run_dir.join("etc/hostname"), b"prima\n")
-        .map_err(|error| format!("failed to write hostname: {error}"))?;
-    fs::write(run_dir.join("usr/lib/version"), b"1.0\n")
-        .map_err(|error| format!("failed to write version: {error}"))?;
-    fs::write(run_dir.join("README"), b"prima rootfs\n")
-        .map_err(|error| format!("failed to write README: {error}"))?;
-    fs::write(run_dir.join("f"), b"").map_err(|error| format!("failed to write f: {error}"))?;
-    for file in ["etc/motd", "etc/hostname", "usr/lib/version", "README"] {
-        set_probe_mode(&run_dir.join(file), 0o444)?;
-    }
-    set_probe_mode(&run_dir.join("f"), 0o666)?;
-    set_probe_mode(&run_dir.join("tmp"), 0o777)?;
+    prepare_stage5_reference_tree(&run_dir)?;
     let output = Command::new(&binary)
         .current_dir(&run_dir)
         .env_clear()
@@ -721,6 +780,236 @@ pub(crate) fn check_stage5_linux_vfs() -> Result<(), String> {
         ));
     }
     println!("PASS linux stage5 vfs multi-level path and directory references");
+    Ok(())
+}
+
+/// M8/M9：布置与 Prima rootfs 同形的宿主参考树，权限也按冻结的 mode 设置：
+/// 文件 0444、`f` 0666、目录 0555、`tmp` 0777。`/dev/null` 只在 Prima 侧存在。
+fn prepare_stage5_reference_tree(run_dir: &Path) -> Result<(), String> {
+    if run_dir.exists() {
+        // 树内的 0555 目录会阻止 unlink，先恢复目录写权限再删。
+        make_tree_removable(run_dir);
+        fs::remove_dir_all(run_dir)
+            .map_err(|error| format!("failed to clean {}: {error}", run_dir.display()))?;
+    }
+    for dir in ["etc", "usr/lib", "tmp", "dev"] {
+        fs::create_dir_all(run_dir.join(dir))
+            .map_err(|error| format!("failed to create {dir}: {error}"))?;
+    }
+    fs::write(run_dir.join("etc/motd"), b"welcome\n")
+        .map_err(|error| format!("failed to write motd: {error}"))?;
+    fs::write(run_dir.join("etc/hostname"), b"prima\n")
+        .map_err(|error| format!("failed to write hostname: {error}"))?;
+    fs::write(run_dir.join("usr/lib/version"), b"1.0\n")
+        .map_err(|error| format!("failed to write version: {error}"))?;
+    fs::write(run_dir.join("README"), b"prima rootfs\n")
+        .map_err(|error| format!("failed to write README: {error}"))?;
+    fs::write(run_dir.join("f"), b"").map_err(|error| format!("failed to write f: {error}"))?;
+    for file in ["etc/motd", "etc/hostname", "usr/lib/version", "README"] {
+        set_probe_mode(&run_dir.join(file), 0o444)?;
+    }
+    set_probe_mode(&run_dir.join("f"), 0o666)?;
+    for dir in ["etc", "usr", "usr/lib", "dev"] {
+        set_probe_mode(&run_dir.join(dir), 0o555)?;
+    }
+    set_probe_mode(&run_dir.join("tmp"), 0o777)?;
+    Ok(())
+}
+
+/// 删除参考树前恢复目录写权限（树内目录可能已按 rootfs 设为 0555）。
+#[cfg(unix)]
+fn make_tree_removable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && metadata.is_dir()
+    {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                make_tree_removable(&entry.path());
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn make_tree_removable(_path: &Path) {}
+
+/// M9 冻结的元数据/工作目录探针输出（Linux 与 Prima 逐字节相同）。
+pub(crate) const META_EXPECTED_STDOUT: &[u8] = b"META|ok=1;motd=1;hostname=1;readme=1;version=1;etc=1;tmp=1;f=1;null=1;lstat=1;fstat=1;fstatat=1;enoent=1;enotdir=1;empty=1;chdir=1;cwd_abs=1;cwd_etc=1;cwd_parent=1;openrel=1;chdir_file=1;erange=1\n";
+
+/// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
+pub(crate) struct SbaseCase {
+    pub(crate) name: &'static str,
+    pub(crate) args: &'static [&'static str],
+    pub(crate) stdout: &'static [u8],
+}
+
+/// M9：sbase `cat` 读取 rootfs 文件。
+pub(crate) const CAT_CASES: [SbaseCase; 1] = [SbaseCase {
+    name: "C1",
+    args: &["cat", "etc/motd"],
+    stdout: b"welcome\n",
+}];
+
+/// M9：sbase `ls` 的目录枚举、cwd 与 stat 用例。
+pub(crate) const LS_CASES: [SbaseCase; 3] = [
+    SbaseCase {
+        name: "L1",
+        args: &["ls", "etc"],
+        stdout: b"hostname\nmotd\n",
+    },
+    SbaseCase {
+        name: "L2",
+        args: &["ls", "."],
+        stdout: b"README\ndev\netc\nf\ntmp\nusr\n",
+    },
+    SbaseCase {
+        name: "L3",
+        args: &["ls", "etc/motd"],
+        stdout: b"etc/motd\n",
+    },
+];
+
+/// M9：用宿主 glibc 重建 `stage5_meta.c`，在一次性树中取得 statx/chdir/getcwd 参考。
+pub(crate) fn check_stage5_linux_meta() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_meta.c");
+    let binary = workspace.join("target/prima-os/meta-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 meta: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 meta probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/meta-linux-run");
+    prepare_stage5_reference_tree(&run_dir)?;
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 meta probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != META_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 meta mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(META_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 statx/chdir/getcwd references");
+    Ok(())
+}
+
+/// M9：用宿主 glibc 重建 sbase `cat`/`ls`，在同一参考树上取得逐字节 stdout。
+pub(crate) fn check_stage5_linux_cat_ls() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let sbase = workspace.join("target").join("sbase");
+    ensure_sbase(&sbase)?;
+    let output_dir = workspace.join("target/prima-os");
+    let cpp_flags = [
+        "-DPREFIX=\"/usr/local\"",
+        "-D_DEFAULT_SOURCE",
+        "-D_NETBSD_SOURCE",
+        "-D_BSD_SOURCE",
+        "-D_XOPEN_SOURCE=700",
+        "-D_FILE_OFFSET_BITS=64",
+    ];
+    let cat_binary = output_dir.join("cat-linux");
+    let ls_binary = output_dir.join("ls-linux");
+    let build = |binary: &Path, sources: &[PathBuf]| -> Result<(), String> {
+        let mut command = Command::new("cc");
+        command
+            .args(["-O2", "-std=c11", "-Wall", "-Werror"])
+            .args(cpp_flags);
+        command.arg("-I").arg(&sbase);
+        for source in sources {
+            command.arg(source);
+        }
+        let built =
+            command.arg("-o").arg(binary).output().map_err(|error| {
+                format!("failed to run Linux cc for {}: {error}", binary.display())
+            })?;
+        if !built.status.success() {
+            return Err(format!(
+                "failed to build Linux {}: {}",
+                binary.display(),
+                String::from_utf8_lossy(&built.stderr)
+            ));
+        }
+        Ok(())
+    };
+    build(
+        &cat_binary,
+        &[
+            sbase.join("cat.c"),
+            sbase.join("libutil").join("concat.c"),
+            sbase.join("libutil").join("writeall.c"),
+            sbase.join("libutil").join("eprintf.c"),
+            sbase.join("libutil").join("fshut.c"),
+        ],
+    )?;
+    build(
+        &ls_binary,
+        &[
+            sbase.join("ls.c"),
+            sbase.join("libutil").join("ealloc.c"),
+            sbase.join("libutil").join("eprintf.c"),
+            sbase.join("libutil").join("fshut.c"),
+            sbase.join("libutil").join("reallocarray.c"),
+            sbase.join("libutil").join("human.c"),
+            sbase.join("libutf").join("rune.c"),
+            sbase.join("libutf").join("runetype.c"),
+            sbase.join("libutf").join("utf.c"),
+            sbase.join("libutf").join("isprintrune.c"),
+            sbase.join("libutf").join("iscntrlrune.c"),
+        ],
+    )?;
+    let run_dir = workspace.join("target/prima-os/sbase-linux-run");
+    prepare_stage5_reference_tree(&run_dir)?;
+    let run = |binary: &Path, args: &[&str]| -> Result<Vec<u8>, String> {
+        let output = Command::new(binary)
+            .args(args)
+            .current_dir(&run_dir)
+            .env_clear()
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("failed to run {}: {error}", binary.display()))?;
+        if output.status.code() != Some(0) {
+            return Err(format!(
+                "Linux {} {args:?} exited {:?}: {}",
+                binary.display(),
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(output.stdout)
+    };
+    if run(&cat_binary, &["etc/motd"])? != CAT_CASES[0].stdout {
+        return Err("Linux sbase cat mismatch".to_owned());
+    }
+    for case in &LS_CASES {
+        // argv[0] 只作为程序名；实际参数与 Prima 用例一致。
+        let args = &case.args[1..];
+        if run(&ls_binary, args)? != case.stdout {
+            return Err(format!("Linux sbase ls {} mismatch", case.name));
+        }
+    }
+    println!("PASS linux sbase cat/ls references");
     Ok(())
 }
 

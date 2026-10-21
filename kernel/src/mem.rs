@@ -2,13 +2,17 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 
 pub const FRAME_SIZE: u64 = 4096;
 const MAX_FREE_RANGES: usize = 128;
-// FrameRegistry 最多同时持有 192 个 Segment 帧和 128 个页表帧；全部归还也必须有位置。
+// FrameRegistry 最多同时持有 `MAX_FRAME_OWNERS` 个 Segment 帧和 `MAX_TABLE_FRAMES` 个页表帧；
+// 全部归还也必须有位置。
 /// 归还帧的回收栈容量——**必须 ≥ 同时可归还的活动帧上界**（`frames::MAX_FRAME_OWNERS` +
 /// `frames::MAX_TABLE_FRAMES`），否则归还以 `CapacityExceeded` 失败、帧泄漏。
 ///
 /// SPEC-106：`MAX_TABLE_FRAMES` 128→256 后该上界达 448，故 320→**512**（`frames` 侧
 /// `all_live_frames_can_be_returned_without_filling_the_recycle_pool` 照实钉住）。
-const MAX_RECYCLED_FRAMES: usize = 512;
+///
+/// **M9 512 → 640**：`MAX_FRAME_OWNERS` 256→320 后上界为 320 + 256 = 576；640 留 64 项余量，
+/// 上限仍由同一条宿主测试逐帧钉住。
+const MAX_RECYCLED_FRAMES: usize = 640;
 
 /// 物理地址经 bootloader 的物理内存直映射换算为虚拟地址（offset + phys）。
 pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {

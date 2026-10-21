@@ -19,7 +19,7 @@
 ## 当前阶段（阶段 5）文档
 
 - [POSIX profile v0（冻结）](superpowers/specs/2026-10-18-stage5-profile-v0.md)
-- [POSIX profile v1 delta（M8 提案）](superpowers/specs/2026-10-20-stage5-profile-v1.md)
+- [POSIX profile v1 delta（M8/M9 提案）](superpowers/specs/2026-10-20-stage5-profile-v1.md)
 - [M8 用户态 VFS 设计](superpowers/specs/2026-10-20-stage5-user-vfs-design.md)
 - [阶段 5 修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)
@@ -30,6 +30,7 @@
   - [M6 POSIX 时间](superpowers/reports/2026-10-19-stage5-m6-time.md)
   - [M7 fd 表 / dup / getpid](superpowers/reports/2026-10-19-stage5-m7-fd-table.md)
   - [M8 用户态 VFS / rootfs / 多级路径](superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)
+  - [M9 statx / chdir / getcwd + sbase cat/ls](superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)
 
 ## 阶段 0–4 签署入口
 

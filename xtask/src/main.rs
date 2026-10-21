@@ -119,6 +119,47 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios V1 run={run}");
     }
+    // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
+    image::check_stage5_linux_meta()?;
+    let images = image::build_images_for_meta()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "M1",
+                image::META_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS M1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios M1 run={run}");
+    }
+    // M9：sbase `cat` 读取 rootfs 文件，Linux 参考与 Prima 逐字节比较。
+    image::check_stage5_linux_cat_ls()?;
+    for case in &image::CAT_CASES {
+        let images = image::build_images_for_cat(case.args)?;
+        let mut ipc_baseline = None;
+        for run in 1..=2 {
+            ipc_baseline = Some(
+                qemu::run_bios_test_program(&images.bios, case.name, case.stdout, ipc_baseline)
+                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
+            );
+            println!("PASS qemu bios {} run={run}", case.name);
+        }
+    }
+    // M9：sbase `ls`（opendir/readdir + stat/lstat + chdir/getcwd），各跑两轮。
+    for case in &image::LS_CASES {
+        let images = image::build_images_for_ls(case.args)?;
+        let mut ipc_baseline = None;
+        for run in 1..=2 {
+            ipc_baseline = Some(
+                qemu::run_bios_test_program(&images.bios, case.name, case.stdout, ipc_baseline)
+                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
+            );
+            println!("PASS qemu bios {} run={run}", case.name);
+        }
+    }
     println!("PASS stage1 boot slice");
     Ok(())
 }

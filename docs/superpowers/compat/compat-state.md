@@ -11,15 +11,17 @@ M7 把 `P5-PROC-02` 推进到 `partial`（`getpid` → `SYS_TASK_ID`），并给
 本地 fd 表 3..10 与 `dup`/`dup2`/`dup3`（见 [M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)）；
 M8 把文件后端推进到用户态 VFS/rootfs，新增通用 fd 0..18、多级路径与 `getdents64`
 （见 [M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md) 与
-[profile v1 delta](../specs/2026-10-20-stage5-profile-v1.md)），但**没有**勾选 S5-D*/S5-X*。
-`malloc/free` 仍只代表 mallocng 在 64 页 arena 上工作，不代表通用 `mmap`；VFS 仍无符号
-链接、cwd、`stat`、进程退出自动关闭与持久化；时间只是 10 ms 粒度的 PIT 轮询，不是阻塞
-时钟服务。
+[profile v1 delta](../specs/2026-10-20-stage5-profile-v1.md)）；M9 新增 stat 家族
+（x86_64 musl 走 kstat 4/5/6/262，另实现 `statx(332)`）与 `chdir`/`getcwd`，并用 sbase `cat`/`ls` 做端到端
+验收（见 [M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)），但**没有**勾选
+S5-D*/S5-X*。`malloc/free` 仍只代表 mallocng 在 96 页 arena 上工作，不代表通用 `mmap`；
+VFS 仍无符号链接、`mkdir`/`unlink`/`rename`、进程退出自动关闭与持久化；时间只是 10 ms
+粒度的 PIT 轮询，不是阻塞时钟服务。
 
 符号级 `UNTEST` 沿用候选规格的术语：musl 会把它链接进来，但本阶段不承诺其行为。`UNTEST`
 不进入 profile 支持表。
 
-## 1. profile v0 行与 M8 的 v1 delta
+## 1. profile v0 行与 M8/M9 的 v1 delta
 
 | ID | 当前状态 | M0 结论 |
 |---|---|---|
@@ -30,9 +32,11 @@ M8 把文件后端推进到用户态 VFS/rootfs，新增通用 fd 0..18、多级
 | P5-PROC-02 | partial | **M7**：`getpid` → `SYS_TASK_ID`；任务存活期间稳定、u32 回绕前不复用；无 Process/Thread 区分、无 `getppid` |
 | P5-IO-02 | partial | **M8**：fd 0 读 EOF；fd 3..18 文件 `read` 可用（EOF/短读由服务端容量决定）；目录不暴露给 `read`（`EBADF`），只经 `P5-FS-03`；tty `read` 与 `readv` 未实现 |
 | P5-FD-01 | partial | **M8**：本地 fd 0..18；fd 0=null、1/2=tty、file/dir 指向服务端句柄 3..10；`dup*` 共享句柄/offset/目录游标，最后引用才关闭；目标 0..18；无 fd 0 的 tty 输入、表满 `EAGAIN`、无 exec 故 `O_CLOEXEC` 无语义、无退出自动关闭 |
-| P5-FS-01 | partial | **M8**：绝对/相对、多级目录、`.`/`..`、尾随 `/`、`dirfd` 起始目录；`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_APPEND`/`O_DIRECTORY`；Namespace `fs` 一次授权。无符号链接/cwd/`stat`/`mkdir`/`unlink`/`rename`；名称 ≤16 B、路径 ≤64 B、分量 ≤6；只有 `/tmp` 可新建普通文件 |
+| P5-FS-01 | partial | **M8/M9**：绝对/相对、多级目录、`.`/`..`、尾随 `/`、`dirfd` 起始目录；M9 起 `AT_FDCWD` 的相对路径从当前 cwd 解析（初始 `/`）；`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_APPEND`/`O_DIRECTORY`；Namespace `fs` 一次授权。无符号链接/`mkdir`/`unlink`/`rename`/`fchdir`；名称 ≤16 B、路径 ≤64 B、分量 ≤6；只有 `/tmp` 可新建普通文件 |
 | P5-FS-02 | partial | **M8**：普通文件 SET/CUR/END；目录 fd 的 `lseek` 重置枚举游标；`O_APPEND` 在服务端每次写前定位 EOF；同一句柄经 `dup` 共享 offset；无跨 open 共享、无 `pread`/`pwrite` |
-| P5-FS-03 | partial | **M8**：`getdents64(217)` 返回 `linux_dirent64` 子集（`.`/`..`、`d_ino`、`d_type`、8 字节对齐 `d_reclen`）；非目录 `ENOTDIR`、缓冲不足 `EINVAL`；`d_off` 非稳定 cookie，`telldir`/`seekdir` 与 `readdir` 端到端未验收 |
+| P5-FS-03 | partial | **M8/M9**：`getdents64(217)` 返回 `linux_dirent64` 子集（`.`/`..`、`d_ino`、`d_type`、8 字节对齐 `d_reclen`）；非目录 `ENOTDIR`、缓冲不足 `EINVAL`；M9 经 musl `opendir`/`readdir` 的 sbase `ls` 端到端验收；`d_off` 非稳定 cookie，`telldir`/`seekdir` 未验收 |
+| P5-FS-04 | partial | **M9**：x86_64 musl 经 kstat 4/5/6/262 提供类型/权限/大小/inode/nlink/blksize/blocks（同一字段集经 `statx(332)`）；目录 0555/0777、文件 0444/0666、`/dev/null` 为 `S_IFCHR\|0666`；接受 `AT_NO_AUTOMOUNT`/`AT_SYMLINK_NOFOLLOW`/`AT_EMPTY_PATH`；时间戳与 `st_dev`/`st_rdev` 恒 0，无 `statx` sync/mount 语义 |
+| P5-FS-05 | partial | **M9**：每任务 cwd，初始 `/`；`chdir` 确认目录后保存词法规范化的绝对路径（无符号链接，`..` 按字面回退、根处钳制）；`getcwd` 返回含 NUL 长度，缓冲不足 `ERANGE`；无 `fchdir`/cwd 继承/`buf=NULL` 分配形式 |
 | P5-MM-01 | planned | echo 的 TLS 预计走 `builtin_tls`，不需要 `mmap`；mallocng 仅链接、不执行 |
 | P5-TIME-01 | partial | **M6**：`clock_gettime(CLOCK_MONOTONIC)` 与相对/绝对 `nanosleep` 可用；PIT 10 ms 粒度，用户态轮询，无 `EINTR`/阻塞等待；`CLOCK_REALTIME` 查询 `EINVAL` |
 | P5-THREAD-01 | unsupported | 不变；单线程锁在 `libc.need_locks=0` 时为空操作 |
@@ -73,23 +77,23 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 类别 | 结论 |
 |---|---|
 | 可复用（用户态现有机制） | fd 1/2 的逐字节 `SYS_SEND` 到服务管理器、管理器转发 tty；`SYS_TASK_ID`；`SYS_TASK_DESTROY`；私有可写 `PT_LOAD` |
-| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena 的 bump 分配（partial，见 M3b）；**M8**：本地 fd 0..18 与 `open`/`openat`/`read`/`write`/`lseek`/`close`/`dup`/`dup2`/`dup3`/`getdents64` 翻译、句柄引用计数与共享 offset/目录游标、3 字节分片、OPEN/PATH/COMMIT 三段式路径、Namespace `fs` 一次授权、用户态 VFS/rootfs；`getpid` → `SYS_TASK_ID`；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
+| 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena 的 bump 分配（partial，见 M3b）；**M8/M9**：本地 fd 0..18 与 `open`/`openat`/`read`/`write`/`lseek`/`close`/`dup`/`dup2`/`dup3`/`getdents64` 翻译、句柄引用计数与共享 offset/目录游标、3 字节分片、OPEN/PATH/COMMIT 三段式路径、Namespace `fs` 一次授权、用户态 VFS/rootfs；M9 增加 STAT 请求（不占句柄）与 `statx`/`chdir`/`getcwd`；`getpid` → `SYS_TASK_ID`；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
 | 需新增内核机制（已落地 M2/M3/M6） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR；M6 追加 `SYS_TIME_ENABLE=39`（只编程 PIT 通道 0，不配置 PIC/IF）与 `SYS_TIME_TICKS=40`（锁存并累计硬件倒计数） |
-| musl 静态基座（M3/M3b/M4 已落地） | 锁定快照 + 两个可重放补丁；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`printf`+`fflush` 已验；C 任务由服务管理器预映射 64 页匿名 arena（与栈同段） |
-| 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、通用 `mmap`/文件映射、符号链接、cwd/`chdir`/`getcwd`、`stat`/`mkdir`/`unlink`/`rename`、持久化、进程退出自动关闭 fd |
+| musl 静态基座（M3/M3b/M4 已落地） | 锁定快照 + 两个可重放补丁；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`printf`+`fflush` 已验；C 任务由服务管理器预映射 96 页匿名 arena（与栈同段；M9 起 40 页 brk + 56 页 mmap） |
+| 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、通用 `mmap`/文件映射、符号链接、`mkdir`/`unlink`/`rename`/`fchdir`、持久化、进程退出自动关闭 fd |
 | 仅链接、不执行（E1–E6） | mallocng `calloc`、futex/`__wait`（`libc.need_locks=0`）、`poll`/`ppoll`（非 secure auxv 早退）；`open`/`lseek` 已由 M4 适配层承接，但不在 echo 闭包 |
 
 ## 4. 非承诺
 
 - 本文件不表示 musl 已完整移植、stdio 已可用或 echo 已通过 E1–E6。M4 只覆盖单文件
   `f` 的 fd 生命周期与 `printf`+`fflush` 输出；stdio 文件 API、线程/信号/网络未验收。
-- 匿名 `mmap` 是 64 页用户态 arena 的 partial 适配：无逐映射回收、无权限变更、
-  无文件/共享映射，单次上限 48 页；不得据此宣称通用 `mmap`。
+- 匿名 `mmap` 是 96 页用户态 arena 的 partial 适配：40 页 brk + 56 页 mmap bump；
+  无逐映射回收、无权限变更、无文件/共享映射，单次上限 56 页；不得据此宣称通用 `mmap`。
 - M6 的时间是 PIT 自由运行计数 + 用户态轮询：10 ms 粒度，无 `EINTR`、无阻塞睡眠、
   无墙上时钟；相邻 `SYS_TIME_TICKS` 间隔超过约 55 ms 会少计。不得据此宣称完整
   `clock_gettime`/`nanosleep` 或 POSIX 定时器。
 - **M8** 的文件服务是用户态 **VFS/rootfs**：静态根树、多级路径、目录枚举、8 个服务端
-  句柄、通用 fd 0..18；但无符号链接/cwd/`stat`/`mkdir`/`unlink`/`rename`/文件映射/
+  句柄、通用 fd 0..18；M9 另加 `statx`/`chdir`/`getcwd`，但无符号链接/`mkdir`/`unlink`/`rename`/文件映射/
   持久化，只有 `/tmp` 可新建普通文件。管理器只做 `fs` 入口的一次授权与路由，不是文件树。
   `dup` 共享服务端 offset 与目录游标；`O_CLOEXEC` 因无 exec 而无语义。
 - M7 的 `getpid` 是 Task id 映射，不是 Process/PID 语义：无父子关系、无进程组、

@@ -82,7 +82,7 @@ pub(crate) fn run_bios_test_echo(
     run_bios_test_program(image, case.name, case.stdout, expected_ipc)
 }
 
-/// M5/M6：托管程序轮（echo、时间探针共用同一证据通道）。
+/// M5–M9：托管程序轮（echo、时间/fd/vfs/meta 探针与 sbase cat/ls 共用同一证据通道）。
 pub(crate) fn run_bios_test_program(
     image: &Path,
     name: &str,
@@ -90,6 +90,15 @@ pub(crate) fn run_bios_test_program(
     expected_ipc: Option<(u64, u64, u64)>,
 ) -> Result<(u64, u64, u64), String> {
     let output = run_captured(image)?;
+    // 证据落盘：每个托管程序的原始串口流写到 `target/prima-os/<name>.log`，报告引用
+    // 计数/输出时不必依赖终端滚动；失败时 `with_output` 仍带完整输出。
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root");
+    let log = workspace
+        .join("target/prima-os")
+        .join(format!("{name}.log"));
+    let _ = std::fs::write(log, &output.stdout);
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     let ipc = protocol::validate_output_echo(&output.stdout, expected_ipc)

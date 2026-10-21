@@ -8,6 +8,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |
 | 2026-10-19 | [2026-10-19-stage5-m7-fd-table.md](2026-10-19-stage5-m7-fd-table.md) | 阶段 5 M7：完整本地 fd 表、`dup` 与 `getpid` |
 | 2026-10-19 | [2026-10-19-stage5-m6-time.md](2026-10-19-stage5-m6-time.md) | 阶段 5 M6：POSIX 时间首切片（clock_gettime / nanosleep） |

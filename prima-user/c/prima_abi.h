@@ -24,6 +24,9 @@
 #define PRIMA_LINUX_SYS_write 1
 #define PRIMA_LINUX_SYS_open 2
 #define PRIMA_LINUX_SYS_close 3
+#define PRIMA_LINUX_SYS_stat 4
+#define PRIMA_LINUX_SYS_fstat 5
+#define PRIMA_LINUX_SYS_lstat 6
 #define PRIMA_LINUX_SYS_lseek 8
 #define PRIMA_LINUX_SYS_mmap 9
 #define PRIMA_LINUX_SYS_mprotect 10
@@ -44,6 +47,10 @@
 #define PRIMA_LINUX_SYS_exit_group 231
 #define PRIMA_LINUX_SYS_openat 257
 #define PRIMA_LINUX_SYS_getdents64 217
+#define PRIMA_LINUX_SYS_getcwd 79
+#define PRIMA_LINUX_SYS_chdir 80
+#define PRIMA_LINUX_SYS_newfstatat 262
+#define PRIMA_LINUX_SYS_statx 332
 
 /* 原始负 errno。 */
 #define PRIMA_ERRNO_ENOENT 2
@@ -56,6 +63,7 @@
 #define PRIMA_ERRNO_ENOTDIR 20
 #define PRIMA_ERRNO_EINVAL 22
 #define PRIMA_ERRNO_ENOSPC 28
+#define PRIMA_ERRNO_ERANGE 34
 #define PRIMA_ERRNO_ENOSYS 38
 
 /* M4：openat 的冻结 flag 子集。adapter 归一化后只把 access/CREAT/TRUNC 传给服务端；
@@ -72,6 +80,10 @@
 #define PRIMA_O_DIRECTORY 0200000
 #define PRIMA_O_CLOEXEC 02000000
 #define PRIMA_AT_FDCWD (-100)
+/* M9：statx 接受的 flag 子集；无符号链接，故 SYMLINK_NOFOLLOW 仅被接受。 */
+#define PRIMA_AT_SYMLINK_NOFOLLOW 0x100
+#define PRIMA_AT_NO_AUTOMOUNT 0x800
+#define PRIMA_AT_EMPTY_PATH 0x1000
 
 /* M4：lseek 的 whence 子集。 */
 #define PRIMA_SEEK_SET 0
@@ -101,6 +113,7 @@
 #define PRIMA_FILE_OP_WRITE 2
 #define PRIMA_FILE_OP_LSEEK 3
 #define PRIMA_FILE_OP_CLOSE 4
+#define PRIMA_FILE_OP_STAT 5
 #define PRIMA_FILE_OPEN_FLAGS_SHIFT 28
 #define PRIMA_FILE_OPEN_PATH_LEN_SHIFT 26
 #define PRIMA_FILE_OPEN_PATH_MASK UINT64_C(0xffffff)
@@ -133,9 +146,11 @@
 #define PRIMA_VFS_FLAG_APPEND 16
 #define PRIMA_VFS_FLAG_EXCLUSIVE 32
 #define PRIMA_VFS_FLAG_DIRECTORY 64
+#define PRIMA_VFS_FLAG_STAT 128
 #define PRIMA_VFS_REPLY_NODE_MASK UINT64_C(0xff)
 #define PRIMA_VFS_REPLY_KIND_SHIFT 8
 #define PRIMA_VFS_REPLY_KIND_MASK UINT64_C(0x3)
+#define PRIMA_VFS_REPLY_WRITABLE_SHIFT 10
 #define PRIMA_VFS_REPLY_SIZE_SHIFT 16
 #define PRIMA_VFS_PATH_MAX 64
 #define PRIMA_VFS_KIND_DIR 0

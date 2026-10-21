@@ -35,21 +35,22 @@ long prima_native_syscall3(long number, long a0, long a1, long a2) {
 
 /* M3b：musl mallocng 的匿名内存。
  *
- * 服务管理器在创建 C 任务时把 64 页 arena 与栈作为**同一 Segment** 的两段映射
- * 进本任务根：首 16 页作 `brk` 区（mallocng 的元数据区），其余作匿名 `mmap`
- * 的 bump 区。适配层只做指针推进，不再发 `memseg_create`——C 探针运行期容量
- * 快照已是 segment 槽位 41/48、audit 757/768，任务内建段会立即触顶。
+ * 服务管理器在创建 C 任务时把 96 页 arena 与栈作为**同一 Segment** 的两段映射
+ * 进本任务根：首 40 页作 `brk` 区（mallocng 的元数据区），其余 56 页作匿名
+ * `mmap` 的 bump 区。适配层只做指针推进，不再发 `memseg_create`——C 探针运行期
+ * 容量快照已是 segment 槽位 41/48、audit 757/768，任务内建段会立即触顶。
+ * M9 的 96 页是给 sbase `ls` 的 64 KiB `PATH_MAX` visited 表留出 brk 余量。
  *
  * 已知边界（M3 报告登记，不得据此宣称通用 mmap）：
  * - 只支持 `MAP_PRIVATE|MAP_ANONYMOUS`、fd=-1、offset=0；
  * - `MAP_FIXED` 只为 mallocng 的 brk guard 页返回原地址，不改变权限；
  * - `mprotect` 返回成功但不改变权限（匿名页一律 RW）；
  * - `munmap` 是空操作，bump 区不回收；无 `mremap`；
- * - 单次匿名映射上限 48 页，arena 用尽后 `mmap` 返回 `ENOMEM`。
+ * - 单次匿名映射上限 56 页，arena 用尽后 `mmap` 返回 `ENOMEM`。
  */
 #define PRIMA_HEAP_VA UINT64_C(0x00000c0000000000)
-#define PRIMA_HEAP_PAGES 64UL
-#define PRIMA_BRK_PAGES 16UL
+#define PRIMA_HEAP_PAGES 96UL
+#define PRIMA_BRK_PAGES 40UL
 #define PRIMA_MMAP_PAGES (PRIMA_HEAP_PAGES - PRIMA_BRK_PAGES)
 #define PRIMA_PAGE_SIZE 4096UL
 
@@ -148,7 +149,8 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
  * Linux `linux_dirent64` 布局。
  *
  * 已知边界（P5-FS-01/P5-FD-01 partial）：无符号链接、无 mkdir/unlink/rename、
- * 无 cwd（相对路径从 root 起）、公共 `read`/`write` 不把目录当普通文件。
+ * cwd 为每任务独立的适配层状态（M9 起支持 chdir/getcwd）、公共 `read`/`write`
+ * 不把目录当普通文件。
  */
 #define PRIMA_FD_FREE 0
 #define PRIMA_FD_TTY 1
@@ -307,26 +309,182 @@ static long prima_reply_status(uint64_t reply) {
     return (long)((reply >> PRIMA_FILE_STATUS_SHIFT) & 0xff);
 }
 
-/* M8：打开/创建路径。`dirfd` 为 AT_FDCWD 时从 root 起；否则从目录 fd 的节点起。 */
-static long prima_openat(long dirfd, const char *path, long flags, long mode) {
-    (void)mode;
+/* ---------- M9：工作目录、路径合成与 statx ----------
+ *
+ * cwd 由适配层保存为**规范化绝对路径**（≤ PRIMA_VFS_PATH_MAX 字节）。阶段 5 的 rootfs
+ * 无符号链接，故 `..` 只按字面分量回退；`chdir` 先用 STAT 确认目标为目录，成功后才
+ * 更新 cwd。`openat(AT_FDCWD, 相对路径)` 与 `statx(AT_FDCWD, ...)` 先把相对路径与 cwd
+ * 合成为绝对路径再送服务端；`dirfd` 形式仍以该目录节点为起点，语义不变。
+ *
+ * 已知边界（P5-FS-01/P5-PROC-03 partial）：路径 ≤64 字节、名称 ≤16 字节、分量 ≤6；
+ * 无符号链接、无 `fchdir`、无进程级 cwd 继承（每任务各自初始化为 `/`）。
+ */
+static char prima_cwd[PRIMA_VFS_PATH_MAX + 1] = "/";
+
+struct prima_stat_meta {
+    unsigned char node;
+    unsigned char kind;
+    unsigned char writable;
+    unsigned short size;
+};
+
+static unsigned long prima_strlen_bounded(const char *text, unsigned long max) {
+    unsigned long len = 0;
+    while (text[len] != 0) {
+        if (len >= max)
+            return max + 1;
+        len++;
+    }
+    return len;
+}
+
+/* 把 path 加上当前 cwd 前缀并消除 `.`/`..`/重复 `/`；失败返回负 errno。 */
+static long prima_normalize_path(const char *path, char *out,
+                                 unsigned long *out_len) {
+    unsigned long len = 0;
+    if (path[0] != '/') {
+        unsigned long base = prima_strlen_bounded(prima_cwd, PRIMA_VFS_PATH_MAX);
+        if (base > PRIMA_VFS_PATH_MAX)
+            return -PRIMA_ERRNO_EINVAL;
+        for (unsigned long i = 0; i < base; i++)
+            out[len++] = prima_cwd[i];
+    }
+    const char *cursor = path;
+    while (*cursor != 0) {
+        while (*cursor == '/')
+            cursor++;
+        if (*cursor == 0)
+            break;
+        const char *part = cursor;
+        unsigned long part_len = 0;
+        while (*cursor != 0 && *cursor != '/') {
+            cursor++;
+            part_len++;
+        }
+        if (part_len == 1 && part[0] == '.')
+            continue;
+        if (part_len == 2 && part[0] == '.' && part[1] == '.') {
+            while (len > 0 && out[len - 1] != '/')
+                len--;
+            if (len > 0)
+                len--;
+            continue;
+        }
+        if (len + 1 + part_len > PRIMA_VFS_PATH_MAX)
+            return -PRIMA_ERRNO_EINVAL;
+        if (len == 0 || out[len - 1] != '/')
+            out[len++] = '/';
+        for (unsigned long i = 0; i < part_len; i++)
+            out[len++] = part[i];
+    }
+    if (len == 0)
+        out[len++] = '/';
+    out[len] = 0;
+    *out_len = len;
+    return 0;
+}
+
+/* 解析 dirfd + path → (起始节点, 实际发送的路径)。cwd 合成缓冲由调用方提供。 */
+static long prima_path_target(long dirfd, const char *path, unsigned char *start,
+                              char *buffer, const char **send_path) {
     if (!path)
         return -PRIMA_ERRNO_EFAULT;
-    unsigned char start = 0;
     if (dirfd != PRIMA_AT_FDCWD) {
         struct prima_fd_entry *dir = prima_fd_entry((int)dirfd);
         if (!dir)
             return -PRIMA_ERRNO_EBADF;
         if (dir->kind != PRIMA_FD_DIR)
             return -PRIMA_ERRNO_ENOTDIR;
-        start = dir->node;
+        *start = dir->node;
+        *send_path = path;
+        return 0;
+    }
+    *start = 0;
+    if (path[0] == '/') {
+        *send_path = path;
+        return 0;
     }
     unsigned long len = 0;
-    while (path[len] != 0) {
-        if (len >= PRIMA_VFS_PATH_MAX)
-            return -PRIMA_ERRNO_EINVAL;
-        len++;
+    long normalized = prima_normalize_path(path, buffer, &len);
+    if (normalized < 0)
+        return normalized;
+    *send_path = buffer;
+    return 0;
+}
+
+/* 发送一次 OPEN/PATH/COMMIT；成功把应答 payload 写入 reply。 */
+static long prima_vfs_path_request(uint64_t internal, unsigned char start,
+                                   const char *path, unsigned long len,
+                                   uint64_t *reply) {
+    uint64_t meta = PRIMA_STAGE5_VFS_OPEN_TAG |
+                    ((internal & 0xff) << PRIMA_VFS_FLAGS_SHIFT) |
+                    (((uint64_t)len & 0xff) << PRIMA_VFS_PATH_LEN_SHIFT) |
+                    (((uint64_t)start & 0xff) << PRIMA_VFS_START_SHIFT);
+    for (unsigned long i = 0; i < len && i < 3; i++)
+        meta |= (uint64_t)(unsigned char)path[i] << (8 * i);
+    long sent = prima_vfs_send(meta);
+    if (sent < 0)
+        return sent;
+    for (unsigned long offset = 3; offset < len; offset += 5) {
+        uint64_t chunk = PRIMA_STAGE5_VFS_PATH_TAG |
+                         (((uint64_t)offset & 0xff) << PRIMA_VFS_PATH_OFFSET_SHIFT);
+        for (unsigned long i = 0; i < 5 && offset + i < len; i++)
+            chunk |= (uint64_t)(unsigned char)path[offset + i] << (8 * i);
+        sent = prima_vfs_send(chunk);
+        if (sent < 0)
+            return sent;
     }
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    long raw = prima_vfs_call(PRIMA_STAGE5_VFS_COMMIT_TAG |
+                              (((uint64_t)id & 0xff)
+                               << PRIMA_VFS_COMMIT_CLIENT_SHIFT));
+    if (raw < 0)
+        return raw;
+    *reply = (uint64_t)raw;
+    return 0;
+}
+
+/* 只解析路径取元数据；不分配服务端句柄，也不做读写权限检查。 */
+static long prima_stat_fetch(unsigned char start, const char *path,
+                             struct prima_stat_meta *out) {
+    unsigned long len = prima_strlen_bounded(path, PRIMA_VFS_PATH_MAX);
+    if (len > PRIMA_VFS_PATH_MAX)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t reply = 0;
+    long request = prima_vfs_path_request(PRIMA_VFS_FLAG_STAT, start, path, len,
+                                          &reply);
+    if (request < 0)
+        return request;
+    long status = prima_reply_status(reply);
+    if (status != 0)
+        return -status;
+    out->node = (unsigned char)(reply & PRIMA_VFS_REPLY_NODE_MASK);
+    out->kind = (unsigned char)((reply >> PRIMA_VFS_REPLY_KIND_SHIFT) &
+                                PRIMA_VFS_REPLY_KIND_MASK);
+    out->writable =
+        (unsigned char)((reply >> PRIMA_VFS_REPLY_WRITABLE_SHIFT) & 1);
+    out->size =
+        (unsigned short)((reply >> PRIMA_VFS_REPLY_SIZE_SHIFT) & 0xffff);
+    return 0;
+}
+
+/* M8/M9：打开/创建路径。cwd 默认为根；`dirfd` 形式从该目录节点起。 */
+static long prima_openat(long dirfd, const char *path, long flags, long mode) {
+    (void)mode;
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    /* 空路径不能经 cwd 合成为 "."：Linux `open("")` 是 ENOENT。 */
+    if (path[0] == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    char resolved[PRIMA_VFS_PATH_MAX + 1];
+    const char *send = path;
+    unsigned char start = 0;
+    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    if (target < 0)
+        return target;
+    unsigned long len = prima_strlen_bounded(send, PRIMA_VFS_PATH_MAX);
+    if (len > PRIMA_VFS_PATH_MAX)
+        return -PRIMA_ERRNO_EINVAL;
     if (len == 0)
         return -PRIMA_ERRNO_ENOENT;
     long access = flags & PRIMA_O_ACCMODE;
@@ -352,39 +510,20 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     if (flags & PRIMA_O_DIRECTORY)
         internal |= PRIMA_VFS_FLAG_DIRECTORY;
 
-    uint64_t meta = PRIMA_STAGE5_VFS_OPEN_TAG |
-                    ((internal & 0x7f) << PRIMA_VFS_FLAGS_SHIFT) |
-                    (((uint64_t)len & 0xff) << PRIMA_VFS_PATH_LEN_SHIFT) |
-                    (((uint64_t)start & 0xff) << PRIMA_VFS_START_SHIFT);
-    for (unsigned long i = 0; i < len && i < 3; i++)
-        meta |= (uint64_t)(unsigned char)path[i] << (8 * i);
-    long sent = prima_vfs_send(meta);
-    if (sent < 0)
-        return sent;
-    for (unsigned long offset = 3; offset < len; offset += 5) {
-        uint64_t chunk = PRIMA_STAGE5_VFS_PATH_TAG |
-                         (((uint64_t)offset & 0xff) << PRIMA_VFS_PATH_OFFSET_SHIFT);
-        for (unsigned long i = 0; i < 5 && offset + i < len; i++)
-            chunk |= (uint64_t)(unsigned char)path[offset + i] << (8 * i);
-        sent = prima_vfs_send(chunk);
-        if (sent < 0)
-            return sent;
-    }
-    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
-    long reply = prima_vfs_call(PRIMA_STAGE5_VFS_COMMIT_TAG |
-                           (((uint64_t)id & 0xff) << PRIMA_VFS_COMMIT_CLIENT_SHIFT));
-    if (reply < 0)
-        return reply;
-    long status = prima_reply_status((uint64_t)reply);
+    uint64_t reply = 0;
+    long request = prima_vfs_path_request(internal, start, send, len, &reply);
+    if (request < 0)
+        return request;
+    long status = prima_reply_status(reply);
     if (status != 0)
         return -status;
-    uint64_t raw = (uint64_t)reply;
-    long handle = (long)((raw >> PRIMA_FILE_FD_SHIFT) & 0xf);
+    long handle = (long)((reply >> PRIMA_FILE_FD_SHIFT) & 0xf);
     if (handle < PRIMA_FILE_FIRST_FD || handle > PRIMA_FILE_LAST_FD)
         return -PRIMA_ERRNO_EINVAL;
-    unsigned char node = (unsigned char)(raw & PRIMA_VFS_REPLY_NODE_MASK);
-    unsigned char kind = (unsigned char)((raw >> PRIMA_VFS_REPLY_KIND_SHIFT) &
-                                         PRIMA_VFS_REPLY_KIND_MASK);
+    unsigned char node = (unsigned char)(reply & PRIMA_VFS_REPLY_NODE_MASK);
+    unsigned char kind =
+        (unsigned char)((reply >> PRIMA_VFS_REPLY_KIND_SHIFT) &
+                        PRIMA_VFS_REPLY_KIND_MASK);
     if (kind != PRIMA_VFS_KIND_DIR && kind != PRIMA_VFS_KIND_FILE &&
         kind != PRIMA_VFS_KIND_NULL) {
         (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
@@ -401,6 +540,201 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
         return -PRIMA_ERRNO_EAGAIN;
     }
     return local;
+}
+
+/* Linux x86_64 `struct statx`（256 字节）。x86_64 musl 的 stat 家族实际走下方
+ * kstat 号 4/5/6/262，只有直接调用 `statx(332)` 的程序用本布局；适配层只填
+ * profile 冻结的字段，其余清零。 */
+struct prima_statx {
+    uint32_t stx_mask;
+    uint32_t stx_blksize;
+    uint64_t stx_attributes;
+    uint32_t stx_nlink;
+    uint32_t stx_uid;
+    uint32_t stx_gid;
+    uint16_t stx_mode;
+    uint16_t spare0;
+    uint64_t stx_ino;
+    uint64_t stx_size;
+    uint64_t stx_blocks;
+    uint64_t stx_attributes_mask;
+    struct {
+        int64_t tv_sec;
+        uint32_t tv_nsec;
+        int32_t pad;
+    } stx_atime, stx_btime, stx_ctime, stx_mtime;
+    uint32_t stx_rdev_major;
+    uint32_t stx_rdev_minor;
+    uint32_t stx_dev_major;
+    uint32_t stx_dev_minor;
+    uint64_t spare2[14];
+};
+_Static_assert(sizeof(struct prima_statx) == 256, "statx ABI size");
+
+#define PRIMA_S_IFMT 0170000
+#define PRIMA_S_IFDIR 0040000
+#define PRIMA_S_IFREG 0100000
+#define PRIMA_S_IFCHR 0020000
+#define PRIMA_STATX_BASIC_STATS 0x7ff
+
+static void prima_fill_statx(struct prima_statx *stx,
+                             const struct prima_stat_meta *meta) {
+    uint16_t mode;
+    if (meta->kind == PRIMA_VFS_KIND_DIR)
+        mode = (uint16_t)(PRIMA_S_IFDIR | (meta->writable ? 0777 : 0555));
+    else if (meta->kind == PRIMA_VFS_KIND_NULL)
+        mode = (uint16_t)(PRIMA_S_IFCHR | 0666);
+    else
+        mode = (uint16_t)(PRIMA_S_IFREG | (meta->writable ? 0666 : 0444));
+    *stx = (struct prima_statx){0};
+    stx->stx_mask = PRIMA_STATX_BASIC_STATS;
+    stx->stx_blksize = 4096;
+    stx->stx_nlink = meta->kind == PRIMA_VFS_KIND_DIR ? 2 : 1;
+    stx->stx_mode = mode;
+    stx->stx_ino = (uint64_t)meta->node + 1;
+    stx->stx_size = meta->size;
+    stx->stx_blocks = ((uint64_t)meta->size + 511) / 512;
+}
+
+/* 取 stat 元数据：AT_EMPTY_PATH 按 fd（本地 tty/null 合成），否则解析路径。 */
+static long prima_meta_for(long dirfd, const char *path, long flags,
+                           struct prima_stat_meta *meta) {
+    if ((flags & PRIMA_AT_EMPTY_PATH) != 0 && path != 0 && path[0] == 0) {
+        struct prima_fd_entry *entry = prima_fd_entry((int)dirfd);
+        if (!entry)
+            return -PRIMA_ERRNO_EBADF;
+        if (entry->kind == PRIMA_FD_TTY || entry->kind == PRIMA_FD_NULL) {
+            meta->node = entry->node;
+            meta->kind = PRIMA_VFS_KIND_NULL;
+            meta->writable = 0;
+            meta->size = 0;
+            return 0;
+        }
+        /* 节点自身：STAT 请求以空路径表示，不走 VFS 的相对路径解析（文件节点上的
+         * 相对 "." 会被 POSIX/`walk` 判为 ENOTDIR）。 */
+        return prima_stat_fetch(entry->node, "", meta);
+    }
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    if (path[0] == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    char resolved[PRIMA_VFS_PATH_MAX + 1];
+    const char *send = path;
+    unsigned char start = 0;
+    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    if (target < 0)
+        return target;
+    return prima_stat_fetch(start, send, meta);
+}
+
+static long prima_statx(long dirfd, const char *path, long flags, long mask,
+                        void *buffer) {
+    (void)mask;
+    if (!buffer)
+        return -PRIMA_ERRNO_EFAULT;
+    long allowed = PRIMA_AT_SYMLINK_NOFOLLOW | PRIMA_AT_NO_AUTOMOUNT |
+                   PRIMA_AT_EMPTY_PATH;
+    if ((flags & ~allowed) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    struct prima_stat_meta meta;
+    long fetched = prima_meta_for(dirfd, path, flags, &meta);
+    if (fetched < 0)
+        return fetched;
+    prima_fill_statx((struct prima_statx *)buffer, &meta);
+    return 0;
+}
+
+/* x86_64 musl 的 stat/lstat/fstat/fstatat 走 legacy kstat 系统调用（4/5/6/262），
+ * 填充 144 字节的 `struct kstat`；statx(332) 只覆盖直接调用 statx 的程序。
+ * 时间戳、dev/rdev 与 uid/gid 在本 profile 中恒 0。 */
+struct prima_kstat {
+    uint64_t st_dev;
+    uint64_t st_ino;
+    uint64_t st_nlink;
+    uint32_t st_mode;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint32_t pad0;
+    uint64_t st_rdev;
+    int64_t st_size;
+    int64_t st_blksize;
+    int64_t st_blocks;
+    int64_t st_atime_sec;
+    int64_t st_atime_nsec;
+    int64_t st_mtime_sec;
+    int64_t st_mtime_nsec;
+    int64_t st_ctime_sec;
+    int64_t st_ctime_nsec;
+    int64_t unused[3];
+};
+_Static_assert(sizeof(struct prima_kstat) == 144, "kstat ABI size");
+
+static void prima_fill_kstat(struct prima_kstat *st,
+                             const struct prima_stat_meta *meta) {
+    *st = (struct prima_kstat){0};
+    st->st_ino = (uint64_t)meta->node + 1;
+    st->st_nlink = meta->kind == PRIMA_VFS_KIND_DIR ? 2 : 1;
+    if (meta->kind == PRIMA_VFS_KIND_DIR)
+        st->st_mode = (uint32_t)(PRIMA_S_IFDIR | (meta->writable ? 0777 : 0555));
+    else if (meta->kind == PRIMA_VFS_KIND_NULL)
+        st->st_mode = (uint32_t)(PRIMA_S_IFCHR | 0666);
+    else
+        st->st_mode = (uint32_t)(PRIMA_S_IFREG | (meta->writable ? 0666 : 0444));
+    st->st_size = meta->size;
+    st->st_blksize = 4096;
+    st->st_blocks = ((int64_t)meta->size + 511) / 512;
+}
+
+static long prima_stat_kstat(long dirfd, const char *path, long flags,
+                             void *buffer) {
+    if (!buffer)
+        return -PRIMA_ERRNO_EFAULT;
+    long allowed = PRIMA_AT_SYMLINK_NOFOLLOW | PRIMA_AT_NO_AUTOMOUNT |
+                   PRIMA_AT_EMPTY_PATH;
+    if ((flags & ~allowed) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    struct prima_stat_meta meta;
+    long fetched = prima_meta_for(dirfd, path, flags, &meta);
+    if (fetched < 0)
+        return fetched;
+    prima_fill_kstat((struct prima_kstat *)buffer, &meta);
+    return 0;
+}
+
+/* M9：chdir 先用 stat 确认目标是目录；成功后保存**规范化绝对路径**。 */
+static long prima_chdir(const char *path) {
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    if (path[0] == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    char normalized[PRIMA_VFS_PATH_MAX + 1];
+    unsigned long len = 0;
+    long normalized_status = prima_normalize_path(path, normalized, &len);
+    if (normalized_status < 0)
+        return normalized_status;
+    struct prima_stat_meta meta;
+    long fetched = prima_stat_fetch(0, normalized, &meta);
+    if (fetched < 0)
+        return fetched;
+    if (meta.kind != PRIMA_VFS_KIND_DIR)
+        return -PRIMA_ERRNO_ENOTDIR;
+    for (unsigned long i = 0; i <= len; i++)
+        prima_cwd[i] = normalized[i];
+    return 0;
+}
+
+/* M9：返回包含结尾 NUL 的长度；缓冲不足用 ERANGE（profile v1 新冻结）。 */
+static long prima_getcwd(char *buffer, unsigned long size) {
+    if (!buffer)
+        return -PRIMA_ERRNO_EFAULT;
+    unsigned long len = prima_strlen_bounded(prima_cwd, PRIMA_VFS_PATH_MAX);
+    if (len > PRIMA_VFS_PATH_MAX)
+        return -PRIMA_ERRNO_EINVAL;
+    if (size < len + 1)
+        return -PRIMA_ERRNO_ERANGE;
+    for (unsigned long i = 0; i <= len; i++)
+        buffer[i] = prima_cwd[i];
+    return (long)(len + 1);
 }
 
 static long prima_handle_read(int handle, void *buf, unsigned long len) {
@@ -861,6 +1195,24 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_openat(PRIMA_AT_FDCWD, (const char *)a0, a1, a2);
     case PRIMA_LINUX_SYS_openat:
         return prima_openat(a0, (const char *)a1, a2, a3);
+    /* M9：x86_64 musl 的 stat/lstat/fstat/fstatat 走 legacy kstat 号 4/5/6/262；
+     * 直接调用 statx 的程序走 332。cwd 相关调用走 chdir(80)/getcwd(79)。 */
+    case PRIMA_LINUX_SYS_stat:
+        return prima_stat_kstat(PRIMA_AT_FDCWD, (const char *)a0, 0,
+                                (void *)a1);
+    case PRIMA_LINUX_SYS_lstat:
+        return prima_stat_kstat(PRIMA_AT_FDCWD, (const char *)a0,
+                                PRIMA_AT_SYMLINK_NOFOLLOW, (void *)a1);
+    case PRIMA_LINUX_SYS_fstat:
+        return prima_stat_kstat((int)a0, "", PRIMA_AT_EMPTY_PATH, (void *)a1);
+    case PRIMA_LINUX_SYS_newfstatat:
+        return prima_stat_kstat((int)a0, (const char *)a1, a3, (void *)a2);
+    case PRIMA_LINUX_SYS_statx:
+        return prima_statx((int)a0, (const char *)a1, a2, a3, (void *)a4);
+    case PRIMA_LINUX_SYS_chdir:
+        return prima_chdir((const char *)a0);
+    case PRIMA_LINUX_SYS_getcwd:
+        return prima_getcwd((char *)a0, (unsigned long)a1);
     case PRIMA_LINUX_SYS_ioctl:
         return -PRIMA_ERRNO_ENOSYS;
     case PRIMA_LINUX_SYS_clock_gettime:

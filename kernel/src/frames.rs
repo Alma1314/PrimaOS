@@ -58,7 +58,11 @@ pub const MAX_SEGMENTS: usize = 48;
 /// **M3b 192 → 256**：C 任务的栈与匿名 arena 合并为一个 72 页 Segment。旧上限
 /// 192 下 8 页栈段仍可创建，故创建前的已用条目 ≤ 184；栈 + arena 的 72 页使
 /// 256 成为可证明的上界。存储已移至 [`OWNER_ARENA`]，不占结构体预算。
-pub const MAX_FRAME_OWNERS: usize = 256;
+///
+/// **M9 256 → 320**：C 任务的栈 + arena 段从 72 页扩到 104 页（sbase `ls` 的
+/// 64 KiB visited 表需要更大的 brk 区）。按同一上界算式 184 + 104 = 288，320 留出
+/// 32 项余量；`memseg_create` 仍以 `owner_count == MAX_FRAME_OWNERS` 确定失败。
+pub const MAX_FRAME_OWNERS: usize = 320;
 /// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
 ///
 /// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`

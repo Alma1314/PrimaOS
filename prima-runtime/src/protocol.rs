@@ -188,6 +188,8 @@ pub const SERVICE_FILE_OP_READ: u64 = 1;
 pub const SERVICE_FILE_OP_WRITE: u64 = 2;
 pub const SERVICE_FILE_OP_LSEEK: u64 = 3;
 pub const SERVICE_FILE_OP_CLOSE: u64 = 4;
+/// M9：路径元数据查询（`statx`）的应答 op；不复用 OPEN，便于区分“只读查询、无句柄”。
+pub const SERVICE_FILE_OP_STAT: u64 = 5;
 
 /// M4：open 的 `arg` 布局——`flags(28..31) | path_len(26..27) | path(0..23)`。
 pub const SERVICE_FILE_OPEN_FLAGS_SHIFT: u64 = 28;
@@ -231,7 +233,8 @@ pub const SERVICE_VFS_NODES: usize = 16;
 /// - [`SERVICE_VFS_PATH_TAG`]：`tag | offset(40..47) | 5 字节(0..39)`；
 /// - [`SERVICE_VFS_COMMIT_TAG`]：`tag | client(32..39)`，解析暂存路径并回复。
 ///
-/// 三条消息都经服务管理器同步转发；每条都有应答，避免一次性灌满全局消息队列。
+/// OPEN/PATH 只入队由服务端暂存，只有 COMMIT 同步等待一条应答；适配层据此不会一次
+/// 灌满全局消息队列。
 pub const SERVICE_VFS_OPEN_TAG: u64 = 0x5ED6_0000_0000_0000;
 pub const SERVICE_VFS_PATH_TAG: u64 = 0x5ED7_0000_0000_0000;
 pub const SERVICE_VFS_COMMIT_TAG: u64 = 0x5ED8_0000_0000_0000;
@@ -243,18 +246,24 @@ pub const SERVICE_VFS_PATH_OFFSET_SHIFT: u64 = 40;
 pub const SERVICE_VFS_PATH_BYTES_MASK: u64 = 0x0000_00ff_ffff_ffff;
 pub const SERVICE_VFS_COMMIT_CLIENT_SHIFT: u64 = 32;
 
-/// M8：适配层归一化后的 open flags（低 7 位）。access 位于 bit 2..3。
+/// M8/M9：适配层归一化后的 open/stat flags（低 8 位）。access 位于 bit 2..3。
 pub const SERVICE_VFS_FLAG_CREATE: u64 = 1 << 0;
 pub const SERVICE_VFS_FLAG_TRUNC: u64 = 1 << 1;
 pub const SERVICE_VFS_ACCESS_SHIFT: u64 = 2;
 pub const SERVICE_VFS_FLAG_APPEND: u64 = 1 << 4;
 pub const SERVICE_VFS_FLAG_EXCLUSIVE: u64 = 1 << 5;
 pub const SERVICE_VFS_FLAG_DIRECTORY: u64 = 1 << 6;
+/// M9：只解析路径并返回元数据，不分配服务端句柄、不做 access 检查。
+pub const SERVICE_VFS_FLAG_STAT: u64 = 1 << 7;
+/// M9：`flags` 字段宽度（bit 40..47）。
+pub const SERVICE_VFS_FLAGS_MASK: u64 = 0xff;
 
-/// M8：open 成功应答的 `data` 布局——`node(0..7) | kind(8..9) | size(16..31)`。
+/// M8/M9：open/stat 成功应答的 `data` 布局——
+/// `node(0..7) | kind(8..9) | writable(10) | size(16..31)`。
 pub const SERVICE_VFS_REPLY_NODE_MASK: u64 = 0xff;
 pub const SERVICE_VFS_REPLY_KIND_SHIFT: u64 = 8;
 pub const SERVICE_VFS_REPLY_KIND_MASK: u64 = 0x3;
+pub const SERVICE_VFS_REPLY_WRITABLE_SHIFT: u64 = 10;
 pub const SERVICE_VFS_REPLY_SIZE_SHIFT: u64 = 16;
 
 /// M8：打包 OPEN 元数据（`first` 至多 3 字节）。
@@ -266,7 +275,7 @@ pub fn pack_vfs_open(flags: u64, path_len: usize, start: u64, first: &[u8]) -> u
         index += 1;
     }
     SERVICE_VFS_OPEN_TAG
-        | ((flags & 0x7f) << SERVICE_VFS_FLAGS_SHIFT)
+        | ((flags & SERVICE_VFS_FLAGS_MASK) << SERVICE_VFS_FLAGS_SHIFT)
         | (((path_len as u64) & 0xff) << SERVICE_VFS_PATH_LEN_SHIFT)
         | ((start & 0xff) << SERVICE_VFS_START_SHIFT)
         | bytes
@@ -288,10 +297,11 @@ pub const fn pack_vfs_commit(client: u64) -> u64 {
     SERVICE_VFS_COMMIT_TAG | ((client & 0xff) << SERVICE_VFS_COMMIT_CLIENT_SHIFT)
 }
 
-/// M8：打包 open 应答的 `data` 字段。
-pub const fn pack_vfs_node(node: u64, kind: u64, size: u64) -> u64 {
+/// M8/M9：打包 open/stat 应答的 `data` 字段。`writable` 区分 0444/0555 与 0666/0777。
+pub const fn pack_vfs_node(node: u64, kind: u64, size: u64, writable: bool) -> u64 {
     (node & SERVICE_VFS_REPLY_NODE_MASK)
         | ((kind & SERVICE_VFS_REPLY_KIND_MASK) << SERVICE_VFS_REPLY_KIND_SHIFT)
+        | ((writable as u64) << SERVICE_VFS_REPLY_WRITABLE_SHIFT)
         | ((size & 0xffff) << SERVICE_VFS_REPLY_SIZE_SHIFT)
 }
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。

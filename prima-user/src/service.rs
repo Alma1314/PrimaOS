@@ -32,18 +32,18 @@ use prima_runtime::{
         SERVICE_FILE_EEXIST, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ENOENT,
         SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_ENOTDIR, SERVICE_FILE_FD_SHIFT,
         SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE, SERVICE_FILE_OP_LSEEK, SERVICE_FILE_OP_OPEN,
-        SERVICE_FILE_OP_READ, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_WRITE,
+        SERVICE_FILE_OP_READ, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_STAT, SERVICE_FILE_OP_WRITE,
         SERVICE_FILE_REQUEST_TAG, SERVICE_FILE_SEEK_OFFSET_MASK, SERVICE_FILE_SEEK_WHENCE_SHIFT,
         SERVICE_FILE_SIZE_OFFSET, SERVICE_FILE_WRITE_COUNT_SHIFT, SERVICE_MARKER_MASK,
         SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG,
         SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_FIRST_BYTES_MASK,
         SERVICE_VFS_FLAG_APPEND, SERVICE_VFS_FLAG_CREATE, SERVICE_VFS_FLAG_DIRECTORY,
-        SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_TRUNC, SERVICE_VFS_FLAGS_SHIFT,
-        SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT,
-        SERVICE_VFS_PATH_MAX, SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG,
-        SERVICE_VFS_START_SHIFT, SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker,
-        pack_service_reply, pack_vfs_node,
+        SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_STAT, SERVICE_VFS_FLAG_TRUNC,
+        SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT, SERVICE_VFS_OPEN_TAG,
+        SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT, SERVICE_VFS_PATH_MAX,
+        SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG, SERVICE_VFS_START_SHIFT,
+        SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker, pack_service_reply, pack_vfs_node,
     },
     vfs::{self, NodeKind, OpenFlags, Storage},
 };
@@ -190,8 +190,9 @@ pub fn run(
             };
             let _ = runtime.send(peer, send_cap, pack_service_reply(kind, result), &[]);
         } else if tag == SERVICE_VFS_OPEN_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
-            // M8：open 元数据。清空暂存路径并写入第一段字节；每条消息同步应答，避免灌满队列。
-            let flags = ((message.payload >> SERVICE_VFS_FLAGS_SHIFT) & 0x7f) as u8;
+            // M8/M9：open/stat 元数据。清空暂存路径并写入第一段字节。
+            let flags =
+                ((message.payload >> SERVICE_VFS_FLAGS_SHIFT) & SERVICE_VFS_FLAGS_MASK) as u8;
             let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
             let start = ((message.payload >> SERVICE_VFS_START_SHIFT) & 0xff) as u8;
             let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
@@ -209,9 +210,13 @@ pub fn run(
                 staged.active = false;
             }
         } else if tag == SERVICE_VFS_COMMIT_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
-            // M8：解析暂存路径；成功时分配服务端句柄并回复 node/kind/size。
+            // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
             let reply = if vfs_ready {
-                open_staged(&runtime, &mut staged, &mut files)
+                if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
+                    stat_staged(&runtime, &mut staged)
+                } else {
+                    open_staged(&runtime, &mut staged, &mut files)
+                }
             } else {
                 pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOSYS, 0)
             };
@@ -276,7 +281,9 @@ impl OpenStaging {
     };
 
     fn begin(&mut self, flags: u8, len: usize, start: u8, first: u64) -> u64 {
-        if len == 0 || len > SERVICE_VFS_PATH_MAX {
+        // M9：STAT 允许空路径，表示“直接查询 start 节点”（fstat 用）。
+        let stat_only = flags & SERVICE_VFS_FLAG_STAT as u8 != 0;
+        if (len == 0 && !stat_only) || len > SERVICE_VFS_PATH_MAX {
             self.active = false;
             return SERVICE_FILE_EINVAL;
         }
@@ -373,6 +380,43 @@ fn open_staged<T: SyscallTransport>(
             opened.id as u64,
             opened.node.kind.as_raw() as u64,
             opened.node.size as u64,
+            opened.node.writable,
+        ),
+    )
+}
+
+/// M9：只解析暂存路径并回复元数据，不分配句柄、不做 access 检查。
+fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStaging) -> u64 {
+    let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_STAT, 0, status, 0);
+    if !staged.active || staged.got != staged.len {
+        staged.active = false;
+        return reply(SERVICE_FILE_EINVAL);
+    }
+    let start = staged.start;
+    let len = staged.len as usize;
+    staged.active = false;
+    let mut storage = SegmentStorage { runtime };
+    let id = if len == 0 {
+        start
+    } else {
+        match vfs::resolve(&mut storage, start, &staged.path[..len]) {
+            Ok(id) => id,
+            Err(error) => return reply(vfs_status(error)),
+        }
+    };
+    let node = match vfs::read_node(&mut storage, id) {
+        Ok(node) => node,
+        Err(error) => return reply(vfs_status(error)),
+    };
+    pack_file_reply(
+        SERVICE_FILE_OP_STAT,
+        0,
+        0,
+        pack_vfs_node(
+            id as u64,
+            node.kind.as_raw() as u64,
+            node.size as u64,
+            node.writable,
         ),
     )
 }
