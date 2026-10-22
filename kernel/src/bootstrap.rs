@@ -8996,7 +8996,11 @@ impl BootstrapState {
                 process.threads &= !bit;
                 process.thread_count = process.thread_count.saturating_sub(1);
             }
-            remove_process = process.thread_count == 0;
+            // M17b：fork 子进程保留僵尸 Process（parent 存在），直到 wait4 回收；
+            // 无父进程的普通 Task 最后一个线程离开即删除。
+            remove_process = process.thread_count == 0
+                && process.parent.is_none()
+                && process.exit_status.is_none();
         }
         if remove_process {
             let _ = self.processes.remove(process_id);
@@ -9091,6 +9095,7 @@ impl BootstrapState {
 
     pub fn process_exit(&mut self, process_id: u32, status: i64) -> WaitWake {
         let mut wakes = WaitWake::empty();
+        let mut reap = false;
         if let Some(process) = self.processes.find_mut(process_id) {
             process.exit_status = Some(status);
             let waiters = process.waiters;
@@ -9108,6 +9113,11 @@ impl BootstrapState {
                     wakes.push(task_id, WaitResultCode::Satisfied);
                 }
             }
+            // 有等待者时状态已随唤醒交付，直接回收僵尸 Process。
+            reap = wakes.count > 0;
+        }
+        if reap {
+            let _ = self.processes.remove(process_id);
         }
         wakes
     }
@@ -10810,10 +10820,7 @@ mod tests {
         let wakes = state.process_exit(child, 7);
         assert_eq!(wakes.count, 1);
         assert_eq!(state.tasks.status_of(INIT_TASK_ID), Some(TaskStatus::Ready));
-        assert_eq!(
-            state.wait4(INIT_TASK_ID, 2, 0, false),
-            Ok(Wait4Outcome::Exited(2, 7))
-        );
+        // 有等待者时状态随唤醒交付并回收：再次 wait 得 ECHILD。
         assert_eq!(
             state.wait4(INIT_TASK_ID, -1, 0, true),
             Err(Wait4Error::EChild)
@@ -10838,6 +10845,72 @@ mod tests {
         let orphan = state.create_process(3).expect("orphan");
         assert!(state.attach_thread(orphan, 3));
         assert_eq!(state.wait4(3, -1, 0, true), Err(Wait4Error::EChild));
+    }
+
+    #[test]
+    fn fork_create_then_wait4_finds_child_by_pid() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).expect("fork");
+        let child_process = state.process_of(child).expect("child process");
+        assert_eq!(state.process_parent(child_process), Some(parent));
+        assert_eq!(state.process_leader(child_process), Some(child));
+        // 子进程存活：WNOHANG 返回 None。
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, true),
+            Ok(Wait4Outcome::None)
+        );
+        // 子进程退出后按 pid 回收。
+        let wakes = state.process_exit(child_process, 7);
+        assert_eq!(wakes.count, 0);
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, true),
+            Ok(Wait4Outcome::Exited(child as i64, 7))
+        );
+    }
+
+    #[test]
+    fn forked_child_process_survives_task_destroy_until_reaped() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).expect("fork");
+        let child_process = state.process_of(child).expect("child process");
+        let wakes = state.process_exit(child_process, 9);
+        assert_eq!(wakes.count, 0);
+        // 子 Task 退出（root 由 syscall 层传入；模型层用 None）。
+        let _ = state.task_destroy(child, child, None, 0);
+        // 僵尸 Process 仍在，wait4 可以回收。
+        assert_eq!(state.process_parent(child_process), Some(parent));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, true),
+            Ok(Wait4Outcome::Exited(child as i64, 9))
+        );
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Err(Wait4Error::EChild)
+        );
+    }
+
+    #[test]
+    fn process_exit_with_waiter_reaps_the_zombie() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).expect("fork");
+        let child_process = state.process_of(child).expect("child process");
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, false),
+            Ok(Wait4Outcome::Blocked)
+        );
+        let wakes = state.process_exit(child_process, 3);
+        assert_eq!(wakes.count, 1);
+        // 唤醒即回收：再次 wait 得 ECHILD。
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Err(Wait4Error::EChild)
+        );
     }
 
     #[test]
