@@ -40,13 +40,14 @@ use prima_ostd::sync::StaticCell;
 pub use prima_abi::syscall::{
     SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_CLONE, SYS_COPY_IN,
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
-    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
-    SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE,
-    SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
-    SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
-    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW,
-    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
-    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_YIELD,
+    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_FORK, SYS_MEMSEG_CREATE,
+    SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
+    SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
+    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID,
+    SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
+    SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE,
+    SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -305,6 +306,8 @@ pub const EXC_SYSCALL_TRAP_PAYLOAD: u64 = EXC_SYSCALL_TRAP_SOURCE | (EXC_KIND_SY
 pub enum Errno {
     /// 找不到对象（不存在的 Capability）。
     NoEnt = 2,
+    /// POSIX `ECHILD`：没有可等待的子进程。
+    Child = 10,
     /// 切片 V：暂时不可用——自毁要求存在其他 Ready 任务，当前没有。
     Again = 11,
     /// 权限不足（缺权限 / 非持有者 / 已失效）。
@@ -337,6 +340,7 @@ pub const ERRNO_INVALID: u64 = encode_errno(Errno::Invalid);
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
         Errno::NoEnt => "ENOENT",
+        Errno::Child => "ECHILD",
         Errno::Again => "EAGAIN",
         Errno::Access => "EACCES",
         Errno::Fault => "EFAULT",
@@ -983,6 +987,104 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
         sched::set_frame_rax(*task, result.code());
     }
+}
+
+/// M17b：fork（COW 地址空间；子进程独立用户栈）。
+fn fork_call() -> u64 {
+    let caller = sched::current();
+    let Some(parent_root) = sched::root(caller) else {
+        return encode_errno(Errno::Fault);
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    let Ok(new_root) = crate::frames::allocate_table_frame() else {
+        return encode_errno(Errno::NoSpace);
+    };
+    let root_va = crate::mem::phys_to_virt(new_root, offset);
+    for index in 0..512u64 {
+        prima_ostd::mm::write_u64(root_va + index * 8, 0);
+    }
+    let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
+    if crate::vspace::clone_root_cow(parent_root, new_root, map, || {
+        crate::frames::allocate_table_frame().ok()
+    })
+    .is_err()
+    {
+        let _ = crate::frames::release_table_frame(new_root);
+        return encode_errno(Errno::NoSpace);
+    }
+    let frame = current_context();
+    let child = match bootstrap::fork_create(caller, frame.rip) {
+        Ok(child) => child,
+        Err(bootstrap::ThreadError::Busy) => {
+            let _ = crate::frames::release_table_frame(new_root);
+            return encode_errno(Errno::Again);
+        }
+        Err(_) => {
+            let _ = crate::frames::release_table_frame(new_root);
+            return encode_errno(Errno::NoSpace);
+        }
+    };
+    let fs_base = sched::fs_base(caller).unwrap_or(0);
+    if crate::user::register_clone_task(child, new_root, frame, frame.rsp, fs_base).is_err() {
+        bootstrap::thread_abort(child);
+        let _ = crate::frames::release_table_frame(new_root);
+        return encode_errno(Errno::Invalid);
+    }
+    child as u64
+}
+
+fn write_status(ptr: u64, status: i64) {
+    let encoded = ((status as u64) & 0xff) << 8;
+    for (index, byte) in encoded.to_le_bytes().iter().enumerate() {
+        prima_ostd::mm::write_u8_at(ptr, index as u64, *byte);
+    }
+}
+
+fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
+    let cur = sched::current();
+    let no_hang = options & 1 != 0;
+    match bootstrap::wait4(cur, pid as i64, status_ptr, no_hang) {
+        Ok(bootstrap::Wait4Outcome::Exited(child, status)) => {
+            if status_ptr != 0 {
+                write_status(status_ptr, status);
+            }
+            child as u64
+        }
+        Ok(bootstrap::Wait4Outcome::None) => 0,
+        Ok(bootstrap::Wait4Outcome::Blocked) => {
+            let mut frame = current_context();
+            frame.rax = 0;
+            sched::set_frame(cur, frame);
+            let next = sched::pick_next(cur).expect("SYS_WAIT4: no Ready task to switch to");
+            sched::block_to(next)
+        }
+        Err(bootstrap::Wait4Error::EChild) => encode_errno(Errno::Child),
+    }
+}
+
+fn process_exit_call(status: u64) -> u64 {
+    let cur = sched::current();
+    let Some(process) = bootstrap::process_of(cur) else {
+        return encode_errno(Errno::Invalid);
+    };
+    if bootstrap::process_leader(process) != Some(cur) {
+        return encode_errno(Errno::Invalid);
+    }
+    let wakes = bootstrap::process_exit(process, status as i64);
+    for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
+        let ptr = bootstrap::wait_status_ptr(*task);
+        if ptr != 0 {
+            write_status(ptr, status as i64);
+        }
+        sched::set_frame_rax(*task, cur as u64);
+    }
+    let root = sched::root(cur);
+    let next = sched::pick_next(cur).expect("SYS_PROCESS_EXIT: no Ready task to switch to");
+    let _ = bootstrap::task_destroy(cur, cur, root, 0);
+    sched::clear_task(cur);
+    sched::exit_to(next)
 }
 
 /// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack），
@@ -2565,6 +2667,12 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_FORK {
+        fork_call()
+    } else if num == SYS_WAIT4 {
+        wait4_call(args[0], args[1], args[2])
+    } else if num == SYS_PROCESS_EXIT {
+        process_exit_call(args[0])
     } else if num == SYS_CLONE {
         clone_call(args[0], args[1], args[2], args[3], args[4])
     } else if num == SYS_THREAD_CREATE {

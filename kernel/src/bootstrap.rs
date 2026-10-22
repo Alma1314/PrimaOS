@@ -2518,6 +2518,24 @@ impl TaskVspaceTable {
 
     /// SPEC-107：该任务的**首个**映射 VA（无则 `None`）。供销毁路径「找到一个、拆一个」的滚动
     /// 循环使用——免去 `[u64; MAX_VSPACE_ENTRIES]` 栈快照随容量常量放大内核栈占用。
+    /// M17b：把 `from` 的映射条目复制给 `to`（fork 子进程的模型视图）。
+    fn clone_entries_for(&mut self, from: u32, to: u32) -> Result<(), MemsegError> {
+        let mut index = 0;
+        while index < self.count {
+            if let Some(entry) = self
+                .entry(index)
+                .filter(|entry| entry.task_id.get() == from)
+            {
+                self.insert(VspaceEntry {
+                    task_id: core::num::NonZeroU32::new(to).expect("task id nonzero"),
+                    ..entry
+                })?;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
     fn first_mapping(&self, task_id: u32) -> Option<u64> {
         let mut found = None;
         self.for_each_entry(|entry| {
@@ -3074,6 +3092,8 @@ pub enum ThreadError {
     InvalidStack,
     CapacityExceeded,
     AuditFull,
+    /// M17b：多线程进程不能 fork（返回 EAGAIN）。
+    Busy,
 }
 
 /// COSIR §21.1/§21.2 的失败名。
@@ -9013,6 +9033,62 @@ impl BootstrapState {
     }
 
     /// M17b：子进程退出，设置状态并唤醒等待者。
+    /// M17b：该 Task 的一个映射段 id（COW 帧归属；无映射返回 None）。
+    pub fn task_segment_id(&self, task_id: u32) -> Option<u32> {
+        let mut found = None;
+        self.vspace.for_each_entry(|entry| {
+            if found.is_none() && entry.task_id.get() == task_id {
+                found = Some(entry.seg_id);
+            }
+        });
+        found
+    }
+
+    /// M17b：fork 的模型部分（新 Process + 新 Task；地址空间由 syscall 层 COW 克隆）。
+    pub fn fork_create(&mut self, caller: u32, entry: u64) -> Result<u32, ThreadError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ThreadError::InvalidCaller);
+        }
+        let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;
+        if self.process_threads(parent_process) != 1 {
+            return Err(ThreadError::Busy);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ThreadError::AuditFull);
+        }
+        let new_id = self
+            .ensure_thread_slot()
+            .ok_or(ThreadError::CapacityExceeded)?;
+        let process = self
+            .create_process(new_id)
+            .ok_or(ThreadError::CapacityExceeded)?;
+        if !self.inherit_cap_space(process, parent_process) {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        if self.create_task_record(new_id, entry).is_err() {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        if !self.attach_thread(process, new_id) {
+            let _ = self.tasks.remove(new_id);
+            return Err(ThreadError::CapacityExceeded);
+        }
+        // M17b：子进程继承父的 vspace 模型条目（COW 帧归属与销毁路径）。
+        if self.vspace.clone_entries_for(caller, new_id).is_err() {
+            let _ = self.tasks.remove(new_id);
+            return Err(ThreadError::CapacityExceeded);
+        }
+        self.audit
+            .append(AuditEvent::TaskCreated { task_id: new_id });
+        Ok(new_id)
+    }
+
+    pub fn wait_status_ptr(&self, task_id: u32) -> u64 {
+        self.tasks
+            .find(task_id)
+            .map(|task| task.wait_status_ptr)
+            .unwrap_or(0)
+    }
+
     pub fn process_exit(&mut self, process_id: u32, status: i64) -> WaitWake {
         let mut wakes = WaitWake::empty();
         if let Some(process) = self.processes.find_mut(process_id) {
@@ -9448,6 +9524,39 @@ impl BootstrapState {
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
 /// M15b-2：全局线程创建。
+pub fn task_segment_id(task_id: u32) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|state| state.task_segment_id(task_id))
+    })
+}
+
+pub fn process_of(task_id: u32) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().and_then(|state| state.process_of(task_id)))
+}
+
+pub fn process_leader(process_id: u32) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|state| state.process_leader(process_id))
+    })
+}
+
+pub fn fork_create(caller: u32, entry: u64) -> Result<u32, ThreadError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.fork_create(caller, entry),
+        None => Err(ThreadError::InvalidCaller),
+    })
+}
+
+pub fn wait_status_ptr(task_id: u32) -> u64 {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .map(|state| state.wait_status_ptr(task_id))
+            .unwrap_or(0)
+    })
+}
+
 pub fn process_exit(process_id: u32, status: i64) -> WaitWake {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.process_exit(process_id, status),

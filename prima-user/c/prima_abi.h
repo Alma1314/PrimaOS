@@ -27,6 +27,12 @@
 #define PRIMA_SYS_CLONE 48
 #define PRIMA_SYS_THREAD_EXIT 49
 #define PRIMA_SYS_THREAD_CLEAR_TID 50
+#define PRIMA_SYS_FORK 51
+#define PRIMA_SYS_WAIT4 53
+#define PRIMA_SYS_PROCESS_EXIT 54
+#define PRIMA_LINUX_SYS_fork 57
+#define PRIMA_LINUX_SYS_wait4 61
+#define PRIMA_ERRNO_ECHILD 10
 /* M10：memseg_protect(task_cap, target_base, page_count, new_access)。 */
 #define PRIMA_SYS_MEMSEG_MAP 14
 #define PRIMA_SYS_MEMSEG_UNMAP 15

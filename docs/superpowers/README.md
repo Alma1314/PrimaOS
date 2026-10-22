@@ -79,6 +79,7 @@
 - [M16b-3 pthread 创建/join 打通](reports/2026-10-23-stage5-m16b3-pthread-join.md)
 - [M17b-1 wait4 状态机模型](reports/2026-10-23-stage5-m17b1-wait4-model.md)
 - [M17b-2a COW 页表原语](reports/2026-10-23-stage5-m17b2-cow-primitives.md)
+- [M17b-2b general COW 与 fork](reports/2026-10-23-stage5-m17b2-cow-fork.md)
 
 ## 文档约定
 

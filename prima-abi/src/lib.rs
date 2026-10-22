@@ -219,6 +219,12 @@ pub mod syscall {
     pub const SYS_THREAD_EXIT: u64 = 49;
     /// M16b-3：返回当前线程的 `clear_child_tid` 地址（0 = 非线程）。
     pub const SYS_THREAD_CLEAR_TID: u64 = 50;
+    /// M17b：`fork() -> pid`（COW 地址空间）。
+    pub const SYS_FORK: u64 = 51;
+    /// M17b：`wait4(pid, status_ptr, options, rusage)`。
+    pub const SYS_WAIT4: u64 = 53;
+    /// M17b：当前进程以 `status` 退出（仅 leader）。
+    pub const SYS_PROCESS_EXIT: u64 = 54;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

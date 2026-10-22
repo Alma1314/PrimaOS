@@ -255,7 +255,26 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
                 ctx.copied = true;
                 return Some(frame.rip);
             }
-        } else if !ctx.user_copied && ctx.user_va != 0 && cr2 == ctx.user_va {
+        } else if write
+            && frame.cs & 3 != 0
+            && let Some(task) = Some(crate::sched::current())
+        {
+            // M17b：general user COW——任意用户写故障上带 PT_COW 的叶。
+            let va = cr2 & !0xfff;
+            let user_root = crate::sched::current_root().unwrap_or(root_phys);
+            let segment = crate::bootstrap::task_segment_id(task);
+            if let Some(segment) = segment {
+                let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
+                let resolved = crate::vspace::resolve_cow(user_root, va, map, || {
+                    crate::frames::allocate_for_segment(segment).ok()
+                });
+                if resolved.is_ok() {
+                    prima_ostd::arch::invlpg(va);
+                    return Some(frame.rip);
+                }
+            }
+        }
+        if !ctx.user_copied && ctx.user_va != 0 && cr2 == ctx.user_va {
             let shared = ctx.user_shared;
             let va = ctx.user_va;
             // 切片 O：用户页换映射必须写到**当前任务**的根（per-task CR3），而非 boot 根。
