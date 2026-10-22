@@ -258,13 +258,17 @@ pub const SERVICE_VFS_FLAG_STAT: u64 = 1 << 7;
 /// M9：`flags` 字段宽度（bit 40..47）。
 pub const SERVICE_VFS_FLAGS_MASK: u64 = 0xff;
 
-/// M8/M9：open/stat 成功应答的 `data` 布局——
-/// `node(0..7) | kind(8..9) | writable(10) | size(16..31)`。
+/// M8/M9/M13b：open/stat 成功应答的 `data` 布局——
+/// `node(0..7) | kind(8..9) | writable(10) | mode(11..19) | size(20..31)`。
+/// mode 只承载 0..0o777；`size` 上限 4095（内容区实际更小）。
 pub const SERVICE_VFS_REPLY_NODE_MASK: u64 = 0xff;
 pub const SERVICE_VFS_REPLY_KIND_SHIFT: u64 = 8;
 pub const SERVICE_VFS_REPLY_KIND_MASK: u64 = 0x3;
 pub const SERVICE_VFS_REPLY_WRITABLE_SHIFT: u64 = 10;
-pub const SERVICE_VFS_REPLY_SIZE_SHIFT: u64 = 16;
+pub const SERVICE_VFS_REPLY_MODE_SHIFT: u64 = 11;
+pub const SERVICE_VFS_REPLY_MODE_MASK: u64 = 0x1ff;
+pub const SERVICE_VFS_REPLY_SIZE_SHIFT: u64 = 20;
+pub const SERVICE_VFS_REPLY_SIZE_MASK: u64 = 0xfff;
 
 /// M8：打包 OPEN 元数据（`first` 至多 3 字节）。
 pub fn pack_vfs_open(flags: u64, path_len: usize, start: u64, first: &[u8]) -> u64 {
@@ -297,12 +301,13 @@ pub const fn pack_vfs_commit(client: u64) -> u64 {
     SERVICE_VFS_COMMIT_TAG | ((client & 0xff) << SERVICE_VFS_COMMIT_CLIENT_SHIFT)
 }
 
-/// M8/M9：打包 open/stat 应答的 `data` 字段。`writable` 区分 0444/0555 与 0666/0777。
-pub const fn pack_vfs_node(node: u64, kind: u64, size: u64, writable: bool) -> u64 {
+/// M8/M9/M13b：打包 open/stat 应答的 `data` 字段。`mode` 只取低 9 位（0..0o777）。
+pub const fn pack_vfs_node(node: u64, kind: u64, size: u64, mode: u16) -> u64 {
     (node & SERVICE_VFS_REPLY_NODE_MASK)
         | ((kind & SERVICE_VFS_REPLY_KIND_MASK) << SERVICE_VFS_REPLY_KIND_SHIFT)
-        | ((writable as u64) << SERVICE_VFS_REPLY_WRITABLE_SHIFT)
-        | ((size & 0xffff) << SERVICE_VFS_REPLY_SIZE_SHIFT)
+        | (((mode & 0o200 != 0) as u64) << SERVICE_VFS_REPLY_WRITABLE_SHIFT)
+        | (((mode as u64) & SERVICE_VFS_REPLY_MODE_MASK) << SERVICE_VFS_REPLY_MODE_SHIFT)
+        | ((size & SERVICE_VFS_REPLY_SIZE_MASK) << SERVICE_VFS_REPLY_SIZE_SHIFT)
 }
 /// M11：单路径文件树变更（`mkdir`/`unlink`/`rmdir`）。
 ///
@@ -400,6 +405,25 @@ pub const SERVICE_VFS_LINK_OFFSET_SHIFT: u64 = 32;
 pub const SERVICE_VFS_LINK_CLIENT_SHIFT: u64 = 40;
 pub const SERVICE_VFS_LINK_REPLY_SHIFT: u64 = 32;
 pub const SERVICE_VFS_LINK_CHUNK: usize = 3;
+
+/// M13b：`chmod`/`fchmod` 的单路径请求。`tag | start(24..31) | path_len(32..39) |
+/// 前 3 字节`；PATH 片段复用 [`SERVICE_VFS_PATH_TAG`]；COMMIT 的 bits 8..16 携带
+/// mode（9 位），bits 32..39 仍是 client。路径为空时改 `start` 节点（`fchmod`）。
+pub const SERVICE_VFS_CHMOD_TAG: u64 = 0x5EE2_0000_0000_0000;
+pub const SERVICE_VFS_CHMOD_MODE_SHIFT: u64 = 8;
+pub const SERVICE_VFS_CHMOD_MODE_MASK: u64 = 0x1ff;
+
+/// 打包一次 chmod 的 OPEN 元数据（`first` 至多 3 字节）。
+pub fn pack_vfs_chmod(start: u64, path_len: usize, first: &[u8]) -> u64 {
+    let mut bytes = 0u64;
+    for (index, byte) in first.iter().take(3).enumerate() {
+        bytes |= (*byte as u64) << (8 * index);
+    }
+    SERVICE_VFS_CHMOD_TAG
+        | ((start & 0xff) << SERVICE_VFS_START_SHIFT)
+        | (((path_len as u64) & 0xff) << SERVICE_VFS_PATH_LEN_SHIFT)
+        | bytes
+}
 
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
 pub const SERVICE_FILE_HANDLES: usize = 8;

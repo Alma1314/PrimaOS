@@ -135,6 +135,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios V2 run={run}");
     }
+    // M13b：chmod/fchmod/umask 与 stdio 文件 API，各跑两轮。
+    image::check_stage5_linux_vfs3()?;
+    let images = image::build_images_for_vfs3()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "V3",
+                image::VFS3_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS V3 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios V3 run={run}");
+    }
     // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
     image::check_stage5_linux_meta()?;
     let images = image::build_images_for_meta()?;

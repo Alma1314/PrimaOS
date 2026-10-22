@@ -23,7 +23,8 @@
 //! 创建只发生在静态根树中，`O_CREAT` 只能在可写目录（当前为 `/tmp`）里新建普通文件。
 
 /// 单个节点的字节数。
-pub const NODE_BYTES: usize = 32;
+/// M13b：节点 32 → 36 B，新增 16 位 mode。
+pub const NODE_BYTES: usize = 36;
 /// 节点条目上限（同时决定内容区起点，保证已分配的内容偏移稳定）。
 /// M13a：节点槽 16 → 32。符号链接/rename 用例在 16 槽下会因临时节点耗尽返回
 /// `ENOSPC`；扩到 32 后内容区仍 ≥3 KiB（`CONTENT_CAPACITY` 按 32×32 B 节点表重算）。
@@ -43,7 +44,8 @@ pub const MAX_COMPONENTS: usize = 6;
 /// 镜像 magic：ASCII `PVFS`。
 pub const MAGIC: u32 = u32::from_le_bytes(*b"PVFS");
 /// 镜像版本。
-pub const VERSION: u16 = 1;
+/// M13b：节点布局 v2（mode 字段）；v1 镜像确定拒绝，存储服务每启动重新格式化。
+pub const VERSION: u16 = 2;
 
 /// 根节点编号。
 pub const ROOT: NodeId = 0;
@@ -127,7 +129,8 @@ pub trait Storage {
 pub struct Node {
     pub kind: NodeKind,
     pub parent: NodeId,
-    pub writable: bool,
+    /// POSIX 权限位（低 12 位）。单用户模型只看 owner 读写位。
+    pub mode: u16,
     pub size: u16,
     /// 内容区内的起始偏移（仅普通文件有意义）。
     pub data: u16,
@@ -139,6 +142,16 @@ impl Node {
     /// 节点名称字节。
     pub fn name_bytes(&self) -> &[u8] {
         &self.name[..self.name_len as usize]
+    }
+
+    /// owner 写位；阶段 5 的单用户权限模型只用这一位做写检查。
+    pub fn writable(&self) -> bool {
+        self.mode & 0o200 != 0
+    }
+
+    /// owner 读位。
+    pub fn readable(&self) -> bool {
+        self.mode & 0o400 != 0
     }
 }
 
@@ -234,10 +247,10 @@ fn encode_node(node: &Node) -> [u8; NODE_BYTES] {
     bytes[0] = node.name_len;
     bytes[1] = node.kind.as_raw();
     bytes[2] = node.parent;
-    bytes[3] = u8::from(node.writable);
     bytes[4..6].copy_from_slice(&node.size.to_le_bytes());
     bytes[6..8].copy_from_slice(&node.data.to_le_bytes());
-    bytes[8..8 + node.name_len as usize].copy_from_slice(node.name_bytes());
+    bytes[8..10].copy_from_slice(&node.mode.to_le_bytes());
+    bytes[10..10 + node.name_len as usize].copy_from_slice(node.name_bytes());
     bytes
 }
 
@@ -248,11 +261,11 @@ fn decode_node(bytes: &[u8; NODE_BYTES]) -> Result<Node, VfsError> {
     }
     let kind = NodeKind::from_raw(bytes[1]).ok_or(VfsError::Unformatted)?;
     let mut name = [0u8; MAX_NAME];
-    name[..name_len as usize].copy_from_slice(&bytes[8..8 + name_len as usize]);
+    name[..name_len as usize].copy_from_slice(&bytes[10..10 + name_len as usize]);
     Ok(Node {
         kind,
         parent: bytes[2],
-        writable: bytes[3] & 1 != 0,
+        mode: u16::from_le_bytes([bytes[8], bytes[9]]),
         size: u16::from_le_bytes([bytes[4], bytes[5]]),
         data: u16::from_le_bytes([bytes[6], bytes[7]]),
         name_len,
@@ -289,7 +302,7 @@ struct InitialNode {
     name: &'static [u8],
     parent: NodeId,
     kind: NodeKind,
-    writable: bool,
+    mode: u16,
     content: &'static [u8],
 }
 
@@ -299,84 +312,84 @@ const INITIAL: [InitialNode; 12] = [
         name: b"",
         parent: ROOT,
         kind: NodeKind::Directory,
-        writable: false,
+        mode: 0o555,
         content: b"",
     },
     InitialNode {
         name: b"f",
         parent: ROOT,
         kind: NodeKind::File,
-        writable: true,
+        mode: 0o666,
         content: b"",
     },
     InitialNode {
         name: b"README",
         parent: ROOT,
         kind: NodeKind::File,
-        writable: false,
+        mode: 0o444,
         content: b"prima rootfs\n",
     },
     InitialNode {
         name: b"etc",
         parent: ROOT,
         kind: NodeKind::Directory,
-        writable: false,
+        mode: 0o555,
         content: b"",
     },
     InitialNode {
         name: b"motd",
         parent: 3,
         kind: NodeKind::File,
-        writable: false,
+        mode: 0o444,
         content: b"welcome\n",
     },
     InitialNode {
         name: b"hostname",
         parent: 3,
         kind: NodeKind::File,
-        writable: false,
+        mode: 0o444,
         content: b"prima\n",
     },
     InitialNode {
         name: b"usr",
         parent: ROOT,
         kind: NodeKind::Directory,
-        writable: false,
+        mode: 0o555,
         content: b"",
     },
     InitialNode {
         name: b"lib",
         parent: 6,
         kind: NodeKind::Directory,
-        writable: false,
+        mode: 0o555,
         content: b"",
     },
     InitialNode {
         name: b"version",
         parent: 7,
         kind: NodeKind::File,
-        writable: false,
+        mode: 0o444,
         content: b"1.0\n",
     },
     InitialNode {
         name: b"tmp",
         parent: ROOT,
         kind: NodeKind::Directory,
-        writable: true,
+        mode: 0o777,
         content: b"",
     },
     InitialNode {
         name: b"dev",
         parent: ROOT,
         kind: NodeKind::Directory,
-        writable: false,
+        mode: 0o555,
         content: b"",
     },
     InitialNode {
         name: b"null",
         parent: 10,
         kind: NodeKind::Null,
-        writable: false,
+        mode: 0o666,
         content: b"",
     },
 ];
@@ -404,7 +417,7 @@ pub fn mount<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
         let mut node = Node {
             kind: initial.kind,
             parent: initial.parent,
-            writable: initial.writable,
+            mode: initial.mode,
             size: 0,
             data: 0,
             name_len: initial.name.len() as u8,
@@ -709,7 +722,7 @@ pub fn open<S: Storage>(
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if !parent.writable {
+    if !parent.writable() {
         return Err(VfsError::Access);
     }
     if flags.directory {
@@ -727,7 +740,7 @@ pub fn open<S: Storage>(
     let node = Node {
         kind: NodeKind::File,
         parent: directory,
-        writable: true,
+        mode: 0o666,
         size: 0,
         data,
         name_len: last.len,
@@ -753,12 +766,12 @@ fn finish_open<S: Storage>(
         // `/dev/null` 接受任意 access：读总是 EOF，写被丢弃。
         if node.kind == NodeKind::Null {
             // allowed
-        } else if node.kind != NodeKind::File || !node.writable {
+        } else if node.kind != NodeKind::File || !node.writable() {
             return Err(VfsError::Access);
         }
     }
     if flags.truncate {
-        if node.kind != NodeKind::File || !node.writable {
+        if node.kind != NodeKind::File || !node.writable() {
             return Err(VfsError::Access);
         }
         node.size = 0;
@@ -824,7 +837,7 @@ pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if !parent.writable {
+    if !parent.writable() {
         return Err(VfsError::Access);
     }
     if lookup(storage, directory, last.as_bytes())?.is_some() {
@@ -836,7 +849,7 @@ pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<
     let node = Node {
         kind: NodeKind::Directory,
         parent: directory,
-        writable: true,
+        mode: 0o777,
         size: 0,
         data: 0,
         name_len: last.len,
@@ -867,7 +880,7 @@ pub fn unlink<S: Storage>(
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if !parent.writable {
+    if !parent.writable() {
         return Err(VfsError::Access);
     }
     let id = lookup(storage, directory, last.as_bytes())?.ok_or(VfsError::NoEnt)?;
@@ -897,6 +910,28 @@ pub fn unlink<S: Storage>(
     Ok(id)
 }
 
+/// M13b：修改节点权限位（低 12 位）。路径跟随符号链接；空路径表示 `start` 节点
+/// 本身（`fchmod`）。单用户模型不校验 uid/gid，只保存与检查 owner 读写位。
+pub fn chmod<S: Storage>(
+    storage: &mut S,
+    start: NodeId,
+    path: &[u8],
+    mode: u16,
+) -> Result<(), VfsError> {
+    if mode > 0o777 {
+        return Err(VfsError::Invalid);
+    }
+    let id = if path.is_empty() {
+        read_node(storage, start)?; // 仅校验节点存在，不跟随
+        start
+    } else {
+        resolve(storage, start, path)?
+    };
+    let mut node = read_node(storage, id)?;
+    node.mode = mode;
+    write_node(storage, id, &node)
+}
+
 /// M13a：在可写目录中创建符号链接，目标字节写入内容区。
 ///
 /// 目标只做长度/非空校验，不要求当前存在（允许悬空链接）；解析时再按冻结深度
@@ -923,7 +958,7 @@ pub fn symlink<S: Storage>(
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if !parent.writable {
+    if !parent.writable() {
         return Err(VfsError::Access);
     }
     if lookup(storage, directory, last.as_bytes())?.is_some() {
@@ -939,7 +974,7 @@ pub fn symlink<S: Storage>(
     let node = Node {
         kind: NodeKind::Symlink,
         parent: directory,
-        writable: false,
+        mode: 0o777,
         size: target.len() as u16,
         data,
         name_len: last.len,
@@ -1084,7 +1119,7 @@ pub fn rename<S: Storage>(
     if to_parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if !to_parent.writable {
+    if !to_parent.writable() {
         return Err(VfsError::Access);
     }
     if to_parsed.trailing_slash && from_node.kind != NodeKind::Directory {
@@ -1163,7 +1198,7 @@ pub fn write<S: Storage>(
     if node.kind != NodeKind::File {
         return Err(VfsError::NotDir);
     }
-    if !node.writable {
+    if !node.writable() {
         return Err(VfsError::Access);
     }
     if offset > CONTENT_CAPACITY as u64 {
@@ -1281,7 +1316,7 @@ pub fn truncate<S: Storage>(
     if node.kind != NodeKind::File {
         return Err(VfsError::NotDir);
     }
-    if !node.writable {
+    if !node.writable() {
         return Err(VfsError::Access);
     }
     if size > node.size as u64 {
@@ -1749,7 +1784,7 @@ mod tests {
         let node = read_node(&mut storage, a).unwrap();
         assert_eq!(node.kind, NodeKind::Directory);
         assert_eq!(node.parent, resolve(&mut storage, ROOT, b"tmp").unwrap());
-        assert!(node.writable);
+        assert!(node.writable());
         assert_eq!(mkdir(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::Exist));
         assert_eq!(mkdir(&mut storage, ROOT, b"/etc/x"), Err(VfsError::Access));
         assert_eq!(mkdir(&mut storage, ROOT, b"/nope/x"), Err(VfsError::NoEnt));
@@ -2013,6 +2048,55 @@ mod tests {
             rename(&mut storage, ROOT, b"/tmp/q/", b"/tmp/q2"),
             Err(VfsError::NotDir)
         );
+    }
+
+    #[test]
+    fn chmod_updates_mode_and_access_checks() {
+        let mut storage = mounted();
+        let create = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        let mut file = open(&mut storage, ROOT, b"/tmp/p", create).unwrap();
+        assert!(file.node.writable());
+        assert_eq!(file.node.mode, 0o666);
+        assert_eq!(chmod(&mut storage, ROOT, b"/tmp/p", 0o444), Ok(()));
+        let node = read_node(&mut storage, file.id).unwrap();
+        assert!(!node.writable());
+        assert!(node.readable());
+        let write_flags = OpenFlags {
+            access: 1,
+            ..OpenFlags::default()
+        };
+        assert_eq!(
+            open(&mut storage, ROOT, b"/tmp/p", write_flags),
+            Err(VfsError::Access)
+        );
+        // 空路径 + start 节点等价于 fchmod。
+        assert_eq!(chmod(&mut storage, file.id, b"", 0o600), Ok(()));
+        assert!(read_node(&mut storage, file.id).unwrap().writable());
+        // 目录 mode 决定创建/删除权限。
+        assert_eq!(chmod(&mut storage, ROOT, b"/tmp", 0o555), Ok(()));
+        assert_eq!(
+            open(&mut storage, ROOT, b"/tmp/q", create),
+            Err(VfsError::Access)
+        );
+        assert_eq!(chmod(&mut storage, ROOT, b"/tmp", 0o777), Ok(()));
+        assert_eq!(
+            open(&mut storage, ROOT, b"/tmp/q", create).unwrap().id,
+            file.id + 1
+        );
+        // 非法 mode/缺失路径确定失败。
+        assert_eq!(
+            chmod(&mut storage, ROOT, b"/tmp/p", 0o10000),
+            Err(VfsError::Invalid)
+        );
+        assert_eq!(
+            chmod(&mut storage, ROOT, b"/tmp/none", 0o666),
+            Err(VfsError::NoEnt)
+        );
+        let _ = write(&mut storage, file.id, &mut file.node, 0, b"");
     }
 
     #[test]

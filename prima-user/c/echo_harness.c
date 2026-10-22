@@ -11,8 +11,9 @@ long __syscall4(long number, long a0, long a1, long a2, long a3);
 
 int prima_echo_harness(void) {
     for (int i = 0; i < 2; i++) {
+        /* M13b：mode 不再是“被忽略的参数”；用 0600 保证第二次 open 仍有写权限。 */
         long fd = __syscall4(PRIMA_LINUX_SYS_openat, PRIMA_AT_FDCWD, (long)"f",
-                             PRIMA_O_RDWR | PRIMA_O_CREAT | PRIMA_O_TRUNC, 0);
+                             PRIMA_O_RDWR | PRIMA_O_CREAT | PRIMA_O_TRUNC, 0600);
         if (fd < 3)
             return 1 + i * 2;
         if (__syscall3(PRIMA_LINUX_SYS_close, fd, 0, 0) != 0)

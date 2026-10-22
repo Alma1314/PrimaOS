@@ -45,6 +45,7 @@
 - [M11 文件树变更设计](specs/2026-10-22-stage5-m11-file-mutation-design.md)
 - [M12 C 启动/退出设计](specs/2026-10-22-stage5-m12-c-startup-exit-design.md)
 - [M13a 符号链接/rename 设计](specs/2026-10-22-stage5-m13a-vfs-links-design.md)
+- [M13b 权限/stdio 设计](specs/2026-10-22-stage5-m13b-permissions-stdio-design.md)
 - [阶段 5 收尾与阶段 6 入口路线图](plans/2026-10-22-stage5-completion-roadmap.md)
 - [阶段 5 修订计划](plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](plans/2026-10-18-musl-port-plan.md)
@@ -59,6 +60,7 @@
 - [M11 文件树变更](reports/2026-10-22-stage5-m11-file-mutation.md)
 - [M12 C 启动栈与退出清理](reports/2026-10-22-stage5-m12-c-startup.md)
 - [M13a 符号链接/rename/fchdir](reports/2026-10-22-stage5-m13a-vfs-links.md)
+- [M13b 权限位/umask/stdio](reports/2026-10-22-stage5-m13b-permissions-stdio.md)
 
 ## 文档约定
 

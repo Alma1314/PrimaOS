@@ -111,6 +111,8 @@ enum Stage5Program<'a> {
     Mut,
     /// M13a：符号链接/readlink/rename/fchdir 探针。
     Vfs2,
+    /// M13b：chmod/fchmod/umask 与 stdio 文件 API 探针。
+    Vfs3,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -159,6 +161,11 @@ pub(crate) fn build_images_for_mut() -> Result<Images, String> {
 /// M13a：用符号链接/rename/fchdir 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_vfs2() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Vfs2)
+}
+
+/// M13b：用 chmod/umask/stdio 探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_vfs3() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Vfs3)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -295,6 +302,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_vfs2.c")],
             "stage5 vfs2 probe",
         ),
+        Stage5Program::Vfs3 => (
+            path.with_file_name("stage5-vfs3.elf"),
+            vec![c_dir.join("stage5_vfs3.c")],
+            "stage5 vfs3 probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -423,6 +435,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Mem => Some((&["stage5-mem"], &[])),
         Stage5Program::Mut => Some((&["stage5-mut"], &[])),
         Stage5Program::Vfs2 => Some((&["stage5-vfs2"], &[])),
+        Stage5Program::Vfs3 => Some((&["stage5-vfs3"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -913,6 +926,47 @@ pub(crate) fn check_stage5_linux_vfs2() -> Result<(), String> {
     Ok(())
 }
 
+/// M13b：chmod/fchmod/umask 与 stdio 文件 API 的 Linux 参考运行（同一源码）。
+pub(crate) fn check_stage5_linux_vfs3() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_vfs3.c");
+    let binary = workspace.join("target/prima-os/vfs3-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 vfs3: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 vfs3 probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/vfs3-linux-run");
+    prepare_stage5_reference_tree(&run_dir)?;
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 vfs3 probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != VFS3_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 vfs3 mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(VFS3_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 chmod/umask/stdio references");
+    Ok(())
+}
+
 /// M8/M9：布置与 Prima rootfs 同形的宿主参考树，权限也按冻结的 mode 设置：
 /// 文件 0444、`f` 0666、目录 0555、`tmp` 0777。`/dev/null` 只在 Prima 侧存在。
 fn prepare_stage5_reference_tree(run_dir: &Path) -> Result<(), String> {
@@ -978,6 +1032,10 @@ pub(crate) const MUT_EXPECTED_STDOUT: &[u8] = b"MUT|ok=1;mkdir=1;exists=1;stat_d
 
 /// M13a 冻结的符号链接/rename/fchdir 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlink=1;dir=1;subtree=1;nonempty=1;fchdir=1;ro=1;loop=1;type=1;trunc=1;missing=1|ok=1;err=0\n";
+
+/// M13b 冻结的 chmod/fchmod/umask/stdio 探针输出（Linux 与 Prima 逐字节相同）。
+pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
+    b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {

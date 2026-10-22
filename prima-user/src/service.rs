@@ -37,7 +37,8 @@ use prima_runtime::{
         SERVICE_FILE_SEEK_WHENCE_SHIFT, SERVICE_FILE_SIZE_OFFSET, SERVICE_FILE_WRITE_COUNT_SHIFT,
         SERVICE_MARKER_MASK, SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
         SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT,
-        SERVICE_SERVE_TAG, SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_COMMIT_TAG,
+        SERVICE_SERVE_TAG, SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_CHMOD_MODE_MASK,
+        SERVICE_VFS_CHMOD_MODE_SHIFT, SERVICE_VFS_CHMOD_TAG, SERVICE_VFS_COMMIT_TAG,
         SERVICE_VFS_FIRST_BYTES_MASK, SERVICE_VFS_FLAG_APPEND, SERVICE_VFS_FLAG_CREATE,
         SERVICE_VFS_FLAG_DIRECTORY, SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_STAT,
         SERVICE_VFS_FLAG_TRUNC, SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT,
@@ -79,6 +80,8 @@ const SERVICE_VFS_BASE: u64 = SERVICE_FILE_SIZE_OFFSET;
 const STAGED_MKDIR: u8 = SERVICE_VFS_OP_MKDIR as u8 + 1;
 const STAGED_UNLINK: u8 = SERVICE_VFS_OP_UNLINK as u8 + 1;
 const STAGED_RMDIR: u8 = SERVICE_VFS_OP_RMDIR as u8 + 1;
+/// M13b：chmod/fchmod 的单路径暂存（0..3 已分配）。
+const STAGED_CHMOD: u8 = 4;
 /// M8：文件/目录服务端句柄的编号起点。
 const SERVICE_FILE_FIRST_FD: u64 = 3;
 
@@ -234,7 +237,7 @@ pub fn run(
             // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
             let reply = if vfs_ready {
                 if staged.op != 0 {
-                    mutate_staged(&runtime, &mut staged, &mut files)
+                    mutate_staged(&runtime, &mut staged, &mut files, message.payload)
                 } else if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
                     stat_staged(&runtime, &mut staged)
                 } else {
@@ -252,6 +255,17 @@ pub fn run(
                 | (client << SERVICE_VFS_STATUS_CLIENT_SHIFT)
                 | (open & SERVICE_VFS_STATUS_COUNT_MASK);
             let _ = runtime.send(peer, send_cap, reply, &[]);
+        } else if tag == SERVICE_VFS_CHMOD_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M13b：chmod/fchmod 的路径暂存；mode 在 COMMIT 消息里携带。
+            let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
+            let start = ((message.payload >> SERVICE_VFS_START_SHIFT) & 0xff) as u8;
+            let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
+            if vfs_ready {
+                pair.active = false;
+                let _ = staged.begin_chmod(len, start, first);
+            } else {
+                staged.active = false;
+            }
         } else if tag == SERVICE_VFS_MUTATE_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M11：mkdir/unlink/rmdir 复用 OPEN/PATH/COMMIT 的分段路径传输。
             let op = ((message.payload >> SERVICE_VFS_MUTATE_OP_SHIFT) & SERVICE_VFS_MUTATE_OP_MASK)
@@ -356,7 +370,7 @@ impl FileHandle {
 #[derive(Clone, Copy)]
 struct OpenStaging {
     active: bool,
-    /// 0 = open/stat；1 = mkdir；2 = unlink；3 = rmdir（M11）。
+    /// 0 = open/stat；1 = mkdir；2 = unlink；3 = rmdir（M11）；4 = chmod（M13b）。
     op: u8,
     flags: u8,
     len: u8,
@@ -397,6 +411,26 @@ impl OpenStaging {
     }
 
     /// M11：开始一次单路径变更（mkdir/unlink/rmdir）；空路径一律拒绝。
+    /// M13b：开始一次 chmod/fchmod；空路径合法（改 `start` 节点），故不复用
+    /// `begin` 的“非 stat 必须非空路径”检查。
+    fn begin_chmod(&mut self, len: usize, start: u8, first: u64) -> u64 {
+        if len > SERVICE_VFS_PATH_MAX {
+            self.active = false;
+            return SERVICE_FILE_EINVAL;
+        }
+        self.active = true;
+        self.op = STAGED_CHMOD;
+        self.flags = 0;
+        self.len = len as u8;
+        self.got = len.min(3) as u8;
+        self.start = start;
+        self.path = [0u8; SERVICE_VFS_PATH_MAX];
+        for index in 0..self.got as usize {
+            self.path[index] = ((first >> (8 * index)) & 0xff) as u8;
+        }
+        0
+    }
+
     fn begin_mutate(&mut self, op: u8, len: usize, start: u8, first: u64) -> u64 {
         if len == 0 || len > SERVICE_VFS_PATH_MAX {
             self.active = false;
@@ -540,6 +574,7 @@ fn mutate_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     staged: &mut OpenStaging,
     files: &mut [FileHandle; SERVICE_FILE_HANDLES],
+    commit: u64,
 ) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
     if !staged.active || staged.got != staged.len {
@@ -552,6 +587,13 @@ fn mutate_staged<T: SyscallTransport>(
     staged.active = false;
     let mut storage = SegmentStorage { runtime };
     let path = &staged.path[..len];
+    if op == STAGED_CHMOD {
+        let mode = (commit >> SERVICE_VFS_CHMOD_MODE_SHIFT) & SERVICE_VFS_CHMOD_MODE_MASK;
+        return match vfs::chmod(&mut storage, start, path, mode as u16) {
+            Ok(()) => reply(0),
+            Err(error) => reply(vfs_status(error)),
+        };
+    }
     match op {
         STAGED_MKDIR => match vfs::mkdir(&mut storage, start, path) {
             Ok(_) => reply(0),
@@ -613,7 +655,7 @@ fn open_staged<T: SyscallTransport>(
             opened.id as u64,
             opened.node.kind.as_raw() as u64,
             opened.node.size as u64,
-            opened.node.writable,
+            opened.node.mode,
         ),
     )
 }
@@ -649,7 +691,7 @@ fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStagi
             id as u64,
             node.kind.as_raw() as u64,
             node.size as u64,
-            node.writable,
+            node.mode,
         ),
     )
 }

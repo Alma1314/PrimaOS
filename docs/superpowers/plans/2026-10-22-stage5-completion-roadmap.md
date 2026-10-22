@@ -76,13 +76,13 @@
 |---|---:|---|
 | `MAX_TASKS` | 18 | 内核任务槽 |
 | `MAX_CAPABILITY_SLOTS` | 160 | Capability 槽 |
-| `MAX_AUDIT_EVENTS` | 8192 | 审计环形容量（M12b 清理查询后实测 `audit_used=1322`） |
+| `MAX_AUDIT_EVENTS` | 8192 | 审计环形容量（M13b 创建后 chmod 请求实测 `audit_used=1346`） |
 | `SHARED_RECORDS` | 16 | 共享 trace 记录数（M12b 15→16，清理记录置末） |
 | `MAX_SEGMENT_FRAMES` | 149 | 单 Segment 帧上限（M12b 实测扩容：管理器 26 页，log/ns/store 各 21 页，`ls` 映像合计 149 页） |
 | `MAX_VSPACE_ENTRIES` | 384 | 逻辑 vspace 条目 |
 | `MAX_MESSAGES` | 32 | IPC 队列 |
 | `MAX_TIMERS` | 8 | Timer 对象 |
-| `MAX_NODES`（VFS） | 32 | 用户态 rootfs 节点（M13a 16→32，内容区 3048 B） |
+| `MAX_NODES`（VFS） | 32 | 用户态 rootfs 节点（M13a 16→32；M13b 节点 36 B，内容区 2920 B） |
 | `MAX_NAME`/`MAX_PATH`/`MAX_COMPONENTS` | 16/64/6 | 用户态 VFS 路径边界（M13a 未变） |
 | 用户态 crate `opt-level` | 1 | `prima-user`/`prima-runtime`（M13a 容量缓解；内核不变） |
 | `SERVICE_FILE_HANDLES` | 8 | 存储服务并发句柄 |

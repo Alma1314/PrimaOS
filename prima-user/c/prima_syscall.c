@@ -435,7 +435,13 @@ static long prima_vfs_call(uint64_t payload);
 static long prima_absolute_path(long dirfd, const char *path, char *out,
                                 unsigned long *out_len);
 static long prima_reply_status(uint64_t reply);
+static long prima_chmod_path(long dirfd, const char *path, long mode);
+static long prima_vfs_chmod_request(unsigned char start, const char *path,
+                                    unsigned long len, unsigned short mode);
 static void prima_dir_reset(unsigned char handle);
+
+/* M13b：单用户权限模型的进程级 umask（默认 022）。 */
+static long prima_umask_value = 022;
 
 struct prima_fd_entry {
     unsigned char kind;
@@ -631,7 +637,7 @@ static char prima_cwd[PRIMA_VFS_PATH_MAX + 1] = "/";
 struct prima_stat_meta {
     unsigned char node;
     unsigned char kind;
-    unsigned char writable;
+    unsigned short mode;
     unsigned short size;
 };
 
@@ -856,10 +862,10 @@ static long prima_stat_fetch(unsigned char start, const char *path,
     out->node = (unsigned char)(reply & PRIMA_VFS_REPLY_NODE_MASK);
     out->kind = (unsigned char)((reply >> PRIMA_VFS_REPLY_KIND_SHIFT) &
                                 PRIMA_VFS_REPLY_KIND_MASK);
-    out->writable =
-        (unsigned char)((reply >> PRIMA_VFS_REPLY_WRITABLE_SHIFT) & 1);
+    out->mode =
+        (unsigned short)((reply >> PRIMA_VFS_REPLY_MODE_SHIFT) & PRIMA_VFS_REPLY_MODE_MASK);
     out->size =
-        (unsigned short)((reply >> PRIMA_VFS_REPLY_SIZE_SHIFT) & 0xffff);
+        (unsigned short)((reply >> PRIMA_VFS_REPLY_SIZE_SHIFT) & PRIMA_VFS_REPLY_SIZE_MASK);
     return 0;
 }
 
@@ -935,6 +941,14 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
         if (prima_absolute_path(dirfd, path, absolute, &absolute_len) == 0)
             prima_fd_path_set(local, absolute);
     }
+    if (local >= 0 && (flags & PRIMA_O_CREAT) != 0) {
+        // M13b：VFS 新建文件默认 0666；适配层按 umask 收紧（无 uid/gid 模型）。
+        char absolute[PRIMA_VFS_PATH_MAX + 1];
+        unsigned long absolute_len = 0;
+        if (prima_absolute_path(dirfd, path, absolute, &absolute_len) == 0)
+            (void)prima_vfs_chmod_request(0, absolute, absolute_len,
+                                          (unsigned short)(mode & ~prima_umask_value));
+    }
     if (local < 0) {
         (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
         prima_file_refs[handle - PRIMA_FILE_FIRST_FD] = 0;
@@ -1001,8 +1015,11 @@ static long prima_mutate_path(long dirfd, const char *path, unsigned char op) {
 }
 
 static long prima_mkdirat(long dirfd, const char *path, long mode) {
-    (void)mode; /* 首版 VFS 无权限位：新建目录统一 0777/可写。 */
-    return prima_mutate_path(dirfd, path, PRIMA_VFS_OP_MKDIR);
+    long status = prima_mutate_path(dirfd, path, PRIMA_VFS_OP_MKDIR);
+    if (status != 0)
+        return status;
+    // M13b：VFS 新建目录默认 0777；适配层按 umask 收紧。
+    return prima_chmod_path(dirfd, path, mode & ~prima_umask_value);
 }
 
 static long prima_unlinkat(long dirfd, const char *path, long flags) {
@@ -1046,17 +1063,21 @@ _Static_assert(sizeof(struct prima_statx) == 256, "statx ABI size");
 #define PRIMA_S_IFDIR 0040000
 #define PRIMA_S_IFREG 0100000
 #define PRIMA_S_IFCHR 0020000
+#define PRIMA_S_IFLNK 0120000
 #define PRIMA_STATX_BASIC_STATS 0x7ff
 
 static void prima_fill_statx(struct prima_statx *stx,
                              const struct prima_stat_meta *meta) {
-    uint16_t mode;
+    uint16_t ifmt;
     if (meta->kind == PRIMA_VFS_KIND_DIR)
-        mode = (uint16_t)(PRIMA_S_IFDIR | (meta->writable ? 0777 : 0555));
+        ifmt = PRIMA_S_IFDIR;
     else if (meta->kind == PRIMA_VFS_KIND_NULL)
-        mode = (uint16_t)(PRIMA_S_IFCHR | 0666);
+        ifmt = PRIMA_S_IFCHR;
+    else if (meta->kind == PRIMA_VFS_KIND_SYMLINK)
+        ifmt = PRIMA_S_IFLNK;
     else
-        mode = (uint16_t)(PRIMA_S_IFREG | (meta->writable ? 0666 : 0444));
+        ifmt = PRIMA_S_IFREG;
+    uint16_t mode = (uint16_t)(ifmt | (meta->mode & 0777));
     *stx = (struct prima_statx){0};
     stx->stx_mask = PRIMA_STATX_BASIC_STATS;
     stx->stx_blksize = 4096;
@@ -1077,7 +1098,7 @@ static long prima_meta_for(long dirfd, const char *path, long flags,
         if (entry->kind == PRIMA_FD_TTY || entry->kind == PRIMA_FD_NULL) {
             meta->node = entry->node;
             meta->kind = PRIMA_VFS_KIND_NULL;
-            meta->writable = 0;
+            meta->mode = 0666;
             meta->size = 0;
             return 0;
         }
@@ -1146,11 +1167,11 @@ static void prima_fill_kstat(struct prima_kstat *st,
     st->st_ino = (uint64_t)meta->node + 1;
     st->st_nlink = meta->kind == PRIMA_VFS_KIND_DIR ? 2 : 1;
     if (meta->kind == PRIMA_VFS_KIND_DIR)
-        st->st_mode = (uint32_t)(PRIMA_S_IFDIR | (meta->writable ? 0777 : 0555));
+        st->st_mode = (uint32_t)(PRIMA_S_IFDIR | (meta->mode & 0777));
     else if (meta->kind == PRIMA_VFS_KIND_NULL)
-        st->st_mode = (uint32_t)(PRIMA_S_IFCHR | 0666);
+        st->st_mode = (uint32_t)(PRIMA_S_IFCHR | (meta->mode & 0777));
     else
-        st->st_mode = (uint32_t)(PRIMA_S_IFREG | (meta->writable ? 0666 : 0444));
+        st->st_mode = (uint32_t)(PRIMA_S_IFREG | (meta->mode & 0777));
     st->st_size = meta->size;
     st->st_blksize = 4096;
     st->st_blocks = ((int64_t)meta->size + 511) / 512;
@@ -1352,6 +1373,72 @@ static long prima_readlinkat(long dirfd, const char *path, char *buffer,
             break;
     }
     return (long)copied;
+}
+
+/* M13b：chmod 的单路径请求；COMMIT 的 bits 8..16 携带 mode。 */
+static long prima_vfs_chmod_request(unsigned char start, const char *path,
+                                    unsigned long len, unsigned short mode) {
+    uint64_t meta = PRIMA_STAGE5_VFS_CHMOD_TAG |
+                    (((uint64_t)start & 0xff) << PRIMA_VFS_START_SHIFT) |
+                    (((uint64_t)len & 0xff) << PRIMA_VFS_PATH_LEN_SHIFT);
+    for (unsigned long i = 0; i < len && i < 3; i++)
+        meta |= (uint64_t)(unsigned char)path[i] << (8 * i);
+    long sent = prima_vfs_send(meta);
+    if (sent < 0)
+        return sent;
+    for (unsigned long offset = 3; offset < len; offset += 5) {
+        uint64_t chunk = PRIMA_STAGE5_VFS_PATH_TAG |
+                         (((uint64_t)offset & 0xff) << PRIMA_VFS_PATH_OFFSET_SHIFT);
+        for (unsigned long i = 0; i < 5 && offset + i < len; i++)
+            chunk |= (uint64_t)(unsigned char)path[offset + i] << (8 * i);
+        sent = prima_vfs_send(chunk);
+        if (sent < 0)
+            return sent;
+    }
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    uint64_t commit = PRIMA_STAGE5_VFS_COMMIT_TAG |
+                      (((uint64_t)id & 0xff) << PRIMA_VFS_COMMIT_CLIENT_SHIFT) |
+                      (((uint64_t)mode & PRIMA_VFS_CHMOD_MODE_MASK)
+                       << PRIMA_VFS_CHMOD_MODE_SHIFT);
+    long raw = prima_vfs_call(commit);
+    if (raw < 0)
+        return raw;
+    long status = prima_reply_status((uint64_t)raw);
+    return status == 0 ? 0 : -status;
+}
+
+/* chmod/chmodat：路径规范化后交给服务端；跟随符号链接。 */
+static long prima_chmod_path(long dirfd, const char *path, long mode) {
+    if (!path)
+        return -PRIMA_ERRNO_EFAULT;
+    if (path[0] == 0)
+        return -PRIMA_ERRNO_ENOENT;
+    if (mode < 0 || (mode & ~(long)0777) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    char resolved[PRIMA_VFS_PATH_MAX + 1];
+    unsigned long len = 0;
+    long status = prima_absolute_path(dirfd, path, resolved, &len);
+    if (status < 0)
+        return status;
+    return prima_vfs_chmod_request(0, resolved, len, (unsigned short)mode);
+}
+
+static long prima_fchmod(int fd, long mode) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    // tty/null 没有 VFS 节点；node 字段为 0 时不能落到根节点。
+    if (entry->kind != PRIMA_FD_FILE && entry->kind != PRIMA_FD_DIR)
+        return -PRIMA_ERRNO_EBADF;
+    if (mode < 0 || (mode & ~(long)0777) != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    return prima_vfs_chmod_request(entry->node, "", 0, (unsigned short)mode);
+}
+
+static long prima_kernel_umask(long mask) {
+    long previous = prima_umask_value;
+    prima_umask_value = mask & 0777;
+    return previous;
 }
 
 static long prima_handle_read(int handle, void *buf, unsigned long len) {
@@ -1814,6 +1901,25 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         }
         return (long)total;
     }
+    case PRIMA_LINUX_SYS_readv: {
+        // M13b：musl 的 stdio 读走 readv；按 iovec 顺序调用同一 fd 读路径。
+        const struct iovec *iov = (const struct iovec *)a1;
+        long count = a2;
+        if (count <= 0)
+            return -PRIMA_ERRNO_EINVAL;
+        if (!iov)
+            return -PRIMA_ERRNO_EFAULT;
+        unsigned long total = 0;
+        for (long i = 0; i < count; i++) {
+            long got = prima_fd_read((int)a0, iov[i].iov_base, iov[i].iov_len);
+            if (got < 0)
+                return total > 0 ? (long)total : got;
+            total += (unsigned long)got;
+            if ((unsigned long)got < iov[i].iov_len)
+                break;
+        }
+        return (long)total;
+    }
     case PRIMA_LINUX_SYS_close:
         return prima_fd_close((int)a0);
     case PRIMA_LINUX_SYS_read:
@@ -1866,6 +1972,16 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_chdir((const char *)a0);
     case PRIMA_LINUX_SYS_fchdir:
         return prima_fchdir((int)a0);
+    case PRIMA_LINUX_SYS_chmod:
+        return prima_chmod_path(PRIMA_AT_FDCWD, (const char *)a0, a1);
+    case PRIMA_LINUX_SYS_fchmod:
+        return prima_fchmod((int)a0, a1);
+    case PRIMA_LINUX_SYS_fchmodat:
+        if (a3 != 0)
+            return -PRIMA_ERRNO_EINVAL;
+        return prima_chmod_path((long)a0, (const char *)a1, a2);
+    case PRIMA_LINUX_SYS_umask:
+        return prima_kernel_umask(a0);
     case PRIMA_LINUX_SYS_getcwd:
         return prima_getcwd((char *)a0, (unsigned long)a1);
     case PRIMA_LINUX_SYS_rename:
