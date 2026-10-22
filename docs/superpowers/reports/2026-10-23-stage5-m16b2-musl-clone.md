@@ -45,6 +45,16 @@
   使 generation 前进；当前现象说明唤醒没有落到父线程的 futex 表项上，需
   在适配层打印表项地址/cap/word 与 wake 命中情况继续定位。
 - 探针与 W4 接线仍不提交；代码回到 `73e85a9` 的可用状态。
+- **futex 表项追踪**（适配层临时打印 `c/w/W/N` + 地址/低 4 位 + cap）：
+  `N70;create=1;self=1;w2f;` —— 父线程内部锁 wake 无表项（N70），join 在
+  detach_state 上创建表项并等待（w2f）；子线程 `pthread_self()` **等于**
+  父线程的 pthread 句柄（`self=1`，TLS/TCB 正确），随后子线程（id 5）在父
+  线程 join 前已成 `Dead`，但**没有出现 detach_state 的 wake 标记**。
+- 推论：子线程执行了 worker（g_value/self 有值），但退出路径没有走到 musl
+  `__pthread_exit` 的 `a_store(DT_EXITED)+__wake`；最可能是 clone.s 的
+  `call *%r9` 之后走了回退 `exit(60)`（即 `start` 未调用 `__pthread_exit`），
+  或 `__pthread_exit` 在 store 前阻塞。下一步在 musl 的 `start`/
+  `__pthread_exit`/clone.s 回退处加标记，确认实际路径。
 
 ## 4. 分析与下一步
 

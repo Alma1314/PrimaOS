@@ -12,6 +12,7 @@
 struct prima_entry_ctx prima_ctx;
 
 static long prima_futex(int *uaddr, int op, int value, const void *timeout);
+
 static long prima_clone(unsigned long flags, void *stack, int *ptid, int *ctid, unsigned long tls);
 __attribute__((noreturn)) static void prima_thread_exit(void);
 
@@ -2541,7 +2542,7 @@ static struct prima_futex_entry *prima_futex_slot(uint64_t addr) {
             }
             prima_futexes[i].addr = addr;
             prima_futexes[i].cap = cap;
-            prima_futexes[i].generation = (unsigned long)generation;
+                    prima_futexes[i].generation = (unsigned long)generation;
             return &prima_futexes[i];
         }
     }
