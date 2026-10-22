@@ -57,7 +57,15 @@ fork 子进程为 `Process 10`（parent 9、leader task 5），`wait4` 的查找
 `F12094628986632;`），因此子进程走的是父路径（用垃圾 pid 调 wait4，随后
 ECHILD），从未进入子分支的 `SYS_PROCESS_EXIT`。根因指向 fork 子进程从
 **快速 syscall 的保存帧**继续执行时用户上下文（rax/栈）未正确恢复；clone
-路径不受影响（子进程从新入口/新栈开始）。慢路径实验（`int 0x80` 代替 `syscall` 发 fork）结果相同
+路径不受影响（子进程从新入口/新栈开始）。内核侧续执行验证：`fork` 后打印子进程保存帧并在 `resume` 时打印帧内容——
+首个恢复点为 `rip=0xb0000001ec2`（fork 的 syscall 之后、`prima_translate`
+返回路径）、`rax=0`、`rsp` 为父栈；随后恢复点落入
+`prima_fd_write`（父路径的字段输出）。说明**内核保存/恢复的帧是正确的**，
+问题发生在子进程用户态返回路径（栈/返回帧）上：子进程最终以非 0 的
+`pid` 走父路径。下一步聚焦用户态续执行：检查 COW 栈上的返回帧与
+`prima_translate` 的返回约定。
+
+慢路径实验（`int 0x80` 代替 `syscall` 发 fork）结果相同
 （`fork=1;wait=0;status=0;cow=1`），说明问题不在快速入口的保存帧格式；
 子进程仍拿到非 0 的 fork 返回值。下一步：为 fork 建立显式的
 用户态续执行方案（例如保存/恢复完整用户上下文，或用 trampoline 让子进程
