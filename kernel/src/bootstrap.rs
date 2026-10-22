@@ -2862,6 +2862,12 @@ pub struct Process {
     pub creator: u32,
     /// 线程组的能力空间代表（leader Task id）；同组线程共享 holder。
     pub leader: u32,
+    /// M17：能力空间代表（fork 子沿用父的 cap_space；线程组默认 = leader）。
+    pub cap_space: u32,
+    /// M17：父进程（fork 建立；init 为 None）。
+    pub parent: Option<u32>,
+    /// M17：退出状态（wait4 读取；None = 未退出）。
+    pub exit_status: Option<i64>,
     /// 线程位图（task id 1..=MAX_TASKS；紧凑表示以守住 `BootstrapState` 栈预算）。
     pub threads: u32,
     pub thread_count: usize,
@@ -8737,8 +8743,29 @@ impl BootstrapState {
             .find(task_id)
             .and_then(|task| task.process)
             .and_then(|process_id| self.processes.find(process_id))
-            .map(|process| process.leader)
+            .map(|process| process.cap_space)
             .unwrap_or(task_id)
+    }
+
+    /// M17：fork 子进程的能力空间继承父进程（同一 cap_space）。
+    pub fn inherit_cap_space(&mut self, child_process: u32, parent_process: u32) -> bool {
+        let Some(parent_space) = self.processes.find(parent_process).map(|p| p.cap_space) else {
+            return false;
+        };
+        let Some(child) = self.processes.find_mut(child_process) else {
+            return false;
+        };
+        child.cap_space = parent_space;
+        child.parent = Some(parent_process);
+        true
+    }
+
+    pub fn process_parent(&self, process_id: u32) -> Option<u32> {
+        self.processes.find(process_id).and_then(|p| p.parent)
+    }
+
+    pub fn process_exit_status(&self, process_id: u32) -> Option<i64> {
+        self.processes.find(process_id).and_then(|p| p.exit_status)
     }
 
     /// M15b-2b：复用墓碑 id 前撤销所有 target 为该 Task 的 Capability（防句柄复活）。
@@ -8871,6 +8898,9 @@ impl BootstrapState {
                 id,
                 creator,
                 leader: creator,
+                cap_space: creator,
+                parent: None,
+                exit_status: None,
                 threads: 0,
                 thread_count: 0,
                 exit: None,
@@ -10511,6 +10541,22 @@ mod tests {
             state.thread_create(INIT_TASK_ID, 0x1000, 0x2001),
             Err(ThreadError::InvalidStack)
         );
+    }
+
+    #[test]
+    fn fork_cap_space_inheritance_shares_caps() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("wait object");
+        state.tasks.create(2).expect("task 2");
+        let child = state.create_process(2).expect("child");
+        assert!(state.attach_thread(child, 2));
+        assert!(state.inherit_cap_space(child, parent));
+        assert_eq!(state.process_parent(child), Some(parent));
+        assert_eq!(state.space_of(2), state.space_of(INIT_TASK_ID));
+        // M17 工作决定：fork 子沿用父能力空间，父铸造的 cap 可被子授权。
+        assert_eq!(state.authorize(2, cap, Right::WaitSignal), Ok(cap));
     }
 
     #[test]
