@@ -259,9 +259,11 @@ static long prima_mmap_anon(long requested_address, uint64_t length, long prot,
         return access;
     prima_heap_ready();
     (void)prima_arena_acquire();
-    /* 没有 Segment cap 时无法先 R 再补 W；PROT_NONE 直接按 RW 返回（近似）。 */
-    if (prima_arena_cap == 0 && (access & (PRIMA_ACCESS_R | PRIMA_ACCESS_W)) !=
-                                     (PRIMA_ACCESS_R | PRIMA_ACCESS_W))
+    /* 没有 Segment cap 时无法先 R 再补 W；PROT_NONE 直接按 RW 返回（近似）。
+     * musl pthread_create 先用 PROT_NONE 占位再 mprotect：PROT_NONE 也按 RW 映射，
+     * 否则 arena 会拒绝 map 而 pthread_create 返回 EAGAIN。 */
+    if ((access & (PRIMA_ACCESS_R | PRIMA_ACCESS_W)) !=
+        (PRIMA_ACCESS_R | PRIMA_ACCESS_W))
         access = PRIMA_ACCESS_R | PRIMA_ACCESS_W;
 
     unsigned index;
@@ -2231,7 +2233,7 @@ static unsigned long prima_linux_flags_to_prima(unsigned long flags) {
                                   PRIMA_CLONE_SYSVSEM | PRIMA_CLONE_SETTLS |
                                   PRIMA_CLONE_PARENT_SETTID |
                                   PRIMA_CLONE_CHILD_CLEARTID |
-                                  PRIMA_CLONE_CHILD_SETTID;
+                                  PRIMA_CLONE_CHILD_SETTID | PRIMA_CLONE_DETACHED;
     if (flags & ~allowed)
         return 0;
     return flags;
@@ -2253,8 +2255,8 @@ static long prima_clone(unsigned long flags, void *stack, int *ptid, int *ctid,
     if (!prima_flags || !stack || (prima_flags & (PRIMA_CLONE_VM | PRIMA_CLONE_THREAD)) !=
                                       (PRIMA_CLONE_VM | PRIMA_CLONE_THREAD))
         return -PRIMA_ERRNO_EINVAL;
-    long tid = prima_native(PRIMA_SYS_CLONE, (long)prima_flags, (long)stack, (long)tls,
-                            0, 0, 0);
+    long tid = prima_native(PRIMA_SYS_CLONE, (long)prima_flags, (long)stack,
+                            (long)ptid, (long)ctid, (long)tls, 0);
     if (tid <= 0)
         return tid; /* 0 = 子线程；负值 = errno */
     if ((flags & PRIMA_CLONE_PARENT_SETTID) && ptid)
@@ -2487,6 +2489,10 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         for (int i = 0; i < PRIMA_THREAD_SLOTS; i++)
             if (prima_threads[i].tid == id)
                 prima_thread_exit();
+        /* musl 的 clone.s 直接发 Prima 48，适配层的线程表可能没有记录；
+         * SYS_THREAD_EXIT 对非 leader 线程成功且不返回，leader 则回退到
+         * 进程退出。 */
+        (void)prima_native(PRIMA_SYS_THREAD_EXIT, 0, 0, 0, 0, 0, 0);
         prima_exit_group((int)a0);
     }
     case PRIMA_LINUX_SYS_exit_group:

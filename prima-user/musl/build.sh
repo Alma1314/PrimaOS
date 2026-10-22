@@ -13,7 +13,7 @@ work="$root/target/musl-prima"
 build="$root/target/musl-build"
 prefix="$root/target/musl-prefix"
 
-stamp_src="$here/patches/syscall_arch.h $here/patches/__set_thread_area.s"
+stamp_src="$here/patches/syscall_arch.h $here/patches/__set_thread_area.s $here/patches/clone.s"
 stamp=$(
     {
         git -C "$snapshot" rev-parse HEAD 2>/dev/null || echo unknown
@@ -35,6 +35,7 @@ rm -rf "$work" "$build" "$prefix"
 cp -a "$snapshot" "$work"
 cp "$here/patches/syscall_arch.h" "$work/arch/x86_64/syscall_arch.h"
 cp "$here/patches/__set_thread_area.s" "$work/src/thread/x86_64/__set_thread_area.s"
+cp "$here/patches/clone.s" "$work/src/thread/x86_64/clone.s"
 
 mkdir -p "$build"
 cd "$build"

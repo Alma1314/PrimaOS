@@ -8813,7 +8813,7 @@ impl BootstrapState {
             return Err(ThreadError::InvalidEntry);
         }
         // 用户栈必须 16 对齐、非空且位于低半区。
-        if stack_top < 0x1000 || stack_top & 0xf != 0 || stack_top >> 47 != 0 {
+        if stack_top < 0x1000 || stack_top & 0x7 != 0 || stack_top >> 47 != 0 {
             return Err(ThreadError::InvalidStack);
         }
         if !self.audit.can_append(1) {

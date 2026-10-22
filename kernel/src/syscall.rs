@@ -985,8 +985,9 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     }
 }
 
-/// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack）。
-fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
+/// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack），
+/// 参数顺序与 Linux 一致：`flags, stack, parent_tid, child_tid, tls`。
+fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, _child_tid: u64, tls: u64) -> u64 {
     const CLONE_VM: u64 = 0x100;
     const CLONE_FS: u64 = 0x200;
     const CLONE_FILES: u64 = 0x400;
@@ -997,6 +998,8 @@ fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
     const CLONE_PARENT_SETTID: u64 = 0x10_0000;
     const CLONE_CHILD_CLEARTID: u64 = 0x20_0000;
     const CLONE_CHILD_SETTID: u64 = 0x100_0000;
+    // musl 设置已废弃的 CLONE_DETACHED（Linux 忽略）。
+    const CLONE_DETACHED: u64 = 0x40_0000;
     const ALLOWED: u64 = CLONE_VM
         | CLONE_FS
         | CLONE_FILES
@@ -1006,7 +1009,8 @@ fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
         | CLONE_SETTLS
         | CLONE_PARENT_SETTID
         | CLONE_CHILD_CLEARTID
-        | CLONE_CHILD_SETTID;
+        | CLONE_CHILD_SETTID
+        | CLONE_DETACHED;
     if flags & !ALLOWED != 0 || flags & (CLONE_VM | CLONE_THREAD) != (CLONE_VM | CLONE_THREAD) {
         return encode_errno(Errno::Invalid);
     }
@@ -1017,7 +1021,9 @@ fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
     let frame = current_context();
     let thread = match bootstrap::thread_create(caller, frame.rip, stack_top) {
         Ok(thread) => thread,
-        Err(_) => return encode_errno(Errno::NoSpace),
+        Err(_) => {
+            return encode_errno(Errno::NoSpace);
+        }
     };
     let fs_base = if flags & CLONE_SETTLS != 0 {
         tls
@@ -1027,6 +1033,12 @@ fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
     if crate::user::register_clone_task(thread, root, frame, stack_top, fs_base).is_err() {
         bootstrap::thread_abort(thread);
         return encode_errno(Errno::Invalid);
+    }
+    // Linux CLONE_PARENT_SETTID：父线程在返回前写入子 tid。
+    if parent_tid != 0 {
+        for (index, byte) in thread.to_le_bytes().iter().enumerate() {
+            prima_ostd::mm::write_u8_at(parent_tid, index as u64, *byte);
+        }
     }
     thread as u64
 }
@@ -2547,7 +2559,7 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
     } else if num == SYS_CLONE {
-        clone_call(args[0], args[1], args[2])
+        clone_call(args[0], args[1], args[2], args[3], args[4])
     } else if num == SYS_THREAD_CREATE {
         thread_create_call(args[0], args[1], args[2])
     } else if num == SYS_THREAD_EXIT {
