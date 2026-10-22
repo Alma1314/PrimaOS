@@ -2826,6 +2826,8 @@ pub const MAX_PROCESSES: usize = MAX_TASKS;
 pub struct Process {
     pub id: u32,
     pub creator: u32,
+    /// 线程组的能力空间代表（leader Task id）；同组线程共享 holder。
+    pub leader: u32,
     /// 线程位图（task id 1..=MAX_TASKS；紧凑表示以守住 `BootstrapState` 栈预算）。
     pub threads: u32,
     pub thread_count: usize,
@@ -2998,6 +3000,16 @@ impl WaitWake {
 pub struct SignalOutcome {
     pub generation: u64,
     pub wakes: WaitWake,
+}
+
+/// M15b-2：线程创建的失败名。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadError {
+    InvalidCaller,
+    InvalidEntry,
+    InvalidStack,
+    CapacityExceeded,
+    AuditFull,
 }
 
 /// COSIR §21.1/§21.2 的失败名。
@@ -3879,7 +3891,7 @@ impl BootstrapState {
             return Err(AuditError::InvalidCap);
         }
         let target = self.target_of(cap).ok_or(AuditError::InvalidCap)?;
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(AuditError::NotHeld);
         }
         let mut trace = AuditTrace {
@@ -4219,7 +4231,7 @@ impl BootstrapState {
         if !self.target_live(target) {
             return Err(AuthError::TargetDead);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(AuthError::NotHolder);
         }
         let rights = self.rights_of(cap).ok_or(AuthError::NoSuchCapability)?;
@@ -4248,7 +4260,7 @@ impl BootstrapState {
             SlotState::Stale => return Err(DropError::StaleHandle),
             SlotState::Live => {}
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(DropError::NotHolder);
         }
         let structural = self
@@ -4282,6 +4294,7 @@ impl BootstrapState {
         rights: Rights,
         target: ObjectRef,
     ) -> Result<Handle, DeriveError> {
+        let holder = self.space_of(holder);
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
         }
@@ -4790,7 +4803,7 @@ impl BootstrapState {
             SlotState::Stale => return Err(DeriveError::StaleHandle),
             SlotState::Live => {}
         }
-        if self.holder_of(parent) != Some(caller) {
+        if self.holder_of(parent) != Some(self.space_of(caller)) {
             return Err(DeriveError::ParentNotHeld);
         }
         let target = self.target_of(parent).ok_or(DeriveError::NoSuchParent)?;
@@ -4881,7 +4894,7 @@ impl BootstrapState {
             SlotState::Stale => return Err(DeriveError::StaleHandle),
             SlotState::Live => {}
         }
-        if self.holder_of(parent) != Some(caller) {
+        if self.holder_of(parent) != Some(self.space_of(caller)) {
             return Err(DeriveError::ParentNotHeld);
         }
         let target = self.target_of(parent).ok_or(DeriveError::NoSuchParent)?;
@@ -4965,7 +4978,7 @@ impl BootstrapState {
         if !self.target_live(target) {
             return Err(NsError::InvalidNamespace);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(NsError::NotHeld);
         }
         let rights = self.rights_of(cap).ok_or(NsError::InvalidCap)?;
@@ -5170,7 +5183,7 @@ impl BootstrapState {
         if !self.target_live(target) {
             return Err(NsError::TargetDead);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(NsError::NotHeld);
         }
         if self.is_structural_root_ns_cap(cap) {
@@ -5673,7 +5686,7 @@ impl BootstrapState {
         if self.devices.find(id).is_none() {
             return Err(DeviceError::DeadDevice);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(DeviceError::NotHeld);
         }
         let rights = self.rights_of(cap).ok_or(DeviceError::InvalidCap)?;
@@ -5773,7 +5786,7 @@ impl BootstrapState {
         if self.timers.find(id).is_none() {
             return Err(TimerError::InvalidTimer);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(TimerError::NotHeld);
         }
         let rights = self.rights_of(cap).ok_or(TimerError::InvalidCap)?;
@@ -6120,7 +6133,7 @@ impl BootstrapState {
             SlotState::Stale => return Err(CapabilityPositionError::StaleHandle),
             SlotState::Live => {}
         }
-        if self.holder_of(cap) != Some(holder) {
+        if self.holder_of(cap) != Some(self.space_of(holder)) {
             return Err(CapabilityPositionError::HolderMismatch);
         }
         // W5：结构性根 Namespace Capability 不得被直接撤销/丢弃。
@@ -6159,6 +6172,9 @@ impl BootstrapState {
         if !self.tasks.is_live(to_task) {
             return Err(CapabilityPositionError::InvalidHolder);
         }
+        // M15b-2：holder 以能力空间（Process leader）表示；单线程 Task 退化为自身 id。
+        let from_task = self.space_of(from_task);
+        let to_task = self.space_of(to_task);
         if !self.audit.can_append(1) {
             return Err(CapabilityPositionError::AuditFull);
         }
@@ -6415,7 +6431,9 @@ impl BootstrapState {
             {
                 return Err(TaskCreateError::StructuralCap);
             }
-            if self.slots.check(cap) != SlotState::Live || self.holder_of(cap) != Some(caller) {
+            if self.slots.check(cap) != SlotState::Live
+                || self.holder_of(cap) != Some(self.space_of(caller))
+            {
                 return Err(TaskCreateError::InvalidInitialCap);
             }
             if self
@@ -6581,8 +6599,8 @@ impl BootstrapState {
                 return Err(TaskCreateError::CapacityExceeded);
             }
         }
-        // ---- 成功动作 8：TaskCreated（M15b：新 Task 建立单线程 Process） ----
-        if let Some(process) = self.create_process(caller) {
+        // ---- 成功动作 8：TaskCreated（M15b：新 Task 建立单线程 Process，leader 为新 Task） ----
+        if let Some(process) = self.create_process(new_id) {
             self.attach_thread(process, new_id);
         }
         self.audit
@@ -6922,7 +6940,7 @@ impl BootstrapState {
                 SlotState::Live => {}
                 SlotState::Free | SlotState::Stale => return Err(IpcError::InvalidCapability),
             }
-            if self.holder_of(cap) != Some(sender) {
+            if self.holder_of(cap) != Some(self.space_of(sender)) {
                 return Err(IpcError::CapabilityHolderMismatch);
             }
             // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
@@ -8679,6 +8697,77 @@ pub fn time_now() -> Option<Instant> {
 }
 
 impl BootstrapState {
+    /// M15b-2：Task 的能力空间代表（同 Process 的线程共享 leader 的 holder）。
+    pub fn space_of(&self, task_id: u32) -> u32 {
+        self.tasks
+            .find(task_id)
+            .and_then(|task| task.process)
+            .and_then(|process_id| self.processes.find(process_id))
+            .map(|process| process.leader)
+            .unwrap_or(task_id)
+    }
+
+    /// M15b-2：用户态线程创建（共享调用者的 Process/能力空间/地址空间）。
+    pub fn thread_create(
+        &mut self,
+        caller: u32,
+        entry: u64,
+        stack_top: u64,
+    ) -> Result<u32, ThreadError> {
+        if !self.tasks.is_live(caller) {
+            return Err(ThreadError::InvalidCaller);
+        }
+        if entry == 0 {
+            return Err(ThreadError::InvalidEntry);
+        }
+        // 用户栈必须 16 对齐、非空且位于低半区。
+        if stack_top < 0x1000 || stack_top & 0xf != 0 || stack_top >> 47 != 0 {
+            return Err(ThreadError::InvalidStack);
+        }
+        if !self.audit.can_append(1) {
+            return Err(ThreadError::AuditFull);
+        }
+        let new_id = self
+            .tasks
+            .next_free_id()
+            .ok_or(ThreadError::CapacityExceeded)?;
+        let process = match self.process_of(caller) {
+            Some(process) => process,
+            None => {
+                let process = self
+                    .create_process(caller)
+                    .ok_or(ThreadError::CapacityExceeded)?;
+                let _ = self.attach_thread(process, caller);
+                process
+            }
+        };
+        if self.tasks.create_with_entry(new_id, entry).is_err() {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        if let Some(task) = self.tasks.find_mut(new_id) {
+            task.creator = caller;
+        }
+        if !self.attach_thread(process, new_id) {
+            let _ = self.tasks.remove(new_id);
+            return Err(ThreadError::CapacityExceeded);
+        }
+        self.audit
+            .append(AuditEvent::TaskCreated { task_id: new_id });
+        Ok(new_id)
+    }
+
+    /// M15b-2：为新线程铸造自毁用的 Task cap（落在 Process 能力空间）。
+    pub fn mint_thread_self_cap(&mut self, thread: u32) -> Result<Handle, ThreadError> {
+        self.mint_root_capability(thread, MANAGER_TASK_RIGHTS, ObjectRef::Task(thread))
+            .map_err(|_| ThreadError::CapacityExceeded)
+    }
+
+    /// M15b-2：线程创建失败回滚（移除 Task 与 Process 归属）。
+    pub fn thread_abort(&mut self, thread: u32) {
+        let _ = self.tasks.remove(thread);
+        self.detach_thread(thread);
+    }
+
     /// M15b：建立一个 Process（内部 API；用户态线程创建在后续切片接线）。
     pub fn create_process(&mut self, creator: u32) -> Option<u32> {
         let id = self.processes.next_id();
@@ -8686,6 +8775,7 @@ impl BootstrapState {
             .insert(Process {
                 id,
                 creator,
+                leader: creator,
                 threads: 0,
                 thread_count: 0,
                 exit: None,
@@ -8768,7 +8858,7 @@ impl BootstrapState {
         if self.wait_objects.find(id).is_none() {
             return Err(WaitError::TargetDead);
         }
-        if self.holder_of(cap) != Some(caller) {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(WaitError::NotHeld);
         }
         let rights = self.rights_of(cap).ok_or(WaitError::InvalidCap)?;
@@ -9101,6 +9191,29 @@ impl BootstrapState {
 }
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
+/// M15b-2：全局线程创建。
+pub fn thread_create(caller: u32, entry: u64, stack_top: u64) -> Result<u32, ThreadError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.thread_create(caller, entry, stack_top),
+        None => Err(ThreadError::InvalidCaller),
+    })
+}
+
+pub fn mint_thread_self_cap(thread: u32) -> Result<Handle, ThreadError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.mint_thread_self_cap(thread),
+        None => Err(ThreadError::InvalidCaller),
+    })
+}
+
+pub fn thread_abort(thread: u32) {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        if let Some(state) = slot.as_mut() {
+            state.thread_abort(thread);
+        }
+    });
+}
+
 pub fn wait_object_create(caller: u32) -> Result<Handle, WaitError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.wait_object_create(caller),
@@ -9597,9 +9710,9 @@ mod tests {
         RECLAIM_NEGATIVE_TASK_ID, RECLAIM_WITNESS_TASK_ID, SEGMENT_ROOT_RIGHTS,
         SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject,
         TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
-        TaskError, TaskKind, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
-        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, WaitError,
-        WaitOutcome, WaitResultCode, create_snapshot, create_state, entry_in_image,
+        TaskError, TaskKind, TaskStatus, ThreadError, TimerCancelOutcome, TimerCancelReason,
+        TimerError, TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry,
+        WaitError, WaitOutcome, WaitResultCode, create_snapshot, create_state, entry_in_image,
         platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
@@ -10222,6 +10335,32 @@ mod tests {
         state.detach_thread(INIT_TASK_ID);
         assert_eq!(state.process_of(INIT_TASK_ID), None);
         assert!(state.processes.find(process).is_none());
+    }
+
+    #[test]
+    fn thread_create_shares_process_and_capability_space() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("wait object");
+        let thread = state
+            .thread_create(INIT_TASK_ID, 0x1000, 0x2000)
+            .expect("thread");
+        assert_eq!(state.process_of(thread), state.process_of(INIT_TASK_ID));
+        assert_eq!(
+            state.process_threads(state.process_of(thread).expect("process")),
+            2
+        );
+        assert_eq!(state.space_of(thread), INIT_TASK_ID);
+        // 线程与 leader 共享能力空间：leader 铸造的 cap 可被线程授权。
+        assert_eq!(state.authorize(thread, cap, Right::WaitSignal), Ok(cap));
+        // 非法入口/栈。
+        assert_eq!(
+            state.thread_create(INIT_TASK_ID, 0, 0x2000),
+            Err(ThreadError::InvalidEntry)
+        );
+        assert_eq!(
+            state.thread_create(INIT_TASK_ID, 0x1000, 0x2001),
+            Err(ThreadError::InvalidStack)
+        );
     }
 
     #[test]

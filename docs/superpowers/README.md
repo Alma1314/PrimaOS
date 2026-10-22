@@ -69,6 +69,7 @@
 - [M15a-1 WaitObject](reports/2026-10-23-stage5-m15a-waitobject.md)
 - [M15a-2 WaitObject 阻塞](reports/2026-10-23-stage5-m15a2-waitobject-blocking.md)
 - [M15b-1 Process/Thread 元数据](reports/2026-10-23-stage5-m15b1-process-metadata.md)
+- [M15b-2a 共享能力空间线程](reports/2026-10-23-stage5-m15b2a-thread-create.md)
 
 ## 文档约定
 

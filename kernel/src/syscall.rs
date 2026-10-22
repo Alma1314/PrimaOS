@@ -44,9 +44,9 @@ pub use prima_abi::syscall::{
     SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE,
     SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
     SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
-    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE,
-    SYS_WAIT_SIGNAL, SYS_YIELD,
+    SYS_THREAD_CREATE, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL,
+    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY,
+    SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -983,6 +983,36 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
         sched::set_frame_rax(*task, result.code());
     }
+}
+
+fn thread_create_call(entry: u64, stack_top: u64, tls: u64) -> u64 {
+    let caller = sched::current();
+    let Some(root) = sched::root(caller) else {
+        return encode_errno(Errno::Fault);
+    };
+    let thread = match bootstrap::thread_create(caller, entry, stack_top) {
+        Ok(thread) => thread,
+        Err(_) => return encode_errno(Errno::NoSpace),
+    };
+    let self_cap = match bootstrap::mint_thread_self_cap(thread) {
+        Ok(cap) => cap,
+        Err(_) => {
+            bootstrap::thread_abort(thread);
+            return encode_errno(Errno::NoSpace);
+        }
+    };
+    let fs_base = if tls == 0 {
+        sched::fs_base(caller).unwrap_or(0)
+    } else {
+        tls
+    };
+    if crate::user::register_thread_task(thread, root, entry, stack_top, self_cap.encode(), fs_base)
+        .is_err()
+    {
+        bootstrap::thread_abort(thread);
+        return encode_errno(Errno::Invalid);
+    }
+    thread as u64
 }
 
 fn wait_create_call() -> u64 {
@@ -2452,6 +2482,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_THREAD_CREATE {
+        thread_create_call(args[0], args[1], args[2])
     } else if num == SYS_WAIT_CREATE {
         wait_create_call()
     } else if num == SYS_WAIT_OBSERVE {

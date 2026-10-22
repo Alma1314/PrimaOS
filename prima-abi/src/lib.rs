@@ -209,6 +209,10 @@ pub mod syscall {
     pub const SYS_WAIT_SIGNAL: u64 = 45;
     /// M15：`wait_object_destroy(cap)`（COSIR §21.1.3）。
     pub const SYS_WAIT_DESTROY: u64 = 46;
+    /// M15b-2：`thread_create(entry, stack_top, tls) -> thread_task_id`。
+    ///
+    /// 共享调用者 Process 的地址空间与能力空间；`tls=0` 时继承调用者 FS base。
+    pub const SYS_THREAD_CREATE: u64 = 47;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.
