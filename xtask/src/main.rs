@@ -167,6 +167,23 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios N1 run={run}");
     }
+    // M14：fd 0 tty 输入（canonical/raw/EOF），marker 驱动串口输入，各跑两轮。
+    image::check_stage5_linux_ttyin()?;
+    let images = image::build_images_for_ttyin()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_input(
+                &images.bios,
+                "I1",
+                image::TTYIN_EXPECTED_STDOUT,
+                ipc_baseline,
+                &[("TTYREADY", b"hi\n"), ("TTYRAW", b"xy"), ("TTYEOF", &[4u8])],
+            )
+            .map_err(|error| format!("BIOS I1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios I1 run={run}");
+    }
     // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
     image::check_stage5_linux_meta()?;
     let images = image::build_images_for_meta()?;

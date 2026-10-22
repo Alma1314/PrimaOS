@@ -27,6 +27,7 @@
 - [M13a 符号链接/rename 设计](superpowers/specs/2026-10-22-stage5-m13a-vfs-links-design.md)
 - [M13b 权限/stdio 设计](superpowers/specs/2026-10-22-stage5-m13b-permissions-stdio-design.md)
 - [M19 loopback UDP 设计](superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md)
+- [M14 tty 输入设计](superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md)
 - [阶段 5 收尾与阶段 6 入口路线图](superpowers/plans/2026-10-22-stage5-completion-roadmap.md)
 - [阶段 5 修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)
@@ -44,6 +45,7 @@
   - [M13a 符号链接/rename/fchdir](superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md)
   - [M13b 权限位/umask/stdio](superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md)
   - [M19 用户态 loopback UDP](superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md)
+  - [M14 tty 输入](superpowers/reports/2026-10-23-stage5-m14-tty-input.md)
 
 ## 阶段 0–4 签署入口
 

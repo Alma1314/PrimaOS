@@ -13,6 +13,7 @@
 | 2026-10-22 | [2026-10-22-stage5-m13a-vfs-links-design.md](2026-10-22-stage5-m13a-vfs-links-design.md) | 阶段 5 / M13a：符号链接、rename 与 fchdir（设计） |
 | 2026-10-22 | [2026-10-22-stage5-m13b-permissions-stdio-design.md](2026-10-22-stage5-m13b-permissions-stdio-design.md) | 阶段 5 / M13b：权限位、umask 与 stdio 文件 API（设计） |
 | 2026-10-23 | [2026-10-23-stage5-m19-loopback-udp-design.md](2026-10-23-stage5-m19-loopback-udp-design.md) | 阶段 5 / M19：用户态 loopback IPv4/UDP 子集（设计） |
+| 2026-10-23 | [2026-10-23-stage5-m14-tty-input-design.md](2026-10-23-stage5-m14-tty-input-design.md) | 阶段 5 / M14：tty 输入与最小 console（设计） |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory-design.md](2026-10-21-stage5-m10-anon-memory-design.md) | 阶段 5 / M10：匿名内存与保护（设计） |
 | 2026-10-20 | [2026-10-20-stage5-user-vfs-design.md](2026-10-20-stage5-user-vfs-design.md) | 阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计） |
 | 2026-10-20 | [2026-10-20-stage5-profile-v1.md](2026-10-20-stage5-profile-v1.md) | 阶段 5 POSIX profile v1（delta，提案） |

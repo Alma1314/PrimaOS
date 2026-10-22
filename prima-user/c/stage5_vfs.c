@@ -150,7 +150,6 @@ int main(void) {
     int append_ok = 0;
     int null_ok = 0;
     int getdents_ok = 0;
-    int fd0_ok = 0;
     char buffer[16];
 
     int motd = openat(AT_FDCWD, ROOT "etc/motd", O_RDONLY);
@@ -245,8 +244,8 @@ int main(void) {
             (void)close(check);
     }
 
-    /* fd 0 读 EOF；/dev/null 读 EOF、写计数成功。 */
-    fd0_ok = read(0, buffer, sizeof buffer) == 0;
+    /* M14：fd 0 改为 tty 输入（读会阻塞），本探针不再声明 fd0 EOF；
+     * /dev/null 仍读 EOF、写计数成功。 */
     int nullfd = openat(AT_FDCWD, "/dev/null", O_RDWR);
     if (nullfd >= 0) {
         null_ok = read(nullfd, buffer, sizeof buffer) == 0 &&
@@ -267,7 +266,7 @@ int main(void) {
 
     int all_ok = motd_ok && multi_ok && parent_ok && dirfd_ok && dupdir_ok &&
                  enoent_ok && enotdir_ok && eacces_ok && eexist_ok &&
-                 create_ok && append_ok && null_ok && getdents_ok && fd0_ok;
+                 create_ok && append_ok && null_ok && getdents_ok;
     failures = !all_ok;
     int first = 1;
     emit("VFS");
@@ -285,7 +284,6 @@ int main(void) {
     field("append", append_ok, &first);
     field("null", null_ok, &first);
     field("getdents", getdents_ok, &first);
-    field("fd0", fd0_ok, &first);
     emit("\n");
     return failures ? 1 : 0;
 }

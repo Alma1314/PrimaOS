@@ -1,8 +1,9 @@
 use crate::protocol;
+use std::sync::mpsc;
 use std::{
     env,
     ffi::OsString,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     thread::{self, JoinHandle},
@@ -92,6 +93,152 @@ pub(crate) fn run_bios_test_program(
     let output = run_captured(image)?;
     // 证据落盘：每个托管程序的原始串口流写到 `target/prima-os/<name>.log`，报告引用
     // 计数/输出时不必依赖终端滚动；失败时 `with_output` 仍带完整输出。
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root");
+    let log = workspace
+        .join("target/prima-os")
+        .join(format!("{name}.log"));
+    let _ = std::fs::write(log, &output.stdout);
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    let ipc = protocol::validate_output_echo(&output.stdout, expected_ipc)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_user_fault_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_echo(&output.stdout, name, expected_stdout)
+        .map_err(|error| with_output(error, &output))?;
+    Ok(ipc)
+}
+
+/// M14：带 marker 驱动输入注入的 QEMU 捕获运行器。
+///
+/// `script` 的每一对 `(marker, bytes)` 在串口输出首次出现 `marker` 时写入 QEMU
+/// stdin（即 guest 串口输入）。这样输入不会早于 guest 的读请求被丢弃。
+fn run_captured_input(
+    image: &Path,
+    script: &[(&'static str, &'static [u8])],
+) -> Result<CapturedOutput, String> {
+    let qemu = locate_qemu()?;
+    let mut child = Command::new(&qemu)
+        .args(qemu_args(image))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start {}: {error}", qemu.display()))?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+    let writer = thread::Builder::new()
+        .name("prima-qemu-input".to_owned())
+        .spawn(move || {
+            for chunk in receiver {
+                if stdin.write_all(&chunk).is_err() {
+                    break;
+                }
+                let _ = stdin.flush();
+            }
+        })
+        .map_err(|error| format!("failed to start input writer: {error}"))?;
+    let script_owned: Vec<(String, Vec<u8>)> = script
+        .iter()
+        .map(|(marker, bytes)| ((*marker).to_owned(), bytes.to_vec()))
+        .collect();
+    let reader = thread::Builder::new()
+        .name("prima-qemu-stdout".to_owned())
+        .spawn(move || {
+            let mut out = Vec::new();
+            let mut buffer = [0u8; 4096];
+            let mut used = vec![false; script_owned.len()];
+            let mut stream = stdout;
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        out.extend_from_slice(&buffer[..count]);
+                        for (index, (marker, bytes)) in script_owned.iter().enumerate() {
+                            if used[index] || marker.is_empty() {
+                                continue;
+                            }
+                            if contains_bytes(&out, marker.as_bytes()) {
+                                used[index] = true;
+                                let _ = sender.send(bytes.to_vec());
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            out
+        })
+        .map_err(|error| format!("failed to start QEMU stdout reader: {error}"))?;
+    let stderr_reader = thread::Builder::new()
+        .name("prima-qemu-stderr".to_owned())
+        .spawn(move || {
+            let mut out = Vec::new();
+            let mut stream = stderr;
+            let _ = stream.read_to_end(&mut out);
+            out
+        })
+        .map_err(|error| format!("failed to start QEMU stderr reader: {error}"))?;
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < TEST_TIMEOUT => {
+                thread::sleep(Duration::from_millis(10))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let stdout = reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                return Err(format!(
+                    "QEMU timed out after {}s with input script\nstdout:\n{}\nstderr:\n{}",
+                    TEST_TIMEOUT.as_secs(),
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("failed while waiting for QEMU: {error}"));
+            }
+        }
+    };
+    let stdout = reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    let _ = writer.join();
+    Ok(CapturedOutput {
+        status,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+/// M14：托管程序轮 + marker 驱动串口输入。
+pub(crate) fn run_bios_test_input(
+    image: &Path,
+    name: &str,
+    expected_stdout: &[u8],
+    expected_ipc: Option<(u64, u64, u64)>,
+    script: &[(&'static str, &'static [u8])],
+) -> Result<(u64, u64, u64), String> {
+    let output = run_captured_input(image, script)?;
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask must be directly under the workspace root");

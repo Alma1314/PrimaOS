@@ -457,6 +457,18 @@ pub const SERVICE_NET_DATAGRAM_MAX: usize = 64;
 pub const SERVICE_NET_SOCKETS: usize = 4;
 pub const SERVICE_NET_QUEUE: usize = 4;
 pub const SERVICE_NET_EPHEMERAL_PORT: u16 = 49152;
+
+/// M14：tty 输入请求/应答（fd 0）。
+///
+/// `READ: tag | client(40..47) | max(32..39)`；`READ_REPLY: tag | count(8..16) | 3 字节`；
+/// `MODE: tag | canonical(0) | echo(1)`（适配层 termios 变化时单向通知）。
+pub const STAGE5_TTY_READ_TAG: u64 = 0x5EE8_0000_0000_0000;
+pub const STAGE5_TTY_READ_REPLY_TAG: u64 = 0x5EE9_0000_0000_0000;
+pub const STAGE5_TTY_MODE_TAG: u64 = 0x5EEA_0000_0000_0000;
+pub const STAGE5_TTY_READ_MAX_SHIFT: u64 = 32;
+pub const STAGE5_TTY_READ_COUNT_SHIFT: u64 = 24;
+pub const STAGE5_TTY_READ_CHUNK: usize = 3;
+pub const STAGE5_TTY_LINE_MAX: usize = 64;
 /// `EADDRINUSE`：bind 到已被占用的端口。
 pub const SERVICE_NET_EADDRINUSE: u64 = 98;
 

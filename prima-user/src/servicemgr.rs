@@ -77,7 +77,9 @@ use prima_runtime::{
         SERVICE_VFS_ROOT_PATH, SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK,
         SERVICE_VFS_STATUS_TAG, SERVICE_VMA_CAP_REQUEST_TAG, SERVICE_VMA_CLIENT_SHIFT,
         SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG,
-        STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
+        STAGE5_TTY_ACK_TAG, STAGE5_TTY_LINE_MAX, STAGE5_TTY_MODE_TAG, STAGE5_TTY_READ_CHUNK,
+        STAGE5_TTY_READ_COUNT_SHIFT, STAGE5_TTY_READ_MAX_SHIFT, STAGE5_TTY_READ_REPLY_TAG,
+        STAGE5_TTY_READ_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
         STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply, pack_net_reply,
         pack_service_name, pack_service_request, pack_vfs_pair_reply, pack_vma_cap_reply,
     },
@@ -439,6 +441,8 @@ pub extern "C" fn _start(
     let mut file_client: Option<u32> = None;
     // M19：loopback UDP 端点表（仅首次 socket 请求后才被使用）。
     let mut net = NetState::new();
+    // M14：fd 0 的行规程状态。
+    let mut tty_input = TtyInput::new();
     let mut c_send: Option<Capability> = None;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
@@ -734,6 +738,29 @@ pub extern "C" fn _start(
                 } else {
                     pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOENT, 0)
                 };
+                let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
+            }
+        } else if message.payload >> 48 == STAGE5_TTY_MODE_TAG >> 48 {
+            // M14：termios 的 ICANON/ECHO 变化（适配层单向通知）。
+            tty_input.canonical = message.payload & 1 != 0;
+            tty_input.echo = message.payload & 2 != 0;
+        } else if message.payload >> 48 == STAGE5_TTY_READ_TAG >> 48 {
+            // M14：fd 0 读；无数据时轮询 COM1（仅在有读者时）。
+            let client = ((message.payload >> 40) & 0xff) as u32;
+            let max = ((message.payload >> STAGE5_TTY_READ_MAX_SHIFT) & 0xff) as usize;
+            let reply = if let Some(serial) = mgr_serial {
+                tty_read_request(
+                    &runtime,
+                    serial,
+                    &mut tty_input,
+                    max,
+                    &mut echo_len,
+                    &mut echo_hash,
+                )
+            } else {
+                STAGE5_TTY_READ_REPLY_TAG
+            };
+            if let Some(send) = c_send {
                 let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
             }
         } else if message.payload >> 48 == SERVICE_NET_REQUEST_TAG >> 48 {
@@ -2322,6 +2349,152 @@ fn write_created_witness(
 ///
 /// 保留两条**连续**发送的 SPEC-104 协议。阶段 2 直投修复后，内核已可把带 cap 消息
 /// 直接递送给阻塞在 `recv` 的接收者；移除此唤醒需同步修改服务端协议和见证。
+/// M14：fd 0 的最小行规程。字节来自服务管理器持有的 COM1 设备 cap；
+/// 只有存在读请求时才轮询 UART，空闲时管理器阻塞在 `SYS_RECV`。
+struct TtyInput {
+    canonical: bool,
+    echo: bool,
+    line: [u8; STAGE5_TTY_LINE_MAX],
+    line_len: usize,
+    ready: [u8; STAGE5_TTY_LINE_MAX],
+    ready_len: usize,
+    eof: bool,
+}
+
+impl TtyInput {
+    const fn new() -> Self {
+        Self {
+            canonical: true,
+            echo: true,
+            line: [0; STAGE5_TTY_LINE_MAX],
+            line_len: 0,
+            ready: [0; STAGE5_TTY_LINE_MAX],
+            ready_len: 0,
+            eof: false,
+        }
+    }
+
+    fn take(&mut self, max: usize) -> Option<(usize, [u8; STAGE5_TTY_READ_CHUNK])> {
+        let mut bytes = [0u8; STAGE5_TTY_READ_CHUNK];
+        if self.ready_len > 0 {
+            let count = self.ready_len.min(max).min(STAGE5_TTY_READ_CHUNK);
+            bytes[..count].copy_from_slice(&self.ready[..count]);
+            for index in count..self.ready_len {
+                self.ready[index - count] = self.ready[index];
+            }
+            self.ready_len -= count;
+            return Some((count, bytes));
+        }
+        if self.eof {
+            self.eof = false;
+            return Some((0, bytes));
+        }
+        None
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.ready_len < self.ready.len() {
+            self.ready[self.ready_len] = byte;
+            self.ready_len += 1;
+        }
+    }
+
+    /// 处理一个输入字节；返回需要回显的字节（不超过 32）。
+    fn feed(&mut self, byte: u8, echo: &mut [u8; 32]) -> usize {
+        let mut out = 0usize;
+        if !self.canonical {
+            self.push(byte);
+            if self.echo {
+                echo[0] = byte;
+                return 1;
+            }
+            return 0;
+        }
+        match byte {
+            b'\n' | b'\r' => {
+                for index in 0..self.line_len {
+                    self.push(self.line[index]);
+                }
+                self.line_len = 0;
+                self.push(b'\n');
+                if self.echo {
+                    echo[0] = b'\n';
+                    out = 1;
+                }
+            }
+            0x7f | 0x08 => {
+                if self.line_len > 0 {
+                    self.line_len -= 1;
+                    if self.echo {
+                        echo[0] = 0x08;
+                        echo[1] = b' ';
+                        echo[2] = 0x08;
+                        out = 3;
+                    }
+                }
+            }
+            0x04 => {
+                if self.line_len == 0 {
+                    self.eof = true;
+                } else {
+                    for index in 0..self.line_len {
+                        self.push(self.line[index]);
+                    }
+                    self.line_len = 0;
+                }
+            }
+            _ => {
+                if self.line_len < self.line.len() {
+                    self.line[self.line_len] = byte;
+                    self.line_len += 1;
+                }
+                if self.echo {
+                    echo[0] = byte;
+                    out = 1;
+                }
+            }
+        }
+        out
+    }
+}
+
+fn tty_read_request<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    serial: Capability,
+    input: &mut TtyInput,
+    max: usize,
+    echo_len: &mut u64,
+    echo_hash: &mut u32,
+) -> u64 {
+    let max = max.clamp(1, STAGE5_TTY_READ_CHUNK);
+    loop {
+        if let Some((count, bytes)) = input.take(max) {
+            let mut value = 0u64;
+            for (index, byte) in bytes[..count].iter().enumerate() {
+                value |= (*byte as u64) << (8 * index);
+            }
+            return STAGE5_TTY_READ_REPLY_TAG
+                | ((count as u64) << STAGE5_TTY_READ_COUNT_SHIFT)
+                | value;
+        }
+        // 只有存在读请求时才轮询；空闲路径仍是阻塞 `SYS_RECV`。
+        if let Ok(status) = runtime.dev_ioport_in(serial, IOPORT_BASE + 5)
+            && status & 1 != 0
+            && let Ok(byte) = runtime.dev_ioport_in(serial, IOPORT_BASE)
+        {
+            let mut echo = [0u8; 32];
+            let count = input.feed(byte, &mut echo);
+            for byte in echo[..count].iter().copied() {
+                let _ = runtime.dev_ioport_out(serial, IOPORT_BASE, byte);
+                // M14：回显字节也属于终端输出，计入 ECHO 见证。
+                *echo_len += 1;
+                *echo_hash = native_app_hash(*echo_hash, byte);
+            }
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// M19：loopback UDP 端点表。队列固定大小，满时 `ENOBUFS`；不做拥塞/重传。
 #[derive(Clone, Copy)]
 struct NetDatagram {

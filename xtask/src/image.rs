@@ -115,6 +115,8 @@ enum Stage5Program<'a> {
     Vfs3,
     /// M19：用户态 loopback IPv4/UDP 探针。
     Net,
+    /// M14：fd 0 tty 输入（canonical/raw/EOF/termios）探针。
+    Ttyin,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -173,6 +175,11 @@ pub(crate) fn build_images_for_vfs3() -> Result<Images, String> {
 /// M19：用 loopback UDP 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_net() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Net)
+}
+
+/// M14：用 fd 0 tty 输入探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_ttyin() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Ttyin)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -319,6 +326,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_net.c")],
             "stage5 net probe",
         ),
+        Stage5Program::Ttyin => (
+            path.with_file_name("stage5-ttyin.elf"),
+            vec![c_dir.join("stage5_ttyin.c")],
+            "stage5 ttyin probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -449,6 +461,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Vfs2 => Some((&["stage5-vfs2"], &[])),
         Stage5Program::Vfs3 => Some((&["stage5-vfs3"], &[])),
         Stage5Program::Net => Some((&["stage5-net"], &[])),
+        Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -841,7 +854,7 @@ pub(crate) fn check_stage5_linux_fd() -> Result<(), String> {
 }
 
 /// M8 冻结的 Linux 参考输出：同一份 `stage5_vfs.c` 在宿主上必须全项通过。
-pub(crate) const VFS_EXPECTED_STDOUT: &[u8] = b"VFS|ok=1;motd=1;multi=1;parent=1;dirfd=1;dupdir=1;enoent=1;enotdir=1;eacces=1;eexist=1;create=1;append=1;null=1;getdents=1;fd0=1\n";
+pub(crate) const VFS_EXPECTED_STDOUT: &[u8] = b"VFS|ok=1;motd=1;multi=1;parent=1;dirfd=1;dupdir=1;enoent=1;enotdir=1;eacces=1;eexist=1;create=1;append=1;null=1;getdents=1\n";
 
 #[cfg(unix)]
 fn set_probe_mode(path: &Path, mode: u32) -> Result<(), String> {
@@ -1018,6 +1031,53 @@ pub(crate) fn check_stage5_linux_net() -> Result<(), String> {
     Ok(())
 }
 
+/// M14：fd 0 tty 输入的 Linux 参考运行（管道 stdin）。
+pub(crate) fn check_stage5_linux_ttyin() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_ttyin.c");
+    let binary = workspace.join("target/prima-os/ttyin-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 ttyin: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 ttyin probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    use std::io::Write;
+    let mut child = Command::new(&binary)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .spawn()
+        .map_err(|error| format!("failed to run Linux stage5 ttyin probe: {error}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"hi\n");
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("failed to wait for Linux stage5 ttyin probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != TTYIN_LINUX_STDOUT {
+        return Err(format!(
+            "Linux stage5 ttyin mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(TTYIN_LINUX_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 tty input references");
+    Ok(())
+}
+
 /// M8/M9：布置与 Prima rootfs 同形的宿主参考树，权限也按冻结的 mode 设置：
 /// 文件 0444、`f` 0666、目录 0555、`tmp` 0777。`/dev/null` 只在 Prima 侧存在。
 fn prepare_stage5_reference_tree(run_dir: &Path) -> Result<(), String> {
@@ -1091,6 +1151,13 @@ pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
 /// M19 冻结的 loopback UDP 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const NET_EXPECTED_STDOUT: &[u8] =
     b"NET|pair=1;zero=1;large=1;drop=1;reuse=1;badfam=1;closed=1|ok=1;err=0\n";
+
+/// M14：Prima 侧 tty 输入探针输出（含回显与 raw/EOF）。
+pub(crate) const TTYIN_EXPECTED_STDOUT: &[u8] =
+    b"TTYRD|termios=1\nTTYREADY\nhi\n;line=1\nTTYRAW\n;raw=1\nTTYEOF\n;eof=1|ok=1;err=0\n";
+
+/// M14：Linux 参考用管道 stdin，只验证行与 EOF（termios/回显需真实 tty）。
+pub(crate) const TTYIN_LINUX_STDOUT: &[u8] = b"TTYRD|line=1;eof=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {

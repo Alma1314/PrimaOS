@@ -439,6 +439,8 @@ static long prima_reply_status(uint64_t reply);
 static long prima_chmod_path(long dirfd, const char *path, long mode);
 static long prima_net_request(unsigned char op, unsigned char handle, uint64_t arg,
                               uint64_t *reply);
+static long prima_tty_read(void *buf, unsigned long len);
+static long prima_tty_ioctl(int fd, unsigned long request, unsigned long arg);
 static long prima_vfs_chmod_request(unsigned char start, const char *path,
                                     unsigned long len, unsigned short mode);
 static void prima_dir_reset(unsigned char handle);
@@ -454,7 +456,7 @@ struct prima_fd_entry {
 };
 
 static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT] = {
-    {PRIMA_FD_NULL, 0, 0, 0},
+    {PRIMA_FD_TTY, 0, 0, 0},
     {PRIMA_FD_TTY, 1, 0, 0},
     {PRIMA_FD_TTY, 2, 0, 0},
 };
@@ -1667,6 +1669,124 @@ static long prima_net_recvfrom(int fd, void *buf, unsigned long len, int flags,
     return (long)copy;
 }
 
+/* M14：fd 0 的 tty 读；单次最多 3 字节（tty 允许短读），无数据时管理器
+ * 阻塞在轮询循环里。返回实际字节数，0 表示 EOF。 */
+static long prima_tty_read(void *buf, unsigned long len) {
+    if (!buf && len != 0)
+        return -PRIMA_ERRNO_EFAULT;
+    if (len == 0)
+        return 0;
+    unsigned long chunk = len < PRIMA_TTY_READ_CHUNK ? len : PRIMA_TTY_READ_CHUNK;
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    uint64_t payload = PRIMA_STAGE5_TTY_READ_TAG |
+                       (((uint64_t)id & 0xff) << PRIMA_TTY_READ_CLIENT_SHIFT) |
+                       ((uint64_t)chunk << PRIMA_TTY_READ_MAX_SHIFT);
+    long sent = prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                          (long)prima_ctx.send_cap, (long)payload, 0, 0, 0);
+    if (sent != 0)
+        return sent < 0 ? sent : -PRIMA_ERRNO_EFAULT;
+    uint64_t caps[3];
+    uint64_t reply = 0;
+    for (;;) {
+        long raw = prima_raw(PRIMA_SYS_RECV, (long)caps, 0, 0, 0, 0, 0);
+        if (raw < 0)
+            return raw;
+        if (((uint64_t)raw >> 48) == (PRIMA_STAGE5_TTY_READ_REPLY_TAG >> 48)) {
+            reply = (uint64_t)raw;
+            break;
+        }
+    }
+    unsigned long count = (reply >> PRIMA_TTY_READ_COUNT_SHIFT) & 0xff;
+    if (count > chunk)
+        count = chunk;
+    uint64_t data = reply & 0x00ffffff;
+    unsigned char *out = buf;
+    for (unsigned long index = 0; index < count; index++)
+        out[index] = (unsigned char)(data >> (8 * index));
+    return (long)count;
+}
+
+/* M14：termios 只保存 ICANON/ECHO 等标志；行规程在管理器侧。 */
+struct prima_termios {
+    uint32_t c_iflag;
+    uint32_t c_oflag;
+    uint32_t c_cflag;
+    uint32_t c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[32];
+    uint32_t c_ispeed;
+    uint32_t c_ospeed;
+};
+_Static_assert(sizeof(struct prima_termios) == 60, "termios ABI size");
+
+static struct prima_termios prima_tty_termios;
+static int prima_tty_termios_ready;
+
+static struct prima_termios *prima_termios(void) {
+    if (!prima_tty_termios_ready) {
+        prima_tty_termios.c_lflag = PRIMA_ICANON | PRIMA_ECHO | 0x1; /* ISIG */
+        prima_tty_termios.c_cc[0] = 3;   /* VINTR */
+        prima_tty_termios.c_cc[1] = 28;  /* VQUIT */
+        prima_tty_termios.c_cc[2] = 127; /* VERASE */
+        prima_tty_termios.c_cc[3] = 21;  /* VKILL */
+        prima_tty_termios.c_cc[4] = 4;   /* VEOF */
+        prima_tty_termios.c_cc[6] = 1;   /* VMIN */
+        prima_tty_termios_ready = 1;
+    }
+    return &prima_tty_termios;
+}
+
+static void prima_tty_sync_mode(void) {
+    struct prima_termios *term = prima_termios();
+    uint64_t mode = PRIMA_STAGE5_TTY_MODE_TAG;
+    if (term->c_lflag & PRIMA_ICANON)
+        mode |= 1;
+    if (term->c_lflag & PRIMA_ECHO)
+        mode |= 2;
+    (void)prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                    (long)prima_ctx.send_cap, (long)mode, 0, 0, 0);
+}
+
+static long prima_tty_ioctl(int fd, unsigned long request, unsigned long arg) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    if (entry->kind != PRIMA_FD_TTY)
+        return -PRIMA_ERRNO_ENOTTY;
+    struct prima_termios *term = prima_termios();
+    if (request == PRIMA_TCGETS) {
+        if (!arg)
+            return -PRIMA_ERRNO_EFAULT;
+        unsigned char *out = (unsigned char *)arg;
+        const unsigned char *in = (const unsigned char *)term;
+        for (int i = 0; i < 60; i++)
+            out[i] = in[i];
+        return 0;
+    }
+    if (request == PRIMA_TCSETS || request == PRIMA_TCSETSW ||
+        request == PRIMA_TCSETSF) {
+        if (!arg)
+            return -PRIMA_ERRNO_EFAULT;
+        const unsigned char *in = (const unsigned char *)arg;
+        unsigned char *out = (unsigned char *)term;
+        for (int i = 0; i < 60; i++)
+            out[i] = in[i];
+        prima_tty_sync_mode();
+        return 0;
+    }
+    if (request == PRIMA_TIOCGWINSZ) {
+        if (!arg)
+            return -PRIMA_ERRNO_EFAULT;
+        unsigned short *out = (unsigned short *)arg;
+        out[0] = 24; /* rows */
+        out[1] = 80; /* cols */
+        out[2] = 0;
+        out[3] = 0;
+        return 0;
+    }
+    return -PRIMA_ERRNO_ENOTTY;
+}
+
 static long prima_handle_read(int handle, void *buf, unsigned long len) {
     if (len == 0)
         return 0;
@@ -1874,6 +1994,11 @@ static long prima_fd_read(int fd, void *buf, unsigned long len) {
             return -PRIMA_ERRNO_EFAULT;
         return 0;
     }
+    if (entry->kind == PRIMA_FD_TTY) {
+        if (entry->object != 0)
+            return -PRIMA_ERRNO_EBADF;
+        return prima_tty_read(buf, len);
+    }
     if (entry->kind != PRIMA_FD_FILE)
         return -PRIMA_ERRNO_EBADF;
     return prima_handle_read(entry->object, buf, len);
@@ -1891,7 +2016,7 @@ static long prima_fd_write(int fd, const void *buf, unsigned long len) {
     if (entry->kind == PRIMA_FD_SOCKET)
         return -PRIMA_ERRNO_NOTSOCK;
     if (entry->kind == PRIMA_FD_TTY)
-        return prima_write_bytes(entry->object, buf, len);
+        return prima_write_bytes(entry->object == 0 ? 1 : entry->object, buf, len);
     if (entry->kind == PRIMA_FD_FILE)
         return prima_handle_write(entry->object, buf, len);
     return -PRIMA_ERRNO_EBADF;
@@ -2249,7 +2374,7 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_readlinkat((long)a0, (const char *)a1, (char *)a2,
                                 (unsigned long)a3);
     case PRIMA_LINUX_SYS_ioctl:
-        return -PRIMA_ERRNO_ENOSYS;
+        return prima_tty_ioctl((int)a0, a1, a2);
     case PRIMA_LINUX_SYS_clock_gettime:
         return prima_clock_gettime(a0, (void *)a1);
     case PRIMA_LINUX_SYS_clock_nanosleep:
