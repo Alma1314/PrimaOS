@@ -182,6 +182,21 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios W1 run={run}");
     }
+    // M15b-2：共享线程 signal 唤醒阻塞等待（Prima 专用），各跑两轮。
+    let images = image::build_images_for_wait2()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "W2",
+                image::WAIT2_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS W2 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios W2 run={run}");
+    }
     // M14：fd 0 tty 输入（canonical/raw/EOF），marker 驱动串口输入，各跑两轮。
     image::check_stage5_linux_ttyin()?;
     let images = image::build_images_for_ttyin()?;

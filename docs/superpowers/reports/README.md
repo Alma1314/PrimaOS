@@ -19,6 +19,7 @@
 | 2026-10-23 | [2026-10-23-stage5-m15b1-process-metadata.md](2026-10-23-stage5-m15b1-process-metadata.md) | 阶段 5 M15b-1：Process/Thread 元数据 |
 | 2026-10-23 | [2026-10-23-stage5-m15b2a-thread-create.md](2026-10-23-stage5-m15b2a-thread-create.md) | 阶段 5 M15b-2a：共享能力空间的 thread_create（QEMU 容量阻塞） |
 | 2026-10-23 | [2026-10-23-stage5-thread-capacity-investigation.md](2026-10-23-stage5-thread-capacity-investigation.md) | ISSUE-THREAD-CAPACITY-001 调查：扩容破坏 task_ready 见证 |
+| 2026-10-23 | [2026-10-23-stage5-m15b2b-thread-slots.md](2026-10-23-stage5-m15b2b-thread-slots.md) | 阶段 5 M15b-2b：线程槽位回收、W2 端到端唤醒 |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |

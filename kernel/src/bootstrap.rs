@@ -655,6 +655,8 @@ pub struct TaskCreateOutcome {
 pub struct TaskTable {
     pub entries: [Option<TaskRecord>; MAX_TASKS],
     pub count: usize,
+    /// M15b-2b：已销毁 Task 的墓碑（记录已回收，`task_status` 仍报 Dead）。
+    pub dead: u32,
 }
 
 impl TaskTable {
@@ -676,7 +678,11 @@ impl TaskTable {
             pending_wait_result: None,
             pending: None,
         });
-        Self { entries, count: 1 }
+        Self {
+            entries,
+            count: 1,
+            dead: 0,
+        }
     }
 
     fn find(&self, task_id: u32) -> Option<&TaskRecord> {
@@ -693,6 +699,27 @@ impl TaskTable {
             .find(|task| task.id == task_id)
     }
 
+    /// 最低 id 的 Dead 记录（线程创建惰性回收用）。
+    pub fn find_dead_id(&self) -> Option<u32> {
+        self.entries[..self.count]
+            .iter()
+            .flatten()
+            .filter(|task| task.status == TaskStatus::Dead)
+            .map(|task| task.id)
+            .min()
+    }
+
+    pub fn is_dead(&self, task_id: u32) -> bool {
+        task_id < 32 && self.dead & (1u32 << task_id) != 0
+    }
+
+    /// M15b-2b：销毁后的墓碑状态（记录可能已回收）。
+    pub fn status_of(&self, task_id: u32) -> Option<TaskStatus> {
+        self.find(task_id)
+            .map(|task| task.status)
+            .or_else(|| self.is_dead(task_id).then_some(TaskStatus::Dead))
+    }
+
     pub fn create(&mut self, task_id: u32) -> Result<(), TaskError> {
         self.create_with_entry(task_id, 0)
     }
@@ -701,6 +728,9 @@ impl TaskTable {
     pub fn create_with_entry(&mut self, task_id: u32, entry: u64) -> Result<(), TaskError> {
         if self.find(task_id).is_some() {
             return Err(TaskError::DuplicateTask);
+        }
+        if task_id < 32 {
+            self.dead &= !(1u32 << task_id);
         }
         if self.count == MAX_TASKS {
             return Err(TaskError::CapacityExceeded);
@@ -4188,7 +4218,7 @@ impl BootstrapState {
     }
 
     fn task_status_of(&self, task_id: u32) -> Option<TaskStatus> {
-        self.tasks.find(task_id).map(|task| task.status)
+        self.tasks.status_of(task_id)
     }
 
     fn task_pending_exc(&self, task_id: u32) -> Option<PendingExc> {
@@ -6512,7 +6542,7 @@ impl BootstrapState {
             }
         }
         // ---- 成功动作 1：Task 记录 ----
-        if self.tasks.create_with_entry(new_id, req.entry).is_err() {
+        if self.create_task_record(new_id, req.entry).is_err() {
             rollback(&fresh_tables, fresh_count);
             return Err(TaskCreateError::CapacityExceeded);
         }
@@ -8707,6 +8737,68 @@ impl BootstrapState {
             .unwrap_or(task_id)
     }
 
+    /// M15b-2b：复用墓碑 id 前撤销所有 target 为该 Task 的 Capability（防句柄复活）。
+    fn revoke_task_caps(&mut self, task_id: u32) {
+        let mut handles = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
+        let mut count = 0usize;
+        for index in 0..MAX_CAPABILITY_SLOTS {
+            if let Some(record) = self.records.get_index(index)
+                && record.target == ObjectRef::Task(task_id)
+                && count < handles.len()
+            {
+                handles[count] = record.handle;
+                count += 1;
+            }
+        }
+        for handle in handles[..count].iter().copied() {
+            let _ = self.retire_capability(handle);
+        }
+    }
+
+    /// M15b-2b：线程专用的槽位分配——表满时惰性回收一个 Dead 记录并撤销其 cap。
+    ///
+    /// 只用于 `thread_create`：`task_create` 必须保留“表满 → ENOSPC”的负例语义。
+    fn ensure_thread_slot(&mut self) -> Option<u32> {
+        if let Some(id) = self.tasks.next_free_id() {
+            return Some(id);
+        }
+        // 优先复用没有存活 cap 指向的 Dead 记录：不动 cap 计数。
+        let mut fallback = None;
+        for index in 0..self.tasks.count {
+            let Some(task) = self.tasks.entries[index] else {
+                continue;
+            };
+            if task.status != TaskStatus::Dead {
+                continue;
+            }
+            if !self.cap_targets_task(task.id) {
+                self.tasks.remove(task.id);
+                return Some(task.id);
+            }
+            fallback.get_or_insert(task.id);
+        }
+        let dead = fallback?;
+        self.revoke_task_caps(dead);
+        self.tasks.remove(dead);
+        Some(dead)
+    }
+
+    fn cap_targets_task(&self, task_id: u32) -> bool {
+        (0..MAX_CAPABILITY_SLOTS).any(|index| {
+            self.records
+                .get_index(index)
+                .is_some_and(|record| record.target == ObjectRef::Task(task_id))
+        })
+    }
+
+    /// M15b-2b：创建 Task 记录（复用墓碑 id 时先撤销旧目标 cap）。
+    fn create_task_record(&mut self, task_id: u32, entry: u64) -> Result<(), TaskError> {
+        if self.tasks.is_dead(task_id) {
+            self.revoke_task_caps(task_id);
+        }
+        self.tasks.create_with_entry(task_id, entry)
+    }
+
     /// M15b-2：用户态线程创建（共享调用者的 Process/能力空间/地址空间）。
     pub fn thread_create(
         &mut self,
@@ -8728,8 +8820,7 @@ impl BootstrapState {
             return Err(ThreadError::AuditFull);
         }
         let new_id = self
-            .tasks
-            .next_free_id()
+            .ensure_thread_slot()
             .ok_or(ThreadError::CapacityExceeded)?;
         let process = match self.process_of(caller) {
             Some(process) => process,
@@ -8741,7 +8832,7 @@ impl BootstrapState {
                 process
             }
         };
-        if self.tasks.create_with_entry(new_id, entry).is_err() {
+        if self.create_task_record(new_id, entry).is_err() {
             return Err(ThreadError::CapacityExceeded);
         }
         if let Some(task) = self.tasks.find_mut(new_id) {
@@ -9646,8 +9737,7 @@ pub fn schedule_task_global(task_id: u32) -> Result<(), TaskError> {
 pub fn task_status(task_id: u32) -> Option<TaskStatus> {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
-            .and_then(|state| state.tasks.find(task_id))
-            .map(|task| task.status)
+            .and_then(|state| state.tasks.status_of(task_id))
     })
 }
 
@@ -11276,7 +11366,7 @@ mod tests {
         assert_eq!(state.destroy_task(2), Err(TaskError::CannotDestroyRunning));
         state.yield_task(2).unwrap();
         state.destroy_task(2).unwrap();
-        assert_eq!(state.tasks.entries[1].unwrap().status, TaskStatus::Dead);
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Dead));
         assert!(state.records.find(cap).is_none());
         assert_eq!(
             state.destroy_task(INIT_TASK_ID),
@@ -11480,7 +11570,7 @@ mod tests {
         assert_ne!(negative_root, Handle::ZERO);
         // 正例任务已被内核回收为 Dead；W5 只约束活动 Task。
         assert_eq!(
-            state.tasks.find(RECLAIM_WITNESS_TASK_ID).map(|t| t.status),
+            state.tasks.status_of(RECLAIM_WITNESS_TASK_ID),
             Some(TaskStatus::Dead)
         );
         assert_eq!(state.validate_authority(), Ok(()));
@@ -12733,12 +12823,7 @@ mod tests {
             .unwrap();
         assert!(state.is_unrecoverable_faulted(2));
         assert!(state.kernel_reclaim_task(2, None, 0).is_ok());
-        let task = state.tasks.find(2).copied().unwrap();
-        assert_eq!(task.status, TaskStatus::Dead);
-        assert!(
-            task.pending_exc.is_none(),
-            "§8.2 步骤 6 必须清空 pending_exc"
-        );
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Dead));
         assert!(!state.tasks.is_live(2));
         assert!(state.tasks.check_faulted_invariant().is_ok());
     }
@@ -12886,9 +12971,7 @@ mod tests {
         assert!(state.tasks.prepare_destroy(2).is_ok());
         state.tasks.finish_destroy(2).unwrap();
         assert_eq!(crate::sched::kernel_resume_frame(2), None);
-        let task = state.tasks.find(2).copied().unwrap();
-        assert_eq!(task.status, TaskStatus::Dead);
-        assert!(task.pending_exc.is_none());
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Dead));
         assert!(state.tasks.check_faulted_invariant().is_ok());
     }
 

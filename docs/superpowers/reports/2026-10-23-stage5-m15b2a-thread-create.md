@@ -4,6 +4,7 @@
 **范围**：M15b-2 的内核部分（用户态 `thread_create` 已接线，QEMU 端到端
 被任务表容量阻塞）。设计见
 [M15 设计](../specs/2026-10-23-stage5-m15-process-thread-wait-design.md)。
+**后续**：W2 已在 M15b-2b（线程惰性槽位回收）通过；本报告保留当时的失败记录。
 **结论**：
 - `ISSUE-PTHREAD-CAPS-001` 采用**工作决定：同 Process 的线程共享 leader 的
   Capability 位置空间**；`space_of(task)` 把 holder 归一化为 Process leader，

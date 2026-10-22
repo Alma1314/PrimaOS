@@ -119,6 +119,8 @@ enum Stage5Program<'a> {
     Ttyin,
     /// M15：WaitObject 原生机制探针。
     Wait,
+    /// M15b-2：共享地址空间线程唤醒 WaitObject 探针。
+    Wait2,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -187,6 +189,11 @@ pub(crate) fn build_images_for_ttyin() -> Result<Images, String> {
 /// M15：用 WaitObject 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_wait() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Wait)
+}
+
+/// M15b-2：用共享线程唤醒 WaitObject 探针替换 C 探针映像。
+pub(crate) fn build_images_for_wait2() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Wait2)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -343,6 +350,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_wait.c")],
             "stage5 wait probe",
         ),
+        Stage5Program::Wait2 => (
+            path.with_file_name("stage5-wait2.elf"),
+            vec![c_dir.join("stage5_wait2.c")],
+            "stage5 wait2 probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -475,6 +487,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Net => Some((&["stage5-net"], &[])),
         Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),
+        Stage5Program::Wait2 => Some((&["stage5-wait2"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -1175,6 +1188,10 @@ pub(crate) const TTYIN_LINUX_STDOUT: &[u8] = b"TTYRD|line=1;eof=1|ok=1;err=0\n";
 /// M15a-1：WaitObject 原生探针输出（Prima 专用，无 Linux 对应物）。
 pub(crate) const WAIT_EXPECTED_STDOUT: &[u8] =
     b"WAIT|create=1;gen0=1;signal=1;satisfied=1;timeout=1;invalid=1;destroy=1;dead=1|ok=1;err=0\n";
+
+/// M15b-2：共享线程 signal 唤醒阻塞等待（Prima 专用）。
+pub(crate) const WAIT2_EXPECTED_STDOUT: &[u8] =
+    b"WAIT2|create=1;thread=1;satisfied=1;gen=1;destroy=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
