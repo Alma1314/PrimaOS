@@ -40,6 +40,7 @@
 | ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
 | BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 原生版本握手已按追加号 `37` 落地；POSIX profile、C 入口栈、退出状态及错误映射仍按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决，阻塞项保持 Open。 |
 | BLK-004（已关闭） | 全量服务后 C ELF Task 16 创建、执行、自毁、栈回收、复建 `ENOSPC` 和四类容量水位获 QEMU 双轮见证，见[C ELF 报告](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。 | POSIX 启动/退出状态及 `write` 仍属片 C，不由此门槛代签。 |
+| ISSUE-TTYIN-001 | M14 的串口输入需要“数据到达 → 唤醒读者”，但服务阶段 PIT IRQ0 被屏蔽、只有 PIT 计数自由运行；现有 Timer 只在 syscall 边界推进，用户态阻塞 `SYS_RECV` 等不到输入，轮询则忙等。 | 按路线图复用 M15 的 WaitObject 或内核串口 IRQ 递送后再接线；在此之前不实现忙等版本，M14 不勾选。 |
 | ISSUE-START-ARGS-001 | M12 的独立 C 启动探针与 `ECHO_ARGS` 参数载体组合时，QEMU 在 `user_cow_ready` 之前出现 `SYS_RECV` 无 Ready 任务或用户页故障；去掉参数载体即通过。根因未定位，见[M12 报告](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)。 | 先以 host/单测与固定探针验证 envp/auxv；不得放宽内核调度断言。定位后再恢复任意 argv 端到端轮次。 |
 
 其余已关闭问题的发现、修复与复核记录见相应报告和压缩前版本。`ISSUE-IPC-001` 已由阶段 2 整改关闭。
