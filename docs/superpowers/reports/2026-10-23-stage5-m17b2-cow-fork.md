@@ -38,6 +38,18 @@ PROC|fork=1;wait=0;status=0;cow=1;echild...  （随后 panic）
   的段/根），确认子进程是否运行、`process_exit` 是否设置状态并唤醒父进程；
   同时检查 fork 子进程的 kstack/帧与 `block_to` 的交互。
 
+## 3.1 后续定位（本轮追加）
+
+- 父线程 `fork` 返回正值；子帧 `rax=0` 已在 syscall 层验证（`[Z0]`）。
+- 子 Process id=9、parent=0；C 任务的 Process id=0。
+- 把 wait4 的查找条件放宽为“按 leader 匹配 pid”后，首次 wait4 仍返回
+  `ECHILD`（`[C0]`），随后第二次 wait4 进入 Blocked 并在无 Ready 后继处
+  panic（`SYS_WAIT4`）。
+- 说明 `wait4` 找到的子 Process 与 `pid`/leader/task 记录的对应关系仍有问题
+  （或首次调用发生在子 Process 可见之前），需要打印 Process 表的
+  id/parent/leader 与对应 Task 状态逐项核对；父/子 `pid` 的语义也应统一
+  （当前 fork 返回 task id，而 Process id 独立）。
+
 ## 4. 边界
 
 - W6 未接入；fork/wait 无套件证据；
