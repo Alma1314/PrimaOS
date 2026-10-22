@@ -151,6 +151,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios V3 run={run}");
     }
+    // M19：用户态 loopback IPv4/UDP，各跑两轮。
+    image::check_stage5_linux_net()?;
+    let images = image::build_images_for_net()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "N1",
+                image::NET_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS N1 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios N1 run={run}");
+    }
     // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
     image::check_stage5_linux_meta()?;
     let images = image::build_images_for_meta()?;

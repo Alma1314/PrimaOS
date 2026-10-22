@@ -425,6 +425,59 @@ pub fn pack_vfs_chmod(start: u64, path_len: usize, first: &[u8]) -> u64 {
         | bytes
 }
 
+/// M19：用户态 loopback IPv4/UDP 子集（服务管理器内的端点表）。
+///
+/// 请求：`tag | op(44..47) | handle(40..43) | client(32..39) | arg(0..31)`；
+/// 应答：`tag | op(44..47) | handle(40..43) | status(32..39) | data(0..31)`。
+/// 只支持 `AF_INET`/`SOCK_DGRAM`、地址 127.0.0.1 或 0.0.0.0；不做 TCP/NIC/DNS。
+pub const SERVICE_NET_REQUEST_TAG: u64 = 0x5EE6_0000_0000_0000;
+pub const SERVICE_NET_REPLY_TAG: u64 = 0x5EE7_0000_0000_0000;
+pub const SERVICE_NET_OP_SHIFT: u64 = 44;
+pub const SERVICE_NET_OP_MASK: u64 = 0xf;
+pub const SERVICE_NET_HANDLE_SHIFT: u64 = 40;
+pub const SERVICE_NET_CLIENT_SHIFT: u64 = 32;
+pub const SERVICE_NET_STATUS_SHIFT: u64 = 32;
+pub const SERVICE_NET_ARG_MASK: u64 = 0xffff_ffff;
+pub const SERVICE_NET_OP_OPEN: u64 = 0;
+pub const SERVICE_NET_OP_BIND: u64 = 1;
+pub const SERVICE_NET_OP_SENDTO_BEGIN: u64 = 2;
+pub const SERVICE_NET_OP_SENDTO_DATA: u64 = 3;
+pub const SERVICE_NET_OP_SENDTO_END: u64 = 4;
+pub const SERVICE_NET_OP_RECVFROM: u64 = 5;
+pub const SERVICE_NET_OP_RECV_CHUNK: u64 = 6;
+pub const SERVICE_NET_OP_GETSOCKNAME: u64 = 7;
+pub const SERVICE_NET_OP_CLOSE: u64 = 8;
+pub const SERVICE_NET_PORT_SHIFT: u64 = 16;
+pub const SERVICE_NET_PORT_MASK: u64 = 0xffff;
+pub const SERVICE_NET_LEN_SHIFT: u64 = 16;
+pub const SERVICE_NET_LEN_MASK: u64 = 0xff;
+pub const SERVICE_NET_DATA_MASK: u64 = 0x00ff_ffff;
+pub const SERVICE_NET_CHUNK: usize = 3;
+pub const SERVICE_NET_DATAGRAM_MAX: usize = 64;
+pub const SERVICE_NET_SOCKETS: usize = 4;
+pub const SERVICE_NET_QUEUE: usize = 4;
+pub const SERVICE_NET_EPHEMERAL_PORT: u16 = 49152;
+/// `EADDRINUSE`：bind 到已被占用的端口。
+pub const SERVICE_NET_EADDRINUSE: u64 = 98;
+
+/// 打包一次网络请求（`arg` 的语义由 `op` 决定）。
+pub const fn pack_net_request(op: u64, handle: u64, client: u64, arg: u64) -> u64 {
+    SERVICE_NET_REQUEST_TAG
+        | ((op & SERVICE_NET_OP_MASK) << SERVICE_NET_OP_SHIFT)
+        | ((handle & 0xf) << SERVICE_NET_HANDLE_SHIFT)
+        | ((client & 0xff) << SERVICE_NET_CLIENT_SHIFT)
+        | (arg & SERVICE_NET_ARG_MASK)
+}
+
+/// 打包一次网络应答；`status` 为 0 或正 errno。
+pub const fn pack_net_reply(op: u64, handle: u64, status: u64, data: u64) -> u64 {
+    SERVICE_NET_REPLY_TAG
+        | ((op & SERVICE_NET_OP_MASK) << SERVICE_NET_OP_SHIFT)
+        | ((handle & 0xf) << SERVICE_NET_HANDLE_SHIFT)
+        | ((status & 0xff) << SERVICE_NET_STATUS_SHIFT)
+        | (data & SERVICE_NET_ARG_MASK)
+}
+
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
 pub const SERVICE_FILE_HANDLES: usize = 8;
 

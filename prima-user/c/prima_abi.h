@@ -69,6 +69,11 @@
 #define PRIMA_LINUX_SYS_rename 82
 #define PRIMA_LINUX_SYS_symlink 88
 #define PRIMA_LINUX_SYS_readlink 89
+#define PRIMA_LINUX_SYS_socket 41
+#define PRIMA_LINUX_SYS_sendto 44
+#define PRIMA_LINUX_SYS_recvfrom 45
+#define PRIMA_LINUX_SYS_bind 49
+#define PRIMA_LINUX_SYS_getsockname 51
 #define PRIMA_LINUX_SYS_newfstatat 262
 #define PRIMA_LINUX_SYS_renameat 264
 #define PRIMA_LINUX_SYS_symlinkat 266
@@ -93,6 +98,11 @@
 #define PRIMA_ERRNO_ERANGE 34
 #define PRIMA_ERRNO_ENOSYS 38
 #define PRIMA_ERRNO_ELOOP 40
+#define PRIMA_ERRNO_NOTSOCK 88
+#define PRIMA_ERRNO_DESTADDRREQ 89
+#define PRIMA_ERRNO_MSGSIZE 90
+#define PRIMA_ERRNO_AFNOSUPPORT 97
+#define PRIMA_ERRNO_ADDRINUSE 98
 
 /* M4：openat 的冻结 flag 子集。adapter 归一化后只把 access/CREAT/TRUNC 传给服务端；
  * O_LARGEFILE/O_CLOEXEC 被接受但无语义效果（单线程、无 exec）。 */
@@ -227,6 +237,32 @@
 #define PRIMA_VFS_OP_UNLINK 1
 #define PRIMA_VFS_OP_RMDIR 2
 #define PRIMA_DIR_CACHE_BYTES 32
+
+
+/* M19：loopback IPv4/UDP 子集。请求/应答布局与 `prima-runtime::protocol` 一致。 */
+#define PRIMA_STAGE5_NET_REQUEST_TAG UINT64_C(0x5ee6000000000000)
+#define PRIMA_STAGE5_NET_REPLY_TAG UINT64_C(0x5ee7000000000000)
+#define PRIMA_NET_OP_SHIFT 44
+#define PRIMA_NET_HANDLE_SHIFT 40
+#define PRIMA_NET_CLIENT_SHIFT 32
+#define PRIMA_NET_ARG_MASK UINT64_C(0xffffffff)
+#define PRIMA_NET_OP_OPEN 0
+#define PRIMA_NET_OP_BIND 1
+#define PRIMA_NET_OP_SENDTO_BEGIN 2
+#define PRIMA_NET_OP_SENDTO_DATA 3
+#define PRIMA_NET_OP_SENDTO_END 4
+#define PRIMA_NET_OP_RECVFROM 5
+#define PRIMA_NET_OP_RECV_CHUNK 6
+#define PRIMA_NET_OP_GETSOCKNAME 7
+#define PRIMA_NET_OP_CLOSE 8
+#define PRIMA_NET_PORT_SHIFT 16
+#define PRIMA_NET_LEN_SHIFT 16
+#define PRIMA_NET_STATUS_SHIFT 32
+#define PRIMA_NET_CHUNK 3
+#define PRIMA_NET_DATAGRAM_MAX 64
+#define PRIMA_NET_SOCKETS 4
+#define PRIMA_AF_INET 2
+#define PRIMA_SOCK_DGRAM 2
 
 /* M8：本地 fd 表（0..18）。fd 0 预置 `/dev/null` 语义（读 EOF、写丢弃），1/2 预置
  * tty；文件/目录项指向服务端句柄（3..10），dup 出的多项共享同一句柄与 offset。

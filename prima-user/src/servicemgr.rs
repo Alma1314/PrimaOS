@@ -51,15 +51,22 @@ use prima_runtime::{
         NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
         SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_ECHO_ARGS_OFFSET,
-        SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT,
-        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_REPLY_TAG,
-        SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
-        SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_SERVICEMGR,
-        SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
-        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
-        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
-        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
-        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_EBADF, SERVICE_FILE_EINVAL, SERVICE_FILE_ENOENT,
+        SERVICE_FILE_ENOSPC, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT,
+        SERVICE_FILE_REPLY_TAG, SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER,
+        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS,
+        SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC,
+        SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA,
+        SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK,
+        SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NET_ARG_MASK,
+        SERVICE_NET_CHUNK, SERVICE_NET_CLIENT_SHIFT, SERVICE_NET_DATAGRAM_MAX,
+        SERVICE_NET_EADDRINUSE, SERVICE_NET_EPHEMERAL_PORT, SERVICE_NET_HANDLE_SHIFT,
+        SERVICE_NET_LEN_MASK, SERVICE_NET_LEN_SHIFT, SERVICE_NET_OP_BIND, SERVICE_NET_OP_CLOSE,
+        SERVICE_NET_OP_GETSOCKNAME, SERVICE_NET_OP_MASK, SERVICE_NET_OP_OPEN,
+        SERVICE_NET_OP_RECV_CHUNK, SERVICE_NET_OP_RECVFROM, SERVICE_NET_OP_SENDTO_BEGIN,
+        SERVICE_NET_OP_SENDTO_DATA, SERVICE_NET_OP_SENDTO_END, SERVICE_NET_OP_SHIFT,
+        SERVICE_NET_QUEUE, SERVICE_NET_REQUEST_TAG, SERVICE_NET_SOCKETS, SERVICE_NS_CAP_TAG,
+        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICE_VFS_CHMOD_TAG, SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG,
@@ -71,7 +78,7 @@ use prima_runtime::{
         SERVICE_VFS_STATUS_TAG, SERVICE_VMA_CAP_REQUEST_TAG, SERVICE_VMA_CLIENT_SHIFT,
         SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG,
         STAGE5_TTY_ACK_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
-        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply,
+        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply, pack_net_reply,
         pack_service_name, pack_service_request, pack_vfs_pair_reply, pack_vma_cap_reply,
     },
     task::TaskSpec,
@@ -430,6 +437,8 @@ pub extern "C" fn _start(
     let mut rootfs_bound = false;
     let mut file_authorized = false;
     let mut file_client: Option<u32> = None;
+    // M19：loopback UDP 端点表（仅首次 socket 请求后才被使用）。
+    let mut net = NetState::new();
     let mut c_send: Option<Capability> = None;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
@@ -725,6 +734,100 @@ pub extern "C" fn _start(
                 } else {
                     pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOENT, 0)
                 };
+                let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
+            }
+        } else if message.payload >> 48 == SERVICE_NET_REQUEST_TAG >> 48 {
+            // M19：loopback IPv4/UDP 子集。端点表在本（ring3 服务管理器）进程内；
+            // 数据报经 IPC 搬运，但对外是 socket/端口/数据报语义，不是 IPC 别名。
+            let op = (message.payload >> SERVICE_NET_OP_SHIFT) & SERVICE_NET_OP_MASK;
+            let handle = ((message.payload >> SERVICE_NET_HANDLE_SHIFT) & 0xf) as u8;
+            let client = ((message.payload >> SERVICE_NET_CLIENT_SHIFT) & 0xff) as u32;
+            let arg = message.payload & SERVICE_NET_ARG_MASK;
+            let mut reply = None;
+            match op {
+                SERVICE_NET_OP_OPEN => {
+                    reply = Some(match net.open() {
+                        Some(handle) => pack_net_reply(op, handle as u64, 0, handle as u64),
+                        None => pack_net_reply(op, 0, SERVICE_FILE_ENOSPC, 0),
+                    });
+                }
+                SERVICE_NET_OP_BIND => {
+                    let port = (arg & 0xffff) as u16;
+                    reply = Some(match net.bind(handle, port) {
+                        Ok(port) => pack_net_reply(op, handle as u64, 0, port as u64),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                SERVICE_NET_OP_GETSOCKNAME => {
+                    reply = Some(match net.port(handle) {
+                        Ok(port) => pack_net_reply(op, handle as u64, 0, port as u64),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                SERVICE_NET_OP_SENDTO_BEGIN => {
+                    let port = (arg & 0xffff) as u16;
+                    let total = ((arg >> SERVICE_NET_LEN_SHIFT) & SERVICE_NET_LEN_MASK) as u8;
+                    reply = Some(match net.send_begin(handle, port, total) {
+                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                SERVICE_NET_OP_SENDTO_DATA => {
+                    reply = Some(match net.send_data(arg as u32) {
+                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                SERVICE_NET_OP_SENDTO_END => {
+                    reply = Some(match net.send_end() {
+                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                    if let Some((pending_handle, pending_client)) = net.pending
+                        && let Some((source, len)) = net.take_datagram(pending_handle)
+                    {
+                        net.pending = None;
+                        let data = source as u64 | ((len as u64) << SERVICE_NET_LEN_SHIFT);
+                        if let Some(send) = c_send {
+                            let _ = runtime.send(
+                                TaskId::from_raw(pending_client),
+                                send,
+                                pack_net_reply(
+                                    SERVICE_NET_OP_RECVFROM,
+                                    pending_handle as u64,
+                                    0,
+                                    data,
+                                ),
+                                &[],
+                            );
+                        }
+                    }
+                }
+                SERVICE_NET_OP_RECVFROM => {
+                    if let Some((source, len)) = net.take_datagram(handle) {
+                        let data = source as u64 | ((len as u64) << SERVICE_NET_LEN_SHIFT);
+                        reply = Some(pack_net_reply(op, handle as u64, 0, data));
+                    } else if net.socket_open(handle) {
+                        net.pending = Some((handle, client));
+                    } else {
+                        reply = Some(pack_net_reply(op, handle as u64, SERVICE_FILE_EBADF, 0));
+                    }
+                }
+                SERVICE_NET_OP_RECV_CHUNK => {
+                    reply = Some(match net.recv_chunk(handle, arg as usize) {
+                        Ok(data) => pack_net_reply(op, handle as u64, 0, data),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                SERVICE_NET_OP_CLOSE => {
+                    reply = Some(match net.close(handle) {
+                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
+                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
+                    });
+                }
+                _ => reply = Some(pack_net_reply(op, handle as u64, SERVICE_FILE_EINVAL, 0)),
+            }
+            if let (Some(reply), Some(send)) = (reply, c_send) {
                 let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
             }
         } else if message.payload >> 48 == SERVICE_FILE_REQUEST_TAG >> 48 {
@@ -2219,6 +2322,237 @@ fn write_created_witness(
 ///
 /// 保留两条**连续**发送的 SPEC-104 协议。阶段 2 直投修复后，内核已可把带 cap 消息
 /// 直接递送给阻塞在 `recv` 的接收者；移除此唤醒需同步修改服务端协议和见证。
+/// M19：loopback UDP 端点表。队列固定大小，满时 `ENOBUFS`；不做拥塞/重传。
+#[derive(Clone, Copy)]
+struct NetDatagram {
+    len: u8,
+    source: u16,
+    bytes: [u8; SERVICE_NET_DATAGRAM_MAX],
+}
+
+impl NetDatagram {
+    const EMPTY: Self = Self {
+        len: 0,
+        source: 0,
+        bytes: [0; SERVICE_NET_DATAGRAM_MAX],
+    };
+}
+
+#[derive(Clone, Copy)]
+struct NetSocket {
+    open: bool,
+    port: u16,
+    head: u8,
+    count: u8,
+    queue: [NetDatagram; SERVICE_NET_QUEUE],
+    recv_len: u8,
+    recv_buf: [u8; SERVICE_NET_DATAGRAM_MAX],
+}
+
+impl NetSocket {
+    const EMPTY: Self = Self {
+        open: false,
+        port: 0,
+        head: 0,
+        count: 0,
+        queue: [NetDatagram::EMPTY; SERVICE_NET_QUEUE],
+        recv_len: 0,
+        recv_buf: [0; SERVICE_NET_DATAGRAM_MAX],
+    };
+}
+
+struct NetState {
+    sockets: [NetSocket; SERVICE_NET_SOCKETS],
+    pending: Option<(u8, u32)>,
+    send_handle: u8,
+    send_port: u16,
+    send_active: bool,
+    send_total: u8,
+    send_got: u8,
+    send_buf: [u8; SERVICE_NET_DATAGRAM_MAX],
+    next_port: u16,
+}
+
+impl NetState {
+    const fn new() -> Self {
+        Self {
+            sockets: [NetSocket::EMPTY; SERVICE_NET_SOCKETS],
+            pending: None,
+            send_handle: 0,
+            send_port: 0,
+            send_active: false,
+            send_total: 0,
+            send_got: 0,
+            send_buf: [0; SERVICE_NET_DATAGRAM_MAX],
+            next_port: SERVICE_NET_EPHEMERAL_PORT,
+        }
+    }
+
+    fn socket_open(&self, handle: u8) -> bool {
+        (handle as usize) < SERVICE_NET_SOCKETS && self.sockets[handle as usize].open
+    }
+
+    fn open(&mut self) -> Option<u8> {
+        let index = self.sockets.iter().position(|socket| !socket.open)?;
+        self.sockets[index] = NetSocket::EMPTY;
+        self.sockets[index].open = true;
+        Some(index as u8)
+    }
+
+    fn port(&self, handle: u8) -> Result<u16, u64> {
+        if !self.socket_open(handle) {
+            return Err(SERVICE_FILE_EBADF);
+        }
+        Ok(self.sockets[handle as usize].port)
+    }
+
+    fn bind(&mut self, handle: u8, port: u16) -> Result<u16, u64> {
+        if !self.socket_open(handle) {
+            return Err(SERVICE_FILE_EBADF);
+        }
+        let assigned = if port != 0 {
+            port
+        } else {
+            let mut candidate = self.next_port;
+            loop {
+                if !self
+                    .sockets
+                    .iter()
+                    .any(|socket| socket.open && socket.port == candidate)
+                {
+                    break candidate;
+                }
+                candidate = if candidate == u16::MAX {
+                    SERVICE_NET_EPHEMERAL_PORT
+                } else {
+                    candidate + 1
+                };
+            }
+        };
+        if self.sockets.iter().enumerate().any(|(index, socket)| {
+            index != handle as usize && socket.open && socket.port == assigned
+        }) {
+            return Err(SERVICE_NET_EADDRINUSE);
+        }
+        self.sockets[handle as usize].port = assigned;
+        if port == 0 {
+            self.next_port = if assigned == u16::MAX {
+                SERVICE_NET_EPHEMERAL_PORT
+            } else {
+                assigned + 1
+            };
+        }
+        Ok(assigned)
+    }
+
+    fn send_begin(&mut self, handle: u8, port: u16, total: u8) -> Result<(), u64> {
+        if !self.socket_open(handle) {
+            return Err(SERVICE_FILE_EBADF);
+        }
+        if total as usize > SERVICE_NET_DATAGRAM_MAX || port == 0 {
+            return Err(SERVICE_FILE_EINVAL);
+        }
+        let bound = self.sockets[handle as usize].port;
+        if bound == 0 {
+            let _ = self.bind(handle, 0)?;
+        }
+        self.send_handle = handle;
+        self.send_port = port;
+        self.send_active = true;
+        self.send_total = total;
+        self.send_got = 0;
+        self.send_buf = [0; SERVICE_NET_DATAGRAM_MAX];
+        Ok(())
+    }
+
+    fn send_data(&mut self, data: u32) -> Result<(), u64> {
+        if !self.send_active || self.send_got >= self.send_total {
+            return Err(SERVICE_FILE_EINVAL);
+        }
+        for index in 0..SERVICE_NET_CHUNK {
+            if self.send_got as usize >= self.send_total as usize {
+                break;
+            }
+            self.send_buf[self.send_got as usize] = ((data >> (8 * index)) & 0xff) as u8;
+            self.send_got += 1;
+        }
+        Ok(())
+    }
+
+    fn send_end(&mut self) -> Result<(), u64> {
+        if !self.send_active || self.send_got != self.send_total {
+            return Err(SERVICE_FILE_EINVAL);
+        }
+        let source = self.sockets[self.send_handle as usize].port;
+        let len = self.send_total;
+        let bytes = self.send_buf;
+        let destination = self
+            .sockets
+            .iter()
+            .position(|socket| socket.open && socket.port == self.send_port && socket.port != 0);
+        self.send_active = false;
+        self.send_total = 0;
+        self.send_got = 0;
+        let Some(index) = destination else {
+            // UDP：目标未绑定则报文被丢弃，sendto 仍成功。
+            return Ok(());
+        };
+        let socket = &mut self.sockets[index];
+        if socket.count as usize == SERVICE_NET_QUEUE {
+            return Err(SERVICE_FILE_ENOSPC);
+        }
+        let slot = (socket.head as usize + socket.count as usize) % SERVICE_NET_QUEUE;
+        socket.queue[slot] = NetDatagram { len, source, bytes };
+        socket.count += 1;
+        Ok(())
+    }
+
+    fn take_datagram(&mut self, handle: u8) -> Option<(u16, u8)> {
+        if !self.socket_open(handle) {
+            return None;
+        }
+        let socket = &mut self.sockets[handle as usize];
+        if socket.count == 0 {
+            return None;
+        }
+        let slot = socket.head as usize;
+        let datagram = socket.queue[slot];
+        socket.head = ((socket.head as usize + 1) % SERVICE_NET_QUEUE) as u8;
+        socket.count -= 1;
+        socket.recv_len = datagram.len;
+        socket.recv_buf = datagram.bytes;
+        Some((datagram.source, datagram.len))
+    }
+
+    fn recv_chunk(&self, handle: u8, offset: usize) -> Result<u64, u64> {
+        if !self.socket_open(handle) {
+            return Err(SERVICE_FILE_EBADF);
+        }
+        let socket = &self.sockets[handle as usize];
+        let len = socket.recv_len as usize;
+        if offset >= len {
+            return Ok(0);
+        }
+        let count = (len - offset).min(SERVICE_NET_CHUNK);
+        let mut data = 0u64;
+        for index in 0..count {
+            data |= (socket.recv_buf[offset + index] as u64) << (8 * index);
+        }
+        Ok(data)
+    }
+
+    fn close(&mut self, handle: u8) -> Result<(), u64> {
+        if !self.socket_open(handle) {
+            return Err(SERVICE_FILE_EBADF);
+        }
+        self.sockets[handle as usize] = NetSocket::EMPTY;
+        if self.pending.is_some_and(|(pending, _)| pending == handle) {
+            self.pending = None;
+        }
+        Ok(())
+    }
+}
+
 fn forward(runtime: &Runtime<impl SyscallTransport>, endpoint: &Endpoint, segment: Capability) {
     let receiver = TaskId::from_raw(endpoint.id as u32);
     let _ = runtime.send(

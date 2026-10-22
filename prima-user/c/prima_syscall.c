@@ -429,6 +429,7 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
 #define PRIMA_FD_NULL 2
 #define PRIMA_FD_FILE 3
 #define PRIMA_FD_DIR 4
+#define PRIMA_FD_SOCKET 5
 
 static long prima_file_call(long op, long fd, uint64_t arg);
 static long prima_vfs_call(uint64_t payload);
@@ -436,6 +437,8 @@ static long prima_absolute_path(long dirfd, const char *path, char *out,
                                 unsigned long *out_len);
 static long prima_reply_status(uint64_t reply);
 static long prima_chmod_path(long dirfd, const char *path, long mode);
+static long prima_net_request(unsigned char op, unsigned char handle, uint64_t arg,
+                              uint64_t *reply);
 static long prima_vfs_chmod_request(unsigned char start, const char *path,
                                     unsigned long len, unsigned short mode);
 static void prima_dir_reset(unsigned char handle);
@@ -456,6 +459,8 @@ static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT] = {
     {PRIMA_FD_TTY, 2, 0, 0},
 };
 static unsigned char prima_file_refs[PRIMA_FILE_HANDLES];
+// M19：socket 服务端句柄的本地引用计数（dup 共享）。
+static unsigned char prima_net_refs[PRIMA_NET_SOCKETS];
 
 /* M13a：目录 fd 的规范化绝对路径（与 cwd 一样按文本保存），供 fchdir 使用。
  * dup/dup2/dup3 复制路径；关闭 fd 时清除。 */
@@ -549,7 +554,13 @@ static void prima_dir_reset(unsigned char handle) {
 static long prima_fd_drop(int fd) {
     struct prima_fd_entry *entry = &prima_fds[fd - PRIMA_LOCAL_FD_FIRST];
     long status = 0;
-    if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR) {
+    if (entry->kind == PRIMA_FD_SOCKET) {
+        unsigned char handle = entry->object;
+        if (handle < PRIMA_NET_SOCKETS && --prima_net_refs[handle] == 0) {
+            uint64_t reply = 0;
+            (void)prima_net_request(PRIMA_NET_OP_CLOSE, handle, 0, &reply);
+        }
+    } else if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR) {
         unsigned char handle = entry->object;
         if (--prima_file_refs[handle - PRIMA_FILE_FIRST_FD] == 0) {
             long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
@@ -1441,6 +1452,221 @@ static long prima_kernel_umask(long mask) {
     return previous;
 }
 
+/* M19：同步网络请求（OPEN/BIND/SENDTO 系列/RECVFROM/RECV_CHUNK/GETSOCKNAME/CLOSE）。 */
+static long prima_net_request(unsigned char op, unsigned char handle, uint64_t arg,
+                              uint64_t *reply) {
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    uint64_t payload = PRIMA_STAGE5_NET_REQUEST_TAG |
+                       ((uint64_t)(op & 0xf) << PRIMA_NET_OP_SHIFT) |
+                       ((uint64_t)(handle & 0xf) << PRIMA_NET_HANDLE_SHIFT) |
+                       (((uint64_t)id & 0xff) << PRIMA_NET_CLIENT_SHIFT) |
+                       (arg & PRIMA_NET_ARG_MASK);
+    long sent = prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                          (long)prima_ctx.send_cap, (long)payload, 0, 0, 0);
+    if (sent != 0)
+        return sent < 0 ? sent : -PRIMA_ERRNO_EFAULT;
+    uint64_t caps[3];
+    for (;;) {
+        long raw = prima_raw(PRIMA_SYS_RECV, (long)caps, 0, 0, 0, 0, 0);
+        if (raw < 0)
+            return raw;
+        uint64_t value = (uint64_t)raw;
+        if ((value >> 48) != (PRIMA_STAGE5_NET_REPLY_TAG >> 48))
+            continue;
+        // 应答必须匹配本次 op（OPEN 的 handle 是新句柄，其余按原 handle）。
+        if (((value >> PRIMA_NET_OP_SHIFT) & 0xf) != (uint64_t)op)
+            continue;
+        if (op != PRIMA_NET_OP_OPEN &&
+            ((value >> PRIMA_NET_HANDLE_SHIFT) & 0xf) != (uint64_t)handle)
+            continue;
+        *reply = value;
+        return 0;
+    }
+}
+
+static long prima_net_status(uint64_t reply) {
+    return (long)((reply >> PRIMA_NET_STATUS_SHIFT) & 0xff);
+}
+
+/* sockaddr_in 只接受 AF_INET + 127.0.0.1/0.0.0.0。返回主机序端口。 */
+static long prima_sockaddr_port(const void *addr, int len, int allow_zero,
+                                unsigned short *port) {
+    if (!addr || len < 16)
+        return -PRIMA_ERRNO_EINVAL;
+    const unsigned char *bytes = addr;
+    unsigned short family = (unsigned short)(bytes[0] | (bytes[1] << 8));
+    if (family != PRIMA_AF_INET)
+        return -PRIMA_ERRNO_AFNOSUPPORT;
+    unsigned int host = (unsigned int)bytes[4] | ((unsigned int)bytes[5] << 8) |
+                        ((unsigned int)bytes[6] << 16) |
+                        ((unsigned int)bytes[7] << 24);
+    if (host != 0x0100007Fu && host != 0)
+        return -PRIMA_ERRNO_AFNOSUPPORT;
+    unsigned short value = (unsigned short)((bytes[2] << 8) | bytes[3]);
+    if (value == 0 && !allow_zero)
+        return -PRIMA_ERRNO_EINVAL;
+    *port = value;
+    return 0;
+}
+
+static void prima_sockaddr_fill(void *addr, int *len, unsigned short port) {
+    if (!addr || !len || *len < 16) {
+        if (len)
+            *len = 0;
+        return;
+    }
+    unsigned char *bytes = addr;
+    for (int i = 0; i < 16; i++)
+        bytes[i] = 0;
+    bytes[0] = PRIMA_AF_INET;
+    bytes[1] = 0;
+    bytes[2] = (unsigned char)(port >> 8);
+    bytes[3] = (unsigned char)(port & 0xff);
+    bytes[4] = 127;
+    bytes[7] = 1;
+    *len = 16;
+}
+
+static long prima_net_socket(long domain, long type, long protocol) {
+    if (domain != PRIMA_AF_INET)
+        return -PRIMA_ERRNO_AFNOSUPPORT;
+    if (type != PRIMA_SOCK_DGRAM || protocol != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t reply = 0;
+    long status = prima_net_request(PRIMA_NET_OP_OPEN, 0, 0, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    if (status != 0)
+        return -status;
+    unsigned char handle = (unsigned char)(reply & 0xff);
+    if (handle >= PRIMA_NET_SOCKETS)
+        return -PRIMA_ERRNO_EINVAL;
+    int local = prima_fd_install(PRIMA_FD_SOCKET, handle, 0, 0);
+    if (local < 0) {
+        uint64_t drop_reply = 0;
+        (void)prima_net_request(PRIMA_NET_OP_CLOSE, handle, 0, &drop_reply);
+        return -PRIMA_ERRNO_EAGAIN;
+    }
+    prima_net_refs[handle] = 1;
+    return local;
+}
+
+static struct prima_fd_entry *prima_socket_entry(int fd) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry)
+        return 0;
+    if (entry->kind != PRIMA_FD_SOCKET)
+        return 0;
+    return entry;
+}
+
+static long prima_net_bind(int fd, const void *addr, int len) {
+    struct prima_fd_entry *entry = prima_socket_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    unsigned short port = 0;
+    long status = prima_sockaddr_port(addr, len, 1, &port);
+    if (status < 0)
+        return status;
+    uint64_t reply = 0;
+    status = prima_net_request(PRIMA_NET_OP_BIND, entry->object, port, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    return status == 0 ? 0 : -status;
+}
+
+static long prima_net_getsockname(int fd, void *addr, int *len) {
+    struct prima_fd_entry *entry = prima_socket_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    uint64_t reply = 0;
+    long status = prima_net_request(PRIMA_NET_OP_GETSOCKNAME, entry->object, 0, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    if (status != 0)
+        return -status;
+    prima_sockaddr_fill(addr, len, (unsigned short)(reply & 0xffff));
+    return 0;
+}
+
+static long prima_net_sendto(int fd, const void *buf, unsigned long len, int flags,
+                             const void *addr, int addrlen) {
+    struct prima_fd_entry *entry = prima_socket_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    if (flags != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    if (len > PRIMA_NET_DATAGRAM_MAX)
+        return -PRIMA_ERRNO_MSGSIZE;
+    if (!buf && len != 0)
+        return -PRIMA_ERRNO_EFAULT;
+    unsigned short port = 0;
+    long status = prima_sockaddr_port(addr, addrlen, 0, &port);
+    if (status < 0)
+        return status;
+    uint64_t reply = 0;
+    uint64_t arg = (uint64_t)port | ((uint64_t)(len & 0xff) << PRIMA_NET_LEN_SHIFT);
+    status = prima_net_request(PRIMA_NET_OP_SENDTO_BEGIN, entry->object, arg, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    if (status != 0)
+        return -status;
+    const unsigned char *bytes = buf;
+    for (unsigned long offset = 0; offset < len; offset += PRIMA_NET_CHUNK) {
+        uint64_t chunk = 0;
+        for (unsigned long i = 0; i < PRIMA_NET_CHUNK && offset + i < len; i++)
+            chunk |= (uint64_t)bytes[offset + i] << (8 * i);
+        status = prima_net_request(PRIMA_NET_OP_SENDTO_DATA, entry->object, chunk, &reply);
+        if (status < 0)
+            return status;
+        status = prima_net_status(reply);
+        if (status != 0)
+            return -status;
+    }
+    status = prima_net_request(PRIMA_NET_OP_SENDTO_END, entry->object, 0, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    return status == 0 ? (long)len : -status;
+}
+
+static long prima_net_recvfrom(int fd, void *buf, unsigned long len, int flags,
+                               void *addr, int *addrlen) {
+    struct prima_fd_entry *entry = prima_socket_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    if (flags != 0)
+        return -PRIMA_ERRNO_EINVAL;
+    uint64_t reply = 0;
+    long status = prima_net_request(PRIMA_NET_OP_RECVFROM, entry->object, 0, &reply);
+    if (status < 0)
+        return status;
+    status = prima_net_status(reply);
+    if (status != 0)
+        return -status;
+    unsigned short source = (unsigned short)(reply & 0xffff);
+    unsigned long total = (reply >> PRIMA_NET_LEN_SHIFT) & 0xff;
+    unsigned long copy = total < len ? total : len;
+    unsigned char *bytes = buf;
+    for (unsigned long offset = 0; offset < copy; offset += PRIMA_NET_CHUNK) {
+        status = prima_net_request(PRIMA_NET_OP_RECV_CHUNK, entry->object, offset, &reply);
+        if (status < 0)
+            return status;
+        status = prima_net_status(reply);
+        if (status != 0)
+            return -status;
+        uint64_t data = reply & PRIMA_NET_ARG_MASK;
+        for (unsigned long i = 0; i < PRIMA_NET_CHUNK && offset + i < copy; i++)
+            bytes[offset + i] = (unsigned char)((data >> (8 * i)) & 0xff);
+    }
+    prima_sockaddr_fill(addr, addrlen, source);
+    return (long)copy;
+}
+
 static long prima_handle_read(int handle, void *buf, unsigned long len) {
     if (len == 0)
         return 0;
@@ -1641,6 +1867,8 @@ static long prima_fd_read(int fd, void *buf, unsigned long len) {
     struct prima_fd_entry *entry = prima_fd_entry(fd);
     if (!entry)
         return -PRIMA_ERRNO_EBADF;
+    if (entry->kind == PRIMA_FD_SOCKET)
+        return -PRIMA_ERRNO_NOTSOCK;
     if (entry->kind == PRIMA_FD_NULL) {
         if (!buf && len != 0)
             return -PRIMA_ERRNO_EFAULT;
@@ -1660,6 +1888,8 @@ static long prima_fd_write(int fd, const void *buf, unsigned long len) {
             return -PRIMA_ERRNO_EFAULT;
         return (long)len;
     }
+    if (entry->kind == PRIMA_FD_SOCKET)
+        return -PRIMA_ERRNO_NOTSOCK;
     if (entry->kind == PRIMA_FD_TTY)
         return prima_write_bytes(entry->object, buf, len);
     if (entry->kind == PRIMA_FD_FILE)
@@ -1698,6 +1928,8 @@ static long prima_fd_dup(int oldfd) {
         return -PRIMA_ERRNO_EAGAIN;
     if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR)
         prima_file_refs[entry->object - PRIMA_FILE_FIRST_FD]++;
+    else if (entry->kind == PRIMA_FD_SOCKET && entry->object < PRIMA_NET_SOCKETS)
+        prima_net_refs[entry->object]++;
     prima_fd_path_copy(newfd, oldfd);
     return newfd;
 }
@@ -1712,6 +1944,8 @@ static long prima_fd_dup_to(int oldfd, int newfd) {
     unsigned char cloexec = source->cloexec;
     if (kind == PRIMA_FD_FILE || kind == PRIMA_FD_DIR)
         prima_file_refs[object - PRIMA_FILE_FIRST_FD]++;
+    else if (kind == PRIMA_FD_SOCKET && object < PRIMA_NET_SOCKETS)
+        prima_net_refs[object]++;
     if (prima_fd_entry(newfd))
         (void)prima_fd_drop(newfd);
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].kind = kind;
@@ -1924,6 +2158,18 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_fd_close((int)a0);
     case PRIMA_LINUX_SYS_read:
         return prima_fd_read((int)a0, (void *)a1, (unsigned long)a2);
+    case PRIMA_LINUX_SYS_socket:
+        return prima_net_socket(a0, a1, a2);
+    case PRIMA_LINUX_SYS_bind:
+        return prima_net_bind((int)a0, (const void *)a1, (int)a2);
+    case PRIMA_LINUX_SYS_getsockname:
+        return prima_net_getsockname((int)a0, (void *)a1, (int *)a2);
+    case PRIMA_LINUX_SYS_sendto:
+        return prima_net_sendto((int)a0, (const void *)a1, (unsigned long)a2,
+                                (int)a3, (const void *)a4, (int)a5);
+    case PRIMA_LINUX_SYS_recvfrom:
+        return prima_net_recvfrom((int)a0, (void *)a1, (unsigned long)a2,
+                                  (int)a3, (void *)a4, (int *)a5);
     case PRIMA_LINUX_SYS_getdents64:
         return prima_getdents64((int)a0, (void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_lseek:

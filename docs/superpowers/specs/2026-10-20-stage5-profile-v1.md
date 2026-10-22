@@ -1,12 +1,12 @@
 # 阶段 5 POSIX profile v1（delta，M8/M9/M10/M11/M12 提案）
 
-**日期**：2026-10-22（M8 于 2026-10-20 提交，M9 追加元数据/工作目录行，M10 追加匿名内存/保护行，M11 追加文件树变更行，M12 追加启动栈边界，M13a 追加符号链接/rename 行，M13b 追加权限/stdio 行）
-**状态**：**提案**。v0 仍是当前冻结契约；本文件只列出 M8–M13b 需要变更/新增的行，
+**日期**：2026-10-22（M8 于 2026-10-20 提交，M9 追加元数据/工作目录行，M10 追加匿名内存/保护行，M11 追加文件树变更行，M12 追加启动栈边界，M13a 追加符号链接/rename 行，M13b 追加权限/stdio 行，M19 追加 loopback UDP 行）
+**状态**：**提案**。v0 仍是当前冻结契约；本文件只列出 M8–M19 需要变更/新增的行，
 供组织级评审后发布为 v1。S5-D1 的组织级确认仍未完成，因此本文件不自行勾选任何
 S5-D*/S5-X*。
 
 **与 v0 的关系**：不删除、不重编号 v0 的任何行；`P5-FS-01`/`P5-FD-01`/`P5-FS-02`
-只更新 partial 边界与证据，新增 `P5-FS-03`/`P5-FS-04`/`P5-FS-05`；M10 新增 `P5-MM-01` 的 partial 边界，M11 新增 `P5-FS-06` 的 partial 边界，M12 更新 `P5-BOOT-01` 的 partial 边界，M13a 新增 `P5-FS-07` 并更新 `P5-FS-01`/`03`/`04`/`05`/`06`，M13b 新增 `P5-FS-08`/`P5-LIB-02` 并更新 `P5-FS-04`/`P5-IO-02`。未列出的行继续按
+只更新 partial 边界与证据，新增 `P5-FS-03`/`P5-FS-04`/`P5-FS-05`；M10 新增 `P5-MM-01` 的 partial 边界，M11 新增 `P5-FS-06` 的 partial 边界，M12 更新 `P5-BOOT-01` 的 partial 边界，M13a 新增 `P5-FS-07` 并更新 `P5-FS-01`/`03`/`04`/`05`/`06`，M13b 新增 `P5-FS-08`/`P5-LIB-02` 并更新 `P5-FS-04`/`P5-IO-02`，M19 新增 `P5-NET-01` 的 partial 边界。未列出的行继续按
 v0 执行。
 
 ## 1. 变更行
@@ -20,6 +20,7 @@ v0 执行。
 | P5-FS-05 | `chdir`/`getcwd` | partial | **M9**：每任务独立 cwd，初始 `/`；`chdir` 只接受存在的目录（文件→`ENOTDIR`），成功后保存**词法规范化**的绝对路径（无符号链接，故 `..` 按字面回退，根处钳制）；`getcwd` 返回含 NUL 的长度，缓冲不足 `ERANGE`；**M13a**：`fchdir` 接受目录 fd 并恢复打开时记录的规范化绝对路径（非目录 `ENOTDIR`，路径不可得 `EINVAL`）；无 cwd 继承、无 `getcwd` 分配形式（`buf=NULL`）；`chdir("../..")` 仍是词法回退，不按链接父目录重解析。证据：[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)、[M13a 报告](../reports/2026-10-22-stage5-m13a-vfs-links.md) |
 | P5-FS-07 | `rename`/`renameat`、`symlink`/`symlinkat`、`readlink`/`readlinkat`、`fchdir` | partial | **M13a**：同一 VFS 内 `rename` 文件/目录/链接；目标可替换文件/链接或**空**目录，非空目录/文件覆盖目录用 `EACCES`/`ENOTDIR`（冻结错误集无 `ENOTEMPTY`/`EISDIR`）；目录禁止移进自身子树（`EINVAL`）；符号链接目标存内容区（≤64 B），`readlink` 缓冲不足按 Linux 截断；`fchdir` 见 `P5-FS-05`；硬链接/`linkat` 未接线（`ENOSYS`）。证据：[M13a 报告](../reports/2026-10-22-stage5-m13a-vfs-links.md) V2 双轮与同源差分 |
 | P5-LIB-02 | stdio 文件 API：`fopen`/`fread`/`fwrite`/`fseek`/`fclose` | partial | **M13b**：经 musl 实际执行（不是只链接）；`fopen("w+")` 写入/回读、`fopen("r")` 读取、0444 文件写打开拒绝；依赖适配层的 `readv` 拆分。无 `fdopen`/`freopen`/`setvbuf` 验收，无缓冲语义/错误注入承诺 |
+| P5-NET-01 | `socket`/`bind`/`getpeername`/`sendto`/`recvfrom`/`close` | partial | **M19**：仅 `AF_INET`/`SOCK_DGRAM`/loopback 127.0.0.1（或 bind 0.0.0.0 本机）；4 端点 × 4 条 64 B 数据报队列；`bind(0)` 领临时端口、`getsockname` 可查；源端口/零长度/较大报文/未绑定目标丢弃/`EADDRINUSE`/`EAFNOSUPPORT`/`EMSGSIZE`/关闭后 `EBADF` 均有同源证据。无 TCP、IPv6、`connect`/`listen`/`accept`、`poll`/非阻塞、`MSG_*`、分片重组、NIC/DNS。证据：[M19 报告](../reports/2026-10-23-stage5-m19-loopback-udp.md) N1 双轮与同源差分 |
 | P5-FS-08 | `chmod`/`fchmod`/`fchmodat`/`umask` | partial | **M13b**：节点 mode 低 12 位（本切片只接受 0..0o777）；`chmod` 跟随末项链接，`fchmod` 按 fd 节点，`fchmodat` 仅 flags=0；`umask` 为进程级值（默认 022），在 `O_CREAT`/`mkdir` 成功后由适配层按 `mode & ~umask` 收紧；单用户模型只强制 owner 读写位，无 uid/gid/组/other/ACL/setuid/setgid/sticky。证据：[M13b 报告](../reports/2026-10-22-stage5-m13b-permissions-stdio.md) V3 双轮与同源差分 |
 | P5-MM-01 | `mmap/munmap/mprotect` | partial | **M10**：仅 `MAP_PRIVATE|MAP_ANONYMOUS`、fd=-1、offset=0；56 页固定 arena 内按页 first-fit 分配、`munmap` 真正拆 PTE、复用地址时复映射；`mprotect` 经内核 `memseg_protect(41)` 改权，RW↔R 等收缩/恢复可用；初始 prot 生效。`PROT_NONE` 近似为只读（COSIR 访问集不可为空）；匿名 `PROT_EXEC` 返回 `EACCES`（W^X）；无文件映射/`MAP_SHARED`/`mremap`/`madvise`；`MAP_FIXED` 仅限 arena（brk guard 页例外），区外 `ENOMEM`；无硬件 NX。证据：[M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md) A1 双轮与 M10 设计 |
 | P5-FS-06 | `mkdir`/`mkdirat`/`unlink`/`unlinkat`/`rmdir` | partial | **M11**：单路径创建空目录与删除文件/空目录；`AT_FDCWD` 相对路径与 cwd 合成，`dirfd` 形式以目录节点为起点；`AT_REMOVEDIR` 支持，其它 `unlinkat` flags 返回 `EINVAL`。**M13a**：节点表 32 槽、删除后槽位复用；删除的内容区由写入压力触发的压实回收；带打开句柄的节点拒绝删除（`EACCES`）；非空目录/目录 `unlink` 用 `EACCES` 代替 `ENOTEMPTY`/`EISDIR`；`mode`/`umask`/`chmod` 不建模。无硬链接、无跨启动持久化；`rename`/符号链接见 `P5-FS-07`。证据：[M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md) D1 双轮、[M13a 报告](../reports/2026-10-22-stage5-m13a-vfs-links.md) |
@@ -32,7 +33,7 @@ v0 执行。
 ## 2. 不变的行
 
 `P5-ABI-01`、`P5-PROC-01`、`P5-PROC-02`、`P5-TIME-01`、`P5-THREAD-01`、
-`P5-NET-01`、`P5-LIB-01` 按 v0；M8/M9 没有新增 `mmap`/线程/信号/网络能力，也没有升级
+`P5-NET-01` 见下表 `partial`；`P5-LIB-01` 按 v0；M8/M9 没有新增 `mmap`/线程/信号/网络能力，也没有升级
 `P5-LIB-01` 的 stdio 文件 API（M9 的 `ls` 只经 `opendir`/`readdir` 与 `printf` 系列，
 不执行 `fopen`/`fread`）。
 
