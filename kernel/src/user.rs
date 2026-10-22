@@ -1670,6 +1670,27 @@ pub fn register_thread_task(
     Ok(())
 }
 
+/// M16b：登记 clone 线程（复制父帧、rax=0、rsp=stack、可选 FS base）。
+pub fn register_clone_task(
+    task_id: u32,
+    root_phys: u64,
+    parent_frame: SretFrame,
+    stack_top: u64,
+    fs_base: u64,
+) -> Result<(), VspaceError> {
+    let kstack = task_kstack_top(task_id).ok_or(VspaceError::BadRoot)?;
+    let mut frame = parent_frame;
+    frame.rax = 0;
+    frame.rsp = stack_top;
+    frame.cs = USER_CS as u64;
+    frame.ss = USER_DS as u64;
+    crate::sched::set_root(task_id, root_phys);
+    crate::sched::set_kstack_top(task_id, kstack);
+    crate::sched::set_frame(task_id, frame);
+    crate::sched::set_fs_base(task_id, fs_base);
+    Ok(())
+}
+
 /// 切片 O：两任务的抢占空转初始帧（同代码 VA，各自用户栈，RFLAGS.IF=1 以接收时钟）。
 pub fn spin_frames() -> (SretFrame, SretFrame) {
     let mut f1 = SretFrame::ZERO;

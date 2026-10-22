@@ -8923,6 +8923,21 @@ impl BootstrapState {
         }
     }
 
+    /// M16b：Task 是否为非 leader 线程（共享地址空间，退出不拆 root）。
+    pub fn task_is_thread(&self, task_id: u32) -> bool {
+        self.tasks
+            .find(task_id)
+            .and_then(|task| task.process)
+            .and_then(|process| self.processes.find(process))
+            .is_some_and(|process| process.leader != task_id)
+    }
+
+    pub fn process_leader(&self, process_id: u32) -> Option<u32> {
+        self.processes
+            .find(process_id)
+            .map(|process| process.leader)
+    }
+
     /// M15b：Task 所属 Process。
     pub fn process_of(&self, task_id: u32) -> Option<u32> {
         self.tasks.find(task_id).and_then(|task| task.process)
@@ -9283,6 +9298,13 @@ impl BootstrapState {
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
 /// M15b-2：全局线程创建。
+pub fn task_is_thread(task_id: u32) -> bool {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .is_some_and(|state| state.task_is_thread(task_id))
+    })
+}
+
 pub fn thread_create(caller: u32, entry: u64, stack_top: u64) -> Result<u32, ThreadError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.thread_create(caller, entry, stack_top),
@@ -10440,6 +10462,10 @@ mod tests {
             2
         );
         assert_eq!(state.space_of(thread), INIT_TASK_ID);
+        let process = state.process_of(thread).expect("process");
+        assert_eq!(state.process_leader(process), Some(INIT_TASK_ID));
+        assert!(state.task_is_thread(thread));
+        assert!(!state.task_is_thread(INIT_TASK_ID));
         // 线程与 leader 共享能力空间：leader 铸造的 cap 可被线程授权。
         assert_eq!(state.authorize(thread, cap, Right::WaitSignal), Ok(cap));
         // 非法入口/栈。

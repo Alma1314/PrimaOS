@@ -12,6 +12,8 @@
 struct prima_entry_ctx prima_ctx;
 
 static long prima_futex(int *uaddr, int op, int value, const void *timeout);
+static long prima_clone(unsigned long flags, void *stack, int *ptid, int *ctid, unsigned long tls);
+__attribute__((noreturn)) static void prima_thread_exit(void);
 
 /* 六参数陷入：号在 rax，参数依次 rdi/rsi/rdx/r10/r8/r9（Prima ABI）。 */
 static long prima_raw(long number, long a0, long a1, long a2, long a3, long a4,
@@ -2210,6 +2212,80 @@ static void prima_close_all_fds(void) {
     }
 }
 
+/* ---------- M16b：clone / 线程退出 ---------- */
+
+long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5);
+
+#define PRIMA_THREAD_SLOTS 8
+
+struct prima_thread_record {
+    long tid;
+    int *clear_tid;
+};
+
+static struct prima_thread_record prima_threads[PRIMA_THREAD_SLOTS];
+static unsigned long prima_linux_flags_to_prima(unsigned long flags) {
+    /* 只保留内核 clone 支持的位；其余（含 CLONE_VFORK/PID 等）拒绝。 */
+    const unsigned long allowed = PRIMA_CLONE_VM | PRIMA_CLONE_FS | PRIMA_CLONE_FILES |
+                                  PRIMA_CLONE_SIGHAND | PRIMA_CLONE_THREAD |
+                                  PRIMA_CLONE_SYSVSEM | PRIMA_CLONE_SETTLS |
+                                  PRIMA_CLONE_PARENT_SETTID |
+                                  PRIMA_CLONE_CHILD_CLEARTID |
+                                  PRIMA_CLONE_CHILD_SETTID;
+    if (flags & ~allowed)
+        return 0;
+    return flags;
+}
+
+static void prima_thread_record(long tid, int *ctid) {
+    for (int i = 0; i < PRIMA_THREAD_SLOTS; i++) {
+        if (prima_threads[i].tid == 0) {
+            prima_threads[i].tid = tid;
+            prima_threads[i].clear_tid = ctid;
+            return;
+        }
+    }
+}
+
+static long prima_clone(unsigned long flags, void *stack, int *ptid, int *ctid,
+                        unsigned long tls) {
+    unsigned long prima_flags = prima_linux_flags_to_prima(flags);
+    if (!prima_flags || !stack || (prima_flags & (PRIMA_CLONE_VM | PRIMA_CLONE_THREAD)) !=
+                                      (PRIMA_CLONE_VM | PRIMA_CLONE_THREAD))
+        return -PRIMA_ERRNO_EINVAL;
+    long tid = prima_native(PRIMA_SYS_CLONE, (long)prima_flags, (long)stack, (long)tls,
+                            0, 0, 0);
+    if (tid <= 0)
+        return tid; /* 0 = 子线程；负值 = errno */
+    if ((flags & PRIMA_CLONE_PARENT_SETTID) && ptid)
+        *ptid = (int)tid;
+    if ((flags & (PRIMA_CLONE_CHILD_SETTID | PRIMA_CLONE_CHILD_CLEARTID)) && ctid) {
+        *ctid = (int)tid;
+        if (flags & PRIMA_CLONE_CHILD_CLEARTID)
+            prima_thread_record(tid, ctid);
+    }
+    return tid;
+}
+
+__attribute__((noreturn)) static void prima_thread_exit(void) {
+    long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    for (int i = 0; i < PRIMA_THREAD_SLOTS; i++) {
+        if (prima_threads[i].tid == id) {
+            if (prima_threads[i].clear_tid) {
+                *prima_threads[i].clear_tid = 0;
+                (void)prima_futex(prima_threads[i].clear_tid, 1, 0x7fffffff, 0);
+            }
+            prima_threads[i].tid = 0;
+            prima_threads[i].clear_tid = 0;
+        }
+    }
+    (void)prima_native(PRIMA_SYS_THREAD_EXIT, 0, 0, 0, 0, 0, 0);
+    for (;;) {
+        long sink[3];
+        (void)prima_raw(PRIMA_SYS_RECV, (long)sink, 0, 0, 0, 0, 0);
+    }
+}
+
 __attribute__((noreturn)) static void prima_exit_group(int status) {
     prima_close_all_fds();
     long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
@@ -2379,6 +2455,9 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_tty_ioctl((int)a0, a1, a2);
     case PRIMA_LINUX_SYS_futex:
         return prima_futex((int *)a0, (int)a1, (int)a2, (void *)a3);
+    case PRIMA_LINUX_SYS_clone:
+        return prima_clone((unsigned long)a0, (void *)a1, (int *)a2, (int *)a3,
+                           (unsigned long)a4);
     case PRIMA_LINUX_SYS_clock_gettime:
         return prima_clock_gettime(a0, (void *)a1);
     case PRIMA_LINUX_SYS_clock_nanosleep:
@@ -2403,7 +2482,13 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
             return 0;
         }
         return -PRIMA_ERRNO_EINVAL;
-    case PRIMA_LINUX_SYS_exit:
+    case PRIMA_LINUX_SYS_exit: {
+        long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+        for (int i = 0; i < PRIMA_THREAD_SLOTS; i++)
+            if (prima_threads[i].tid == id)
+                prima_thread_exit();
+        prima_exit_group((int)a0);
+    }
     case PRIMA_LINUX_SYS_exit_group:
         prima_exit_group((int)a0);
     default:

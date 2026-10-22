@@ -213,6 +213,10 @@ pub mod syscall {
     ///
     /// 共享调用者 Process 的地址空间与能力空间；`tls=0` 时继承调用者 FS base。
     pub const SYS_THREAD_CREATE: u64 = 47;
+    /// M16b：Linux `clone` 语义的共享线程创建（copy 调用者帧、rax=0、rsp=stack）。
+    pub const SYS_CLONE: u64 = 48;
+    /// M16b：退出当前线程（不拆共享地址空间，不报告进程状态）。
+    pub const SYS_THREAD_EXIT: u64 = 49;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

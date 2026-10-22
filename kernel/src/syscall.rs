@@ -38,15 +38,15 @@ use prima_ostd::entry::AbiFrame;
 use prima_ostd::sync::StaticCell;
 
 pub use prima_abi::syscall::{
-    SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_COPY_IN,
+    SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_CLONE, SYS_COPY_IN,
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY,
     SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE,
     SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
     SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
-    SYS_THREAD_CREATE, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL,
-    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY,
-    SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_YIELD,
+    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
+    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -983,6 +983,64 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
         sched::set_frame_rax(*task, result.code());
     }
+}
+
+/// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack）。
+fn clone_call(flags: u64, stack_top: u64, tls: u64) -> u64 {
+    const CLONE_VM: u64 = 0x100;
+    const CLONE_FS: u64 = 0x200;
+    const CLONE_FILES: u64 = 0x400;
+    const CLONE_SIGHAND: u64 = 0x800;
+    const CLONE_THREAD: u64 = 0x1_0000;
+    const CLONE_SYSVSEM: u64 = 0x4_0000;
+    const CLONE_SETTLS: u64 = 0x8_0000;
+    const CLONE_PARENT_SETTID: u64 = 0x10_0000;
+    const CLONE_CHILD_CLEARTID: u64 = 0x20_0000;
+    const CLONE_CHILD_SETTID: u64 = 0x100_0000;
+    const ALLOWED: u64 = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | CLONE_SETTLS
+        | CLONE_PARENT_SETTID
+        | CLONE_CHILD_CLEARTID
+        | CLONE_CHILD_SETTID;
+    if flags & !ALLOWED != 0 || flags & (CLONE_VM | CLONE_THREAD) != (CLONE_VM | CLONE_THREAD) {
+        return encode_errno(Errno::Invalid);
+    }
+    let caller = sched::current();
+    let Some(root) = sched::root(caller) else {
+        return encode_errno(Errno::Fault);
+    };
+    let frame = current_context();
+    let thread = match bootstrap::thread_create(caller, frame.rip, stack_top) {
+        Ok(thread) => thread,
+        Err(_) => return encode_errno(Errno::NoSpace),
+    };
+    let fs_base = if flags & CLONE_SETTLS != 0 {
+        tls
+    } else {
+        sched::fs_base(caller).unwrap_or(0)
+    };
+    if crate::user::register_clone_task(thread, root, frame, stack_top, fs_base).is_err() {
+        bootstrap::thread_abort(thread);
+        return encode_errno(Errno::Invalid);
+    }
+    thread as u64
+}
+
+/// M16b：退出当前线程（不拆共享 root、不报告进程状态）。
+fn thread_exit_call() -> u64 {
+    let cur = sched::current();
+    if !bootstrap::task_is_thread(cur) {
+        return encode_errno(Errno::Invalid);
+    }
+    let next = sched::pick_next(cur).expect("SYS_THREAD_EXIT: no Ready task to switch to");
+    let _ = bootstrap::task_destroy(cur, cur, None, 0);
+    sched::clear_task(cur);
+    sched::exit_to(next)
 }
 
 fn thread_create_call(entry: u64, stack_top: u64, tls: u64) -> u64 {
@@ -2078,7 +2136,12 @@ fn task_destroy_call(raw_cap: u64) -> u64 {
             None => return encode_errno(Errno::Again),
         }
     }
-    let root = crate::sched::root(task_id);
+    // M16b：非 leader 线程退出不拆共享地址空间（root 归 leader/Process）。
+    let root = if bootstrap::task_is_thread(task_id) {
+        None
+    } else {
+        crate::sched::root(task_id)
+    };
     match bootstrap::task_destroy(caller, task_id, root, offset) {
         Ok(()) if self_destroy => {
             crate::sched::clear_task(caller);
@@ -2483,8 +2546,12 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_CLONE {
+        clone_call(args[0], args[1], args[2])
     } else if num == SYS_THREAD_CREATE {
         thread_create_call(args[0], args[1], args[2])
+    } else if num == SYS_THREAD_EXIT {
+        thread_exit_call()
     } else if num == SYS_WAIT_CREATE {
         wait_create_call()
     } else if num == SYS_WAIT_OBSERVE {

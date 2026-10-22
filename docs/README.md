@@ -54,6 +54,7 @@
   - [线程容量调查（ISSUE-THREAD-CAPACITY-001）](superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md)
   - [M15b-2b 线程槽位回收与 W2](superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)
   - [M16a futex WAIT/WAKE](superpowers/reports/2026-10-23-stage5-m16a-futex.md)
+  - [M16b-1 clone 基础与 musl 阻塞](superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md)
 
 ## 阶段 0–4 签署入口
 
