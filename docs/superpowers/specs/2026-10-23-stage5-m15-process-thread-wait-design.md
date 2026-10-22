@@ -51,6 +51,12 @@ Thread {
 Phase 5 只落地**单线程 Process + Thread 视图**；`fork`/`execve`/`wait4` 留 M17，
 多线程 `pthread` 由 M16 在共享 root 上创建 Threads。
 
+**实现进展（M15b-1）**：内核 bootstrap 已有 Process 表与 Task→Process 归属；
+`task_create` 建立单线程 Process，销毁摘除。用户态线程创建暂缓：COSIR 的
+Capability 位置空间是每 Task 的，线程共享地址空间后无法直接使用既有 fd/cap，
+见 `ISSUE-PTHREAD-CAPS-001`；需先决定 Process 共享 cap 空间或一致的 cap
+复制/迁移语义，才能继续 M15b-2 与 M16。
+
 ## 3. WaitObject（M15a，按 COSIR §21 实现）
 
 ### 3.1 对象与权限

@@ -557,6 +557,8 @@ pub struct TaskRecord {
     pub entry: u64,
     /// §5.2/W9：仅 `status == Faulted` 时非空（双向不变量由 `check_faulted_invariant` 钉住）。
     pub pending_exc: Option<PendingExc>,
+    /// M15b：所属 Process（线程模型；单线程 Task 也各有 Process）。
+    pub process: Option<u32>,
     /// COSIR §5.2：仅 `BlockedWait` 时非空。
     pub wait_request: Option<WaitRequest>,
     /// COSIR §5.6：唤醒后待领取的结果（`schedule` 消费）。
@@ -669,6 +671,7 @@ impl TaskTable {
             root_ns_cap: NAMESPACE_CAP_HANDLE,
             entry: 0,
             pending_exc: None,
+            process: None,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -713,6 +716,7 @@ impl TaskTable {
             root_ns_cap: Handle::ZERO,
             entry,
             pending_exc: None,
+            process: None,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -2814,6 +2818,79 @@ pub struct NsRejects {
     pub invalid_path: u32,
 }
 
+/// M15b / COSIR Process 提案：活动 Process 上限（= MAX_TASKS）。
+pub const MAX_PROCESSES: usize = MAX_TASKS;
+
+/// M15b：Process 是线程组（共享地址空间/fd/cwd 的用户态概念），调度单元仍是 Task。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Process {
+    pub id: u32,
+    pub creator: u32,
+    /// 线程位图（task id 1..=MAX_TASKS；紧凑表示以守住 `BootstrapState` 栈预算）。
+    pub threads: u32,
+    pub thread_count: usize,
+    pub exit: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessTable {
+    pub entries: [Option<Process>; MAX_PROCESSES],
+    pub count: usize,
+}
+
+impl ProcessTable {
+    const fn empty() -> Self {
+        Self {
+            entries: [None; MAX_PROCESSES],
+            count: 0,
+        }
+    }
+
+    pub fn find(&self, id: u32) -> Option<&Process> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|process| process.id == id)
+    }
+
+    fn find_mut(&mut self, id: u32) -> Option<&mut Process> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|process| process.id == id)
+    }
+
+    fn next_id(&self) -> u32 {
+        self.entries
+            .iter()
+            .flatten()
+            .map(|process| process.id + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn insert(&mut self, process: Process) -> bool {
+        if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(process);
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove(&mut self, id: u32) -> Option<Process> {
+        for slot in self.entries.iter_mut() {
+            if slot.is_some_and(|process| process.id == id) {
+                let process = slot.take();
+                self.count -= 1;
+                return process;
+            }
+        }
+        None
+    }
+}
+
 /// M15 / COSIR §21：活动 WaitObject 上限（8 个对象，内联表）。
 pub const MAX_WAIT_OBJECTS: usize = 8;
 /// COSIR §21.1.1：根 WaitObject Capability 的权限集。
@@ -3422,6 +3499,8 @@ pub struct BootstrapState {
     pub devices: DeviceTable,
     /// M15 / COSIR §5.6：活动等待对象表。
     pub wait_objects: WaitObjectTable,
+    /// M15b：Process/线程组表。
+    pub processes: ProcessTable,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -6359,6 +6438,9 @@ impl BootstrapState {
         if !self.audit.can_append(2 + initial_count) {
             return Err(TaskCreateError::AuditFull);
         }
+        if self.processes.count == MAX_PROCESSES {
+            return Err(TaskCreateError::CapacityExceeded);
+        }
         let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
         // ---- 成功动作 2：新地址空间 + 代码页 ----
         let root = crate::frames::allocate_table_frame().map_err(|_| TaskCreateError::NoMemory)?;
@@ -6499,7 +6581,10 @@ impl BootstrapState {
                 return Err(TaskCreateError::CapacityExceeded);
             }
         }
-        // ---- 成功动作 8：TaskCreated ----
+        // ---- 成功动作 8：TaskCreated（M15b：新 Task 建立单线程 Process） ----
+        if let Some(process) = self.create_process(caller) {
+            self.attach_thread(process, new_id);
+        }
         self.audit
             .append(AuditEvent::TaskCreated { task_id: new_id });
         Ok(TaskCreateOutcome {
@@ -6727,6 +6812,8 @@ impl BootstrapState {
     /// 自毁路径（[`Self::task_destroy_self`]）复用它——调用者此刻是 `Running`，不能过
     /// `prepare_destroy` 的 Running 检查。
     fn destroy_task_body(&mut self, task_id: u32) -> Result<(), TaskError> {
+        // M15b：从所属 Process 摘除；最后一个线程离开时删除 Process。
+        self.detach_thread(task_id);
         let pending_message = self.tasks.find(task_id).and_then(|task| task.pending);
         let mut dropped_message_ids = [0u32; MAX_MESSAGES];
         let mut dropped_count = 0;
@@ -8088,6 +8175,7 @@ pub fn create_state(
         now: 0,
         timers: TimerTable::empty(),
         wait_objects: WaitObjectTable::empty(),
+        processes: ProcessTable::empty(),
         timer_stats: TimerStats::default(),
         devices: DeviceTable::empty(),
         vspace: TaskVspaceTable::empty(),
@@ -8591,6 +8679,82 @@ pub fn time_now() -> Option<Instant> {
 }
 
 impl BootstrapState {
+    /// M15b：建立一个 Process（内部 API；用户态线程创建在后续切片接线）。
+    pub fn create_process(&mut self, creator: u32) -> Option<u32> {
+        let id = self.processes.next_id();
+        self.processes
+            .insert(Process {
+                id,
+                creator,
+                threads: 0,
+                thread_count: 0,
+                exit: None,
+            })
+            .then_some(id)
+    }
+
+    /// M15b：把一个 Task 挂到 Process；同一 Process 至多 MAX_TASKS 个线程。
+    pub fn attach_thread(&mut self, process_id: u32, task_id: u32) -> bool {
+        if self.tasks.find(task_id).is_none() {
+            return false;
+        }
+        let Some(process) = self.processes.find_mut(process_id) else {
+            return false;
+        };
+        if task_id == 0 || task_id > 31 {
+            return false;
+        }
+        let bit = 1u32 << task_id;
+        if process.threads & bit != 0 {
+            return true;
+        }
+        process.threads |= bit;
+        process.thread_count += 1;
+        if let Some(task) = self.tasks.find_mut(task_id) {
+            task.process = Some(process_id);
+        }
+        true
+    }
+
+    /// M15b：从 Process 摘除 Task；最后一个线程离开时删除 Process。
+    fn detach_thread(&mut self, task_id: u32) {
+        let Some(process_id) = self
+            .tasks
+            .find_mut(task_id)
+            .and_then(|task| task.process.take())
+        else {
+            return;
+        };
+        let mut remove_process = false;
+        if let Some(process) = self.processes.find_mut(process_id)
+            && task_id > 0
+            && task_id <= 31
+        {
+            let bit = 1u32 << task_id;
+            if process.threads & bit != 0 {
+                process.threads &= !bit;
+                process.thread_count = process.thread_count.saturating_sub(1);
+            }
+            remove_process = process.thread_count == 0;
+        }
+        if remove_process {
+            let _ = self.processes.remove(process_id);
+        }
+    }
+
+    /// M15b：Task 所属 Process。
+    pub fn process_of(&self, task_id: u32) -> Option<u32> {
+        self.tasks.find(task_id).and_then(|task| task.process)
+    }
+
+    /// M15b：Process 的活动线程数。
+    pub fn process_threads(&self, process_id: u32) -> usize {
+        self.processes
+            .find(process_id)
+            .map(|process| process.thread_count)
+            .unwrap_or(0)
+    }
+
     fn wait_cap(&self, caller: u32, cap: Handle, right: Right) -> Result<u32, WaitError> {
         match self.slots.check(cap) {
             SlotState::Free => return Err(WaitError::InvalidCap),
@@ -10032,6 +10196,32 @@ mod tests {
             state.tasks.find(INIT_TASK_ID).expect("task").status,
             TaskStatus::Ready
         );
+    }
+
+    #[test]
+    fn process_groups_tasks_and_last_thread_removes_it() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).expect("process");
+        assert_eq!(state.process_of(INIT_TASK_ID), None);
+        assert!(state.attach_thread(process, INIT_TASK_ID));
+        assert_eq!(state.process_of(INIT_TASK_ID), Some(process));
+        assert_eq!(state.process_threads(process), 1);
+        state.tasks.create(2).expect("task 2");
+        assert!(state.attach_thread(process, 2));
+        assert_eq!(state.process_of(2), Some(process));
+        assert_eq!(state.process_threads(process), 2);
+        // 重复挂载幂等。
+        assert!(state.attach_thread(process, 2));
+        assert_eq!(state.process_threads(process), 2);
+        // 不存在的 Task / Process 失败。
+        assert!(!state.attach_thread(process, 9));
+        assert!(!state.attach_thread(99, 2));
+        state.detach_thread(2);
+        assert_eq!(state.process_threads(process), 1);
+        assert_eq!(state.process_of(2), None);
+        state.detach_thread(INIT_TASK_ID);
+        assert_eq!(state.process_of(INIT_TASK_ID), None);
+        assert!(state.processes.find(process).is_none());
     }
 
     #[test]
