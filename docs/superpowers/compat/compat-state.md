@@ -91,7 +91,7 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 用户态适配（无新内核机制） | `writev`/`write`/`close(1/2)`/`ioctl` 的 Linux 号映射；`set_tid_address` → `SYS_TASK_ID`；`exit(60)`/`exit_group(231)` → 退出消息 + 自毁；`__syscall4..6` 全参数透传；`brk`/匿名 `mmap`/`mprotect`/`munmap` → 预映射 arena（M10 起按页分配、真正 unmap/复映射，`mprotect` 走内核 `SYS_MEMSEG_PROTECT=41`；partial）；**M8/M9**：本地 fd 0..18 与 `open`/`openat`/`read`/`write`/`lseek`/`close`/`dup`/`dup2`/`dup3`/`getdents64` 翻译、句柄引用计数与共享 offset/目录游标、3 字节分片、OPEN/PATH/COMMIT 三段式路径、Namespace `fs` 一次授权、用户态 VFS/rootfs；M9 增加 STAT 请求（不占句柄）与 `statx`/`chdir`/`getcwd`；M11 增加 MUTATE 请求（mkdir/unlink/rmdir，复用 PATH/COMMIT）；`getpid` → `SYS_TASK_ID`；`__stdio_*`、`printf`/`fflush` 等 musl 路径 |
 | 需新增内核机制（已落地 M2/M3/M6） | `arch_prctl(ARCH_SET_FS)` → `SYS_TASK_SET_FS_BASE=38`，per-task FS base；M3 另启用 SSE（`CR4.OSFXSR/OSXMMEXCPT`）与 per-task FXSAVE/FXRSTOR；M6 追加 `SYS_TIME_ENABLE=39`（只编程 PIT 通道 0，不配置 PIC/IF）与 `SYS_TIME_TICKS=40`（锁存并累计硬件倒计数） |
 | musl 静态基座（M3/M3b/M4 已落地） | 锁定快照 + 两个可重放补丁；Prima crt 接 `__libc_start_main`；静态 `libc.a`/sysroot；`snprintf`/`getenv`/errno、`malloc/free/realloc`、`printf`+`fflush` 已验；C 任务由服务管理器预映射 96 页匿名 arena（与栈同段；M9 起 40 页 brk + 56 页 mmap；M10 起 mmap 区按页分配/回收） |
-| 明确不支持（本片） | 线程/`clone`、futex 等待、信号、`fork/execve/wait4`、网络、动态链接、完整 POSIX `mmap`/文件映射、符号链接、`rename`/`fchdir`、权限位、持久化、进程退出自动关闭 fd |
+| 明确不支持（本片） | 信号、`execve`、网络、动态链接、完整 POSIX `mmap`/文件映射、符号链接、`rename`/`fchdir`、权限位、持久化、进程退出自动关闭 fd；`fork`/`wait4` 见 §5（机制部分落地、用户态未验收），不得据此宣称支持 |
 | 仅链接、不执行（E1–E6） | mallocng `calloc`、futex/`__wait`（`libc.need_locks=0`）、`poll`/`ppoll`（非 secure auxv 早退）；`open`/`lseek` 已由 M4 适配层承接，但不在 echo 闭包 |
 
 ## 4. 非承诺
@@ -121,3 +121,24 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
   增长，不是断言放宽。`frames_ready` 的 image/free 数值随内核镜像变化。
 - SSP/fortify 在 Prima 构建中预计关闭（避免 `AT_RANDOM` 与 glibc 专有 `*_chk` 符号）；
   这不是安全承诺，需在 M3 中作为已知边界登记。
+
+
+## 5. 阶段 5 追加的原生 syscall（42–54）状态
+
+本节把 M13–M17 新增的 Prima 原生入口按**当前证据**登记；这是状态台账，
+不是兼容性承诺。随后缀 `partial` 的项只表示机制/模型落地，用户态语义未验收。
+
+| 号 | 名称 | 状态 | 证据 |
+|---|---|---|---|
+| 42–46 | `SYS_WAIT_OBJECT_WAIT/ANY`、`SIGNAL`、`DESTROY`、`CLOSE` | 已实现 | 模块 E 报告、W1/W2 探针双轮 |
+| 47 | `SYS_THREAD_CREATE` | 已实现 | W2 探针双轮（fresh entry 线程） |
+| 48 | `SYS_CLONE` | 已实现 | W4（musl clone 路由、pthread_create/join） |
+| 49 | `SYS_THREAD_EXIT` | 已实现 | W4、W2 |
+| 50 | `SYS_THREAD_CLEAR_TID` | 已实现 | M16b-3（clear_child_tid 唤醒） |
+| 51 | `SYS_FORK` | **partial**：COW 页表克隆/写隔离成立；子进程用户态续执行未修复，W6 未通过 | M17b-2a/2b 报告 |
+| 52 | （预留） | — | — |
+| 53 | `SYS_WAIT4` | **partial**：模型（阻塞/唤醒/回收/ECHILD/WNOHANG）有 host 用例；syscall 胶水未验收 | M17b-1/3 报告 |
+| 54 | `SYS_PROCESS_EXIT` | **partial**：W6 子进程路径使用；随 W6 未通过 | M17b-2b/2b 报告 |
+
+**不得据此宣称**：`fork`/`wait4`/`execve` 的 POSIX 语义、进程组/session、信号、
+`vfork`/`posix_spawn`、动态链接。
