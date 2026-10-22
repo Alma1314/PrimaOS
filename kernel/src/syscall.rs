@@ -45,7 +45,8 @@ pub use prima_abi::syscall::{
     SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
     SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
     SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_YIELD,
+    SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE,
+    SYS_WAIT_SIGNAL, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -960,6 +961,93 @@ fn timer_destroy_call(raw_cap: u64) -> u64 {
     match bootstrap::timer_destroy(sched::current(), cap) {
         Ok(()) => 0,
         Err(error) => encode_errno(timer_errno(error)),
+    }
+}
+
+/// M15：`WaitError` → errno。
+pub const fn wait_errno(error: bootstrap::WaitError) -> Errno {
+    use bootstrap::WaitError;
+    match error {
+        WaitError::InvalidCaller | WaitError::NotHeld | WaitError::MissingRight(_) => Errno::Access,
+        WaitError::InvalidCap
+        | WaitError::InvalidWaitObject
+        | WaitError::DuplicateWaitObject
+        | WaitError::InvalidGeneration => Errno::Invalid,
+        WaitError::TargetDead => Errno::NoEnt,
+        WaitError::CapacityExceeded | WaitError::AuditFull => Errno::NoSpace,
+        WaitError::WouldBlock => Errno::Again,
+    }
+}
+
+fn wait_create_call() -> u64 {
+    match bootstrap::wait_object_create(sched::current()) {
+        Ok(handle) => handle.encode(),
+        Err(error) => encode_errno(wait_errno(error)),
+    }
+}
+
+fn wait_observe_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::wait_object_observe(sched::current(), cap) {
+        Ok(generation) => generation,
+        Err(error) => encode_errno(wait_errno(error)),
+    }
+}
+
+fn wait_signal_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::wait_object_signal(sched::current(), cap) {
+        Ok(generation) => generation,
+        Err(error) => encode_errno(wait_errno(error)),
+    }
+}
+
+fn wait_destroy_call(raw_cap: u64) -> u64 {
+    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    match bootstrap::wait_object_destroy(sched::current(), cap) {
+        Ok(()) => 0,
+        Err(error) => encode_errno(wait_errno(error)),
+    }
+}
+
+/// M15a-1：立即满足/立即超时；需要阻塞时返回 `EAGAIN`。
+fn wait_objects_call(
+    cap0: u64,
+    observed0: u64,
+    cap1: u64,
+    observed1: u64,
+    mode: u64,
+    timeout: u64,
+) -> u64 {
+    let Ok(first) = bootstrap::decode_handle(cap0) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let second = if cap1 == 0 {
+        crate::handle::Handle::ZERO
+    } else {
+        match bootstrap::decode_handle(cap1) {
+            Ok(handle) => handle,
+            Err(_) => return encode_errno(Errno::Invalid),
+        }
+    };
+    match bootstrap::wait_objects(
+        sched::current(),
+        first,
+        observed0,
+        second,
+        observed1,
+        mode,
+        timeout,
+    ) {
+        Ok(bootstrap::WaitOutcome::Satisfied) => 0,
+        Ok(bootstrap::WaitOutcome::TimedOut) => 1,
+        Err(error) => encode_errno(wait_errno(error)),
     }
 }
 
@@ -2341,6 +2429,16 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_WAIT_CREATE {
+        wait_create_call()
+    } else if num == SYS_WAIT_OBSERVE {
+        wait_observe_call(args[0])
+    } else if num == SYS_WAIT_OBJECTS {
+        wait_objects_call(args[0], args[1], args[2], args[3], args[4], args[5])
+    } else if num == SYS_WAIT_SIGNAL {
+        wait_signal_call(args[0])
+    } else if num == SYS_WAIT_DESTROY {
+        wait_destroy_call(args[0])
     } else if num == SYS_AUDIT {
         audit_call(args[0])
     } else if num == SYS_DEV_IOPORT_CREATE {

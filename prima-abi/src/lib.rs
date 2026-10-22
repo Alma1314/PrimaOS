@@ -196,6 +196,19 @@ pub mod syscall {
     /// 追加号；把区间内已映射页的逻辑访问集原子地改为 `new_access`，并同步叶 PTE 的
     /// 可写位。新增权限要求调用者持有对应 Segment 的映射授权；入口页不得失去 `X`。
     pub const SYS_MEMSEG_PROTECT: u64 = 41;
+    /// M15：`wait_object_create() -> wait_cap`（COSIR §21.1.1）。
+    pub const SYS_WAIT_CREATE: u64 = 42;
+    /// M15：`wait_object_observe(cap) -> generation`（COSIR §21.1.2）。
+    pub const SYS_WAIT_OBSERVE: u64 = 43;
+    /// M15：`wait_objects(cap0, gen0, cap1, gen1, mode, timeout)`（COSIR §21.2.1）。
+    ///
+    /// `cap1 == 0` 表示单一对象；`timeout == u64::MAX` 表示无限。M15a-1 只实现
+    /// 立即满足/立即超时；需要阻塞时返回 `EAGAIN`（阻塞路径见后续切片）。
+    pub const SYS_WAIT_OBJECTS: u64 = 44;
+    /// M15：`signal_object(cap) -> generation`（COSIR §21.2.2）。
+    pub const SYS_WAIT_SIGNAL: u64 = 45;
+    /// M15：`wait_object_destroy(cap)`（COSIR §21.1.3）。
+    pub const SYS_WAIT_DESTROY: u64 = 46;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

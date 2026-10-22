@@ -975,6 +975,8 @@ pub enum ObjectRef {
     Timer(u32),
     /// SPEC-113 / §15.2：设备对象。`kind` 随引用携带，供 W2 类型检查（§15.2）。
     Device(u32, DeviceKind),
+    /// M15 / COSIR §5.6：通用等待对象。
+    WaitObject(u32),
 }
 
 impl ObjectRef {
@@ -986,6 +988,7 @@ impl ObjectRef {
             ObjectRef::ExcSource(_) => ObjectKind::ExcSource,
             ObjectRef::Timer(_) => ObjectKind::Timer,
             ObjectRef::Device(_, kind) => ObjectKind::Device(kind),
+            ObjectRef::WaitObject(_) => ObjectKind::WaitObject,
         }
     }
 
@@ -998,7 +1001,8 @@ impl ObjectRef {
             | Self::Namespace(id)
             | Self::ExcSource(id)
             | Self::Timer(id)
-            | Self::Device(id, _) => id,
+            | Self::Device(id, _)
+            | Self::WaitObject(id) => id,
         }
     }
 }
@@ -2757,6 +2761,104 @@ pub struct NsRejects {
     pub invalid_path: u32,
 }
 
+/// M15 / COSIR §21：活动 WaitObject 上限（8 个对象，内联表）。
+pub const MAX_WAIT_OBJECTS: usize = 8;
+/// COSIR §21.1.1：根 WaitObject Capability 的权限集。
+pub const WAIT_RIGHTS: Rights = Rights::from_rights(&[
+    Right::Derive,
+    Right::WaitWait,
+    Right::WaitSignal,
+    Right::WaitDestroy,
+]);
+
+/// COSIR §5.6 / §21：等待对象。语义中立，只维护 generation 与（后续切片的）等待者。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitObject {
+    pub id: u32,
+    pub creator: u32,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitObjectTable {
+    pub entries: [Option<WaitObject>; MAX_WAIT_OBJECTS],
+    pub count: usize,
+}
+
+impl WaitObjectTable {
+    const fn empty() -> Self {
+        Self {
+            entries: [None; MAX_WAIT_OBJECTS],
+            count: 0,
+        }
+    }
+
+    pub fn find(&self, id: u32) -> Option<&WaitObject> {
+        self.entries.iter().flatten().find(|object| object.id == id)
+    }
+
+    fn find_mut(&mut self, id: u32) -> Option<&mut WaitObject> {
+        self.entries
+            .iter_mut()
+            .flatten()
+            .find(|object| object.id == id)
+    }
+
+    fn next_id(&self) -> u32 {
+        self.entries
+            .iter()
+            .flatten()
+            .map(|object| object.id + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn insert(&mut self, object: WaitObject) -> bool {
+        if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(object);
+            self.count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove(&mut self, id: u32) -> Option<WaitObject> {
+        for slot in self.entries.iter_mut() {
+            if slot.is_some_and(|object| object.id == id) {
+                let object = slot.take();
+                self.count -= 1;
+                return object;
+            }
+        }
+        None
+    }
+}
+
+/// COSIR §21.1/§21.2 的失败名。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitError {
+    InvalidCaller,
+    InvalidCap,
+    InvalidWaitObject,
+    NotHeld,
+    MissingRight(Right),
+    TargetDead,
+    CapacityExceeded,
+    AuditFull,
+    DuplicateWaitObject,
+    InvalidGeneration,
+    /// M15a-1：需要阻塞，但阻塞路径尚未实现（syscall 映射为 `EAGAIN`）。
+    WouldBlock,
+}
+
+/// `wait_objects` 的立即结果；阻塞路径在后续切片返回 `WouldBlock`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitOutcome {
+    Satisfied,
+    TimedOut,
+}
+
 /// SPEC-082 / §5.5：Timer 的取消原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimerCancelReason {
@@ -3228,6 +3330,8 @@ pub struct BootstrapState {
     pub timer_stats: TimerStats,
     /// SPEC-113 / §15.2：活动设备表（本片仅 `IOPortRange` 种）。
     pub devices: DeviceTable,
+    /// M15 / COSIR §5.6：活动等待对象表。
+    pub wait_objects: WaitObjectTable,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -3713,6 +3817,7 @@ impl BootstrapState {
             ObjectRef::ExcSource(id) => self.exc_sources.find(id).is_some(),
             ObjectRef::Timer(id) => self.timers.find(id).is_some(),
             ObjectRef::Device(id, _) => self.devices.find(id).is_some(),
+            ObjectRef::WaitObject(id) => self.wait_objects.find(id).is_some(),
         }
     }
 
@@ -7890,6 +7995,7 @@ pub fn create_state(
         ns_rejects: NsRejects::default(),
         now: 0,
         timers: TimerTable::empty(),
+        wait_objects: WaitObjectTable::empty(),
         timer_stats: TimerStats::default(),
         devices: DeviceTable::empty(),
         vspace: TaskVspaceTable::empty(),
@@ -8392,7 +8498,205 @@ pub fn time_now() -> Option<Instant> {
     BOOTSTRAP_STATE.with(|slot| slot.as_ref().map(|state| state.time_now()))
 }
 
+impl BootstrapState {
+    fn wait_cap(&self, caller: u32, cap: Handle, right: Right) -> Result<u32, WaitError> {
+        match self.slots.check(cap) {
+            SlotState::Free => return Err(WaitError::InvalidCap),
+            SlotState::Stale => return Err(WaitError::InvalidWaitObject),
+            SlotState::Live => {}
+        }
+        let target = self.target_of(cap).ok_or(WaitError::InvalidCap)?;
+        let ObjectRef::WaitObject(id) = target else {
+            return Err(WaitError::InvalidWaitObject);
+        };
+        if self.wait_objects.find(id).is_none() {
+            return Err(WaitError::TargetDead);
+        }
+        if self.holder_of(cap) != Some(caller) {
+            return Err(WaitError::NotHeld);
+        }
+        let rights = self.rights_of(cap).ok_or(WaitError::InvalidCap)?;
+        if !rights.contains(right) {
+            return Err(WaitError::MissingRight(right));
+        }
+        Ok(id)
+    }
+
+    /// COSIR §21.1.1：创建 WaitObject 并返回调用者持有的根 Capability。
+    pub fn wait_object_create(&mut self, caller: u32) -> Result<Handle, WaitError> {
+        if !self.tasks.is_live(caller) {
+            return Err(WaitError::InvalidCaller);
+        }
+        if self.wait_objects.count == MAX_WAIT_OBJECTS {
+            return Err(WaitError::CapacityExceeded);
+        }
+        if !self.audit.can_append(3) {
+            return Err(WaitError::AuditFull);
+        }
+        let id = self.wait_objects.next_id();
+        let handle = self
+            .mint_root_capability(caller, WAIT_RIGHTS, ObjectRef::WaitObject(id))
+            .map_err(|_| WaitError::CapacityExceeded)?;
+        if !self.wait_objects.insert(WaitObject {
+            id,
+            creator: caller,
+            generation: 0,
+        }) {
+            return Err(WaitError::CapacityExceeded);
+        }
+        self.audit.append(AuditEvent::ObjectCreated {
+            object_id: id,
+            kind: ObjectKind::WaitObject,
+        });
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: handle,
+            holder: caller,
+        });
+        Ok(handle)
+    }
+
+    /// COSIR §21.1.2：读取 generation（纯查询）。
+    pub fn wait_object_observe(&mut self, caller: u32, cap: Handle) -> Result<u64, WaitError> {
+        let id = self.wait_cap(caller, cap, Right::WaitWait)?;
+        self.wait_objects
+            .find(id)
+            .map(|object| object.generation)
+            .ok_or(WaitError::TargetDead)
+    }
+
+    /// COSIR §21.2.2：generation 加一并返回新值。M15a-1 尚无等待者。
+    pub fn wait_object_signal(&mut self, caller: u32, cap: Handle) -> Result<u64, WaitError> {
+        let id = self.wait_cap(caller, cap, Right::WaitSignal)?;
+        let object = self
+            .wait_objects
+            .find_mut(id)
+            .ok_or(WaitError::TargetDead)?;
+        object.generation += 1;
+        Ok(object.generation)
+    }
+
+    /// COSIR §21.2.1 的立即路径：满足/立即超时；否则 `WouldBlock`。
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_objects(
+        &mut self,
+        caller: u32,
+        cap0: Handle,
+        observed0: u64,
+        cap1: Handle,
+        observed1: u64,
+        mode: u64,
+        timeout: u64,
+    ) -> Result<WaitOutcome, WaitError> {
+        if !self.tasks.is_live(caller) {
+            return Err(WaitError::InvalidCaller);
+        }
+        let id0 = self.wait_cap(caller, cap0, Right::WaitWait)?;
+        let id1 = if cap1 == Handle::ZERO {
+            None
+        } else {
+            Some(self.wait_cap(caller, cap1, Right::WaitWait)?)
+        };
+        if id1 == Some(id0) {
+            return Err(WaitError::DuplicateWaitObject);
+        }
+        let generation0 = self
+            .wait_objects
+            .find(id0)
+            .ok_or(WaitError::TargetDead)?
+            .generation;
+        if observed0 > generation0 {
+            return Err(WaitError::InvalidGeneration);
+        }
+        let generation1 = match id1 {
+            Some(id) => {
+                let generation = self
+                    .wait_objects
+                    .find(id)
+                    .ok_or(WaitError::TargetDead)?
+                    .generation;
+                if observed1 > generation {
+                    return Err(WaitError::InvalidGeneration);
+                }
+                Some(generation)
+            }
+            None => None,
+        };
+        let satisfied0 = generation0 > observed0;
+        let satisfied = match (mode, generation1) {
+            (0, _) => satisfied0 || generation1.is_some_and(|generation| generation > observed1),
+            (1, Some(generation)) => satisfied0 && generation > observed1,
+            (1, None) => satisfied0,
+            _ => return Err(WaitError::InvalidCap),
+        };
+        if satisfied {
+            return Ok(WaitOutcome::Satisfied);
+        }
+        if timeout != u64::MAX && timeout <= self.now {
+            return Ok(WaitOutcome::TimedOut);
+        }
+        Err(WaitError::WouldBlock)
+    }
+
+    /// COSIR §21.1.3：销毁对象；M15a-1 尚无等待者，Capability 目标随之失活。
+    pub fn wait_object_destroy(&mut self, caller: u32, cap: Handle) -> Result<(), WaitError> {
+        let id = self.wait_cap(caller, cap, Right::WaitDestroy)?;
+        if !self.audit.can_append(1) {
+            return Err(WaitError::AuditFull);
+        }
+        self.wait_objects.remove(id).ok_or(WaitError::TargetDead)?;
+        self.audit.append(AuditEvent::ObjectDestroyed {
+            object_id: id,
+            kind: ObjectKind::WaitObject,
+        });
+        Ok(())
+    }
+}
+
 /// SPEC-082：全局 `timer_set`（§10.2）。
+pub fn wait_object_create(caller: u32) -> Result<Handle, WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_object_create(caller),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
+pub fn wait_object_observe(caller: u32, cap: Handle) -> Result<u64, WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_object_observe(caller, cap),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
+pub fn wait_object_signal(caller: u32, cap: Handle) -> Result<u64, WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_object_signal(caller, cap),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn wait_objects(
+    caller: u32,
+    cap0: Handle,
+    observed0: u64,
+    cap1: Handle,
+    observed1: u64,
+    mode: u64,
+    timeout: u64,
+) -> Result<WaitOutcome, WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_objects(caller, cap0, observed0, cap1, observed1, mode, timeout),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
+pub fn wait_object_destroy(caller: u32, cap: Handle) -> Result<(), WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_object_destroy(caller, cap),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
 pub fn timer_set(caller: u32, deadline: Instant) -> Result<Handle, TimerError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.timer_set(caller, deadline),
@@ -8829,9 +9133,9 @@ mod tests {
         SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject,
         TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
         TaskError, TaskKind, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
-        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, create_snapshot,
-        create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
-        platform_segment_is_direct,
+        TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, WaitError,
+        WaitOutcome, create_snapshot, create_state, entry_in_image, platform_segment_cap_handle,
+        platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
@@ -9254,6 +9558,102 @@ mod tests {
             Err(NsError::MountCycle)
         );
         assert_eq!(state.ns_entries.count_in(a_ns), 1);
+    }
+
+    #[test]
+    fn wait_object_create_observe_signal_and_destroy() {
+        let mut state = fresh_state();
+        let cap = state
+            .wait_object_create(INIT_TASK_ID)
+            .expect("create wait object");
+        assert_eq!(state.wait_object_observe(INIT_TASK_ID, cap), Ok(0));
+        assert_eq!(state.wait_object_signal(INIT_TASK_ID, cap), Ok(1));
+        assert_eq!(state.wait_object_observe(INIT_TASK_ID, cap), Ok(1));
+        // 观察值 0 已被 signal 满足。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 0, Handle::ZERO, 0, 0, u64::MAX),
+            Ok(WaitOutcome::Satisfied)
+        );
+        // 观察值已最新且无超时：M15a-1 返回 WouldBlock。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 1, Handle::ZERO, 0, 0, u64::MAX),
+            Err(WaitError::WouldBlock)
+        );
+        // 立即超时。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 1, Handle::ZERO, 0, 0, 0),
+            Ok(WaitOutcome::TimedOut)
+        );
+        // 超前观测。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 5, Handle::ZERO, 0, 0, u64::MAX),
+            Err(WaitError::InvalidGeneration)
+        );
+        // 销毁后目标失活。
+        assert_eq!(state.wait_object_destroy(INIT_TASK_ID, cap), Ok(()));
+        assert_eq!(
+            state.wait_object_observe(INIT_TASK_ID, cap),
+            Err(WaitError::TargetDead)
+        );
+        assert_eq!(
+            state.wait_object_signal(INIT_TASK_ID, cap),
+            Err(WaitError::TargetDead)
+        );
+    }
+
+    #[test]
+    fn wait_objects_any_all_and_duplicates() {
+        let mut state = fresh_state();
+        let a = state.wait_object_create(INIT_TASK_ID).expect("create a");
+        let b = state.wait_object_create(INIT_TASK_ID).expect("create b");
+        let _ = state.wait_object_signal(INIT_TASK_ID, b).expect("signal b");
+        // Any：b 已满足。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, a, 0, b, 0, 0, u64::MAX),
+            Ok(WaitOutcome::Satisfied)
+        );
+        // All：a 未满足。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, a, 0, b, 0, 1, u64::MAX),
+            Err(WaitError::WouldBlock)
+        );
+        let _ = state.wait_object_signal(INIT_TASK_ID, a).expect("signal a");
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, a, 0, b, 0, 1, u64::MAX),
+            Ok(WaitOutcome::Satisfied)
+        );
+        // 重复等待同一对象。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, a, 0, a, 0, 0, u64::MAX),
+            Err(WaitError::DuplicateWaitObject)
+        );
+        // 未知模式。
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, a, 0, b, 0, 9, u64::MAX),
+            Err(WaitError::InvalidCap)
+        );
+    }
+
+    #[test]
+    fn wait_object_rights_are_enforced() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("create");
+        let observe_only = state
+            .derive_capability(
+                INIT_TASK_ID,
+                cap,
+                Rights::from_rights(&[Right::Derive, Right::WaitWait]),
+            )
+            .expect("derive");
+        assert_eq!(
+            state.wait_object_signal(INIT_TASK_ID, observe_only),
+            Err(WaitError::MissingRight(Right::WaitSignal))
+        );
+        assert_eq!(state.wait_object_observe(INIT_TASK_ID, observe_only), Ok(0));
+        assert_eq!(
+            state.wait_object_destroy(INIT_TASK_ID, observe_only),
+            Err(WaitError::MissingRight(Right::WaitDestroy))
+        );
     }
 
     #[test]

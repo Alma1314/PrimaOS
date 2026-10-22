@@ -117,6 +117,8 @@ enum Stage5Program<'a> {
     Net,
     /// M14：fd 0 tty 输入（canonical/raw/EOF/termios）探针。
     Ttyin,
+    /// M15：WaitObject 原生机制探针。
+    Wait,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -180,6 +182,11 @@ pub(crate) fn build_images_for_net() -> Result<Images, String> {
 /// M14：用 fd 0 tty 输入探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_ttyin() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Ttyin)
+}
+
+/// M15：用 WaitObject 探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_wait() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Wait)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -331,6 +338,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_ttyin.c")],
             "stage5 ttyin probe",
         ),
+        Stage5Program::Wait => (
+            path.with_file_name("stage5-wait.elf"),
+            vec![c_dir.join("stage5_wait.c")],
+            "stage5 wait probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -462,6 +474,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Vfs3 => Some((&["stage5-vfs3"], &[])),
         Stage5Program::Net => Some((&["stage5-net"], &[])),
         Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
+        Stage5Program::Wait => Some((&["stage5-wait"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -1158,6 +1171,10 @@ pub(crate) const TTYIN_EXPECTED_STDOUT: &[u8] =
 
 /// M14：Linux 参考用管道 stdin，只验证行与 EOF（termios/回显需真实 tty）。
 pub(crate) const TTYIN_LINUX_STDOUT: &[u8] = b"TTYRD|line=1;eof=1|ok=1;err=0\n";
+
+/// M15a-1：WaitObject 原生探针输出（Prima 专用，无 Linux 对应物）。
+pub(crate) const WAIT_EXPECTED_STDOUT: &[u8] =
+    b"WAIT|create=1;gen0=1;signal=1;satisfied=1;block=1;timeout=1;invalid=1;destroy=1;dead=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {

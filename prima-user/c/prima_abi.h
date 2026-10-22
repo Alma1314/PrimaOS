@@ -18,6 +18,11 @@
 #define PRIMA_SYS_TASK_SET_FS_BASE 38
 #define PRIMA_SYS_TIME_ENABLE 39
 #define PRIMA_SYS_TIME_TICKS 40
+#define PRIMA_SYS_WAIT_CREATE 42
+#define PRIMA_SYS_WAIT_OBSERVE 43
+#define PRIMA_SYS_WAIT_OBJECTS 44
+#define PRIMA_SYS_WAIT_SIGNAL 45
+#define PRIMA_SYS_WAIT_DESTROY 46
 /* M10：memseg_protect(task_cap, target_base, page_count, new_access)。 */
 #define PRIMA_SYS_MEMSEG_MAP 14
 #define PRIMA_SYS_MEMSEG_UNMAP 15

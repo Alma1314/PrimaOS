@@ -2407,6 +2407,12 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
     }
 }
 
+/* M15：Prima 原生 syscall 直通（供只存在于 Prima 的机制探针使用；
+ * 避免与 Linux 42-46 的 connect/accept/sendto/recvfrom/sendmsg 号冲突）。 */
+long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5) {
+    return prima_raw(number, a0, a1, a2, a3, a4, a5);
+}
+
 long __syscall0(long number) { return prima_translate(number, 0, 0, 0, 0, 0, 0); }
 
 long __syscall1(long number, long a0) {

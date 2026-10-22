@@ -66,6 +66,7 @@
 - [M13b 权限位/umask/stdio](reports/2026-10-22-stage5-m13b-permissions-stdio.md)
 - [M19 用户态 loopback UDP](reports/2026-10-23-stage5-m19-loopback-udp.md)
 - [M14 tty 输入](reports/2026-10-23-stage5-m14-tty-input.md)
+- [M15a-1 WaitObject](reports/2026-10-23-stage5-m15a-waitobject.md)
 
 ## 文档约定
 
