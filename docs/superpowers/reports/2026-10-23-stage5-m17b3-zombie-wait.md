@@ -51,7 +51,17 @@ COW 解析：成功 4 次（[K]），失败 2 次（[k]）；[X]（SYS_PROCESS_E
   NoFrame）尚未打印；
 - 父进程最终以 `wait=0` 恢复。
 
-补充（同一轮后续）：`fork` 的返回标记为 `[F7>5]`（调用者 task 17、子 task 5），
+补充（后续轮）：Process 表 dump 显示父进程为 `Process 9`（leader task 17）、
+fork 子进程为 `Process 10`（parent 9、leader task 5），`wait4` 的查找/父子关系
+本身正确；真正的问题是**子进程的用户态 fork 返回值是垃圾值**（探针打印出
+`F12094628986632;`），因此子进程走的是父路径（用垃圾 pid 调 wait4，随后
+ECHILD），从未进入子分支的 `SYS_PROCESS_EXIT`。根因指向 fork 子进程从
+**快速 syscall 的保存帧**继续执行时用户上下文（rax/栈）未正确恢复；clone
+路径不受影响（子进程从新入口/新栈开始）。下一步：为 fork 建立显式的
+用户态续执行方案（例如保存/恢复完整用户上下文，或用 trampoline 让子进程
+从 0 返回），再验证 W6。
+
+补充（同一轮前段）：`fork` 的返回标记为 `[F7>5]`（调用者 task 17、子 task 5），
 说明 `fork` 正常返回；改用 `WNOHANG` 轮询时 `nohang` 字段为失败（非 0），
 即子进程仍未被 `wait4` 找到（与 `[C0]` 一致）。下一轮需在 wait4 的 EChild
 分支打印 Process 表的 `id/parent/leader` 与 caller/pid（标记要落盘并用
