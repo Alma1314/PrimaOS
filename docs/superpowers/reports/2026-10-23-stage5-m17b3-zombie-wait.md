@@ -57,7 +57,15 @@ fork 子进程为 `Process 10`（parent 9、leader task 5），`wait4` 的查找
 `F12094628986632;`），因此子进程走的是父路径（用垃圾 pid 调 wait4，随后
 ECHILD），从未进入子分支的 `SYS_PROCESS_EXIT`。根因指向 fork 子进程从
 **快速 syscall 的保存帧**继续执行时用户上下文（rax/栈）未正确恢复；clone
-路径不受影响（子进程从新入口/新栈开始）。内核侧续执行验证：`fork` 后打印子进程保存帧并在 `resume` 时打印帧内容——
+路径不受影响（子进程从新入口/新栈开始）。raw-fork 实验（探针内用最小内联 asm 直接发 `SYS_FORK=51`，绕过 musl/适配层
+包装）：子进程**成功到达 `SYS_PROCESS_EXIT`**，说明内核 fork 返回值/续执行
+本身可用，问题出在经 musl/适配层 `syscall(57)` 的返回路径上。随后暴露出
+调度状态不一致：`SYS_PROCESS_EXIT` 里 `schedule_task_global(next)` 返回
+`AlreadyRunning`（表里已有 Running），容忍后 `switch_to` 的
+`yield_task_global(cur)` 又失败（当前任务不是 Running），指向“两个 Running/
+状态残留”的调度器不变量问题。
+
+内核侧续执行验证：`fork` 后打印子进程保存帧并在 `resume` 时打印帧内容——
 首个恢复点为 `rip=0xb0000001ec2`（fork 的 syscall 之后、`prima_translate`
 返回路径）、`rax=0`、`rsp` 为父栈；随后恢复点落入
 `prima_fd_write`（父路径的字段输出）。说明**内核保存/恢复的帧是正确的**，
