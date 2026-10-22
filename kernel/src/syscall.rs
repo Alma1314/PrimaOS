@@ -44,8 +44,8 @@ pub use prima_abi::syscall::{
     SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE,
     SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_RECV,
     SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
-    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
-    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
+    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW,
+    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
     SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_YIELD,
 };
 
@@ -987,7 +987,7 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
 
 /// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack），
 /// 参数顺序与 Linux 一致：`flags, stack, parent_tid, child_tid, tls`。
-fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, _child_tid: u64, tls: u64) -> u64 {
+fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, child_tid: u64, tls: u64) -> u64 {
     const CLONE_VM: u64 = 0x100;
     const CLONE_FS: u64 = 0x200;
     const CLONE_FILES: u64 = 0x400;
@@ -1034,7 +1034,14 @@ fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, _child_tid: u64, tls:
         bootstrap::thread_abort(thread);
         return encode_errno(Errno::Invalid);
     }
-    // Linux CLONE_PARENT_SETTID：父线程在返回前写入子 tid。
+    // Linux CLONE_PARENT_SETTID / CLONE_CHILD_SETTID：写入子 tid；
+    // child_tid 同时作为线程退出时要清零并 futex 唤醒的地址。
+    if child_tid != 0 {
+        for (index, byte) in thread.to_le_bytes().iter().enumerate() {
+            prima_ostd::mm::write_u8_at(child_tid, index as u64, *byte);
+        }
+        bootstrap::set_clear_child_tid(thread, child_tid);
+    }
     if parent_tid != 0 {
         for (index, byte) in thread.to_le_bytes().iter().enumerate() {
             prima_ostd::mm::write_u8_at(parent_tid, index as u64, *byte);
@@ -2564,6 +2571,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         thread_create_call(args[0], args[1], args[2])
     } else if num == SYS_THREAD_EXIT {
         thread_exit_call()
+    } else if num == SYS_THREAD_CLEAR_TID {
+        bootstrap::clear_child_tid(sched::current())
     } else if num == SYS_WAIT_CREATE {
         wait_create_call()
     } else if num == SYS_WAIT_OBSERVE {

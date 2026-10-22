@@ -56,6 +56,7 @@
   - [M16a futex WAIT/WAKE](superpowers/reports/2026-10-23-stage5-m16a-futex.md)
   - [M16b-1 clone 基础与 musl 阻塞](superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md)
   - [M16b-2 musl clone 路由与 pthread 进展](superpowers/reports/2026-10-23-stage5-m16b2-musl-clone.md)
+  - [M16b-3 pthread 创建/join 打通](superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)
 
 ## 阶段 0–4 签署入口
 

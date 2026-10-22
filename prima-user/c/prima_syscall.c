@@ -2282,6 +2282,12 @@ __attribute__((noreturn)) static void prima_thread_exit(void) {
             prima_threads[i].clear_tid = 0;
         }
     }
+    /* M16b-3：清除 clone 的 child_tid 并 futex 唤醒（musl 线程退出）。 */
+    long clear_tid = prima_native(PRIMA_SYS_THREAD_CLEAR_TID, 0, 0, 0, 0, 0, 0);
+    if (clear_tid > 0) {
+        *(volatile int *)clear_tid = 0;
+        (void)prima_futex((int *)clear_tid, 1, 0x7fffffff, 0);
+    }
     (void)prima_native(PRIMA_SYS_THREAD_EXIT, 0, 0, 0, 0, 0, 0);
     for (;;) {
         long sink[3];
@@ -2491,8 +2497,13 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
             if (prima_threads[i].tid == id)
                 prima_thread_exit();
         /* musl 的 clone.s 直接发 Prima 48，适配层的线程表可能没有记录；
-         * SYS_THREAD_EXIT 对非 leader 线程成功且不返回，leader 则回退到
+         * 先清 child_tid 并唤醒 joiner，再试 SYS_THREAD_EXIT；leader 回退到
          * 进程退出。 */
+        long clear_tid = prima_native(PRIMA_SYS_THREAD_CLEAR_TID, 0, 0, 0, 0, 0, 0);
+        if (clear_tid > 0) {
+            *(volatile int *)clear_tid = 0;
+            (void)prima_futex((int *)clear_tid, 1, 0x7fffffff, 0);
+        }
         (void)prima_native(PRIMA_SYS_THREAD_EXIT, 0, 0, 0, 0, 0, 0);
         prima_exit_group((int)a0);
     }

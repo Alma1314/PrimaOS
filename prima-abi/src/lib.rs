@@ -217,6 +217,8 @@ pub mod syscall {
     pub const SYS_CLONE: u64 = 48;
     /// M16b：退出当前线程（不拆共享地址空间，不报告进程状态）。
     pub const SYS_THREAD_EXIT: u64 = 49;
+    /// M16b-3：返回当前线程的 `clear_child_tid` 地址（0 = 非线程）。
+    pub const SYS_THREAD_CLEAR_TID: u64 = 50;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

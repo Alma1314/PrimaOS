@@ -212,6 +212,36 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios W3 run={run}");
     }
+    // M16b：pthread 创建/join 与共享内存可见性（同源 Linux 参考），各跑两轮。
+    image::check_stage5_linux_pthread()?;
+    let images = image::build_images_for_pthread()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "W4",
+                image::PTHREAD_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS W4 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios W4 run={run}");
+    }
+    let images = image::build_images_for_share()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "W5",
+                image::SHARE_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS W5 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios W5 run={run}");
+    }
     // M14：fd 0 tty 输入（canonical/raw/EOF），marker 驱动串口输入，各跑两轮。
     image::check_stage5_linux_ttyin()?;
     let images = image::build_images_for_ttyin()?;

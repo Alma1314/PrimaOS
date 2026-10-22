@@ -26,6 +26,7 @@
 #define PRIMA_SYS_THREAD_CREATE 47
 #define PRIMA_SYS_CLONE 48
 #define PRIMA_SYS_THREAD_EXIT 49
+#define PRIMA_SYS_THREAD_CLEAR_TID 50
 /* M10：memseg_protect(task_cap, target_base, page_count, new_access)。 */
 #define PRIMA_SYS_MEMSEG_MAP 14
 #define PRIMA_SYS_MEMSEG_UNMAP 15

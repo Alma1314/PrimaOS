@@ -123,6 +123,8 @@ enum Stage5Program<'a> {
     Wait2,
     /// M16a：futex WAIT/WAKE 探针。
     Futex,
+    Pthread,
+    Share,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -201,6 +203,14 @@ pub(crate) fn build_images_for_wait2() -> Result<Images, String> {
 /// M16a：用 futex 探针替换 C 探针映像。
 pub(crate) fn build_images_for_futex() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Futex)
+}
+
+pub(crate) fn build_images_for_pthread() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Pthread)
+}
+
+pub(crate) fn build_images_for_share() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Share)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -367,6 +377,16 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_futex.c")],
             "stage5 futex probe",
         ),
+        Stage5Program::Pthread => (
+            path.with_file_name("stage5-pthread.elf"),
+            vec![c_dir.join("stage5_pthread.c")],
+            "stage5 pthread probe",
+        ),
+        Stage5Program::Share => (
+            path.with_file_name("stage5-share.elf"),
+            vec![c_dir.join("stage5_share.c")],
+            "stage5 share probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -501,6 +521,8 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),
         Stage5Program::Wait2 => Some((&["stage5-wait2"], &[])),
         Stage5Program::Futex => Some((&["stage5-futex"], &[])),
+        Stage5Program::Pthread => Some((&["stage5-pthread"], &[])),
+        Stage5Program::Share => Some((&["stage5-share"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -1209,6 +1231,52 @@ pub(crate) const WAIT2_EXPECTED_STDOUT: &[u8] =
 /// M16a：futex WAIT/WAKE 探针输出（Prima 专用）。
 pub(crate) const FUTEX_EXPECTED_STDOUT: &[u8] =
     b"FUTEX|thread=1;wake=1;wait=1;eagain=1;nowake=1|ok=1;err=0\n";
+
+pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
+    b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";
+
+/// M16b：pthread 的 Linux 参考（真实 pthread）。
+pub(crate) fn check_stage5_linux_pthread() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_pthread.c");
+    let binary = workspace.join("target/prima-os/pthread-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-pthread"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 pthread: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 pthread probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 pthread probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != PTHREAD_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 pthread mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(PTHREAD_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 pthread references");
+    Ok(())
+}
+
+pub(crate) const SHARE_EXPECTED_STDOUT: &[u8] =
+    b"SHARE|create=1;thread=1;wake=1;word=1;destroy=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {

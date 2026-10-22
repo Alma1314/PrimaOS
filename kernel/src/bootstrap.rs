@@ -559,6 +559,8 @@ pub struct TaskRecord {
     pub pending_exc: Option<PendingExc>,
     /// M15b：所属 Process（线程模型；单线程 Task 也各有 Process）。
     pub process: Option<u32>,
+    /// M16b-3：clone 的 `child_tid`（线程退出前清零并 futex 唤醒）。
+    pub clear_child_tid: u64,
     /// COSIR §5.2：仅 `BlockedWait` 时非空。
     pub wait_request: Option<WaitRequest>,
     /// COSIR §5.6：唤醒后待领取的结果（`schedule` 消费）。
@@ -674,6 +676,7 @@ impl TaskTable {
             entry: 0,
             pending_exc: None,
             process: None,
+            clear_child_tid: 0,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -747,6 +750,7 @@ impl TaskTable {
             entry,
             pending_exc: None,
             process: None,
+            clear_child_tid: 0,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -8923,6 +8927,20 @@ impl BootstrapState {
         }
     }
 
+    /// M16b-3：记录 clone 的 child_tid（线程退出时清零并唤醒）。
+    pub fn set_clear_child_tid(&mut self, task_id: u32, addr: u64) {
+        if let Some(task) = self.tasks.find_mut(task_id) {
+            task.clear_child_tid = addr;
+        }
+    }
+
+    pub fn clear_child_tid(&self, task_id: u32) -> u64 {
+        self.tasks
+            .find(task_id)
+            .map(|task| task.clear_child_tid)
+            .unwrap_or(0)
+    }
+
     /// M16b：Task 是否为非 leader 线程（共享地址空间，退出不拆 root）。
     pub fn task_is_thread(&self, task_id: u32) -> bool {
         self.tasks
@@ -9302,6 +9320,22 @@ pub fn task_is_thread(task_id: u32) -> bool {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
             .is_some_and(|state| state.task_is_thread(task_id))
+    })
+}
+
+pub fn set_clear_child_tid(task_id: u32, addr: u64) {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        if let Some(state) = slot.as_mut() {
+            state.set_clear_child_tid(task_id, addr);
+        }
+    });
+}
+
+pub fn clear_child_tid(task_id: u32) -> u64 {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .map(|state| state.clear_child_tid(task_id))
+            .unwrap_or(0)
     })
 }
 
