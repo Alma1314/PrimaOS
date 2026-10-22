@@ -51,9 +51,12 @@ COW 解析：成功 4 次（[K]），失败 2 次（[k]）；[X]（SYS_PROCESS_E
   NoFrame）尚未打印；
 - 父进程最终以 `wait=0` 恢复。
 
-下一步：在 `[k]` 处打印任务 id、fault VA、`resolve_cow` 的错误与
-`task_segment_id`，确认子进程的 `g_child` 写是否落在非 COW 页或帧分配失败；
-再修 COW 悬挂/返回路径。
+补充（同一轮后续）：`fork` 的返回标记为 `[F7>5]`（调用者 task 17、子 task 5），
+说明 `fork` 正常返回；改用 `WNOHANG` 轮询时 `nohang` 字段为失败（非 0），
+即子进程仍未被 `wait4` 找到（与 `[C0]` 一致）。下一轮需在 wait4 的 EChild
+分支打印 Process 表的 `id/parent/leader` 与 caller/pid（标记要落盘并用
+grep 校验），确认是 parent 匹配还是 leader/pid 语义问题；同时确认子进程
+是否真正执行到 `SYS_PROCESS_EXIT`（`[X]` 仍缺失）。
 
 ## 4. 边界
 
