@@ -55,6 +55,17 @@
   `call *%r9` 之后走了回退 `exit(60)`（即 `start` 未调用 `__pthread_exit`），
   或 `__pthread_exit` 在 store 前阻塞。下一步在 musl 的 `start`/
   `__pthread_exit`/clone.s 回退处加标记，确认实际路径。
+- **musl 内部标记**（临时改 `target/musl-prima` 后 `make install`）：
+  `E`（__pthread_exit 入口）、`1`+state、`Z`（store DT_EXITED 前）、`W`（wake 后）。
+  QEMU 输出 `PTHREAD|E12ZWcreate=1;self=1` —— 说明 `__pthread_exit` **确实
+  执行**：state=2（DT_JOINABLE），已执行 store 与 wake，而且发生在父线程
+  `create=1` 返回之前；但 join 仍然阻塞。即“子线程的 detach_state 写入/唤醒
+  没有反映到父线程 `t->detach_state`”，或 join 等待的是另一个 futex 地址。
+- 下一步：在同一探针里打印父线程 `t` 与子线程 `pthread_self()` 的
+  `detach_state` 地址差、join 读到的 state、以及 wait 的 futex 地址，
+  确认是否同一物理地址/同一表项；若地址不同，检查 `__copy_tls` 的
+  TP_OFFSET/TCB 布局与 `pthread` 结构体内存（可能子线程 TLS 与父线程
+  看到的线程结构不是同一块映射）。
 
 ## 4. 分析与下一步
 

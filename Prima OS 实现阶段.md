@@ -40,7 +40,7 @@
 | ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
 | BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 原生版本握手已按追加号 `37` 落地；POSIX profile、C 入口栈、退出状态及错误映射仍按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决，阻塞项保持 Open。 |
 | BLK-004（已关闭） | 全量服务后 C ELF Task 16 创建、执行、自毁、栈回收、复建 `ENOSPC` 和四类容量水位获 QEMU 双轮见证，见[C ELF 报告](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。 | POSIX 启动/退出状态及 `write` 仍属片 C，不由此门槛代签。 |
-| ISSUE-PTHREAD-CLONE-001（部分关闭） | clone.s 裸 syscall 56 曾绕过适配层，`pthread_create` EAGAIN。 | 已打 musl clone.s 补丁（56→48、60→49）+ 内核 parent_tid 写 + 适配层 PROT_NONE mmap；create 已成功。join 的 detach_state 唤醒仍存在“唤醒先于等待登记”的顺序问题，继续排查后再接 W4。 |
+| ISSUE-PTHREAD-CLONE-001（部分关闭） | clone.s 裸 syscall 56 曾绕过适配层，`pthread_create` EAGAIN。 | 已打 musl clone.s 补丁（56→48、60→49）+ 内核 parent_tid 写 + 适配层 PROT_NONE mmap；create 已成功。musl 内部标记显示 `__pthread_exit` 确实执行（state=2、store DT_EXITED、wake）且早于父线程 create 返回，但 join 仍阻塞，怀疑 detach_state 地址/映射不一致；下一步打印父子 detach_state 地址与 join 读值。 |
 | ISSUE-THREAD-CAPACITY-001（已关闭） | 线程创建曾因 18 槽位占满而 `ENOSPC`；扩容会破坏容量负例见证。 | M15b-2b：`thread_create` 惰性回收 Dead 记录（优先无 cap 指向，否则撤销 cap），`task_create` 保持“满 → ENOSPC”；W2 双轮通过，见证 12/132 不变。 |
 | ISSUE-PTHREAD-CAPS-001（工作决定） | 线程共享地址空间/适配层 fd 表后，内核 Capability 位置空间仍是每 Task；新线程无法使用既有 cap（`holder_of(cap)` 不匹配），M16 pthread/futex 被阻塞。 | 工作决定：同 Process 的线程共享 leader 的 Capability 位置空间（`space_of`），单线程 Task 退化为自身 id；实现见 M15b-2a。该决定仍需 COSIR 组织级确认。 |
 | ISSUE-TTYIN-001（部分关闭） | M14 的串口输入需要“数据到达 → 唤醒读者”。M14a 用“有读者时管理器轮询 COM1、无读者时阻塞 RECV”落地冻结子集；有读者期间的轮询仍是临时偏差，不是 WaitObject。 | M15 的 WaitObject 或内核串口 IRQ 递送落地后替换有读者轮询；在此之前 M14 只按 I1 证据标 `partial`，不宣称通用 console。 |
