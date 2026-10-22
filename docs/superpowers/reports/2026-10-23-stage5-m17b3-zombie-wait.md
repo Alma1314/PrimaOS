@@ -57,7 +57,21 @@ fork 子进程为 `Process 10`（parent 9、leader task 5），`wait4` 的查找
 `F12094628986632;`），因此子进程走的是父路径（用垃圾 pid 调 wait4，随后
 ECHILD），从未进入子分支的 `SYS_PROCESS_EXIT`。根因指向 fork 子进程从
 **快速 syscall 的保存帧**继续执行时用户上下文（rax/栈）未正确恢复；clone
-路径不受影响（子进程从新入口/新栈开始）。raw-fork 实验（探针内用最小内联 asm 直接发 `SYS_FORK=51`，绕过 musl/适配层
+路径不受影响（子进程从新入口/新栈开始）。本轮续查（raw-fork 探针）：
+
+- `SYS_PROCESS_EXIT` 的 `task_destroy_self` 因 `unmap_4k(BadRoot)` 失败返回
+  `NoSuchTask`（子进程根中该模型条目未映射），导致子 Task 仍是 Running、
+  `exit_to` 调度报 `AlreadyRunning`。**容忍 `BadRoot`（视为已拆除）后**，W6
+  首次得到：
+  `PROC|fork=1;wait=1;status=0;cow=1;echild=1`
+  ——fork/wait 返回与 COW 隔离、ECHILD 均正确，仅 status 为 0。
+- status 为 0 的根因：唤醒者（子进程）用 `write_status` 写父进程的 status
+  指针时，写的是**子进程 COW 副本**的栈页，父进程看不到；status 必须切到
+  父进程根后再写（实现过 pending-status + `resume` 写入，本轮调试中尚未
+  收敛，已回退）。
+- QEMU 侧另有 W6 的容量 trace 期望与退出码 33 约定需适配。
+
+raw-fork 实验（探针内用最小内联 asm 直接发 `SYS_FORK=51`，绕过 musl/适配层
 包装）：子进程**成功到达 `SYS_PROCESS_EXIT`**，说明内核 fork 返回值/续执行
 本身可用，问题出在经 musl/适配层 `syscall(57)` 的返回路径上。随后暴露出
 调度状态不一致：`SYS_PROCESS_EXIT` 里 `schedule_task_global(next)` 返回
