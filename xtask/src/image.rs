@@ -123,6 +123,7 @@ enum Stage5Program<'a> {
     Wait2,
     /// M16a：futex WAIT/WAKE 探针。
     Futex,
+    Proc,
     Pthread,
     Share,
     /// M9：sbase `cat`（文件读取）冻结用例。
@@ -203,6 +204,10 @@ pub(crate) fn build_images_for_wait2() -> Result<Images, String> {
 /// M16a：用 futex 探针替换 C 探针映像。
 pub(crate) fn build_images_for_futex() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Futex)
+}
+
+pub(crate) fn build_images_for_proc() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Proc)
 }
 
 pub(crate) fn build_images_for_pthread() -> Result<Images, String> {
@@ -377,6 +382,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_futex.c")],
             "stage5 futex probe",
         ),
+        Stage5Program::Proc => (
+            path.with_file_name("stage5-proc.elf"),
+            vec![c_dir.join("stage5_proc.c")],
+            "stage5 proc probe",
+        ),
         Stage5Program::Pthread => (
             path.with_file_name("stage5-pthread.elf"),
             vec![c_dir.join("stage5_pthread.c")],
@@ -521,6 +531,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),
         Stage5Program::Wait2 => Some((&["stage5-wait2"], &[])),
         Stage5Program::Futex => Some((&["stage5-futex"], &[])),
+        Stage5Program::Proc => Some((&["stage5-proc"], &[])),
         Stage5Program::Pthread => Some((&["stage5-pthread"], &[])),
         Stage5Program::Share => Some((&["stage5-share"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
@@ -1231,6 +1242,48 @@ pub(crate) const WAIT2_EXPECTED_STDOUT: &[u8] =
 /// M16a：futex WAIT/WAKE 探针输出（Prima 专用）。
 pub(crate) const FUTEX_EXPECTED_STDOUT: &[u8] =
     b"FUTEX|thread=1;wake=1;wait=1;eagain=1;nowake=1|ok=1;err=0\n";
+
+/// M17b：fork/wait 的 Linux 参考（真实 fork/wait4）。
+pub(crate) fn check_stage5_linux_proc() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_proc.c");
+    let binary = workspace.join("target/prima-os/proc-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 proc: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 proc probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 proc probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != PROC_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 proc mismatch: exit {:?}, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout)
+        ));
+    }
+    println!("PASS linux stage5 fork/wait references");
+    Ok(())
+}
+
+pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
+    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1|ok=1;err=0\n";
 
 pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
     b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";

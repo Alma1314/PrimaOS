@@ -62,6 +62,7 @@
   - [M17b-2a COW 页表原语](superpowers/reports/2026-10-23-stage5-m17b2-cow-primitives.md)
   - [M17b-2b general COW 与 fork](superpowers/reports/2026-10-23-stage5-m17b2-cow-fork.md)
   - [M17b-3 僵尸保留与唤醒回收](superpowers/reports/2026-10-23-stage5-m17b3-zombie-wait.md)
+  - [M17b-4 fork/wait 打通（W6）](superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)
 
 ## 阶段 0–4 签署入口
 

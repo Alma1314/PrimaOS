@@ -1075,9 +1075,7 @@ fn process_exit_call(status: u64) -> u64 {
     let wakes = bootstrap::process_exit(process, status as i64);
     for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
         let ptr = bootstrap::wait_status_ptr(*task);
-        if ptr != 0 {
-            write_status(ptr, status as i64);
-        }
+        sched::set_pending_status(*task, ptr, status as i64);
         sched::set_frame_rax(*task, cur as u64);
     }
     let root = sched::root(cur);

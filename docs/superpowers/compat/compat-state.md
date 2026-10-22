@@ -135,10 +135,10 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 48 | `SYS_CLONE` | 已实现 | W4（musl clone 路由、pthread_create/join） |
 | 49 | `SYS_THREAD_EXIT` | 已实现 | W4、W2 |
 | 50 | `SYS_THREAD_CLEAR_TID` | 已实现 | M16b-3（clear_child_tid 唤醒） |
-| 51 | `SYS_FORK` | **partial**：COW 页表克隆/写隔离成立；子进程用户态续执行未修复，W6 未通过 | M17b-2a/2b 报告 |
+| 51 | `SYS_FORK` | 已实现（单线程；W6 双轮）：COW 克隆/写隔离/子进程退出；`syscall(57)` 包装路径的子进程返回值损坏，W6 用原生 51 | M17b-4 报告 |
 | 52 | （预留） | — | — |
-| 53 | `SYS_WAIT4` | **partial**：模型（阻塞/唤醒/回收/ECHILD/WNOHANG）有 host 用例；syscall 胶水未验收 | M17b-1/3 报告 |
-| 54 | `SYS_PROCESS_EXIT` | **partial**：W6 子进程路径使用；随 W6 未通过 | M17b-2b/2b 报告 |
+| 53 | `SYS_WAIT4` | 已实现（W6 双轮）：阻塞/唤醒/回收/ECHILD；WNOHANG 有 host 用例 | M17b-4 报告 |
+| 54 | `SYS_PROCESS_EXIT` | 已实现（W6 双轮）：退出状态经 pending-status 在父根写回 | M17b-4 报告 |
 
 **不得据此宣称**：`fork`/`wait4`/`execve` 的 POSIX 语义、进程组/session、信号、
 `vfork`/`posix_spawn`、动态链接。

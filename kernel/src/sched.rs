@@ -106,6 +106,38 @@ static DEFERRED_FRAMES: StaticCell<[u64; MAX_DEFERRED_FRAMES]> =
     StaticCell::new([0; MAX_DEFERRED_FRAMES]);
 static DEFERRED_COUNT: StaticCell<usize> = StaticCell::new(0);
 
+/// M17b：等待任务的 status 写回（在目标任务的地址空间里执行）。
+static PENDING_STATUS: StaticCell<[Option<(u64, i64)>; MAX_TASKS]> =
+    StaticCell::new([None; MAX_TASKS]);
+
+pub fn set_pending_status(task_id: u32, ptr: u64, status: i64) {
+    if (task_id as usize) < MAX_TASKS {
+        PENDING_STATUS.with_mut(|slots| slots[task_id as usize] = Some((ptr, status)));
+    }
+}
+
+fn write_pending_status(task_id: u32, root: u64) {
+    let pending = PENDING_STATUS.with_mut(|slots| slots[task_id as usize].take());
+    if let Some((ptr, status)) = pending
+        && ptr != 0
+    {
+        let va = ptr & !0xfff;
+        if let Some(segment) = crate::bootstrap::task_segment_id(task_id) {
+            let offset = crate::cow::root_and_offset()
+                .map(|(_, off)| off)
+                .unwrap_or(0);
+            let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
+            let _ = crate::vspace::resolve_cow(root, va, map, || {
+                crate::frames::allocate_for_segment(segment).ok()
+            });
+        }
+        let encoded = ((status as u64) & 0xff) << 8;
+        for (index, byte) in encoded.to_le_bytes().iter().enumerate() {
+            prima_ostd::mm::write_u8_at(ptr, index as u64, *byte);
+        }
+    }
+}
+
 /// 当前运行的 Task id。
 pub fn current() -> u32 {
     CURRENT.load(Ordering::Relaxed)
@@ -369,6 +401,7 @@ pub fn resume(task_id: u32) -> ! {
     }
     if let Some(root) = root(task_id) {
         crate::cpu::write_cr3(root);
+        write_pending_status(task_id, root);
     }
     // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
     activate_fs(task_id);

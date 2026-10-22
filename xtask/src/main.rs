@@ -212,6 +212,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios W3 run={run}");
     }
+    // M17b：fork/wait/COW 隔离/退出码/ECHILD（同源 Linux 参考），跑两轮。
+    image::check_stage5_linux_proc()?;
+    let images = image::build_images_for_proc()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "W6",
+                image::PROC_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS W6 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios W6 run={run}");
+    }
     // M16b：pthread 创建/join 与共享内存可见性（同源 Linux 参考），各跑两轮。
     image::check_stage5_linux_pthread()?;
     let images = image::build_images_for_pthread()?;
