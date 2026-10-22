@@ -2466,6 +2466,8 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_futex((int *)a0, (int)a1, (int)a2, (void *)a3);
     case PRIMA_LINUX_SYS_fork:
         return prima_native(PRIMA_SYS_FORK, 0, 0, 0, 0, 0, 0);
+    case PRIMA_LINUX_SYS_kill:
+        return prima_native(PRIMA_SYS_SIGNAL, a0, a1, 0, 0, 0, 0);
     case PRIMA_LINUX_SYS_wait4:
         return prima_native(PRIMA_SYS_WAIT4, a0, a1, a2, 0, 0, 0);
     case PRIMA_LINUX_SYS_clone:

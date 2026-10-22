@@ -225,6 +225,8 @@ pub mod syscall {
     pub const SYS_WAIT4: u64 = 53;
     /// M17b：当前进程以 `status` 退出（仅 leader）。
     pub const SYS_PROCESS_EXIT: u64 = 54;
+    /// M18a：`kill(pid, sig)` 最小信号（默认终止）。
+    pub const SYS_SIGNAL: u64 = 56;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

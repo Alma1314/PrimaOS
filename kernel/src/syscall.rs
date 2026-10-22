@@ -43,8 +43,8 @@ pub use prima_abi::syscall::{
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_FORK, SYS_MEMSEG_CREATE,
     SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
     SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
-    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID,
-    SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGNAL, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
+    SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
     SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
     SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE,
     SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
@@ -1062,6 +1062,37 @@ fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
         }
         Err(bootstrap::Wait4Error::EChild) => encode_errno(Errno::Child),
     }
+}
+
+/// M18a：最小信号——默认终止（status=128+sig）。
+fn signal_call(pid: u64, sig: u64) -> u64 {
+    if sig == 0 || sig > 31 {
+        return encode_errno(Errno::Invalid);
+    }
+    let cur = sched::current();
+    let target = pid as u32;
+    let Some(process) = bootstrap::process_of(target) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    let status = 128 + sig as i64;
+    let wakes = bootstrap::process_exit(process, status);
+    for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
+        let ptr = bootstrap::wait_status_ptr(*task);
+        sched::set_pending_status(*task, ptr, status);
+        sched::set_frame_rax(*task, target as u64);
+    }
+    if target == cur {
+        return process_exit_call(status as u64);
+    }
+    if let Some(leader) = bootstrap::process_leader(process) {
+        let root = sched::root(leader);
+        let offset = crate::cow::root_and_offset()
+            .map(|(_, off)| off)
+            .unwrap_or(0);
+        let _ = bootstrap::task_destroy(cur, leader, root, offset);
+        sched::clear_task(leader);
+    }
+    0
 }
 
 fn process_exit_call(status: u64) -> u64 {
@@ -2667,6 +2698,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_destroy_call(args[0])
     } else if num == SYS_FORK {
         fork_call()
+    } else if num == SYS_SIGNAL {
+        signal_call(args[0], args[1])
     } else if num == SYS_WAIT4 {
         wait4_call(args[0], args[1], args[2])
     } else if num == SYS_PROCESS_EXIT {

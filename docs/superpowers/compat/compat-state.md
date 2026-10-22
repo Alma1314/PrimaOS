@@ -138,6 +138,7 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 51 | `SYS_FORK` | 已实现（单线程；W6 双轮）：COW 克隆/写隔离/子进程退出；`syscall(57)` 包装路径的子进程返回值损坏，W6 用原生 51 | M17b-4 报告 |
 | 52 | （预留） | — | — |
 | 53 | `SYS_WAIT4` | 已实现（W6 双轮）：阻塞/唤醒/回收/ECHILD；WNOHANG 有 host 用例 | M17b-4 报告 |
+| 56 | `SYS_SIGNAL` | 已实现（W8 双轮）：`kill(pid, sig)` 默认终止，状态 128+sig 经 wait4 写回；无 handler/sigaction/sigreturn | M18a 报告 |
 | 54 | `SYS_PROCESS_EXIT` | 已实现（W6 双轮）：退出状态经 pending-status 在父根写回 | M17b-4 报告 |
 
 **不得据此宣称**：`fork`/`wait4`/`execve` 的 POSIX 语义、进程组/session、信号、

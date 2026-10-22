@@ -30,6 +30,7 @@
 | 2026-10-23 | [2026-10-23-stage5-m17b3-zombie-wait.md](2026-10-23-stage5-m17b3-zombie-wait.md) | 阶段 5 M17b-3：fork 僵尸保留、唤醒回收（W6 未接入） |
 | 2026-10-23 | [2026-10-23-stage5-m17b4-fork-wait.md](2026-10-23-stage5-m17b4-fork-wait.md) | 阶段 5 M17b-4：fork/wait 打通（W6 双轮） |
 | 2026-10-23 | [2026-10-23-stage5-m17c1-elf-plan.md](2026-10-23-stage5-m17c1-elf-plan.md) | 阶段 5 M17c-1：静态 ELF 解析与初始栈（host） |
+| 2026-10-23 | [2026-10-23-stage5-m18a-signal-kill.md](2026-10-23-stage5-m18a-signal-kill.md) | 阶段 5 M18a：kill 默认终止与 wait4 信号状态（W8） |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |
