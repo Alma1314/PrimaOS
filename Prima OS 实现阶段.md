@@ -40,6 +40,7 @@
 | ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
 | BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 原生版本握手已按追加号 `37` 落地；POSIX profile、C 入口栈、退出状态及错误映射仍按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决，阻塞项保持 Open。 |
 | BLK-004（已关闭） | 全量服务后 C ELF Task 16 创建、执行、自毁、栈回收、复建 `ENOSPC` 和四类容量水位获 QEMU 双轮见证，见[C ELF 报告](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。 | POSIX 启动/退出状态及 `write` 仍属片 C，不由此门槛代签。 |
+| ISSUE-FORK-COW-001 | fork 需要独立地址空间；共享 root 的 fork-lite 会让父子共用用户栈并在 syscall 上互相踩踏（QEMU 实测子线程循环，未提交）。 | 实现 COW/深拷贝 root（含独立用户栈）与 general user COW 故障处理，再接 SYS_FORK/SYS_WAIT4/SYS_PROCESS_EXIT 与 W6。 |
 | ISSUE-FORK-CAPS-001 | `fork` 需要子进程继承父进程的 fd/cap；当前 cap 句柄按能力空间唯一，若共享则父子 close 语义不独立（POSIX 偏差），若复制则需多 holder 句柄/句柄值保持。 | M17 设计采用“fork 子沿用父 cap 空间”的工作决定并登记 close 偏差；实现 fork/wait 探针后评估是否升级为 per-Process cap 空间或多 holder 句柄。 |
 | ISSUE-PTHREAD-CLONE-001（已关闭） | clone.s 裸 syscall 56 曾绕过适配层，`pthread_create` EAGAIN。 | 已打 musl clone.s 补丁（56→48、60→49）+ 内核 parent_tid 写 + 适配层 PROT_NONE mmap；create 已成功。musl 内部标记显示 `__pthread_exit` 确实执行（state=2、store DT_EXITED、wake）且早于父线程 create 返回，但 join 仍阻塞，怀疑 detach_state 地址/映射不一致；下一步打印父子 detach_state 地址与 join 读值。 |
 | ISSUE-THREAD-CAPACITY-001（已关闭） | 线程创建曾因 18 槽位占满而 `ENOSPC`；扩容会破坏容量负例见证。 | M15b-2b：`thread_create` 惰性回收 Dead 记录（优先无 cap 指向，否则撤销 cap），`task_create` 保持“满 → ENOSPC”；W2 双轮通过，见证 12/132 不变。 |

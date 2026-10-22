@@ -27,7 +27,21 @@ cargo xtask lint / fmt                 → PASS
   返回 `(2, 7)` → 再 wait 得 `ECHILD`；
 - `wait4_nohang_reports_running_child_and_echild_without_children`。
 
-## 3. 边界与下一步
+## 3. 追加实验：共享 root 的 fork 不可用
+
+尝试先用“共享地址空间”的 fork（SYS_FORK 51 + SYS_PROCESS_EXIT 54 +
+SYS_WAIT4 53）验证生命周期，QEMU 实测：
+
+- 父线程 fork 返回、wait4 阻塞（`[F][W]`），子线程（id 5）为 Ready；
+- 子线程被调度后**没有执行退出**，而是在 7/7/8 号 syscall 上循环；
+- 根因：fork 子与父**共享用户栈**，父线程在 write/wait 路径上的调用帧与
+  子线程的执行互相踩踏；共享 root 的“fork-lite”不是可用语义。
+
+结论：fork 必须先有**独立的地址空间**（深拷贝或 COW；含独立用户栈），
+不能用线程式共享 root 近似。实验代码已回退，未提交；下一步实现
+COW/深拷贝 root 后再接 W6。
+
+## 4. 边界与下一步
 
 - 未实现 `SYS_FORK`/`SYS_WAIT4`/`SYS_PROCESS_EXIT` 的 syscall 胶水；
 - 未实现 fork 的 COW root 克隆与 general user COW（当前 `clone_root` 仅浅拷贝
