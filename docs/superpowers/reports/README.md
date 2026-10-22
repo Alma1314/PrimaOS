@@ -9,6 +9,8 @@
 | 日期 | 文档 | 标题 |
 |---|---|---|
 | 2026-10-22 | [2026-10-22-stage5-m11-file-mutation.md](2026-10-22-stage5-m11-file-mutation.md) | 阶段 5 M11：文件树变更（`mkdir`/`rmdir`/`unlink`） |
+| 2026-10-22 | [2026-10-22-stage5-m12-c-startup.md](2026-10-22-stage5-m12-c-startup.md) | 阶段 5 M12：C 启动栈与退出清理（envp/auxv、自动关闭 fd） |
+| 2026-10-22 | [2026-10-22-stage5-m13a-vfs-links.md](2026-10-22-stage5-m13a-vfs-links.md) | 阶段 5 M13a：符号链接/readlink/rename/fchdir、内容区压实 |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |

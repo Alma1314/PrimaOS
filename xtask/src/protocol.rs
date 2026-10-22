@@ -281,7 +281,7 @@ const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
-    validate_output_impl(output, Some((53, 158, 166))).map(|_| ())
+    validate_output_impl(output, Some((53, 160, 168))).map(|_| ())
 }
 
 /// M5：echo 用例的 IPC 高水位依赖该程序实际的字节数，不是固定探针基线。
@@ -690,6 +690,15 @@ pub(crate) fn validate_stage5_echo(
             "{case} stage5 capacity trace mismatch: {capacity:?}"
         ));
     }
+    if case == "F1" {
+        let cleanup: Vec<_> = records
+            .iter()
+            .filter(|record| record.id == prima_abi::trace::EVENT_STAGE5_CLEANUP)
+            .collect();
+        if cleanup.len() != 1 || cleanup[0].args[0] != 17 || cleanup[0].args[1] != 0 {
+            return Err(format!("{case} stage5 cleanup trace mismatch: {cleanup:?}"));
+        }
+    }
     let lines: Vec<_> = output
         .lines()
         .filter(|line| line.starts_with("TASKCAP|"))
@@ -775,7 +784,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1312;audit_limit=8192"
+            != "CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1322;audit_limit=8192"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -816,7 +825,13 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     }
     let first = parse_shared_trace(output, 0, 1)?;
     let shared = parse_shared_trace(output, 1, prima_abi::trace::SHARED_RECORDS)?;
-    let ids: Vec<_> = shared.iter().map(|record| record.id).collect();
+    // M12b：退出清理记录是每个 C 程序运行期新增的可选尾记录；服务语义由
+    // `validate_stage5_echo` 的 F1 分支单独校验，此处只排除它以免改写既有金标序列。
+    let ids: Vec<_> = shared
+        .iter()
+        .filter(|record| record.id != prima_abi::trace::EVENT_STAGE5_CLEANUP)
+        .map(|record| record.id)
+        .collect();
     if ids != expected {
         return Err(format!("unexpected shared trace record IDs: {ids:?}"));
     }
@@ -4270,7 +4285,7 @@ mod tests {
 
     fn service_trace_fixture() -> (String, String) {
         let first_args = [0u64, 0x14d495250, 0x300000001, 0x100000018, 0x100000010001];
-        let shared_records: [[u64; 6]; 15] = [
+        let shared_records: [[u64; 6]; 16] = [
             [
                 1,
                 first_args[0],
@@ -4349,6 +4364,7 @@ mod tests {
                 0,
             ],
             [7, 17, 0x5a, 37, 1, 1],
+            [8, 17, 0, 0, 0, 0],
         ];
 
         let mut output = String::new();
@@ -4363,7 +4379,7 @@ mod tests {
             .flat_map(|record| record.iter().flat_map(|word| word.to_le_bytes()))
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        output.push_str(&format!("TRACEBYTES|slot=1;count=0xf;data={hex}\r\n"));
+        output.push_str(&format!("TRACEBYTES|slot=1;count=0x10;data={hex}\r\n"));
 
         let mut y = [0u8; 4096];
         let mut put = |offset: usize, value: u64| {
@@ -4425,7 +4441,7 @@ mod tests {
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
         output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132\r\n");
-        output.push_str("CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1312;audit_limit=8192\r\n");
+        output.push_str("CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1322;audit_limit=8192\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);
@@ -4442,14 +4458,16 @@ mod tests {
     fn service_trace_rejects_missing_duplicate_malformed_and_divergent_records() {
         let (output, hex) = service_trace_fixture();
         assert_eq!(validate_service_traces(&output), Ok(()));
-        assert!(validate_service_traces(&output.replace("count=0xf", "count=0xe")).is_err());
+        assert!(validate_service_traces(&output.replace("count=0x10", "count=0xe")).is_err());
         assert!(validate_service_traces(&output.replacen("data=01", "data=zz", 1)).is_err());
         assert!(validate_service_traces(&output.replacen("data=01", "data=03", 1)).is_err());
         assert!(validate_service_traces(&output.replace("TRACEBYTES|", "BROKEN|")).is_err());
         assert!(validate_service_traces(&output.replace("slot=0", "slot=1")).is_err());
         assert!(
-            validate_service_traces(&format!("{output}TRACEBYTES|slot=1;count=0xf;data={hex}\n"))
-                .is_err()
+            validate_service_traces(&format!(
+                "{output}TRACEBYTES|slot=1;count=0x10;data={hex}\n"
+            ))
+            .is_err()
         );
         assert!(validate_service_traces(&output.replace("YBYTES|", "BROKEN|")).is_err());
         assert!(validate_service_traces(&output.replace("kind=seg", "kind=obj")).is_err());
@@ -4492,7 +4510,7 @@ mod tests {
             chunk.copy_from_slice(&word.to_le_bytes());
         }
         let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        let good = format!("TRACEBYTES|slot=1;count=0xf;data={hex}\r\n");
+        let good = format!("TRACEBYTES|slot=1;count=0x10;data={hex}\r\n");
         assert_eq!(validate_native_app_trace(&good), Ok(()));
         assert!(
             validate_native_app_trace(&good.replace("0f00000000000000", "0700000000000000"))
@@ -4529,7 +4547,7 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=53;direct=158;blocks=166\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=53;direct=160;blocks=168\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=132;root_cleared=1;grandchild=4;tasks_after=12;caps_after=132;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=3;binds=4;unbinds=2;mounts=2;unmounts=1;resolves=4;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
@@ -4719,9 +4737,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=158;", ";direct=0;");
+        let output = VALID.replace(";direct=160;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 53/158/166"), "{error}");
+        assert!(error.contains("expected 53/160/168"), "{error}");
     }
 
     #[test]

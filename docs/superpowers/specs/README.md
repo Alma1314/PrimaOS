@@ -9,6 +9,8 @@
 | 日期 | 文档 | 标题 |
 |---|---|---|
 | 2026-10-22 | [2026-10-22-stage5-m11-file-mutation-design.md](2026-10-22-stage5-m11-file-mutation-design.md) | 阶段 5 / M11：文件树变更（设计） |
+| 2026-10-22 | [2026-10-22-stage5-m12-c-startup-exit-design.md](2026-10-22-stage5-m12-c-startup-exit-design.md) | 阶段 5 / M12：C 启动、退出与 fd 清理（设计） |
+| 2026-10-22 | [2026-10-22-stage5-m13a-vfs-links-design.md](2026-10-22-stage5-m13a-vfs-links-design.md) | 阶段 5 / M13a：符号链接、rename 与 fchdir（设计） |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory-design.md](2026-10-21-stage5-m10-anon-memory-design.md) | 阶段 5 / M10：匿名内存与保护（设计） |
 | 2026-10-20 | [2026-10-20-stage5-user-vfs-design.md](2026-10-20-stage5-user-vfs-design.md) | 阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计） |
 | 2026-10-20 | [2026-10-20-stage5-profile-v1.md](2026-10-20-stage5-profile-v1.md) | 阶段 5 POSIX profile v1（delta，提案） |

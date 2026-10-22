@@ -32,8 +32,8 @@
 | 2 | Capability、Segment、Task、IPC | 阶段 2 设计与 SPEC-147 复核 |
 | 3 | Namespace、Timer、Audit | 阶段 3 设计与 SPEC-148 复核 |
 | 4 | 原生运行时、服务管理器、用户态驱动/应用 | SPEC-129/130 与 SPEC-149 复核 |
-| 5 | POSIX 源码兼容、musl、C 入口、tty、文件、时间 | [profile v0](specs/2026-10-18-stage5-profile-v0.md)、[阶段 5 修订计划](plans/2026-10-18-stage5-revised-plan.md)、[compat 台账](compat/README.md) |
-| 6 | Linux x86_64 静态 ELF | 阶段 6 定义在实现阶段跟踪中，尚未开始 |
+| 5 | POSIX 源码兼容、musl、C 入口、tty、文件、时间 | [profile v0](specs/2026-10-18-stage5-profile-v0.md)、[阶段 5 收尾路线图](plans/2026-10-22-stage5-completion-roadmap.md)、[compat 台账](compat/README.md) |
+| 6 | Linux x86_64 静态 ELF | [阶段 6 入口](plans/2026-10-22-stage5-completion-roadmap.md)（路线图 §7）；尚未开始 |
 | 7 | SMP、动态链接、配额、恢复、第二架构 | 候选范围，未冻结 |
 
 ## 当前阶段（阶段 5）快速入口
@@ -43,6 +43,9 @@
 - [M8 用户态 VFS 设计](specs/2026-10-20-stage5-user-vfs-design.md)
 - [M10 匿名内存/保护设计](specs/2026-10-21-stage5-m10-anon-memory-design.md)
 - [M11 文件树变更设计](specs/2026-10-22-stage5-m11-file-mutation-design.md)
+- [M12 C 启动/退出设计](specs/2026-10-22-stage5-m12-c-startup-exit-design.md)
+- [M13a 符号链接/rename 设计](specs/2026-10-22-stage5-m13a-vfs-links-design.md)
+- [阶段 5 收尾与阶段 6 入口路线图](plans/2026-10-22-stage5-completion-roadmap.md)
 - [阶段 5 修订计划](plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](plans/2026-10-18-musl-port-plan.md)
 - [兼容状态台账](compat/compat-state.md)
@@ -54,6 +57,8 @@
 - [M9 statx / chdir / getcwd + sbase cat/ls](reports/2026-10-21-stage5-m9-metadata-cwd.md)
 - [M10 匿名内存 / 保护](reports/2026-10-21-stage5-m10-anon-memory.md)
 - [M11 文件树变更](reports/2026-10-22-stage5-m11-file-mutation.md)
+- [M12 C 启动栈与退出清理](reports/2026-10-22-stage5-m12-c-startup.md)
+- [M13a 符号链接/rename/fchdir](reports/2026-10-22-stage5-m13a-vfs-links.md)
 
 ## 文档约定
 

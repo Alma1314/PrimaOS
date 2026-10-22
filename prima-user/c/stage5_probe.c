@@ -275,6 +275,36 @@ static long probe_write_fd(int fd, const char *s) {
     return probe_raw3(PRIMA_LINUX_SYS_write, fd, (long)s, (long)text_len(s));
 }
 
+/* M12：从 envp 中按名取值；找不到返回 0。 */
+static const char *env_value(char **envp, const char *name) {
+    if (!envp)
+        return 0;
+    for (; *envp; envp++) {
+        const char *entry = *envp;
+        const char *key = name;
+        while (*key && *entry == *key) {
+            entry++;
+            key++;
+        }
+        if (*key == 0 && *entry == '=')
+            return entry + 1;
+    }
+    return 0;
+}
+
+/* M12：envp 的 NULL 终止符之后就是 auxv（Linux/Prima 冻结布局相同）。 */
+static unsigned long auxv_value(char **envp, unsigned long key) {
+    if (!envp)
+        return 0;
+    while (*envp)
+        envp++;
+    unsigned long *aux = (unsigned long *)(envp + 1);
+    for (; aux[0] != 0; aux += 2)
+        if (aux[0] == key)
+            return aux[1];
+    return 0;
+}
+
 #if !defined(PRIMA_HOST) && !defined(PRIMA_WITH_LIBC)
 static uint64_t read_fs_zero(void) {
     uint64_t value;
@@ -307,8 +337,25 @@ static int xmm_round_trip_survives_yield(void) {
 int main(int argc, char **argv, char **envp) {
     if (argc != 2 || !same(argv[1], "stack-ready"))
         return 2;
-    if (!envp || !envp[0] || !same(envp[0], "PRIMA_ABI=1") || envp[1] != 0)
-        return 3;
+    {
+        int env_count = 0;
+        while (envp && envp[env_count])
+            env_count++;
+        const char *abi = env_value(envp, "PRIMA_ABI");
+        const char *token = env_value(envp, "M12_ENV");
+        const char *empty = env_value(envp, "M12_EMPTY");
+        if (env_count != 3 || !abi || !same(abi, "1") || !token ||
+            !same(token, "one") || !empty || !same(empty, ""))
+            return 3;
+        if (auxv_value(envp, 6) != 4096 || auxv_value(envp, 4) != 56 ||
+            auxv_value(envp, 5) == 0 || auxv_value(envp, 3) == 0 ||
+            auxv_value(envp, 9) == 0 || auxv_value(envp, 31) == 0)
+            return 10;
+#ifndef PRIMA_HOST
+        if (auxv_value(envp, 7) != 0)
+            return 10;
+#endif
+    }
     /* 写读私有 .bss：BSS 必须初始为零，且数据页可写。 */
     if (bss_probe != 0)
         return 5;
@@ -434,13 +481,24 @@ __attribute__((noreturn)) void stage5_entry(uint64_t self, uint64_t send_cap,
     (void)manager_id;
     uint64_t received[3];
     if (((uint64_t)stack & 15) != 0 || stack[0] != 2 ||
-        stack[1] != (uint64_t)stack + 0x80 ||
-        stack[2] != (uint64_t)stack + 0x90 || stack[3] != 0 ||
-        stack[4] != (uint64_t)stack + 0xa0 || stack[5] != 0 ||
-        stack[6] != 6 || stack[7] != 4096 || stack[8] != 0 || stack[9] != 0 ||
+        stack[1] != (uint64_t)stack + 0xc0 ||
+        stack[2] != (uint64_t)stack + 0xcd || stack[3] != 0 ||
+        stack[4] != (uint64_t)stack + 0xd9 ||
+        stack[5] != (uint64_t)stack + 0xe5 ||
+        stack[6] != (uint64_t)stack + 0xf1 || stack[7] != 0 ||
+        stack[8] != 6 || stack[9] != 4096 ||
+        stack[10] != 3 || stack[11] == 0 ||
+        stack[12] != 4 || stack[13] != 56 ||
+        stack[14] != 5 || stack[15] == 0 ||
+        stack[16] != 9 || stack[17] == 0 ||
+        stack[18] != 7 || stack[19] != 0 ||
+        stack[20] != 31 || stack[21] == 0 ||
+        stack[22] != 0 || stack[23] != 0 ||
         !same((const char *)stack[1], "stage5-probe") ||
         !same((const char *)stack[2], "stack-ready") ||
-        !same((const char *)stack[4], "PRIMA_ABI=1"))
+        !same((const char *)stack[4], "PRIMA_ABI=1") ||
+        !same((const char *)stack[5], "M12_ENV=one") ||
+        !same((const char *)stack[6], "M12_EMPTY="))
         goto failed;
     if (prima_native_syscall3(PRIMA_SYS_ABI_CHECK, 1, 0, 0) !=
             UINT64_C(0x0000000100000000) ||

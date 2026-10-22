@@ -7,6 +7,9 @@
 | [compat-state.md](compat-state.md) | 阶段 5 兼容状态台账（M0） |
 | [symbol-trace.md](symbol-trace.md) | 阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo） |
 
+剩余 API/子系统的实施顺序见[阶段 5 收尾与阶段 6 入口路线图](../plans/2026-10-22-stage5-completion-roadmap.md)；
+该路线图是计划，不改变本目录的兼容状态。
+
 ## 使用规则
 
 - `compat-state.md`：API/符号兼容状态；每项须有状态、已知偏差和测试入口。

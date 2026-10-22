@@ -2178,7 +2178,11 @@ pub struct PlatformSegmentsRecord {
 /// **M9 扩容 136 → 144**：sbase `ls` 的 C 映像 24 页，使 boot manifest 的服务映像段
 /// 合计 137 页（含目录页），越过 136。只扩到 144（8 页余量），不重复 M8 试过的 192；
 /// 仍按 `>` 拒绝越界，且不改变 `SegmentFrames` 的逐帧归属检查。
-pub const MAX_SEGMENT_FRAMES: usize = 144;
+/// **M12b 扩容 144 → 149**：M12a 的参数块/auxv 解析使 `prima-servicemgr` 到 26 页；
+/// M12b 的句柄查询/清理协议使 log/ns/store 各到 21 页。`ls` 用例的服务映像合计
+/// 149 页（目录页 1 + 服务/C 探针/参数载体 148）。144/146 都会让
+/// `install_boot_image` 在启动早期确定拒绝。只按实测扩到 149，不放开逐页检查。
+pub const MAX_SEGMENT_FRAMES: usize = 149;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =

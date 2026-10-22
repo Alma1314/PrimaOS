@@ -29,23 +29,29 @@ use prima_runtime::{
     protocol::{
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_FILE_ARG_MASK,
         SERVICE_FILE_CHUNK, SERVICE_FILE_EACCES, SERVICE_FILE_EAGAIN, SERVICE_FILE_EBADF,
-        SERVICE_FILE_EEXIST, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ENOENT,
-        SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_ENOTDIR, SERVICE_FILE_FD_SHIFT,
-        SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE, SERVICE_FILE_OP_LSEEK, SERVICE_FILE_OP_OPEN,
-        SERVICE_FILE_OP_READ, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_STAT, SERVICE_FILE_OP_WRITE,
-        SERVICE_FILE_REQUEST_TAG, SERVICE_FILE_SEEK_OFFSET_MASK, SERVICE_FILE_SEEK_WHENCE_SHIFT,
-        SERVICE_FILE_SIZE_OFFSET, SERVICE_FILE_WRITE_COUNT_SHIFT, SERVICE_MARKER_MASK,
-        SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_OP_ADVANCE,
-        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT, SERVICE_SERVE_TAG,
-        SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_FIRST_BYTES_MASK,
-        SERVICE_VFS_FLAG_APPEND, SERVICE_VFS_FLAG_CREATE, SERVICE_VFS_FLAG_DIRECTORY,
-        SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_STAT, SERVICE_VFS_FLAG_TRUNC,
-        SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT, SERVICE_VFS_MUTATE_OP_MASK,
-        SERVICE_VFS_MUTATE_OP_SHIFT, SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OP_MKDIR,
-        SERVICE_VFS_OP_RMDIR, SERVICE_VFS_OP_UNLINK, SERVICE_VFS_OPEN_TAG,
+        SERVICE_FILE_EEXIST, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ELOOP,
+        SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_ENOTDIR,
+        SERVICE_FILE_FD_SHIFT, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE, SERVICE_FILE_OP_LSEEK,
+        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_READ, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_STAT,
+        SERVICE_FILE_OP_WRITE, SERVICE_FILE_REQUEST_TAG, SERVICE_FILE_SEEK_OFFSET_MASK,
+        SERVICE_FILE_SEEK_WHENCE_SHIFT, SERVICE_FILE_SIZE_OFFSET, SERVICE_FILE_WRITE_COUNT_SHIFT,
+        SERVICE_MARKER_MASK, SERVICE_NAME_MASK, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
+        SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_OP_SHIFT,
+        SERVICE_SERVE_TAG, SERVICE_VFS_ACCESS_SHIFT, SERVICE_VFS_COMMIT_TAG,
+        SERVICE_VFS_FIRST_BYTES_MASK, SERVICE_VFS_FLAG_APPEND, SERVICE_VFS_FLAG_CREATE,
+        SERVICE_VFS_FLAG_DIRECTORY, SERVICE_VFS_FLAG_EXCLUSIVE, SERVICE_VFS_FLAG_STAT,
+        SERVICE_VFS_FLAG_TRUNC, SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT,
+        SERVICE_VFS_LINK_CHUNK, SERVICE_VFS_LINK_OFFSET_SHIFT, SERVICE_VFS_LINK_READ_TAG,
+        SERVICE_VFS_LINK_REPLY_TAG, SERVICE_VFS_MUTATE_OP_MASK, SERVICE_VFS_MUTATE_OP_SHIFT,
+        SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OP_MKDIR, SERVICE_VFS_OP_RMDIR, SERVICE_VFS_OP_UNLINK,
+        SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PAIR_COMMIT_TAG, SERVICE_VFS_PAIR_OP_MASK,
+        SERVICE_VFS_PAIR_OP_READLINK, SERVICE_VFS_PAIR_OP_RENAME, SERVICE_VFS_PAIR_OP_SHIFT,
+        SERVICE_VFS_PAIR_OP_SYMLINK, SERVICE_VFS_PAIR_SLOT_SHIFT, SERVICE_VFS_PAIR_TAG,
         SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT, SERVICE_VFS_PATH_MAX,
         SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG, SERVICE_VFS_START_SHIFT,
+        SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK, SERVICE_VFS_STATUS_TAG,
         SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker, pack_service_reply, pack_vfs_node,
+        pack_vfs_pair_reply,
     },
     vfs::{self, NodeKind, OpenFlags, Storage},
 };
@@ -147,6 +153,9 @@ pub fn run(
     let mut vfs_ready = false;
     // M8：一次 `openat` 的分阶段路径暂存（OPEN / PATH* / COMMIT）。
     let mut staged = OpenStaging::EMPTY;
+    // M13a：双路径/双字符串操作（rename/symlink/readlink）的暂存与最近一次链接目标。
+    let mut pair = PairStaging::EMPTY;
+    let mut link = LinkTarget::EMPTY;
     loop {
         let Ok(message) = runtime.receive() else {
             continue;
@@ -203,6 +212,7 @@ pub fn run(
             let start = ((message.payload >> SERVICE_VFS_START_SHIFT) & 0xff) as u8;
             let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
             if vfs_ready {
+                pair.active = false;
                 let _ = staged.begin(flags, len, start, first);
             } else {
                 staged.active = false;
@@ -211,9 +221,14 @@ pub fn run(
             let offset = ((message.payload >> SERVICE_VFS_PATH_OFFSET_SHIFT) & 0xff) as usize;
             let bytes = message.payload & SERVICE_VFS_PATH_BYTES_MASK;
             if vfs_ready {
-                let _ = staged.append(offset, bytes);
+                if pair.active {
+                    let _ = pair.append(offset, bytes);
+                } else {
+                    let _ = staged.append(offset, bytes);
+                }
             } else {
                 staged.active = false;
+                pair.active = false;
             }
         } else if tag == SERVICE_VFS_COMMIT_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
@@ -229,6 +244,14 @@ pub fn run(
                 pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOSYS, 0)
             };
             let _ = runtime.send(peer, send_cap, reply, &[]);
+        } else if tag == SERVICE_VFS_STATUS_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M12b：只读句柄计数，供服务管理器在 C 退出后核对清理结果。
+            let client = (message.payload >> SERVICE_VFS_STATUS_CLIENT_SHIFT) & 0xff;
+            let open = files.iter().filter(|handle| handle.open).count() as u64;
+            let reply = SERVICE_VFS_STATUS_TAG
+                | (client << SERVICE_VFS_STATUS_CLIENT_SHIFT)
+                | (open & SERVICE_VFS_STATUS_COUNT_MASK);
+            let _ = runtime.send(peer, send_cap, reply, &[]);
         } else if tag == SERVICE_VFS_MUTATE_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M11：mkdir/unlink/rmdir 复用 OPEN/PATH/COMMIT 的分段路径传输。
             let op = ((message.payload >> SERVICE_VFS_MUTATE_OP_SHIFT) & SERVICE_VFS_MUTATE_OP_MASK)
@@ -237,10 +260,60 @@ pub fn run(
             let start = ((message.payload >> SERVICE_VFS_START_SHIFT) & 0xff) as u8;
             let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
             if vfs_ready {
+                pair.active = false;
                 let _ = staged.begin_mutate(op + 1, len, start, first);
             } else {
                 staged.active = false;
             }
+        } else if tag == SERVICE_VFS_PAIR_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M13a：双字符串操作的 OPEN（槽 0/1 的前 3 字节）。
+            let op =
+                ((message.payload >> SERVICE_VFS_PAIR_OP_SHIFT) & SERVICE_VFS_PAIR_OP_MASK) as u8;
+            let slot = ((message.payload >> SERVICE_VFS_PAIR_SLOT_SHIFT) & 1) as u8;
+            let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
+            let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
+            if vfs_ready && pair.begin(op, slot, len, first) {
+                staged.active = false;
+            } else {
+                pair.active = false;
+            }
+        } else if tag == SERVICE_VFS_PAIR_COMMIT_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M13a：槽 0 的 COMMIT 只确认暂存；readlink 或槽 1 的 COMMIT 执行操作。
+            let op =
+                ((message.payload >> SERVICE_VFS_PAIR_OP_SHIFT) & SERVICE_VFS_PAIR_OP_MASK) as u8;
+            let slot = ((message.payload >> SERVICE_VFS_PAIR_SLOT_SHIFT) & 1) as u8;
+            let reply = if vfs_ready && pair.active && pair.op == op {
+                if slot == 0 && op != SERVICE_VFS_PAIR_OP_READLINK as u8 {
+                    if pair.ready(0) {
+                        pack_vfs_pair_reply(op as u64, 0, 0)
+                    } else {
+                        pair.active = false;
+                        pack_vfs_pair_reply(op as u64, SERVICE_FILE_EINVAL, 0)
+                    }
+                } else {
+                    pair_staged(&runtime, &mut pair, &mut link)
+                }
+            } else {
+                pair.active = false;
+                pack_vfs_pair_reply(op as u64, SERVICE_FILE_EINVAL, 0)
+            };
+            let _ = runtime.send(peer, send_cap, reply, &[]);
+        } else if tag == SERVICE_VFS_LINK_READ_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            // M13a：readlink 目标按 3 字节分段取回。
+            let offset = ((message.payload >> SERVICE_VFS_LINK_OFFSET_SHIFT) & 0xff) as usize;
+            let mut status = 0u64;
+            let mut bytes = 0u64;
+            if offset > link.len as usize {
+                status = SERVICE_FILE_EINVAL;
+            } else {
+                let count = (link.len as usize - offset).min(SERVICE_VFS_LINK_CHUNK);
+                for index in 0..count {
+                    bytes |= (link.bytes[offset + index] as u64) << (8 * index);
+                }
+            }
+            let reply =
+                SERVICE_VFS_LINK_REPLY_TAG | (status << SERVICE_VFS_LINK_OFFSET_SHIFT) | bytes;
+            let _ = runtime.send(peer, send_cap, reply, &[]);
         } else if tag == SERVICE_FILE_REQUEST_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M4/M8：读/写/lseek/close 只在存储服务、且持久化段已映射后处理；否则明确拒绝。
             let response = if vfs_ready {
@@ -353,6 +426,89 @@ impl OpenStaging {
     }
 }
 
+/// M13a：rename/symlink 的双字符串暂存，以及 readlink 最近一次目标。
+///
+/// 槽 0 与槽 1 各自按 `OPEN`（前 3 字节）+ `PATH`（随后每段 5 字节）填充；A 的
+/// COMMIT 只确认，B 的 COMMIT（readlink 是 A）执行操作。两个槽都只保存字节，
+/// 目标字符串不要求是合法路径。
+#[derive(Clone, Copy)]
+struct PairStaging {
+    active: bool,
+    op: u8,
+    slot: u8,
+    lens: [u8; 2],
+    got: [u8; 2],
+    paths: [[u8; SERVICE_VFS_PATH_MAX]; 2],
+}
+
+impl PairStaging {
+    const EMPTY: Self = Self {
+        active: false,
+        op: 0,
+        slot: 0,
+        lens: [0; 2],
+        got: [0; 2],
+        paths: [[0u8; SERVICE_VFS_PATH_MAX]; 2],
+    };
+
+    fn begin(&mut self, op: u8, slot: u8, len: usize, first: u64) -> bool {
+        if slot > 1
+            || op > SERVICE_VFS_PAIR_OP_READLINK as u8
+            || len == 0
+            || len > SERVICE_VFS_PATH_MAX
+        {
+            self.active = false;
+            return false;
+        }
+        self.active = true;
+        self.op = op;
+        self.slot = slot;
+        self.lens[slot as usize] = len as u8;
+        self.got[slot as usize] = len.min(3) as u8;
+        self.paths[slot as usize] = [0u8; SERVICE_VFS_PATH_MAX];
+        for index in 0..self.got[slot as usize] as usize {
+            self.paths[slot as usize][index] = ((first >> (8 * index)) & 0xff) as u8;
+        }
+        true
+    }
+
+    fn append(&mut self, offset: usize, bytes: u64) -> bool {
+        if !self.active {
+            return false;
+        }
+        let slot = self.slot as usize;
+        let len = self.lens[slot] as usize;
+        let got = self.got[slot] as usize;
+        if offset != got || offset > len {
+            return false;
+        }
+        let count = (len - offset).min(5);
+        for index in 0..count {
+            self.paths[slot][offset + index] = ((bytes >> (8 * index)) & 0xff) as u8;
+        }
+        self.got[slot] = (offset + count) as u8;
+        true
+    }
+
+    fn ready(&self, slot: usize) -> bool {
+        self.lens[slot] != 0 && self.got[slot] == self.lens[slot]
+    }
+}
+
+/// M13a：readlink 最近一次目标，供后续 3 字节分段读取。
+#[derive(Clone, Copy)]
+struct LinkTarget {
+    len: u8,
+    bytes: [u8; SERVICE_VFS_PATH_MAX],
+}
+
+impl LinkTarget {
+    const EMPTY: Self = Self {
+        len: 0,
+        bytes: [0u8; SERVICE_VFS_PATH_MAX],
+    };
+}
+
 fn open_flags(bits: u8) -> OpenFlags {
     let bits = bits as u64;
     OpenFlags {
@@ -375,6 +531,7 @@ fn vfs_status(error: vfs::VfsError) -> u64 {
         vfs::VfsError::NoSpace => SERVICE_FILE_ENOSPC,
         vfs::VfsError::Unformatted => SERVICE_FILE_ENOSYS,
         vfs::VfsError::Io => SERVICE_FILE_EFAULT,
+        vfs::VfsError::Loop => SERVICE_FILE_ELOOP,
     }
 }
 
@@ -495,6 +652,82 @@ fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStagi
             node.writable,
         ),
     )
+}
+
+/// M13a：执行一次双路径操作（rename/symlink/readlink），返回 `PAIR_REPLY`。
+///
+/// 调用方已确认 VFS 可用、暂存态与 `op` 一致。`readlink` 的目标写入 `link`，供
+/// 后续分段读取；失败时清空暂存态，避免半条请求留在服务里。
+fn pair_staged<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    pair: &mut PairStaging,
+    link: &mut LinkTarget,
+) -> u64 {
+    let op = pair.op as u64;
+    let reply = |status: u64, data: u64| pack_vfs_pair_reply(op, status, data);
+    if !pair.ready(0) {
+        pair.active = false;
+        return reply(SERVICE_FILE_EINVAL, 0);
+    }
+    let mut storage = SegmentStorage { runtime };
+    let first_len = pair.lens[0] as usize;
+    if op == SERVICE_VFS_PAIR_OP_READLINK {
+        let id = match vfs::resolve_link(&mut storage, vfs::ROOT, &pair.paths[0][..first_len]) {
+            Ok(id) => id,
+            Err(error) => {
+                pair.active = false;
+                return reply(vfs_status(error), 0);
+            }
+        };
+        let node = match vfs::read_node(&mut storage, id) {
+            Ok(node) => node,
+            Err(error) => {
+                pair.active = false;
+                return reply(vfs_status(error), 0);
+            }
+        };
+        if node.kind != NodeKind::Symlink {
+            pair.active = false;
+            return reply(SERVICE_FILE_EINVAL, 0);
+        }
+        let target = match vfs::read_link(&mut storage, &node) {
+            Ok(target) => target,
+            Err(error) => {
+                pair.active = false;
+                return reply(vfs_status(error), 0);
+            }
+        };
+        let len = node.size as usize;
+        link.bytes = [0u8; SERVICE_VFS_PATH_MAX];
+        link.bytes[..len].copy_from_slice(&target[..len]);
+        link.len = len as u8;
+        pair.active = false;
+        return reply(0, len as u64);
+    }
+    if !pair.ready(1) {
+        pair.active = false;
+        return reply(SERVICE_FILE_EINVAL, 0);
+    }
+    let second_len = pair.lens[1] as usize;
+    let status = match op {
+        SERVICE_VFS_PAIR_OP_RENAME => vfs::rename(
+            &mut storage,
+            vfs::ROOT,
+            &pair.paths[0][..first_len],
+            &pair.paths[1][..second_len],
+        )
+        .map_or_else(vfs_status, |_| 0),
+        SERVICE_VFS_PAIR_OP_SYMLINK => vfs::symlink(
+            &mut storage,
+            vfs::ROOT,
+            &pair.paths[1][..second_len],
+            &pair.paths[0][..first_len],
+        )
+        .map_or_else(vfs_status, |_| 0),
+        _ => SERVICE_FILE_EINVAL,
+    };
+    pair.active = false;
+    reply(status, 0)
 }
 
 /// M8：按 `fd` 取**已打开**的句柄；fd 3 起，越界/未打开统一 `None`（调用方回 `EBADF`）。
@@ -634,6 +867,8 @@ fn file_request<T: SyscallTransport>(
                     (total, total)
                 }
                 NodeKind::Null => (0, 0),
+                // 符号链接句柄不通过 open 暴露（open 会跟随目标）；lseek 确定失败。
+                NodeKind::Symlink => return reply(SERVICE_FILE_EINVAL, 0),
             };
             let whence = (arg >> SERVICE_FILE_SEEK_WHENCE_SHIFT) & 0x3;
             let raw = (arg & SERVICE_FILE_SEEK_OFFSET_MASK) as i64;

@@ -49,6 +49,7 @@
 #define PRIMA_LINUX_SYS_dup 32
 #define PRIMA_LINUX_SYS_dup2 33
 #define PRIMA_LINUX_SYS_getpid 39
+#define PRIMA_LINUX_SYS_getppid 110
 #define PRIMA_LINUX_SYS_nanosleep 35
 #define PRIMA_LINUX_SYS_exit 60
 #define PRIMA_LINUX_SYS_clock_gettime 228
@@ -63,7 +64,14 @@
 #define PRIMA_LINUX_SYS_getdents64 217
 #define PRIMA_LINUX_SYS_getcwd 79
 #define PRIMA_LINUX_SYS_chdir 80
+#define PRIMA_LINUX_SYS_fchdir 81
+#define PRIMA_LINUX_SYS_rename 82
+#define PRIMA_LINUX_SYS_symlink 88
+#define PRIMA_LINUX_SYS_readlink 89
 #define PRIMA_LINUX_SYS_newfstatat 262
+#define PRIMA_LINUX_SYS_renameat 264
+#define PRIMA_LINUX_SYS_symlinkat 266
+#define PRIMA_LINUX_SYS_readlinkat 267
 #define PRIMA_LINUX_SYS_statx 332
 
 /* 原始负 errno。 */
@@ -79,6 +87,7 @@
 #define PRIMA_ERRNO_ENOSPC 28
 #define PRIMA_ERRNO_ERANGE 34
 #define PRIMA_ERRNO_ENOSYS 38
+#define PRIMA_ERRNO_ELOOP 40
 
 /* M4：openat 的冻结 flag 子集。adapter 归一化后只把 access/CREAT/TRUNC 传给服务端；
  * O_LARGEFILE/O_CLOEXEC 被接受但无语义效果（单线程、无 exec）。 */
@@ -172,6 +181,24 @@
 #define PRIMA_VFS_KIND_DIR 0
 #define PRIMA_VFS_KIND_FILE 1
 #define PRIMA_VFS_KIND_NULL 2
+#define PRIMA_VFS_KIND_SYMLINK 3
+
+/* M13a：双路径/双字符串操作（rename/symlink/readlink）。槽 0 = 源/链接路径，
+ * 槽 1 = 目标路径或链接目标；A 的 COMMIT 只确认，B（或 readlink 的 A）执行。 */
+#define PRIMA_STAGE5_VFS_PAIR_TAG UINT64_C(0x5edd000000000000)
+#define PRIMA_STAGE5_VFS_PAIR_COMMIT_TAG UINT64_C(0x5ede000000000000)
+#define PRIMA_STAGE5_VFS_PAIR_REPLY_TAG UINT64_C(0x5edf000000000000)
+#define PRIMA_VFS_PAIR_SLOT_SHIFT 47
+#define PRIMA_VFS_PAIR_OP_SHIFT 44
+#define PRIMA_VFS_PAIR_OP_RENAME 0
+#define PRIMA_VFS_PAIR_OP_SYMLINK 1
+#define PRIMA_VFS_PAIR_OP_READLINK 2
+#define PRIMA_VFS_PAIR_STATUS_SHIFT 32
+#define PRIMA_STAGE5_VFS_LINK_READ_TAG UINT64_C(0x5ee0000000000000)
+#define PRIMA_STAGE5_VFS_LINK_REPLY_TAG UINT64_C(0x5ee1000000000000)
+#define PRIMA_VFS_LINK_OFFSET_SHIFT 32
+#define PRIMA_VFS_LINK_CLIENT_SHIFT 40
+#define PRIMA_VFS_LINK_CHUNK 3
 
 /* M10：C 任务向管理器申请 arena Segment 的映射授权。REPLY 携带一条派生 cap
  * （Derive|SegMapR|SegMapW），之后 mmap/munmap/mprotect 直接走原生号。 */

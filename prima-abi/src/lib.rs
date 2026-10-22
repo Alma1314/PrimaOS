@@ -96,8 +96,8 @@ pub mod trace {
     pub const ARGS: usize = 5;
     /// 客户端共享页中的 trace 区；前 512 字节留给既有协议字段。
     pub const SHARED_OFFSET: u64 = 512;
-    /// 8 字节记录数，后跟至多 15 条小端 `Record`。
-    pub const SHARED_RECORDS: usize = 15;
+    /// 8 字节记录数，后跟至多 16 条小端 `Record`（M12b 增加清理见证）。
+    pub const SHARED_RECORDS: usize = 16;
     pub const RECORD_BYTES: usize = 8 * (1 + ARGS);
     const _: () = assert!(SHARED_OFFSET as usize + 8 + SHARED_RECORDS * RECORD_BYTES <= 4096);
     /// 用户态/xtask 约定的 runtime-hello trace 事件 ID（内核不分支解释）。
@@ -114,6 +114,9 @@ pub mod trace {
     pub const EVENT_NATIVE_APP: u64 = 6;
     /// 阶段 5 首个服务后 Task 的 ring3 容量见证。
     pub const EVENT_STAGE5_CAPACITY: u64 = 7;
+    /// M12b：退出清理见证。`args = [task_id, open_handles, 0, 0, 0]`，`open_handles`
+    /// 由存储服务的只读状态查询返回；0 表示退出后服务端句柄已全部释放。
+    pub const EVENT_STAGE5_CLEANUP: u64 = 8;
 
     /// 内核保存的通用 trace 记录；内核只复制/透传，不解释 `id` 或 `args`。
     #[repr(C)]

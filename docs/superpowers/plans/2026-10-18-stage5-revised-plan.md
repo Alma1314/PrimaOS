@@ -1,7 +1,8 @@
 # 阶段 5 修订计划：从原生机制到 POSIX 源码兼容
 
-**日期**：2026-10-18
+**日期**：2026-10-18（2026-10-22 增补后续路线图指针）
 **基线**：`master` `eba03c4`；依据[阶段 1–4 实现复核](../reports/2026-10-18-stage1-4-implementation-review.md)及[准入分析](../reports/2026-10-18-stage5-entry-analysis.md)
+**后续计划**：M11 之后的剩余工作已由[阶段 5 收尾与阶段 6 入口实施路线图](2026-10-22-stage5-completion-roadmap.md)承接（M12–M21、S6-A–E）；本文件保留为 2026-10-18 的高层切片计划与历史执行记录。
 **状态**：执行计划；片 B 的 C ELF 容量门槛已关闭，片 A 的[原生 ABI 1.0 握手](../reports/2026-10-18-stage5-native-abi-check.md)和片 C 的[固定 C 初始栈](../reports/2026-10-18-stage5-c-start-stack.md)、[同源 `main` 返回码](../reports/2026-10-18-stage5-main-return-status.md)及片 C 的[tty 字节流 `write(1/2)`/`_exit`](../reports/2026-10-18-stage5-c-tty-write.md)已获见证；M5 首切片的 [sbase `echo` E1–E6](../reports/2026-10-19-stage5-m5-sbase-echo.md)已双轮通过，S5-X3 证据已具备；M6 的 [POSIX 时间首切片](../reports/2026-10-19-stage5-m6-time.md)把 `P5-TIME-01` 推进到 `partial`（PIT 轮询、10 ms 粒度）；M7 的 [fd 表切片](../reports/2026-10-19-stage5-m7-fd-table.md)补齐本地 fd 表与 `dup`/`dup2`/`dup3`，并把 `getpid` 推进到 `partial`；M8 的[用户态 VFS/rootfs 切片](../reports/2026-10-20-stage5-m8-user-vfs.md)补齐多级路径、目录枚举、通用 fd 0..18 与静态 rootfs，并新增 [profile v1 delta](../specs/2026-10-20-stage5-profile-v1.md) 提案；M9 的 [statx/chdir/getcwd 与 sbase cat/ls](../reports/2026-10-21-stage5-m9-metadata-cwd.md)补齐了路径元数据与工作目录，并把 profile v1 的 `P5-FS-04`/`P5-FS-05` 推进到 partial；M10 的[匿名内存/保护切片](../reports/2026-10-21-stage5-m10-anon-memory.md)实现了内核 `memseg_protect`（号 41）与 C 侧 56 页匿名 mmap 区的分配/真正 unmap/复映射/改权，并把 `P5-MM-01` 推进到 partial；M11 的[文件树变更切片](../reports/2026-10-22-stage5-m11-file-mutation.md)补齐单路径 `mkdir`/`rmdir`/`unlink`（含 `*at`）与删除槽位复用，并把 `P5-FS-06` 推进到 partial。POSIX profile 的其余行、通用 mmap 与进程语义仍待完成；S5-D1–D7/X1–X2 未完成，S5-X3 待组织级复核。BLK-003 仍 Open；DOC-002 仍为外部候选。ISSUE-IPC-001 已在[阶段 2 签署后整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)中关闭。
 
 ## 1. 目标与取舍
@@ -23,15 +24,15 @@ DOC-002 的 musl/IDL/`ld.so`/Rust `std`/信号/`fork`/250 ns IPC 是候选分解
 
 | 片 | 工作与依赖 | 验收证据 |
 |---|---|---|
-| A 准入冻结 | 冻结 profile v0 的 API、具体参数/错误/partial 边界；逐项裁决 BLK-003（保留已用 1–37，仅追加新号；Prima 命名；错误码与 C 入口；动态链接阶段归属）；选定开源程序的版本、许可证与冻结用例。原生 ABI 1.0 握手已完成。 | S5-D1 的版本化 profile [v0](../specs/2026-10-18-stage5-profile-v0.md) 已冻结（待组织级确认勾选）；每行有 planned/supported/partial/unsupported、Linux 参考行为、Prima 后端和测试 ID。未评审的 DOC-002 条目不得混入 ABI。 |
+| A 准入冻结 | 冻结 profile v0 的 API、具体参数/错误/partial 边界；逐项裁决 BLK-003（保留已用 1–41，仅从 42 起追加新号；Prima 命名；错误码与 C 入口；动态链接阶段归属）；选定开源程序的版本、许可证与冻结用例。原生 ABI 1.0 握手已完成。 | S5-D1 的版本化 profile [v0](../specs/2026-10-18-stage5-profile-v0.md) 已冻结（待组织级确认勾选）；每行有 planned/supported/partial/unsupported、Linux 参考行为、Prima 后端和测试 ID。未评审的 DOC-002 条目不得混入 ABI。 |
 | B 容量 | 解决 BLK-004，保证全量现有服务启动后还可建、运行、退出、回收新 Task；沿用已修复的带 Cap 直投作为 IPC 基线。 | host 状态机 + ring3 QEMU 正反例；峰值容量/错误语义记录；旧阶段 1–4 事件不回归。通用 Cap IPC 的 supported 范围仍限已实现的消息大小与 2 Cap 上限。 |
 | C 首个 C 程序 | 用当前用户 ELF 机制构建最小静态 C crt/syscall 适配；定义 ABI 版本、退出状态与观察者；接入新 tty 字节流服务，先覆盖 `_start`、`write(1/2)`、`_exit`。 | 同一 C 源码在 Linux/Prima 编译运行；输出和退出状态与冻结预期一致；非法 fd/坏指针确定失败；不宣称已有 libc/文件系统。 |
-| D 文件与路径 | **首切片已完成（M4/M7/M8）**：用户态 fd 生命周期、`openat/read/write/close/lseek` 的冻结子集、多级路径/目录枚举、用户态 rootfs 与真实字节存储；利用 Namespace 做授权入口，不把它当文件树。 | 每个支持的 API 有 Linux/Prima 差分；`dup` 已支持，`CLOEXEC`/符号链接/cwd/持久化等未实现者标 partial/unsupported；服务崩溃/失效句柄有确定行为。 |
-| E 内存、时间、线程 | 有限 `mmap/munmap/mprotect`、单调时间映射；设计 Process/Thread 与共享地址空间、TLS、mutex/cond/wait 对应机制。`memseg_protect` 已由 M10 实现并有 host/QEMU 证据；WaitObject 仍只有规范文本，须独立实现与验证。 | 每个承诺 flag、权限转移、超时和同步边界都有成功/失败 QEMU 测试；W^X 由 ELF 装载、map 和 protect 三路径共同强制。 |
-| F 网络与库栈 | 冻结“基础网络子集”的地址族、协议和功能测试，建设用户态网络服务/传输；按 profile 所需移植 libc，补 Rust `core/std` 的实际支持矩阵。 | 网络 API 不可用时明确 unsupported；S5-D3/D6 只能按实际程序与测试勾选。自研 C 冒烟仅是中间证据，不能替代开源程序。 |
-| G 出口 | 在固定编译器/sysroot、Linux 参考环境与 Prima QEMU 上重跑完整 profile、差分矩阵和选定开源程序；记录 API 状态、偏差、版本、产物哈希。 | S5-X1 每项映射和重复测试；S5-X2 每项状态；S5-X3 开源程序源码重编译与冻结功能集 PASS。余项未通过则阶段继续进行中。 |
+| D 文件与路径 | **已推进到 M11**：用户态 fd 生命周期、`openat/read/write/close/lseek` 的冻结子集、多级路径/目录枚举/cwd、用户态 rootfs 与真实字节存储、`statx` 与单路径 `mkdir`/`rmdir`/`unlink`；利用 Namespace 做授权入口，不把它当文件树。剩余项见路线图 M13。 | 每个支持的 API 有 Linux/Prima 差分；`dup` 已支持，`CLOEXEC`/符号链接/`rename`/持久化等未实现者标 partial/unsupported；服务崩溃/失效句柄有确定行为。 |
+| E 内存、时间、线程 | 有限 `mmap/munmap/mprotect`、单调时间映射；设计 Process/Thread 与共享地址空间、TLS、mutex/cond/wait 对应机制。`memseg_protect` 已由 M10 实现并有 host/QEMU 证据；WaitObject 仍只有规范文本，须独立实现与验证；时间仍只有 PIT 轮询子集。剩余项见路线图 M15–M18。 | 每个承诺 flag、权限转移、超时和同步边界都有成功/失败 QEMU 测试；W^X 由 ELF 装载、map 和 protect 三路径共同强制。 |
+| F 网络与库栈 | 冻结“基础网络子集”的地址族、协议和功能测试，建设用户态网络服务/传输；按 profile 所需移植 libc，补 Rust `core/std` 的实际支持矩阵。剩余项见路线图 M19–M20。 | 网络 API 不可用时明确 unsupported；S5-D3/D6 只能按实际程序与测试勾选。自研 C 冒烟仅是中间证据，不能替代开源程序。 |
+| G 出口 | 在固定编译器/sysroot、Linux 参考环境与 Prima QEMU 上重跑完整 profile、差分矩阵和选定开源程序；记录 API 状态、偏差、版本、产物哈希。阶段 6 入口另见路线图 S6-A–E。 | S5-X1 每项映射和重复测试；S5-X2 每项状态；S5-X3 开源程序源码重编译与冻结功能集 PASS。余项未通过则阶段继续进行中。 |
 
-片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；按 `PT_LOAD` 权限的私有写段/BSS 与 W^X 已由[装载报告](../reports/2026-10-18-stage5-ptload-wx.md)见证；musl 的 M0 依赖盘点已完成（见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)）；M2 首个系统边界切片已完成（追加 `SYS_TASK_SET_FS_BASE=38`、C 适配层与同源探针，见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)）；M3 静态 musl 基座与 M3b 匿名内存已完成（SSE/FPU 契约、可重放补丁、Prima crt 接 `__libc_start_main`、探针链接 `libc.a`、`malloc/free/realloc`，见[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)）。M4 文件首切片已完成（单文件 `f` 的 fd 生命周期、`openat/read/write/lseek/close` 冻结子集、Namespace `f` 授权与 `printf`+`fflush` 输出，见 [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)）；M5 首切片已完成（sbase `echo` E1–E6 在 Prima 双轮通过、与 Linux 参考逐字节一致，见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)）；M6 时间首切片已完成（`CLOCK_MONOTONIC` + 轮询睡眠，`P5-TIME-01` partial，见 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)）；M7 fd 表切片已完成（本地 fd 3..10、`dup`/`dup2`/`dup3`、共享 offset、`getpid`，见 [M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)）；目录/多级路径、完整 auxv/任意 argv 与真实进程退出仍未完成；M10 的匿名 arena 仍不是通用 `mmap` 承诺（无文件映射/`MAP_SHARED`/`mremap`，`PROT_NONE` 近似只读），PIT 轮询不是阻塞时钟服务。
+片 B 的容量门槛已由[首个 C ELF 的 QEMU 见证](../reports/2026-10-18-stage5-c-elf-qemu.md)关闭；片 C 的最小 POSIX 风格入口、`write(1/2)` 与退出状态已由[独立报告](../reports/2026-10-18-stage5-c-tty-write.md)见证；按 `PT_LOAD` 权限的私有写段/BSS 与 W^X 已由[装载报告](../reports/2026-10-18-stage5-ptload-wx.md)见证；musl 的 M0 依赖盘点已完成（见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)）；M2 首个系统边界切片已完成（追加 `SYS_TASK_SET_FS_BASE=38`、C 适配层与同源探针，见[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)）；M3 静态 musl 基座与 M3b 匿名内存已完成（SSE/FPU 契约、可重放补丁、Prima crt 接 `__libc_start_main`、探针链接 `libc.a`、`malloc/free/realloc`，见[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)）。M4 文件首切片已完成（单文件 `f` 的 fd 生命周期、`openat/read/write/lseek/close` 冻结子集、Namespace `f` 授权与 `printf`+`fflush` 输出，见 [M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)）；M5 首切片已完成（sbase `echo` E1–E6 在 Prima 双轮通过、与 Linux 参考逐字节一致，见 [M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)）；M6 时间首切片已完成（`CLOCK_MONOTONIC` + 轮询睡眠，`P5-TIME-01` partial，见 [M6 报告](../reports/2026-10-19-stage5-m6-time.md)）；M7 fd 表切片已完成（本地 fd 3..10、`dup`/`dup2`/`dup3`、共享 offset、`getpid`，见 [M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)）；M8/M9 已补齐多级路径、目录枚举、`statx`/`chdir`/`getcwd` 与 sbase `cat`/`ls`（见 [M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)），M11 补齐单路径 `mkdir`/`unlink`/`rmdir`（见 [M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)）；完整 auxv/任意 argv、真实进程退出、线程/信号/网络仍未完成。M10 的匿名 arena 仍不是通用 `mmap` 承诺（无文件映射/`MAP_SHARED`/`mremap`，`PROT_NONE` 近似只读），PIT 轮询不是阻塞时钟服务。M12 之后的排序、证据门槛与阶段 6 入口见[路线图](2026-10-22-stage5-completion-roadmap.md)。
 
 片 C 是首个最小纵向证明，D–G 才构成完整阶段交付。任何新增内核机制先对照 COSIR 与代码现状；语义变化按跟踪规则先改规范，再改实现与证据。
 
@@ -45,6 +46,16 @@ musl 的依赖盘点、静态链接闭环和逐步验收见 [musl 移植计划](
 
 ## 5. 暂缓裁决
 
-- `fork/execve/wait4`、完整 POSIX signal、`ld.so` 和 Rust `std` 全量覆盖仍在 S5-D2/D6 候选范围内；各自必须先决定阶段归属与所需 Process/Thread、loader、VFS 语义。不能把单线程 `pthread` 假实现或返回 `ENOSYS` 算成线程交付。
-- DOC-002 的 `0x0xx` 号表、`NT_RUXOS_ABI`、`x86_64-ruxos-none`、`nightly-2026-09-15` 不直接使用。仓库原有号 1–36 保持，37 用于原生 ABI 握手；工具链仍为 `nightly-2026-07-30`。
+- `fork/execve/wait4`、完整 POSIX signal、`ld.so` 和 Rust `std` 全量覆盖仍在 S5-D2/D6 候选范围内；各自必须先决定阶段归属与所需 Process/Thread、loader、VFS 语义。不能把单线程 `pthread` 假实现或返回 `ENOSYS` 算成线程交付。M11 之后的排序与决策门见[路线图](2026-10-22-stage5-completion-roadmap.md)。
+- DOC-002 的 `0x0xx` 号表、`NT_RUXOS_ABI`、`x86_64-ruxos-none`、`nightly-2026-09-15` 不直接使用。仓库原有号 1–41 保持（37 为原生 ABI 握手，38–41 为 M2/M6/M10 追加），只从 42 起追加；工具链仍为 `nightly-2026-07-30`。
 - 性能目标（如 IPC ≤250 ns）仅在固定 `(QEMU, guest CPU, host CPU)` 上实测后定门槛；不得阻断语义正确的首片。
+
+## 6. 后续计划
+
+M11 之后的阶段 5 剩余工作与阶段 6 入口已拆分为
+[阶段 5 收尾与阶段 6 入口实施路线图](2026-10-22-stage5-completion-roadmap.md)：
+M12–M21 覆盖 C 入口/退出清理、VFS 完成、tty 输入、Process/Thread、pthread/TLS、
+`fork/execve/wait4`、signal、网络、Rust std 与阶段 5 出口；S6-A–E 覆盖 Linux 静态 ELF
+装载、OS 中立 trap/exception 递送、Linux LibOS profile、白名单与阶段 6 出口。
+
+本文件不再追加逐切片任务；新增实现应按路线图的里程碑、决策门和证据纪律执行。

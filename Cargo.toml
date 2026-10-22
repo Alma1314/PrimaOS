@@ -11,6 +11,10 @@ panic = "abort"
 
 [profile.dev.package.prima-user]
 debug = false
+# M13a：共享用户态服务代码增长后，debug（-O0）构建把 log/ns/store 推到 29 页，
+# 与 boot manifest 的单段上限冲突。只对用户态 crate 启用轻量优化，内核不改。
+opt-level = 1
 
 [profile.dev.package.prima-runtime]
 debug = false
+opt-level = 1

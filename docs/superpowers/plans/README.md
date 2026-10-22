@@ -8,8 +8,11 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-22 | [2026-10-22-stage5-completion-roadmap.md](2026-10-22-stage5-completion-roadmap.md) | 阶段 5 收尾与阶段 6 入口实施路线图（M12–M21 + S6-A–E） |
 | 2026-10-18 | [2026-10-18-stage5-revised-plan.md](2026-10-18-stage5-revised-plan.md) | 阶段 5 修订计划：从原生机制到 POSIX 源码兼容 |
 | 2026-10-18 | [2026-10-18-musl-port-plan.md](2026-10-18-musl-port-plan.md) | 阶段 5：musl 移植计划 |
+
+> 2026-10-22 路线图是 M11 之后剩余工作的当前总入口；它仍是执行计划，不代表实现状态。
 
 ## 阶段 1
 

@@ -119,6 +119,22 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios V1 run={run}");
     }
+    // M13a：符号链接/readlink/rename/fchdir 探针，各跑两轮并逐轮比较 IPC 计数。
+    image::check_stage5_linux_vfs2()?;
+    let images = image::build_images_for_vfs2()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "V2",
+                image::VFS2_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS V2 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios V2 run={run}");
+    }
     // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
     image::check_stage5_linux_meta()?;
     let images = image::build_images_for_meta()?;

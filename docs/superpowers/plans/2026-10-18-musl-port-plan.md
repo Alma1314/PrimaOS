@@ -1,12 +1,12 @@
 # 阶段 5：musl 移植计划
 
-**日期**：2026-10-18
+**日期**：2026-10-18（2026-10-22 增补后续路线图指针）
 
 **性质**：实施计划；M0 依赖盘点、M2 系统边界、M3 静态 musl 基座、M3b 匿名内存
 （`malloc/free/realloc`）、M4 文件首切片、M5 sbase `echo` 首切片、M6 POSIX 时间首切片、
 M7 完整本地 fd 表、M8 用户态 VFS/rootfs、M9 元数据/工作目录、M10 匿名内存/保护与 M11 文件树变更已完成（2026-10-18/22，见[盘点报告](../reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2 报告](../reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 报告](../reports/2026-10-18-stage5-musl-m3-base.md)、[M4 报告](../reports/2026-10-18-stage5-musl-m4-file.md)、[M5 报告](../reports/2026-10-19-stage5-m5-sbase-echo.md)、[M6 报告](../reports/2026-10-19-stage5-m6-time.md)、[M7 报告](../reports/2026-10-19-stage5-m7-fd-table.md)、[M8 报告](../reports/2026-10-20-stage5-m8-user-vfs.md)、[M9 报告](../reports/2026-10-21-stage5-m9-metadata-cwd.md)、[M10 报告](../reports/2026-10-21-stage5-m10-anon-memory.md)与 [M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)）。`printf`+`fflush` 输出路径已验收；sbase `echo` E1–E6 已双轮通过，但完整 auxv/任意 argv 仍受限；时间只覆盖 `CLOCK_MONOTONIC` 与轮询睡眠；fd 表支持 `dup`/`dup2`/`dup3` 与 `getpid`，M8 补上 fd 0..18、多级路径、目录枚举与用户态 rootfs；仍无符号链接、进程退出自动关闭与持久化；`mmap` 只覆盖 56 页匿名 arena 子集，文件树仅支持单路径 mkdir/unlink/rmdir。BLK-004 已关闭、BLK-003 仍 Open，S5-D/X 均未勾选。
 
-**上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。
+**上位计划**：[阶段 5 修订计划](2026-10-18-stage5-revised-plan.md)；本计划细化其中的 ABI 准入、C 程序启动与 libc 工作。M1 的固定 C 探针[初始栈见证](../reports/2026-10-18-stage5-c-start-stack.md)与 [`main` 返回码观察](../reports/2026-10-18-stage5-main-return-status.md)已通过；完整 auxv、任意 argv 与 musl 通用入口仍待完成。M11 之后的跨子系统排序见[阶段 5 收尾与阶段 6 入口实施路线图](2026-10-22-stage5-completion-roadmap.md)；本计划保留为 libc 适配主线。
 
 ## 目标与边界
 
@@ -20,7 +20,7 @@ musl 上游[安装说明](https://git.musl-libc.org/cgit/musl/tree/INSTALL)明�
 
 | 门槛 | 必须形成的决策或证据 |
 |---|---|
-| BLK-003：ABI | 原生 ABI 1.0 握手已用追加号 37 验证；仍需冻结首版 POSIX profile、C 调用约定、初始栈/auxv、错误码映射及后续调用号。保留 `prima-abi` 已用 1–37 号，只追加、不复用空洞；不照搬 DOC-002 的 `0x0xx` 号表和 RuxOS 命名。 |
+| BLK-003：ABI | 原生 ABI 1.0 握手已用追加号 37 验证；仍需冻结首版 POSIX profile、C 调用约定、初始栈/auxv、错误码映射及后续调用号。保留 `prima-abi` 已用 1–41 号（截至 M10；含 38–41），只从 42 起追加、不复用空洞；不照搬 DOC-002 的 `0x0xx` 号表和 RuxOS 命名。 |
 | BLK-004：容量 | 现有服务全量存活时，能创建、运行、退出并回收额外 C 程序 Task；记录 Task、栈、Cap、Segment、消息和 Audit 峰值及容量错误。 |
 | 目标程序 | 选定开源程序的版本、许可证、源码哈希、编译参数、依赖与冻结用例。自写 hello 仅作启动探针。 |
 | 上游快照 | 以 DOC-002 提议的 musl 1.2.5 为候选，复核后锁定 tag/commit、归档哈希和许可文本；记录本地补丁与重放方法。版本在此步确定，不随系统包隐式变化。 |
@@ -127,6 +127,25 @@ C 适配层新增 `mkdir(83)`/`mkdirat(258)`/`unlink(87)`/`unlinkat(263)`/`rmdir
 无 `rename`/`mv`、链接、权限位、内容区回收或跨启动持久化。详见
 [M11 报告](../reports/2026-10-22-stage5-m11-file-mutation.md)与
 [M11 设计](../specs/2026-10-22-stage5-m11-file-mutation-design.md)。
+
+## 后续里程碑与归属
+
+M11 之后的里程碑不在本文件重复展开，统一由[阶段 5 收尾与阶段 6 入口实施路线图](2026-10-22-stage5-completion-roadmap.md)定义。对应关系如下：
+
+| 路线图里程碑 | 与本计划的关系 | 主要 libc/musl 工作面 |
+|---|---|---|
+| M12 | C 入口/退出清理 | 任意 argv/envp、auxv、退出状态、fd 自动关闭 |
+| M13 | VFS 完成 | `rename`/链接/权限、stdio 文件 API |
+| M14 | tty 输入 | `read(0)`、`termios` 子集、EOF |
+| M15 | Process/Thread 模型 | 线程上下文、TLS 前置、futex/WaitObject |
+| M16 | pthread/TLS | `pthread_create/join`、mutex/cond、TLS |
+| M17 | `fork/execve/wait4` | 进程生命周期、fd 继承、`CLOEXEC` |
+| M18 | POSIX signal | `sigaction`/`kill`/`sigreturn`、`EINTR` |
+| M19 | 网络子集 | socket API 的用户态后端 |
+| M20 | Rust core/std 与矩阵 | libc-test/同源程序、profile v2、符号追溯 |
+| M21 | 阶段 5 出口 | 全量重复运行与证据审计 |
+
+本计划仍负责 musl 快照、补丁重放、sysroot 构建和 libc-test 子集；路线图负责这些工作与内核/服务里程碑的依赖排序。
 
 ## 构建与验证
 

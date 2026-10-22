@@ -223,7 +223,7 @@ pub const SERVICE_VFS_ROOT_PATH: &str = "fs";
 /// M8：rootfs 路径字节上限（含 `/`，不含结尾 NUL）。
 pub const SERVICE_VFS_PATH_MAX: usize = 64;
 /// M8：rootfs 节点上限（与 `prima_runtime::vfs::MAX_NODES` 一致）。
-pub const SERVICE_VFS_NODES: usize = 16;
+pub const SERVICE_VFS_NODES: usize = 32;
 
 /// M8：`openat` 的分阶段路径传输——先 OPEN 元数据，再若干 PATH 片段，最后 COMMIT。
 ///
@@ -328,6 +328,79 @@ pub fn pack_vfs_mutate(op: u64, path_len: usize, start: u64, first: &[u8]) -> u6
         | bytes
 }
 
+/// M12b：存储服务只读状态查询——返回当前打开的句柄数（0..8）。
+///
+/// `tag | client(32..39)`；应答 `tag | client(32..39) | open_count(0..7)`。
+pub const SERVICE_VFS_STATUS_TAG: u64 = 0x5EDC_0000_0000_0000;
+pub const SERVICE_VFS_STATUS_CLIENT_SHIFT: u64 = 32;
+pub const SERVICE_VFS_STATUS_COUNT_MASK: u64 = 0xff;
+
+/// M13a：双字符串路径操作（rename/symlink）与 readlink 的分段暂存。
+///
+/// 复用 [`SERVICE_VFS_PATH_TAG`] 的片段格式，但服务端有两个暂存槽：
+/// - A（slot 0）：rename 的源路径、symlink 的链接路径、readlink 的查询路径；
+/// - B（slot 1）：rename 的目标路径、symlink 的目标字符串（不按路径解析）。
+///
+/// OPEN：`tag | slot(47) | op(44..46) | path_len(32..39) | start(24..31) | 前 3 字节`；
+/// COMMIT：`tag | slot(47) | op(44..46) | client(32..39)`。A 的 COMMIT 只确认暂存，
+/// B 的 COMMIT（或 readlink 的 A COMMIT）执行操作并回复
+/// [`SERVICE_VFS_PAIR_REPLY_TAG`]。readlink 的目标字节随后用
+/// [`SERVICE_VFS_LINK_READ_TAG`] 按 3 字节分段取回。
+pub const SERVICE_VFS_PAIR_TAG: u64 = 0x5EDD_0000_0000_0000;
+pub const SERVICE_VFS_PAIR_SLOT_SHIFT: u64 = 47;
+pub const SERVICE_VFS_PAIR_OP_SHIFT: u64 = 44;
+pub const SERVICE_VFS_PAIR_OP_MASK: u64 = 0x7;
+pub const SERVICE_VFS_PAIR_OP_RENAME: u64 = 0;
+pub const SERVICE_VFS_PAIR_OP_SYMLINK: u64 = 1;
+pub const SERVICE_VFS_PAIR_OP_READLINK: u64 = 2;
+
+/// 打包一次双路径 OPEN（`first` 至多 3 字节）。
+pub fn pack_vfs_pair_open(op: u64, slot: u64, path_len: usize, start: u64, first: &[u8]) -> u64 {
+    let mut bytes = 0u64;
+    for (index, byte) in first.iter().take(3).enumerate() {
+        bytes |= (*byte as u64) << (8 * index);
+    }
+    SERVICE_VFS_PAIR_TAG
+        | ((slot & 1) << SERVICE_VFS_PAIR_SLOT_SHIFT)
+        | ((op & SERVICE_VFS_PAIR_OP_MASK) << SERVICE_VFS_PAIR_OP_SHIFT)
+        | (((path_len as u64) & 0xff) << SERVICE_VFS_PATH_LEN_SHIFT)
+        | ((start & 0xff) << SERVICE_VFS_START_SHIFT)
+        | bytes
+}
+
+/// COMMIT：`tag | slot(47) | op(44..46) | client(32..39)`。
+pub const SERVICE_VFS_PAIR_COMMIT_TAG: u64 = 0x5EDE_0000_0000_0000;
+
+/// 打包 COMMIT，`client` 是发起操作的 Task id 低 8 位。
+pub const fn pack_vfs_pair_commit(op: u64, slot: u64, client: u64) -> u64 {
+    SERVICE_VFS_PAIR_COMMIT_TAG
+        | ((slot & 1) << SERVICE_VFS_PAIR_SLOT_SHIFT)
+        | ((op & SERVICE_VFS_PAIR_OP_MASK) << SERVICE_VFS_PAIR_OP_SHIFT)
+        | ((client & 0xff) << SERVICE_VFS_STATUS_CLIENT_SHIFT)
+}
+
+/// 双路径操作应答：`tag | op(44..46) | status(32..39) | data(0..31)`。
+pub const SERVICE_VFS_PAIR_REPLY_TAG: u64 = 0x5EDF_0000_0000_0000;
+pub const SERVICE_VFS_PAIR_REPLY_OP_SHIFT: u64 = 44;
+
+/// 打包双路径操作应答；readlink 的 `data` 是目标长度。
+pub const fn pack_vfs_pair_reply(op: u64, status: u64, data: u64) -> u64 {
+    SERVICE_VFS_PAIR_REPLY_TAG
+        | ((op & SERVICE_VFS_PAIR_OP_MASK) << SERVICE_VFS_PAIR_REPLY_OP_SHIFT)
+        | ((status & 0xff) << SERVICE_VFS_STATUS_CLIENT_SHIFT)
+        | (data & SERVICE_FILE_ARG_MASK)
+}
+
+/// readlink 目标分段读取：`tag | offset(32..39) | client(40..47)`；
+/// 应答 `tag | status(32..39) | 3 字节(0..23)`。
+pub const SERVICE_VFS_LINK_READ_TAG: u64 = 0x5EE0_0000_0000_0000;
+/// readlink 目标分段的应答（与请求分开，管理器据此单向转发）。
+pub const SERVICE_VFS_LINK_REPLY_TAG: u64 = 0x5EE1_0000_0000_0000;
+pub const SERVICE_VFS_LINK_OFFSET_SHIFT: u64 = 32;
+pub const SERVICE_VFS_LINK_CLIENT_SHIFT: u64 = 40;
+pub const SERVICE_VFS_LINK_REPLY_SHIFT: u64 = 32;
+pub const SERVICE_VFS_LINK_CHUNK: usize = 3;
+
 /// M4/M8：同时打开的文件/目录服务端句柄上限（服务端 fd 3..10）。
 pub const SERVICE_FILE_HANDLES: usize = 8;
 
@@ -363,6 +436,8 @@ pub const SERVICE_FILE_ENOTDIR: u64 = 20;
 pub const SERVICE_FILE_EINVAL: u64 = 22;
 pub const SERVICE_FILE_ENOSPC: u64 = 28;
 pub const SERVICE_FILE_ENOSYS: u64 = 38;
+/// M13a：`ELOOP`（符号链接展开超过冻结深度）。
+pub const SERVICE_FILE_ELOOP: u64 = 40;
 
 /// M4：打包文件服务请求。
 pub const fn pack_file_request(op: u64, fd: u64, client: u64, arg: u64) -> u64 {

@@ -25,7 +25,9 @@
 /// 单个节点的字节数。
 pub const NODE_BYTES: usize = 32;
 /// 节点条目上限（同时决定内容区起点，保证已分配的内容偏移稳定）。
-pub const MAX_NODES: usize = 16;
+/// M13a：节点槽 16 → 32。符号链接/rename 用例在 16 槽下会因临时节点耗尽返回
+/// `ENOSPC`；扩到 32 后内容区仍 ≥3 KiB（`CONTENT_CAPACITY` 按 32×32 B 节点表重算）。
+pub const MAX_NODES: usize = 32;
 /// 单个名称的字节上限。
 pub const MAX_NAME: usize = 16;
 /// 镜像头字节数。
@@ -67,6 +69,8 @@ pub enum NodeKind {
     File = 1,
     /// `/dev/null` 一类字符设备占位：读总是 EOF，写被丢弃。
     Null = 2,
+    /// M13a：符号链接；目标字节保存在内容区（`data`/`size`），不占节点内联空间。
+    Symlink = 3,
 }
 
 impl NodeKind {
@@ -76,6 +80,7 @@ impl NodeKind {
             0 => Some(Self::Directory),
             1 => Some(Self::File),
             2 => Some(Self::Null),
+            3 => Some(Self::Symlink),
             _ => None,
         }
     }
@@ -105,6 +110,8 @@ pub enum VfsError {
     Unformatted,
     /// 调用方提供的存储读写失败。
     Io,
+    /// `ELOOP`：符号链接展开超过冻结深度。
+    Loop,
 }
 
 /// 字节存储抽象。所有偏移都相对镜像起点（不含 SPEC-112 的状态字）。
@@ -551,6 +558,36 @@ fn lookup<S: Storage>(
     Ok(None)
 }
 
+/// M13a：符号链接展开的冻结深度上限。
+pub const MAX_SYMLINK_DEPTH: u8 = 8;
+/// 展开符号链接时待处理分量的上限（避免无限增长）。
+const PENDING_COMPONENTS: usize = MAX_COMPONENTS * 2 + 4;
+
+/// 读符号链接目标（不跟随）。目标长度受 [`MAX_PATH`] 与内容区边界约束。
+pub fn read_link<S: Storage>(storage: &mut S, node: &Node) -> Result<[u8; MAX_PATH], VfsError> {
+    if node.kind != NodeKind::Symlink {
+        return Err(VfsError::NotDir);
+    }
+    let len = node.size as usize;
+    if len > MAX_PATH {
+        return Err(VfsError::Invalid);
+    }
+    let mut target = [0u8; MAX_PATH];
+    if len != 0 {
+        read_exact(
+            storage,
+            CONTENT_OFFSET + node.data as usize,
+            &mut target[..len],
+        )?;
+    }
+    Ok(target)
+}
+
+/// 按分量逐项走路径，并在遇到符号链接时展开。
+///
+/// 相对目标从链接所在目录开始，绝对目标从根开始；展开深度由
+/// [`MAX_SYMLINK_DEPTH`] 冻结，剩余分量按原顺序接在目标分量之后。链接目标
+/// 本身仍受 [`MAX_PATH`] 解析规则约束，故总分量数有界。
 fn walk<S: Storage>(
     storage: &mut S,
     start: NodeId,
@@ -560,8 +597,20 @@ fn walk<S: Storage>(
     if !parsed.absolute && read_node(storage, current)?.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
+    let mut pending = [Component {
+        len: 0,
+        bytes: [0u8; MAX_NAME],
+    }; PENDING_COMPONENTS];
+    let mut count = 0usize;
     for index in 0..parsed.count as usize {
-        let component = parsed.component(index);
+        pending[count] = *parsed.component(index);
+        count += 1;
+    }
+    let mut index = 0usize;
+    let mut depth = 0u8;
+    while index < count {
+        let component = pending[index];
+        index += 1;
         if component.is_dot() {
             continue;
         }
@@ -569,7 +618,31 @@ fn walk<S: Storage>(
             current = read_node(storage, current)?.parent;
             continue;
         }
-        current = lookup(storage, current, component.as_bytes())?.ok_or(VfsError::NoEnt)?;
+        let id = lookup(storage, current, component.as_bytes())?.ok_or(VfsError::NoEnt)?;
+        let node = read_node(storage, id)?;
+        if node.kind != NodeKind::Symlink {
+            current = id;
+            continue;
+        }
+        if depth >= MAX_SYMLINK_DEPTH {
+            return Err(VfsError::Loop);
+        }
+        depth += 1;
+        let target = read_link(storage, &node)?;
+        let len = node.size as usize;
+        let target = ParsedPath::parse(&target[..len])?;
+        let remaining = count - index;
+        let total = remaining + target.count as usize;
+        if count + target.count as usize > PENDING_COMPONENTS {
+            return Err(VfsError::Invalid);
+        }
+        // 目标分量插到剩余分量之前；相对目标以链接父目录为基准。
+        pending.copy_within(index..count, index + target.count as usize);
+        for slot in 0..target.count as usize {
+            pending[index + slot] = *target.component(slot);
+        }
+        count = index + total;
+        current = if target.absolute { ROOT } else { node.parent };
     }
     if parsed.trailing_slash && read_node(storage, current)?.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
@@ -584,6 +657,26 @@ pub fn resolve<S: Storage>(
     path: &[u8],
 ) -> Result<NodeId, VfsError> {
     walk(storage, start, &ParsedPath::parse(path)?)
+}
+
+/// M13a：解析到**末项本身**，不跟随末项的符号链接（`lstat`/`readlink` 语义）。
+///
+/// 前缀分量仍按 [`walk`] 展开链接；末项为空、`.`、`..` 或父目录不存在时确定失败。
+pub fn resolve_link<S: Storage>(
+    storage: &mut S,
+    start: NodeId,
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
+    let parsed = ParsedPath::parse(path)?;
+    if parsed.count == 0 {
+        return Err(VfsError::Invalid);
+    }
+    let last = parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if last.is_dot() || last.is_dot_dot() {
+        return Err(VfsError::Invalid);
+    }
+    let directory = walk(storage, start, &parsed.prefix())?;
+    lookup(storage, directory, last.as_bytes())?.ok_or(VfsError::NoEnt)
 }
 
 /// 打开/创建文件或目录。
@@ -804,6 +897,231 @@ pub fn unlink<S: Storage>(
     Ok(id)
 }
 
+/// M13a：在可写目录中创建符号链接，目标字节写入内容区。
+///
+/// 目标只做长度/非空校验，不要求当前存在（允许悬空链接）；解析时再按冻结深度
+/// 展开。路径分量沿用 [`ParsedPath`] 上限，不复用 `path` 参数做拼接。
+pub fn symlink<S: Storage>(
+    storage: &mut S,
+    start: NodeId,
+    target: &[u8],
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
+    if target.is_empty() || target.len() > MAX_PATH {
+        return Err(VfsError::Invalid);
+    }
+    let parsed = ParsedPath::parse(path)?;
+    if parsed.count == 0 {
+        return Err(VfsError::Exist);
+    }
+    let last = parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if last.is_dot() || last.is_dot_dot() {
+        return Err(VfsError::Exist);
+    }
+    let directory = walk(storage, start, &parsed.prefix())?;
+    let parent = read_node(storage, directory)?;
+    if parent.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if !parent.writable {
+        return Err(VfsError::Access);
+    }
+    if lookup(storage, directory, last.as_bytes())?.is_some() {
+        return Err(VfsError::Exist);
+    }
+    let data = alloc_content(storage, target.len())?;
+    if !target.is_empty() {
+        write_all(storage, CONTENT_OFFSET + data as usize, target)?;
+    }
+    let id = alloc_node(storage)?;
+    let mut name = [0u8; MAX_NAME];
+    name[..last.len as usize].copy_from_slice(last.as_bytes());
+    let node = Node {
+        kind: NodeKind::Symlink,
+        parent: directory,
+        writable: false,
+        size: target.len() as u16,
+        data,
+        name_len: last.len,
+        name,
+    };
+    store_node(storage, id, &node)?;
+    Ok(id)
+}
+
+/// 在内容区分配 `len` 字节；空间不足时先压实回收已删除文件留下的空洞。
+fn alloc_content<S: Storage>(storage: &mut S, len: usize) -> Result<u16, VfsError> {
+    let mut header = read_header(storage)?;
+    if header.data_used as usize + len > CONTENT_CAPACITY {
+        compact(storage)?;
+        header = read_header(storage)?;
+    }
+    let start = header.data_used as usize;
+    if start + len > CONTENT_CAPACITY {
+        return Err(VfsError::NoSpace);
+    }
+    header.data_used = (start + len) as u16;
+    if !header.write(storage) {
+        return Err(VfsError::Io);
+    }
+    Ok(start as u16)
+}
+
+/// M13a：压实内容区，回收已删除节点留下的空洞。
+///
+/// 按当前 `data` 升序把存活文件/符号链接的内容左移并重写节点的 `data`；节点编号
+/// 不变，打开句柄只持节点编号，故压实不破坏句柄。目标偏移总是不大于源偏移，
+/// 分块前向拷贝不会覆盖尚未读取的字节。
+fn compact<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
+    let header = read_header(storage)?;
+    let mut entries = [(0u8, 0u16, 0u16); MAX_NODES];
+    let mut count = 0usize;
+    for id in 1..header.count {
+        let node = read_node(storage, id)?;
+        if is_free(&node) || node.size == 0 {
+            continue;
+        }
+        if node.kind == NodeKind::File || node.kind == NodeKind::Symlink {
+            entries[count] = (id, node.data, node.size);
+            count += 1;
+        }
+    }
+    // 16 项以内的插入排序，避免引入分配。
+    for index in 1..count {
+        let item = entries[index];
+        let mut slot = index;
+        while slot > 0 && entries[slot - 1].1 > item.1 {
+            entries[slot] = entries[slot - 1];
+            slot -= 1;
+        }
+        entries[slot] = item;
+    }
+    let mut used = 0usize;
+    for (id, data, size) in entries[..count].iter().copied() {
+        if data as usize != used {
+            let mut copied = 0usize;
+            while copied < size as usize {
+                let chunk = core::cmp::min(32, size as usize - copied);
+                let mut bytes = [0u8; 32];
+                read_exact(
+                    storage,
+                    CONTENT_OFFSET + data as usize + copied,
+                    &mut bytes[..chunk],
+                )?;
+                write_all(storage, CONTENT_OFFSET + used + copied, &bytes[..chunk])?;
+                copied += chunk;
+            }
+            let mut node = read_node(storage, id)?;
+            node.data = used as u16;
+            write_node(storage, id, &node)?;
+        }
+        used += size as usize;
+    }
+    let mut updated = read_header(storage)?;
+    updated.data_used = used as u16;
+    if !updated.write(storage) {
+        return Err(VfsError::Io);
+    }
+    Ok(())
+}
+
+/// `candidate` 是否位于 `ancestor` 之下（含自身）。
+fn in_subtree<S: Storage>(
+    storage: &mut S,
+    ancestor: NodeId,
+    candidate: NodeId,
+) -> Result<bool, VfsError> {
+    let mut current = candidate;
+    for _ in 0..=MAX_NODES {
+        if current == ancestor {
+            return Ok(true);
+        }
+        if current == ROOT {
+            return Ok(false);
+        }
+        current = read_node(storage, current)?.parent;
+        if current == FREE_PARENT {
+            return Ok(false);
+        }
+    }
+    Ok(false)
+}
+
+/// M13a：同一 VFS 内重命名/移动节点；末项不跟随符号链接。
+///
+/// 目标已存在时：文件/链接可替换文件/链接，目录只能替换空目录；错误集沿用
+/// 冻结的 `ENOENT`/`ENOTDIR`/`EACCES`/`EINVAL`，不新增 errno。
+pub fn rename<S: Storage>(
+    storage: &mut S,
+    start: NodeId,
+    from: &[u8],
+    to: &[u8],
+) -> Result<(), VfsError> {
+    let from_parsed = ParsedPath::parse(from)?;
+    if from_parsed.count == 0 {
+        return Err(VfsError::Invalid);
+    }
+    let from_last = from_parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if from_last.is_dot() || from_last.is_dot_dot() {
+        return Err(VfsError::Invalid);
+    }
+    let from_dir = walk(storage, start, &from_parsed.prefix())?;
+    let from_id = lookup(storage, from_dir, from_last.as_bytes())?.ok_or(VfsError::NoEnt)?;
+    let from_node = read_node(storage, from_id)?;
+    if from_parsed.trailing_slash && from_node.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    let to_parsed = ParsedPath::parse(to)?;
+    if to_parsed.count == 0 {
+        return Err(VfsError::Invalid);
+    }
+    let to_last = to_parsed.last().copied().ok_or(VfsError::Invalid)?;
+    if to_last.is_dot() || to_last.is_dot_dot() {
+        return Err(VfsError::Invalid);
+    }
+    let to_dir = walk(storage, start, &to_parsed.prefix())?;
+    let to_parent = read_node(storage, to_dir)?;
+    if to_parent.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if !to_parent.writable {
+        return Err(VfsError::Access);
+    }
+    if to_parsed.trailing_slash && from_node.kind != NodeKind::Directory {
+        return Err(VfsError::NotDir);
+    }
+    if to_dir == from_id {
+        return Err(VfsError::Invalid);
+    }
+    if from_node.kind == NodeKind::Directory && in_subtree(storage, from_id, to_dir)? {
+        return Err(VfsError::Invalid);
+    }
+    if let Some(existing) = lookup(storage, to_dir, to_last.as_bytes())? {
+        if existing == from_id {
+            // 同一路径：Linux 返回成功且不改动。
+            return Ok(());
+        }
+        let target = read_node(storage, existing)?;
+        if target.kind == NodeKind::Directory {
+            if from_node.kind != NodeKind::Directory {
+                return Err(VfsError::NotDir);
+            }
+            if has_children(storage, existing)? {
+                return Err(VfsError::Access);
+            }
+        } else if from_node.kind == NodeKind::Directory {
+            return Err(VfsError::NotDir);
+        }
+        free_node(storage, existing)?;
+    }
+    let mut moved = from_node;
+    moved.parent = to_dir;
+    moved.name_len = to_last.len;
+    moved.name = [0u8; MAX_NAME];
+    moved.name[..to_last.len as usize].copy_from_slice(to_last.as_bytes());
+    write_node(storage, from_id, &moved)
+}
+
 /// 读文件/设备。目录读取由 [`dir_bytes`] 单独提供，避免把目录当普通文件暴露给 `read(2)`。
 pub fn read<S: Storage>(
     storage: &mut S,
@@ -814,6 +1132,8 @@ pub fn read<S: Storage>(
     match node.kind {
         NodeKind::Null => Ok(0),
         NodeKind::Directory => Err(VfsError::NotDir),
+        // 符号链接的 fd 只在 readlink 语义下有意义；`read(2)` 返回 EINVAL。
+        NodeKind::Symlink => Err(VfsError::Invalid),
         NodeKind::File => {
             let size = node.size as u64;
             if offset >= size || out.is_empty() {
@@ -829,6 +1149,10 @@ pub fn read<S: Storage>(
 }
 
 /// 写文件；调用方负责 `access` 检查。返回实际写入的字节数。
+///
+/// 内容区按“独占区间”管理：写入不增长时原地覆盖；增长时先检查本文件到下一个
+/// 存活区间的空隙与内容区尾部，不足则先压实，再把文件内容搬到尾部（旧区间成为
+/// 空洞，由后续压实回收）。这样两个先后创建的空文件不会共享同一区间。
 pub fn write<S: Storage>(
     storage: &mut S,
     id: NodeId,
@@ -845,12 +1169,19 @@ pub fn write<S: Storage>(
     if offset > CONTENT_CAPACITY as u64 {
         return Err(VfsError::NoSpace);
     }
-    let limit = CONTENT_CAPACITY.saturating_sub(node.data as usize);
     let Some(end) = (offset as usize).checked_add(data.len()) else {
         return Err(VfsError::NoSpace);
     };
-    if end > limit {
+    if end > CONTENT_CAPACITY {
         return Err(VfsError::NoSpace);
+    }
+    if end > node.size as usize && end > growth_limit(storage, id, node)? {
+        // 原地放不下：先压实回收空洞，再按新的布局重试。
+        compact(storage)?;
+        *node = read_node(storage, id)?;
+        if end > growth_limit(storage, id, node)? {
+            relocate(storage, id, node, end)?;
+        }
     }
     if !data.is_empty() {
         write_all(
@@ -862,8 +1193,82 @@ pub fn write<S: Storage>(
     if end > node.size as usize {
         node.size = end as u16;
         write_node(storage, id, node)?;
+        // 尾部高水位随原地增长前移，供下一次创建/搬迁使用。
+        let mut header = read_header(storage)?;
+        let used = node.data as usize + end;
+        if used > header.data_used as usize {
+            header.data_used = used as u16;
+            if !header.write(storage) {
+                return Err(VfsError::Io);
+            }
+        }
     }
     Ok(data.len())
+}
+
+/// 本文件在不覆盖其他存活区间的前提下可达到的最大长度（相对文件起点）。
+fn growth_limit<S: Storage>(storage: &mut S, id: NodeId, node: &Node) -> Result<usize, VfsError> {
+    let data = node.data as usize;
+    let mut limit = CONTENT_CAPACITY.saturating_sub(data);
+    let header = read_header(storage)?;
+    for other in 1..header.count {
+        if other == id {
+            continue;
+        }
+        let node = read_node(storage, other)?;
+        if is_free(&node) || node.size == 0 {
+            continue;
+        }
+        let start = node.data as usize;
+        if start >= data && start - data < limit {
+            limit = start - data;
+        }
+    }
+    Ok(limit)
+}
+
+/// 把文件内容搬到内容区尾部，为新长度腾出连续空间。
+fn relocate<S: Storage>(
+    storage: &mut S,
+    id: NodeId,
+    node: &mut Node,
+    end: usize,
+) -> Result<(), VfsError> {
+    let mut header = read_header(storage)?;
+    let mut tail = header.data_used as usize;
+    for other in 1..header.count {
+        let node = read_node(storage, other)?;
+        if is_free(&node) {
+            continue;
+        }
+        let used = node.data as usize + node.size as usize;
+        if used > tail {
+            tail = used;
+        }
+    }
+    if tail + end > CONTENT_CAPACITY {
+        return Err(VfsError::NoSpace);
+    }
+    let old_data = node.data as usize;
+    let old_size = node.size as usize;
+    let mut copied = 0usize;
+    while copied < old_size {
+        let chunk = core::cmp::min(32, old_size - copied);
+        let mut bytes = [0u8; 32];
+        read_exact(
+            storage,
+            CONTENT_OFFSET + old_data + copied,
+            &mut bytes[..chunk],
+        )?;
+        write_all(storage, CONTENT_OFFSET + tail + copied, &bytes[..chunk])?;
+        copied += chunk;
+    }
+    node.data = tail as u16;
+    header.data_used = (tail + end) as u16;
+    if !header.write(storage) {
+        return Err(VfsError::Io);
+    }
+    write_node(storage, id, node)
 }
 
 /// 把文件截断到 `size`；只允许缩小或保持不变。
@@ -1248,16 +1653,16 @@ mod tests {
         assert_eq!(write(&mut storage, opened.id, &mut node, 0, b"x"), Ok(1));
         assert_eq!(mount(&mut storage), Ok(()));
         assert_eq!(read_file(&mut storage, b"/tmp/a"), b"x");
-        let mut next = 1u8;
+        let mut next = 0u32;
         loop {
-            let mut name = [b'/'; 6];
-            name[0] = b'/';
+            let mut name = [b'/'; 8];
             name[1] = b't';
             name[2] = b'm';
             name[3] = b'p';
             name[4] = b'/';
-            name[5] = b'a' + (next % 20);
-            let path = &name[..6];
+            name[5] = b'a' + ((next / 10) % 10) as u8;
+            name[6] = b'a' + (next % 10) as u8;
+            let path = &name[..7];
             match open(
                 &mut storage,
                 ROOT,
@@ -1462,5 +1867,175 @@ mod tests {
         assert_eq!(b, a);
         assert_eq!(resolve(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::NoEnt));
         assert_eq!(resolve(&mut storage, ROOT, b"/tmp/b"), Ok(b));
+    }
+
+    #[test]
+    fn symlinks_create_read_and_resolve() {
+        let mut storage = mounted();
+        // 相对目标以链接父目录为基准（`/tmp/../etc/motd`）。
+        symlink(&mut storage, ROOT, b"../etc/motd", b"/tmp/rel").unwrap();
+        assert_eq!(read_file(&mut storage, b"/tmp/rel"), b"welcome\n");
+        assert_eq!(read_file(&mut storage, b"tmp/rel"), b"welcome\n");
+        // 绝对目标从根开始。
+        symlink(&mut storage, ROOT, b"/etc/hostname", b"/tmp/abs").unwrap();
+        assert_eq!(read_file(&mut storage, b"tmp/abs"), b"prima\n");
+        // 中间分量是链接时按目标目录继续。
+        symlink(&mut storage, ROOT, b"/etc", b"/tmp/dir").unwrap();
+        assert_eq!(read_file(&mut storage, b"/tmp/dir/motd"), b"welcome\n");
+        // readlink 返回目标原文；末项不跟随，前缀照常跟随。
+        let id = resolve_link(&mut storage, ROOT, b"/tmp/rel").unwrap();
+        let node = read_node(&mut storage, id).unwrap();
+        assert_eq!(node.kind, NodeKind::Symlink);
+        let followed = resolve(&mut storage, ROOT, b"/tmp/rel").unwrap();
+        assert_eq!(
+            read_node(&mut storage, followed).unwrap().kind,
+            NodeKind::File
+        );
+        let target = read_link(&mut storage, &node).unwrap();
+        assert_eq!(&target[..node.size as usize], b"../etc/motd");
+        // 重复创建与非法目标确定失败。
+        assert_eq!(
+            symlink(&mut storage, ROOT, b"etc/motd", b"/tmp/rel"),
+            Err(VfsError::Exist)
+        );
+        assert_eq!(
+            symlink(&mut storage, ROOT, b"", b"/tmp/empty"),
+            Err(VfsError::Invalid)
+        );
+        // 只读父目录拒绝创建。
+        assert_eq!(
+            symlink(&mut storage, ROOT, b"etc/motd", b"/usr/l"),
+            Err(VfsError::Access)
+        );
+    }
+
+    #[test]
+    fn symlink_loops_and_dangling_targets_fail_deterministically() {
+        let mut storage = mounted();
+        symlink(&mut storage, ROOT, b"loop", b"/tmp/loop").unwrap();
+        assert_eq!(
+            resolve(&mut storage, ROOT, b"/tmp/loop"),
+            Err(VfsError::Loop)
+        );
+        symlink(&mut storage, ROOT, b"missing", b"/tmp/dangling").unwrap();
+        assert_eq!(
+            resolve(&mut storage, ROOT, b"/tmp/dangling"),
+            Err(VfsError::NoEnt)
+        );
+        // 互相指向的两级环在深度上限处确定失败。
+        symlink(&mut storage, ROOT, b"s1", b"/tmp/s0").unwrap();
+        symlink(&mut storage, ROOT, b"s0", b"/tmp/s1").unwrap();
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/s0"), Err(VfsError::Loop));
+    }
+
+    #[test]
+    fn rename_moves_and_replaces_files() {
+        let mut storage = mounted();
+        let create = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        let mut opened = open(&mut storage, ROOT, b"/tmp/f", create).unwrap();
+        write(&mut storage, opened.id, &mut opened.node, 0, b"abc").unwrap();
+        assert_eq!(rename(&mut storage, ROOT, b"/tmp/f", b"/tmp/g"), Ok(()));
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/f"), Err(VfsError::NoEnt));
+        assert_eq!(read_file(&mut storage, b"/tmp/g"), b"abc");
+        // 覆盖已有文件：目标槽位被释放，内容来自源文件。
+        let mut other = open(&mut storage, ROOT, b"/tmp/h", create).unwrap();
+        write(&mut storage, other.id, &mut other.node, 0, b"xyz").unwrap();
+        assert_eq!(rename(&mut storage, ROOT, b"/tmp/g", b"/tmp/h"), Ok(()));
+        assert_eq!(read_file(&mut storage, b"/tmp/h"), b"abc");
+        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/g"), Err(VfsError::NoEnt));
+        assert_eq!(rename(&mut storage, ROOT, b"/tmp/h", b"/tmp/h"), Ok(()));
+    }
+
+    #[test]
+    fn rename_moves_directories_and_rejects_subtree() {
+        let mut storage = mounted();
+        let create = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        mkdir(&mut storage, ROOT, b"/tmp/d").unwrap();
+        let mut inner = open(&mut storage, ROOT, b"/tmp/d/inner", create).unwrap();
+        write(&mut storage, inner.id, &mut inner.node, 0, b"in").unwrap();
+        assert_eq!(rename(&mut storage, ROOT, b"/tmp/d", b"/tmp/e"), Ok(()));
+        assert_eq!(read_file(&mut storage, b"/tmp/e/inner"), b"in");
+        // 目录不能移进自己的子树。
+        mkdir(&mut storage, ROOT, b"/tmp/e/sub").unwrap();
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/e", b"/tmp/e/sub"),
+            Err(VfsError::Invalid)
+        );
+    }
+
+    #[test]
+    fn rename_enforces_replace_and_error_rules() {
+        let mut storage = mounted();
+        let create = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        // 文件不能覆盖目录。
+        let mut file = open(&mut storage, ROOT, b"/tmp/f", create).unwrap();
+        write(&mut storage, file.id, &mut file.node, 0, b"f").unwrap();
+        mkdir(&mut storage, ROOT, b"/tmp/y").unwrap();
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/f", b"/tmp/y"),
+            Err(VfsError::NotDir)
+        );
+        // 目录不能覆盖非空目录；目标清空后可以替换。
+        let k = open(&mut storage, ROOT, b"/tmp/y/k", create).unwrap();
+        mkdir(&mut storage, ROOT, b"/tmp/x").unwrap();
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/x", b"/tmp/y"),
+            Err(VfsError::Access)
+        );
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/f", false), Ok(file.id));
+        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/y/k", false), Ok(k.id));
+        mkdir(&mut storage, ROOT, b"/tmp/z").unwrap();
+        assert_eq!(rename(&mut storage, ROOT, b"/tmp/z", b"/tmp/y"), Ok(()));
+        // 冻结错误集。
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/none", b"/tmp/n2"),
+            Err(VfsError::NoEnt)
+        );
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/x", b"/usr/x"),
+            Err(VfsError::Access)
+        );
+        // 冻结错误集：文件带尾随斜杠不能重命名（目录可以）。
+        open(&mut storage, ROOT, b"/tmp/q", create).unwrap();
+        assert_eq!(
+            rename(&mut storage, ROOT, b"/tmp/q/", b"/tmp/q2"),
+            Err(VfsError::NotDir)
+        );
+    }
+
+    #[test]
+    fn deleted_content_is_reclaimed_by_compaction() {
+        let mut storage = mounted();
+        let create = OpenFlags {
+            access: 2,
+            create: true,
+            ..OpenFlags::default()
+        };
+        let mut first = open(&mut storage, ROOT, b"/tmp/first", create).unwrap();
+        write(&mut storage, first.id, &mut first.node, 0, &[b'a'; 1200]).unwrap();
+        let mut second = open(&mut storage, ROOT, b"/tmp/second", create).unwrap();
+        write(&mut storage, second.id, &mut second.node, 0, &[b'b'; 900]).unwrap();
+        assert_eq!(content_used(&mut storage), Ok(31 + 1200 + 900));
+        assert_eq!(
+            unlink(&mut storage, ROOT, b"/tmp/first", false),
+            Ok(first.id)
+        );
+        // 删除后 `second` 的 `data` 仍靠后；下一次增长触发压实并把内容左移。
+        let grown = write(&mut storage, second.id, &mut second.node, 0, &[b'c'; 1900]);
+        assert_eq!(grown, Ok(1900));
+        assert_eq!(read_file(&mut storage, b"/tmp/second"), vec![b'c'; 1900]);
+        assert_eq!(content_used(&mut storage), Ok(1900 + 31));
     }
 }

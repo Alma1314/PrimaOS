@@ -64,6 +64,7 @@ static int same_bytes(const void *left, const void *right, unsigned long count) 
 
 int main(void) {
     int pid_before = getpid();
+    int parent_before = getppid();
 
     long fd = open("f", O_RDWR | O_CREAT | O_TRUNC, 0600);
     int open_ok = fd >= 3 && fd <= 10;
@@ -134,14 +135,33 @@ int main(void) {
     }
 
     int pid_ok = pid_before > 0 && getpid() == pid_before;
+    int ppid_ok = parent_before > 0 && parent_before != pid_before;
 
-    int all_ok = open_ok && pid_ok && dup_ok && share_ok && dup2_ok &&
-                 dup3_ok && close_ok && self_ok && reuse_ok && bad_ok;
+    /* M12b：O_CLOEXEC 被接受且不影响读写；本阶段仍无 exec 语义。 */
+    int cloexec_ok = 0;
+    long ce = open("f", O_RDONLY | O_CLOEXEC);
+    if (ce >= 3 && read((int)ce, buffer, 1) == 1 && close((int)ce) == 0)
+        cloexec_ok = 1;
+
+    /* M12b：占满 8 个服务端句柄后直接退出，由适配层自动 CLOSE；
+     * 管理器在退出后查询存储服务，期望 open_handles == 0。 */
+    int held = 0;
+    for (int index = 0; index < 8; index++) {
+        long handle = open("f", O_RDONLY);
+        if (handle >= 3 && handle <= 10)
+            held++;
+    }
+    int held_ok = held == 8;
+
+    int all_ok = open_ok && pid_ok && ppid_ok && dup_ok && share_ok &&
+                 dup2_ok && dup3_ok && close_ok && self_ok && reuse_ok &&
+                 bad_ok && cloexec_ok && held_ok;
     failures = !all_ok;
     int first = 1;
     emit("FD");
     field("ok", all_ok, &first);
     field("pid", pid_ok, &first);
+    field("ppid", ppid_ok, &first);
     field("open", open_ok, &first);
     field("dup", dup_ok, &first);
     field("share", share_ok, &first);
@@ -151,6 +171,8 @@ int main(void) {
     field("self", self_ok, &first);
     field("reuse", reuse_ok, &first);
     field("bad", bad_ok, &first);
+    field("cloexec", cloexec_ok, &first);
+    field("held", held_ok, &first);
     emit("\n");
     return failures ? 1 : 0;
 }

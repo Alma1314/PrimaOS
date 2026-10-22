@@ -109,6 +109,8 @@ enum Stage5Program<'a> {
     Mem,
     /// M11：mkdir/rmdir/unlink（含 *at）文件树变更探针。
     Mut,
+    /// M13a：符号链接/readlink/rename/fchdir 探针。
+    Vfs2,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -152,6 +154,11 @@ pub(crate) fn build_images_for_mem() -> Result<Images, String> {
 /// M11：用文件树变更探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_mut() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Mut)
+}
+
+/// M13a：用符号链接/rename/fchdir 探针替换 C 探针映像并跑同一双轮验证。
+pub(crate) fn build_images_for_vfs2() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Vfs2)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -283,6 +290,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_mut.c")],
             "stage5 mut probe",
         ),
+        Stage5Program::Vfs2 => (
+            path.with_file_name("stage5-vfs2.elf"),
+            vec![c_dir.join("stage5_vfs2.c")],
+            "stage5 vfs2 probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -401,23 +413,24 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
     validate_static_pie(&c_image)?;
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
-    let program_args: Option<&[&str]> = match &program {
-        Stage5Program::Echo(args) => Some(args),
+    let program_args: Option<(&[&str], &[&str])> = match &program {
+        Stage5Program::Echo(args) => Some((args, &[])),
         // 时间/fd/vfs/meta 探针不需要参数；托管程序通道仍要求一个非空 argv。
-        Stage5Program::Time => Some(&["stage5-time"]),
-        Stage5Program::Fd => Some(&["stage5-fd"]),
-        Stage5Program::Vfs => Some(&["stage5-vfs"]),
-        Stage5Program::Meta => Some(&["stage5-meta"]),
-        Stage5Program::Mem => Some(&["stage5-mem"]),
-        Stage5Program::Mut => Some(&["stage5-mut"]),
-        Stage5Program::Cat(args) => Some(args),
-        Stage5Program::Ls(args) => Some(args),
+        Stage5Program::Time => Some((&["stage5-time"], &[])),
+        Stage5Program::Fd => Some((&["stage5-fd"], &[])),
+        Stage5Program::Vfs => Some((&["stage5-vfs"], &[])),
+        Stage5Program::Meta => Some((&["stage5-meta"], &[])),
+        Stage5Program::Mem => Some((&["stage5-mem"], &[])),
+        Stage5Program::Mut => Some((&["stage5-mut"], &[])),
+        Stage5Program::Vfs2 => Some((&["stage5-vfs2"], &[])),
+        Stage5Program::Cat(args) => Some((args, &[])),
+        Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
     };
-    if let Some(args) = program_args {
+    if let Some((args, env)) = program_args {
         manifest.push((
             prima_runtime::protocol::SERVICE_IMAGE_KIND_ECHO_ARGS,
-            pack_program_args(args)?,
+            pack_program_args(args, env)?,
         ));
     }
 
@@ -496,28 +509,75 @@ fn ensure_sbase(sbase: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// argv 参数块：`[count][len, bytes]...`。内核把每个 manifest 条目都当 ELF 解析，
-/// 故参数块放进一个单页 ET_DYN（一个覆盖全页的 `PT_LOAD`）的固定偏移之后。
-fn pack_program_args(args: &[&str]) -> Result<Vec<u8>, String> {
-    if args.is_empty() || args.len() > 8 {
+/// 参数块冻结上限（M12）：数量与单串长度由 u8 长度字节约束，总量受单页参数载体约束。
+const MAX_PROGRAM_ARGS: usize = 16;
+const MAX_PROGRAM_ENV: usize = 8;
+
+/// argv/envp 参数块。内核把每个 manifest 条目都当 ELF 解析，故参数块放进一个单页
+/// ET_DYN（一个覆盖全页的 `PT_LOAD`）的固定偏移之后。
+///
+/// 无 envp 时沿用 M5 的冻结格式 `[argc][len, bytes]...`（envp 由管理器写死
+/// `PRIMA_ABI=1`）；带 envp 时使用版本化格式
+/// `[0xa5][2][argc][len, bytes]... [envc][len, bytes]...`。两种格式都只含 u8
+/// 长度；`0xa5` 不可能与合法 `argc` 混淆（上限 16）。
+fn pack_program_args(args: &[&str], env: &[&str]) -> Result<Vec<u8>, String> {
+    if args.is_empty() || args.len() > MAX_PROGRAM_ARGS {
         return Err(format!(
-            "program argv count {} is outside 1..=8",
+            "program argv count {} is outside 1..={MAX_PROGRAM_ARGS}",
             args.len()
         ));
     }
+    if env.len() > MAX_PROGRAM_ENV {
+        return Err(format!(
+            "program envp count {} exceeds {MAX_PROGRAM_ENV}",
+            env.len()
+        ));
+    }
+    let mut env_strings: Vec<&str> = env.to_vec();
+    if !env_strings.is_empty()
+        && !env_strings
+            .iter()
+            .any(|item| item.starts_with("PRIMA_ABI="))
+    {
+        if env_strings.len() == MAX_PROGRAM_ENV {
+            return Err(format!(
+                "program envp is full ({MAX_PROGRAM_ENV}) and lacks PRIMA_ABI"
+            ));
+        }
+        env_strings.push("PRIMA_ABI=1");
+    }
     let mut payload = Vec::new();
-    payload.push(args.len() as u8);
+    if env.is_empty() {
+        payload.push(args.len() as u8);
+    } else {
+        payload.push(0xa5);
+        payload.push(2);
+        payload.push(args.len() as u8);
+    }
     for arg in args {
-        if arg.len() > 127 {
+        if arg.len() > 255 {
             return Err(format!("program argument too long: {} bytes", arg.len()));
         }
         payload.push(arg.len() as u8);
         payload.extend_from_slice(arg.as_bytes());
     }
+    if !env.is_empty() {
+        payload.push(env_strings.len() as u8);
+        for item in &env_strings {
+            if item.len() > 255 {
+                return Err(format!(
+                    "program environment too long: {} bytes",
+                    item.len()
+                ));
+            }
+            payload.push(item.len() as u8);
+            payload.extend_from_slice(item.as_bytes());
+        }
+    }
     let offset = prima_runtime::protocol::SERVICE_ECHO_ARGS_OFFSET as usize;
     let total = offset + payload.len();
     if total > 0x1000 {
-        return Err("program argv block exceeds one page".to_owned());
+        return Err("program argv/envp block exceeds one page".to_owned());
     }
     let mut image = vec![0u8; total];
     image[0..4].copy_from_slice(b"\x7fELF");
@@ -587,7 +647,10 @@ pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
             command.arg("stack-ready");
         }
         if environment {
-            command.env("PRIMA_ABI", "1");
+            command
+                .env("PRIMA_ABI", "1")
+                .env("M12_ENV", "one")
+                .env("M12_EMPTY", "");
         }
         let output = command
             .output()
@@ -706,7 +769,7 @@ pub(crate) fn check_stage5_linux_time() -> Result<(), String> {
 
 /// M7 冻结的 Linux 参考输出：同一份 `stage5_fd.c` 在宿主上必须全项通过。
 pub(crate) const FD_EXPECTED_STDOUT: &[u8] =
-    b"FD|ok=1;pid=1;open=1;dup=1;share=1;dup2=1;dup3=1;close=1;self=1;reuse=1;bad=1\n";
+    b"FD|ok=1;pid=1;ppid=1;open=1;dup=1;share=1;dup2=1;dup3=1;close=1;self=1;reuse=1;bad=1;cloexec=1;held=1\n";
 
 /// M7：用宿主 glibc 重建 `stage5_fd.c`，取得 dup/dup2/dup3/getpid 的参考结果。
 /// 在一次性 cwd 中运行，使探针的路径 `f` 与 Prima 的单文件服务等价。
@@ -809,6 +872,47 @@ pub(crate) fn check_stage5_linux_vfs() -> Result<(), String> {
     Ok(())
 }
 
+/// M13a：符号链接/readlink/rename/fchdir 的 Linux 参考运行（同一源码）。
+pub(crate) fn check_stage5_linux_vfs2() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_vfs2.c");
+    let binary = workspace.join("target/prima-os/vfs2-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 vfs2: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 vfs2 probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let run_dir = workspace.join("target/prima-os/vfs2-linux-run");
+    prepare_stage5_reference_tree(&run_dir)?;
+    let output = Command::new(&binary)
+        .current_dir(&run_dir)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 vfs2 probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != VFS2_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 vfs2 mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(VFS2_EXPECTED_STDOUT)
+        ));
+    }
+    println!("PASS linux stage5 symlink/rename/fchdir references");
+    Ok(())
+}
+
 /// M8/M9：布置与 Prima rootfs 同形的宿主参考树，权限也按冻结的 mode 设置：
 /// 文件 0444、`f` 0666、目录 0555、`tmp` 0777。`/dev/null` 只在 Prima 侧存在。
 fn prepare_stage5_reference_tree(run_dir: &Path) -> Result<(), String> {
@@ -871,6 +975,9 @@ pub(crate) const MEM_EXPECTED_STDOUT: &[u8] = b"MEM|ok=1;map=1;zero=1;write=1;pr
 /// M11 冻结的文件树变更探针输出（Linux 与 Prima 逐字节相同；`nonempty`/`unlink_dir`
 /// 是各平台冻结期望）。
 pub(crate) const MUT_EXPECTED_STDOUT: &[u8] = b"MUT|ok=1;mkdir=1;exists=1;stat_dir=1;nested=1;nonempty=1;rmdir=1;unlink_file=1;unlink_dir=1;rmdir_file=1;readonly=1;missing=1;enoent=1;at=1\n";
+
+/// M13a 冻结的符号链接/rename/fchdir 探针输出（Linux 与 Prima 逐字节相同）。
+pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlink=1;dir=1;subtree=1;nonempty=1;fchdir=1;ro=1;loop=1;type=1;trunc=1;missing=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
@@ -1398,5 +1505,41 @@ mod tests {
         assert_eq!(manifest_index(&entries, 1), Ok(1));
         assert_eq!(manifest_index(&entries, 0x100), Ok(0));
         assert!(manifest_index(&entries, 3).is_err());
+    }
+
+    fn payload(image: &[u8]) -> &[u8] {
+        &image[prima_runtime::protocol::SERVICE_ECHO_ARGS_OFFSET as usize..]
+    }
+
+    #[test]
+    fn program_args_without_env_keep_the_m5_legacy_block() {
+        let image = pack_program_args(&["echo", "a"], &[]).unwrap();
+        assert_eq!(&image[0..4], b"\x7fELF");
+        assert_eq!(payload(&image), &[2, 4, b'e', b'c', b'h', b'o', 1, b'a']);
+    }
+
+    #[test]
+    fn program_args_with_env_are_versioned_and_append_prima_abi() {
+        let image = pack_program_args(&["p"], &["M12_ENV=one", "M12_EMPTY="]).unwrap();
+        let bytes = payload(&image);
+        assert_eq!(&bytes[..3], &[0xa5, 2, 1]);
+        assert_eq!(bytes[3], 1);
+        assert_eq!(bytes[4], b'p');
+        let env_count = bytes[5];
+        assert_eq!(env_count, 3);
+        let text = String::from_utf8_lossy(&bytes[5..]);
+        assert!(text.contains("M12_ENV=one"));
+        assert!(text.contains("M12_EMPTY="));
+        assert!(text.contains("PRIMA_ABI=1"));
+    }
+
+    #[test]
+    fn program_args_reject_capacity_overflow_without_truncation() {
+        let many = vec!["a"; MAX_PROGRAM_ARGS + 1];
+        assert!(pack_program_args(&many, &[]).is_err());
+        let env = vec!["A=1"; MAX_PROGRAM_ENV];
+        assert!(pack_program_args(&["p"], &env).is_err());
+        let long = "x".repeat(256);
+        assert!(pack_program_args(&[&long], &[]).is_err());
     }
 }
