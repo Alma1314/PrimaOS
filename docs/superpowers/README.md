@@ -48,6 +48,7 @@
 - [M13b 权限/stdio 设计](specs/2026-10-22-stage5-m13b-permissions-stdio-design.md)
 - [M19 loopback UDP 设计](specs/2026-10-23-stage5-m19-loopback-udp-design.md)
 - [M14 tty 输入设计](specs/2026-10-23-stage5-m14-tty-input-design.md)
+- [M15 Process/Thread/WaitObject 设计](specs/2026-10-23-stage5-m15-process-thread-wait-design.md)
 - [阶段 5 收尾与阶段 6 入口路线图](plans/2026-10-22-stage5-completion-roadmap.md)
 - [阶段 5 修订计划](plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](plans/2026-10-18-musl-port-plan.md)
