@@ -10918,6 +10918,21 @@ mod tests {
     }
 
     #[test]
+    fn fork_rejects_multithreaded_process() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let _thread = state
+            .thread_create(INIT_TASK_ID, 0x1000, 0x2000)
+            .expect("thread");
+        assert_eq!(state.process_threads(parent), 2);
+        assert_eq!(
+            state.fork_create(INIT_TASK_ID, 0x1000),
+            Err(ThreadError::Busy)
+        );
+    }
+
+    #[test]
     fn ns_mount_requires_a_delegable_source() {
         let mut state = fresh_state();
         let a = state.ns_create(INIT_TASK_ID).expect("create a");

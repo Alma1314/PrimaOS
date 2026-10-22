@@ -35,6 +35,12 @@
 - `execve` 未实现（M17c）。
 - `syscall(57)` 的 musl 返回路径损坏（子进程拿到非 0 返回值），W6 用原生 51。
 
+## 3.1 追加：多线程 fork 的 EAGAIN 边界
+
+`fork_create` 已对 `process_threads > 1` 返回 `ThreadError::Busy`（syscall 层
+映射 EAGAIN）；host 用例 `fork_rejects_multithreaded_process`（父进程 + 一个
+`thread_create` 线程 → fork 返回 Busy）通过。
+
 ## 4. 本报告不代表
 
 - 不表示 fork/exec/wait 的完整 POSIX 语义（进程组/session、vfork、
