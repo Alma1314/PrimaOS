@@ -57,7 +57,9 @@ fork 子进程为 `Process 10`（parent 9、leader task 5），`wait4` 的查找
 `F12094628986632;`），因此子进程走的是父路径（用垃圾 pid 调 wait4，随后
 ECHILD），从未进入子分支的 `SYS_PROCESS_EXIT`。根因指向 fork 子进程从
 **快速 syscall 的保存帧**继续执行时用户上下文（rax/栈）未正确恢复；clone
-路径不受影响（子进程从新入口/新栈开始）。下一步：为 fork 建立显式的
+路径不受影响（子进程从新入口/新栈开始）。慢路径实验（`int 0x80` 代替 `syscall` 发 fork）结果相同
+（`fork=1;wait=0;status=0;cow=1`），说明问题不在快速入口的保存帧格式；
+子进程仍拿到非 0 的 fork 返回值。下一步：为 fork 建立显式的
 用户态续执行方案（例如保存/恢复完整用户上下文，或用 trampoline 让子进程
 从 0 返回），再验证 W6。
 
