@@ -9,6 +9,8 @@ pub mod bootstrap;
 pub mod cow;
 pub mod cpu;
 pub mod exc;
+#[doc(hidden)]
+pub mod exec;
 pub mod fault;
 pub mod frames;
 pub mod gdt;

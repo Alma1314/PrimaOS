@@ -82,6 +82,7 @@
 - [M17b-2b general COW 与 fork](reports/2026-10-23-stage5-m17b2-cow-fork.md)
 - [M17b-3 僵尸保留与唤醒回收](reports/2026-10-23-stage5-m17b3-zombie-wait.md)
 - [M17b-4 fork/wait 打通（W6）](reports/2026-10-23-stage5-m17b4-fork-wait.md)
+- [M17c-1 静态 ELF 解析与初始栈](reports/2026-10-23-stage5-m17c1-elf-plan.md)
 
 ## 文档约定
 
