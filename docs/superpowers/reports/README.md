@@ -25,6 +25,7 @@
 | 2026-10-23 | [2026-10-23-stage5-m16b2-musl-clone.md](2026-10-23-stage5-m16b2-musl-clone.md) | 阶段 5 M16b-2：musl clone.s 补丁、pthread_create 成功、join 唤醒待解 |
 | 2026-10-23 | [2026-10-23-stage5-m16b3-pthread-join.md](2026-10-23-stage5-m16b3-pthread-join.md) | 阶段 5 M16b-3：clear_child_tid、pthread create/join、共享内存可见性 |
 | 2026-10-23 | [2026-10-23-stage5-m17b1-wait4-model.md](2026-10-23-stage5-m17b1-wait4-model.md) | 阶段 5 M17b-1：wait4 状态机模型（阻塞/唤醒/回收/ECHILD） |
+| 2026-10-23 | [2026-10-23-stage5-m17b2-cow-primitives.md](2026-10-23-stage5-m17b2-cow-primitives.md) | 阶段 5 M17b-2a：COW 页表克隆/写故障原语 |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |

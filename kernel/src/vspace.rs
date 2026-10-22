@@ -17,6 +17,9 @@ pub const PT_USER: u64 = 1 << 2;
 /// PDPT/PD 叶项的大页位（bit 7）。
 pub const PT_HUGE: u64 = 1 << 7;
 
+/// M17b：软件 COW 位（PTE bit 9，available）。
+pub const PT_COW: u64 = 1 << 9;
+
 /// PTE 物理地址掩码（bits 12..51）。
 pub const PT_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
@@ -514,6 +517,119 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
     })
 }
 
+/// M17b：COW 克隆用户页表。
+///
+/// 深拷贝 `src_root` 的用户页表层级（非 user 的 PML4 项原样复制），叶帧父子共享；
+/// 可写叶在**父子两侧**都清除 `PT_WRITABLE` 并置 `PT_COW`，由
+/// [`resolve_cow`] 在写故障时复制。`dst_root` 必须已清零。
+pub fn clone_root_cow<F: Fn(u64) -> u64 + Copy>(
+    src_root: u64,
+    dst_root: u64,
+    map: F,
+    mut alloc: impl FnMut() -> Option<u64>,
+) -> Result<(), VspaceError> {
+    let src = map(src_root);
+    let dst = map(dst_root);
+    for i4 in 0..512u64 {
+        let entry = read_raw(src + i4 * 8);
+        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
+            // 内核/非用户槽原样复制。
+            write_raw(dst + i4 * 8, entry);
+            continue;
+        }
+        let Some(pdpt) = alloc() else {
+            return Err(VspaceError::NoFrame);
+        };
+        write_raw(dst + i4 * 8, pdpt | (entry & 0xfff));
+        clone_level(pdpt, entry & PT_ADDR_MASK, 3, map, &mut alloc)?;
+    }
+    Ok(())
+}
+
+fn clone_level<F: Fn(u64) -> u64 + Copy>(
+    dst_table_phys: u64,
+    src_table_phys: u64,
+    level: u32,
+    map: F,
+    alloc: &mut impl FnMut() -> Option<u64>,
+) -> Result<(), VspaceError> {
+    let src = map(src_table_phys);
+    let dst = map(dst_table_phys);
+    for index in 0..512u64 {
+        let entry = read_raw(src + index * 8);
+        if entry & PT_PRESENT == 0 {
+            continue;
+        }
+        if level == 1 {
+            let mut leaf = entry;
+            if entry & PT_WRITABLE != 0 {
+                leaf &= !PT_WRITABLE;
+                leaf |= PT_COW;
+                // 父子两侧都写保护；父页表页是共享的。
+                write_raw(src + index * 8, leaf);
+            }
+            write_raw(dst + index * 8, leaf);
+            continue;
+        }
+        if entry & PT_HUGE != 0 {
+            // 大页按原样共享（当前用户映射均为 4 KiB）。
+            write_raw(dst + index * 8, entry);
+            continue;
+        }
+        let Some(next) = alloc() else {
+            return Err(VspaceError::NoFrame);
+        };
+        write_raw(dst + index * 8, next | (entry & 0xfff));
+        clone_level(next, entry & PT_ADDR_MASK, level - 1, map, alloc)?;
+    }
+    Ok(())
+}
+
+/// M17b：解析一次 COW 写故障——复制叶帧并把 PTE 恢复为可写。
+///
+/// 要求目标页 present + user + `PT_COW`。返回新帧物理地址；调用方负责
+/// `invlpg` 后重试指令。
+pub fn resolve_cow<F: Fn(u64) -> u64 + Copy>(
+    root: u64,
+    va: u64,
+    map: F,
+    mut alloc: impl FnMut() -> Option<u64>,
+) -> Result<u64, VspaceError> {
+    let idx = indices(va);
+    let pml4 = read_raw(map(root) + idx[0] as u64 * 8);
+    if pml4 & PT_PRESENT == 0 || pml4 & PT_USER == 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let pdpt = read_raw(map(pml4 & PT_ADDR_MASK) + idx[1] as u64 * 8);
+    if pdpt & PT_PRESENT == 0 || pdpt & PT_HUGE != 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let pd = read_raw(map(pdpt & PT_ADDR_MASK) + idx[2] as u64 * 8);
+    if pd & PT_PRESENT == 0 || pd & PT_HUGE != 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let pt = map(pd & PT_ADDR_MASK);
+    let pte = read_raw(pt + idx[3] as u64 * 8);
+    if pte & PT_PRESENT == 0 || pte & PT_USER == 0 || pte & PT_COW == 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let old = pte & PT_ADDR_MASK;
+    let Some(new) = alloc() else {
+        return Err(VspaceError::NoFrame);
+    };
+    let src = map(old);
+    let dst = map(new);
+    for word in 0..512u64 {
+        write_raw(dst + word * 8, read_raw(src + word * 8));
+    }
+    let flags = (pte | PT_WRITABLE) & !PT_COW;
+    write_raw(
+        pt + idx[3] as u64 * 8,
+        (new & PT_ADDR_MASK) | (flags & 0xfff),
+    );
+    Ok(new)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +637,68 @@ mod tests {
 
     fn identity(phys: u64) -> u64 {
         phys
+    }
+
+    #[test]
+    fn cow_clone_shares_frames_and_resolve_copies_on_write() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let frame = pool.alloc().unwrap();
+        map_4k(src, VSPACE_VA, identity, || pool.alloc(), frame, true, true).unwrap();
+        write_raw(frame, 0x1122_3344_5566_7788);
+        clone_root_cow(src, dst, identity, || pool.alloc()).unwrap();
+
+        let src_leaf = read_leaf(src, VSPACE_VA, identity).unwrap();
+        assert_eq!(src_leaf & PT_ADDR_MASK, frame);
+        assert_eq!(src_leaf & PT_WRITABLE, 0);
+        assert_ne!(src_leaf & PT_COW, 0);
+        let dst_leaf = read_leaf(dst, VSPACE_VA, identity).unwrap();
+        assert_eq!(dst_leaf & PT_ADDR_MASK, frame);
+        assert_ne!(dst_leaf & PT_COW, 0);
+
+        let new = resolve_cow(dst, VSPACE_VA, identity, || pool.alloc()).unwrap();
+        assert_ne!(new, frame);
+        assert_eq!(read_raw(new), 0x1122_3344_5566_7788);
+        let dst_leaf = read_leaf(dst, VSPACE_VA, identity).unwrap();
+        assert_eq!(dst_leaf & PT_ADDR_MASK, new);
+        assert_ne!(dst_leaf & PT_WRITABLE, 0);
+        assert_eq!(dst_leaf & PT_COW, 0);
+        // 父页仍共享旧帧、保持 COW。
+        let src_leaf = read_leaf(src, VSPACE_VA, identity).unwrap();
+        assert_eq!(src_leaf & PT_ADDR_MASK, frame);
+        assert_ne!(src_leaf & PT_COW, 0);
+        assert_eq!(read_raw(frame), 0x1122_3344_5566_7788);
+    }
+
+    #[test]
+    fn cow_clone_keeps_readonly_shared_and_copies_supervisor_entries() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let ro = pool.alloc().unwrap();
+        let sup = pool.alloc().unwrap();
+        map_4k(src, VSPACE_VA, identity, || pool.alloc(), ro, false, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA + 0x1000,
+            identity,
+            || pool.alloc(),
+            sup,
+            true,
+            false,
+        )
+        .unwrap();
+        clone_root_cow(src, dst, identity, || pool.alloc()).unwrap();
+
+        let ro_leaf = read_leaf(dst, VSPACE_VA, identity).unwrap();
+        assert_eq!(ro_leaf & PT_ADDR_MASK, ro);
+        assert_eq!(ro_leaf & PT_COW, 0);
+        // supervisor 映射原样复制（同一 PTE，不复制页表）。
+        let src_sup = read_leaf(src, VSPACE_VA + 0x1000, identity).unwrap();
+        let dst_sup = read_leaf(dst, VSPACE_VA + 0x1000, identity).unwrap();
+        assert_eq!(src_sup, dst_sup);
+        assert_eq!(src_sup & PT_ADDR_MASK, sup);
     }
 
     #[test]
