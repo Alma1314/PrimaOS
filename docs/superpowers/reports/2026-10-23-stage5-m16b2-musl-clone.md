@@ -32,7 +32,21 @@
   “唤醒先于等待登记”顺序）。
 - 既有套件：`cargo xtask test` **89 条 PASS**（EXIT 0），W1/W2/W3 与既有轮次全量重跑通过，clone.s 补丁与 mmap 变更无回归。
 
-## 3. 分析与下一步
+## 3. 追加实验（yield 与无 yield）
+
+- **yield 实验**：把探针的 `sched_yield` 换成 Prima `YIELD(8)` 后，调试打印
+  `[C]R` 表明 clone 返回时子线程确为 `Ready`；随后父线程的 yield 循环让子
+  线程运行并退出，下一次 yield 因“无其他 Ready 任务”在
+  `SYS_YIELD` panic。这是协作调度在“所有其他任务都已阻塞/退出”时的既有
+  限制，不是 join 的根因。
+- **无 yield join**：panic 发生在 `SYS_WAIT` 的 Blocked 分支；转储显示子线程
+  已 `Dead`、父线程 `BlockedWait`。由于父线程的 futex 入口检查/观察/重查
+  都在同一地址上，理论上子线程的“置 0 + wake”要么被 word 检查捕获、要么
+  使 generation 前进；当前现象说明唤醒没有落到父线程的 futex 表项上，需
+  在适配层打印表项地址/cap/word 与 wake 命中情况继续定位。
+- 探针与 W4 接线仍不提交；代码回到 `73e85a9` 的可用状态。
+
+## 4. 分析与下一步
 
 - musl `pthread_join` 在 `t->detach_state` 上 `__timedwait_cp`；退出线程在
   `__pthread_exit` 里 `a_store(DT_EXITED); __wake(detach_state)` 后 `exit(60)`。
@@ -46,7 +60,7 @@
   考虑让内核的 `SYS_WAIT` 在阻塞前重新检查用户 word（需要额外的用户读
   或者由适配层在 recheck 后禁止抢占）。
 
-## 4. 边界
+## 5. 边界
 
 - pthread 的 join 尚无 QEMU 证据；`pthread_create` 已可成功。
 - 线程退出路径依赖适配层的 `exit(60)` 识别；musl 的 clone.s 绕过适配层，
@@ -55,7 +69,7 @@
 - 补丁改变了 musl 快照构建（`target/musl-prefix` 重建），需在同一 PR 中
   保留 patch + build.sh 的戳更新。
 
-## 5. 本报告不代表
+## 6. 本报告不代表
 
 - 不表示 pthread_create/join 可用；
 - 不表示 M16 完成或阶段 5 退出条件满足。
