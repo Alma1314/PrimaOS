@@ -58,6 +58,7 @@
   - [M16b-1 clone 基础与 musl 阻塞](superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md)
   - [M16b-2 musl clone 路由与 pthread 进展](superpowers/reports/2026-10-23-stage5-m16b2-musl-clone.md)
   - [M16b-3 pthread 创建/join 打通](superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)
+  - [M17b-1 wait4 状态机模型](superpowers/reports/2026-10-23-stage5-m17b1-wait4-model.md)
 
 ## 阶段 0–4 签署入口
 

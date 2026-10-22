@@ -561,6 +561,10 @@ pub struct TaskRecord {
     pub process: Option<u32>,
     /// M16b-3：clone 的 `child_tid`（线程退出前清零并 futex 唤醒）。
     pub clear_child_tid: u64,
+    /// M17b：wait4 等待的子 Process（None = 未等待）。
+    pub waiting_process: Option<u32>,
+    /// M17b：wait4 的 status 输出指针。
+    pub wait_status_ptr: u64,
     /// COSIR §5.2：仅 `BlockedWait` 时非空。
     pub wait_request: Option<WaitRequest>,
     /// COSIR §5.6：唤醒后待领取的结果（`schedule` 消费）。
@@ -677,6 +681,8 @@ impl TaskTable {
             pending_exc: None,
             process: None,
             clear_child_tid: 0,
+            waiting_process: None,
+            wait_status_ptr: 0,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -751,6 +757,8 @@ impl TaskTable {
             pending_exc: None,
             process: None,
             clear_child_tid: 0,
+            waiting_process: None,
+            wait_status_ptr: 0,
             wait_request: None,
             pending_wait_result: None,
             pending: None,
@@ -2868,6 +2876,9 @@ pub struct Process {
     pub parent: Option<u32>,
     /// M17：退出状态（wait4 读取；None = 未退出）。
     pub exit_status: Option<i64>,
+    /// M17b：等待本进程退出的父 Task（位图，task id ≤ 31）。
+    pub waiters: u32,
+    pub waiter_count: usize,
     /// 线程位图（task id 1..=MAX_TASKS；紧凑表示以守住 `BootstrapState` 栈预算）。
     pub threads: u32,
     pub thread_count: usize,
@@ -3040,6 +3051,19 @@ impl WaitWake {
 pub struct SignalOutcome {
     pub generation: u64,
     pub wakes: WaitWake,
+}
+
+/// M17b：wait4 的结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait4Outcome {
+    Exited(i64, i64),
+    None,
+    Blocked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait4Error {
+    EChild,
 }
 
 /// M15b-2：线程创建的失败名。
@@ -8901,6 +8925,8 @@ impl BootstrapState {
                 cap_space: creator,
                 parent: None,
                 exit_status: None,
+                waiters: 0,
+                waiter_count: 0,
                 threads: 0,
                 thread_count: 0,
                 exit: None,
@@ -8984,6 +9010,82 @@ impl BootstrapState {
         self.processes
             .find(process_id)
             .map(|process| process.leader)
+    }
+
+    /// M17b：子进程退出，设置状态并唤醒等待者。
+    pub fn process_exit(&mut self, process_id: u32, status: i64) -> WaitWake {
+        let mut wakes = WaitWake::empty();
+        if let Some(process) = self.processes.find_mut(process_id) {
+            process.exit_status = Some(status);
+            let waiters = process.waiters;
+            process.waiters = 0;
+            process.waiter_count = 0;
+            for task_id in 0..32u32 {
+                if waiters & (1 << task_id) == 0 {
+                    continue;
+                }
+                if let Some(task) = self.tasks.find_mut(task_id)
+                    && task.status == TaskStatus::BlockedWait
+                {
+                    task.status = TaskStatus::Ready;
+                    task.waiting_process = None;
+                    wakes.push(task_id, WaitResultCode::Satisfied);
+                }
+            }
+        }
+        wakes
+    }
+
+    /// M17b：wait4 的立即/阻塞判定。
+    pub fn wait4(
+        &mut self,
+        caller: u32,
+        pid: i64,
+        status_ptr: u64,
+        no_hang: bool,
+    ) -> Result<Wait4Outcome, Wait4Error> {
+        let caller_process = self.process_of(caller).ok_or(Wait4Error::EChild)?;
+        let child = self
+            .processes
+            .entries
+            .iter()
+            .flatten()
+            .find(|process| {
+                process.parent == Some(caller_process)
+                    && (pid < 0 || process.leader as i64 == pid)
+                    && self.tasks.find(process.leader).is_some()
+            })
+            .map(|process| process.id);
+        let Some(child) = child else {
+            return Err(Wait4Error::EChild);
+        };
+        let exit_status = self.processes.find(child).and_then(|p| p.exit_status);
+        match exit_status {
+            Some(status) => {
+                let leader = self.processes.find(child).map(|p| p.leader).unwrap_or(0);
+                // 回收：移除子进程与子 Task 记录（Dead 记录）。
+                let _ = self.processes.remove(child);
+                if leader != 0 {
+                    self.detach_thread(leader);
+                }
+                Ok(Wait4Outcome::Exited(leader as i64, status))
+            }
+            None if no_hang => Ok(Wait4Outcome::None),
+            None => {
+                if let Some(process) = self.processes.find_mut(child)
+                    && caller < 32
+                {
+                    process.waiters |= 1u32 << caller;
+                    process.waiter_count += 1;
+                }
+                if let Some(task) = self.tasks.find_mut(caller) {
+                    task.waiting_process = Some(child);
+                    task.wait_status_ptr = status_ptr;
+                    task.status = TaskStatus::BlockedWait;
+                }
+                Ok(Wait4Outcome::Blocked)
+            }
+        }
     }
 
     /// M15b：Task 所属 Process。
@@ -9346,6 +9448,25 @@ impl BootstrapState {
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
 /// M15b-2：全局线程创建。
+pub fn process_exit(process_id: u32, status: i64) -> WaitWake {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.process_exit(process_id, status),
+        None => WaitWake::empty(),
+    })
+}
+
+pub fn wait4(
+    caller: u32,
+    pid: i64,
+    status_ptr: u64,
+    no_hang: bool,
+) -> Result<Wait4Outcome, Wait4Error> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait4(caller, pid, status_ptr, no_hang),
+        None => Err(Wait4Error::EChild),
+    })
+}
+
 pub fn task_is_thread(task_id: u32) -> bool {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
@@ -9888,8 +10009,9 @@ mod tests {
         TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
         TaskError, TaskKind, TaskStatus, ThreadError, TimerCancelOutcome, TimerCancelReason,
         TimerError, TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry,
-        WaitError, WaitOutcome, WaitResultCode, create_snapshot, create_state, entry_in_image,
-        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
+        Wait4Error, Wait4Outcome, WaitError, WaitOutcome, WaitResultCode, create_snapshot,
+        create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
+        platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
@@ -10557,6 +10679,56 @@ mod tests {
         assert_eq!(state.space_of(2), state.space_of(INIT_TASK_ID));
         // M17 工作决定：fork 子沿用父能力空间，父铸造的 cap 可被子授权。
         assert_eq!(state.authorize(2, cap, Right::WaitSignal), Ok(cap));
+    }
+
+    #[test]
+    fn wait4_blocks_then_child_exit_wakes_and_reaps() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        state.tasks.create(2).expect("task 2");
+        let child = state.create_process(2).expect("child");
+        assert!(state.attach_thread(child, 2));
+        assert!(state.inherit_cap_space(child, parent));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, 2, 0, false),
+            Ok(Wait4Outcome::Blocked)
+        );
+        assert_eq!(
+            state.tasks.status_of(INIT_TASK_ID),
+            Some(TaskStatus::BlockedWait)
+        );
+        let wakes = state.process_exit(child, 7);
+        assert_eq!(wakes.count, 1);
+        assert_eq!(state.tasks.status_of(INIT_TASK_ID), Some(TaskStatus::Ready));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, 2, 0, false),
+            Ok(Wait4Outcome::Exited(2, 7))
+        );
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Err(Wait4Error::EChild)
+        );
+    }
+
+    #[test]
+    fn wait4_nohang_reports_running_child_and_echild_without_children() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        state.tasks.create(2).expect("task 2");
+        let child = state.create_process(2).expect("child");
+        assert!(state.attach_thread(child, 2));
+        assert!(state.inherit_cap_space(child, parent));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Ok(Wait4Outcome::None)
+        );
+        // 没有子进程的 Task。
+        state.tasks.create(3).expect("task 3");
+        let orphan = state.create_process(3).expect("orphan");
+        assert!(state.attach_thread(orphan, 3));
+        assert_eq!(state.wait4(3, -1, 0, true), Err(Wait4Error::EChild));
     }
 
     #[test]
