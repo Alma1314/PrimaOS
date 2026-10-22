@@ -30,6 +30,7 @@
 - [M14 tty 输入设计](superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md)
 - [M15 Process/Thread/WaitObject 设计](superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)
 - [M17 fork/execve/wait4 设计](superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md)
+- [M17c-2 execve syscall 契约](superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md)
 - [阶段 5 收尾与阶段 6 入口路线图](superpowers/plans/2026-10-22-stage5-completion-roadmap.md)
 - [阶段 5 修订计划](superpowers/plans/2026-10-18-stage5-revised-plan.md)
 - [musl 移植计划](superpowers/plans/2026-10-18-musl-port-plan.md)
