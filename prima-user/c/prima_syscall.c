@@ -11,6 +11,8 @@
 
 struct prima_entry_ctx prima_ctx;
 
+static long prima_futex(int *uaddr, int op, int value, const void *timeout);
+
 /* 六参数陷入：号在 rax，参数依次 rdi/rsi/rdx/r10/r8/r9（Prima ABI）。 */
 static long prima_raw(long number, long a0, long a1, long a2, long a3, long a4,
                       long a5) {
@@ -2375,6 +2377,8 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
                                 (unsigned long)a3);
     case PRIMA_LINUX_SYS_ioctl:
         return prima_tty_ioctl((int)a0, a1, a2);
+    case PRIMA_LINUX_SYS_futex:
+        return prima_futex((int *)a0, (int)a1, (int)a2, (void *)a3);
     case PRIMA_LINUX_SYS_clock_gettime:
         return prima_clock_gettime(a0, (void *)a1);
     case PRIMA_LINUX_SYS_clock_nanosleep:
@@ -2409,6 +2413,112 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
 
 /* M15：Prima 原生 syscall 直通（供只存在于 Prima 的机制探针使用；
  * 避免与 Linux 42-46 的 connect/accept/sendto/recvfrom/sendmsg 号冲突）。 */
+/* ---------- M16a：futex（用户态表 + WaitObject） ---------- */
+
+long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5);
+
+#define PRIMA_FUTEX_SLOTS 8
+
+struct prima_futex_entry {
+    uint64_t addr;
+    long cap;
+    unsigned long generation;
+};
+
+static struct prima_futex_entry prima_futexes[PRIMA_FUTEX_SLOTS];
+
+static struct prima_futex_entry *prima_futex_find(uint64_t addr) {
+    for (int i = 0; i < PRIMA_FUTEX_SLOTS; i++)
+        if (prima_futexes[i].cap > 0 && prima_futexes[i].addr == addr)
+            return &prima_futexes[i];
+    return 0;
+}
+
+static struct prima_futex_entry *prima_futex_slot(uint64_t addr) {
+    struct prima_futex_entry *found = prima_futex_find(addr);
+    if (found)
+        return found;
+    for (int i = 0; i < PRIMA_FUTEX_SLOTS; i++) {
+        if (prima_futexes[i].cap <= 0) {
+            long cap = prima_native(PRIMA_SYS_WAIT_CREATE, 0, 0, 0, 0, 0, 0);
+            if (cap <= 0)
+                return 0;
+            long generation = prima_native(PRIMA_SYS_WAIT_OBSERVE, cap, 0, 0, 0, 0, 0);
+            if (generation < 0) {
+                (void)prima_native(PRIMA_SYS_WAIT_DESTROY, cap, 0, 0, 0, 0, 0);
+                return 0;
+            }
+            prima_futexes[i].addr = addr;
+            prima_futexes[i].cap = cap;
+            prima_futexes[i].generation = (unsigned long)generation;
+            return &prima_futexes[i];
+        }
+    }
+    return 0;
+}
+
+static long prima_futex_wait(int *uaddr, int value, const void *timeout) {
+    if (!uaddr)
+        return -PRIMA_ERRNO_EFAULT;
+    if (*(volatile int *)uaddr != value)
+        return -PRIMA_ERRNO_EAGAIN;
+    struct prima_futex_entry *entry = prima_futex_slot((uint64_t)uaddr);
+    if (!entry)
+        return -PRIMA_ERRNO_EFAULT;
+    long generation = prima_native(PRIMA_SYS_WAIT_OBSERVE, entry->cap, 0, 0, 0, 0, 0);
+    if (generation < 0)
+        return -PRIMA_ERRNO_EAGAIN;
+    /* 观察后重查，避免 observe 与阻塞之间丢唤醒。 */
+    if (*(volatile int *)uaddr != value)
+        return -PRIMA_ERRNO_EAGAIN;
+    uint64_t deadline = 0x7fffffffffffffffULL;
+    if (timeout) {
+        const long *parts = timeout;
+        if (parts[0] < 0 || parts[1] < 0 || parts[1] >= 1000000000L)
+            return -PRIMA_ERRNO_EINVAL;
+        unsigned long long nanoseconds =
+            (unsigned long long)parts[0] * 1000000000ULL + (unsigned long long)parts[1];
+        unsigned long long ticks = (nanoseconds + 9999999ULL) / 10000000ULL;
+        if (ticks > deadline)
+            ticks = deadline;
+        deadline = (uint64_t)prima_raw(PRIMA_SYS_TIME_TICKS, 0, 0, 0, 0, 0, 0) + ticks;
+    }
+    long result = prima_native(PRIMA_SYS_WAIT_OBJECTS, entry->cap, generation, 0, 0, 0,
+                               (long)deadline);
+    if (result == 0)
+        return 0;
+    if (result == 1)
+        return -PRIMA_ERRNO_ETIMEDOUT;
+    return -PRIMA_ERRNO_EAGAIN;
+}
+
+static long prima_futex_wake(int *uaddr, int count) {
+    if (!uaddr)
+        return -PRIMA_ERRNO_EFAULT;
+    if (count <= 0)
+        return 0;
+    struct prima_futex_entry *entry = prima_futex_find((uint64_t)uaddr);
+    if (!entry)
+        return 0;
+    long result = prima_native(PRIMA_SYS_WAIT_SIGNAL, entry->cap, 0, 0, 0, 0, 0);
+    if (result < 0)
+        return -PRIMA_ERRNO_EAGAIN;
+    unsigned long woken = ((unsigned long)result >> 32) & 0xffffffffUL;
+    if (woken > (unsigned long)count)
+        woken = (unsigned long)count;
+    return (long)woken;
+}
+
+/* Linux futex 号 202；只支持 WAIT/WAKE（PRIVATE 标志按同一进程内语义处理）。 */
+static long prima_futex(int *uaddr, int op, int value, const void *timeout) {
+    int command = op & PRIMA_FUTEX_CMD_MASK;
+    if (command == PRIMA_FUTEX_WAIT)
+        return prima_futex_wait(uaddr, value, timeout);
+    if (command == PRIMA_FUTEX_WAKE)
+        return prima_futex_wake(uaddr, value);
+    return -PRIMA_ERRNO_ENOSYS;
+}
+
 long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5) {
     return prima_raw(number, a0, a1, a2, a3, a4, a5);
 }

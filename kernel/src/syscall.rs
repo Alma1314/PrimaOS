@@ -1039,7 +1039,8 @@ fn wait_signal_call(raw_cap: u64) -> u64 {
     match bootstrap::wait_object_signal(sched::current(), cap) {
         Ok(outcome) => {
             inject_wait_wakes(&outcome.wakes);
-            outcome.generation
+            // M16a：低 32 位 generation、高 32 位被唤醒数（futex wake 需要计数）。
+            outcome.generation | ((outcome.wakes.count as u64) << 32)
         }
         Err(error) => encode_errno(wait_errno(error)),
     }

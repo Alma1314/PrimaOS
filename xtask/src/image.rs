@@ -121,6 +121,8 @@ enum Stage5Program<'a> {
     Wait,
     /// M15b-2：共享地址空间线程唤醒 WaitObject 探针。
     Wait2,
+    /// M16a：futex WAIT/WAKE 探针。
+    Futex,
     /// M9：sbase `cat`（文件读取）冻结用例。
     Cat(&'a [&'a str]),
     /// M9：sbase `ls`（目录枚举 + statx + cwd）。
@@ -194,6 +196,11 @@ pub(crate) fn build_images_for_wait() -> Result<Images, String> {
 /// M15b-2：用共享线程唤醒 WaitObject 探针替换 C 探针映像。
 pub(crate) fn build_images_for_wait2() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Wait2)
+}
+
+/// M16a：用 futex 探针替换 C 探针映像。
+pub(crate) fn build_images_for_futex() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Futex)
 }
 
 /// M9：用 sbase `cat` 替换 C 探针映像并打包本次用例的 argv。
@@ -355,6 +362,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_wait2.c")],
             "stage5 wait2 probe",
         ),
+        Stage5Program::Futex => (
+            path.with_file_name("stage5-futex.elf"),
+            vec![c_dir.join("stage5_futex.c")],
+            "stage5 futex probe",
+        ),
         Stage5Program::Cat(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -488,6 +500,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),
         Stage5Program::Wait2 => Some((&["stage5-wait2"], &[])),
+        Stage5Program::Futex => Some((&["stage5-futex"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
         Stage5Program::Ls(args) => Some((args, &[])),
         Stage5Program::Probe => None,
@@ -1192,6 +1205,10 @@ pub(crate) const WAIT_EXPECTED_STDOUT: &[u8] =
 /// M15b-2：共享线程 signal 唤醒阻塞等待（Prima 专用）。
 pub(crate) const WAIT2_EXPECTED_STDOUT: &[u8] =
     b"WAIT2|create=1;thread=1;satisfied=1;gen=1;destroy=1|ok=1;err=0\n";
+
+/// M16a：futex WAIT/WAKE 探针输出（Prima 专用）。
+pub(crate) const FUTEX_EXPECTED_STDOUT: &[u8] =
+    b"FUTEX|thread=1;wake=1;wait=1;eagain=1;nowake=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
