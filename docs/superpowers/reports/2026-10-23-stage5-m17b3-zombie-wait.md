@@ -37,6 +37,24 @@ PROC[W]|fork=1;wait=0;status=0;cow=1;...
   `block_to`/`resume` 与 `process_exit` 的唤醒注入处加任务 id 级标记，
   确认实际调度序列。
 
+## 3.1 调度/COW 追迹（本轮追加）
+
+在 `resume`/`wait4`/`process_exit`/general COW 分支加任务 id 级标记后：
+
+```text
+[R08][R05] × 多次 → [R16] |fork=1;wait=0;status=0;cow=1...
+COW 解析：成功 4 次（[K]），失败 2 次（[k]）；[X]（SYS_PROCESS_EXIT）0 次
+```
+
+- 子进程（id 5）与任务 8 反复交替，子进程**从未进入 SYS_PROCESS_EXIT**；
+- general COW 有 4 次成功、2 次失败：失败的具体 VA/任务/原因（BadRoot 还是
+  NoFrame）尚未打印；
+- 父进程最终以 `wait=0` 恢复。
+
+下一步：在 `[k]` 处打印任务 id、fault VA、`resolve_cow` 的错误与
+`task_segment_id`，确认子进程的 `g_child` 写是否落在非 COW 页或帧分配失败；
+再修 COW 悬挂/返回路径。
+
 ## 4. 边界
 
 - 僵尸保留只覆盖有 `parent` 的 fork 子进程；普通 Task 的最后一个线程离开仍
