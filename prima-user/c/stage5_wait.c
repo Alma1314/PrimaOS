@@ -1,7 +1,8 @@
 /* M15a-1：WaitObject 的 Prima 原生探针（无 Linux 对应物）。
  *
- * 覆盖 create/observe/signal、立即满足、需要阻塞（EAGAIN）、立即超时、
- * 超前观测（EINVAL）、destroy 后目标死亡（ENOENT）与权限位。
+ * 覆盖 create/observe/signal、立即满足、立即超时、超前观测（EINVAL）、
+ * destroy 后目标死亡（ENOENT）与权限位。需要阻塞的路径由 host 状态机覆盖
+ * （W1 没有第二个用户任务可 signal，阻塞会挂起）。
  */
 #include <errno.h>
 #include <stdint.h>
@@ -14,7 +15,6 @@ extern long prima_native(long number, long a0, long a1, long a2, long a3, long a
 #define SYS_WAIT_OBJECTS 44
 #define SYS_WAIT_SIGNAL 45
 #define SYS_WAIT_DESTROY 46
-#define EAGAIN_ 11
 #define EINVAL_ 22
 #define ENOENT_ 2
 
@@ -79,9 +79,6 @@ int main(void) {
 
     long satisfied = cap > 0 ? wait_call(cap, 0, 0, (long)0x7fffffffffffffffL) : -1;
     field("satisfied", satisfied == 0, satisfied);
-
-    long block = cap > 0 ? wait_call(cap, 1, 0, (long)0x7fffffffffffffffL) : -1;
-    field("block", block == -EAGAIN_, block);
 
     long timeout = cap > 0 ? wait_call(cap, 1, 0, 0) : -1;
     field("timeout", timeout == 1, timeout);

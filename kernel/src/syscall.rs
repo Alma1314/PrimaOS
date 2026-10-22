@@ -979,6 +979,12 @@ pub const fn wait_errno(error: bootstrap::WaitError) -> Errno {
     }
 }
 
+fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
+    for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
+        sched::set_frame_rax(*task, result.code());
+    }
+}
+
 fn wait_create_call() -> u64 {
     match bootstrap::wait_object_create(sched::current()) {
         Ok(handle) => handle.encode(),
@@ -1001,7 +1007,10 @@ fn wait_signal_call(raw_cap: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::wait_object_signal(sched::current(), cap) {
-        Ok(generation) => generation,
+        Ok(outcome) => {
+            inject_wait_wakes(&outcome.wakes);
+            outcome.generation
+        }
         Err(error) => encode_errno(wait_errno(error)),
     }
 }
@@ -1011,12 +1020,15 @@ fn wait_destroy_call(raw_cap: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::wait_object_destroy(sched::current(), cap) {
-        Ok(()) => 0,
+        Ok(wakes) => {
+            inject_wait_wakes(&wakes);
+            0
+        }
         Err(error) => encode_errno(wait_errno(error)),
     }
 }
 
-/// M15a-1：立即满足/立即超时；需要阻塞时返回 `EAGAIN`。
+/// M15a-2：立即满足/立即超时；否则登记 BlockedWait 并切走。
 fn wait_objects_call(
     cap0: u64,
     observed0: u64,
@@ -1047,6 +1059,14 @@ fn wait_objects_call(
     ) {
         Ok(bootstrap::WaitOutcome::Satisfied) => 0,
         Ok(bootstrap::WaitOutcome::TimedOut) => 1,
+        Ok(bootstrap::WaitOutcome::Blocked) => {
+            let cur = sched::current();
+            let mut frame = current_context();
+            frame.rax = 0;
+            sched::set_frame(cur, frame);
+            let next = sched::pick_next(cur).expect("SYS_WAIT: no Ready task to switch to");
+            sched::block_to(next)
+        }
         Err(error) => encode_errno(wait_errno(error)),
     }
 }
@@ -2337,6 +2357,9 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     }
     let cs = frame.cs();
     let current = sched::current();
+    // M15a-2：syscall 入口推进超时等待，并消费已注入的等待结果。
+    inject_wait_wakes(&bootstrap::expire_waits_global());
+    let _ = bootstrap::take_wait_result(current);
 
     let ret = serve(num, &args);
 

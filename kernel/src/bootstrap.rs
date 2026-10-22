@@ -258,6 +258,11 @@ pub enum AuditEvent {
         object_id: u32,
         kind: ObjectKind,
     },
+    /// M15：WaitObject generation 递增（COSIR §21.2.2）。
+    WaitSignaled {
+        object_id: u32,
+        generation: u64,
+    },
     /// 切片 P：Task 状态迁移（W13 要求每次迁移有事件）。
     TaskStateChanged {
         task_id: u32,
@@ -479,6 +484,8 @@ pub enum TaskStatus {
     Ready,
     Running,
     BlockedRecv,
+    /// COSIR §5.2/§21.2：阻塞在 `wait_objects`（等待一个或多个 WaitObject）。
+    BlockedWait,
     /// §5.2/§12.5：硬件执行异常使 Task 进入的常规状态。不可由调度隐式恢复。
     Faulted,
     Dead,
@@ -500,6 +507,40 @@ pub enum TaskKind {
 /// 单节点细化层：所有 Task 的 `node` 都是本节点。
 pub const LOCAL_NODE: u32 = 0;
 
+/// COSIR §5.2：`wait_objects` 的单个等待条目。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitEntry {
+    pub object: u32,
+    pub observed: u64,
+}
+
+/// COSIR §5.2：`BlockedWait` 时保存的等待请求（最多两个对象，覆盖 Any/All 最小集合）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitRequest {
+    pub entries: [WaitEntry; 2],
+    pub count: usize,
+    pub mode: u64,
+    pub deadline: Option<Instant>,
+}
+
+/// COSIR §5.6：等待结果编码（0=满足、1=超时、2=目标死亡）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitResultCode {
+    Satisfied,
+    TimedOut,
+    TargetDead,
+}
+
+impl WaitResultCode {
+    pub const fn code(self) -> u64 {
+        match self {
+            Self::Satisfied => 0,
+            Self::TimedOut => 1,
+            Self::TargetDead => 2,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskRecord {
     pub id: u32,
@@ -516,6 +557,10 @@ pub struct TaskRecord {
     pub entry: u64,
     /// §5.2/W9：仅 `status == Faulted` 时非空（双向不变量由 `check_faulted_invariant` 钉住）。
     pub pending_exc: Option<PendingExc>,
+    /// COSIR §5.2：仅 `BlockedWait` 时非空。
+    pub wait_request: Option<WaitRequest>,
+    /// COSIR §5.6：唤醒后待领取的结果（`schedule` 消费）。
+    pub pending_wait_result: Option<WaitResultCode>,
     pending: Option<IpcMessage>,
 }
 
@@ -624,6 +669,8 @@ impl TaskTable {
             root_ns_cap: NAMESPACE_CAP_HANDLE,
             entry: 0,
             pending_exc: None,
+            wait_request: None,
+            pending_wait_result: None,
             pending: None,
         });
         Self { entries, count: 1 }
@@ -666,6 +713,8 @@ impl TaskTable {
             root_ns_cap: Handle::ZERO,
             entry,
             pending_exc: None,
+            wait_request: None,
+            pending_wait_result: None,
             pending: None,
         });
         self.count += 1;
@@ -784,10 +833,14 @@ impl TaskTable {
     }
 
     fn finish_destroy(&mut self, task_id: u32) -> Result<(), TaskError> {
-        let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
-        task.status = TaskStatus::Dead;
-        // §8.2 步骤 6：清空目标的 `pending_exc` 与 `kernel_resume_frame`（覆盖 Faulted 与已恢复者）。
-        task.pending_exc = None;
+        {
+            let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
+            task.status = TaskStatus::Dead;
+            task.wait_request = None;
+            task.pending_wait_result = None;
+            // §8.2 步骤 6：清空目标的 `pending_exc` 与 `kernel_resume_frame`（覆盖 Faulted 与已恢复者）。
+            task.pending_exc = None;
+        }
         crate::sched::clear_kernel_resume_frame(task_id);
         Ok(())
     }
@@ -2777,7 +2830,12 @@ pub struct WaitObject {
     pub id: u32,
     pub creator: u32,
     pub generation: u64,
+    pub waiters: [Option<u32>; MAX_WAITERS],
+    pub waiter_count: usize,
 }
+
+/// 每个 WaitObject 的等待者上限（与 MAX_TASKS 对齐的保守值）。
+pub const MAX_WAITERS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WaitObjectTable {
@@ -2835,6 +2893,36 @@ impl WaitObjectTable {
     }
 }
 
+/// 一次唤醒操作波及的 Task 与结果（≤ 一个对象的等待者上限）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaitWake {
+    pub tasks: [Option<(u32, WaitResultCode)>; MAX_WAITERS],
+    pub count: usize,
+}
+
+impl WaitWake {
+    const fn empty() -> Self {
+        Self {
+            tasks: [None; MAX_WAITERS],
+            count: 0,
+        }
+    }
+
+    fn push(&mut self, task: u32, result: WaitResultCode) {
+        if self.count < MAX_WAITERS {
+            self.tasks[self.count] = Some((task, result));
+            self.count += 1;
+        }
+    }
+}
+
+/// `signal_object` 的结果：新 generation 与被唤醒的 Task。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignalOutcome {
+    pub generation: u64,
+    pub wakes: WaitWake,
+}
+
 /// COSIR §21.1/§21.2 的失败名。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitError {
@@ -2857,6 +2945,8 @@ pub enum WaitError {
 pub enum WaitOutcome {
     Satisfied,
     TimedOut,
+    /// 已登记为 BlockedWait；调用方保存帧并切走。
+    Blocked,
 }
 
 /// SPEC-082 / §5.5：Timer 的取消原因。
@@ -3837,7 +3927,7 @@ impl BootstrapState {
                 match status {
                     TaskStatus::Running => audit.to_running += 1,
                     TaskStatus::Ready => audit.to_ready += 1,
-                    TaskStatus::BlockedRecv => audit.to_blocked += 1,
+                    TaskStatus::BlockedRecv | TaskStatus::BlockedWait => audit.to_blocked += 1,
                     TaskStatus::Faulted => audit.to_faulted += 1,
                     // `Dead` 是细化态、非 POSIR 状态，§13.1 不对它要求事件（登记在案）。
                     TaskStatus::Dead => {}
@@ -6688,6 +6778,8 @@ impl BootstrapState {
         let _ = self.tasks.take_pending(task_id);
         self.ipc.remove_task(task_id);
         self.tasks.finish_destroy(task_id)?;
+        // M15a-2：把该 Task 从所有 WaitObject 的等待队列移除。
+        self.detach_waiter(task_id);
         for message_id in dropped_message_ids[..dropped_count].iter().copied() {
             self.audit.append(AuditEvent::MessageDropped { message_id });
         }
@@ -8541,6 +8633,8 @@ impl BootstrapState {
             id,
             creator: caller,
             generation: 0,
+            waiters: [None; MAX_WAITERS],
+            waiter_count: 0,
         }) {
             return Err(WaitError::CapacityExceeded);
         }
@@ -8564,15 +8658,140 @@ impl BootstrapState {
             .ok_or(WaitError::TargetDead)
     }
 
-    /// COSIR §21.2.2：generation 加一并返回新值。M15a-1 尚无等待者。
-    pub fn wait_object_signal(&mut self, caller: u32, cap: Handle) -> Result<u64, WaitError> {
+    /// COSIR §21.2.2：generation 加一，并唤醒满足条件的等待者。
+    pub fn wait_object_signal(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+    ) -> Result<SignalOutcome, WaitError> {
         let id = self.wait_cap(caller, cap, Right::WaitSignal)?;
+        if !self.audit.can_append(1) {
+            return Err(WaitError::AuditFull);
+        }
         let object = self
             .wait_objects
             .find_mut(id)
             .ok_or(WaitError::TargetDead)?;
         object.generation += 1;
-        Ok(object.generation)
+        let generation = object.generation;
+        self.audit.append(AuditEvent::WaitSignaled {
+            object_id: id,
+            generation,
+        });
+        let wakes = self.collect_ready_waiters(id);
+        Ok(SignalOutcome { generation, wakes })
+    }
+
+    /// 重新评估所有等待者（某个对象的 generation 变化后）。
+    fn collect_ready_waiters(&mut self, signaled: u32) -> WaitWake {
+        let mut wakes = WaitWake::empty();
+        let waiters: [Option<u32>; MAX_WAITERS] = self
+            .wait_objects
+            .find(signaled)
+            .map(|object| object.waiters)
+            .unwrap_or([None; MAX_WAITERS]);
+        for task_id in waiters.iter().flatten().copied() {
+            let Some(request) = self.tasks.find(task_id).and_then(|task| task.wait_request) else {
+                continue;
+            };
+            if !self.request_satisfied(&request) {
+                continue;
+            }
+            if self.wake_waiter(task_id, WaitResultCode::Satisfied) {
+                wakes.push(task_id, WaitResultCode::Satisfied);
+            }
+        }
+        wakes
+    }
+
+    fn request_satisfied(&self, request: &WaitRequest) -> bool {
+        let mut all = true;
+        let mut any = false;
+        for entry in request.entries[..request.count].iter() {
+            let generation = self
+                .wait_objects
+                .find(entry.object)
+                .map(|object| object.generation)
+                .unwrap_or(0);
+            let satisfied = generation > entry.observed;
+            any |= satisfied;
+            all &= satisfied;
+        }
+        if request.mode == 1 { all } else { any }
+    }
+
+    /// 把一个等待者从所有等待队列移除、清空请求、改 Ready 并记录结果。
+    fn wake_waiter(&mut self, task_id: u32, result: WaitResultCode) -> bool {
+        if !self.audit.can_append(1) {
+            return false;
+        }
+        let Some(task) = self.tasks.find_mut(task_id) else {
+            return false;
+        };
+        if task.status != TaskStatus::BlockedWait {
+            return false;
+        }
+        let Some(request) = task.wait_request else {
+            return false;
+        };
+        task.wait_request = None;
+        task.pending_wait_result = Some(result);
+        task.status = TaskStatus::Ready;
+        for entry in request.entries[..request.count].iter() {
+            if let Some(object) = self.wait_objects.find_mut(entry.object) {
+                for slot in object.waiters.iter_mut() {
+                    if *slot == Some(task_id) {
+                        *slot = None;
+                        object.waiter_count = object.waiter_count.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        self.audit_transition(task_id, TaskStatus::Ready);
+        true
+    }
+
+    /// 移除一个 Task 的全部等待登记（销毁/故障清理用）。
+    fn detach_waiter(&mut self, task_id: u32) {
+        if let Some(task) = self.tasks.find_mut(task_id) {
+            task.wait_request = None;
+        }
+        for object in self.wait_objects.entries.iter_mut().flatten() {
+            for slot in object.waiters.iter_mut() {
+                if *slot == Some(task_id) {
+                    *slot = None;
+                    object.waiter_count = object.waiter_count.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    /// 到期的等待者全部唤醒为 `WaitTimedOut`。
+    pub fn expire_waits(&mut self, now: Instant) -> WaitWake {
+        let mut wakes = WaitWake::empty();
+        let expired: [Option<u32>; MAX_TASKS] = {
+            let mut list = [None; MAX_TASKS];
+            let mut count = 0;
+            for task in self.tasks.entries[..self.tasks.count].iter().flatten() {
+                if task.status == TaskStatus::BlockedWait
+                    && task
+                        .wait_request
+                        .and_then(|request| request.deadline)
+                        .is_some_and(|deadline| deadline <= now)
+                    && count < MAX_TASKS
+                {
+                    list[count] = Some(task.id);
+                    count += 1;
+                }
+            }
+            list
+        };
+        for task_id in expired.iter().flatten().copied() {
+            if self.wake_waiter(task_id, WaitResultCode::TimedOut) {
+                wakes.push(task_id, WaitResultCode::TimedOut);
+            }
+        }
+        wakes
     }
 
     /// COSIR §21.2.1 的立即路径：满足/立即超时；否则 `WouldBlock`。
@@ -8634,21 +8853,86 @@ impl BootstrapState {
         if timeout != u64::MAX && timeout <= self.now {
             return Ok(WaitOutcome::TimedOut);
         }
-        Err(WaitError::WouldBlock)
+        // 阻塞路径：检查每个目标对象的等待者容量与审计预算。
+        let targets = if let Some(second) = id1 {
+            [Some(id0), Some(second)]
+        } else {
+            [Some(id0), None]
+        };
+        for target in targets.iter().flatten() {
+            let capacity = self
+                .wait_objects
+                .find(*target)
+                .map(|object| object.waiter_count < MAX_WAITERS)
+                .unwrap_or(false);
+            if !capacity {
+                return Err(WaitError::CapacityExceeded);
+            }
+        }
+        if !self.audit.can_append(1) {
+            return Err(WaitError::AuditFull);
+        }
+        let entries = [
+            WaitEntry {
+                object: id0,
+                observed: observed0,
+            },
+            WaitEntry {
+                object: id1.unwrap_or(0),
+                observed: observed1,
+            },
+        ];
+        let count = if id1.is_some() { 2 } else { 1 };
+        let request = WaitRequest {
+            entries,
+            count,
+            mode,
+            deadline: if timeout == u64::MAX {
+                None
+            } else {
+                Some(timeout)
+            },
+        };
+        let Some(task) = self.tasks.find_mut(caller) else {
+            return Err(WaitError::InvalidCaller);
+        };
+        task.wait_request = Some(request);
+        task.status = TaskStatus::BlockedWait;
+        for entry in request.entries[..request.count].iter() {
+            if let Some(object) = self.wait_objects.find_mut(entry.object)
+                && let Some(slot) = object.waiters.iter_mut().find(|slot| slot.is_none())
+            {
+                *slot = Some(caller);
+                object.waiter_count += 1;
+            }
+        }
+        self.audit_transition(caller, TaskStatus::BlockedWait);
+        Ok(WaitOutcome::Blocked)
     }
 
-    /// COSIR §21.1.3：销毁对象；M15a-1 尚无等待者，Capability 目标随之失活。
-    pub fn wait_object_destroy(&mut self, caller: u32, cap: Handle) -> Result<(), WaitError> {
+    /// COSIR §21.1.3：销毁对象；等待者以 `WaitTargetDead` 唤醒。
+    pub fn wait_object_destroy(&mut self, caller: u32, cap: Handle) -> Result<WaitWake, WaitError> {
         let id = self.wait_cap(caller, cap, Right::WaitDestroy)?;
         if !self.audit.can_append(1) {
             return Err(WaitError::AuditFull);
+        }
+        let waiters: [Option<u32>; MAX_WAITERS] = self
+            .wait_objects
+            .find(id)
+            .map(|object| object.waiters)
+            .unwrap_or([None; MAX_WAITERS]);
+        let mut wakes = WaitWake::empty();
+        for task_id in waiters.iter().flatten().copied() {
+            if self.wake_waiter(task_id, WaitResultCode::TargetDead) {
+                wakes.push(task_id, WaitResultCode::TargetDead);
+            }
         }
         self.wait_objects.remove(id).ok_or(WaitError::TargetDead)?;
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: id,
             kind: ObjectKind::WaitObject,
         });
-        Ok(())
+        Ok(wakes)
     }
 }
 
@@ -8667,7 +8951,7 @@ pub fn wait_object_observe(caller: u32, cap: Handle) -> Result<u64, WaitError> {
     })
 }
 
-pub fn wait_object_signal(caller: u32, cap: Handle) -> Result<u64, WaitError> {
+pub fn wait_object_signal(caller: u32, cap: Handle) -> Result<SignalOutcome, WaitError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.wait_object_signal(caller, cap),
         None => Err(WaitError::InvalidCaller),
@@ -8690,10 +8974,27 @@ pub fn wait_objects(
     })
 }
 
-pub fn wait_object_destroy(caller: u32, cap: Handle) -> Result<(), WaitError> {
+pub fn wait_object_destroy(caller: u32, cap: Handle) -> Result<WaitWake, WaitError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.wait_object_destroy(caller, cap),
         None => Err(WaitError::InvalidCaller),
+    })
+}
+
+/// M15a-2：在 syscall 入口推进超时等待（无 IRQ 时时间由 syscall 推进）。
+pub fn expire_waits_global() -> WaitWake {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.expire_waits(state.now),
+        None => WaitWake::empty(),
+    })
+}
+
+/// 消费当前 Task 的 pending 等待结果（结果已在唤醒时注入 rax）。
+pub fn take_wait_result(task: u32) -> Option<WaitResultCode> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .and_then(|state| state.tasks.find_mut(task))
+            .and_then(|task| task.pending_wait_result.take())
     })
 }
 
@@ -9134,8 +9435,8 @@ mod tests {
         TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
         TaskError, TaskKind, TaskStatus, TimerCancelOutcome, TimerCancelReason, TimerError,
         TimerState, USER_IPC_CAP_SLOT_BASE, USER_SEGMENT_ID_FIRST, VspaceEntry, WaitError,
-        WaitOutcome, create_snapshot, create_state, entry_in_image, platform_segment_cap_handle,
-        platform_segment_cap_slot, platform_segment_is_direct,
+        WaitOutcome, WaitResultCode, create_snapshot, create_state, entry_in_image,
+        platform_segment_cap_handle, platform_segment_cap_slot, platform_segment_is_direct,
     };
     use crate::mem::FrameInventory;
     use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
@@ -9567,17 +9868,19 @@ mod tests {
             .wait_object_create(INIT_TASK_ID)
             .expect("create wait object");
         assert_eq!(state.wait_object_observe(INIT_TASK_ID, cap), Ok(0));
-        assert_eq!(state.wait_object_signal(INIT_TASK_ID, cap), Ok(1));
+        let outcome = state.wait_object_signal(INIT_TASK_ID, cap).expect("signal");
+        assert_eq!(outcome.generation, 1);
+        assert_eq!(outcome.wakes.count, 0);
         assert_eq!(state.wait_object_observe(INIT_TASK_ID, cap), Ok(1));
         // 观察值 0 已被 signal 满足。
         assert_eq!(
             state.wait_objects(INIT_TASK_ID, cap, 0, Handle::ZERO, 0, 0, u64::MAX),
             Ok(WaitOutcome::Satisfied)
         );
-        // 观察值已最新且无超时：M15a-1 返回 WouldBlock。
+        // 观察值已最新且无超时：登记 BlockedWait。
         assert_eq!(
             state.wait_objects(INIT_TASK_ID, cap, 1, Handle::ZERO, 0, 0, u64::MAX),
-            Err(WaitError::WouldBlock)
+            Ok(WaitOutcome::Blocked)
         );
         // 立即超时。
         assert_eq!(
@@ -9590,7 +9893,7 @@ mod tests {
             Err(WaitError::InvalidGeneration)
         );
         // 销毁后目标失活。
-        assert_eq!(state.wait_object_destroy(INIT_TASK_ID, cap), Ok(()));
+        assert!(state.wait_object_destroy(INIT_TASK_ID, cap).is_ok());
         assert_eq!(
             state.wait_object_observe(INIT_TASK_ID, cap),
             Err(WaitError::TargetDead)
@@ -9615,7 +9918,7 @@ mod tests {
         // All：a 未满足。
         assert_eq!(
             state.wait_objects(INIT_TASK_ID, a, 0, b, 0, 1, u64::MAX),
-            Err(WaitError::WouldBlock)
+            Ok(WaitOutcome::Blocked)
         );
         let _ = state.wait_object_signal(INIT_TASK_ID, a).expect("signal a");
         assert_eq!(
@@ -9653,6 +9956,81 @@ mod tests {
         assert_eq!(
             state.wait_object_destroy(INIT_TASK_ID, observe_only),
             Err(WaitError::MissingRight(Right::WaitDestroy))
+        );
+    }
+
+    #[test]
+    fn wait_blocks_then_signal_wakes_satisfied() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("create");
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 0, Handle::ZERO, 0, 0, u64::MAX),
+            Ok(WaitOutcome::Blocked)
+        );
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).expect("task").status,
+            TaskStatus::BlockedWait
+        );
+        let outcome = state
+            .wait_object_signal(INIT_TASK_ID, cap)
+            .expect("signal wakes");
+        assert_eq!(outcome.generation, 1);
+        assert_eq!(outcome.wakes.count, 1);
+        assert_eq!(
+            outcome.wakes.tasks[0],
+            Some((INIT_TASK_ID, WaitResultCode::Satisfied))
+        );
+        let task = state.tasks.find(INIT_TASK_ID).expect("task");
+        assert_eq!(task.status, TaskStatus::Ready);
+        assert_eq!(task.pending_wait_result, Some(WaitResultCode::Satisfied));
+        assert_eq!(task.wait_request, None);
+    }
+
+    #[test]
+    fn wait_expires_only_at_the_deadline() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("create");
+        let deadline = state.now + 10;
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 0, Handle::ZERO, 0, 0, deadline),
+            Ok(WaitOutcome::Blocked)
+        );
+        assert_eq!(state.expire_waits(deadline - 1).count, 0);
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).expect("task").status,
+            TaskStatus::BlockedWait
+        );
+        let wakes = state.expire_waits(deadline);
+        assert_eq!(wakes.count, 1);
+        assert_eq!(
+            wakes.tasks[0],
+            Some((INIT_TASK_ID, WaitResultCode::TimedOut))
+        );
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).expect("task").status,
+            TaskStatus::Ready
+        );
+    }
+
+    #[test]
+    fn wait_destroy_wakes_target_dead() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).expect("create");
+        assert_eq!(
+            state.wait_objects(INIT_TASK_ID, cap, 0, Handle::ZERO, 0, 0, u64::MAX),
+            Ok(WaitOutcome::Blocked)
+        );
+        let wakes = state
+            .wait_object_destroy(INIT_TASK_ID, cap)
+            .expect("destroy");
+        assert_eq!(wakes.count, 1);
+        assert_eq!(
+            wakes.tasks[0],
+            Some((INIT_TASK_ID, WaitResultCode::TargetDead))
+        );
+        assert_eq!(
+            state.tasks.find(INIT_TASK_ID).expect("task").status,
+            TaskStatus::Ready
         );
     }
 

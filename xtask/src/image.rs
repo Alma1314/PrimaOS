@@ -1174,7 +1174,7 @@ pub(crate) const TTYIN_LINUX_STDOUT: &[u8] = b"TTYRD|line=1;eof=1|ok=1;err=0\n";
 
 /// M15a-1：WaitObject 原生探针输出（Prima 专用，无 Linux 对应物）。
 pub(crate) const WAIT_EXPECTED_STDOUT: &[u8] =
-    b"WAIT|create=1;gen0=1;signal=1;satisfied=1;block=1;timeout=1;invalid=1;destroy=1;dead=1|ok=1;err=0\n";
+    b"WAIT|create=1;gen0=1;signal=1;satisfied=1;timeout=1;invalid=1;destroy=1;dead=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
