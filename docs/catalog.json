@@ -3156,7 +3156,7 @@
         },
         {
           "line": 12,
-          "target": "llms.txt"
+          "target": "llms.md"
         },
         {
           "line": 13,
@@ -3527,7 +3527,7 @@
         },
         {
           "line": 62,
-          "target": "../../llms.txt"
+          "target": "../../llms.md"
         }
       ]
     },

@@ -349,7 +349,7 @@ def main():
         return 0
     errors = validate(catalog)
     # Validate the generated human index too, without introducing a self-hash dependency.
-    for auxiliary in (INDEX, "llms.txt"):
+    for auxiliary in (INDEX, "llms.md"):
         if not (ROOT / auxiliary).exists():
             continue
         for number, target in links((ROOT / auxiliary).read_text(encoding="utf-8")):

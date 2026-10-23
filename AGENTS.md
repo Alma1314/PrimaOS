@@ -6,7 +6,7 @@ This is a Rust workspace for a research OS. `cosir/` contains the executable, pl
 
 ## How to Read the Documentation
 
-Start at `docs/README.md`, then use `docs/architecture/ai-retrieval.md` and the topic routes in `docs/architecture/topics.json` to select a bounded context package. `llms.txt` is a lightweight routing entry, not another source of project status.
+Start at `docs/README.md`, then use `docs/architecture/ai-retrieval.md` and the topic routes in `docs/architecture/topics.json` to select a bounded context package. `llms.md` is a lightweight routing entry, not another source of project status.
 
 Authority depends on the question:
 

@@ -14,7 +14,7 @@ updated: 2026-10-23
 
 ## 1. 交付内容
 
-- 根 README、AGENTS、llms.txt 和 docs/README 使用同一权威分工与任务路由；入口不重复维护当前阶段清单。
+- 根 README、AGENTS、llms.md 和 docs/README 使用同一权威分工与任务路由；入口不重复维护当前阶段清单。
 - 新增入门、AI 检索、系统/代码地图、术语、接口/版本、证据规则、开发验证和维护手册。
 - 十个主题包连接规范/计划/报告链、代码、测试与限制；topics.json 保存人工精选路径。
 - catalog.json/catalog.md 自动枚举源文档与全部 ATX 标题，包含行号范围、哈希、角色、引用和编号提及。

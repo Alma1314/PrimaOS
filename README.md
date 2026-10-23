@@ -9,7 +9,7 @@ PrimaOS 是研究型操作系统项目，探索以小型对象能力内核支撑
 | 目的 | 入口 |
 |---|---|
 | 了解与使用文档 | [文档中心](docs/README.md) · [首次阅读路线](docs/architecture/getting-started.md) |
-| AI 接手、检索和交接 | [AI 检索协议](docs/architecture/ai-retrieval.md) · [llms.txt](llms.txt) |
+| AI 接手、检索和交接 | [AI 检索协议](docs/architecture/ai-retrieval.md) · [llms.md](llms.md) |
 | 查看当前阶段、阻塞和证据 | [实现阶段跟踪](Prima%20OS%20实现阶段.md) |
 | 查设计与实现 | [子系统主题地图](docs/architecture/topics/README.md) · [系统与源码地图](docs/architecture/system-map.md) |
 | 查权威契约 | [架构白皮书](Prima%20OS.md) · [COSIR 原语规范](COSIR%20原语规范.md) |
