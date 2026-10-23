@@ -34,6 +34,7 @@
 | 2026-10-23 | [2026-10-23-stage5-m18b-sigaction.md](2026-10-23-stage5-m18b-sigaction.md) | 阶段 5 M18b：sigaction/handler/sigreturn（W9） |
 | 2026-10-23 | [2026-10-23-stage5-m17c3-exec.md](2026-10-23-stage5-m17c3-exec.md) | 阶段 5 M17c-3：exec_replace（W7） |
 | 2026-10-23 | [2026-10-23-stage5-m17c4-execve-vfs.md](2026-10-23-stage5-m17c4-execve-vfs.md) | 阶段 5 M17c-4：VFS 镜像 exec（W7b） |
+| 2026-10-23 | [2026-10-23-stage5-m20-compat-final.md](2026-10-23-stage5-m20-compat-final.md) | 阶段 5 M20：兼容矩阵定稿 |
 | 2026-10-21 | [2026-10-21-stage5-m10-anon-memory.md](2026-10-21-stage5-m10-anon-memory.md) | 阶段 5 M10：匿名内存与保护（`mmap`/`munmap`/`mprotect` + 内核 `memseg_protect`） |
 | 2026-10-21 | [2026-10-21-stage5-m9-metadata-cwd.md](2026-10-21-stage5-m9-metadata-cwd.md) | 阶段 5 M9：`statx` 元数据、`chdir`/`getcwd` 与 sbase `cat`/`ls` |
 | 2026-10-20 | [2026-10-20-stage5-m8-user-vfs.md](2026-10-20-stage5-m8-user-vfs.md) | 阶段 5 M8：用户态 VFS/rootfs、通用 fd 与多级路径 |

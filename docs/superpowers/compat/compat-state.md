@@ -1,6 +1,6 @@
 # 阶段 5 兼容状态台账（M0）
 
-**日期**：2026-10-18（2026-10-22 更新 M11 与剩余边界）。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3/M3b 补充了
+**日期**：2026-10-18（2026-10-23 更新 M14–M18 与 M20 矩阵）。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3/M3b 补充了
 musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命周期与 `printf` 输出证据。
 冻结 profile 仍是 [profile v0](../specs/2026-10-18-stage5-profile-v0.md)；M4 把
 `P5-IO-02`/`P5-FD-01`/`P5-FS-01`/`P5-FS-02`/`P5-LIB-01` 推进到 `partial`；M5 的
@@ -146,3 +146,30 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 
 **不得据此宣称**：`fork`/`wait4`/`execve` 的 POSIX 语义、进程组/session、信号、
 `vfork`/`posix_spawn`、动态链接。
+
+
+## 6. 阶段 5 收尾矩阵（M12–M20）
+
+本节是 **M20 定稿矩阵**：按已验收的 QEMU/Linux 同源证据汇总各子系统的当前
+状态；`partial` 表示该子集可用但不完整，`supported` 表示有双轮证据且边界
+已登记。证据链接见各行与 [M20 报告](../reports/2026-10-23-stage5-m20-compat-final.md)。
+
+| 子系统 | 状态 | 证据 | 主要边界 |
+|---|---|---|---|
+| 进程退出/返回码 | supported | E1–E6、M12 | 固定探针形态 |
+| fork（单线程，COW） | supported（W6 双轮 + Linux） | M17b-4 | 多线程 EAGAIN；fd 表 COW 继承、close 语义共享（ISSUE-FORK-CAPS-001） |
+| wait4 | supported（W6/W8 双轮） | M17b-4、M18a | 仅 WNOHANG/阻塞；无 rusage；信号状态用 128+sig 编码 |
+| exec（静态 ET_EXEC） | supported（W7/W7b 双轮） | M17c-3/4 | 内存/VFS 镜像；无 envp/CLOEXEC/PIE/解释器；子任务内 VFS IPC 受授权限制 |
+| kill（默认终止） | supported（W8 双轮 + Linux） | M18a | 仅 1..31；无 SIGCHLD 自动通知 |
+| sigaction + handler + sigreturn | supported（W9 双轮 + Linux） | M18b | 无掩码/siginfo/EINTR/SA_RESTART；跨任务投递在下一次 syscall 返回 |
+| 线程（thread_create/clone pthread） | supported（W2/W4 双轮） | M15b/M16b | pthread 取消/分离/属性未做；线程操作数上限 24 |
+| futex（WAIT/WAKE 子集） | partial（W3 双轮） | M16a | 无 PI/robust/requeue |
+| tty 输入/termios | partial（I1 双轮） | M14 | fd 0 轮询；无字间定时/流控 |
+| loopback IPv4/UDP | partial（N1 双轮） | M19 | 仅环回、无 TCP/路由/分片 |
+| VFS/rootfs | partial（C1–C3/L1–L3/V1–V3 等双轮） | M8/M9/M11/M13 | 无硬链接、跨启动持久化 |
+| 网络服务 | partial | M19 | 无 socket 全语义 |
+| 信号掩码/EINTR | unsupported | — | 未实现 |
+| 进程组/session、vfork、posix_spawn、ptrace | unsupported | — | 明确不做 |
+
+**不得据此宣称**：完整 POSIX 进程/信号/线程/文件/网络语义；`execve` 的
+VFS 子任务内路径；动态链接。

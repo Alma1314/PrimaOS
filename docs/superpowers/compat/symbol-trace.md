@@ -94,3 +94,20 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 
 **负责人**：M2/M3 实现由主 agent 本人执行（不使用实现子 agent）；组织级独立复核尚未安排，
 不得由实现者自签。每个测试 ID 在 M2/M3 落地时必须附 Linux/Prima 两端的实际命令与结果。
+
+
+## 5. 阶段 5 收尾探针的符号/系统调用追溯（W1–W9）
+
+| 探针 | 使用的 libc/符号 | Linux syscall | Prima 机制 | 证据 |
+|---|---|---|---|---|
+| W1/W2 wait object | `syscall`（Prima 原生直发）/`prima_native` | 无（Prima 42–47） | `SYS_WAIT_*`/`SYS_THREAD_CREATE` | M15 报告 |
+| W3 futex | musl `pthread` + 适配层 futex | 202 | 适配层静态 futex 表 + WaitObject | M16a 报告 |
+| W4 pthread | musl `pthread_create/join`、`clone` | 56 | `SYS_CLONE(48)`（clone.s 补丁）、`SYS_THREAD_EXIT(49)`、`SYS_THREAD_CLEAR_TID(50)` | M16b 报告 |
+| W6 fork/wait | 内联 asm `syscall` 51 / `wait4` 61 | 57/61（Linux 参考） | `SYS_FORK(51)`、`SYS_WAIT4(53)`、`SYS_PROCESS_EXIT(54)` | M17b-4 报告 |
+| W7 exec | 内联镜像 + `SYS_EXEC_REPLACE` | 无（Prima 55） | `SYS_EXEC_REPLACE(55)` | M17c-3 报告 |
+| W7b VFS exec | `open/read/close` + fork/exec | 2/0/3/57 | 适配层 VFS + `SYS_EXEC_REPLACE(55)` | M17c-4 报告 |
+| W8 kill | `kill` 62 | 62 | `SYS_SIGNAL(56)` | M18a 报告 |
+| W9 sigaction | `sigaction`/`kill`（Linux 参考） | 13/62 | `SYS_SIGACTION(57)`、`SYS_SIGRETURN(58)` | M18b 报告 |
+
+`syscall(57)` 的 musl 包装路径在 fork 子进程中返回值损坏（`ISSUE-FORK-CONTINUATION-001`）：
+W6/W7b 使用内联 asm 直发 51；适配层 57 仍待修。
