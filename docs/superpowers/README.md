@@ -89,6 +89,7 @@
 - [M17c-3 exec_replace（W7）](reports/2026-10-23-stage5-m17c3-exec.md)
 - [M17c-4 VFS 镜像 exec（W7b）](reports/2026-10-23-stage5-m17c4-execve-vfs.md)
 - [M20 兼容矩阵定稿](reports/2026-10-23-stage5-m20-compat-final.md)
+- [M21 出口评审（未签署）](reports/2026-10-23-stage5-m21-exit-review.md)
 
 ## 文档约定
 

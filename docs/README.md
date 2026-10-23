@@ -70,6 +70,7 @@
   - [M17c-3 exec_replace（W7）](superpowers/reports/2026-10-23-stage5-m17c3-exec.md)
   - [M17c-4 VFS 镜像 exec（W7b）](superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md)
   - [M20 兼容矩阵定稿](superpowers/reports/2026-10-23-stage5-m20-compat-final.md)
+  - [M21 出口评审（未签署）](superpowers/reports/2026-10-23-stage5-m21-exit-review.md)
 
 ## 阶段 0–4 签署入口
 

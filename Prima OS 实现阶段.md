@@ -57,6 +57,7 @@
 
 ## 决策日志
 
+- **2026-10-23：**M21 出口评审完成（未签署）：全量 114 条 PASS、`cargo xtask compat` PASS；S5-D1（组织级确认）与 S5-D6（Rust target/core-std）未满足、profile v2 未编写、S5-X3 待组织级复核，另有 `ISSUE-FORK-CONTINUATION-001`、fork 子任务授权、信号掩码等限制；阶段 6 入口（D10）不启动。见[M21 报告](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)。
 - **2026-10-22：**M11 之后的阶段 5 余项与阶段 6 入口采用[收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)（M12–M21、S6-A–E）；BLK-003 仍 Open，路线图不预设 42+ 的具体号或状态升级。M13a 按 D8 的建议作工作决定：符号链接/`rename`/`fchdir` 落地，硬链接/权限/持久化不做；D8 仍未组织级关闭。M19 按 D5 的建议作工作决定：阶段 5 只做用户态 loopback IPv4/UDP，NIC/DNS/TCP 留阶段 7；D5 仍未组织级关闭。M15 按 D2/D3 的建议作工作决定：42 起追加 Prima 命名 syscall，先在 COSIR/设计层确立 Process/Thread/ShareGroup 语义，再以 WaitObject（42–46）和多线程 Process 分片实现；D2/D3 仍未组织级关闭，设计见 [M15 设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)。
 - **2026-10-18：**阶段 5 先冻结 profile 和上游 ABI 归属，再扩展 libc；采用[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。
 - **2026-10-17：**阶段 0–4 按 SPEC-145–149 的各自证据范围签署；阶段 0 仅为规范文本复核。
