@@ -1577,6 +1577,14 @@ mod tests {
     }
 
     #[test]
+    fn tiny_elf_fixture_is_readable() {
+        let mut storage = mounted();
+        assert_eq!(read_file(&mut storage, b"/tiny.elf"), TINY_ELF);
+        assert!(TINY_ELF.len() > 100);
+        assert_eq!(&TINY_ELF[..4], b"\x7fELF");
+    }
+
+    #[test]
     fn resolution_reports_frozen_errors() {
         let mut storage = mounted();
         assert_eq!(resolve(&mut storage, ROOT, b""), Err(VfsError::Invalid));

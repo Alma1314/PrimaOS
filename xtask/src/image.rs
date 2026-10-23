@@ -127,6 +127,7 @@ enum Stage5Program<'a> {
     Sig,
     Sigact,
     Exec,
+    Execve,
     Pthread,
     Share,
     /// M9：sbase `cat`（文件读取）冻结用例。
@@ -223,6 +224,10 @@ pub(crate) fn build_images_for_sigact() -> Result<Images, String> {
 
 pub(crate) fn build_images_for_exec() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Exec)
+}
+
+pub(crate) fn build_images_for_execve() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Execve)
 }
 
 pub(crate) fn build_images_for_pthread() -> Result<Images, String> {
@@ -417,6 +422,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_exec.c")],
             "stage5 exec probe",
         ),
+        Stage5Program::Execve => (
+            path.with_file_name("stage5-execve.elf"),
+            vec![c_dir.join("stage5_execve.c")],
+            "stage5 execve probe",
+        ),
         Stage5Program::Pthread => (
             path.with_file_name("stage5-pthread.elf"),
             vec![c_dir.join("stage5_pthread.c")],
@@ -565,6 +575,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Sig => Some((&["stage5-sig"], &[])),
         Stage5Program::Sigact => Some((&["stage5-sigact"], &[])),
         Stage5Program::Exec => Some((&["stage5-exec"], &[])),
+        Stage5Program::Execve => Some((&["stage5-execve"], &[])),
         Stage5Program::Pthread => Some((&["stage5-pthread"], &[])),
         Stage5Program::Share => Some((&["stage5-share"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
@@ -1205,7 +1216,15 @@ fn prepare_stage5_reference_tree(run_dir: &Path) -> Result<(), String> {
     fs::write(run_dir.join("README"), b"prima rootfs\n")
         .map_err(|error| format!("failed to write README: {error}"))?;
     fs::write(run_dir.join("f"), b"").map_err(|error| format!("failed to write f: {error}"))?;
-    for file in ["etc/motd", "etc/hostname", "usr/lib/version", "README"] {
+    fs::write(run_dir.join("tiny.elf"), b"elf")
+        .map_err(|error| format!("failed to write tiny.elf: {error}"))?;
+    for file in [
+        "etc/motd",
+        "etc/hostname",
+        "usr/lib/version",
+        "README",
+        "tiny.elf",
+    ] {
         set_probe_mode(&run_dir.join(file), 0o444)?;
     }
     set_probe_mode(&run_dir.join("f"), 0o666)?;
@@ -1399,6 +1418,8 @@ pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] = b"SIGACT|sigaction=1;kill=1;ran
 
 pub(crate) const EXEC_EXPECTED_STDOUT: &[u8] = b"EXEC|exec=1;wait=1;bad=1|ok=1;err=0\n";
 
+pub(crate) const EXECVE_EXPECTED_STDOUT: &[u8] = b"EXECVE|read=1;exec=1;wait=1|ok=1;err=0\n";
+
 pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
     b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";
 
@@ -1469,7 +1490,7 @@ pub(crate) const LS_CASES: [SbaseCase; 3] = [
     SbaseCase {
         name: "L2",
         args: &["ls", "."],
-        stdout: b"README\ndev\netc\nf\ntmp\nusr\n",
+        stdout: b"README\ndev\netc\nf\ntiny.elf\ntmp\nusr\n",
     },
     SbaseCase {
         name: "L3",
