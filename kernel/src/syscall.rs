@@ -43,11 +43,11 @@ pub use prima_abi::syscall::{
     SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_FORK, SYS_MEMSEG_CREATE,
     SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
     SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
-    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGNAL, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY,
-    SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
-    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE,
-    SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
+    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4,
+    SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID,
+    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
+    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -1074,6 +1074,10 @@ fn signal_call(pid: u64, sig: u64) -> u64 {
     let Some(process) = bootstrap::process_of(target) else {
         return encode_errno(Errno::NoEnt);
     };
+    if crate::signal::handler_of(target, sig as u32) != 0 {
+        crate::signal::set_pending(target, sig as u32);
+        return 0;
+    }
     let status = 128 + sig as i64;
     let wakes = bootstrap::process_exit(process, status);
     for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
@@ -1093,6 +1097,63 @@ fn signal_call(pid: u64, sig: u64) -> u64 {
         sched::clear_task(leader);
     }
     0
+}
+
+/// M18b：登记信号 handler。
+fn sigaction_call(signal: u64, handler: u64) -> u64 {
+    if signal == 0 || signal > 31 {
+        return encode_errno(Errno::Invalid);
+    }
+    let cur = sched::current();
+    crate::signal::set_handler(cur, signal as u32, handler);
+    0
+}
+
+/// M18b：从 handler 返回，恢复被中断的现场。
+fn sigreturn_call() -> u64 {
+    let cur = sched::current();
+    match crate::signal::take_saved(cur) {
+        Some(frame) => {
+            sched::set_frame(cur, frame);
+            sched::resume(cur)
+        }
+        None => encode_errno(Errno::Invalid),
+    }
+}
+
+/// M18b：syscall 返回前递送 pending 信号（handler 或默认终止）。
+fn maybe_deliver_signals(result: u64) {
+    let cur = sched::current();
+    let pending = crate::signal::pending(cur);
+    if pending == 0 {
+        return;
+    }
+    let signal = pending.trailing_zeros();
+    let mut saved = current_context();
+    saved.rax = result;
+    if let Some(frame) = crate::signal::deliver(cur, signal, saved) {
+        sched::set_frame(cur, frame);
+        sched::resume(cur);
+    }
+    // 无 handler：默认终止。
+    terminate_current(128 + signal as i64);
+}
+
+fn terminate_current(status: i64) -> ! {
+    let cur = sched::current();
+    if let Some(process) = bootstrap::process_of(cur) {
+        let wakes = bootstrap::process_exit(process, status);
+        for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
+            let ptr = bootstrap::wait_status_ptr(*task);
+            sched::set_pending_status(*task, ptr, status);
+            sched::set_frame_rax(*task, cur as u64);
+        }
+    }
+    let root = sched::root(cur);
+    let next = sched::pick_next(cur).expect("terminate_current: no Ready successor");
+    let _ = bootstrap::task_destroy(cur, cur, root, 0);
+    sched::clear_task(cur);
+    sched::exit_to(next)
 }
 
 fn process_exit_call(status: u64) -> u64 {
@@ -2606,6 +2667,7 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     let _ = bootstrap::take_wait_result(current);
 
     let ret = serve(num, &args);
+    maybe_deliver_signals(ret);
 
     // 切片 M：只把 task 1 阶段一的前 MAX_CALLS 次进入记入 CALLS（既有证据固定下标）；
     // 其余（task 1 阶段二、task 2）记入 mt，避免扰动 COUNT 与 CALLS[0..15]。
@@ -2698,6 +2760,10 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_destroy_call(args[0])
     } else if num == SYS_FORK {
         fork_call()
+    } else if num == SYS_SIGACTION {
+        sigaction_call(args[0], args[1])
+    } else if num == SYS_SIGRETURN {
+        sigreturn_call()
     } else if num == SYS_SIGNAL {
         signal_call(args[0], args[1])
     } else if num == SYS_WAIT4 {
@@ -2767,6 +2833,7 @@ pub extern "C" fn handle_fast(frame: AbiFrame) -> u64 {
     }
     let cs = frame.cs();
     let ret = serve(num, &args);
+    maybe_deliver_signals(ret);
     // 记录指定的 echo 快路径见证，而不让后来运行的服务 Runtime syscall 覆盖它。
     if num == SYS_ECHO && args[0] == FAST_ARG {
         FAST.with_mut(|fast| {

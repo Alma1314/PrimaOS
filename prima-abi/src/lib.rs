@@ -227,6 +227,10 @@ pub mod syscall {
     pub const SYS_PROCESS_EXIT: u64 = 54;
     /// M18a：`kill(pid, sig)` 最小信号（默认终止）。
     pub const SYS_SIGNAL: u64 = 56;
+    /// M18b：`sigaction(sig, handler)`（最小：仅登记地址）。
+    pub const SYS_SIGACTION: u64 = 57;
+    /// M18b：从信号 handler 返回（恢复被中断现场）。
+    pub const SYS_SIGRETURN: u64 = 58;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.

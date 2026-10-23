@@ -14,7 +14,7 @@ use crate::exc::SretFrame;
 use prima_ostd::sync::StaticCell;
 
 /// 调度器与 Task 表共用同一上限，避免新增 Task 只有模型槽、没有上下文槽。
-const MAX_TASKS: usize = bootstrap::MAX_TASKS;
+pub const MAX_TASKS: usize = bootstrap::MAX_TASKS;
 
 /// 当前运行的 Task id（进入用户态前初始化；初值 1 与 Bootstrap init Task 一致）。
 static CURRENT: AtomicU32 = AtomicU32::new(1);

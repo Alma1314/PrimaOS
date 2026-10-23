@@ -31,6 +31,11 @@
 #define PRIMA_SYS_WAIT4 53
 #define PRIMA_SYS_PROCESS_EXIT 54
 #define PRIMA_SYS_SIGNAL 56
+#define PRIMA_SYS_SIGACTION 57
+#define PRIMA_SYS_SIGRETURN 58
+#define PRIMA_LINUX_SYS_rt_sigaction 13
+#define PRIMA_LINUX_SYS_rt_sigreturn 15
+#define PRIMA_LINUX_SYS_kill 62
 #define PRIMA_LINUX_SYS_kill 62
 #define PRIMA_LINUX_SYS_fork 57
 #define PRIMA_LINUX_SYS_wait4 61

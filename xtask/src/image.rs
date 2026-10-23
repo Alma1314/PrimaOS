@@ -125,6 +125,7 @@ enum Stage5Program<'a> {
     Futex,
     Proc,
     Sig,
+    Sigact,
     Pthread,
     Share,
     /// M9：sbase `cat`（文件读取）冻结用例。
@@ -213,6 +214,10 @@ pub(crate) fn build_images_for_proc() -> Result<Images, String> {
 
 pub(crate) fn build_images_for_sig() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Sig)
+}
+
+pub(crate) fn build_images_for_sigact() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Sigact)
 }
 
 pub(crate) fn build_images_for_pthread() -> Result<Images, String> {
@@ -397,6 +402,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_signal.c")],
             "stage5 signal probe",
         ),
+        Stage5Program::Sigact => (
+            path.with_file_name("stage5-sigact.elf"),
+            vec![c_dir.join("stage5_sigaction.c")],
+            "stage5 sigaction probe",
+        ),
         Stage5Program::Pthread => (
             path.with_file_name("stage5-pthread.elf"),
             vec![c_dir.join("stage5_pthread.c")],
@@ -543,6 +553,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Futex => Some((&["stage5-futex"], &[])),
         Stage5Program::Proc => Some((&["stage5-proc"], &[])),
         Stage5Program::Sig => Some((&["stage5-sig"], &[])),
+        Stage5Program::Sigact => Some((&["stage5-sigact"], &[])),
         Stage5Program::Pthread => Some((&["stage5-pthread"], &[])),
         Stage5Program::Share => Some((&["stage5-share"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
@@ -1255,6 +1266,44 @@ pub(crate) const FUTEX_EXPECTED_STDOUT: &[u8] =
     b"FUTEX|thread=1;wake=1;wait=1;eagain=1;nowake=1|ok=1;err=0\n";
 
 /// M17b：fork/wait 的 Linux 参考（真实 fork/wait4）。
+pub(crate) fn check_stage5_linux_sigact() -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be directly under the workspace root")
+        .to_path_buf();
+    let source = workspace.join("prima-user/c/stage5_sigaction.c");
+    let binary = workspace.join("target/prima-os/sigact-linux");
+    let compiled = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to run Linux cc for stage5 sigact: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to build Linux stage5 sigact probe: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run Linux stage5 sigact probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != SIGACT_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux stage5 sigact mismatch: exit {:?}, stdout {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout)
+        ));
+    }
+    println!("PASS linux stage5 sigaction references");
+    Ok(())
+}
+
 pub(crate) fn check_stage5_linux_sig() -> Result<(), String> {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1334,6 +1383,8 @@ pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
     b"PROC|fork=1;wait=1;status=1;cow=1;echild=1|ok=1;err=0\n";
 
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
+
+pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] = b"SIGACT|sigaction=1;kill=1;ran=1|ok=1;err=0\n";
 
 pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
     b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";

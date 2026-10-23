@@ -22,6 +22,8 @@ pub mod namespace;
 pub mod preempt;
 pub mod rights;
 pub mod sched;
+#[doc(hidden)]
+pub mod signal;
 pub mod syscall;
 #[cfg(test)]
 pub mod test_support;

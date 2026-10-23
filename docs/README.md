@@ -66,6 +66,7 @@
   - [M17b-4 fork/wait 打通（W6）](superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)
   - [M17c-1 静态 ELF 解析与初始栈](superpowers/reports/2026-10-23-stage5-m17c1-elf-plan.md)
   - [M18a 最小信号 kill](superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)
+  - [M18b sigaction/handler/sigreturn](superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)
 
 ## 阶段 0–4 签署入口
 
