@@ -6,25 +6,33 @@ This is a Rust workspace for a research OS. `cosir/` contains the executable, pl
 
 ## How to Read the Documentation
 
-Start with the repository-level sources, then use the indexes under `docs/`:
+Start at `docs/README.md`, then use `docs/architecture/ai-retrieval.md` and the topic routes in `docs/architecture/topics.json` to select a bounded context package. `llms.txt` is a lightweight routing entry, not another source of project status.
 
-1. `docs/README.md` — the unified documentation entry point and reading paths.
-2. `Prima OS.md` — architecture, research hypotheses, compatibility roadmap, and design boundaries.
-3. `COSIR 原语规范.md` — authoritative POSIR/COSIR operation semantics.
-4. `Prima OS 实现阶段.md` — authoritative current stage, exit conditions, blockers, and evidence links.
-5. `docs/superpowers/README.md` — document conventions and stage-by-stage navigation.
+Authority depends on the question:
 
-Use the document type to interpret its claims:
+- `Prima OS.md`: architecture, research hypotheses, stage definitions and design boundaries.
+- `COSIR 原语规范.md`: abstract operation semantics, errors and invariants (the historical file name does not make it a machine ABI specification).
+- `Prima OS 实现阶段.md`: sole current stage, exit checkboxes, active blockers and current evidence pointers.
+- `docs/superpowers/specs/`: expected behavior; verify proposal/frozen status before treating a document as a contract.
+- `docs/superpowers/plans/`: historical execution plans, not current implementation status.
+- `docs/superpowers/reports/`: evidence within each report's explicit scope. Follow discovery/remediation/review chains; newer dates alone do not establish supersession.
+- `docs/superpowers/compat/`: scoped API compatibility and symbol-to-syscall ledgers, not complete POSIX/Linux compatibility.
+- `lean/README.md`: authoritative mapping between the modeled Lean and cosir fields, with explicit omissions.
+- `docs/architecture/`: explanatory guides and retrieval routes; these do not override contracts or sign stages off.
 
-- `docs/superpowers/specs/` contains designs and specifications: expected behavior, not proof that behavior is implemented.
-- `docs/superpowers/plans/` contains execution plans and task breakdowns: historical process records, not current status.
-- `docs/superpowers/reports/` contains implementation, review, remediation, and test evidence. Read each report's stated scope; later remediation reports may supersede earlier findings.
-- `docs/superpowers/compat/` contains the stage 5 API/symbol compatibility ledger and symbol-to-syscall trace. It is not a claim of complete POSIX or Linux compatibility.
-- `docs/architecture/` contains explanatory synthesis such as `primaos-architecture-qa.md`; these are non-normative reader guides.
+Before changing behavior, read the relevant spec, plan and report chain, including failures and limitations. If implementation and contract differ, record the deviation rather than silently making implementation normative. Changes to phase status or evidence must update the stage tracker and relevant evidence indexes.
 
-When several documents disagree, resolve the conflict in this order: the implementation-stage tracker for current status, `COSIR 原语规范.md` for abstract semantics, `docs/superpowers/specs/` for the frozen design contract, and the latest linked report for actual evidence. Do not cite a historical report as a current capability without checking the tracker and any later remediation report.
+New documents belong under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`; keep the docs root for navigation and generated machine catalogs. Follow `docs/superpowers/specs/2026-10-23-documentation-system-design.md` and the templates in `docs/architecture/templates/`. Preserve historical paths and conclusions; use portable relative Markdown links, not wiki links.
 
-Before changing behavior, read the relevant spec, plan, and report chain rather than only the latest summary. Preserve failed cases and explicit limitations in reports. If a change affects phase status or evidence, update `Prima OS 实现阶段.md` and add or update the relevant index under `docs/superpowers/`. New documents must be filed under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`, not left loose in `docs/`.
+For documentation changes, run:
+
+```sh
+python3 scripts/docs.py self-test
+python3 scripts/docs.py build
+python3 scripts/docs.py check
+```
+
+`docs/catalog.json` and `docs/architecture/catalog.md` are generated; do not hand-edit them. `topics.json` is curated. The catalog includes heading line ranges, hashes and identifier mentions; mentions are not unique document IDs or approval evidence. `python3 scripts/docs.py topic <id>` and `search '<terms>' --limit 5 --json` support bounded offline retrieval.
 
 ## Build, Test, and Development Commands
 

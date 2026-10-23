@@ -16,7 +16,7 @@
 Capability。为避开这些标签，用户 Segment 被迫使用独立帧标签命名空间
 （`frame_label(id) = 100 + id`）。
 
-本切片按 [[COSIR 原语规范]] §5.1（Segment 对象）、§4.3（位置模型）、§7.1（`memseg_create`
+本切片按 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §5.1（Segment 对象）、§4.3（位置模型）、§7.1（`memseg_create`
 的取帧/清零/铸根 cap）、§16 W6/W7 落地迁移，闭合 `ISSUE-AUTH-002`。
 
 ### 0.1 已确认的关键决策（用户逐项确认）

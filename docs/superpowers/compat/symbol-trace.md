@@ -1,5 +1,7 @@
 # 阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo）
 
+> 阅读范围：§1–4 是最初 echo/musl 链接闭包及当时状态；§5 是 M20 后继调用路径汇总。早期 planned/UNTEST 不自动覆盖后继报告的验收，也不由本文整理升级为完整兼容。当前范围见[兼容台账](compat-state.md)与[M21](../reports/2026-10-23-stage5-m21-exit-review.md)。
+
 **日期**：2026-10-18。**快照**：[musl-snapshot.lock.toml](musl-snapshot.lock.toml)
 （commit `0784374d561435f7c787a555aeab8ede699ed298`）。**目标程序**：sbase `echo`
 （profile v0 锁定的 `c546c3a…`）。
@@ -80,7 +82,7 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 | 231 | `exit_group` | 上报状态 + 自毁 | 正常终止 | 不返回 |
 | 7 / 271 / 2 | `poll`/`ppoll`/`open` | 未实现 | 否（非 secure auxv 早退） | `-ENOSYS` |
 
-## 5. 未决依赖与归属
+## 历史基线：未决依赖与归属（M0）
 
 | 依赖 | 归属 | 测试 ID |
 |---|---|---|

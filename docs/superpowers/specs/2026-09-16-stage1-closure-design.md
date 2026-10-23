@@ -22,7 +22,7 @@
 - **S1-X3**「活动 Segment 与空闲页帧满足唯一归属不变量」。
 
 冻结的垂直切片（COW→PF→`exc_resume`→TLB→Linux trace）已收口，阶段 2 未开始。本切片按
-[[COSIR 原语规范]] §14（Bootstrap 初始 Authority）、§4.1（权限）、§5.1/§5.4（对象）、
+[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §14（Bootstrap 初始 Authority）、§4.1（权限）、§5.1/§5.4（对象）、
 §7（Segment）、§16 W5/W6/W7（不变量）、§20.5（页表帧守恒式）补齐实现。
 
 ### 0.1 规范与实现的差距（动手前核对）

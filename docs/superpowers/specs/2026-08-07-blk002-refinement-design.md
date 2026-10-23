@@ -2,7 +2,7 @@
 
 > 文档类型：阶段 0 细化层设计
 >
-> 关联规范：[[COSIR 原语规范]]（§14 Bootstrap、§18.0 边界清单）；[[Prima OS]]（§13.2 COSIR 细化验证）
+> 关联规范：[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)（§14 Bootstrap、§18.0 边界清单）；[Prima OS](../../../Prima%20OS.md)（§13.2 COSIR 细化验证）
 >
 > 状态：已获批准，待实现
 

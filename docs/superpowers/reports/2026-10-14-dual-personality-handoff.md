@@ -6,11 +6,11 @@
 >
 > 基线提交：`5838630`（`docs(spec): adopt wait objects, directed upcalls, and memseg_protect (DOC-007)`）
 >
-> 用途：为后续 session / agent 提供压缩上下文；精确语义始终以 [[COSIR 原语规范]] 为准。
+> 用途：为后续 session / agent 提供压缩上下文；精确语义始终以 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 为准。
 
 ## 1. 当前冻结语义
 
-[[COSIR 原语规范]] 已于 2026-10-14 正式采纳：
+[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 已于 2026-10-14 正式采纳：
 
 | 项 | 规范位置 | 状态 |
 |---|---|---|
@@ -48,13 +48,13 @@
 
 下一阶段为 **Process / Thread / ShareGroup holder 模型设计**：
 
-- 设计草案：[[docs/superpowers/specs/2026-10-14-dual-personality-holder-model-design|双人格 Holder 模型设计草案]];
-- 审核输入：[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|双人格扩展候选采纳审核]];
-- 差距分析：[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis|COSIR/POSIR 双人格底座差距分析]]。
+- 设计草案：[双人格 Holder 模型设计草案](../specs/2026-10-14-dual-personality-holder-model-design.md);
+- 审核输入：[双人格扩展候选采纳审核](2026-10-14-cosir-dual-personality-adoption-review.md);
+- 差距分析：[COSIR/POSIR 双人格底座差距分析](2026-10-14-cosir-dual-personality-gap-analysis.md)。
 
 目标不是立刻改 POSIR，而是先冻结候选模型、迁移顺序和 W3/W4/W9/W17 的影响面；该设计通过后再进入规范修订与实现切片。
 
-**H0 评审状态（2026-10-14）：** 设计草案**条件通过**，评审报告见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|Holder 模型 H0 评审报告]]。
+**H0 评审状态（2026-10-14）：** 设计草案**条件通过**，评审报告见 [Holder 模型 H0 评审报告](2026-10-14-dual-personality-holder-model-h0-review.md)。
 
 H1 前必须完成：
 

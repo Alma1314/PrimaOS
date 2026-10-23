@@ -1,12 +1,12 @@
 # COSIR/POSIR 双人格扩展候选采纳审核
 
-> 文档类型：采纳审核报告（非规范；规范变更见 [[COSIR 原语规范]]）
+> 文档类型：采纳审核报告（非规范；规范变更见 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)）
 >
 > 日期：2026-10-14
 >
-> 审核输入：[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis|COSIR/POSIR 双人格底座差距分析]] 中的候选机制族
+> 审核输入：[COSIR/POSIR 双人格底座差距分析](2026-10-14-cosir-dual-personality-gap-analysis.md) 中的候选机制族
 >
-> 审核目标：对每一项候选逐条判断“是否正式纳入 POSIR 冻结语义”；审核通过项已同步写入 [[COSIR 原语规范]]，未通过或暂缓项保留为后续设计输入。
+> 审核目标：对每一项候选逐条判断“是否正式纳入 POSIR 冻结语义”；审核通过项已同步写入 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)，未通过或暂缓项保留为后续设计输入。
 
 ## 1. 审核准则
 

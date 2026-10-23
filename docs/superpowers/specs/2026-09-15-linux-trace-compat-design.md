@@ -11,7 +11,7 @@
 ## 0. 定位与前置
 
 垂直切片固定为 **COW/page fault → handler → `exc_resume` → TLB → Linux trace**
-（[[Prima OS 实现阶段]] 研究停止条件段）。前四节点已全部落地于真实内核：
+（[Prima OS 实现阶段](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 研究停止条件段）。前四节点已全部落地于真实内核：
 
 - SPEC-040/041：真实 vector-14 #PF 捕获 + 硬件 error code 译码分类；
 - SPEC-042：验证式 `exc_resume` + 真实 `iretq` 恢复跳板；
@@ -97,7 +97,7 @@ Linux 侧选择 `fork`-COW 而非 `mmap` 只读文件/`mprotect`：`mprotect(PRO
 
 ## 3. 差分判定规则（语义化，允许规范允许的非确定性）
 
-| # | 判定 | 对应 [[Prima OS]] §13.4 项 |
+| # | 判定 | 对应 [Prima OS](../../../Prima%20OS.md) §13.4 项 |
 |---|---|---|
 | 1 | `err & 0x7 == 0x7` 两侧成立 | 返回值/错误语义 |
 | 2 | 分类名一致（Linux 侧由 error code 按同一规则推导） | 错误语义 |
@@ -110,7 +110,7 @@ Divergence 枚举：`MissingFault` / `ErrBitsMismatch` / `ClassMismatch` / `Page
 
 ## 4. 证据边界（不夸大）
 
-- 本切片是**有界差分**，不是 [[Prima OS]] §8.3/§13.4 的完整 `COMPAT-TEST`：后者要求 ELF 加载器、
+- 本切片是**有界差分**，不是 [Prima OS](../../../Prima%20OS.md) §8.3/§13.4 的完整 `COMPAT-TEST`：后者要求 ELF 加载器、
   Linux 初始栈与 Prima LibOS 上运行**同一二进制**，当前阶段 5/6 均未开始。故证据名目为
   `KERNEL-TRACE` + **`COMPAT-TEST (bounded: cow-write-fault)`**，**不勾选 S6-X2**。
 - Prima 侧的比较输入是**后置见证事件**（单条 `user_cow_ready`），无法观测故障重数；判定 5

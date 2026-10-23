@@ -20,7 +20,7 @@
 
 Copy verbatim from the spec `docs/superpowers/specs/2026-09-15-linux-trace-compat-design.md`:
 
-- 本切片是**有界差分**，不是 [[Prima OS]] §8.3/§13.4 的完整 `COMPAT-TEST`：后者要求 ELF 加载器、Linux 初始栈与 Prima LibOS 上运行**同一二进制**，当前阶段 5/6 均未开始。故证据名目为 `KERNEL-TRACE` + **`COMPAT-TEST (bounded: cow-write-fault)`**，**不勾选 S6-X2**。
+- 本切片是**有界差分**，不是 [Prima OS](../../../Prima%20OS.md) §8.3/§13.4 的完整 `COMPAT-TEST`：后者要求 ELF 加载器、Linux 初始栈与 Prima LibOS 上运行**同一二进制**，当前阶段 5/6 均未开始。故证据名目为 `KERNEL-TRACE` + **`COMPAT-TEST (bounded: cow-write-fault)`**，**不勾选 S6-X2**。
 - Prima 侧的比较输入是**后置见证事件**（单条 `user_cow_ready`），无法观测故障重数；判定 5 因此只要求"存在故障记录"，不宣称"目标页恰故障一次"。Linux 侧基线额外要求目标页恰一次（`normalize` 在 >1 时报错），避免把非冻结场景混入基线。
 - 不比较：页表级结构、CR3/PCID、TLB shootdown、文件后端、绝对地址、进程/时间维度。TLB 节点由判定 5 间接覆盖——重试成功（两侧 `receipt`/`write_retried_ok`）要求重试时观测到已刷新的翻译，否则会再次 fault 而无法完成。
 - 不修改 `COSIR 原语规范.md` 与 `Prima OS.md` 的语义；不宣称 `REFINEMENT-PROOF`。

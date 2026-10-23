@@ -1,0 +1,449 @@
+[
+  {
+    "id": "semantics",
+    "title": "抽象语义与形式化",
+    "aliases": [
+      "POSIR",
+      "COSIR",
+      "CDT",
+      "Lean",
+      "良构",
+      "refinement"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "Prima OS.md",
+      "lean/README.md",
+      "docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md",
+      "docs/superpowers/plans/2026-08-18-blk001-lean-formal-model.md",
+      "docs/superpowers/reports/2026-10-13-cosir-cdt-parent-report.md",
+      "docs/superpowers/reports/2026-10-13-lean-cdt-invariant-report.md",
+      "docs/superpowers/reports/2026-10-13-lean-cdt-forest-report.md",
+      "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md",
+      "docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md"
+    ],
+    "code": [
+      "cosir/src/state.rs",
+      "cosir/src/abstract_ops.rs",
+      "cosir/src/machine.rs",
+      "cosir/src/ops.rs",
+      "lean/Formal/State.lean",
+      "lean/Formal/Derive.lean",
+      "lean/Formal/Forest.lean"
+    ],
+    "tests": [
+      "cosir/tests/lean_backtrace.rs",
+      "lean/Formal.lean"
+    ],
+    "guide": "docs/architecture/topics/semantics.md"
+  },
+  {
+    "id": "boot",
+    "title": "启动、硬件与可信边界",
+    "aliases": [
+      "bootstrap",
+      "framekernel",
+      "GDT",
+      "IDT",
+      "trap",
+      "CR3",
+      "EXO",
+      "TCB"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md",
+      "docs/superpowers/plans/2026-08-04-stage1-boot-slice.md",
+      "docs/superpowers/specs/2026-09-25-framekernel-skeleton-design.md",
+      "docs/superpowers/specs/2026-09-25-framekernel-entry-inversion-design.md",
+      "docs/superpowers/reports/2026-09-25-framekernel-closure-report.md",
+      "docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md",
+      "docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md",
+      "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md"
+    ],
+    "code": [
+      "kernel/src/main.rs",
+      "kernel/src/bootstrap.rs",
+      "kernel/src/gdt.rs",
+      "kernel/src/idt.rs",
+      "prima-ostd/src/arch.rs",
+      "prima-ostd/src/entry.rs",
+      "prima-initgen/src/lib.rs",
+      "prima-abi/src/lib.rs",
+      "xtask/src/image.rs"
+    ],
+    "tests": [
+      "xtask/src/protocol.rs",
+      "xtask/src/qemu.rs",
+      "xtask/src/lint.rs"
+    ],
+    "guide": "docs/architecture/topics/boot.md"
+  },
+  {
+    "id": "memory",
+    "title": "页帧、映射、TLB 与 COW",
+    "aliases": [
+      "MemorySegment",
+      "memseg",
+      "vspace",
+      "pagewalk",
+      "TLB",
+      "COW",
+      "mmap",
+      "mprotect",
+      "W^X"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "docs/superpowers/specs/2026-08-12-memseg-pagewalk-refinement-design.md",
+      "docs/superpowers/plans/2026-08-12-memseg-pagewalk-refinement-slice.md",
+      "docs/superpowers/specs/2026-08-14-cow-refinement-design.md",
+      "docs/superpowers/plans/2026-08-14-cow-refinement-slice.md",
+      "docs/superpowers/specs/2026-08-15-tlb-refine-design.md",
+      "docs/superpowers/plans/2026-08-15-tlb-refine.md",
+      "docs/superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md",
+      "docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17b2-cow-primitives.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md",
+      "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
+      "docs/superpowers/plans/2026-08-12-memseg-refinement-remediation.md",
+      "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md"
+    ],
+    "code": [
+      "kernel/src/frames.rs",
+      "kernel/src/mem.rs",
+      "kernel/src/vspace.rs",
+      "kernel/src/cow.rs",
+      "prima-ostd/src/mm.rs",
+      "cosir/src/memseg_refine.rs",
+      "cosir/src/pagewalk.rs",
+      "cosir/src/tlb_refine.rs",
+      "cosir/src/cow_refine.rs",
+      "prima-user/c/prima_syscall.c"
+    ],
+    "tests": [
+      "cosir/src/memseg_refine_tests.rs",
+      "cosir/src/pagewalk_tests.rs",
+      "cosir/src/tlb_refine_tests.rs",
+      "cosir/src/cow_refine_tests.rs",
+      "prima-user/c/stage5_mem.c",
+      "prima-user/c/stage5_proc.c"
+    ],
+    "guide": "docs/architecture/topics/memory.md"
+  },
+  {
+    "id": "capability-ipc",
+    "title": "Capability、句柄、Task 与 IPC",
+    "aliases": [
+      "cap",
+      "rights",
+      "handle",
+      "generation",
+      "holder",
+      "send",
+      "recv",
+      "FIFO",
+      "能力",
+      "消息"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "docs/superpowers/specs/2026-09-16-stage2-handles-caps-segments-design.md",
+      "docs/superpowers/specs/2026-09-16-stage2-ipc-user-surface-design.md",
+      "docs/superpowers/specs/2026-09-17-stage2-task-lifecycle-design.md",
+      "docs/superpowers/reports/2026-09-16-stage2-opening-report.md",
+      "docs/superpowers/reports/2026-09-16-stage2-ipc-user-surface-report.md",
+      "docs/superpowers/reports/2026-09-17-stage2-task-lifecycle-report.md",
+      "docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md",
+      "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md",
+      "docs/superpowers/reports/2026-10-13-ipc-capability-move-audit-report.md"
+    ],
+    "code": [
+      "kernel/src/handle.rs",
+      "kernel/src/rights.rs",
+      "kernel/src/bootstrap.rs",
+      "kernel/src/syscall.rs",
+      "kernel/src/sched.rs",
+      "prima-runtime/src/capability.rs",
+      "prima-runtime/src/ipc.rs",
+      "prima-runtime/src/task.rs"
+    ],
+    "tests": [
+      "kernel/src/test_support.rs",
+      "xtask/src/protocol.rs"
+    ],
+    "guide": "docs/architecture/topics/capability-ipc.md"
+  },
+  {
+    "id": "namespace-time-audit",
+    "title": "Namespace、Timer 与 Audit",
+    "aliases": [
+      "ns_bind",
+      "ns_mount",
+      "ns_resolve",
+      "timer",
+      "audit",
+      "mount",
+      "命名",
+      "审计"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "docs/superpowers/specs/2026-09-25-stage3-namespace-design.md",
+      "docs/superpowers/specs/2026-09-25-stage3-timer-design.md",
+      "docs/superpowers/specs/2026-09-25-stage3-audit-trace-design.md",
+      "docs/superpowers/reports/2026-09-25-stage3-namespace-report.md",
+      "docs/superpowers/reports/2026-09-25-stage3-timer-report.md",
+      "docs/superpowers/reports/2026-10-10-stage3-audit-trace-restore-report.md",
+      "docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md",
+      "docs/superpowers/reports/2026-10-18-stage3-review-remediation.md"
+    ],
+    "code": [
+      "kernel/src/namespace.rs",
+      "kernel/src/bootstrap.rs",
+      "kernel/src/preempt.rs",
+      "prima-runtime/src/namespace.rs",
+      "prima-runtime/src/transport.rs"
+    ],
+    "tests": [
+      "xtask/src/protocol.rs",
+      "kernel/src/namespace.rs"
+    ],
+    "guide": "docs/architecture/topics/namespace-time-audit.md"
+  },
+  {
+    "id": "runtime",
+    "title": "原生运行时、ring3 服务与用户态 I/O",
+    "aliases": [
+      "prima-runtime",
+      "servicemgr",
+      "init",
+      "service",
+      "protocol",
+      "EXO",
+      "driver",
+      "ioport"
+    ],
+    "sources": [
+      "Prima OS.md",
+      "docs/superpowers/specs/2026-09-25-stage4-runtime-api-design.md",
+      "docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md",
+      "docs/superpowers/specs/2026-10-15-exokernel-alignment-design.md",
+      "docs/superpowers/reports/2026-10-16-stage4-closure-report.md",
+      "docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md",
+      "docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md",
+      "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md",
+      "docs/superpowers/reports/2026-10-17-exo3m-kernel-service-witness-retirement-report.md"
+    ],
+    "code": [
+      "prima-runtime/src/lib.rs",
+      "prima-runtime/src/transport.rs",
+      "prima-runtime/src/protocol.rs",
+      "prima-user/src/servicemgr.rs",
+      "prima-user/src/service.rs",
+      "prima-user/src/log.rs",
+      "prima-user/src/ns.rs",
+      "prima-user/src/store.rs",
+      "prima-user/src/driver.rs",
+      "prima-user/src/tty.rs"
+    ],
+    "tests": [
+      "xtask/src/protocol.rs",
+      "prima-user/src/main.rs",
+      "prima-user/src/beta.rs"
+    ],
+    "guide": "docs/architecture/topics/runtime.md"
+  },
+  {
+    "id": "vfs",
+    "title": "用户态 VFS、文件描述符与路径",
+    "aliases": [
+      "rootfs",
+      "fd",
+      "OFD",
+      "openat",
+      "statx",
+      "cwd",
+      "rename",
+      "symlink",
+      "stdio",
+      "chmod",
+      "umask"
+    ],
+    "sources": [
+      "docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md",
+      "docs/superpowers/specs/2026-10-20-stage5-profile-v1.md",
+      "docs/superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md",
+      "docs/superpowers/specs/2026-10-22-stage5-m13a-vfs-links-design.md",
+      "docs/superpowers/specs/2026-10-22-stage5-m13b-permissions-stdio-design.md",
+      "docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md",
+      "docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md",
+      "docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md",
+      "docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md",
+      "docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md",
+      "docs/superpowers/compat/compat-state.md"
+    ],
+    "code": [
+      "prima-runtime/src/vfs.rs",
+      "prima-user/src/store.rs",
+      "prima-user/src/ns.rs",
+      "prima-user/src/servicemgr.rs",
+      "prima-user/c/prima_syscall.c"
+    ],
+    "tests": [
+      "prima-user/c/stage5_fd.c",
+      "prima-user/c/stage5_vfs.c",
+      "prima-user/c/stage5_meta.c",
+      "prima-user/c/stage5_mut.c",
+      "prima-user/c/stage5_vfs2.c",
+      "prima-user/c/stage5_vfs3.c"
+    ],
+    "guide": "docs/architecture/topics/vfs.md"
+  },
+  {
+    "id": "process",
+    "title": "进程、线程、fork、exec 与信号",
+    "aliases": [
+      "Process",
+      "Thread",
+      "ShareGroup",
+      "pthread",
+      "clone",
+      "fork",
+      "execve",
+      "wait4",
+      "signal",
+      "sigaction",
+      "COW"
+    ],
+    "sources": [
+      "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
+      "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md",
+      "docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md",
+      "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m16b2-musl-clone.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17b2-cow-fork.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17b3-zombie-wait.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
+    ],
+    "code": [
+      "kernel/src/bootstrap.rs",
+      "kernel/src/sched.rs",
+      "kernel/src/syscall.rs",
+      "kernel/src/exec.rs",
+      "kernel/src/signal.rs",
+      "kernel/src/cow.rs",
+      "prima-user/c/prima_syscall.c",
+      "prima-user/musl/patches/clone.s"
+    ],
+    "tests": [
+      "prima-user/c/stage5_pthread.c",
+      "prima-user/c/stage5_share.c",
+      "prima-user/c/stage5_proc.c",
+      "prima-user/c/stage5_exec.c",
+      "prima-user/c/stage5_execve.c",
+      "prima-user/c/stage5_signal.c",
+      "prima-user/c/stage5_sigaction.c"
+    ],
+    "guide": "docs/architecture/topics/process.md"
+  },
+  {
+    "id": "synchronization",
+    "title": "等待、唤醒、futex、时间与 TTY",
+    "aliases": [
+      "WaitObject",
+      "wait_objects",
+      "signal_object",
+      "futex",
+      "BlockedWait",
+      "COM1",
+      "termios",
+      "tty",
+      "PIT"
+    ],
+    "sources": [
+      "COSIR 原语规范.md",
+      "docs/superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md",
+      "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m15a-waitobject.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md",
+      "docs/superpowers/reports/2026-10-19-stage5-m6-time.md",
+      "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md"
+    ],
+    "code": [
+      "kernel/src/bootstrap.rs",
+      "kernel/src/syscall.rs",
+      "kernel/src/sched.rs",
+      "kernel/src/preempt.rs",
+      "prima-user/src/tty.rs",
+      "prima-user/src/servicemgr.rs",
+      "prima-user/c/prima_syscall.c"
+    ],
+    "tests": [
+      "prima-user/c/stage5_wait.c",
+      "prima-user/c/stage5_wait2.c",
+      "prima-user/c/stage5_futex.c",
+      "prima-user/c/stage5_time.c",
+      "prima-user/c/stage5_ttyin.c"
+    ],
+    "guide": "docs/architecture/topics/synchronization.md"
+  },
+  {
+    "id": "compatibility",
+    "title": "POSIX profile、musl、网络与 Linux 路线",
+    "aliases": [
+      "POSIX",
+      "Linux",
+      "musl",
+      "libc",
+      "profile",
+      "ABI",
+      "sbase",
+      "UDP",
+      "socket",
+      "compat"
+    ],
+    "sources": [
+      "Prima OS 实现阶段.md",
+      "docs/superpowers/specs/2026-10-18-stage5-profile-v0.md",
+      "docs/superpowers/specs/2026-10-20-stage5-profile-v1.md",
+      "docs/superpowers/plans/2026-10-18-musl-port-plan.md",
+      "docs/superpowers/plans/2026-10-18-stage5-revised-plan.md",
+      "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
+      "docs/superpowers/compat/compat-state.md",
+      "docs/superpowers/compat/symbol-trace.md",
+      "docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md",
+      "docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md",
+      "docs/superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md",
+      "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
+    ],
+    "code": [
+      "prima-user/c/prima_crt.c",
+      "prima-user/c/prima_crt_start.S",
+      "prima-user/c/prima_syscall.c",
+      "prima-user/musl/build.sh",
+      "prima-user/musl/patches/syscall_arch.h",
+      "xtask/src/compat.rs",
+      "xtask/src/linux.rs"
+    ],
+    "tests": [
+      "prima-user/c/stage5_probe.c",
+      "prima-user/c/stage5_net.c",
+      "xtask/src/image.rs",
+      "xtask/src/protocol.rs"
+    ],
+    "guide": "docs/architecture/topics/compatibility.md"
+  }
+]

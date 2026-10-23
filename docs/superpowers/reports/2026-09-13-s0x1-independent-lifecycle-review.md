@@ -4,7 +4,7 @@
 >
 > 日期：2026-09-13
 >
-> 审查对象：[[COSIR 原语规范]] 的对象生命周期语义（Capability/位置、Task/内存/调度、
+> 审查对象：[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 的对象生命周期语义（Capability/位置、Task/内存/调度、
 > Timer/Namespace/Exception/Device 全族）。
 >
 > 目的：为阶段 0 退出条件 **S0-X1（规范没有已知且未记录的对象生命周期空洞）** 提供证据。
@@ -12,11 +12,11 @@
 > **【2026-09-13 更正】** 本报告下方的“后续修复：9 项全部 Fixed、S0-X1 登记义务达成”结论
 > 已被同日 **SPEC-057 独立复核推翻**：SPEC-056 的修复中 2 项 CLOSED、5 项 PARTIAL、
 > 2 项 REGRESSED，另发现 8 项新空洞/矛盾，S0-X1 不满足。详见
-> `docs/superpowers/reports/2026-09-13-s0x1-fix-reverification.md` 与 [[Prima OS 实现阶段]] 的 ISSUE 表。
+> `docs/superpowers/reports/2026-09-13-s0x1-fix-reverification.md` 与 [Prima OS 实现阶段](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 的 ISSUE 表。
 > 本报告正文保留原始审查结论作为历史记录，不再作为 S0-X1 已满足的依据。
 >
 > 结论速览：审查发现 **9 项未记录的生命周期空洞**（含 2 项严重跨节点一致性问题）。
-> 全部已登记为 [[Prima OS 实现阶段]] 的 ISSUE，并已由同日 SPEC-056 规范修订**全部修复**（**该“全部修复”断言已被 SPEC-057 推翻，见上**）。
+> 全部已登记为 [Prima OS 实现阶段](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 的 ISSUE，并已由同日 SPEC-056 规范修订**全部修复**（**该“全部修复”断言已被 SPEC-057 推翻，见上**）。
 > 据此，**不存在“已知且未记录”的空洞，S0-X1 的登记义务达成**（**该判断已被 SPEC-057 推翻，见上**），且无遗留 Open 生命周期 ISSUE。
 
 ## 1. 方法与独立性声明
@@ -86,4 +86,4 @@
 
 本报告是**文档审查**，不构成机器检查、`REFINEMENT-PROOF` 或真实实现验证；不覆盖 §2.2 非目标
 （调度公平性、隐蔽信道、硬件 MMU/IOMMU 正确性、SMP、资源配额）。独立性为 harness 内独立
-agent 会话，非组织级第三方审查。新增/变更的 ISSUE 以 [[Prima OS 实现阶段]] 为准。
+agent 会话，非组织级第三方审查。新增/变更的 ISSUE 以 [Prima OS 实现阶段](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 为准。

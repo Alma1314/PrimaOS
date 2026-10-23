@@ -1,4 +1,6 @@
-# 阶段 5 兼容状态台账（M0）
+# 阶段 5 兼容状态台账与历史基线
+
+> 阅读范围：§1–4 保留 M0–M11 时期的 profile/链接盘点与实现基线，其中“未实现”不是当前总状态。§5–6 为 M20 后继汇总；当前阶段与签署以[阶段跟踪](../../../Prima%20OS%20实现阶段.md)和[M21](../reports/2026-10-23-stage5-m21-exit-review.md)为准。本文维护不发布新 profile。
 
 **日期**：2026-10-18（2026-10-23 更新 M14–M18 与 M20 矩阵）。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3/M3b 补充了
 musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命周期与 `printf` 输出证据。
@@ -123,14 +125,14 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
   这不是安全承诺，需在 M3 中作为已知边界登记。
 
 
-## 5. 阶段 5 追加的原生 syscall（42–54）状态
+## 5. 阶段 5 追加的原生 syscall（42–58）状态
 
 本节把 M13–M17 新增的 Prima 原生入口按**当前证据**登记；这是状态台账，
 不是兼容性承诺。随后缀 `partial` 的项只表示机制/模型落地，用户态语义未验收。
 
 | 号 | 名称 | 状态 | 证据 |
 |---|---|---|---|
-| 42–46 | `SYS_WAIT_OBJECT_WAIT/ANY`、`SIGNAL`、`DESTROY`、`CLOSE` | 已实现 | 模块 E 报告、W1/W2 探针双轮 |
+| 42–46 | `SYS_WAIT_CREATE`、`SYS_WAIT_OBSERVE`、`SYS_WAIT_OBJECTS`、`SYS_WAIT_SIGNAL`、`SYS_WAIT_DESTROY` | 已实现 | [M15a-1](../reports/2026-10-23-stage5-m15a-waitobject.md) / [M15b-2b](../reports/2026-10-23-stage5-m15b2b-thread-slots.md)，W1/W2 双轮 |
 | 47 | `SYS_THREAD_CREATE` | 已实现 | W2 探针双轮（fresh entry 线程） |
 | 48 | `SYS_CLONE` | 已实现 | W4（musl clone 路由、pthread_create/join） |
 | 49 | `SYS_THREAD_EXIT` | 已实现 | W4、W2 |

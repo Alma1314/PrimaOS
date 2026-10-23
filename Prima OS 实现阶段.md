@@ -1,95 +1,112 @@
+---
+id: project-status
+kind: reference
+authority: current-status
+status: maintained
+updated: 2026-10-23
+---
+
 # Prima OS 实现阶段
 
-> 更新：2026-10-18。架构见 [[Prima OS]]，精确语义见 [[COSIR 原语规范]]。本文记录当前进度、退出条件和证据范围；历史逐切片记录可在 [2026-10-18 压缩前版本](https://github.com/Alma1314/PrimaOS/blob/a434a2f0c515ac3421e999be3c436b7d7c6c5313/Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 查阅。
+> 文档整理更新：2026-10-23。当前阶段结论依据已有报告；本次文档/Rust回归见[整理报告](docs/superpowers/reports/2026-10-23-documentation-restructure-report.md)，不改变组织级签署。
+> 架构见[白皮书](Prima%20OS.md)，抽象语义见[原语规范](COSIR%20原语规范.md)。
+> [文档中心](docs/README.md) · [主题地图](docs/architecture/topics/README.md) · [证据规则](docs/architecture/evidence.md)
 
 ## 维护规则
 
-- 状态为未开始、进行中、阻塞或已满足退出条件；设计完成不等于实现完成。
-- 勾选检查项前，应给出可访问的工件和相应范围的证据。host 测试、QEMU 执行、Lean 模型和机器证明不能互相替代。
-- 失败与反例须留在报告中。阶段定义先改 [[Prima OS]]，语义先改 [[COSIR 原语规范]]，再更新本文。
+- 本文是当前进度、退出条件、活跃阻塞与证据指针的唯一汇总来源；计划记录当时步骤，报告保存当时结果。
+- 阶段状态为未开始、进行中、阻塞或已满足退出条件；设计/技术验收不自动构成组织级签署。
+- 勾选前必须有可访问工件及相应范围证据。host、QEMU、Lean、差分不能互相替代；失败与反例留在报告。
+- 阶段定义先改白皮书，语义先改原语规范。文档整理不代替 ABI/profile 裁决。
 
 ## 当前快照
 
-| 项目 | 状态与依据 |
-|---|---|
-| 阶段 0–4 | 已满足退出条件；签署报告依次为 [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)。阶段 0 的结论限规范文本；实现、模型和 QEMU 各按报告范围解释。 |
-| 当前阶段 | 阶段 5 已启动：无 libc 静态 PIE C ELF 在全量服务后运行、自毁并回收；[原生 ABI 1.0 握手](docs/superpowers/reports/2026-10-18-stage5-native-abi-check.md)、[固定 C 初始栈](docs/superpowers/reports/2026-10-18-stage5-c-start-stack.md)与[同源 `main` 返回码](docs/superpowers/reports/2026-10-18-stage5-main-return-status.md)、[同源 `write(1/2)`/`_exit` 的 tty 字节流](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)、[`PT_LOAD` 写段/BSS 私有装载与 W^X](docs/superpowers/reports/2026-10-18-stage5-ptload-wx.md)获见证；[M2 C 系统边界与 per-task FS base](docs/superpowers/reports/2026-10-18-stage5-musl-m2-boundary.md)已完成（`SYS_TASK_SET_FS_BASE=38`、适配层调用集含 `exit(60)`、`__syscall4..6` 全参数透传、静态 PIE 构建期校验）；[M3 静态 musl 基座](docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md)已完成（SSE/FPU 契约、可重放补丁、Prima crt 接 `__libc_start_main`、探针链接 `libc.a` 并通过 `snprintf`/`getenv`/errno 断言），M3b 匿名内存亦已完成（服务管理器预映射 arena，M9 起为 96 页；`malloc/free/realloc` 通过），[M4 文件首切片](docs/superpowers/reports/2026-10-18-stage5-musl-m4-file.md)已完成（单文件 `f` 的 fd 3..6 生命周期、`openat/read/write/lseek/close` 冻结子集、Namespace `f` 授权与 `printf`+`fflush` 输出）；[M5 sbase `echo` 首切片](docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md)已完成（E1–E6 在 Prima 双轮通过，Linux/Prima stdout 逐字节与退出码一致，S5-X3 证据已具备）；[M6 POSIX 时间首切片](docs/superpowers/reports/2026-10-19-stage5-m6-time.md)已完成（`CLOCK_MONOTONIC` + 10 ms PIT 轮询睡眠，`P5-TIME-01` partial，双轮输出与 Linux 参考逐字节一致，未勾选任何 S5-X）；[M7 fd 表切片](docs/superpowers/reports/2026-10-19-stage5-m7-fd-table.md)已完成（本地 fd 3..10、`dup`/`dup2`/`dup3` 共享 offset、`getpid`，双轮 QEMU 与 Linux 同源输出一致，`P5-FD-01`/`P5-PROC-02` 仍为 partial）；[M8 用户态 VFS/rootfs 切片](docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)已完成（静态 rootfs、多级/`.`/`..`/dirfd 路径、目录枚举、通用 fd 0..18、`/dev/null`、`getdents64`，V1 在 Prima 双轮通过且与 Linux 参考逐字节一致；`P5-FS-01`/`P5-FS-02`/`P5-FS-03`/`P5-FD-01` 仍为 partial）；[M9 元数据/工作目录切片](docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)已完成（`stat`/`lstat`/`fstat`/`fstatat` 经 x86_64 musl 的 kstat 号 4/5/6/262，`statx(332)` 亦实现；每任务 `chdir`/`getcwd` 与 `AT_FDCWD` 相对路径；M1 在 Prima 双轮通过且与 Linux 参考逐字节一致；sbase `cat` C1 与 `ls` L1–L3 双轮通过，`P5-FS-04`/`P5-FS-05` 新增为 partial，`P5-FS-01`/`P5-FS-03` 边界更新）；[M10 匿名内存/保护切片](docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md)已完成（内核 `memseg_protect` 追加号 41 + `VspaceProtChanged` 审计；C 适配层 56 页 mmap 区按页分配、真正 `memseg_unmap` 与复映射，`mprotect` 经内核改权；A1 在 Prima 双轮通过且与 Linux 参考逐字节一致；`P5-MM-01` 新增为 partial）；[M11 文件树变更切片](docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md)已完成（用户态 VFS 节点删除标记与槽位复用，`mkdir`/`mkdirat`/`unlink`/`unlinkat`/`rmdir` 经 MUTATE+PATH+COMMIT 到达存储服务；D1 在 Prima 双轮通过且与 Linux 参考逐字节一致；`P5-FS-06` 新增为 partial）。BLK-004 已关闭、BLK-003 仍 Open；POSIX profile v0 已冻结（S5-D1 待组织级确认后勾选），M8 另提交[profile v1 delta](docs/superpowers/specs/2026-10-20-stage5-profile-v1.md) 待评审，S5-D2–D7/X1–X2 未勾选，S5-X3 待组织级复核后勾选。见[C ELF 容量见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)、[profile v0（冻结）](docs/superpowers/specs/2026-10-18-stage5-profile-v0.md)、[M8 设计](docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md)、[M10 设计](docs/superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md)与[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。 |
-| 下一阶段 | 阶段 6 未开始；阶段 7 范围未冻结。阶段 5 余项按[收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)的 M12–M21 执行，阶段 6 入口为 S6-A–S6-E。 |
-| 近期复核 | [阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)、[阶段 2 IPC 整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3 整改](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)；后两者已通过 workspace 测试、lint 和 BIOS QEMU 双跑。 |
-| TCB | 基线与历次统计见压缩前版本；最新数值应以 `cargo xtask tcb` 现跑结果为准，`kernel/src` 仍要求零 `unsafe`。 |
+| 项目 | 当前结论 | 依据与范围 |
+|---|---|---|
+| 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
+| 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
+| 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
+| 最近全量运行记录 | M21 记录 host 427 用例、lint PASS、QEMU 114 条 PASS、compat PASS | 是 M21 报告记录；本次文档/Rust回归另见整理报告，未复跑QEMU或扩大阶段结论 |
+| 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
+| 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
+| TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
 
-| 范围 | 主要工件 | 证据边界 |
+| 范围 | 入口 | 如何解释 |
 |---|---|---|
-| 架构与语义 | [[Prima OS]]、[[COSIR 原语规范]] | 定义目标和操作语义；不代表实现或证明完成。 |
-| 阶段 0–4 签署 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md) | 各报告记录检查项、命令、版本、结果及限制。 |
-| 签署后修订 | [SPEC-150](docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)、[151](docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)、[阶段 2](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段 3](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md) | 按整改报告读取最新实现；旧签署报告是当时基线。 |
-| 阶段 4 技术证据 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)及[后续复核 SPEC-149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md) | 原生运行时与服务；不等于 POSIX fd/VFS/tty。 |
-| 阶段 5 输入 | [准入分析](docs/superpowers/reports/2026-10-18-stage5-entry-analysis.md)、[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[基座库候选规格](docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md) | 候选规格未经内核侧评审，不冻结 ABI 或排期。 |
-| 阶段 5 余项与阶段 6 入口规划 | [阶段 5 收尾与阶段 6 入口实施路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划，不代表实现；M12–M21、S6-A–E 按里程碑证据逐项推进，不改变本页勾选状态。 |
+| 抽象状态与研究目标 | [规范](COSIR%20原语规范.md)、[白皮书](Prima%20OS.md) | 预期语义与研究假设，不是实现证明 |
+| 阶段0–4签署 | 上方 SPEC-145–149 | 以各自退出条件及证据范围为限 |
+| 签署后整改 | [SPEC-150](docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)、[151](docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)、[阶段2 IPC](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段3](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)、[1–4复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md) | 旧签署后的局部修订，不抹去旧报告 |
+| 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
+| 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
+| 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
+| 历史切片与反例 | [全量目录](docs/architecture/catalog.md)、[主题阅读链](docs/architecture/topics/README.md) | 文件不因未进入精选表而失效；必须保留失败与后继 |
 
-早期逐切片 SPEC/TEST、反例和具体命令保留在[文档导航](docs/README.md)所指的设计、计划、报告中；压缩前的逐行证据索引可从上方历史版本读取。
+2026-10-18 压缩前记录保存在[历史版本](https://github.com/Alma1314/PrimaOS/blob/a434a2f0c515ac3421e999be3c436b7d7c6c5313/Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md)。本次重构前版本可用 `git show d48d5ef:Prima\ OS\ 实现阶段.md` 查看；[整理报告](docs/superpowers/reports/2026-10-23-documentation-restructure-report.md)记录陈旧摘要的修正依据。
 
-## 已知问题与纠偏计划
+## 已知问题与当前阻塞
 
-| ID | 当前口径 | 下一步 |
+| ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| ISSUE-CAP-001 | host 模型缺少完整 Capability 派生/位置溯源；非当前内核缺陷。见[差距分析](docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md)。 | 模型独立切片按不可伪造、权限单调和位置唯一验证。 |
-| ISSUE-COW-001/002 | [SPEC-015](docs/superpowers/specs/2026-08-14-cow-refinement-design.md) 的 COW 边界澄清；用户态显式换映射及并发协调责任，非阻断缺陷。 | 若扩大 COW 语义，再做真实路径验证。 |
-| ISSUE-AUTH-001 | §14 image/vspace 细化分叉已由 [SPEC-146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md) 接受，不阻断 S1-X2；不能据此宣称 §14 映射已完整细化。 | 新用户程序段权限和 W^X 在阶段 5 单独验证。 |
-| BLK-003 | 阶段 5 候选基座库对内核 ABI 的假设未评审，且号段/命名与 `prima-abi` 不一致。 | 原生版本握手已按追加号 `37` 落地；POSIX profile、C 入口栈、退出状态及错误映射仍按[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)逐项裁决，阻塞项保持 Open。 |
-| BLK-004（已关闭） | 全量服务后 C ELF Task 16 创建、执行、自毁、栈回收、复建 `ENOSPC` 和四类容量水位获 QEMU 双轮见证，见[C ELF 报告](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。 | POSIX 启动/退出状态及 `write` 仍属片 C，不由此门槛代签。 |
-| ISSUE-FORK-CONTINUATION-001 | `syscall(57)`（musl/适配层包装）的 fork 子进程 `fork` 返回值损坏，子进程走父路径；内联 asm 直发 SYS_FORK=51 正常（W6 已通过）。 | W6 使用原生 51；后续复现并修复适配层/musl 返回路径（可能需 naked 助手或在 57 分支显式处理子进程返回）。 |
-| ISSUE-FORK-COW-001 | fork 需要独立地址空间；共享 root 会让父子共用用户栈（实测子线程循环），全量深拷贝又在页表帧池耗尽处失败（C 进程可写映射约 1.8 MB `.bss`）。 | 实现真 COW：父子共享帧、写保护 + general user COW 故障处理、按需帧（段池归属），新 root 帧清零；再接 SYS_FORK/SYS_WAIT4/SYS_PROCESS_EXIT 与 W6。 |
-| ISSUE-FORK-CAPS-001 | `fork` 需要子进程继承父进程的 fd/cap；当前 cap 句柄按能力空间唯一，若共享则父子 close 语义不独立（POSIX 偏差），若复制则需多 holder 句柄/句柄值保持。 | M17 设计采用“fork 子沿用父 cap 空间”的工作决定并登记 close 偏差；实现 fork/wait 探针后评估是否升级为 per-Process cap 空间或多 holder 句柄。 |
-| ISSUE-PTHREAD-CLONE-001（已关闭） | clone.s 裸 syscall 56 曾绕过适配层，`pthread_create` EAGAIN。 | 已打 musl clone.s 补丁（56→48、60→49）+ 内核 parent_tid 写 + 适配层 PROT_NONE mmap；create 已成功。musl 内部标记显示 `__pthread_exit` 确实执行（state=2、store DT_EXITED、wake）且早于父线程 create 返回，但 join 仍阻塞，怀疑 detach_state 地址/映射不一致；下一步打印父子 detach_state 地址与 join 读值。 |
-| ISSUE-THREAD-CAPACITY-001（已关闭） | 线程创建曾因 18 槽位占满而 `ENOSPC`；扩容会破坏容量负例见证。 | M15b-2b：`thread_create` 惰性回收 Dead 记录（优先无 cap 指向，否则撤销 cap），`task_create` 保持“满 → ENOSPC”；W2 双轮通过，见证 12/132 不变。 |
-| ISSUE-PTHREAD-CAPS-001（工作决定） | 线程共享地址空间/适配层 fd 表后，内核 Capability 位置空间仍是每 Task；新线程无法使用既有 cap（`holder_of(cap)` 不匹配），M16 pthread/futex 被阻塞。 | 工作决定：同 Process 的线程共享 leader 的 Capability 位置空间（`space_of`），单线程 Task 退化为自身 id；实现见 M15b-2a。该决定仍需 COSIR 组织级确认。 |
-| ISSUE-TTYIN-001（部分关闭） | M14 的串口输入需要“数据到达 → 唤醒读者”。M14a 用“有读者时管理器轮询 COM1、无读者时阻塞 RECV”落地冻结子集；有读者期间的轮询仍是临时偏差，不是 WaitObject。 | M15 的 WaitObject 或内核串口 IRQ 递送落地后替换有读者轮询；在此之前 M14 只按 I1 证据标 `partial`，不宣称通用 console。 |
-| ISSUE-START-ARGS-001 | M12 的独立 C 启动探针与 `ECHO_ARGS` 参数载体组合时，QEMU 在 `user_cow_ready` 之前出现 `SYS_RECV` 无 Ready 任务或用户页故障；去掉参数载体即通过。根因未定位，见[M12 报告](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)。 | 先以 host/单测与固定探针验证 envp/auxv；不得放宽内核调度断言。定位后再恢复任意 argv 端到端轮次。 |
+| BLK-003 | 仍 Open：候选基座库的 ABI/profile 假设未全部裁决；工作实现不等于组织级采纳 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M21；保留号段/命名/错误映射与阶段归属待决项 |
+| S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 未编写；Rust target/core-std 未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |
+| ISSUE-FORK-CONTINUATION-001 | Linux 风格 `syscall(57)` 包装的 fork 子返回值损坏；W6 用原生 51 绕过 | [M17b-4](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)；修复包装续执行并补对应探针 |
+| fork 子任务 VFS 授权 | 子任务内直接 execve(path) 受按任务授权限制；W7b 使用父任务预读镜像 | [M17c-4](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md)；不能据此宣称完整 execve |
+| ISSUE-FORK-CAPS-001 | fork 父子共享能力空间，子 close 服务句柄影响父，存在 POSIX close 隔离偏差 | [M17设计](docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md)；需评估 per-Process 空间/多 holder 方案 |
+| ISSUE-PTHREAD-CAPS-001（工作决定） | 同 Process 线程共享 leader 能力空间，组织级语义确认仍待完成 | [M15设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)、[M15b-2a](docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md) |
+| 信号/线程未覆盖项 | 无掩码、siginfo、EINTR、SA_RESTART、SIGCHLD 自动通知；pthread 取消/分离/属性未验证 | [M18b](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)、[M16b-3](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)、M21 |
+| ISSUE-TTYIN-001（部分关闭） | 输入子集已通过；有读者时仍轮询 COM1，尚未由 WaitObject/IRQ 替换 | [M14](docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md)；WaitObject 存在不自动关闭此偏差 |
+| ISSUE-START-ARGS-001 | M12 独立参数载体组合的启动回归未定位；固定探针证据不能代替任意 argv 闭环 | [M12](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)；保留调度断言，单独复现 |
+| ISSUE-CAP-001 | host 模型仍缺完整位置/溯源；不能当成当前内核缺陷 | [模型缺口](docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md)、[Lean映照契约](lean/README.md)；parent/CDT 后续补强不消除 HeldBy 边界 |
+| ISSUE-AUTH-001 | SPEC-146 接受的 image/vspace 细化分叉，不阻断 S1-X2 | 保留与§14完整细化的区别；新装载路径另按阶段5报告取证 |
+| ISSUE-COW-001/002 | 抽象 COW 的映射/并发责任澄清，不是自动阻断项 | [SPEC-015](docs/superpowers/specs/2026-08-14-cow-refinement-design.md)；扩大语义时再验证 |
 
-其余已关闭问题的发现、修复与复核记录见相应报告和压缩前版本。`ISSUE-IPC-001` 已由阶段 2 整改关闭。
+### 已收口问题的后继入口
 
-## 当前阻塞项
-
-阶段 5 的 BLK-004 容量门槛已关闭；BLK-003 ABI 裁决仍是后续 libc/profile 工作的前置。BLK-001 已关闭；BLK-002 已形成细化草案，不能外推为机器证明。M12 的参数载体组合另登记 ISSUE-START-ARGS-001。
+- BLK-001 已关闭；Lean 证明范围见 lean/README。BLK-002 仅形成细化设计，不能外推为机器证明。
+- BLK-004 容量门槛已关闭：[C ELF 见证](docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md)。
+- ISSUE-IPC-001 已由[阶段2整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)关闭。
+- ISSUE-THREAD-CAPACITY-001 已由[M15b-2b](docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)关闭；保留 task_create 满容量负例。
+- ISSUE-PTHREAD-CLONE-001 的 clone/join 阻塞由[M16b-3](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)后继收口；M16b-1/2 的失败是历史记录。
+- ISSUE-FORK-COW-001 的 COW 机制路径已由[M17b-4](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)取得 W6 见证；包装续执行与能力隔离问题继续单独跟踪，不将它们一并关闭。
 
 ## 决策日志
 
-- **2026-10-23：**M21 出口评审完成（未签署）：全量 114 条 PASS、`cargo xtask compat` PASS；S5-D1（组织级确认）与 S5-D6（Rust target/core-std）未满足、profile v2 未编写、S5-X3 待组织级复核，另有 `ISSUE-FORK-CONTINUATION-001`、fork 子任务授权、信号掩码等限制；阶段 6 入口（D10）不启动。见[M21 报告](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)。
-- **2026-10-22：**M11 之后的阶段 5 余项与阶段 6 入口采用[收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)（M12–M21、S6-A–E）；BLK-003 仍 Open，路线图不预设 42+ 的具体号或状态升级。M13a 按 D8 的建议作工作决定：符号链接/`rename`/`fchdir` 落地，硬链接/权限/持久化不做；D8 仍未组织级关闭。M19 按 D5 的建议作工作决定：阶段 5 只做用户态 loopback IPv4/UDP，NIC/DNS/TCP 留阶段 7；D5 仍未组织级关闭。M15 按 D2/D3 的建议作工作决定：42 起追加 Prima 命名 syscall，先在 COSIR/设计层确立 Process/Thread/ShareGroup 语义，再以 WaitObject（42–46）和多线程 Process 分片实现；D2/D3 仍未组织级关闭，设计见 [M15 设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)。
-- **2026-10-18：**阶段 5 先冻结 profile 和上游 ABI 归属，再扩展 libc；采用[修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)。
-- **2026-10-17：**阶段 0–4 按 SPEC-145–149 的各自证据范围签署；阶段 0 仅为规范文本复核。
-- **历史决策：**实现细节、取舍和曾被推翻的结论保留在逐切片报告及压缩前版本，不作为当前状态的替代来源。
+| 日期 | 决定与当前影响 | 来源 |
+|---|---|---|
+| 2026-10-23 | M21 技术出口评审未签署；阶段6 D10 不启动 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) |
+| 2026-10-22/23 | M12–M21 与 S6-A–E 按路线图推进；D2/D3/D5/D8 等工作决定不等于组织级关闭；号段从既有接口追加、Prima 命名 | [路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M15/M17/M19设计 |
+| 2026-10-18 | 阶段5先冻结 profile 与 ABI 归属，再扩展 libc；DOC-002 仍属候选、非已评审权威约束 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md) |
+| 2026-10-17 | 阶段0–4按 SPEC-145–149 各自范围签署，阶段0限文本 | 各退出复核报告 |
+| 2026-10-23 文档整理 | 移除重复的过程堆叠，按后继证据修正陈旧摘要；不改退出勾选、不新增技术结论 | [文档整理报告](docs/superpowers/reports/2026-10-23-documentation-restructure-report.md) |
 
 ## 阶段 0 — 语义基线
 
-**状态：已完成（2026-10-17，SPEC-145 文本层面）**
+**状态：已满足退出条件（2026-10-17，SPEC-145；规范文本范围）**
 
 ### 交付检查
 
 | ID | 交付物 | 状态 | 证据 |
 |---|---|---|---|
-| S0-D1 | 一致的对象能力状态模型 | [x] 已定义，未证明 | SPEC-001 |
-| S0-D2 | 操作、错误、全局不变量和非目标 | [x] 已定义，未证明 | SPEC-001 |
-| S0-D3 | 关键研究假设与反例标准 | [x] 已定义 | DOC-001 |
-| S0-D4 | x86_64 机器状态到 POSIR 状态的细化草案 | [x] 已定义，未证明 | SPEC-013 |
+| S0-D1 | 一致的对象能力状态模型 | [x] 已定义 | [原语规范](COSIR%20原语规范.md) |
+| S0-D2 | 操作、错误、全局不变量和非目标 | [x] 已定义 | 规范及 SPEC-145 文本复核 |
+| S0-D3 | 研究假设与反例标准 | [x] 已定义 | [白皮书](Prima%20OS.md)§3/§14 |
+| S0-D4 | x86_64 状态到 POSIR 的细化草案 | [x] 设计，未完成内核细化证明 | 规范§20与[细化设计](docs/superpowers/specs/2026-08-07-blk002-refinement-design.md) |
 
 ### 退出条件
 
-| ID | 条件 | 满足 | 证据 |
+| ID | 条件 | 满足 | 证据与限制 |
 |---|---|---|---|
-| S0-X1 | 规范没有已知且未记录的对象生命周期空洞 | [x] | **SPEC-142 第三方组织级复核（2026-10-17）未通过 → SPEC-143 逐项整改 29 项 → SPEC-144 残修 3 项 → **SPEC-145 冻结基线复核（`16ff1fc`）通过（文本层面）**（跨节点 target/终态/Node 身份/出站代理/代理根 rights、Faulted 恢复出口、W6 保留帧、GPU 帧池、加速器 CPU Segment 销毁、task_create kind 出口、W1 外来 ID、creator/Timer 等）** → SPEC-055 登记 9 项 → SPEC-056 修订（SPEC-057 复核推翻，注销其“全部 Fixed”）→ **SPEC-058 统一处置全部 19 项 Open** → **SPEC-059 多轮 harness 内独立复核** → **SPEC-137（2026-10-17）范畴外复核新发现的 5 项未登记问题（DEV-008/WAIT-001/LIFE-008/S0X2-001/AUDIT-001）已登记并修订** → **SPEC-139（2026-10-17）组织级阶段 0 审查又发现 4 项未登记问题（CAP-003/LIFE-009/EXC-013/TASK-004）并已修订** → **SPEC-140（2026-10-17）对抗式复核再发现 12 项未登记问题（W16.1/DMA、非 CPU 运行期、跨节点、订阅撤销、创建初始化、S0-X2 错误出口、设备权限类型、GPU Segment 销毁、审计事件、文档口径）并已修订** → **SPEC-141（2026-10-17）第二轮组织级复核又发现 11 项未登记问题（`task_create` 代码 Segment 存活性、`schedule` SMP、Node/RemoteProxy 状态、`attach_remote_task` 前置、跨节点非 CPU 目标、W15 订阅授权、W16.1 `frame_paddr`、`dev_irq_mask/unmask` 分类、`memseg_map`/`MountTargetDead`/Bootstrap 错误语义）并已修订**。字面条件为“已知空洞均已记录且关闭”，但**组织级独立性门槛未跨过**（本轮审查与整改仍为 harness 内会话），故不勾选，待下一轮范畴外复核 |
-| S0-X2 | 每项操作具有明确成功与失败语义 | [x] | **SPEC-142 逐项复核（2026-10-17）未通过 → SPEC-143/144 整改 → SPEC-145 冻结基线复核通过（文本层面）**：`task_create(kind=RemoteProxy)`、10 项 Capability 前置/错误清单、`AlreadyBooted`/`RightsExceeded`/`OutOfBounds`、`gpu_memseg_create` 可达性均已修；§19 现行 **47 项**（新增 `node_attach`） → SPEC-054：旧口径 26 项；[SPEC-134](docs/superpowers/reports/2026-10-17-s0x2-coverage-increment-doc007.md)：DOC-007 新增 8 项；SPEC-137 补入 `gpu_memseg_create` 后旧口径 35 项。**SPEC-139 更正：以 §19 为权威清单，现行常规操作面为 46 项（不含 Bootstrap），旧 26/34/35 口径作废**；并修复 `wait_objects` 长度错误、`ns_resolve` 错误清单缺口、显式清单标准错误包含与 MMIO 零长度/溢出。**SPEC-140：修复本轮发现的错误出口缺口（`memseg_map` 空访问/缺权、`dev_dma_create` 零页、`ns_resolve` 缺权、`dev_mmio_unmap` 幻影错误）并补齐错误定义。** **SPEC-141：`task_create` 代码 Segment 存活性、`memseg_map` `InvalidAccess` 范围、`MountTargetDead` 定义、Bootstrap 失败语义、`dev_irq_mask/unmask` 细化层分类已修；46 项计数与分类见规范 §19/§15.7。SPEC-143：29 项已逐项整改；SPEC-144 残修 `node_attach` 3 项；新增 `node_attach` 后 §19 为 **47 项**，计数与分类见规范 §19/§15.7。** 文本缺口已修，但尚未完成逐项复核，故暂不勾选；均属规范文本证据，不代表实现或证明 |
-| S0-X3 | 形式化工具能够表达并执行状态与迁移 | [x] | SPEC-019 |
+| S0-X1 | 无已知且未记录的生命周期空洞 | [x] | SPEC-142 未通过 → [SPEC-143](docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)/[144](docs/superpowers/reports/2026-10-17-stage0-re-review-spec144.md)整改 → [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)文本签署；旧“暂不勾选”是前序状态 |
+| S0-X2 | 每项操作有明确成功与失败语义 | [x] | SPEC-145 对规范§19清单的文本复核；不等于所有原语已实现或证明 |
+| S0-X3 | 形式化工具能够表达并执行状态与迁移 | [x] | [Lean设计](docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md)、[映照契约](lean/README.md)；只覆盖明确子集 |
 
-
-阶段 0 由 SPEC-142 复核、SPEC-143/144 整改与 SPEC-145 冻结复核签署；文本结论不覆盖实现或形式化证明。
+前序未通过、整改与 CDT 证明链见[语义主题](docs/architecture/topics/semantics.md)，不将签署外推为完整机器细化。
 
 ## 阶段 1 — 启动与最小平台层
 
-**状态：已完成（2026-10-17，SPEC-146）**
+**状态：已满足退出条件（2026-10-17，SPEC-146）**
 
 ### 交付检查
 
@@ -111,7 +128,7 @@
 
 ## 阶段 2 — Capability、Segment、Task 与 IPC
 
-**状态：已完成（2026-10-17，SPEC-147）**
+**状态：已满足退出条件（2026-10-17，SPEC-147）**
 
 
 阶段 2 的实现过程及历史缺口见 SPEC-062–075 报告；签署依据为 [SPEC-147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)。带 Capability 的阻塞直投已按[签署后整改](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)复验。
@@ -133,7 +150,7 @@
 
 ## 阶段 3 — Namespace、Timer 与 Audit
 
-**状态：已完成（2026-10-17，SPEC-148）**
+**状态：已满足退出条件（2026-10-17，SPEC-148）**
 
 **2026-10-18 实现复核整改**：[阶段 3 复核报告](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)修复 4 项：Mount 图 DFS 栈按边数覆盖，`ns_destroy` 补齐逐条 `NsUnbound`/`NsUnmounted`，对象生命周期 Audit 按准确类型关联，派生链查询上界改为追加式历史容量。新增反例 host 测试；workspace tests、lint、BIOS QEMU 双跑通过。现行 `namespace_ready.unbinds=2`、`state_audit_ready.used=606`；SPEC-148 与 SPEC-151 报告中的旧数值保留为其当时基线。阶段 3 交付/退出条件维持已完成，其证据范围仍为 host/QEMU 有界见证。
 
@@ -154,7 +171,7 @@
 
 ## 阶段 4 — Prima 原生运行时与服务
 
-**状态：已完成（2026-10-17，SPEC-149）** S4-D1 Runtime API/版本协商（SPEC-084/085），S4-D2 ring3 服务管理器（SPEC-103–105、109），S4-D3 三个有状态基础服务（SPEC-106、110–112），S4-D4 用户态驱动/受控 I/O（SPEC-113/114），S4-D5 及 X1–X4 的收口证据见 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)。
+**状态：已满足退出条件（2026-10-17，SPEC-149）** S4-D1 Runtime API/版本协商（SPEC-084/085），S4-D2 ring3 服务管理器（SPEC-103–105、109），S4-D3 三个有状态基础服务（SPEC-106、110–112），S4-D4 用户态驱动/受控 I/O（SPEC-113/114），S4-D5 及 X1–X4 的收口证据见 [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)。
 
 
 后续硬化与边界见 [SPEC-149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md) 和[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)。
@@ -177,47 +194,52 @@
 **下游义务登记**：阶段 5 的基座库栈（DOC-002）消费一批内核 ABI 语义，清单与归属见「阶段 5 · 上游前置」表与 BLK-003；这些**不属本阶段交付项**，进入阶段 5 前须逐项评审确认。
 ## 阶段 5 — POSIX 源码兼容
 
-**状态：进行中（BLK-004 C Task 容量门槛已关闭；片 C 的最小 `write(1/2)`+`_exit` 纵向闭环已获 QEMU 见证，见[tty 字节流报告](docs/superpowers/reports/2026-10-18-stage5-c-tty-write.md)；`PT_LOAD` 写段/BSS 私有装载与 W^X 已完成，见[装载报告](docs/superpowers/reports/2026-10-18-stage5-ptload-wx.md)；musl M0 依赖盘点已完成，见[盘点报告](docs/superpowers/reports/2026-10-18-stage5-musl-m0-inventory.md)，发现 P5-LIB-01 符号清单缺口待 profile v1；M2 系统边界已完成，见[M2 报告](docs/superpowers/reports/2026-10-18-stage5-musl-m2-boundary.md)，per-task FS base、C 适配层调用集（含 `exit(60)` 与 `__syscall4..6` 全参数透传）已见证；M3 静态 musl 基座与 M3b 匿名内存已完成，见[M3 报告](docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md)，SSE/FPU 契约、补丁重放、`__libc_start_main` 与 `malloc/free/realloc` 已见证；M4 文件首切片已完成，见[M4 报告](docs/superpowers/reports/2026-10-18-stage5-musl-m4-file.md)，单文件 `f` 的 fd 生命周期、`openat/read/write/lseek/close` 冻结子集、Namespace `f` 授权与 `printf`+`fflush` 输出已获 Linux/Prima 同源差分与双轮 QEMU 见证；M3b 的匿名 `mmap` 是用户态 arena 的 partial 适配（M9 起 96 页）；M4 的单文件后端已由 M8 推进为用户态 VFS/rootfs，但仍非通用文件系统；M5 首切片已完成，见[M5 sbase echo 报告](docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md)，sbase `echo` E1–E6 在 Prima 双轮通过且与 Linux 参考逐字节一致，S5-X3 证据已具备、待组织级复核；M6 时间首切片已完成，见[M6 报告](docs/superpowers/reports/2026-10-19-stage5-m6-time.md)，`CLOCK_MONOTONIC` 与轮询睡眠在 Linux/Prima 双轮逐字节一致，`P5-TIME-01` 为 partial；M7 fd 表切片已完成，见[M7 报告](docs/superpowers/reports/2026-10-19-stage5-m7-fd-table.md)，本地 fd 3..10、`dup`/`dup2`/`dup3` 共享 offset 与 `getpid` 双轮 QEMU 通过，`P5-FD-01`/`P5-PROC-02` 仍为 partial；M8 用户态 VFS/rootfs 切片已完成，见[M8 报告](docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)与[M8 设计](docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md)，静态 rootfs、多级路径、目录枚举、通用 fd 0..18 与 `getdents64` 已获 Linux/Prima 同源差分与 V1 双轮 QEMU 见证，`P5-FS-01`/`P5-FS-02`/`P5-FS-03`/`P5-FD-01` 仍为 partial，profile v1 delta 待评审）；M9 元数据/工作目录切片已完成，见[M9 报告](docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)，`statx`/`chdir`/`getcwd` 与 sbase `cat`/`ls` 已获 Linux/Prima 同源差分与双轮 QEMU 见证，`P5-FS-04`/`P5-FS-05` 为 partial；M10 匿名内存/保护切片已完成，见[M10 报告](docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md)与[M10 设计](docs/superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md)，内核 `memseg_protect`（号 41）与 C 侧 `mmap/munmap/mprotect` 已获 host 单测、A1 同源差分与双轮 QEMU 见证，`P5-MM-01` 为 partial；M11 文件树变更切片已完成，见[M11 报告](docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md)与[M11 设计](docs/superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md)，`mkdir`/`rmdir`/`unlink`（含 `*at`）与删除槽位复用已获 host 单测、D1 同源差分与双轮 QEMU 见证，`P5-FS-06` 为 partial；[阶段 1–4 实现复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md)与[阶段 5 修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)已登记；BLK-003 仍 Open；ISSUE-IPC-001 已由阶段 2 签署后整改关闭。DOC-002 是外部候选、未经内核侧评审、非权威约束。**
+**状态：进行中，M21 未签署。** [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)汇总当前子集，[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)逐项判定出口；本节不复制完整兼容矩阵。
 
-**后续执行（2026-10-22）**：M11 之后的阶段 5 余项按[收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)的 M12–M21 执行；阶段 6 入口为 S6-A–S6-E。该路线图是计划，不改变本页勾选状态；BLK-003 仍 Open。M12a 已落地参数块/auxv 与固定探针 envp 证据，M12b 已落地退出自动关闭、存储句柄计数、`getppid` 与 `O_CLOEXEC` 记录（F1）；独立参数载体的启动回归登记为 ISSUE-START-ARGS-001。M13a 已落地符号链接/`readlink`、`rename`/`renameat`、`fchdir` 与内容区压实（V2 双轮与同源差分，见[M13a 报告](docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md)）；M13b 已落地节点 mode 位、`chmod`/`fchmod`/`fchmodat`、进程级 `umask`、`readv` 与 stdio 文件 API（V3 双轮与同源差分，见[M13b 报告](docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md)）。M19 已落地用户态 loopback IPv4/UDP 子集（socket/bind/sendto/recvfrom/getsockname/close，N1 双轮与同源差分，见[M19 报告](docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md)）；NIC/TCP/DNS 仍属阶段 7。M14 已落地 fd 0 的 tty 输入、canonical/raw、`Ctrl-D` EOF、termios 子集与 QEMU 串口注入（I1 双轮，见[M14 报告](docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md)）；有读者时的 COM1 轮询待 M15 WaitObject/IRQ 替换。M15 的 Process/Thread/ShareGroup 与 WaitObject 设计已提出（D3 提案，[设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)）。M15a-1 已落地 WaitObject 的 create/observe/signal/destroy 与 `wait_objects` 立即路径（42–46，host 3 用例 + W1 双轮，见[M15a-1 报告](docs/superpowers/reports/2026-10-23-stage5-m15a-waitobject.md)）；M15a-2 已接线 BlockedWait/waiters/signal·destroy·超时唤醒与结果注入（host 12 用例，W1 保留立即路径，阻塞的 QEMU 端到端待 M15b，见[M15a-2 报告](docs/superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md)）。M15b-1 已落地 Process/Thread 元数据（`task_create` 建单线程 Process、销毁摘除、位图线程表示，host 用例，见[M15b-1 报告](docs/superpowers/reports/2026-10-23-stage5-m15b1-process-metadata.md)）；M15b-2a 以“同 Process 共享 leader 能力空间”的工作决定接线 `thread_create`(47)、自毁 cap 与共享 root/独立内核栈（host 用例，见[M15b-2a 报告](docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md)）；M15b-2b 以**线程专用惰性 Dead 槽位回收**（优先无 cap 指向的记录，否则撤销 cap 后复用）关闭 ISSUE-THREAD-CAPACITY-001：W2 双轮通过（主线程 BlockedWait 被共享线程 signal 唤醒、线程自毁、容量见证仍 12/132），见[M15b-2b 报告](docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)。M16a 已落地 futex **WAIT/WAKE** 子集（适配层地址表 + WaitObject，Linux 202 翻译，W3 双轮，见[M16a 报告](docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md)）；M16b-1 已加入内核 `SYS_CLONE(48)`/`SYS_THREAD_EXIT(49)`、clone 帧复制与“线程退出不拆共享 root”修复（见[M16b-1 报告](docs/superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md)）。M16b-2 已给 musl 快照打 `clone.s` 补丁（裸 syscall 56→Prima 48、子线程退出 60→49），内核 `SYS_CLONE` 按 Linux 参数序接收并写 `parent_tid`，适配层 PROT_NONE mmap 改为 RW（见[M16b-2 报告](docs/superpowers/reports/2026-10-23-stage5-m16b2-musl-clone.md)）。rootfs 增加 `/tiny.elf` 测试夹具（530B 静态 ELF，随 VFS 静态节点挂载）；适配层 `execve` 路径的 VFS IPC 在 fork 子进程中会触发 `SYS_RECV` 无 Ready 后继，留待后续排查。M20 兼容矩阵定稿：compat-state §6 与 symbol-trace §5 按 W1–W9/全量 114 条 PASS 汇总各子系统状态与边界（见[M20 报告](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)）。M17c-4 打通 VFS 镜像 exec 通路：父任务读 rootfs `/tiny.elf` → fork → 子任务 SYS_EXEC_REPLACE，W7b QEMU 通过（见[M17c-4 报告](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md)）；适配层子任务内直接 execve 受按任务授权限制。M17c-3 打通 exec_replace：SYS_EXEC_REPLACE(55)（拆旧映射、按 exec::plan 映射新段、argv 初始栈、resume 到入口），W7（内存静态 ELF 自 exec + ENOEXEC 负例）QEMU 双轮通过（见[M17c-3 报告](docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md)）；VFS execve 文件来源未接。M18b 打通信号 handler：SYS_SIGACTION(57)/SYS_SIGRETURN(58)，syscall 返回前递送（保存现场→handler→sigreturn 恢复），W9（sigaction/kill/ran）QEMU 双轮与 Linux 同源参考一致（见[M18b 报告](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)）；无掩码/siginfo/EINTR。M18a 打通最小信号：SYS_SIGNAL(56)=kill 默认终止，W8（kill/默认终止/wait4 信号状态）QEMU 双轮与 Linux 同源参考一致（见[M18a 报告](docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)）；handler/sigaction/sigreturn 未做。M17c-2 已给出 execve 的 syscall 契约设计（SYS_EXEC_REPLACE=55、拆旧映射/映射新段/初始栈/帧恢复，见[设计](docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md)）。M17c-1 落地静态 ELF 解析与初始栈纯逻辑（4 个 host 用例，见[M17c-1 报告](docs/superpowers/reports/2026-10-23-stage5-m17c1-elf-plan.md)）；execve 尚未接线。M17b-4 打通单线程 fork/wait：W6 探针（fork/COW 隔离/退出码/ECHILD）QEMU 双轮与 Linux 同源参考一致（内联 asm 直发 SYS_FORK=51；`syscall(57)` 子进程返回路径仍待修，见[M17b-4 报告](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)）。M17b-3 修正 wait4 生命周期模型：fork 子进程退出后保留僵尸 Process 到 wait4 回收、有等待者时随唤醒回收（host 2 用例，见[M17b-3 报告](docs/superpowers/reports/2026-10-23-stage5-m17b3-zombie-wait.md)）；QEMU W6 仍有父线程提前以 0 恢复/子进程未退出的调度问题。M17b-2b 已接 general user COW（写故障复制 + invlpg + 重试）与 SYS_FORK/SYS_WAIT4/SYS_PROCESS_EXIT：fork 成功、COW 写隔离成立，但 wait4 以 0 提前恢复、子进程退出未被观测（W6 未接入，见[M17b-2b 报告](docs/superpowers/reports/2026-10-23-stage5-m17b2-cow-fork.md)）。M17b-2a 已落地 COW 页表原语（`clone_root_cow`/`resolve_cow`，host 2 用例，见[M17b-2a 报告](docs/superpowers/reports/2026-10-23-stage5-m17b2-cow-primitives.md)）；general user COW 故障分派与 fork syscall 待接。M17b-1 已落地 wait4 状态机模型（`process_exit`/`wait4`、阻塞/唤醒/回收、ECHILD/WNOHANG，host 2 用例，见[M17b-1 报告](docs/superpowers/reports/2026-10-23-stage5-m17b1-wait4-model.md)）；fork/exec 的 syscall 与 COW root 尚未接线。M17 的 fork/execve/wait4 设计已提出（[设计](docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md)，D3 提案，含共享 cap 空间导致 close 语义偏差的登记）。M16b-3 实现 `CLONE_CHILD_CLEARTID` 语义（clone 写 child_tid、退出清零并 futex 唤醒）后，`pthread_create`/`pthread_join` 在 QEMU 与 Linux 参考逐字节一致，共享内存可见性最小探针也通过（W4/W5 双轮，见[M16b-3 报告](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)）；pthread 取消/分离/属性未验证。M13 的冻结 VFS 子集除硬链接与跨启动持久化外收口；硬链接/持久化仍标未实现。
+### 里程碑证据与边界
+
+| 里程碑 | 已取得的技术证据 | 当前限制 / 后继 |
+|---|---|---|
+| M0–M4 | [M0盘点](docs/superpowers/reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2边界](docs/superpowers/reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 musl](docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md)、[M4文件](docs/superpowers/reports/2026-10-18-stage5-musl-m4-file.md) | 首切片不等于完整 libc；固定初始栈/单文件后端由后继扩展 |
+| M5–M7 | [sbase echo](docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md)、[时间](docs/superpowers/reports/2026-10-19-stage5-m6-time.md)、[fd/dup](docs/superpowers/reports/2026-10-19-stage5-m7-fd-table.md) | 冻结用例与 partial 边界；S5-X3 待复核 |
+| M8–M11 | [VFS](docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)、[metadata/cwd](docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)、[匿名内存](docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md)、[树变更](docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md) | 固定容量、匿名 arena 与有限文件语义 |
+| M12–M13 | [启动/退出](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)、[链接/rename](docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md)、[权限/stdio](docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md) | 参数载体回归、无硬链接/持久化；exec CLOEXEC 未收口 |
+| M14 | [TTY 输入 I1](docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md) | canonical/raw/EOF 子集；有读者时轮询 |
+| M15–M16 | [WaitObject](docs/superpowers/reports/2026-10-23-stage5-m15a-waitobject.md)、[阻塞模型](docs/superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md)、[W2](docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)、[futex](docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md)、[pthread W4/W5](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md) | WAIT/WAKE、create/join 最小集；共享能力空间待确认 |
+| M17 | [fork/COW/wait W6](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)、[exec W7](docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md)、[父预读 VFS 镜像 W7b](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md) | 包装续执行、子任务 VFS 授权、fd close 隔离；W7/W7b 无 Linux 参考 |
+| M18 | [默认终止 W8](docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)、[handler/sigreturn W9](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md) | 无掩码/EINTR 等；前序“handler未做”已被后继限定 |
+| M19 | [loopback UDP N1](docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md) | 仅环回 IPv4/UDP，无 NIC/TCP/DNS |
+| M20–M21 | [兼容两表汇总](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[技术出口评审](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | 未完成 Rust target/profile v2/组织级确认，未签署 |
 
 ### 交付检查
 
-- [ ] S5-D1：冻结且版本化的 POSIX profile。**v0 已冻结（2026-10-18），等待组织级确认后勾选。**
-- [ ] S5-D2：libc 适配（候选分解 M01–M12：`abi`+IDL 生成器、`ipc`、桩层双模板、crt/`__libc_start_main`、musl 五个边界替换点、`ld.so`、`fd↔capability`、线程/TLS、信号、`fork`/`execve`/`wait4`、tty/console）。**M12–M20 的余项拆解见[路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)。**
-- [ ] S5-D3：文件描述符、路径、线程和基础网络子集。**M4/M7/M8/M9/M10/M11 已覆盖 fd、多级路径、目录枚举、`stat`/cwd、匿名内存保护与文件树变更子集；线程与网络仍未实现，故不勾选。** 线程/网络/tty 输入/VFS 完成分别见路线图 M15–M19。
-- [ ] S5-D4：逐 API 语义映射矩阵。**M20 汇总，逐里程碑提供差分证据。**
-- [ ] S5-D5：与参考 Linux 的差分测试矩阵。**每个里程碑新增同源探针，M20 汇总。**
-- [ ] S5-D6：Rust 目标与 `core`/`std` 移植（候选规格 §5.10 / 里程碑 M7）。**目标/范围由路线图 M20 与决策门 D6 冻结。**
-- [ ] S5-D7：兼容性护栏——persona 字段、符号版本脚本、`compat-state.md`、符号↔syscall 追溯表、ABI 版本握手（候选 `NT_RUXOS_ABI` 名称待评审）。**M12/M20 承接，仍待裁决。**
+以下保留未签署的勾选状态；“当前子集满足”不自动代签整体交付条件。
 
-### 上游前置（内核侧 ABI 承诺，须先评审确认 —— 见 BLK-003）
-
-下表把候选规格消费的内核语义映射到本仓库现状。**这些不是阶段 4 的交付项**，但进入阶段 5 前必须逐项确认归属；其中号段/命名对齐构成决策，不得静默改写（本仓库号段“只追加、空洞不复用”）。
-
-| 前置 | 候选规格要求 | 本仓库现状 | 归属 |
+| ID | 交付物 | 勾选 | M21 当前判定 |
 |---|---|---|---|
-| 直接 IPC 快路径 | 小消息往返 ≤250 ns 依赖直接 IPC（决策 D-09） | 同步 `call/reply` 快路径及 ≤250 ns 指标未实现；排队和带 Cap 的 `BlockedRecv` 直投已通过有限见证（ISSUE-IPC-001） | 阶段 4/5 |
-| futex / wait_multi 内核化 | 决策 D-02 | 未实现 | 阶段 4/5 |
-| 基础信号 | 规格 §4.5.1 结构 + 号段 `0x03A–0x03D`（`sigaction`/`kill`/`sigreturn`/`abort`） | 抽象层已有 `exc_subscribe`/`exc_unsubscribe`（COSIR §12）与 `exc_resume`；用户可调仅 `SYS_TRAP`/`SYS_EXC_WAIT`（SPEC-052） | 阶段 5 |
-| `fork`/`execve`/`wait4` | 规格 §5.11（V1 仅单线程 fork，多线程返 `EAGAIN`，决策 D-13） | 未实现 | 阶段 5 |
-| tty / console 通路 | 规格 §5.12 | 片 C 已实现 fd 1/2 到 COM1 的 ring3 字节流服务（`prima-tty`）与受控端口自检；无行规程、无通用 fd/console API | 阶段 4/5 |
-| 匿名页池与 `mmap` flag、W^X | 规格 §4.14（W^X，决策 D-18） | 未实现；在册“image 段 `{R,X}` 与可写 `.data`/`.bss` 冲突”仍待链接脚本级段切分 | 阶段 4/5 |
-| 号段 / 命名对齐 | `0x0xx` 号段、`NT_RUXOS_ABI`、`x86_64-ruxos-none` | `prima-abi` 的 `SYS_*` 编号（1–41 已占用：37 为原生 ABI 握手，38–41 为 M2/M6/M10 追加；后续只从 42 起追加） | 余项待决策 |
+| S5-D1 | 冻结且版本化 POSIX profile | [ ] | v0已冻结、待组织级；v1提案；v2未编写 |
+| S5-D2 | libc适配 | [ ] | 部分满足；musl/线程/等待已有证据，信号等仍有缺口 |
+| S5-D3 | fd、路径、线程和基础网络子集 | [ ] | 部分满足；线程与网络已有最小集证据，不能再写“均未实现” |
+| S5-D4 | 逐API语义映射矩阵 | [ ] | 当前子集满足：compat-state §6 / symbol-trace §5 |
+| S5-D5 | Linux差分矩阵 | [ ] | 部分满足；W7/W7b无Linux参考 |
+| S5-D6 | Rust target/core/std | [ ] | 未满足；M20只完成矩阵部分 |
+| S5-D7 | persona、符号版本、台账与ABI护栏 | [ ] | 部分满足；ABI握手/台账已有，persona/符号版本未见 |
 
-**候选里程碑（规格 §19，提案，未纳入本仓库排期）**：M1 ABI 基座 → M2 裸通路 → M3 IPC 通路 → M4 libc 主体 → M5 动态链接 → M6 线程/TLS/基础信号 → M7 Rust 基座 → M8 韧性 → M9 出口；M1/M3/M4 可三线并行、M5/M6 须串行；规格侧估算约 22 周 / 26 人周。
+### 上游 ABI 与候选规格归属
 
-### 候选规格的待确认风险（来自其走查/扫雷记录，随本阶段一并跟踪）
+BLK-003 保持 Open。原生号段以 [prima-abi](prima-abi/src/lib.rs)为定义源；42–58 的实现状态见[台账](docs/superpowers/compat/compat-state.md)和[接口说明](docs/architecture/interfaces.md)，52未分配。候选 DOC-002 的 `0x0xx`、RUXOS 命名与时延目标不自动进入 Prima 契约。
 
-- RED（规格内已回写闭环，落地仍需本仓库评审）：符号↔syscall 追溯表、匿名页池/W^X、ABI 握手、信号结构冻结、`fork`/`exec`、tty 通路、libm 归类。
-- YELLOW（规格待确认）：时延目标按 `(qemu, qemu-cpu, hostcpu)` 三元组记 `PROVISIONAL`、`getrandom` 非阻塞语义、`poll/select` 退化实现标 PARTIAL、`sys_features` 位图、`dtable.cookie`、CI 时长、静态链接的 ABI 校验、错误码有损映射（`RUX_KERR_VERBOSE`）。
-- GREEN（规格明确推迟 V2）：`dlmopen`、`DT_RELR`/IFUNC、静态 PIE、locale/宽字符、aarch64/riscv、多 itss 热备、LTP/PISA、形式化验证。
+WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自的后继技术证据，不能继续以候选阶段的“未实现”表代替当前状态。直接 IPC ≤250ns、动态链接归属、Rust 范围、persona/符号版本及未收口语义仍按[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)与 M21 裁决；同步 call/reply 快路径和性能指标不因队列 IPC 通过而完成。
+
+候选规格与风险走查保留在[基座库规格](docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md)和[走查记录](docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)。这些是设计输入，不是本仓库已接受的排期或ABI承诺。
 
 ### 退出条件
 
-- [ ] S5-X1：profile 内每项 API 都有语义映射和可重复测试。
-- [ ] S5-X2：每项 API 明确标记 supported / partial / unsupported。
-- [ ] S5-X3：选定开源程序可重新编译并通过冻结的功能测试集。**证据已具备（2026-10-19）：sbase `echo` E1–E6 双轮 QEMU PASS，见[M5 报告](docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md)；待组织级复核后勾选。**
+| ID | 条件 | 勾选 | 当前依据 |
+|---|---|---|---|
+| S5-X1 | profile每项API均有映射与可重复测试 | [ ] | 部分满足；未实现项与profile缺口见M21 |
+| S5-X2 | 每项API标记supported/partial/unsupported | [ ] | M21判定当前子集满足；整体签署待收口 |
+| S5-X3 | 选定开源程序通过冻结测试集 | [ ] | echo E1–E6、cat C1、ls L1–L3已有双轮/参考证据，待组织级复核 |
 
 ## 阶段 6 — Linux x86_64 静态 ELF
 

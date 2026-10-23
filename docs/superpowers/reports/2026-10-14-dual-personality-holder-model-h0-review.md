@@ -4,9 +4,9 @@
 >
 > 日期：2026-10-14
 >
-> 评审对象：[[docs/superpowers/specs/2026-10-14-dual-personality-holder-model-design|双人格 Holder 模型设计草案]]
+> 评审对象：[双人格 Holder 模型设计草案](../specs/2026-10-14-dual-personality-holder-model-design.md)
 >
-> 输入：[[COSIR 原语规范]] §5.2/§8.1/§16/§17/§21/§22、[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|双人格扩展候选采纳审核]]、[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis|双人格底座差距分析]]
+> 输入：[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §5.2/§8.1/§16/§17/§21/§22、[双人格扩展候选采纳审核](2026-10-14-cosir-dual-personality-adoption-review.md)、[双人格底座差距分析](2026-10-14-cosir-dual-personality-gap-analysis.md)
 >
 > 结论：**条件通过**。目标架构方向成立；在进入 H1 规范细化前，必须先完成下方“通过条件”中的 6 项设计修订。
 
@@ -209,4 +209,4 @@ H1 必须给出：
 - 推荐目标架构（`Task`/`Thread` + `ShareGroup` + `AddressSpace` + `CapTable`）成立；
 - H0-1～H0-10 决策可以作为 H1 设计输入；
 - H1 启动前必须先完成 C1–C6，否则规范修订会在 W3/W4/W5 生命周期处失稳；
-- 本评审不修改 [[COSIR 原语规范]] 冻结语义，不产生实现或形式化证据。
+- 本评审不修改 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 冻结语义，不产生实现或形式化证据。

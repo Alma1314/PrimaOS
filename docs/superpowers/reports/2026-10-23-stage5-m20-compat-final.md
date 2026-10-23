@@ -1,8 +1,8 @@
 # 阶段 5 / M20：兼容矩阵定稿
 
 **日期**：2026-10-23
-**范围**：按已验收证据定稿 [compat-state](../../compat/compat-state.md) §6 与
-[symbol-trace](../../compat/symbol-trace.md) §5。本文只汇总，不新增实现。
+**范围**：按已验收证据定稿 [compat-state](../compat/compat-state.md) §6 与
+[symbol-trace](../compat/symbol-trace.md) §5。本文只汇总，不新增实现。
 **结论**：M12–M18 的进程/线程/信号/exec 子系统均有 QEMU 双轮（部分含 Linux
 同源）证据；剩余项集中在信号掩码、pthread 取消/分离、TTY 轮询、fork 子任务
 VFS 授权与 `syscall(57)` 续执行。

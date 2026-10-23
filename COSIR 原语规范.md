@@ -1,3 +1,10 @@
+---
+id: posir-abstract-semantics
+kind: specification
+authority: abstract-semantics
+status: maintained
+updated: 2026-10-23
+---
 
 # COSIR 原语规范：平台无关抽象语义
 
@@ -308,7 +315,7 @@ Capability 移动不是用户可直接调用的操作，因此没有独立的成
 
 如果未来加入选择性撤销，必须单独定义撤销域、并发语义、在途消息处理和派生树一致性，不能把它隐含在 `cap_drop` 中。
 
-> **撤销域（2026-08）：** 探索阶段已在 Bootstrap 宿主实现中先行落地选择性撤销（子树传播，见实施证据 SPEC-022/023），其撤销域定义见 [[Prima OS]] §6.2 实现注记；本节保持第一版不提供 `cap_revoke` 的基线，不将撤销隐含进 `cap_drop` 或新增一等原语。在途（`InMessage`/`InNamespace`/`InTransit`）位置仍不纳入撤销域，留待后续阶段。
+> **撤销域（2026-08）：** 探索阶段已在 Bootstrap 宿主实现中先行落地选择性撤销（子树传播，见实施证据 SPEC-022/023），其撤销域定义见 [Prima OS](Prima%20OS.md) §6.2 实现注记；本节保持第一版不提供 `cap_revoke` 的基线，不将撤销隐含进 `cap_drop` 或新增一等原语。在途（`InMessage`/`InNamespace`/`InTransit`）位置仍不纳入撤销域，留待后续阶段。
 
 ## 5. 内核状态
 
@@ -2382,7 +2389,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 ### 18.1 跨架构可移植性
 
-POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或类似架构）列为候选适用范围：可寻址线性内存、特权级分离、地址转换硬件、有穷指令集、外部中断/异常、单调时钟、I/O 隔离边界（详见 [[Prima OS]] §17.1）。x86_64、ARMv8-A (AArch64) 和 RISC-V (RV64GC+M+S+U) 是待分别实例化和验证的候选架构；当前证据不能证明跨架构完全适用。
+POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或类似架构）列为候选适用范围：可寻址线性内存、特权级分离、地址转换硬件、有穷指令集、外部中断/异常、单调时钟、I/O 隔离边界（详见 [Prima OS](Prima%20OS.md) §17.1）。x86_64、ARMv8-A (AArch64) 和 RISC-V (RV64GC+M+S+U) 是待分别实例化和验证的候选架构；当前证据不能证明跨架构完全适用。
 
 原语在跨架构可移植性上分为两类：
 
@@ -2452,7 +2459,7 @@ POSIR 抽象规范把满足以下 7 个条件的架构（von Neumann 架构或�
 
 ## 20. 细化层：MachineState 与抽象函数
 
-本章属于 COSIR 细化层，不新增对 POSIR 可见的一等原语。它把 x86_64 机制层与 POSIR 抽象层的对应关系显式化（见 [[Prima OS]] §13.2），为阶段 1 真实内核实现（物理内存、页表/GDT/IDT/trap）提供细化蓝本。当前包含 **Bootstrap 投影**和 **MemorySegment host 四级索引树**两项设计；二者的证据等级均为 `REFINEMENT-DESIGN`，Rust 可执行状态模型的测试仅为 `MODEL-TEST`，不构成真实 CR3/PTE 实现的细化证明。task_create 入口细化和异常/trap 递送仍只登记接口，留待后续细化切片展开。
+本章属于 COSIR 细化层，不新增对 POSIR 可见的一等原语。它把 x86_64 机制层与 POSIR 抽象层的对应关系显式化（见 [Prima OS](Prima%20OS.md) §13.2），为阶段 1 真实内核实现（物理内存、页表/GDT/IDT/trap）提供细化蓝本。当前包含 **Bootstrap 投影**和 **MemorySegment host 四级索引树**两项设计；二者的证据等级均为 `REFINEMENT-DESIGN`，Rust 可执行状态模型的测试仅为 `MODEL-TEST`，不构成真实 CR3/PTE 实现的细化证明。task_create 入口细化和异常/trap 递送仍只登记接口，留待后续细化切片展开。
 
 ### 20.1 MachineState
 
@@ -2723,7 +2730,7 @@ task_upcall_recv() -> List<Upcall>
 
 ## 22. 双人格兼容缺口与采纳状态（信息性附录）
 
-> 本章是信息性记录，不属于第 1–21 章的冻结抽象状态机。2026-10-14 的采纳审核已将通用 `WaitObject`、定向 upcall / alertable wait 与 `memseg_protect` 写入冻结语义；本章只记录仍未采纳的缺口、结论与后续设计输入。详细审核见 [[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|COSIR/POSIR 双人格扩展候选采纳审核]]。
+> 本章是信息性记录，不属于第 1–21 章的冻结抽象状态机。2026-10-14 的采纳审核已将通用 `WaitObject`、定向 upcall / alertable wait 与 `memseg_protect` 写入冻结语义；本章只记录仍未采纳的缺口、结论与后续设计输入。详细审核见 [COSIR/POSIR 双人格扩展候选采纳审核](docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)。
 
 ### 22.1 已采纳项
 

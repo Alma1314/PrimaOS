@@ -1,32 +1,50 @@
 # Prima OS
 
-Prima OS 是一个研究型操作系统项目，探索如何用小型、对象能力化的内核机制支撑可替换的用户态 OS personality。项目当前包含抽象语义、可执行模型、Lean 模型和面向 QEMU x86_64 的 Rust 原型；这些工件的证据等级不同，不能相互替代。
+PrimaOS 是研究型操作系统项目，探索以小型对象能力内核支撑可替换的用户态 OS personality。仓库包含 POSIR 抽象规范、cosir 可执行模型、Lean 工件、Rust x86_64 内核、原生运行时与 C/musl 适配原型。模型、测试、QEMU 执行和证明各有不同范围。
 
-- 本项目在版本1.0.0之前不承诺向后兼容。
+版本 1.0.0 之前不承诺向后兼容；`prima-abi` 仍是实验性机器接口。
 
-## 从这里开始
+## 从任务开始
 
-- [架构与研究白皮书](Prima%20OS.md)：研究问题、分层架构、可证伪假设与阶段目标。
-- [COSIR 原语规范](COSIR%20原语规范.md)：平台无关抽象状态机及操作语义。文件名保留历史用法，本文的术语边界见规范开头。
-- [实现阶段与证据跟踪](Prima%20OS%20实现阶段.md)：当前状态、退出条件、测试证据和已知问题；判断进度时以此处记录的最新证据为准。
-- [文档索引](docs/README.md)：按计划、设计和报告查找切片文档。
-- [Lean 模型说明](lean/README.md)：BLK-001 模型范围、Rust 对拍方式和未覆盖事项。
-
-## 项目结构
-
-| 路径 | 用途 |
+| 目的 | 入口 |
 |---|---|
-| `cosir/` | 平台无关状态机与可执行模型 |
-| `kernel/` | Rust 内核机制与 x86_64 原型 |
-| `prima-ostd/` | 特权框架层及其受控硬件接口 |
-| `prima-abi/` | 内核与运行时共用的实验性 syscall 编号；不作为稳定 ABI |
-| `prima-runtime/` | 原生用户态运行时 API 原型 |
-| `xtask/` | lint、QEMU 验收、兼容性检查和 TCB 度量工具 |
-| `lean/` | Lean 形式化模型 |
-| `docs/superpowers/` | 分阶段计划、设计和实现报告 |
+| 了解与使用文档 | [文档中心](docs/README.md) · [首次阅读路线](docs/architecture/getting-started.md) |
+| AI 接手、检索和交接 | [AI 检索协议](docs/architecture/ai-retrieval.md) · [llms.txt](llms.txt) |
+| 查看当前阶段、阻塞和证据 | [实现阶段跟踪](Prima%20OS%20实现阶段.md) |
+| 查设计与实现 | [子系统主题地图](docs/architecture/topics/README.md) · [系统与源码地图](docs/architecture/system-map.md) |
+| 查权威契约 | [架构白皮书](Prima%20OS.md) · [COSIR 原语规范](COSIR%20原语规范.md) |
+| 构建与验证 | [开发手册](docs/architecture/development.md) · [文档维护](docs/architecture/documentation-maintenance.md) |
+| 全库检索 | [全量目录](docs/architecture/catalog.md) · [catalog.json](docs/catalog.json) |
 
-## 阅读与证据约定
+## 仓库结构
 
-设计文档说明预期方案，计划文档记录实施步骤，报告记录实际结果。只有阶段跟踪中登记并链接到工件的证据，才用于判断退出条件；抽象模型、宿主测试、QEMU 执行和兼容性测试分别支持不同范围的结论。不要将某一层的通过结果外推为完整硬件验证、安全证明或兼容性结论。
+| 路径 | 职责 |
+|---|---|
+| `cosir/` | 平台无关状态机、机器投影与细化设计实验 |
+| `kernel/` | 对象能力与 x86_64 机制编排，源码零 unsafe |
+| `prima-ostd/` | 特权硬件框架与必要 unsafe 的受控边界 |
+| `prima-abi/` | 实验性原生 syscall、boot/trace 共享布局 |
+| `prima-runtime/` | 原生用户态 API、传输抽象、服务协议 |
+| `prima-user/` | ring3 服务/应用/驱动、C 适配层与 musl 补丁 |
+| `prima-initgen/` | init 可执行启动输入生成 |
+| `xtask/` | 镜像构建、QEMU 验收、差分与门禁 |
+| `lean/` | [Lean 模型与映照契约](lean/README.md) |
+| `docs/`、`scripts/docs.py` | 文档、主题路由、离线索引与校验 |
 
-涉及语义变更时，先更新 [COSIR 原语规范](COSIR%20原语规范.md)，再同步架构说明和阶段跟踪；实现或验证进度变更则更新 [阶段跟踪](Prima%20OS%20实现阶段.md)。
+## 常用命令
+
+使用仓库锁定的 nightly 工具链，从根目录执行：
+
+```sh
+cargo test --workspace
+cargo xtask lint
+cargo xtask build
+cargo xtask test
+python3 scripts/docs.py topic process
+python3 scripts/docs.py search 'fork' --limit 5
+python3 scripts/docs.py check
+```
+
+镜像构建需要额外 C/musl 输入，QEMU 验收需要宿主工具；完整前置与失败定位见[开发手册](docs/architecture/development.md)。
+
+设计说明预期，计划记录步骤，报告保存实际结果。当前退出状态只查阶段跟踪；不能将局部 PASS 外推为完整 POSIX/Linux 兼容、真实硬件普遍保证或完整内核细化证明。

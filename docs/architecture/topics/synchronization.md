@@ -1,0 +1,62 @@
+---
+id: topic-synchronization
+kind: topic
+authority: explanatory
+status: maintained
+updated: 2026-10-23
+---
+
+# 等待、唤醒、futex、时间与 TTY
+
+返回[主题地图](README.md) · [AI 检索协议](../ai-retrieval.md) · [当前阶段](../../../Prima%20OS%20实现阶段.md)
+
+## 解决的问题与检索词
+
+observe/generation 如何避免丢唤醒？销毁与超时怎样恢复等待者？线程槽回收为什么不能简单放宽容量？TTY 输入在哪轮注入？
+
+检索别名：WaitObject, wait_objects, signal_object, futex, BlockedWait, COM1, termios, tty, PIT。
+
+## 权威章节与阅读顺序
+
+原语规范§5.6、§21、W17；M15 等待设计；M14 tty 与 M6 时间子集。
+
+先确认阶段跟踪与契约，再按下面链读取设计、计划和报告。历史工件中未开始/未实现的表述只属于其当时基线。
+
+M15a-1 立即路径 → M15a-2 阻塞模型 → 线程容量调查 → M15b-2b W2 阻塞端到端。M16a futex WAIT/WAKE 建在等待机制上。M14 输入和 M6 轮询时间有自己的证据，不能被 WaitObject 的存在自动升级。
+
+## 契约、计划与证据入口
+
+- [COSIR 原语规范.md](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)
+- [2026-10-23-stage5-m14-tty-input-design.md](../../superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md)
+- [2026-10-23-stage5-m15-process-thread-wait-design.md](../../superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)
+- [2026-10-23-stage5-m15a-waitobject.md](../../superpowers/reports/2026-10-23-stage5-m15a-waitobject.md)
+- [2026-10-23-stage5-m15a2-waitobject-blocking.md](../../superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md)
+- [2026-10-23-stage5-m15b2b-thread-slots.md](../../superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)
+- [2026-10-23-stage5-m16a-futex.md](../../superpowers/reports/2026-10-23-stage5-m16a-futex.md)
+- [2026-10-23-stage5-m14-tty-input.md](../../superpowers/reports/2026-10-23-stage5-m14-tty-input.md)
+- [2026-10-19-stage5-m6-time.md](../../superpowers/reports/2026-10-19-stage5-m6-time.md)
+- [2026-10-23-stage5-thread-capacity-investigation.md](../../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md)
+
+## 源码定位
+
+- [bootstrap.rs](../../../kernel/src/bootstrap.rs)
+- [syscall.rs](../../../kernel/src/syscall.rs)
+- [sched.rs](../../../kernel/src/sched.rs)
+- [preempt.rs](../../../kernel/src/preempt.rs)
+- [tty.rs](../../../prima-user/src/tty.rs)
+- [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
+- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+
+## 测试与观察入口
+
+- [stage5_wait.c](../../../prima-user/c/stage5_wait.c)
+- [stage5_wait2.c](../../../prima-user/c/stage5_wait2.c)
+- [stage5_futex.c](../../../prima-user/c/stage5_futex.c)
+- [stage5_time.c](../../../prima-user/c/stage5_time.c)
+- [stage5_ttyin.c](../../../prima-user/c/stage5_ttyin.c)
+
+测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
+
+## 限制与修改注意
+
+futex 仅冻结 WAIT/WAKE 子集。TTY 有读者时仍轮询 COM1；WaitObject 已实现并不意味着轮询已替换。线程惰性回收保留 task_create 满容量 ENOSPC 见证；不能用扩容隐藏负例。

@@ -11,7 +11,7 @@
 ## 0. 定位与前置
 
 阶段 2 未开始；阶段 1 已把归属基础铺好（`FrameRegistry` 是 W6 唯一取帧点，image Segment
-物化，初始 Authority 为 3 条根 cap）。本切片按 [[COSIR 原语规范]] §3（ID 不可伪造表示）、
+物化，初始 Authority 为 3 条根 cap）。本切片按 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §3（ID 不可伪造表示）、
 §18 第 1 条（索引 + generation）、§4.1~§4.6（权限、CapRecord、位置、派生/丢弃、移动边界）、
 §7.1~§7.4（`memseg_create/map/unmap/destroy`）与 §16 W6/W7 落地 S2-D1/D2/D3。
 

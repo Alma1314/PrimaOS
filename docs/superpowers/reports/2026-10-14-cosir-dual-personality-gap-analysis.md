@@ -10,7 +10,7 @@
 >
 > 结论边界：本报告只核验评估中的事实判断、修正优先级与机制边界，不把任何候选机制写成冻结语义，不新增 POSIR 原语、不变量或证明义务。正式采纳任一候选扩展前，必须走“设计 → 评审 → 规范修订 → 验证”的流程。
 >
-> **后续状态（2026-10-14）：** 本报告的候选已进入逐项采纳审核。`WaitObject`/定向 upcall 与 `memseg_protect` 审核通过并写入 [[COSIR 原语规范]]；Process/Thread/ShareGroup 暂缓，具体 Mutex/Event、内核 CompletionQueue、FileObject 不采纳。采纳结论见 [[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|COSIR/POSIR 双人格扩展候选采纳审核]]。本报告保留审核前分析口径。
+> **后续状态（2026-10-14）：** 本报告的候选已进入逐项采纳审核。`WaitObject`/定向 upcall 与 `memseg_protect` 审核通过并写入 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)；Process/Thread/ShareGroup 暂缓，具体 Mutex/Event、内核 CompletionQueue、FileObject 不采纳。采纳结论见 [COSIR/POSIR 双人格扩展候选采纳审核](2026-10-14-cosir-dual-personality-adoption-review.md)。本报告保留审核前分析口径。
 
 ## 1. 结论摘要
 

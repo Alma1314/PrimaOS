@@ -4,9 +4,9 @@
 >
 > 日期：2026-10-14
 >
-> 输入：[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|双人格扩展候选采纳审核]]、[[docs/superpowers/reports/2026-10-14-cosir-dual-personality-gap-analysis|COSIR/POSIR 双人格底座差距分析]]、[[COSIR 原语规范]] §5.2/§8.1/§16/§17/§21/§22
+> 输入：[双人格扩展候选采纳审核](../reports/2026-10-14-cosir-dual-personality-adoption-review.md)、[COSIR/POSIR 双人格底座差距分析](../reports/2026-10-14-cosir-dual-personality-gap-analysis.md)、[COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §5.2/§8.1/§16/§17/§21/§22
 >
-> 状态：H0 条件通过（见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|H0 评审报告]]）；本草案不修改 [[COSIR 原语规范]] 的冻结语义。
+> 状态：H0 条件通过（见 [H0 评审报告](../reports/2026-10-14-dual-personality-holder-model-h0-review.md)）；本草案不修改 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 的冻结语义。
 
 ## 0. 结论先行
 
@@ -291,7 +291,7 @@ TerminateThread  → task_destroy 的线程级变体
 
 ### Phase H0 — 设计冻结（2026-10-14 条件通过）
 
-- 已完成评审，结论见 [[docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review|H0 评审报告]]；
+- 已完成评审，结论见 [H0 评审报告](../reports/2026-10-14-dual-personality-holder-model-h0-review.md)；
 - Holder 采用 `HeldByCapTable`，结构性根采用 `HeldByShareGroup`；
 - `AddressSpace` 与 `CapTable` 均为独立内部对象；
 - H1 前需完成 H0 评审报告 C1–C6。
@@ -352,7 +352,7 @@ TerminateThread  → task_destroy 的线程级变体
 
 ## 9. 证据与边界
 
-- 本文是设计草案，不改变 [[COSIR 原语规范]] 冻结语义；
+- 本文是设计草案，不改变 [COSIR 原语规范](../../../COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 冻结语义；
 - 不产生实现、QEMU、Lean 或 `COMPAT-TEST` 证据；
 - Phase H0 评审通过前，不应把本文当作双人格完整方案；
 - 一旦确定目标模型，应先做规范修订（W3/W4/W5/W7/W9/W13/W17 与操作集合），再进入 host 模型和实现。

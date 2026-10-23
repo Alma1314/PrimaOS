@@ -1,14 +1,22 @@
+---
+id: project-architecture
+kind: reference
+authority: architecture-contract
+status: maintained
+updated: 2026-10-23
+---
+
 # Prima OS：架构与研究白皮书
 
 > 文档类型：决策型架构白皮书
 >
-> 状态：研究设计阶段
+> 状态：研究架构与目标；实际实现状态以[阶段跟踪](Prima%20OS%20实现阶段.md)为准
 >
 > 首个实现目标：QEMU x86_64 原型
 >
-> 更新日期：2026-08-26
+> 架构基线日期：2026-08-26；文档定位与证明范围说明维护：2026-10-23（不改变抽象语义）
 >
-> 精确语义规范：[[COSIR 原语规范]]
+> 精确语义规范：[COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)
 
 ## 摘要
 
@@ -22,7 +30,7 @@ Prima OS 是一个**元操作系统研究项目**。它尝试把传统操作系�
 
 项目的长期愿景是：同一最小机制层可以支撑多个互不信任的 LibOS，并让操作系统兼容语义成为可替换、可组合、可审计的用户态构件。
 
-这仍是**研究假设**，不是已经完成的兼容性或安全性结论。当前成果主要是抽象语义与架构边界；尚无可据此宣称安全、兼容或高性能的完整内核实现。
+这仍是**研究假设**，不是已经完成的兼容性或安全性结论。当前原型、模型与运行证据按[阶段跟踪](Prima%20OS%20实现阶段.md)及其链接报告分别解释，不能从研究目标外推完整安全、兼容或性能结论。
 
 ## 1. 文档职责与状态标签
 
@@ -34,7 +42,7 @@ Prima OS 是一个**元操作系统研究项目**。它尝试把传统操作系�
 - 通用兼容性主张怎样被验证或推翻；
 - 首个 QEMU x86_64 原型如何分阶段落地。
 
-本文不复制每项原语的参数、前置条件和状态迁移。精确语义以 [[COSIR 原语规范]] 为唯一权威来源。该文件沿用历史名称，其中平台无关部分属于 HexArc / POSIR 抽象语义，硬件实现部分属于 COSIR 细化工作。
+本文不复制每项原语的参数、前置条件和状态迁移。精确语义以 [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 为唯一权威来源。该文件沿用历史名称，其中平台无关部分属于 HexArc / POSIR 抽象语义，硬件实现部分属于 COSIR 细化工作。
 
 本文使用三种状态标签：
 
@@ -218,7 +226,7 @@ COSIR 是 POSIR 在具体硅基架构上的实现与细化层。首个目标是 
 
 ## 5. 当前机制基线
 
-[[COSIR 原语规范]] 当前定义以下接口类别：
+[COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 当前定义以下接口类别：
 
 本文按 **12 类 Bootstrap 后常规机制 + 1 个 Bootstrap 初始化迁移** 统计接口类别。§19 总览因此列出 13 项；其中 Bootstrap 是初始 Authority 的唯一来源，不是系统引导完成后的常规可调用操作。H1 中的“12 类”仅指 Bootstrap 后常规机制，不包含该唯一初始化迁移。
 
@@ -272,7 +280,7 @@ Capability 是内核分配、用户态不可伪造的 token。它至少关联：
 
 > **实现注记（2026-08）：撤销域定义与现状。**
 >
-> 第一版不提供派生树的选择性撤销。当前探索阶段的真实内核已在 Bootstrap 状态中以细化形式先行落地选择性撤销——`revoke_capability` 将撤销传播到完整派生子树，不引入对 POSIR 可见的一等新原语，因此不构成 H1/H3 反例。它超前于本小节与 §8 的"第一版只支持 drop 与对象销毁"范围声明，故此处给出该撤销操作的撤销域定义（与 [[COSIR 原语规范]] §4.7 相对应），并如实标注当前实现边界。
+> 第一版不提供派生树的选择性撤销。当前探索阶段的真实内核已在 Bootstrap 状态中以细化形式先行落地选择性撤销——`revoke_capability` 将撤销传播到完整派生子树，不引入对 POSIR 可见的一等新原语，因此不构成 H1/H3 反例。它超前于本小节与 §8 的"第一版只支持 drop 与对象销毁"范围声明，故此处给出该撤销操作的撤销域定义（与 [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §4.7 相对应），并如实标注当前实现边界。
 >
 > **撤销域定义（与 `cap_drop` 正交的选择性撤销）：**
 >
@@ -408,7 +416,7 @@ LibOS 应拆成可独立测试的职责：
 - Linux 文件描述符和虚拟文件系统视图；
 - 可重复的 Linux 差分测试。
 
-设计决策已作出：采取路径 2，即增加一个 OS 中立的异常/陷阱递送机制。[[COSIR 原语规范]] §12 已定义了 ExceptionSource 对象、异常类型体系、订阅/递送/销毁语义和 COW fork 建模示例。该机制的关键属性：
+设计决策已作出：采取路径 2，即增加一个 OS 中立的异常/陷阱递送机制。[COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §12 已定义了 ExceptionSource 对象、异常类型体系、订阅/递送/销毁语义和 COW fork 建模示例。该机制的关键属性：
 
 1. 内核不解释异常语义——ExceptionKind 的分发完全由接收方 LibOS 负责；
 2. 异常通知复用现有 `send/enqueue_or_deliver` 通道，不引入新通知机制；
@@ -429,7 +437,7 @@ LibOS 应拆成可独立测试的职责：
 
 它们可以成为后续研究对象，但不属于 QEMU 原型的完成条件。
 
-> **双人格缺口记录：** 上述排除是阶段范围，不表示双人格方向不可行。2026-10-14 采纳审核已将通用等待/唤醒（`WaitObject`）、定向 upcall/可警报等待与 `memseg_protect` 写入 COSIR 冻结语义；Process/Thread/ShareGroup、I/O 完成协议和文件/流边界仍未采纳或暂缓。逐项审核见 [[docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review|COSIR/POSIR 双人格扩展候选采纳审核]]，规范侧状态见 COSIR §22。
+> **双人格缺口记录：** 上述排除是阶段范围，不表示双人格方向不可行。2026-10-14 采纳审核已将通用等待/唤醒（`WaitObject`）、定向 upcall/可警报等待与 `memseg_protect` 写入 COSIR 冻结语义；Process/Thread/ShareGroup、I/O 完成协议和文件/流边界仍未采纳或暂缓。逐项审核见 [COSIR/POSIR 双人格扩展候选采纳审核](docs/superpowers/reports/2026-10-14-cosir-dual-personality-adoption-review.md)，规范侧状态见 COSIR §22。
 
 ### 8.5 下一阶段机制能力映射
 
@@ -508,7 +516,7 @@ LibOS 应拆成可独立测试的职责：
 
 ### 10.2 当前规范状态（已定义）
 
-[[COSIR 原语规范]] §15 已定义设备与 I/O 对象模型：
+[COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §15 已定义设备与 I/O 对象模型：
 
 - **已定义：** MMIO 区域对象、创建/映射/取消映射和销毁操作（`dev_mmio_*`）；
 - **已定义：** I/O port 范围对象与授权（`dev_ioport_*`）；
@@ -622,7 +630,7 @@ init 计划负责：
 
 ### 13.1 抽象状态机验证
 
-已以 **Lean 4 建立可执行状态模型**作为抽象验证载体（证据 `MODEL-TEST`，见 [[Prima OS 实现阶段]] SPEC-019，BLK-001），覆盖 bootstrap 与 `exc_resume` 的状态迁移、良构谓词与失败原子性，并与 cosir host 模型对拍一致。该模型不构成形式化证明；下述性质的**证明**仍需由独立工件覆盖：
+已以 **Lean 4 建立可执行状态模型**作为抽象验证载体（证据 `MODEL-TEST`，见 [Prima OS 实现阶段](Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) SPEC-019，BLK-001），覆盖 bootstrap 与 `exc_resume` 的状态迁移、良构谓词与失败原子性，并与 cosir host 模型对拍一致。可执行模型与对拍本身不构成完整细化证明；后续 CDT 良构保持性及森林性已有独立 Lean 定理，范围以[Lean 映照契约](lean/README.md)为准。下述更广泛性质仍需逐项由相应独立工件覆盖：
 
 - Bootstrap 建立良构状态；
 - 每项成功迁移保持全局不变量；
@@ -763,7 +771,7 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 
 交付：
 
-- [[COSIR 原语规范]] 的一致状态模型；
+- [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 的一致状态模型；
 - 操作、错误、全局不变量和非目标；
 - 关键研究假设与反例标准；
 - x86_64 机器状态到抽象状态的细化草案。
@@ -774,7 +782,7 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - 每项操作有明确成功与失败语义；
 - 形式化工具能够表达状态与迁移。
 
-阶段 0 的逐操作成功/失败语义已由 SPEC-054、DOC-007 增量覆盖报告 SPEC-134、SPEC-139 与 SPEC-140 更正核对；现行 §19 常规操作面为 **47 项**（SPEC-143 新增 `node_attach`；旧 26/34/35/46 口径作废）。Lean 可执行状态模型见 SPEC-019。**2026-10-17 阶段 0 已通过（SPEC-145 冻结基线复核，文本层面）**：SPEC-142 的 29 项经 SPEC-143/144 整改后，S0-X1/S0-X2 已勾选；跨节点 Capability 传递收窄为 v1 仅传消息、`Faulted` 原上下文重播显式降级、W6 保留帧/GPU 池进入 `KernelState`。详见 [复核报告](docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md) 与 [整改报告](docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)。SPEC-139 的 9 项与 SPEC-140 的 12 项已登记并修订；S0-X2 已由 SPEC-145 按 47 项完成文本复核并勾选。现有模型、QEMU 与文档证据仍不构成完整细化证明。当前实现和阶段状态以 [[Prima OS 实现阶段]] 为准。
+阶段 0 的逐操作成功/失败语义已由 SPEC-054、DOC-007 增量覆盖报告 SPEC-134、SPEC-139 与 SPEC-140 更正核对；现行 §19 常规操作面为 **47 项**（SPEC-143 新增 `node_attach`；旧 26/34/35/46 口径作废）。Lean 可执行状态模型见 SPEC-019。**2026-10-17 阶段 0 已通过（SPEC-145 冻结基线复核，文本层面）**：SPEC-142 的 29 项经 SPEC-143/144 整改后，S0-X1/S0-X2 已勾选；跨节点 Capability 传递收窄为 v1 仅传消息、`Faulted` 原上下文重播显式降级、W6 保留帧/GPU 池进入 `KernelState`。详见 [复核报告](docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md) 与 [整改报告](docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md)。SPEC-139 的 9 项与 SPEC-140 的 12 项已登记并修订；S0-X2 已由 SPEC-145 按 47 项完成文本复核并勾选。现有模型、QEMU 与文档证据仍不构成完整细化证明。当前实现和阶段状态以 [Prima OS 实现阶段](Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) 为准。
 
 ### 阶段 1 — 启动与最小平台层
 
@@ -990,7 +998,7 @@ SMP 上多个 CPU 核共享同一个 KernelState。POSIR 的单核假设（W9：
 
 > Running 的 CPU Task 数量 ≤ CPU 核数。每个 CPU 核至多运行一个 Task。
 
-**候选假设：SMP 不要求新增原语或修改 POSIR 语义。** 预计并发安全复杂性可由 COSIR 细化层的核间锁、TLB shootdown、per-CPU 数据结构、内存顺序（[[COSIR 原语规范]] §18 细化要求 #5）及额外锁不变量承接；这不是既定结论。只有完成 SMP 实现，并以冻结 observable semantics 的 `COMPAT-TEST` 覆盖成功、失败和并发交错，同时通过丢失 shootdown、弱内存顺序等故障注入检验后，才能判断 12 类原语语义和 POSIR 状态机是否可保持不变；若测试暴露新的独立可观察语义，该假设即被证伪并须修改 POSIR。
+**候选假设：SMP 不要求新增原语或修改 POSIR 语义。** 预计并发安全复杂性可由 COSIR 细化层的核间锁、TLB shootdown、per-CPU 数据结构、内存顺序（[COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §18 细化要求 #5）及额外锁不变量承接；这不是既定结论。只有完成 SMP 实现，并以冻结 observable semantics 的 `COMPAT-TEST` 覆盖成功、失败和并发交错，同时通过丢失 shootdown、弱内存顺序等故障注入检验后，才能判断 12 类原语语义和 POSIR 状态机是否可保持不变；若测试暴露新的独立可观察语义，该假设即被证伪并须修改 POSIR。
 
 ### 18.2 GPU / NPU / FPGA 异构计算
 
@@ -1095,8 +1103,8 @@ Prima OS 的阶段性成功不以宣传性的“兼容一切操作系统”衡�
 
 ## 22. 文档关系
 
-- [[COSIR 原语规范]]：对象、Capability、状态迁移、不变量和验证义务的权威规范；
-- [[Prima OS 实现阶段]]：后续用于记录实际实现进度、阶段证据和未解决阻塞；
+- [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md)：对象、Capability、状态迁移、不变量和验证义务的权威规范；
+- [Prima OS 实现阶段](Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md)：后续用于记录实际实现进度、阶段证据和未解决阻塞；
 - 本文：研究假设、架构决策、兼容路线与验收边界。
 
-当本文与精确状态语义冲突时，以 [[COSIR 原语规范]] 为准；当实现与两者冲突时，应记录实现偏差，而不是默认实现定义了正确语义。
+当本文与精确状态语义冲突时，以 [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) 为准；当实现与两者冲突时，应记录实现偏差，而不是默认实现定义了正确语义。

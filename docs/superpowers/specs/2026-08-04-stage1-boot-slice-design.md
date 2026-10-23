@@ -6,7 +6,7 @@
 >
 > 状态：已批准
 >
-> 对应路线：[[Prima OS]] 阶段 1、[[Prima OS 实现阶段]] S1-D1/S1-D2
+> 对应路线：[Prima OS](../../../Prima%20OS.md) 阶段 1、[Prima OS 实现阶段](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md) S1-D1/S1-D2
 
 ## 1. 目标
 
