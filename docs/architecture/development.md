@@ -26,6 +26,7 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask lint` | fmt、Clippy、裸机编译、内核零 unsafe | [lint.rs](../../xtask/src/lint.rs) 定义的规则 |
 | `cargo xtask build` | 构建 boot images/ramdisk | 镜像可生成；不能据此声称已运行 |
 | `cargo xtask run` | 交互 BIOS QEMU | 人工观察；不替代自动断言 |
+| `cargo xtask test-vfs [V1|V2|V3]` | V1/V2/V3 的 Linux 参考与 BIOS 双轮 | 与全量 test 共用同一实现、30 秒门限和断言；便于文件服务迭代 |
 | `cargo xtask test` | BIOS 双轮与各冻结 C/开源程序探针 | 实现定义的 trace、字节流、退出码、输入注入与 Linux 参考 |
 | `cargo xtask compat` | 兼容差分入口 | 当前 cow-write-fault 有界场景；不是全部阶段5 API 验收 |
 | `cargo xtask linux-trace` | Linux 参考 trace 工作流 | 参数与再生成语义见 xtask main/linux |

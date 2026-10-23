@@ -1,4 +1,4 @@
-/* M13b：chmod/fchmod/umask 与 stdio 文件 API 的同源探针。
+/* M13b 与 LibOS 文件对象生命周期的同源探针。
  *
  * 同一份源码在 Linux 宿主（glibc）与 Prima（静态 musl + 适配层）上编译运行：
  * - `ROOT` 在 Prima 是 `/`，在宿主是空串；`tmp` 在两端都可写。
@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -192,6 +193,60 @@ int main(void) {
     int missing_ok = chmod(PATH("v3_none"), 0666) < 0;
     field("missing", missing_ok, 0);
 
+    /* 打开对象独立于目录名；dup 别名共用旧对象，重建同名文件不能污染旧 fd。 */
+    int life = open(PATH("v3_life"), O_RDWR | O_CREAT | O_TRUNC, 0666);
+    int alias = life >= 0 ? dup(life) : -1;
+    int unlink_ok = life >= 0 && alias >= 0 && write(life, "old", 3) == 3 &&
+                    unlink(PATH("v3_life")) == 0;
+    if (life >= 0)
+        close(life);
+    unlink_ok = unlink_ok && write_file(PATH("v3_life"), "new", 3);
+    char life_bytes[3] = {0};
+    unlink_ok = unlink_ok && lseek(alias, 0, SEEK_SET) == 0 &&
+                read(alias, life_bytes, 3) == 3 && same_bytes(life_bytes, "old", 3);
+    if (alias >= 0)
+        close(alias);
+    field("unlink_open", unlink_ok, 0);
+
+    /* rename 替换已打开目标后，路径读 source、原目标 fd 仍读 old。 */
+    int rename_ok = write_file(PATH("v3_src"), "src", 3) &&
+                    write_file(PATH("v3_dst"), "old", 3);
+    int target = open(PATH("v3_dst"), O_RDONLY);
+    rename_ok = rename_ok && target >= 0 &&
+                rename(PATH("v3_src"), PATH("v3_dst")) == 0;
+    char target_bytes[3] = {0};
+    rename_ok = rename_ok && read(target, target_bytes, 3) == 3 &&
+                same_bytes(target_bytes, "old", 3);
+    if (target >= 0)
+        close(target);
+    target = open(PATH("v3_dst"), O_RDONLY);
+    rename_ok = rename_ok && target >= 0 && read(target, target_bytes, 3) == 3 &&
+                same_bytes(target_bytes, "src", 3);
+    if (target >= 0)
+        close(target);
+    field("rename_open", rename_ok, 0);
+
+    /* unlink 检查链接本身，不能因其目标被打开而拒绝。 */
+    target = open(PATH("v3_dst"), O_RDONLY);
+    int link_ok = target >= 0 && symlink("v3_dst", PATH("v3_link")) == 0 &&
+                  unlink(PATH("v3_link")) == 0 && read(target, target_bytes, 3) == 3 &&
+                  same_bytes(target_bytes, "src", 3);
+    if (target >= 0)
+        close(target);
+    field("unlink_link", link_ok, 0);
+
+    /* 截断后原内容不得在稀疏写空洞里重新出现。 */
+    int sparse_ok = write_file(PATH("v3_sparse"), "secret", 6);
+    int sparse = open(PATH("v3_sparse"), O_RDWR | O_TRUNC);
+    char sparse_bytes[6] = {1, 1, 1, 1, 1, 1};
+    sparse_ok = sparse_ok && sparse >= 0 && lseek(sparse, 5, SEEK_SET) == 5 &&
+                write(sparse, "X", 1) == 1 && lseek(sparse, 0, SEEK_SET) == 0 &&
+                read(sparse, sparse_bytes, 6) == 6 &&
+                same_bytes(sparse_bytes, "\0\0\0\0\0X", 6);
+    if (sparse >= 0)
+        close(sparse);
+    field("sparse", sparse_ok, 0);
+
     emit("|ok=");
     emit_dec(failures ? 0 : 1);
     emit(";err=");
@@ -201,5 +256,10 @@ int main(void) {
     unlink(PATH("v3_mode"));
     unlink(PATH("v3_stdio"));
     rmdir(PATH("v3_dir"));
+    unlink(PATH("v3_life"));
+    unlink(PATH("v3_src"));
+    unlink(PATH("v3_dst"));
+    unlink(PATH("v3_link"));
+    unlink(PATH("v3_sparse"));
     return failures ? 1 : 0;
 }

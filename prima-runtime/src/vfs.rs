@@ -1,6 +1,6 @@
-//! 阶段 5 / M8：**用户态 VFS / rootfs 的纯逻辑模型**。
+//! 用户态 RAM 文件系统与 OS ABI 无关的打开文件表。
 //!
-//! 本模块不接触任何 syscall 或 Capability：它把一段字节存储解释成一个只含目录与普通文件的
+//! 本模块不接触任何 syscall 或 Capability：它把一段字节存储解释成含目录、文件、链接和 null 设备的
 //! 小根文件系统。存储由 [`Storage`] 提供，ring3 存储服务用已映射的 MemorySegment 实现它，
 //! host 单测用内存数组实现它；同一份解析/打开/读写/目录逻辑在两端得到相同结果。
 //!
@@ -10,24 +10,28 @@
 //! 镜像布局（从存储偏移 0 起）：
 //!
 //! ```text
-//! 0..16    header：magic("PVFS") | version | node_count | data_used
-//! 16..528  16 个 32 字节的节点条目（名称、父节点、类型、大小、内容偏移）
-//! 528..    文件内容区（总容量 3560 字节）
+//! 0..16      header：magic("PVFS") | version=3 | node_count | data_used
+//! 16..1168   32 个 36 字节的节点条目（名称、父节点、类型、引用数、权限、大小、偏移）
+//! 1168..4088 文件内容区（2920 字节）
 //! ```
 //!
 //! 节点 0 固定为根目录。路径解析在用户态完成，支持绝对/相对路径、`.`、`..`、重复 `/`、
-//! 尾随 `/` 与 `openat(dirfd, ...)` 的起始目录；错误只用 profile v0 已冻结的 `ENOENT`、
-//! `ENOTDIR`、`EACCES`、`EEXIST`、`EINVAL`、`ENOSPC` 语义，未引入 `ELOOP`/`EISDIR` 等新码。
+//! 尾随 `/` 与 `openat(dirfd, ...)` 的起始目录；错误保持为语义枚举，由服务/personality
+//! 映射到各自的状态码。符号链接深度错误沿用 M13a 的 Loop。
 //!
-//! **边界**：不实现符号链接、`rename`/`unlink`/`mkdir`、持久化、并发写锁或文件映射；目录
-//! 创建只发生在静态根树中，`O_CREAT` 只能在可写目录（当前为 `/tmp`）里新建普通文件。
+//! [`OpenFiles`] 管理打开对象、访问模式与游标；Linux fd、errno、stat/dirent 布局仍由
+//! 适配层管理。目录名与打开对象分别回收；unlink/rename 不使已打开对象指向新文件。
+//! **边界**：固定容量、单服务串行调用；无硬链接、跨启动持久化、挂载路由或文件映射。
+
+mod handles;
+pub use handles::{FileInfo, HandleId, OpenFiles, SeekFrom};
 
 /// 单个节点的字节数。
 /// M13b：节点 32 → 36 B，新增 16 位 mode。
 pub const NODE_BYTES: usize = 36;
 /// 节点条目上限（同时决定内容区起点，保证已分配的内容偏移稳定）。
 /// M13a：节点槽 16 → 32。符号链接/rename 用例在 16 槽下会因临时节点耗尽返回
-/// `ENOSPC`；扩到 32 后内容区仍 ≥3 KiB（`CONTENT_CAPACITY` 按 32×32 B 节点表重算）。
+/// `ENOSPC`；当前容量按 32×36 B 节点表由 `CONTENT_CAPACITY` 重算。
 pub const MAX_NODES: usize = 32;
 /// 单个名称的字节上限。
 pub const MAX_NAME: usize = 16;
@@ -44,16 +48,17 @@ pub const MAX_COMPONENTS: usize = 6;
 /// 镜像 magic：ASCII `PVFS`。
 pub const MAGIC: u32 = u32::from_le_bytes(*b"PVFS");
 /// 镜像版本。
-/// M13b：节点布局 v2（mode 字段）；v1 镜像确定拒绝，存储服务每启动重新格式化。
-pub const VERSION: u16 = 2;
+/// v3 在节点保留字节中记录打开引用；旧镜像须显式重新 format，不做隐式迁移。
+pub const VERSION: u16 = 3;
 
 /// 根节点编号。
 pub const ROOT: NodeId = 0;
 
 /// 已删除节点的 `parent` 哨兵。`MAX_NODES` 远小于 255，故不会与真实父节点冲突。
-/// 删除只标记、不清零 `kind/data`：未关闭句柄在槽位被复用前仍可读到旧内容；目录
-/// 查找与枚举一律跳过该节点。
+/// 只有最后一个打开引用释放后，节点槽和内容才可复用。
 pub const FREE_PARENT: NodeId = 0xff;
+/// 已取消目录链接、仍由打开对象引用的节点；不参与路径查找，不可复用。
+const ORPHAN_PARENT: NodeId = 0xfe;
 
 /// 节点是否已被删除（槽位可复用）。
 fn is_free(node: &Node) -> bool {
@@ -114,13 +119,18 @@ pub enum VfsError {
     Io,
     /// `ELOOP`：符号链接展开超过冻结深度。
     Loop,
+    /// 打开句柄不存在，或访问模式不允许此操作。
+    BadHandle,
+    /// 打开文件表已满（由 personality 选择 errno/status 映射）。
+    TooManyOpen,
 }
 
 /// 字节存储抽象。所有偏移都相对镜像起点（不含 SPEC-112 的状态字）。
 pub trait Storage {
     /// 读 `out.len()` 字节；越界/不可读返回 `false`。
     fn read(&mut self, offset: usize, out: &mut [u8]) -> bool;
-    /// 写 `data`；越界/不可写返回 `false`。
+    /// 完整写入 `data`，或保持存储不变并返回 `false`；不得以 false 报告部分写入。
+    /// 此约束不承诺持久化、进程崩溃原子性或多个 write 组成的事务。
     fn write(&mut self, offset: usize, data: &[u8]) -> bool;
 }
 
@@ -129,10 +139,12 @@ pub trait Storage {
 pub struct Node {
     pub kind: NodeKind,
     pub parent: NodeId,
-    /// POSIX 权限位（低 12 位）。单用户模型只看 owner 读写位。
+    /// RAM 镜像内打开对象的引用数；由 OpenFiles 管理，禁止复制表来复制引用。
+    open_refs: u8,
+    /// 权限位（低 9 位）。单用户模型只看 owner 读写位。
     pub mode: u16,
     pub size: u16,
-    /// 内容区内的起始偏移（仅普通文件有意义）。
+    /// 内容区内的起始偏移（文件或符号链接）。
     pub data: u16,
     pub name_len: u8,
     pub name: [u8; MAX_NAME],
@@ -171,11 +183,28 @@ impl DirEntry {
     }
 }
 
-/// `open` 的规范化 flag 子集。
+/// 访问意图；各 personality/协议在边界处解码自己的 flag 数值。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AccessMode {
+    #[default]
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl AccessMode {
+    pub const fn allows_read(self) -> bool {
+        !matches!(self, Self::WriteOnly)
+    }
+    pub const fn allows_write(self) -> bool {
+        !matches!(self, Self::ReadOnly)
+    }
+}
+
+/// `open` 的规范化意图；不接受任何 OS 的原始 flag 位。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OpenFlags {
-    /// 0=只读、1=只写、2=读写。
-    pub access: u8,
+    pub access: AccessMode,
     pub create: bool,
     pub exclusive: bool,
     pub truncate: bool,
@@ -236,7 +265,7 @@ fn read_header<S: Storage>(storage: &mut S) -> Result<Header, VfsError> {
     }
     let count = bytes[6];
     let data_used = u16::from_le_bytes([bytes[8], bytes[9]]);
-    if count as usize > MAX_NODES || data_used as usize > CONTENT_CAPACITY {
+    if count == 0 || count as usize > MAX_NODES || data_used as usize > CONTENT_CAPACITY {
         return Err(VfsError::Unformatted);
     }
     Ok(Header { count, data_used })
@@ -247,6 +276,7 @@ fn encode_node(node: &Node) -> [u8; NODE_BYTES] {
     bytes[0] = node.name_len;
     bytes[1] = node.kind.as_raw();
     bytes[2] = node.parent;
+    bytes[3] = node.open_refs;
     bytes[4..6].copy_from_slice(&node.size.to_le_bytes());
     bytes[6..8].copy_from_slice(&node.data.to_le_bytes());
     bytes[8..10].copy_from_slice(&node.mode.to_le_bytes());
@@ -260,14 +290,22 @@ fn decode_node(bytes: &[u8; NODE_BYTES]) -> Result<Node, VfsError> {
         return Err(VfsError::Unformatted);
     }
     let kind = NodeKind::from_raw(bytes[1]).ok_or(VfsError::Unformatted)?;
+    let data = u16::from_le_bytes([bytes[6], bytes[7]]);
+    let size = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if data as usize + size as usize > CONTENT_CAPACITY
+        || (bytes[2] as usize >= MAX_NODES && bytes[2] != FREE_PARENT && bytes[2] != ORPHAN_PARENT)
+    {
+        return Err(VfsError::Unformatted);
+    }
     let mut name = [0u8; MAX_NAME];
     name[..name_len as usize].copy_from_slice(&bytes[10..10 + name_len as usize]);
     Ok(Node {
         kind,
         parent: bytes[2],
+        open_refs: bytes[3],
         mode: u16::from_le_bytes([bytes[8], bytes[9]]),
-        size: u16::from_le_bytes([bytes[4], bytes[5]]),
-        data: u16::from_le_bytes([bytes[6], bytes[7]]),
+        size,
+        data,
         name_len,
         name,
     })
@@ -287,6 +325,15 @@ pub fn read_node<S: Storage>(storage: &mut S, id: NodeId) -> Result<Node, VfsErr
     let mut bytes = [0u8; NODE_BYTES];
     read_exact(storage, NODES_OFFSET + id as usize * NODE_BYTES, &mut bytes)?;
     decode_node(&bytes)
+}
+
+/// 与镜像布局无关的当前元数据；已回收槽不再作为对象返回。
+pub fn metadata<S: Storage>(storage: &mut S, id: NodeId) -> Result<FileInfo, VfsError> {
+    let node = read_node(storage, id)?;
+    if is_free(&node) {
+        return Err(VfsError::NoEnt);
+    }
+    Ok(FileInfo::new(id, &node))
 }
 
 fn write_node<S: Storage>(storage: &mut S, id: NodeId, node: &Node) -> Result<(), VfsError> {
@@ -442,11 +489,19 @@ const INITIAL: [InitialNode; 13] = [
 /// 文件内容区容量。
 pub const CONTENT_CAPACITY: usize = 4096 - 8 - CONTENT_OFFSET;
 
-/// 格式化存储为首版根文件系统。已格式化且节点数一致的镜像保持不变（幂等）。
+/// 挂载有效镜像；只有全零头的新存储才自动格式化。旧版本、损坏与 I/O 错误不触发覆盖。
 pub fn mount<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
-    if read_header(storage).is_ok() {
-        return Ok(());
+    let mut bytes = [0u8; HEADER_BYTES];
+    read_exact(storage, 0, &mut bytes)?;
+    if bytes == [0u8; HEADER_BYTES] {
+        format(storage)
+    } else {
+        read_header(storage).map(|_| ())
     }
+}
+
+/// 显式破坏性格式化。调用前必须丢弃该存储所有打开文件表；不承诺故障原子性。
+pub fn format<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
     // 先写 magic 为零的头，格式化完成后再写回；中途失败不会留下一个可被误认的镜像。
     let blank = [0u8; HEADER_BYTES];
     write_all(storage, 0, &blank)?;
@@ -462,6 +517,7 @@ pub fn mount<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
         let mut node = Node {
             kind: initial.kind,
             parent: initial.parent,
+            open_refs: 0,
             mode: initial.mode,
             size: 0,
             data: 0,
@@ -487,6 +543,26 @@ pub fn mount<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
     .write(storage)
     {
         return Err(VfsError::Io);
+    }
+    Ok(())
+}
+
+/// 服务启动且所有旧打开表已丢弃时，回收旧会话引用。禁止对仍有活动表的存储调用。
+/// 这不是句柄迁移：存活目录项和内容保留，已 unlink 的对象被回收。
+pub fn recover_open_files<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
+    let header = read_header(storage)?;
+    for id in 0..header.count {
+        let mut node = read_node(storage, id)?;
+        if node.open_refs == 0 && node.parent != ORPHAN_PARENT {
+            continue;
+        }
+        node.open_refs = 0;
+        if node.parent == ORPHAN_PARENT {
+            node.parent = FREE_PARENT;
+            node.size = 0;
+            node.data = 0;
+        }
+        write_node(storage, id, &node)?;
     }
     Ok(())
 }
@@ -524,7 +600,7 @@ struct ParsedPath {
 
 impl ParsedPath {
     fn parse(path: &[u8]) -> Result<Self, VfsError> {
-        if path.is_empty() {
+        if path.is_empty() || path.len() > MAX_PATH || path.contains(&0) {
             return Err(VfsError::Invalid);
         }
         let absolute = path[0] == b'/';
@@ -666,9 +742,13 @@ fn walk<S: Storage>(
     }
     let mut index = 0usize;
     let mut depth = 0u8;
+    let mut require_directory = parsed.trailing_slash;
     while index < count {
         let component = pending[index];
         index += 1;
+        if read_node(storage, current)?.kind != NodeKind::Directory {
+            return Err(VfsError::NotDir);
+        }
         if component.is_dot() {
             continue;
         }
@@ -691,18 +771,21 @@ fn walk<S: Storage>(
         let target = ParsedPath::parse(&target[..len])?;
         let remaining = count - index;
         let total = remaining + target.count as usize;
-        if count + target.count as usize > PENDING_COMPONENTS {
+        if total > PENDING_COMPONENTS {
             return Err(VfsError::Invalid);
         }
-        // 目标分量插到剩余分量之前；相对目标以链接父目录为基准。
-        pending.copy_within(index..count, index + target.count as usize);
-        for slot in 0..target.count as usize {
-            pending[index + slot] = *target.component(slot);
+        if remaining == 0 && target.trailing_slash {
+            require_directory = true;
         }
-        count = index + total;
+        // 目标分量插到剩余分量之前；相对目标以链接父目录为基准。
+        pending.copy_within(index..count, target.count as usize);
+        pending[..target.count as usize]
+            .copy_from_slice(&target.components[..target.count as usize]);
+        index = 0;
+        count = total;
         current = if target.absolute { ROOT } else { node.parent };
     }
-    if parsed.trailing_slash && read_node(storage, current)?.kind != NodeKind::Directory {
+    if require_directory && read_node(storage, current)?.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
     Ok(current)
@@ -744,10 +827,17 @@ pub fn open<S: Storage>(
     path: &[u8],
     flags: OpenFlags,
 ) -> Result<Opened, VfsError> {
-    if flags.access > 2 {
-        return Err(VfsError::Invalid);
-    }
     let parsed = ParsedPath::parse(path)?;
+    // 独占创建按目录项判断，不能先跟随末项链接（包括悬空链接）。
+    if flags.create
+        && flags.exclusive
+        && let Some(last) = parsed.last()
+    {
+        let parent = walk(storage, start, &parsed.prefix())?;
+        if lookup(storage, parent, last.as_bytes())?.is_some() {
+            return Err(VfsError::Exist);
+        }
+    }
     let resolved = walk(storage, start, &parsed);
     if let Ok(id) = resolved {
         return finish_open(storage, id, flags);
@@ -773,6 +863,9 @@ pub fn open<S: Storage>(
     if flags.directory {
         return Err(VfsError::NoEnt);
     }
+    if parsed.trailing_slash {
+        return Err(VfsError::NotDir);
+    }
     if lookup(storage, directory, last.as_bytes())?.is_some() {
         let id = walk(storage, start, &parsed)?;
         return finish_open(storage, id, flags);
@@ -785,6 +878,7 @@ pub fn open<S: Storage>(
     let node = Node {
         kind: NodeKind::File,
         parent: directory,
+        open_refs: 0,
         mode: 0o666,
         size: 0,
         data,
@@ -801,13 +895,19 @@ fn finish_open<S: Storage>(
     flags: OpenFlags,
 ) -> Result<Opened, VfsError> {
     let mut node = read_node(storage, id)?;
+    if node.open_refs == u8::MAX {
+        return Err(VfsError::TooManyOpen);
+    }
     if flags.create && flags.exclusive {
         return Err(VfsError::Exist);
     }
     if flags.directory && node.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
-    if flags.access != 0 {
+    if flags.access.allows_read() && node.kind != NodeKind::Null && !node.readable() {
+        return Err(VfsError::Access);
+    }
+    if flags.access.allows_write() {
         // `/dev/null` 接受任意 access：读总是 EOF，写被丢弃。
         if node.kind == NodeKind::Null {
             // allowed
@@ -844,14 +944,21 @@ fn alloc_node<S: Storage>(storage: &mut S) -> Result<NodeId, VfsError> {
     Ok(id)
 }
 
-/// 标记节点删除。内容区不回收（首版没有内容空闲表），槽位可被后续创建复用。
+/// 解除目录链接；已打开的节点保留内容，最后一次 close 才回收。
 fn free_node<S: Storage>(storage: &mut S, id: NodeId) -> Result<(), VfsError> {
     let mut node = read_node(storage, id)?;
-    node.parent = FREE_PARENT;
+    // 打开目录暂不允许删除或被替换，保留其 `..` 与 dirfd 语义。
+    node.parent = if node.open_refs == 0 {
+        FREE_PARENT
+    } else {
+        ORPHAN_PARENT
+    };
     node.name_len = 0;
     node.name = [0u8; MAX_NAME];
-    node.size = 0;
-    node.data = 0;
+    if node.open_refs == 0 {
+        node.size = 0;
+        node.data = 0;
+    }
     store_node(storage, id, &node)
 }
 
@@ -894,6 +1001,7 @@ pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<
     let node = Node {
         kind: NodeKind::Directory,
         parent: directory,
+        open_refs: 0,
         mode: 0o777,
         size: 0,
         data: 0,
@@ -905,7 +1013,7 @@ pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<
 }
 
 /// `unlink`/`rmdir`：删除末项。目录必须为空（`remove_dir`），普通文件/设备按文件删除；
-/// 根、`.`、`..` 与只读父目录确定失败。打开句柄的检查由存储服务在调用前完成。
+/// 根、`.`、`..` 与只读父目录确定失败。打开目录暂不允许删除，普通文件可延迟回收。
 pub fn unlink<S: Storage>(
     storage: &mut S,
     start: NodeId,
@@ -940,6 +1048,9 @@ pub fn unlink<S: Storage>(
         }
         if has_children(storage, id)? {
             // 冻结错误集没有 ENOTEMPTY；用 EACCES 表达“目录非空不可删”。
+            return Err(VfsError::Access);
+        }
+        if node.open_refs != 0 {
             return Err(VfsError::Access);
         }
     } else {
@@ -1019,6 +1130,7 @@ pub fn symlink<S: Storage>(
     let node = Node {
         kind: NodeKind::Symlink,
         parent: directory,
+        open_refs: 0,
         mode: 0o777,
         size: target.len() as u16,
         data,
@@ -1066,7 +1178,7 @@ fn compact<S: Storage>(storage: &mut S) -> Result<(), VfsError> {
             count += 1;
         }
     }
-    // 16 项以内的插入排序，避免引入分配。
+    // ponytail: 最多 32 项的插入排序；节点上限显著扩大后再换索引，当前无需分配。
     for index in 1..count {
         let item = entries[index];
         let mut slot = index;
@@ -1146,6 +1258,9 @@ pub fn rename<S: Storage>(
         return Err(VfsError::Invalid);
     }
     let from_dir = walk(storage, start, &from_parsed.prefix())?;
+    if !read_node(storage, from_dir)?.writable() {
+        return Err(VfsError::Access);
+    }
     let from_id = lookup(storage, from_dir, from_last.as_bytes())?.ok_or(VfsError::NoEnt)?;
     let from_node = read_node(storage, from_id)?;
     if from_parsed.trailing_slash && from_node.kind != NodeKind::Directory {
@@ -1189,6 +1304,9 @@ pub fn rename<S: Storage>(
             if has_children(storage, existing)? {
                 return Err(VfsError::Access);
             }
+            if target.open_refs != 0 {
+                return Err(VfsError::Access);
+            }
         } else if from_node.kind == NodeKind::Directory {
             return Err(VfsError::NotDir);
         }
@@ -1228,7 +1346,7 @@ pub fn read<S: Storage>(
     }
 }
 
-/// 写文件；调用方负责 `access` 检查。返回实际写入的字节数。
+/// 写文件；调用方负责已打开对象的 access 检查，mode 在 open 时检查。
 ///
 /// 内容区按“独占区间”管理：写入不增长时原地覆盖；增长时先检查本文件到下一个
 /// 存活区间的空隙与内容区尾部，不足则先压实，再把文件内容搬到尾部（旧区间成为
@@ -1243,8 +1361,8 @@ pub fn write<S: Storage>(
     if node.kind != NodeKind::File {
         return Err(VfsError::NotDir);
     }
-    if !node.writable() {
-        return Err(VfsError::Access);
+    if data.is_empty() {
+        return Ok(0);
     }
     if offset > CONTENT_CAPACITY as u64 {
         return Err(VfsError::NoSpace);
@@ -1264,6 +1382,18 @@ pub fn write<S: Storage>(
         }
     }
     if !data.is_empty() {
+        // seek/truncate 后留下的空洞必须清零，不能暴露旧文件内容。
+        let zero = [0u8; 32];
+        let mut position = node.size as usize;
+        while position < offset as usize {
+            let count = zero.len().min(offset as usize - position);
+            write_all(
+                storage,
+                CONTENT_OFFSET + node.data as usize + position,
+                &zero[..count],
+            )?;
+            position += count;
+        }
         write_all(
             storage,
             CONTENT_OFFSET + node.data as usize + offset as usize,
@@ -1318,7 +1448,7 @@ fn relocate<S: Storage>(
     let mut tail = header.data_used as usize;
     for other in 1..header.count {
         let node = read_node(storage, other)?;
-        if is_free(&node) {
+        if is_free(&node) || node.size == 0 {
             continue;
         }
         let used = node.data as usize + node.size as usize;
@@ -1495,686 +1625,10 @@ pub fn dir_bytes<S: Storage>(
     Ok(written)
 }
 
-/// 内容区剩余字节（供容量诊断）。
+/// 内容区分配高水位（供容量诊断）；压实后等于实际存活内容字节数。
 pub fn content_used<S: Storage>(storage: &mut S) -> Result<usize, VfsError> {
     Ok(header_data_used(storage)? as usize)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::vec;
-    use std::vec::Vec;
-
-    struct TestStorage {
-        bytes: Vec<u8>,
-    }
-
-    impl TestStorage {
-        fn new() -> Self {
-            Self {
-                bytes: vec![0u8; 4096 - 8],
-            }
-        }
-    }
-
-    impl Storage for TestStorage {
-        fn read(&mut self, offset: usize, out: &mut [u8]) -> bool {
-            let Some(end) = offset.checked_add(out.len()) else {
-                return false;
-            };
-            if end > self.bytes.len() {
-                return false;
-            }
-            out.copy_from_slice(&self.bytes[offset..end]);
-            true
-        }
-
-        fn write(&mut self, offset: usize, data: &[u8]) -> bool {
-            let Some(end) = offset.checked_add(data.len()) else {
-                return false;
-            };
-            if end > self.bytes.len() {
-                return false;
-            }
-            self.bytes[offset..end].copy_from_slice(data);
-            true
-        }
-    }
-
-    fn mounted() -> TestStorage {
-        let mut storage = TestStorage::new();
-        assert_eq!(mount(&mut storage), Ok(()));
-        storage
-    }
-
-    fn read_file(storage: &mut TestStorage, path: &[u8]) -> Vec<u8> {
-        let id = resolve(storage, ROOT, path).expect("path resolves");
-        let node = read_node(storage, id).expect("node reads");
-        let mut out = vec![0u8; node.size as usize];
-        let count = read(storage, &node, 0, &mut out).expect("file reads");
-        out.truncate(count);
-        out
-    }
-
-    #[test]
-    fn mount_builds_the_multi_level_rootfs() {
-        let mut storage = mounted();
-        assert_eq!(read_file(&mut storage, b"/etc/motd"), b"welcome\n");
-        assert_eq!(read_file(&mut storage, b"/etc/hostname"), b"prima\n");
-        assert_eq!(read_file(&mut storage, b"/usr/lib/version"), b"1.0\n");
-        assert_eq!(read_file(&mut storage, b"README"), b"prima rootfs\n");
-        assert_eq!(read_file(&mut storage, b"etc/motd"), b"welcome\n");
-        assert_eq!(read_file(&mut storage, b"etc/../etc/hostname"), b"prima\n");
-        assert_eq!(
-            read_file(&mut storage, b"usr/./lib/../lib/version"),
-            b"1.0\n"
-        );
-        assert_eq!(resolve(&mut storage, ROOT, b"/").unwrap(), ROOT);
-        assert_eq!(resolve(&mut storage, ROOT, b"..").unwrap(), ROOT);
-        assert_eq!(resolve(&mut storage, ROOT, b"///").unwrap(), ROOT);
-        assert_eq!(content_used(&mut storage), Ok(561));
-    }
-
-    #[test]
-    fn tiny_elf_fixture_is_readable() {
-        let mut storage = mounted();
-        assert_eq!(read_file(&mut storage, b"/tiny.elf"), TINY_ELF);
-        assert!(TINY_ELF.len() > 100);
-        assert_eq!(&TINY_ELF[..4], b"\x7fELF");
-    }
-
-    #[test]
-    fn resolution_reports_frozen_errors() {
-        let mut storage = mounted();
-        assert_eq!(resolve(&mut storage, ROOT, b""), Err(VfsError::Invalid));
-        assert_eq!(resolve(&mut storage, ROOT, b"nope"), Err(VfsError::NoEnt));
-        assert_eq!(
-            resolve(&mut storage, ROOT, b"/etc/motd/x"),
-            Err(VfsError::NotDir)
-        );
-        assert_eq!(
-            resolve(&mut storage, ROOT, b"/etc/motd/"),
-            Err(VfsError::NotDir)
-        );
-        let too_long = [b'a'; MAX_NAME + 1];
-        assert_eq!(
-            resolve(&mut storage, ROOT, &too_long),
-            Err(VfsError::Invalid)
-        );
-        let too_many = b"a/a/a/a/a/a/a/a/a";
-        assert_eq!(
-            resolve(&mut storage, ROOT, too_many),
-            Err(VfsError::Invalid)
-        );
-        let etc = resolve(&mut storage, ROOT, b"etc").unwrap();
-        assert!(resolve(&mut storage, etc, b"motd").unwrap() > 0);
-        assert_eq!(resolve(&mut storage, etc, b"motd/x"), Err(VfsError::NotDir));
-    }
-
-    #[test]
-    fn open_enforces_access_create_and_exclusive() {
-        let mut storage = mounted();
-        let flags = OpenFlags {
-            access: 0,
-            ..OpenFlags::default()
-        };
-        let opened = open(&mut storage, ROOT, b"/etc/motd", flags).unwrap();
-        assert_eq!(opened.node.kind, NodeKind::File);
-        let writable = OpenFlags {
-            access: 1,
-            ..OpenFlags::default()
-        };
-        assert_eq!(
-            open(&mut storage, ROOT, b"/etc/motd", writable),
-            Err(VfsError::Access)
-        );
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            exclusive: true,
-            ..OpenFlags::default()
-        };
-        assert_eq!(
-            open(&mut storage, ROOT, b"/etc/motd", create),
-            Err(VfsError::Exist)
-        );
-        assert_eq!(
-            open(
-                &mut storage,
-                ROOT,
-                b"/nope",
-                OpenFlags {
-                    access: 2,
-                    create: true,
-                    ..OpenFlags::default()
-                }
-            ),
-            Err(VfsError::Access)
-        );
-        let directory = OpenFlags {
-            access: 0,
-            directory: true,
-            ..OpenFlags::default()
-        };
-        assert_eq!(
-            open(&mut storage, ROOT, b"/etc/motd", directory),
-            Err(VfsError::NotDir)
-        );
-        assert_eq!(
-            open(&mut storage, ROOT, b"/tmp/scratch", create)
-                .expect("create in writable dir")
-                .node
-                .kind,
-            NodeKind::File
-        );
-    }
-
-    #[test]
-    fn write_truncate_and_append_round_trip() {
-        let mut storage = mounted();
-        let opened = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/scratch",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        let mut node = opened.node;
-        assert_eq!(
-            write(&mut storage, opened.id, &mut node, 0, b"abcdef"),
-            Ok(6)
-        );
-        assert_eq!(node.size, 6);
-        let mut out = [0u8; 8];
-        assert_eq!(read(&mut storage, &node, 0, &mut out), Ok(6));
-        assert_eq!(&out[..6], b"abcdef");
-        assert_eq!(write(&mut storage, opened.id, &mut node, 6, b"ghi"), Ok(3));
-        assert_eq!(node.size, 9);
-        assert_eq!(truncate(&mut storage, opened.id, &mut node, 3), Ok(()));
-        assert_eq!(node.size, 3);
-        assert_eq!(read(&mut storage, &node, 0, &mut out), Ok(3));
-        assert_eq!(&out[..3], b"abc");
-    }
-
-    #[test]
-    fn directory_listing_includes_dot_and_dot_dot() {
-        let mut storage = mounted();
-        let count = dir_entry_count(&mut storage, ROOT).unwrap();
-        assert_eq!(count, 9);
-        let dot = dir_entry(&mut storage, ROOT, 0).unwrap().unwrap();
-        assert_eq!(dot.name_bytes(), b".");
-        let dot_dot = dir_entry(&mut storage, ROOT, 1).unwrap().unwrap();
-        assert_eq!(dot_dot.name_bytes(), b"..");
-        assert_eq!(dot_dot.node, ROOT);
-        let etc = resolve(&mut storage, ROOT, b"etc").unwrap();
-        let total = dir_total(&mut storage, etc).unwrap();
-        assert_eq!(total, 5 + 6 + 8 + 12); // ., .., motd, hostname
-        let mut bytes = vec![0u8; total];
-        assert_eq!(dir_bytes(&mut storage, etc, 0, &mut bytes), Ok(total));
-        assert_eq!(bytes[0], etc);
-        assert_eq!(bytes[2], NodeKind::Directory.as_raw());
-        assert!(bytes.windows(4).any(|window| window == b"motd"));
-        let mut tail = [0u8; 4];
-        assert_eq!(dir_bytes(&mut storage, etc, total as u64, &mut tail), Ok(0));
-    }
-
-    #[test]
-    fn mount_is_idempotent_and_capacity_is_finite() {
-        let mut storage = mounted();
-        let opened = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/a",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        let mut node = opened.node;
-        assert_eq!(write(&mut storage, opened.id, &mut node, 0, b"x"), Ok(1));
-        assert_eq!(mount(&mut storage), Ok(()));
-        assert_eq!(read_file(&mut storage, b"/tmp/a"), b"x");
-        let mut next = 0u32;
-        loop {
-            let mut name = [b'/'; 8];
-            name[1] = b't';
-            name[2] = b'm';
-            name[3] = b'p';
-            name[4] = b'/';
-            name[5] = b'a' + ((next / 10) % 10) as u8;
-            name[6] = b'a' + (next % 10) as u8;
-            let path = &name[..7];
-            match open(
-                &mut storage,
-                ROOT,
-                path,
-                OpenFlags {
-                    access: 2,
-                    create: true,
-                    ..OpenFlags::default()
-                },
-            ) {
-                Ok(_) => next += 1,
-                Err(error) => {
-                    assert_eq!(error, VfsError::NoSpace);
-                    break;
-                }
-            }
-        }
-        assert!(next >= 3);
-    }
-
-    #[test]
-    fn content_capacity_is_enforced() {
-        let mut storage = mounted();
-        let opened = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/big",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        let mut node = opened.node;
-        let initial = content_used(&mut storage).unwrap();
-        let chunk = [b'z'; 512];
-        let mut offset = 0usize;
-        loop {
-            match write(&mut storage, opened.id, &mut node, offset as u64, &chunk) {
-                Ok(512) => offset += 512,
-                Err(VfsError::NoSpace) => break,
-                other => panic!("unexpected write result {other:?}"),
-            }
-        }
-        assert_eq!(offset, ((CONTENT_CAPACITY - initial) / 512) * 512);
-        assert_eq!(node.size as usize, offset);
-    }
-
-    #[test]
-    fn file_creation_reuses_a_freed_slot() {
-        let mut storage = mounted();
-        let flags = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        let mut last: Option<(NodeId, u8)> = None;
-        let mut index = 0u8;
-        loop {
-            let digit = b'0' + index;
-            let path = [b'/', b't', b'm', b'p', b'/', b'f', digit];
-            match open(&mut storage, ROOT, &path, flags) {
-                Ok(opened) => {
-                    last = Some((opened.id, digit));
-                    index += 1;
-                }
-                Err(VfsError::NoSpace) => break,
-                Err(error) => panic!("unexpected open result {error:?}"),
-            }
-        }
-        let (id, digit) = last.expect("at least one file was created");
-        let path = [b'/', b't', b'm', b'p', b'/', b'f', digit];
-        assert_eq!(unlink(&mut storage, ROOT, &path, false), Ok(id));
-        // 删除后计数仍为高水位，但创建应复用同一槽而不是 ENOSPC。
-        let again = open(&mut storage, ROOT, b"/tmp/g1", flags).unwrap();
-        assert_eq!(again.id, id);
-        assert_eq!(again.node.name_bytes(), b"g1");
-    }
-
-    #[test]
-    fn mkdir_creates_writable_empty_directories() {
-        let mut storage = mounted();
-        let a = mkdir(&mut storage, ROOT, b"/tmp/a").expect("mkdir in writable dir");
-        let node = read_node(&mut storage, a).unwrap();
-        assert_eq!(node.kind, NodeKind::Directory);
-        assert_eq!(node.parent, resolve(&mut storage, ROOT, b"tmp").unwrap());
-        assert!(node.writable());
-        assert_eq!(mkdir(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::Exist));
-        assert_eq!(mkdir(&mut storage, ROOT, b"/etc/x"), Err(VfsError::Access));
-        assert_eq!(mkdir(&mut storage, ROOT, b"/nope/x"), Err(VfsError::NoEnt));
-        assert_eq!(
-            mkdir(&mut storage, ROOT, b"/etc/motd/x"),
-            Err(VfsError::NotDir)
-        );
-        assert_eq!(mkdir(&mut storage, ROOT, b"/"), Err(VfsError::Exist));
-        assert_eq!(mkdir(&mut storage, ROOT, b"."), Err(VfsError::Exist));
-        assert!(mkdir(&mut storage, ROOT, b"/tmp/a/b").is_ok());
-    }
-
-    #[test]
-    fn unlink_and_rmdir_enforce_kind_empty_and_parent_rights() {
-        let mut storage = mounted();
-        let a = mkdir(&mut storage, ROOT, b"/tmp/a").unwrap();
-        let f = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/a/f",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/f", false), Ok(f.id));
-        assert_eq!(
-            resolve(&mut storage, ROOT, b"/tmp/a/f"),
-            Err(VfsError::NoEnt)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/tmp/a/f", false),
-            Err(VfsError::NoEnt)
-        );
-        // 非空目录不能 rmdir；目录不能用 unlink 删除；普通文件不能 rmdir。
-        let _g = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/a/g",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/tmp/a", true),
-            Err(VfsError::Access)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/tmp/a", false),
-            Err(VfsError::Access)
-        );
-        let f2 = open(
-            &mut storage,
-            ROOT,
-            b"/tmp/a/f2",
-            OpenFlags {
-                access: 2,
-                create: true,
-                ..OpenFlags::default()
-            },
-        )
-        .unwrap();
-        // 普通文件不能 rmdir；只读父目录上的任何删除都是 EACCES。
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/tmp/a/f2", true),
-            Err(VfsError::NotDir)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/etc/motd", true),
-            Err(VfsError::Access)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/etc/motd", false),
-            Err(VfsError::Access)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/", true),
-            Err(VfsError::Access)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b".", false),
-            Err(VfsError::Invalid)
-        );
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"..", true),
-            Err(VfsError::Invalid)
-        );
-        // 清空后可删除。
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/g", false), Ok(_g.id));
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a/f2", false), Ok(f2.id));
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a", true), Ok(a));
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::NoEnt));
-    }
-
-    #[test]
-    fn deleted_nodes_are_skipped_and_reused() {
-        let mut storage = mounted();
-        let tmp = resolve(&mut storage, ROOT, b"tmp").unwrap();
-        let a = mkdir(&mut storage, ROOT, b"/tmp/a").unwrap();
-        assert_eq!(dir_entry_count(&mut storage, tmp), Ok(3));
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/a", true), Ok(a));
-        assert_eq!(dir_entry_count(&mut storage, tmp), Ok(2));
-        // 已删除节点不出现在目录枚举里。
-        for index in 0..dir_entry_count(&mut storage, tmp).unwrap() {
-            let entry = dir_entry(&mut storage, tmp, index).unwrap().unwrap();
-            assert_ne!(entry.name_bytes(), b"a");
-        }
-        // 槽位被复用，且新名字覆盖旧名字。
-        let b = mkdir(&mut storage, ROOT, b"/tmp/b").unwrap();
-        assert_eq!(b, a);
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/a"), Err(VfsError::NoEnt));
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/b"), Ok(b));
-    }
-
-    #[test]
-    fn symlinks_create_read_and_resolve() {
-        let mut storage = mounted();
-        // 相对目标以链接父目录为基准（`/tmp/../etc/motd`）。
-        symlink(&mut storage, ROOT, b"../etc/motd", b"/tmp/rel").unwrap();
-        assert_eq!(read_file(&mut storage, b"/tmp/rel"), b"welcome\n");
-        assert_eq!(read_file(&mut storage, b"tmp/rel"), b"welcome\n");
-        // 绝对目标从根开始。
-        symlink(&mut storage, ROOT, b"/etc/hostname", b"/tmp/abs").unwrap();
-        assert_eq!(read_file(&mut storage, b"tmp/abs"), b"prima\n");
-        // 中间分量是链接时按目标目录继续。
-        symlink(&mut storage, ROOT, b"/etc", b"/tmp/dir").unwrap();
-        assert_eq!(read_file(&mut storage, b"/tmp/dir/motd"), b"welcome\n");
-        // readlink 返回目标原文；末项不跟随，前缀照常跟随。
-        let id = resolve_link(&mut storage, ROOT, b"/tmp/rel").unwrap();
-        let node = read_node(&mut storage, id).unwrap();
-        assert_eq!(node.kind, NodeKind::Symlink);
-        let followed = resolve(&mut storage, ROOT, b"/tmp/rel").unwrap();
-        assert_eq!(
-            read_node(&mut storage, followed).unwrap().kind,
-            NodeKind::File
-        );
-        let target = read_link(&mut storage, &node).unwrap();
-        assert_eq!(&target[..node.size as usize], b"../etc/motd");
-        // 重复创建与非法目标确定失败。
-        assert_eq!(
-            symlink(&mut storage, ROOT, b"etc/motd", b"/tmp/rel"),
-            Err(VfsError::Exist)
-        );
-        assert_eq!(
-            symlink(&mut storage, ROOT, b"", b"/tmp/empty"),
-            Err(VfsError::Invalid)
-        );
-        // 只读父目录拒绝创建。
-        assert_eq!(
-            symlink(&mut storage, ROOT, b"etc/motd", b"/usr/l"),
-            Err(VfsError::Access)
-        );
-    }
-
-    #[test]
-    fn symlink_loops_and_dangling_targets_fail_deterministically() {
-        let mut storage = mounted();
-        symlink(&mut storage, ROOT, b"loop", b"/tmp/loop").unwrap();
-        assert_eq!(
-            resolve(&mut storage, ROOT, b"/tmp/loop"),
-            Err(VfsError::Loop)
-        );
-        symlink(&mut storage, ROOT, b"missing", b"/tmp/dangling").unwrap();
-        assert_eq!(
-            resolve(&mut storage, ROOT, b"/tmp/dangling"),
-            Err(VfsError::NoEnt)
-        );
-        // 互相指向的两级环在深度上限处确定失败。
-        symlink(&mut storage, ROOT, b"s1", b"/tmp/s0").unwrap();
-        symlink(&mut storage, ROOT, b"s0", b"/tmp/s1").unwrap();
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/s0"), Err(VfsError::Loop));
-    }
-
-    #[test]
-    fn rename_moves_and_replaces_files() {
-        let mut storage = mounted();
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        let mut opened = open(&mut storage, ROOT, b"/tmp/f", create).unwrap();
-        write(&mut storage, opened.id, &mut opened.node, 0, b"abc").unwrap();
-        assert_eq!(rename(&mut storage, ROOT, b"/tmp/f", b"/tmp/g"), Ok(()));
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/f"), Err(VfsError::NoEnt));
-        assert_eq!(read_file(&mut storage, b"/tmp/g"), b"abc");
-        // 覆盖已有文件：目标槽位被释放，内容来自源文件。
-        let mut other = open(&mut storage, ROOT, b"/tmp/h", create).unwrap();
-        write(&mut storage, other.id, &mut other.node, 0, b"xyz").unwrap();
-        assert_eq!(rename(&mut storage, ROOT, b"/tmp/g", b"/tmp/h"), Ok(()));
-        assert_eq!(read_file(&mut storage, b"/tmp/h"), b"abc");
-        assert_eq!(resolve(&mut storage, ROOT, b"/tmp/g"), Err(VfsError::NoEnt));
-        assert_eq!(rename(&mut storage, ROOT, b"/tmp/h", b"/tmp/h"), Ok(()));
-    }
-
-    #[test]
-    fn rename_moves_directories_and_rejects_subtree() {
-        let mut storage = mounted();
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        mkdir(&mut storage, ROOT, b"/tmp/d").unwrap();
-        let mut inner = open(&mut storage, ROOT, b"/tmp/d/inner", create).unwrap();
-        write(&mut storage, inner.id, &mut inner.node, 0, b"in").unwrap();
-        assert_eq!(rename(&mut storage, ROOT, b"/tmp/d", b"/tmp/e"), Ok(()));
-        assert_eq!(read_file(&mut storage, b"/tmp/e/inner"), b"in");
-        // 目录不能移进自己的子树。
-        mkdir(&mut storage, ROOT, b"/tmp/e/sub").unwrap();
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/e", b"/tmp/e/sub"),
-            Err(VfsError::Invalid)
-        );
-    }
-
-    #[test]
-    fn rename_enforces_replace_and_error_rules() {
-        let mut storage = mounted();
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        // 文件不能覆盖目录。
-        let mut file = open(&mut storage, ROOT, b"/tmp/f", create).unwrap();
-        write(&mut storage, file.id, &mut file.node, 0, b"f").unwrap();
-        mkdir(&mut storage, ROOT, b"/tmp/y").unwrap();
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/f", b"/tmp/y"),
-            Err(VfsError::NotDir)
-        );
-        // 目录不能覆盖非空目录；目标清空后可以替换。
-        let k = open(&mut storage, ROOT, b"/tmp/y/k", create).unwrap();
-        mkdir(&mut storage, ROOT, b"/tmp/x").unwrap();
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/x", b"/tmp/y"),
-            Err(VfsError::Access)
-        );
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/f", false), Ok(file.id));
-        assert_eq!(unlink(&mut storage, ROOT, b"/tmp/y/k", false), Ok(k.id));
-        mkdir(&mut storage, ROOT, b"/tmp/z").unwrap();
-        assert_eq!(rename(&mut storage, ROOT, b"/tmp/z", b"/tmp/y"), Ok(()));
-        // 冻结错误集。
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/none", b"/tmp/n2"),
-            Err(VfsError::NoEnt)
-        );
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/x", b"/usr/x"),
-            Err(VfsError::Access)
-        );
-        // 冻结错误集：文件带尾随斜杠不能重命名（目录可以）。
-        open(&mut storage, ROOT, b"/tmp/q", create).unwrap();
-        assert_eq!(
-            rename(&mut storage, ROOT, b"/tmp/q/", b"/tmp/q2"),
-            Err(VfsError::NotDir)
-        );
-    }
-
-    #[test]
-    fn chmod_updates_mode_and_access_checks() {
-        let mut storage = mounted();
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        let mut file = open(&mut storage, ROOT, b"/tmp/p", create).unwrap();
-        assert!(file.node.writable());
-        assert_eq!(file.node.mode, 0o666);
-        assert_eq!(chmod(&mut storage, ROOT, b"/tmp/p", 0o444), Ok(()));
-        let node = read_node(&mut storage, file.id).unwrap();
-        assert!(!node.writable());
-        assert!(node.readable());
-        let write_flags = OpenFlags {
-            access: 1,
-            ..OpenFlags::default()
-        };
-        assert_eq!(
-            open(&mut storage, ROOT, b"/tmp/p", write_flags),
-            Err(VfsError::Access)
-        );
-        // 空路径 + start 节点等价于 fchmod。
-        assert_eq!(chmod(&mut storage, file.id, b"", 0o600), Ok(()));
-        assert!(read_node(&mut storage, file.id).unwrap().writable());
-        // 目录 mode 决定创建/删除权限。
-        assert_eq!(chmod(&mut storage, ROOT, b"/tmp", 0o555), Ok(()));
-        assert_eq!(
-            open(&mut storage, ROOT, b"/tmp/q", create),
-            Err(VfsError::Access)
-        );
-        assert_eq!(chmod(&mut storage, ROOT, b"/tmp", 0o777), Ok(()));
-        assert_eq!(
-            open(&mut storage, ROOT, b"/tmp/q", create).unwrap().id,
-            file.id + 1
-        );
-        // 非法 mode/缺失路径确定失败。
-        assert_eq!(
-            chmod(&mut storage, ROOT, b"/tmp/p", 0o10000),
-            Err(VfsError::Invalid)
-        );
-        assert_eq!(
-            chmod(&mut storage, ROOT, b"/tmp/none", 0o666),
-            Err(VfsError::NoEnt)
-        );
-        let _ = write(&mut storage, file.id, &mut file.node, 0, b"");
-    }
-
-    #[test]
-    fn deleted_content_is_reclaimed_by_compaction() {
-        let mut storage = mounted();
-        let create = OpenFlags {
-            access: 2,
-            create: true,
-            ..OpenFlags::default()
-        };
-        let initial = content_used(&mut storage).unwrap();
-        let mut first = open(&mut storage, ROOT, b"/tmp/first", create).unwrap();
-        write(&mut storage, first.id, &mut first.node, 0, &[b'a'; 1200]).unwrap();
-        let mut second = open(&mut storage, ROOT, b"/tmp/second", create).unwrap();
-        write(&mut storage, second.id, &mut second.node, 0, &[b'b'; 900]).unwrap();
-        assert_eq!(content_used(&mut storage), Ok(initial + 1200 + 900));
-        assert_eq!(
-            unlink(&mut storage, ROOT, b"/tmp/first", false),
-            Ok(first.id)
-        );
-        // 删除后 `second` 的 `data` 仍靠后；下一次增长触发压实并把内容左移。
-        let grown = write(&mut storage, second.id, &mut second.node, 0, &[b'c'; 1900]);
-        assert_eq!(grown, Ok(1900));
-        assert_eq!(read_file(&mut storage, b"/tmp/second"), vec![b'c'; 1900]);
-        assert_eq!(content_used(&mut storage), Ok(1900 + initial));
-    }
-}
+mod tests;

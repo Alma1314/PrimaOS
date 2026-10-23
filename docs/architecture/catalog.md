@@ -46,7 +46,7 @@
 | [Specs 索引](../superpowers/specs/README.md) | `docs/superpowers/specs/README.md` |
 | [BLK-001 形式化模型（Lean）](../../lean/README.md) | `lean/README.md` |
 
-## plan（21）
+## plan（22）
 
 | 文档 | 路径 |
 |---|---|
@@ -71,6 +71,7 @@
 | [阶段 5 修订计划：从原生机制到 POSIX 源码兼容](../superpowers/plans/2026-10-18-stage5-revised-plan.md) | `docs/superpowers/plans/2026-10-18-stage5-revised-plan.md` |
 | [阶段 5 收尾与阶段 6 入口实施路线图](../superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | `docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md` |
 | [文档体系重构执行计划](../superpowers/plans/2026-10-23-documentation-restructure-plan.md) | `docs/superpowers/plans/2026-10-23-documentation-restructure-plan.md` |
+| [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 
 ## reference（5）
 
@@ -82,7 +83,7 @@
 | [术语与检索别名](glossary.md) | `docs/architecture/glossary.md` |
 | [接口、号段与版本边界](interfaces.md) | `docs/architecture/interfaces.md` |
 
-## report（163）
+## report（164）
 
 | 文档 | 路径 |
 |---|---|
@@ -249,6 +250,13 @@
 | [阶段 5 / M20：兼容矩阵定稿](../superpowers/reports/2026-10-23-stage5-m20-compat-final.md) | `docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md` |
 | [阶段 5 / M21：出口评审（未签署）](../superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | `docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md` |
 | [阶段 5 / ISSUE-THREAD-CAPACITY-001 调查记录](../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md) | `docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md` |
+| [VFS / LibOS 基础重构验证报告](../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | `docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md` |
+
+## spec（1）
+
+| 文档 | 路径 |
+|---|---|
+| [VFS 打开对象与 LibOS 适配边界](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md) | `docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md` |
 
 ## specification（67）
 

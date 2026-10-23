@@ -54,7 +54,7 @@ use prima_runtime::{
         SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker, pack_service_reply, pack_vfs_node,
         pack_vfs_pair_reply,
     },
-    vfs::{self, NodeKind, OpenFlags, Storage},
+    vfs::{self, AccessMode, HandleId, NodeKind, OpenFiles, OpenFlags, SeekFrom, Storage},
 };
 
 /// SPEC-111：Namespace 服务代理解析的编译期路径（内核根 Namespace 里由 `init` 绑定，供
@@ -151,7 +151,7 @@ pub fn run(
     // 此后状态**落盘于该内核 MemorySegment**——日志服务据此落日志、存储服务据此落数据。
     let mut data_seg: Option<Capability> = None;
     // M4/M8：存储服务的文件/目录句柄表。服务端 fd 3..10 对应下标 0..7；close 立即释放并可复用。
-    let mut files = [FileHandle::EMPTY; SERVICE_FILE_HANDLES];
+    let mut files = OpenFiles::<SERVICE_FILE_HANDLES>::new();
     // M8：rootfs 是否已在该段内成功格式化/挂载。
     let mut vfs_ready = false;
     // M8：一次 `openat` 的分阶段路径暂存（OPEN / PATH* / COMMIT）。
@@ -181,7 +181,15 @@ pub fn run(
                 // M8：存储服务在自己的段上格式化 rootfs；日志服务继续只用 0..8 的状态字。
                 if kind == SERVICE_BEHAVIOR_STORE {
                     let mut storage = SegmentStorage { runtime: &runtime };
-                    vfs_ready = vfs::mount(&mut storage).is_ok();
+                    vfs_ready = vfs::mount(&mut storage)
+                        .and_then(|()| {
+                            if files.is_empty() {
+                                vfs::recover_open_files(&mut storage)
+                            } else {
+                                Ok(())
+                            }
+                        })
+                        .is_ok();
                 }
             }
         } else if tag == SERVICE_SERVE_TAG >> 48 {
@@ -237,7 +245,7 @@ pub fn run(
             // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
             let reply = if vfs_ready {
                 if staged.op != 0 {
-                    mutate_staged(&runtime, &mut staged, &mut files, message.payload)
+                    mutate_staged(&runtime, &mut staged, message.payload)
                 } else if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
                     stat_staged(&runtime, &mut staged)
                 } else {
@@ -250,7 +258,7 @@ pub fn run(
         } else if tag == SERVICE_VFS_STATUS_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M12b：只读句柄计数，供服务管理器在 C 退出后核对清理结果。
             let client = (message.payload >> SERVICE_VFS_STATUS_CLIENT_SHIFT) & 0xff;
-            let open = files.iter().filter(|handle| handle.open).count() as u64;
+            let open = files.len() as u64;
             let reply = SERVICE_VFS_STATUS_TAG
                 | (client << SERVICE_VFS_STATUS_CLIENT_SHIFT)
                 | (open & SERVICE_VFS_STATUS_COUNT_MASK);
@@ -343,27 +351,6 @@ pub fn run(
             let _ = runtime.send(peer, send_cap, response, &[]);
         }
     }
-}
-
-/// M4/M8：一个打开的文件/目录句柄。offset 归服务端所有（Linux 的共享偏移语义），
-/// `access` 为 0=只读、1=只写、2=读写。
-#[derive(Clone, Copy)]
-struct FileHandle {
-    open: bool,
-    node: u8,
-    offset: u64,
-    access: u8,
-    append: bool,
-}
-
-impl FileHandle {
-    const EMPTY: Self = Self {
-        open: false,
-        node: 0,
-        offset: 0,
-        access: 0,
-        append: false,
-    };
 }
 
 /// M8：一次 open 的分阶段状态。路径经 `OPEN`（前 3 字节）+ `PATH`（随后每段 5 字节）装入。
@@ -543,16 +530,22 @@ impl LinkTarget {
     };
 }
 
-fn open_flags(bits: u8) -> OpenFlags {
+fn open_flags(bits: u8) -> Result<OpenFlags, vfs::VfsError> {
     let bits = bits as u64;
-    OpenFlags {
-        access: ((bits >> SERVICE_VFS_ACCESS_SHIFT) & 3) as u8,
+    let access = match (bits >> SERVICE_VFS_ACCESS_SHIFT) & 3 {
+        0 => AccessMode::ReadOnly,
+        1 => AccessMode::WriteOnly,
+        2 => AccessMode::ReadWrite,
+        _ => return Err(vfs::VfsError::Invalid),
+    };
+    Ok(OpenFlags {
+        access,
         create: bits & SERVICE_VFS_FLAG_CREATE != 0,
         exclusive: bits & SERVICE_VFS_FLAG_EXCLUSIVE != 0,
         truncate: bits & SERVICE_VFS_FLAG_TRUNC != 0,
         append: bits & SERVICE_VFS_FLAG_APPEND != 0,
         directory: bits & SERVICE_VFS_FLAG_DIRECTORY != 0,
-    }
+    })
 }
 
 fn vfs_status(error: vfs::VfsError) -> u64 {
@@ -566,14 +559,15 @@ fn vfs_status(error: vfs::VfsError) -> u64 {
         vfs::VfsError::Unformatted => SERVICE_FILE_ENOSYS,
         vfs::VfsError::Io => SERVICE_FILE_EFAULT,
         vfs::VfsError::Loop => SERVICE_FILE_ELOOP,
+        vfs::VfsError::BadHandle => SERVICE_FILE_EBADF,
+        vfs::VfsError::TooManyOpen => SERVICE_FILE_EAGAIN,
     }
 }
 
-/// M11：执行一次变更；打开中的节点拒绝删除（返回 `EACCES`，避免句柄指向被复用槽）。
+/// 执行树变更；文件打开引用与目录项生命周期由 VFS 分别维护。
 fn mutate_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     staged: &mut OpenStaging,
-    files: &mut [FileHandle; SERVICE_FILE_HANDLES],
     commit: u64,
 ) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
@@ -600,13 +594,6 @@ fn mutate_staged<T: SyscallTransport>(
             Err(error) => reply(vfs_status(error)),
         },
         STAGED_UNLINK | STAGED_RMDIR => {
-            let id = match vfs::resolve(&mut storage, start, path) {
-                Ok(id) => id,
-                Err(error) => return reply(vfs_status(error)),
-            };
-            if files.iter().any(|handle| handle.open && handle.node == id) {
-                return reply(SERVICE_FILE_EACCES);
-            }
             match vfs::unlink(&mut storage, start, path, op == STAGED_RMDIR) {
                 Ok(_) => reply(0),
                 Err(error) => reply(vfs_status(error)),
@@ -620,42 +607,38 @@ fn mutate_staged<T: SyscallTransport>(
 fn open_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     staged: &mut OpenStaging,
-    files: &mut [FileHandle; SERVICE_FILE_HANDLES],
+    files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
 ) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
     if !staged.active || staged.got != staged.len {
         staged.active = false;
         return reply(SERVICE_FILE_EINVAL);
     }
-    let flags = open_flags(staged.flags);
+    let flags = match open_flags(staged.flags) {
+        Ok(flags) => flags,
+        Err(error) => {
+            staged.active = false;
+            return reply(vfs_status(error));
+        }
+    };
     let start = staged.start;
     let len = staged.len as usize;
     staged.active = false;
     let mut storage = SegmentStorage { runtime };
-    let opened = match vfs::open(&mut storage, start, &staged.path[..len], flags) {
+    let (handle, info) = match files.open(&mut storage, start, &staged.path[..len], flags) {
         Ok(opened) => opened,
         Err(error) => return reply(vfs_status(error)),
     };
-    let Some(index) = files.iter().position(|handle| !handle.open) else {
-        return reply(SERVICE_FILE_EAGAIN);
-    };
-    files[index] = FileHandle {
-        open: true,
-        node: opened.id,
-        offset: 0,
-        access: flags.access,
-        append: flags.append,
-    };
-    let fd = index as u64 + SERVICE_FILE_FIRST_FD;
+    let fd = handle.0 as u64 + SERVICE_FILE_FIRST_FD;
     pack_file_reply(
         SERVICE_FILE_OP_OPEN,
         fd,
         0,
         pack_vfs_node(
-            opened.id as u64,
-            opened.node.kind.as_raw() as u64,
-            opened.node.size as u64,
-            opened.node.mode,
+            info.id as u64,
+            info.kind.as_raw() as u64,
+            info.size,
+            info.mode,
         ),
     )
 }
@@ -679,7 +662,7 @@ fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStagi
             Err(error) => return reply(vfs_status(error)),
         }
     };
-    let node = match vfs::read_node(&mut storage, id) {
+    let info = match vfs::metadata(&mut storage, id) {
         Ok(node) => node,
         Err(error) => return reply(vfs_status(error)),
     };
@@ -687,12 +670,7 @@ fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStagi
         SERVICE_FILE_OP_STAT,
         0,
         0,
-        pack_vfs_node(
-            id as u64,
-            node.kind.as_raw() as u64,
-            node.size as u64,
-            node.mode,
-        ),
+        pack_vfs_node(id as u64, info.kind.as_raw() as u64, info.size, info.mode),
     )
 }
 
@@ -772,176 +750,72 @@ fn pair_staged<T: SyscallTransport>(
     reply(status, 0)
 }
 
-/// M8：按 `fd` 取**已打开**的句柄；fd 3 起，越界/未打开统一 `None`（调用方回 `EBADF`）。
-fn file_handle(files: &mut [FileHandle; SERVICE_FILE_HANDLES], fd: u64) -> Option<&mut FileHandle> {
-    let index = fd.checked_sub(SERVICE_FILE_FIRST_FD)? as usize;
-    if index >= SERVICE_FILE_HANDLES || !files[index].open {
-        return None;
-    }
-    Some(&mut files[index])
-}
-
-/// M8：处理一条读/写/lseek/close 请求，返回应答 payload。调用方已确认 VFS 可用。
+/// 线协议编解码边界；打开对象语义在可 host 测试的 OpenFiles 中。
 fn file_request<T: SyscallTransport>(
     runtime: &Runtime<T>,
-    files: &mut [FileHandle; SERVICE_FILE_HANDLES],
+    files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
     payload: u64,
 ) -> u64 {
     let op = (payload >> SERVICE_FILE_OP_SHIFT) & 0xf;
     let fd = (payload >> SERVICE_FILE_FD_SHIFT) & 0xf;
     let arg = payload & SERVICE_FILE_ARG_MASK;
     let reply = |status: u64, data: u64| pack_file_reply(op, fd, status, data);
+    let Some(index) = fd.checked_sub(SERVICE_FILE_FIRST_FD) else {
+        return reply(SERVICE_FILE_EBADF, 0);
+    };
+    let id = HandleId(index as usize);
     let mut storage = SegmentStorage { runtime };
-    match op {
+    let result = match op {
         SERVICE_FILE_OP_READ => {
-            let Some(handle) = file_handle(files, fd) else {
-                return reply(SERVICE_FILE_EBADF, 0);
-            };
-            let wanted = (arg & 0xff) as usize;
-            let node = match vfs::read_node(&mut storage, handle.node) {
-                Ok(node) => node,
-                Err(error) => return reply(vfs_status(error), 0),
-            };
-            if node.kind == NodeKind::Directory {
-                let total = match vfs::dir_total(&mut storage, handle.node) {
-                    Ok(total) => total,
-                    Err(error) => return reply(vfs_status(error), 0),
-                };
-                if wanted == 0 || handle.offset as usize >= total {
-                    return reply(0, 0);
+            let cap = ((arg & 0xff) as usize).min(SERVICE_FILE_CHUNK as usize);
+            let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
+            let count = match files.info(&mut storage, id) {
+                Ok(info) if info.kind == NodeKind::Directory => {
+                    files.read_directory_bytes(&mut storage, id, &mut bytes[..cap])
                 }
-                let cap = wanted.min(SERVICE_FILE_CHUNK as usize);
-                let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
-                let count = match vfs::dir_bytes(
-                    &mut storage,
-                    handle.node,
-                    handle.offset,
-                    &mut bytes[..cap],
-                ) {
-                    Ok(count) => count,
-                    Err(error) => return reply(vfs_status(error), 0),
-                };
-                handle.offset += count as u64;
+                Ok(_) => files.read(&mut storage, id, &mut bytes[..cap]),
+                Err(error) => Err(error),
+            };
+            count.map(|count| {
                 let mut data = 0u64;
                 for (index, byte) in bytes[..count].iter().enumerate() {
                     data |= (*byte as u64) << (8 * index);
                 }
-                return reply(0, ((count as u64) << SERVICE_FILE_WRITE_COUNT_SHIFT) | data);
-            }
-            if node.kind == NodeKind::Null {
-                return reply(0, 0);
-            }
-            if handle.access != 0 && handle.access != 2 {
-                return reply(SERVICE_FILE_EBADF, 0);
-            }
-            let cap = wanted.min(SERVICE_FILE_CHUNK as usize);
-            let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
-            let count = match vfs::read(&mut storage, &node, handle.offset, &mut bytes[..cap]) {
-                Ok(count) => count,
-                Err(error) => return reply(vfs_status(error), 0),
-            };
-            handle.offset += count as u64;
-            let mut data = 0u64;
-            for (index, byte) in bytes[..count].iter().enumerate() {
-                data |= (*byte as u64) << (8 * index);
-            }
-            reply(0, ((count as u64) << SERVICE_FILE_WRITE_COUNT_SHIFT) | data)
+                ((count as u64) << SERVICE_FILE_WRITE_COUNT_SHIFT) | data
+            })
         }
         SERVICE_FILE_OP_WRITE => {
-            let Some(handle) = file_handle(files, fd) else {
-                return reply(SERVICE_FILE_EBADF, 0);
-            };
-            let wanted = ((arg >> SERVICE_FILE_WRITE_COUNT_SHIFT) & 0xff) as usize;
-            let data = arg & 0x00ff_ffff;
-            let count = wanted.min(SERVICE_FILE_CHUNK as usize);
-            let node = match vfs::read_node(&mut storage, handle.node) {
-                Ok(node) => node,
-                Err(error) => return reply(vfs_status(error), 0),
-            };
-            if node.kind == NodeKind::Directory {
-                return reply(SERVICE_FILE_EBADF, 0);
-            }
-            if node.kind == NodeKind::Null {
-                return reply(0, count as u64);
-            }
-            if handle.access != 1 && handle.access != 2 {
-                return reply(SERVICE_FILE_EBADF, 0);
-            }
-            let offset = if handle.append {
-                node.size as u64
-            } else {
-                handle.offset
-            };
+            let count = (((arg >> SERVICE_FILE_WRITE_COUNT_SHIFT) & 0xff) as usize)
+                .min(SERVICE_FILE_CHUNK as usize);
             let mut bytes = [0u8; SERVICE_FILE_CHUNK as usize];
             for (index, byte) in bytes[..count].iter_mut().enumerate() {
-                *byte = ((data >> (8 * index)) & 0xff) as u8;
+                *byte = ((arg >> (8 * index)) & 0xff) as u8;
             }
-            let mut node = node;
-            match vfs::write(
-                &mut storage,
-                handle.node,
-                &mut node,
-                offset,
-                &bytes[..count],
-            ) {
-                Ok(written) => {
-                    handle.offset = offset + written as u64;
-                    reply(0, written as u64)
-                }
-                Err(error) => reply(vfs_status(error), 0),
-            }
+            files
+                .write(&mut storage, id, &bytes[..count])
+                .map(|count| count as u64)
         }
         SERVICE_FILE_OP_LSEEK => {
-            let Some(handle) = file_handle(files, fd) else {
-                return reply(SERVICE_FILE_EBADF, 0);
-            };
-            let node = match vfs::read_node(&mut storage, handle.node) {
-                Ok(node) => node,
-                Err(error) => return reply(vfs_status(error), 0),
-            };
-            let (base, max) = match node.kind {
-                NodeKind::File => (node.size as i64, vfs::CONTENT_CAPACITY as i64),
-                NodeKind::Directory => {
-                    let total = match vfs::dir_total(&mut storage, handle.node) {
-                        Ok(total) => total as i64,
-                        Err(error) => return reply(vfs_status(error), 0),
-                    };
-                    (total, total)
-                }
-                NodeKind::Null => (0, 0),
-                // 符号链接句柄不通过 open 暴露（open 会跟随目标）；lseek 确定失败。
-                NodeKind::Symlink => return reply(SERVICE_FILE_EINVAL, 0),
-            };
-            let whence = (arg >> SERVICE_FILE_SEEK_WHENCE_SHIFT) & 0x3;
             let raw = (arg & SERVICE_FILE_SEEK_OFFSET_MASK) as i64;
             let offset = if raw & 0x2000_0000 != 0 {
                 raw - 0x4000_0000
             } else {
                 raw
             };
-            let start = match whence {
-                0 => 0,
-                1 => handle.offset as i64,
-                2 => base,
+            let from = match (arg >> SERVICE_FILE_SEEK_WHENCE_SHIFT) & 3 {
+                0 => SeekFrom::Start(offset),
+                1 => SeekFrom::Current(offset),
+                2 => SeekFrom::End(offset),
                 _ => return reply(SERVICE_FILE_EINVAL, 0),
             };
-            let Some(next) = start.checked_add(offset) else {
-                return reply(SERVICE_FILE_EINVAL, 0);
-            };
-            if next < 0 || next > max {
-                return reply(SERVICE_FILE_EINVAL, 0);
-            }
-            handle.offset = next as u64;
-            reply(0, next as u64)
+            files.seek(&mut storage, id, from)
         }
-        SERVICE_FILE_OP_CLOSE => {
-            let Some(handle) = file_handle(files, fd) else {
-                return reply(SERVICE_FILE_EBADF, 0);
-            };
-            handle.open = false;
-            reply(0, 0)
-        }
-        _ => reply(SERVICE_FILE_EINVAL, 0),
+        SERVICE_FILE_OP_CLOSE => files.close(&mut storage, id).map(|()| 0),
+        _ => Err(vfs::VfsError::Invalid),
+    };
+    match result {
+        Ok(data) => reply(0, data),
+        Err(error) => reply(vfs_status(error), 0),
     }
 }
 

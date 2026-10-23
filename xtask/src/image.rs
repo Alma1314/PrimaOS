@@ -1268,9 +1268,9 @@ pub(crate) const MUT_EXPECTED_STDOUT: &[u8] = b"MUT|ok=1;mkdir=1;exists=1;stat_d
 /// M13a 冻结的符号链接/rename/fchdir 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlink=1;dir=1;subtree=1;nonempty=1;fchdir=1;ro=1;loop=1;type=1;trunc=1;missing=1|ok=1;err=0\n";
 
-/// M13b 冻结的 chmod/fchmod/umask/stdio 探针输出（Linux 与 Prima 逐字节相同）。
+/// M13b + LibOS 文件对象生命周期/稀疏写探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
-    b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1|ok=1;err=0\n";
+    b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1;unlink_open=1;rename_open=1;unlink_link=1;sparse=1|ok=1;err=0\n";
 
 /// M19 冻结的 loopback UDP 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const NET_EXPECTED_STDOUT: &[u8] =

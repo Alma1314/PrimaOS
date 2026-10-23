@@ -26,6 +26,8 @@ updated: 2026-10-23
 
 ## 契约、计划与证据入口
 
+- [VFS / LibOS 基础设计](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)
+- [VFS / LibOS 验证报告](../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)
 - [Prima OS 实现阶段.md](../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md)
 - [2026-10-18-stage5-profile-v0.md](../../superpowers/specs/2026-10-18-stage5-profile-v0.md)
 - [2026-10-20-stage5-profile-v1.md](../../superpowers/specs/2026-10-20-stage5-profile-v1.md)

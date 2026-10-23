@@ -36,6 +36,10 @@ Linux 风格 `syscall(57)` 在 C 边界表示 fork，Prima 原生 57 表示 siga
 - boot manifest、boot info 与用户 trace 布局有独立字段与版本。
 - profile v0/v1/v2 是兼容范围版本；候选 `NT_RUXOS_ABI` 等名称不因出现在文档中就成为 Prima 已采纳接口。
 
+## 文件服务与 personality
+
+[原生打开对象](../../prima-runtime/src/vfs/handles.rs)接受 AccessMode/SeekFrom/OpenFlags 并返回 FileInfo/语义错误；[服务边界](../../prima-user/src/service.rs)负责原生 IPC 编解码，[C personality](../../prima-user/c/prima_syscall.c)负责 Linux fd、errno、stat/dirent。HandleId/NodeId 都不是 Capability。v3 RAM 镜像版本独立于当前不变的线协议和 syscall 号空间。多 LibOS 的会话授权和独立根尚未实现，详见[VFS 契约](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)。
+
 ## 变更流程
 
 先确认抽象语义与归属，再同步号段定义、内核分派、runtime 封装、C 头/适配层和 musl 裸 syscall 补丁，补充正负例与 trace。号段只追加、不复用空洞；若工作决定仍待组织级确认，保留该状态并在阶段跟踪登记。

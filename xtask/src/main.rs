@@ -34,6 +34,14 @@ fn run() -> Result<(), String> {
             require_no_args(&rest)?;
             test_boot_slice()
         }
+        "test-vfs" => {
+            let program = match rest.as_slice() {
+                [] => None,
+                [name] if matches!(name.as_str(), "V1" | "V2" | "V3") => Some(name.as_str()),
+                _ => return Err(usage()),
+            };
+            test_vfs_slice(program)
+        }
         "compat" => compat_command(&rest),
         "linux-trace" => linux_trace_command(&rest),
         "lint" => lint::lint_command(&rest),
@@ -46,6 +54,47 @@ fn build_and_report() -> Result<image::Images, String> {
     let images = image::build_images()?;
     image::report_build_success();
     Ok(images)
+}
+
+/// 与全量 test 共用原始验收；便于单独迭代文件系统而不重跑所有子系统。
+fn test_vfs_slice(program: Option<&str>) -> Result<(), String> {
+    if program.is_none() || program == Some("V1") {
+        image::check_stage5_linux_vfs()?;
+        test_program_twice(
+            image::build_images_for_vfs()?,
+            "V1",
+            image::VFS_EXPECTED_STDOUT,
+        )?;
+    }
+    if program.is_none() || program == Some("V2") {
+        image::check_stage5_linux_vfs2()?;
+        test_program_twice(
+            image::build_images_for_vfs2()?,
+            "V2",
+            image::VFS2_EXPECTED_STDOUT,
+        )?;
+    }
+    if program.is_none() || program == Some("V3") {
+        image::check_stage5_linux_vfs3()?;
+        test_program_twice(
+            image::build_images_for_vfs3()?,
+            "V3",
+            image::VFS3_EXPECTED_STDOUT,
+        )?;
+    }
+    Ok(())
+}
+
+fn test_program_twice(images: image::Images, name: &str, stdout: &[u8]) -> Result<(), String> {
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(&images.bios, name, stdout, ipc_baseline)
+                .map_err(|error| format!("BIOS {name} run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios {name} run={run}");
+    }
+    Ok(())
 }
 
 fn test_boot_slice() -> Result<(), String> {
@@ -103,54 +152,7 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios F1 run={run}");
     }
-    // M8：用户态 VFS/rootfs、通用 fd、多级路径与目录枚举探针，各跑两轮。
-    image::check_stage5_linux_vfs()?;
-    let images = image::build_images_for_vfs()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "V1",
-                image::VFS_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS V1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios V1 run={run}");
-    }
-    // M13a：符号链接/readlink/rename/fchdir 探针，各跑两轮并逐轮比较 IPC 计数。
-    image::check_stage5_linux_vfs2()?;
-    let images = image::build_images_for_vfs2()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "V2",
-                image::VFS2_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS V2 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios V2 run={run}");
-    }
-    // M13b：chmod/fchmod/umask 与 stdio 文件 API，各跑两轮。
-    image::check_stage5_linux_vfs3()?;
-    let images = image::build_images_for_vfs3()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "V3",
-                image::VFS3_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS V3 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios V3 run={run}");
-    }
+    test_vfs_slice(None)?;
     // M19：用户态 loopback IPv4/UDP，各跑两轮。
     image::check_stage5_linux_net()?;
     let images = image::build_images_for_net()?;
@@ -495,7 +497,8 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-vfs|compat|linux-trace|lint|tcb>\n\
+     \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"
         .to_owned()

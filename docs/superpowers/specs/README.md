@@ -14,6 +14,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-23 | [2026-10-23-vfs-libos-foundation-design.md](2026-10-23-vfs-libos-foundation-design.md) | VFS 打开对象与 LibOS 适配边界 |
 | 2026-10-22 | [2026-10-22-stage5-m11-file-mutation-design.md](2026-10-22-stage5-m11-file-mutation-design.md) | 阶段 5 / M11：文件树变更（设计） |
 | 2026-10-22 | [2026-10-22-stage5-m12-c-startup-exit-design.md](2026-10-22-stage5-m12-c-startup-exit-design.md) | 阶段 5 / M12：C 启动、退出与 fd 清理（设计） |
 | 2026-10-22 | [2026-10-22-stage5-m13a-vfs-links-design.md](2026-10-22-stage5-m13a-vfs-links-design.md) | 阶段 5 / M13a：符号链接、rename 与 fchdir（设计） |

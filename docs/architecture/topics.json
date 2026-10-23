@@ -268,7 +268,12 @@
       "symlink",
       "stdio",
       "chmod",
-      "umask"
+      "umask",
+      "LibOS",
+      "OpenFiles",
+      "orphan",
+      "稀疏写",
+      "打开对象"
     ],
     "sources": [
       "docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md",
@@ -281,16 +286,22 @@
       "docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md",
       "docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md",
       "docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md",
-      "docs/superpowers/compat/compat-state.md"
+      "docs/superpowers/compat/compat-state.md",
+      "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md",
+      "docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md",
+      "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
     ],
     "code": [
       "prima-runtime/src/vfs.rs",
+      "prima-runtime/src/vfs/handles.rs",
+      "prima-user/src/service.rs",
       "prima-user/src/store.rs",
       "prima-user/src/ns.rs",
       "prima-user/src/servicemgr.rs",
       "prima-user/c/prima_syscall.c"
     ],
     "tests": [
+      "prima-runtime/src/vfs/tests.rs",
       "prima-user/c/stage5_fd.c",
       "prima-user/c/stage5_vfs.c",
       "prima-user/c/stage5_meta.c",
@@ -427,7 +438,9 @@
       "docs/superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md",
       "docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md",
       "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md",
-      "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
+      "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md",
+      "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md",
+      "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
