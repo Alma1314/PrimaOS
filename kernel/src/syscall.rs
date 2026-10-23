@@ -40,13 +40,13 @@ use prima_ostd::sync::StaticCell;
 pub use prima_abi::syscall::{
     SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_CLONE, SYS_COPY_IN,
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
-    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_FORK, SYS_MEMSEG_CREATE,
-    SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
-    SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
-    SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4,
-    SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE, SYS_THREAD_CLEAR_TID,
-    SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
-    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
+    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_EXEC_REPLACE, SYS_FORK,
+    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP,
+    SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND,
+    SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN,
+    SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
+    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW,
+    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
     SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
 };
 
@@ -305,6 +305,8 @@ pub const EXC_SYSCALL_TRAP_PAYLOAD: u64 = EXC_SYSCALL_TRAP_SOURCE | (EXC_KIND_SY
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Errno {
     /// 找不到对象（不存在的 Capability）。
+    /// POSIX `ENOEXEC`：不可执行的镜像格式。
+    Exec = 8,
     NoEnt = 2,
     /// POSIX `ECHILD`：没有可等待的子进程。
     Child = 10,
@@ -339,6 +341,7 @@ pub const ERRNO_INVALID: u64 = encode_errno(Errno::Invalid);
 /// errno 的稳定名字（协议/日志用）。
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
+        Errno::Exec => "ENOEXEC",
         Errno::NoEnt => "ENOENT",
         Errno::Child => "ECHILD",
         Errno::Again => "EAGAIN",
@@ -1064,9 +1067,134 @@ fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
     }
 }
 
+/// M17c：exec 的初始栈固定 VA（PML4 槽 254，单页）。
+const EXEC_STACK_VA: u64 = 0x0000_7f00_0000_0000;
+
+/// M17c：用静态 ELF 替换当前任务映像（拆旧映射、映射新段、构造初始栈）。
+fn exec_call(image: u64, image_len: u64, argv_ptr: u64, argv_count: u64) -> u64 {
+    let cur = sched::current();
+    let Some(root) = sched::root(cur) else {
+        return encode_errno(Errno::Fault);
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    if !(120..=(1 << 20)).contains(&image_len) {
+        return encode_errno(Errno::Exec);
+    }
+    let header_len = core::cmp::min(image_len as usize, 288);
+    let mut header = [0u8; 288];
+    for (index, byte) in header.iter_mut().enumerate().take(header_len) {
+        *byte = prima_ostd::mm::read_u8_at(image, index as u64);
+    }
+    let Ok(plan) = crate::exec::plan_len(&header[..header_len], image_len) else {
+        return encode_errno(Errno::Exec);
+    };
+    // argv copy-in（≤4 项、每项 ≤64 字节）。
+    let argc = core::cmp::min(argv_count as usize, 4);
+    let mut argv_buf = [[0u8; 64]; 4];
+    let mut argv_len = [0usize; 4];
+    for index in 0..argc {
+        let pointer = prima_ostd::mm::read_u64_at(argv_ptr, index as u64);
+        let mut len = 0usize;
+        while len < 64 {
+            let byte = prima_ostd::mm::read_u8_at(pointer, len as u64);
+            argv_buf[index][len] = byte;
+            if byte == 0 {
+                break;
+            }
+            len += 1;
+        }
+        argv_len[index] = len;
+    }
+    let mut argv_slices: [&[u8]; 4] = [&[]; 4];
+    for index in 0..argc {
+        argv_slices[index] = &argv_buf[index][..argv_len[index]];
+    }
+    let Some(segment) = bootstrap::task_segment_id(cur) else {
+        return encode_errno(Errno::NoSpace);
+    };
+    if bootstrap::exec_teardown(cur, root, offset).is_err() {
+        return encode_errno(Errno::NoSpace);
+    }
+    let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
+    for segment_plan in plan.segments.iter().flatten() {
+        let pages = segment_plan.memsz.div_ceil(0x1000);
+        for page in 0..pages {
+            let va = segment_plan.vaddr + page * 0x1000;
+            let Ok(frame) = crate::frames::allocate_for_segment(segment) else {
+                return encode_errno(Errno::NoSpace);
+            };
+            if crate::vspace::map_4k(
+                root,
+                va,
+                map,
+                || crate::frames::allocate_table_frame().ok(),
+                frame,
+                segment_plan.writable,
+                true,
+            )
+            .is_err()
+            {
+                return encode_errno(Errno::NoSpace);
+            }
+            let frame_va = crate::mem::phys_to_virt(frame, offset);
+            for byte_index in 0..0x1000u64 {
+                let source = segment_plan.offset + page * 0x1000 + byte_index;
+                let byte = if source < segment_plan.filesz {
+                    prima_ostd::mm::read_u8_at(image, source)
+                } else {
+                    0
+                };
+                prima_ostd::mm::write_u8_at(frame_va, byte_index, byte);
+            }
+        }
+    }
+    // 初始栈。
+    let Ok(stack_frame) = crate::frames::allocate_for_segment(segment) else {
+        return encode_errno(Errno::NoSpace);
+    };
+    if crate::vspace::map_4k(
+        root,
+        EXEC_STACK_VA,
+        map,
+        || crate::frames::allocate_table_frame().ok(),
+        stack_frame,
+        true,
+        true,
+    )
+    .is_err()
+    {
+        return encode_errno(Errno::NoSpace);
+    }
+    let mut stack = [0u8; 4096];
+    let auxv = [(6u64, 0x1000u64), (9, plan.entry), (0, 0)];
+    let Ok(layout) = crate::exec::build_stack(
+        EXEC_STACK_VA + 0x1000,
+        &argv_slices[..argc],
+        &[],
+        &auxv,
+        &mut stack,
+    ) else {
+        return encode_errno(Errno::NoSpace);
+    };
+    let stack_va = crate::mem::phys_to_virt(stack_frame, offset);
+    for (index, byte) in stack.iter().enumerate() {
+        prima_ostd::mm::write_u8_at(stack_va, index as u64, *byte);
+    }
+    let mut frame = current_context();
+    frame.rip = plan.entry;
+    frame.rsp = layout.rsp;
+    frame.rax = 0;
+    frame.rdi = 0;
+    sched::set_frame(cur, frame);
+    sched::set_fs_base(cur, 0);
+    sched::resume(cur)
+}
+
 /// M18a：最小信号——默认终止（status=128+sig）。
 fn signal_call(pid: u64, sig: u64) -> u64 {
-    if sig == 0 || sig > 31 {
+    if !(1..=31).contains(&sig) {
         return encode_errno(Errno::Invalid);
     }
     let cur = sched::current();
@@ -1101,7 +1229,7 @@ fn signal_call(pid: u64, sig: u64) -> u64 {
 
 /// M18b：登记信号 handler。
 fn sigaction_call(signal: u64, handler: u64) -> u64 {
-    if signal == 0 || signal > 31 {
+    if !(1..=31).contains(&signal) {
         return encode_errno(Errno::Invalid);
     }
     let cur = sched::current();
@@ -2760,6 +2888,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_destroy_call(args[0])
     } else if num == SYS_FORK {
         fork_call()
+    } else if num == SYS_EXEC_REPLACE {
+        exec_call(args[0], args[1], args[2], args[3])
     } else if num == SYS_SIGACTION {
         sigaction_call(args[0], args[1])
     } else if num == SYS_SIGRETURN {

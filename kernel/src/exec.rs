@@ -71,8 +71,8 @@ fn u64_at(data: &[u8], offset: usize) -> Result<u64, ExecError> {
     Ok(u64::from_le_bytes(value))
 }
 
-/// 解析静态 ELF64。
-pub fn plan(image: &[u8]) -> Result<ExecPlan, ExecError> {
+/// 解析静态 ELF64（`image_len` 用于校验段边界；`image` 可只含头部）。
+pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
     if image.len() < ELF_HEADER_LEN {
         return Err(ExecError::Truncated);
     }
@@ -115,7 +115,7 @@ pub fn plan(image: &[u8]) -> Result<ExecPlan, ExecError> {
         }
         if filesz > 0 {
             let end = offset.checked_add(filesz).ok_or(ExecError::Truncated)?;
-            if end as usize > image.len() {
+            if end > image_len {
                 return Err(ExecError::SegmentOutsideImage);
             }
         }
@@ -143,6 +143,11 @@ pub fn plan(image: &[u8]) -> Result<ExecPlan, ExecError> {
         segments,
         count,
     })
+}
+
+/// 解析完整的 ELF64 镜像。
+pub fn plan(image: &[u8]) -> Result<ExecPlan, ExecError> {
+    plan_len(image, image.len() as u64)
 }
 
 /// 初始栈布局：`rsp` 指向 `argc`，其后是 argv/envp 指针数组与 auxv 对。
@@ -254,6 +259,17 @@ mod tests {
             image.extend_from_slice(&header);
         }
         image
+    }
+
+    #[test]
+    fn plan_len_accepts_prefix_with_segment_bound_checked_against_length() {
+        let mut image = synthetic_elf(&[(0x400000, 200, 200, PF_X)]);
+        image.resize(320, 0);
+        let prefix = &image[..64 + PROGRAM_HEADER_LEN];
+        assert_eq!(plan(prefix), Err(ExecError::SegmentOutsideImage));
+        let plan = plan_len(prefix, image.len() as u64).expect("plan_len");
+        assert_eq!(plan.entry, 0x401000);
+        assert_eq!(plan.count, 1);
     }
 
     #[test]

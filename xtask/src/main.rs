@@ -260,6 +260,21 @@ fn test_boot_slice() -> Result<(), String> {
         );
         println!("PASS qemu bios W9 run={run}");
     }
+    // M17c：exec_replace（内存中的静态 ELF、argv、ENOEXEC 负例），跑两轮。
+    let images = image::build_images_for_exec()?;
+    let mut ipc_baseline = None;
+    for run in 1..=2 {
+        ipc_baseline = Some(
+            qemu::run_bios_test_program(
+                &images.bios,
+                "W7",
+                image::EXEC_EXPECTED_STDOUT,
+                ipc_baseline,
+            )
+            .map_err(|error| format!("BIOS W7 run {run} failed: {error}"))?,
+        );
+        println!("PASS qemu bios W7 run={run}");
+    }
     // M16b：pthread 创建/join 与共享内存可见性（同源 Linux 参考），各跑两轮。
     image::check_stage5_linux_pthread()?;
     let images = image::build_images_for_pthread()?;

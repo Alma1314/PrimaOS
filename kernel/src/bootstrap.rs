@@ -9042,6 +9042,27 @@ impl BootstrapState {
 
     /// M17b：子进程退出，设置状态并唤醒等待者。
     /// M17b：该 Task 的一个映射段 id（COW 帧归属；无映射返回 None）。
+    /// M17c：拆掉当前任务的全部用户映射（exec 用；不销毁任务）。
+    pub fn exec_teardown(
+        &mut self,
+        caller: u32,
+        root: u64,
+        phys_offset: u64,
+    ) -> Result<(), TaskError> {
+        let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
+        while let Some(entry_va) = self.vspace.first_mapping(caller) {
+            match crate::vspace::unmap_4k(root, entry_va, map, |frame| {
+                crate::sched::defer_table_frame(frame)
+                    .map_err(|_| crate::vspace::VspaceError::NoFrame)
+            }) {
+                Ok(()) | Err(crate::vspace::VspaceError::BadRoot) => {}
+                Err(_) => return Err(TaskError::NoSuchTask),
+            }
+            let _ = self.vspace.remove(caller, entry_va);
+        }
+        Ok(())
+    }
+
     pub fn task_segment_id(&self, task_id: u32) -> Option<u32> {
         let mut found = None;
         self.vspace.for_each_entry(|entry| {
@@ -9538,6 +9559,13 @@ impl BootstrapState {
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
 /// M15b-2：全局线程创建。
+pub fn exec_teardown(caller: u32, root: u64, phys_offset: u64) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.exec_teardown(caller, root, phys_offset),
+        None => Err(TaskError::NoSuchTask),
+    })
+}
+
 pub fn task_segment_id(task_id: u32) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()

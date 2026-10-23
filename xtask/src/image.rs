@@ -126,6 +126,7 @@ enum Stage5Program<'a> {
     Proc,
     Sig,
     Sigact,
+    Exec,
     Pthread,
     Share,
     /// M9：sbase `cat`（文件读取）冻结用例。
@@ -218,6 +219,10 @@ pub(crate) fn build_images_for_sig() -> Result<Images, String> {
 
 pub(crate) fn build_images_for_sigact() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Sigact)
+}
+
+pub(crate) fn build_images_for_exec() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Exec)
 }
 
 pub(crate) fn build_images_for_pthread() -> Result<Images, String> {
@@ -407,6 +412,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_sigaction.c")],
             "stage5 sigaction probe",
         ),
+        Stage5Program::Exec => (
+            path.with_file_name("stage5-exec.elf"),
+            vec![c_dir.join("stage5_exec.c")],
+            "stage5 exec probe",
+        ),
         Stage5Program::Pthread => (
             path.with_file_name("stage5-pthread.elf"),
             vec![c_dir.join("stage5_pthread.c")],
@@ -554,6 +564,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Proc => Some((&["stage5-proc"], &[])),
         Stage5Program::Sig => Some((&["stage5-sig"], &[])),
         Stage5Program::Sigact => Some((&["stage5-sigact"], &[])),
+        Stage5Program::Exec => Some((&["stage5-exec"], &[])),
         Stage5Program::Pthread => Some((&["stage5-pthread"], &[])),
         Stage5Program::Share => Some((&["stage5-share"], &[])),
         Stage5Program::Cat(args) => Some((args, &[])),
@@ -1385,6 +1396,8 @@ pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
 
 pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] = b"SIGACT|sigaction=1;kill=1;ran=1|ok=1;err=0\n";
+
+pub(crate) const EXEC_EXPECTED_STDOUT: &[u8] = b"EXEC|exec=1;wait=1;bad=1|ok=1;err=0\n";
 
 pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
     b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";

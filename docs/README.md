@@ -67,6 +67,7 @@
   - [M17c-1 静态 ELF 解析与初始栈](superpowers/reports/2026-10-23-stage5-m17c1-elf-plan.md)
   - [M18a 最小信号 kill](superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)
   - [M18b sigaction/handler/sigreturn](superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)
+  - [M17c-3 exec_replace（W7）](superpowers/reports/2026-10-23-stage5-m17c3-exec.md)
 
 ## 阶段 0–4 签署入口
 

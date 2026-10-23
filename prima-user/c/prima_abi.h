@@ -33,6 +33,7 @@
 #define PRIMA_SYS_SIGNAL 56
 #define PRIMA_SYS_SIGACTION 57
 #define PRIMA_SYS_SIGRETURN 58
+#define PRIMA_SYS_EXEC_REPLACE 55
 #define PRIMA_LINUX_SYS_rt_sigaction 13
 #define PRIMA_LINUX_SYS_rt_sigreturn 15
 #define PRIMA_LINUX_SYS_kill 62

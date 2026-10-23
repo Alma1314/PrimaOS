@@ -231,6 +231,8 @@ pub mod syscall {
     pub const SYS_SIGACTION: u64 = 57;
     /// M18b：从信号 handler 返回（恢复被中断现场）。
     pub const SYS_SIGRETURN: u64 = 58;
+    /// M17c：`exec_replace(image_ptr, image_len, argv_ptr, argv_count)`。
+    pub const SYS_EXEC_REPLACE: u64 = 55;
 }
 
 /// Native syscall ABI version; independent of `prima-runtime`'s source API version.
