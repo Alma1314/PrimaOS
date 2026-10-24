@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 抽象语义与形式化
@@ -38,6 +38,9 @@ updated: 2026-10-23
 - [2026-10-17-stage0-frozen-re-review-spec145.md](../../superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)
 - [2026-10-17-stage0-thirdparty-organizational-review-verdict.md](../../superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md)
 
+- [内核句柄与 Lean 补强设计](../../superpowers/specs/2026-10-24-kernel-handle-model-design.md)
+- [实现、证明与回归报告](../../superpowers/reports/2026-10-24-kernel-handle-model-report.md)
+
 ## 源码定位
 
 - [state.rs](../../../cosir/src/state.rs)
@@ -47,6 +50,8 @@ updated: 2026-10-23
 - [State.lean](../../../lean/Formal/State.lean)
 - [Derive.lean](../../../lean/Formal/Derive.lean)
 - [Forest.lean](../../../lean/Formal/Forest.lean)
+
+- [KernelHandle.lean](../../../lean/Formal/KernelHandle.lean)
 
 ## 测试与观察入口
 
@@ -58,3 +63,5 @@ updated: 2026-10-23
 ## 限制与修改注意
 
 SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 也存在明确未建模项；CDT 定理不能推广为 Rust 内核细化证明。修改全局不变量必须检查所有受影响原语，不只改一个成功路径。
+
+内核句柄的有界 generation/永久退役模型独立于 CDT：`freed_handle_never_live` 覆盖单槽任意后续迁移序列；不证明完整 Rust 内核、整表分配、权限或硬件。范围以 [Lean 映照契约](../../../lean/README.md)为准。

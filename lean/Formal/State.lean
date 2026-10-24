@@ -21,8 +21,8 @@ def capDerive : UInt16 := 0b0000_0000_0100_0000
 
 /-- 能力（对齐 cosir `Capability` 的 owner/object/rights/active）。
     `parent`：§4.2 派生树的父 CapId，`none` = 随对象创建铸造的**根**。
-    内核侧对应 `CapRecord.parent : Option<Handle>`（`kernel/src/bootstrap.rs:1095`）；
-    cosir 侧**尚未建模该字段**（登记为映照契约的 Lean-ahead 分歧）。 -/
+    内核侧对应 `CapabilityRecord.parent : Option<Handle>`；cosir 侧已建模
+    `Capability.parent : Option<CapId>`（2026-10-13，见 README 映照契约）。 -/
 structure Capability where
   owner : Nat
   obj : Object

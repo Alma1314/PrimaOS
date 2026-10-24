@@ -20,7 +20,9 @@
       "docs/superpowers/reports/2026-10-13-lean-cdt-invariant-report.md",
       "docs/superpowers/reports/2026-10-13-lean-cdt-forest-report.md",
       "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md",
-      "docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md"
+      "docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md",
+      "docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md",
+      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -29,7 +31,8 @@
       "cosir/src/ops.rs",
       "lean/Formal/State.lean",
       "lean/Formal/Derive.lean",
-      "lean/Formal/Forest.lean"
+      "lean/Formal/Forest.lean",
+      "lean/Formal/KernelHandle.lean"
     ],
     "tests": [
       "cosir/tests/lean_backtrace.rs",
@@ -156,7 +159,9 @@
       "docs/superpowers/reports/2026-09-17-stage2-task-lifecycle-report.md",
       "docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md",
       "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md",
-      "docs/superpowers/reports/2026-10-13-ipc-capability-move-audit-report.md"
+      "docs/superpowers/reports/2026-10-13-ipc-capability-move-audit-report.md",
+      "docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md",
+      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -166,7 +171,8 @@
       "kernel/src/sched.rs",
       "prima-runtime/src/capability.rs",
       "prima-runtime/src/ipc.rs",
-      "prima-runtime/src/task.rs"
+      "prima-runtime/src/task.rs",
+      "lean/Formal/KernelHandle.lean"
     ],
     "tests": [
       "kernel/src/test_support.rs",

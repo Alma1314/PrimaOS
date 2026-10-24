@@ -71,14 +71,14 @@ theorem bootedState_wellformed : WellFormed bootedState := by
     simp only [bootedState] at hc
     unfold initCaps at hc
     by_cases h1 : c = 1
-    · simp only [h1, if_true] at hc; cases hc; rfl
-    · simp only [h1, if_false] at hc
+    · simp only [h1, ite_true] at hc; cases hc; rfl
+    · simp only [h1, ite_false] at hc
       by_cases h2 : c = 2
-      · simp only [h2, if_true] at hc; cases hc; rfl
-      · simp only [h2, if_false] at hc
+      · simp only [h2, ite_true] at hc; cases hc; rfl
+      · simp only [h2, ite_false] at hc
         by_cases h3 : c = 3
-        · simp only [h3, if_true] at hc; cases hc; rfl
-        · simp only [h3, if_false] at hc
+        · simp only [h3, ite_true] at hc; cases hc; rfl
+        · simp only [h3, ite_false] at hc
           simp at hc
   rw [hn] at hp
   simp at hp

@@ -10,7 +10,7 @@ namespace Formal
     - `no_self_parent`：无自环（seL4 CDT 森林性的最小见证）。
 
     证据边界：本模块为 **REFINEMENT-DESIGN** 通道（独立 Lean 证明），不宣称内核 C 级细化
-    或机器证明；cosir 侧尚未建模 `parent`（见 README 映照契约的 Lean-ahead 分歧）。 -/
+    或机器证明；cosir 侧已建模 `parent`，由 `lean_backtrace` 提供固定实例对拍。 -/
 
 /-- 能力表单点更新（`Function.update` 的最小等价物——本模型只用 `Init.Core`，无该 API）。
     把 `f` 在 `a` 处的取值改为 `v`，其余不变。 -/
@@ -19,11 +19,11 @@ def update (f : Nat → Option Capability) (a : Nat) (v : Option Capability) :
   fun c => if c = a then v else f c
 
 @[simp] theorem update_self (f : Nat → Option Capability) (a : Nat) (v : Option Capability) :
-    update f a v a = v := by simp only [update, if_true]
+    update f a v a = v := by simp [update]
 
 @[simp] theorem update_of_ne {f : Nat → Option Capability} {a a' : Nat}
     (h : a' ≠ a) (v : Option Capability) : update f a v a' = f a' := by
-  simp only [update, if_neg h]
+  simp [update, h]
 
 /-- §4.4 `cap_derive` 的前置守卫（§4.2 + §4.4）：父 Capability 存在、**活动**、含
     `CAP_DERIVE`、父 CapId `< newId`、且 `newId` 槽位为空。 -/

@@ -146,6 +146,7 @@ updated: 2026-10-24
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-kernel-handle-model-report.md](2026-10-24-kernel-handle-model-report.md) | 内核句柄、权限与 Lean 模型补强 |
 | 2026-10-18 | [2026-10-18-stage2-ipc-review-remediation.md](2026-10-18-stage2-ipc-review-remediation.md) | 阶段 2 实现复核与 IPC 整改 |
 | 2026-10-17 | [2026-10-17-stage2-exit-review-spec147.md](2026-10-17-stage2-exit-review-spec147.md) | SPEC-147：阶段 2 退出条件复核与签署 |
 | 2026-09-25 | [2026-09-25-framekernel-skeleton-report.md](2026-09-25-framekernel-skeleton-report.md) | 切片 AE 报告：framekernel 分层与 unsafe 收敛（SPEC-076） |

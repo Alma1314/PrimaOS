@@ -9,7 +9,7 @@ namespace Formal
     回到起点的环——派生图是一片森林。
 
     证据边界：同 `Formal/Derive.lean`（**REFINEMENT-DESIGN** 通道；不宣称内核 C 级细化或
-    机器证明；cosir 侧未建模 `parent`，见 README 映照契约的 Lean-ahead 分歧）。 -/
+    机器证明；cosir 侧已建模 `parent`，见 README 映照契约与固定实例对拍）。 -/
 
 /-- 父单步：`c` 的父 CapId（`c` 无记录或无父 → `none`）。 -/
 def parentOf (s : State) (c : Nat) : Option Nat :=

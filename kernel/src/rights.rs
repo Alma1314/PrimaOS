@@ -264,11 +264,7 @@ impl Rights {
 
     /// 类型匹配：非 `Derive` 权限必须落在该对象类型的合法集合内（`Derive` 可用于任何类型）。
     pub fn well_typed(self, kind: ObjectKind) -> bool {
-        let allowed = kind.allowed();
-        ALL_RIGHTS
-            .into_iter()
-            .filter(|right| self.contains(*right))
-            .all(|right| right == Right::Derive || allowed.contains(&right))
+        self.subset_of(Self::from_rights(kind.allowed()).union(Self::from_rights(&[Right::Derive])))
     }
 
     /// 解析逗号分隔的权限名。空白会被忽略；空名与未知名报错。
@@ -403,6 +399,42 @@ mod tests {
         assert!(!parse("ExcSubscribe").well_typed(ObjectKind::Namespace));
         // `Derive` 自身可用于任何对象类型。
         assert!(parse("Derive").well_typed(ObjectKind::Node));
+    }
+
+    #[test]
+    fn every_raw_bit_is_checked_for_each_object_kind() {
+        for kind in [
+            ObjectKind::Segment,
+            ObjectKind::Task,
+            ObjectKind::Namespace,
+            ObjectKind::Timer,
+            ObjectKind::ExcSource,
+            ObjectKind::Node,
+            ObjectKind::WaitObject,
+            ObjectKind::Device(DeviceKind::MmioRegion),
+            ObjectKind::Device(DeviceKind::IoPortRange),
+            ObjectKind::Device(DeviceKind::DmaBuffer),
+            ObjectKind::Device(DeviceKind::InterruptLine),
+        ] {
+            let mut mask = Right::Derive.bit();
+            for right in kind.allowed() {
+                mask |= right.bit();
+            }
+            assert!(Rights::from_bits(mask).well_typed(kind));
+            for bit in 0..32 {
+                let single = 1 << bit;
+                assert_eq!(
+                    Rights::from_bits(single).well_typed(kind),
+                    mask & single != 0,
+                    "kind={kind:?}, bit={bit}"
+                );
+                assert_eq!(
+                    Rights::from_bits(mask | single).well_typed(kind),
+                    mask & single != 0,
+                    "allowed rights must not hide unknown bits: kind={kind:?}, bit={bit}"
+                );
+            }
+        }
     }
 
     #[test]

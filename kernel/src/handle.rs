@@ -9,15 +9,14 @@
 //! ```
 //!
 //! - `index` 是**物理槽索引**（会随对象/位置释放而复用）；
-//! - `generation` 从 1 起，槽位每次释放后递增，故「同一个 index 的旧句柄」在复用后不再匹配，
+//! - `generation` 从 1 起，释放后递增，达到 `u32::MAX` 后永久退役槽位而不回绕，
+//!   故「同一个 index 的旧句柄」在复用后不再匹配，
 //!   这是 S2-X4（stale handle 不因 ID 复用重获 Authority）的编码基础；
 //! - `index == 0` 与 `generation == 0` 一律非法（[`HandleError::Malformed`]），故 `0u64` 与
 //!   任何高位为 0 的裸索引都不是合法句柄。
 //!
-//! **与 §4.2 的显式偏离**：规范要求父 `CapId` 小于子 `CapId`。本实现的 handle.index 是物理
-//! 槽而非逻辑单调 id，槽复用会使该字面序不成立。派生关系的无环性不依赖索引序，而由构造保证：
-//! 派生时父必须存活且被调用者持有、子槽从空闲表新分配（因此不可能是任何活动 Capability 的
-//! 祖先的槽），并在 [`crate::bootstrap`] 中以 `parent` 链显式记录。
+//! §4.2 的单调逻辑 `CapId` 另存于 [`crate::bootstrap::CapabilityRecord`]；
+//! `Handle` 的数值和槽索引不用于判定派生树先后。父可被 drop，历史记录仍保留。
 
 /// 句柄解码错误。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,14 +79,9 @@ impl Handle {
         self.index == 0 && self.generation == 0
     }
 
-    /// 槽位释放后递增 generation（回绕时回到 1，不复用 generation 0）。
-    pub const fn next_generation(self) -> u32 {
-        let next = self.generation.wrapping_add(1);
-        if next == 0 {
-            Self::FIRST_GENERATION
-        } else {
-            next
-        }
+    /// 槽位释放后递增 generation；耗尽返回 None，调用方须永久退役该槽。
+    pub const fn next_generation(self) -> Option<u32> {
+        self.generation.checked_add(1)
     }
 }
 
@@ -132,14 +126,18 @@ mod tests {
     }
 
     #[test]
-    fn next_generation_never_returns_zero() {
+    fn next_generation_stops_at_exhaustion() {
         let handle = Handle::new(1, 1).expect("valid handle");
-        assert_eq!(handle.next_generation(), 2);
+        assert_eq!(handle.next_generation(), Some(2));
+        assert_eq!(
+            Handle::new(1, u32::MAX - 1).unwrap().next_generation(),
+            Some(u32::MAX)
+        );
         let saturated = Handle {
             index: 1,
             generation: u32::MAX,
         };
-        assert_eq!(saturated.next_generation(), Handle::FIRST_GENERATION);
+        assert_eq!(saturated.next_generation(), None);
     }
 
     #[test]

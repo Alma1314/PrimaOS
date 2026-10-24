@@ -70,6 +70,7 @@ updated: 2026-10-24
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-kernel-handle-model-design.md](2026-10-24-kernel-handle-model-design.md) | 内核句柄耗尽与 Lean 迁移模型 |
 | 2026-09-25 | [2026-09-25-framekernel-skeleton-design.md](2026-09-25-framekernel-skeleton-design.md) | 切片 AE 设计：framekernel 分层与 unsafe 收敛（SPEC-076） |
 | 2026-09-25 | [2026-09-25-framekernel-mm-pod-design.md](2026-09-25-framekernel-mm-pod-design.md) | 切片 AF 设计：物理内存与页表 POD 收敛（SPEC-077） |
 | 2026-09-25 | [2026-09-25-framekernel-global-state-design.md](2026-09-25-framekernel-global-state-design.md) | 切片 AG 设计：内核全局状态 safe 化（SPEC-078） |

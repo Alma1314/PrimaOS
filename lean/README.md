@@ -1,9 +1,18 @@
-# BLK-001 形式化模型（Lean）
+---
+id: lean-model-mapping
+kind: reference
+authority: model-mapping
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
+# 形式化模型与内核映照（Lean）
 
 > 证据边界：本切片（BLK-001）以 **MODEL-TEST** 支撑 bootstrap / exc_resume / derive 的可执行状态模型，
 > 并以 **REFINEMENT-DESIGN**（独立 Lean 证明通道）支撑 §4.2 **能力派生树（CDT）不变量**的保持性。
 > **不宣称** `REFINEMENT-PROOF`（内核 C 级细化）、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明，或真实硬件保证。
-> 本文是 Lean 模型（`Formal` 命名空间）与 cosir host 模型之间的**唯一权威映照契约**。
+> 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
 
@@ -12,7 +21,35 @@
 - `Formal.ExcResume`（`Formal/ExcResume.lean`）：`excResume` + 5 条定理（含**非平凡** `exc_resume_preserves_wellformed`）。
 - `Formal.Derive`（`Formal/Derive.lean`）：§4.4 `cap_derive` 对应物 `derive` + `derive_preserves_wellformed`（**非平凡**）+ `no_self_parent`（CDT 无自环）+ 5 条 `native_decide` 可执行锚。
 - `Formal.Forest`（`Formal/Forest.lean`）：`parentOf`/`ancestry` + **`ancestry_lt`（森林性/无环：父链 `k ≥ 1` 步严格递减，§4.2 头号结论）**（**非平凡**）+ `ancestry_no_cycle` + 3 条 `native_decide` 可执行锚。
-- `Formal.lean`（入口）：`import` 上述五个模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
+- `Formal.KernelHandle`（`Formal/KernelHandle.lean`）：有界 generation、槽分配/释放、退役、任意迁移序列中的旧句柄不复活（见下节）。
+- `Formal.lean`（入口）：`import` 上述六个模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
+
+## 构建与复现
+
+`lean-toolchain` 固定 `leanprover/lean4:v4.35.0`；模型只用 Lean 自带库，无外部 Git package。Lake 对库模块启用 `autoImplicit=false` 与 `warningAsError=true`，拒绝未声明隐式变量与含警告的证明构建。已安装该版本后，模型构建本身不需要下载第三方依赖。在 `lean/` 运行：
+
+```sh
+elan run leanprover/lean4:v4.35.0 lake build
+```
+
+通常 elan shim 下 `lake build` 也会读取固定版本。若 PATH 直接指向其他版本的二进制，则使用上面的显式命令，不能只凭文件内容声称实际使用了固定版本。本次升级重新构建全部既有模块，移除旧版本弃用定理名，不改变 CDT 迁移定义。
+
+## 内核句柄模型（独立于 CDT）
+
+[设计](../docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md)与[证据报告](../docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)记录内核 generation 回绕、权限未知位及失败提交顺序的补强。`Formal.KernelHandle` 只证明其中的**单物理槽 generation 生命周期**，权限修复由 Rust 测试验证。
+
+| Lean KernelHandle | Rust 内核 | 映照限制 |
+|---|---|---|
+| `Slot.generation : Nat` | `SlotEntry.generation : u32` | `WellFormed limit` 限定 ≤ limit；生产实例 limit=`maxGeneration=2^32-1`，0 为退役 |
+| `Slot.inUse : Bool` | `SlotEntry.in_use : bool` | 单个固定物理槽；不建模整张表或最小槽选择 |
+| `allocate` | `CapabilitySlotTable::alloc` / `reserve` 经 `slot_free` | 只分配 generation 非 0 且非活动的槽；Rust 另有索引/保留区间检查 |
+| `release limit s handle` | `CapabilitySlotTable::free` / `Handle::next_generation` | 成功时 < limit 则加一，否则退役；无效/不活动/不匹配返回 none，Rust 返回 false 且不提交 |
+| `check s generation` | `CapabilitySlotTable::check(handle) == Live` | 假定是同一合法非零槽索引，只表达 generation/活动条件，不区分 Free 与 Stale |
+| `Step` / `Reachable` | 任意次分配、释放、无状态变化的失败/其他槽操作 | 模型不允许任意外部写表、重置或恢复旧快照；不是从 Rust 自动提取的状态机 |
+
+一般性定理（均非 `native_decide`）：分配与释放保持 `WellFormed`；任意序列保持范围；退役为吸收状态；释放产生 `Invalidated`，该谓词对任意 `Reachable` 序列保持；`freed_handle_never_live` 得出释放后的旧 generation 永不 Live。六条 `native_decide` 锚只求值末两代、退役、重复释放和错误 generation。
+
+本模型不复用 CDT CapId；内核的逻辑 `CapabilityRecord.cap_id` 与物理槽 generation 仍是两层编号。不覆盖 encode/decode 的位运算证明、CapId/历史提交、权限位集、holder/location、对象存活、整表分配策略、并发、硬件或完整内核安全性。Rust 的末代/退役/全表耗尽/固定槽测试为映照实例，**不是自动双向差分或 Rust refinement proof**。下方原有“5 条实质证明”计数只属于 CDT 通道，不包含本模块。
 
 ## 证据边界
 
@@ -29,7 +66,7 @@
 | `State.booted : Bool` | `state::State.booted : bool` | POSIR bootstrap 标志 |
 | `State.caps : Nat → Option Capability` | `state::State.capabilities : HashMap<CapId, Capability>` | 能力表：cap 部分函数 ↔ HashMap。空态两侧一致；**booted 态两侧亦一致**——均铸 §14 三条无父根 Capability（CapId 1/2/3） |
 | `Capability.owner/obj/rights/active` | `state::Capability.owner/object/rights/active` | 字段形态对应（`rights` 两侧均为 16 位位掩码，位值一致） |
-| `Capability.parent : Option Nat` | `state::Capability.parent : Option<CapId>` | §4.2 派生树的父 CapId（`none` = 铸造根），seL4 CDT 对应物。内核（`CapRecord.parent`，`kernel/src/bootstrap.rs:1095`、`derive_capability`/`CapabilityDerived`）、Lean、cosir（**2026-10-13 补入**）**三方一致**；cosir 侧由 `abstract_ops::well_formed`/`derive_capability` 表达，`lean_backtrace::cdt_parity_lean` 对拍 |
+| `Capability.parent : Option Nat` | `state::Capability.parent : Option<CapId>` | §4.2 派生树的父 CapId（`none` = 铸造根），seL4 CDT 对应物。内核（`CapRecord.parent`，`kernel/src/bootstrap.rs` 的 `CapabilityRecord`、`derive_capability`/`CapabilityDerived`）、Lean、cosir（**2026-10-13 补入**）**三方一致**；cosir 侧由 `abstract_ops::well_formed`/`derive_capability` 表达，`lean_backtrace::cdt_parity_lean` 对拍 |
 | `Object.segment/task/excSource/namespace` | `state::CapObject::Segment/Task/ExceptionSource/Namespace` | 对象引用和类型（名称差异） |
 | `initTaskId = 1` | `abstract_ops::init_task_id() = 1` | init Task 恒定量 ID |
 | （**不建模**，Lean `State` 无 `tasks` 字段） | `state::Task.root_ns_cap : CapId` | §5.2/§14 步骤 7 结构性根 Namespace Capability（W5）；Lean 侧只以三条根 Cap 的 `owner/obj` 隐含表示归属，**无该字段**（cosir-only） |

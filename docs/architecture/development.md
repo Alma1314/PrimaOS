@@ -35,12 +35,14 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask compat` | 兼容差分入口 | 当前 cow-write-fault 有界场景；不是全部阶段5 API 验收 |
 | `cargo xtask linux-trace` | Linux 参考 trace 工作流 | 参数与再生成语义见 xtask main/linux |
 | `cargo xtask tcb` | 特权框架/机制层代码和耦合指标 | prima-ostd/src 与 kernel/src 的限定口径 |
-| `cd lean && lake build` | 编译 Lean 工件与定理 | lean/README 声明的模型范围 |
+| `cd lean && elan run leanprover/lean4:v4.35.0 lake build` | 编译 Lean 工件与定理 | lean/README 声明的模型范围 |
 | `python3 scripts/docs.py check` | 文档目录、ID、主题、路径与 Markdown 锚点 | 本地链接；不探测远端网页，不判定技术结论 |
 
 ## 变更对应验证
 
 纯文档变更运行 docs 自检、生成与 check。仓库提交规范另要求 `cargo test --workspace` 和 `cargo xtask lint`；记录实际结果。行为变更按邻近用例补测试；启动、ABI 或协议改变还需更新 trace 断言并运行 `cargo xtask test`。
+
+内核句柄/权限的维护模式见[补强设计](../superpowers/specs/2026-10-24-kernel-handle-model-design.md)：机器计数器必须检查溢出，槽与逻辑 ID 在共同入口提交；不能把“无效句柄”当成可复用状态，不能以遍历已知权限的方式忽略未知输入位。新增或改变模型迁移时，更新 [Lean 映照契约](../../lean/README.md)，同时给出失败原子性、边界反例、不变量保持与实际证明范围。
 
 修改内核对象/调度时关注状态原子性、审计容量、资源回收与负例；改硬件入口时检查 prima-ostd 安全不变量；改兼容 API 时补 Linux 同源探针并更新 profile/台账及报告，不以一次 stdout 相同代替所有错误语义。
 

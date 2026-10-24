@@ -27,7 +27,7 @@ updated: 2026-10-24
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | musl 后继 Rust 876 项、lint、4 个 host 检查、F1/W4 定向双轮和沙箱外全量 62 轮 BIOS PASS；沙箱内 UDP EPERM 单独保留 | [musl 后继报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[前次 VFS 超时记录](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)保留；历史 M21 的 427/114 PASS 只属于当时版本 |
+| 最近验证记录 | 内核/Lean 后继 Rust 882 项、lint、Lean 12 条一般性定理/6 条求值锚、完整 62 轮 BIOS PASS | [内核/Lean 报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)；[musl 前序](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)与[历史 VFS 超时](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)的失败/限制继续保留；各证据不相互替代 |
 | 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -49,6 +49,8 @@ updated: 2026-10-24
 VFS 后继实现与验证见[LibOS 基础重构报告](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)：原生打开对象、普通文件延迟回收和数据边界修复；不改变阶段出口勾选。
 
 musl 后继实现见[调用边界与 fd/stdio 报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)：fcntl、fdopen/已有 append、向量 I/O、汇编边界与锁定构建；不改变阶段出口勾选。
+
+内核句柄与 Lean 后继补强见[验证报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)：generation 耗尽永久退役、权限未知位拒绝、分配失败不推进逻辑 CapId，以及单槽任意后续迁移中的旧句柄不复活证明；证据分层及未覆盖项以报告/Lean 映照为准，不改变阶段签署。
 
 ## 已知问题与当前阻塞
 

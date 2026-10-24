@@ -30,7 +30,7 @@
 | [入门与任务阅读路线](getting-started.md) | current | `docs/architecture/getting-started.md` |
 | [系统层次与源码地图](system-map.md) | current | `docs/architecture/system-map.md` |
 
-## index（11）
+## index（10）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -43,7 +43,6 @@
 | [Plans 索引](../superpowers/plans/README.md) | current | `docs/superpowers/plans/README.md` |
 | [Reports 索引](../superpowers/reports/README.md) | current | `docs/superpowers/reports/README.md` |
 | [Specs 索引](../superpowers/specs/README.md) | current | `docs/superpowers/specs/README.md` |
-| [BLK-001 形式化模型（Lean）](../../lean/README.md) | unclassified | `lean/README.md` |
 | [PrimaOS](../../llms.md) | current | `llms.md` |
 
 ## plan（19）
@@ -70,7 +69,7 @@
 | [阶段 5 收尾与阶段 6 入口实施路线图](../superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | current | `docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md` |
 | [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 
-## reference（5）
+## reference（6）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -79,8 +78,9 @@
 | [证据范围与结论规则](evidence.md) | current | `docs/architecture/evidence.md` |
 | [术语与检索别名](glossary.md) | current | `docs/architecture/glossary.md` |
 | [接口、号段与版本边界](interfaces.md) | current | `docs/architecture/interfaces.md` |
+| [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（165）
+## report（166）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -248,13 +248,15 @@
 | [阶段 5 / ISSUE-THREAD-CAPACITY-001 调查记录](../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md) | historical | `docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md` |
 | [VFS / LibOS 基础重构验证报告](../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | historical | `docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md` |
 | [文档生命周期治理与过时材料清理报告](../superpowers/reports/2026-10-24-documentation-lifecycle-report.md) | historical | `docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md` |
+| [内核句柄、权限与 Lean 模型补强](../superpowers/reports/2026-10-24-kernel-handle-model-report.md) | historical | `docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md` |
 | [musl 移植补强：调用边界与 fd/stdio 验证](../superpowers/reports/2026-10-24-musl-port-boundary-report.md) | historical | `docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md` |
 
-## spec（2）
+## spec（3）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [VFS 打开对象与 LibOS 适配边界](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md) | current | `docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md` |
+| [内核句柄耗尽与 Lean 迁移模型](../superpowers/specs/2026-10-24-kernel-handle-model-design.md) | current | `docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md` |
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 
 ## specification（67）

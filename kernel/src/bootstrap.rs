@@ -1201,6 +1201,7 @@ pub enum SlotState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SlotEntry {
+    /// 0 表示 generation 耗尽后的永久退役槽；从不返回为合法句柄。
     pub generation: u32,
     pub in_use: bool,
 }
@@ -1228,14 +1229,18 @@ impl CapabilitySlotTable {
     /// **不重置 generation**：槽位一旦被释放过，其 generation 已递增，重置回 1 会让旧句柄
     /// 复活（违反 S2-X4）。调用方须先以 [`Self::slot_free`] 确认槽可用。
     fn reserve(&mut self, slot: u32) -> Handle {
+        assert!(self.slot_free(slot), "capability slot is unavailable");
         self.entries[slot as usize].in_use = true;
         self.peak_live = self.peak_live.max(self.live_count());
         cap_handle(slot, self.entries[slot as usize].generation)
     }
 
-    /// 该槽位是否可被保留（合法索引、未被占用）。
+    /// 该槽位是否可被保留（合法索引、未被占用、未退役）。
     pub fn slot_free(&self, slot: u32) -> bool {
-        slot != 0 && (slot as usize) < MAX_CAPABILITY_SLOTS && !self.entries[slot as usize].in_use
+        slot != 0
+            && (slot as usize) < MAX_CAPABILITY_SLOTS
+            && !self.entries[slot as usize].in_use
+            && self.entries[slot as usize].generation != 0
     }
 
     /// 分配最小空闲槽；槽位复用时不改变 generation（generation 只在释放时递增）。
@@ -1250,7 +1255,7 @@ impl CapabilitySlotTable {
                 index += 1;
                 continue;
             }
-            if !self.entries[index].in_use {
+            if self.slot_free(slot) {
                 self.entries[index].in_use = true;
                 self.peak_live = self.peak_live.max(self.live_count());
                 return Handle::new(index as u32, self.entries[index].generation).ok();
@@ -1260,7 +1265,7 @@ impl CapabilitySlotTable {
         None
     }
 
-    /// 释放槽位：`in_use=false` 且 generation 递增，使旧句柄永久不可用（S2-X4）。
+    /// 释放槽位：generation 递增；耗尽则置 0 永久退役，使旧句柄不可复活（S2-X4）。
     pub fn free(&mut self, handle: Handle) -> bool {
         let index = handle.index() as usize;
         if index == 0 || index >= MAX_CAPABILITY_SLOTS {
@@ -1269,7 +1274,7 @@ impl CapabilitySlotTable {
         if !self.entries[index].in_use || self.entries[index].generation != handle.generation() {
             return false;
         }
-        let next = handle.next_generation();
+        let next = handle.next_generation().unwrap_or(0);
         self.entries[index] = SlotEntry {
             generation: next,
             in_use: false,
@@ -3855,11 +3860,17 @@ impl BootstrapState {
         Ok(())
     }
 
-    /// §4.2：分配下一个单调 `CapId`。
-    fn allocate_cap_id(&mut self) -> Option<u32> {
+    /// §3/§4.2：共同提交单调 CapId 与句柄；任一资源耗尽时两者均不变。
+    fn allocate_capability_slot(&mut self, slot: Option<u32>) -> Option<(u32, Handle)> {
         let id = self.next_cap_id;
-        self.next_cap_id = self.next_cap_id.checked_add(1)?;
-        Some(id)
+        let next_id = id.checked_add(1)?;
+        let handle = match slot {
+            Some(slot) if self.slots.slot_free(slot) => self.slots.reserve(slot),
+            Some(_) => return None,
+            None => self.slots.alloc()?,
+        };
+        self.next_cap_id = next_id;
+        Some((id, handle))
     }
 
     fn can_record_capability(&self) -> bool {
@@ -4388,11 +4399,10 @@ impl BootstrapState {
         if !self.can_record_capability() {
             return Err(DeriveError::CapacityExceeded);
         }
-        let cap_id = self
-            .allocate_cap_id()
+        let (cap_id, handle) = self
+            .allocate_capability_slot(None)
             .ok_or(DeriveError::CapacityExceeded)?;
         let created_at = self.audit.count as u32;
-        let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
         let record = self.records.insert(CapabilityRecord {
             handle,
             cap_id,
@@ -4433,11 +4443,10 @@ impl BootstrapState {
             return Err(DeriveError::CapacityExceeded);
         }
         let record_holder = holder.holder_id().unwrap_or(KERNEL_ACTOR);
-        let cap_id = self
-            .allocate_cap_id()
+        let (cap_id, handle) = self
+            .allocate_capability_slot(Some(slot))
             .ok_or(DeriveError::CapacityExceeded)?;
         let created_at = self.audit.count as u32;
-        let handle = self.slots.reserve(slot);
         let record = self.records.insert(CapabilityRecord {
             handle,
             cap_id,
@@ -4910,11 +4919,10 @@ impl BootstrapState {
         if !self.can_record_capability() {
             return Err(DeriveError::CapacityExceeded);
         }
-        let cap_id = self
-            .allocate_cap_id()
+        let (cap_id, handle) = self
+            .allocate_capability_slot(None)
             .ok_or(DeriveError::CapacityExceeded)?;
         let created_at = self.audit.count as u32;
-        let handle = self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?;
         let record = self.records.insert(CapabilityRecord {
             handle,
             cap_id,
@@ -5006,14 +5014,10 @@ impl BootstrapState {
         {
             return Err(DeriveError::CapacityExceeded);
         }
-        let cap_id = self
-            .allocate_cap_id()
+        let (cap_id, handle) = self
+            .allocate_capability_slot(slot)
             .ok_or(DeriveError::CapacityExceeded)?;
         let created_at = self.audit.count as u32;
-        let handle = match slot {
-            Some(slot) => self.slots.reserve(slot),
-            None => self.slots.alloc().ok_or(DeriveError::CapacityExceeded)?,
-        };
         let record = self.records.insert(CapabilityRecord {
             handle,
             cap_id,
@@ -5174,9 +5178,10 @@ impl BootstrapState {
         if !self.can_record_capability() {
             return Err(NsError::CapacityExceeded);
         }
-        let cap_id = self.allocate_cap_id().ok_or(NsError::CapacityExceeded)?;
+        let (cap_id, handle) = self
+            .allocate_capability_slot(None)
+            .ok_or(NsError::CapacityExceeded)?;
         let created_at = self.audit.count as u32;
-        let handle = self.slots.alloc().ok_or(NsError::CapacityExceeded)?;
         let record = self
             .records
             .insert(CapabilityRecord {
@@ -11747,6 +11752,158 @@ mod tests {
             Ok(second)
         );
         assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn exhausted_generation_retires_slot_and_never_revives_old_handles() {
+        let mut slots = super::CapabilitySlotTable::empty();
+        slots.entries[1].generation = u32::MAX - 1;
+        let penultimate = slots.alloc().unwrap();
+        assert_eq!(penultimate.generation(), u32::MAX - 1);
+        assert!(slots.free(penultimate));
+        let last = slots.alloc().unwrap();
+        assert_eq!(last, Handle::new(1, u32::MAX).unwrap());
+        assert_eq!(slots.check(last), super::SlotState::Live);
+        let occupied = slots;
+        assert!(!slots.free(penultimate));
+        assert_eq!(
+            slots, occupied,
+            "old generation cannot free the current occupant"
+        );
+        assert!(slots.free(last));
+        assert_eq!(slots.live_count(), 0);
+        assert!(
+            !slots.slot_free(1),
+            "exhausted slot must be permanently retired"
+        );
+        let retired = slots;
+        assert!(!slots.free(last));
+        assert_eq!(slots, retired, "repeated free must not mutate the table");
+        for _ in 0..3 {
+            let next = slots.alloc().unwrap();
+            assert_ne!(next.index(), 1);
+            for old in [penultimate, last, Handle::new(1, 1).unwrap()] {
+                assert_ne!(slots.check(old), super::SlotState::Live);
+            }
+            assert!(slots.free(next));
+        }
+    }
+
+    #[test]
+    fn retired_slots_fail_dynamic_and_explicit_allocation_without_mutation() {
+        let mut state = fresh_state();
+        // Inject the terminal state instead of executing 2^32 allocation cycles.
+        for entry in &mut state.slots.entries[4..] {
+            entry.generation = 0;
+            entry.in_use = false;
+        }
+        let before = state;
+        assert_eq!(
+            state.derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, IMAGE_RIGHTS),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.derive_capability_to_holder(
+                INIT_TASK_ID,
+                IMAGE_CAP_HANDLE,
+                IMAGE_RIGHTS,
+                INIT_TASK_ID
+            ),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.derive_capability_to_holder_at(
+                INIT_TASK_ID,
+                IMAGE_CAP_HANDLE,
+                IMAGE_RIGHTS,
+                INIT_TASK_ID,
+                4
+            ),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.mint_root_capability(
+                INIT_TASK_ID,
+                IMAGE_RIGHTS,
+                ObjectRef::Segment(IMAGE_SEGMENT_ID)
+            ),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.mint_root_capability_at(
+                CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                4,
+                IMAGE_RIGHTS,
+                ObjectRef::Segment(IMAGE_SEGMENT_ID)
+            ),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn mint_rejects_unknown_right_bits_without_mutation() {
+        let mut state = fresh_state();
+        let before = state;
+        let invalid = Rights::from_bits(IMAGE_RIGHTS.bits() | (1 << 31));
+        assert_eq!(
+            state.mint_root_capability(INIT_TASK_ID, invalid, ObjectRef::Segment(IMAGE_SEGMENT_ID)),
+            Err(DeriveError::WrongRightType)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            state.mint_root_capability_at(
+                CapabilityLocation::HeldByKernel,
+                8,
+                invalid,
+                ObjectRef::Segment(IMAGE_SEGMENT_ID)
+            ),
+            Err(DeriveError::WrongRightType)
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn logical_cap_id_exhaustion_does_not_consume_a_slot() {
+        let mut state = fresh_state();
+        state.next_cap_id = u32::MAX;
+        let before = state;
+        for slot in [None, Some(8), Some(0), Some(u32::MAX)] {
+            assert_eq!(state.allocate_capability_slot(slot), None);
+            assert_eq!(state, before);
+        }
+        state.next_cap_id = u32::MAX - 1;
+        let (id, handle) = state.allocate_capability_slot(None).unwrap();
+        assert_eq!(id, u32::MAX - 1);
+        assert_eq!(state.next_cap_id, u32::MAX);
+        assert_eq!(state.slots.check(handle), super::SlotState::Live);
+        let last = state;
+        assert_eq!(state.allocate_capability_slot(None), None);
+        assert_eq!(state, last);
+    }
+
+    #[test]
+    fn namespace_derivation_exhaustion_leaves_cap_id_and_audit_unchanged() {
+        let mut state = fresh_state();
+        for entry in &mut state.slots.entries[4..] {
+            entry.generation = 0;
+            entry.in_use = false;
+        }
+        let before = state;
+        assert_eq!(
+            state.derive_capability_at(
+                INIT_TASK_ID,
+                IMAGE_CAP_HANDLE,
+                IMAGE_RIGHTS,
+                CapabilityLocation::InNamespace(INIT_NAMESPACE_ID),
+            ),
+            Err(NsError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
     }
 
     #[test]
