@@ -1687,32 +1687,62 @@ pub enum ExcResumeError {
 /// §12.10 成功动作 1「清零 Segment 中 `[frame_offset, frame_offset + 0xA0)` 的已消费 frame
 /// bytes」在此等价为清零该缓冲的对应字节。
 pub const RESUME_FRAME_BUFFER_LEN: usize = 0x200;
-static RESUME_FRAME_BUFFER: StaticCell<[u8; RESUME_FRAME_BUFFER_LEN]> =
-    StaticCell::new([0; RESUME_FRAME_BUFFER_LEN]);
+struct ResumeFrameBuffer([u8; RESUME_FRAME_BUFFER_LEN]);
+
+impl ResumeFrameBuffer {
+    const fn new() -> Self {
+        Self([0; RESUME_FRAME_BUFFER_LEN])
+    }
+
+    fn install(&mut self, offset: usize, bytes: &[u8]) -> Result<(), ExcResumeError> {
+        let end = offset
+            .checked_add(bytes.len())
+            .ok_or(ExcResumeError::OutOfBounds)?;
+        let target = self
+            .0
+            .get_mut(offset..end)
+            .ok_or(ExcResumeError::OutOfBounds)?;
+        target.copy_from_slice(bytes);
+        Ok(())
+    }
+
+    fn frame(&self, offset: usize) -> Option<[u8; crate::exc::SRET_FRAME_LEN]> {
+        let end = offset.checked_add(crate::exc::SRET_FRAME_LEN)?;
+        self.0.get(offset..end)?.try_into().ok()
+    }
+
+    /// Keep the same borrow through validation/commit and clear only on success.
+    fn consume<R>(
+        &mut self,
+        offset: usize,
+        commit: impl FnOnce(&[u8; crate::exc::SRET_FRAME_LEN]) -> Result<R, ExcResumeError>,
+    ) -> Result<R, ExcResumeError> {
+        let end = offset
+            .checked_add(crate::exc::SRET_FRAME_LEN)
+            .ok_or(ExcResumeError::OutOfBounds)?;
+        let target: &mut [u8; crate::exc::SRET_FRAME_LEN] = self
+            .0
+            .get_mut(offset..end)
+            .ok_or(ExcResumeError::OutOfBounds)?
+            .try_into()
+            .expect("fixed frame length");
+        let result = commit(target)?;
+        target.fill(0);
+        Ok(result)
+    }
+}
+
+static RESUME_FRAME_BUFFER: StaticCell<ResumeFrameBuffer> =
+    StaticCell::new(ResumeFrameBuffer::new());
 
 /// SPEC-073：把一帧的编码写进内核持有的恢复帧缓冲（见证/代调方在调用前使用）。
 pub fn install_resume_frame(frame_offset: usize, bytes: &[u8]) -> Result<(), ExcResumeError> {
-    if frame_offset + bytes.len() > RESUME_FRAME_BUFFER_LEN {
-        return Err(ExcResumeError::OutOfBounds);
-    }
-    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
-    // `frame_offset + bytes.len()` 已在上面校验过不超过缓冲长度。
-    let target = prima_ostd::mm::bytes_at_mut(base, bytes.len());
-    target.copy_from_slice(bytes);
-    Ok(())
+    RESUME_FRAME_BUFFER.with_mut(|buffer| buffer.install(frame_offset, bytes))
 }
 
-/// SPEC-073：读取内核持有的恢复帧缓冲（见证断言用）。
+/// SPEC-073：读取内核持有的恢复帧缓冲（返回副本，不借出静态切片）。
 pub fn resume_frame_bytes(frame_offset: usize) -> Option<[u8; crate::exc::SRET_FRAME_LEN]> {
-    if frame_offset + crate::exc::SRET_FRAME_LEN > RESUME_FRAME_BUFFER_LEN {
-        return None;
-    }
-    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
-    // 上面的边界检查保证该区间落在缓冲内。
-    let source = prima_ostd::mm::bytes_at(base, crate::exc::SRET_FRAME_LEN);
-    let mut bytes = [0u8; crate::exc::SRET_FRAME_LEN];
-    bytes.copy_from_slice(source);
-    Some(bytes)
+    RESUME_FRAME_BUFFER.with(|buffer| buffer.frame(frame_offset))
 }
 
 /// SPEC-073：§12.10 `exc_resume` 的 QEMU 见证。
@@ -1729,6 +1759,8 @@ pub struct ResumeWitness {
     pub frame_saved: u32,
     /// 成功动作 1：缓冲中该帧的字节已清零（1 = 已清）。
     pub frame_bytes_zeroed: u32,
+    /// Checked offset arithmetic rejects invalid ranges without changing the buffer.
+    pub bounds_rejected: u32,
     /// §8.4 步骤 3：再次 `schedule` 进 `Running` 时 `kernel_resume_frame` 被消费清空（1 = 成立）。
     pub frame_consumed: u32,
     /// 前置 6：不可恢复种类再次 `exc_resume` 被拒且保持 `Faulted`（1 = 成立）。
@@ -8404,25 +8436,22 @@ pub fn kernel_exc_resume(
     stack_bottom: u64,
     stack_top: u64,
 ) -> Result<(), ExcResumeError> {
-    let Some(bytes) = resume_frame_bytes(frame_offset) else {
-        return Err(ExcResumeError::OutOfBounds);
-    };
-    let frame = crate::exc::SretFrame::decode(&bytes);
-    if crate::exc::validate_for_kernel_resume(&frame, landing, stack_bottom, stack_top).is_err() {
-        return Err(ExcResumeError::InvalidFrame);
-    }
-    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
-        Some(state) => state.exc_resume_faulted(task_id, frame),
-        None => Err(ExcResumeError::NoSuchTask),
-    })?;
-    // 成功动作 1：清零该段已消费的帧字节（此刻已无失败点）。
-    let base = RESUME_FRAME_BUFFER.as_ptr() as u64 + frame_offset as u64;
-    // `resume_frame_bytes` 已对同一区间做过边界校验。
-    let consumed = prima_ostd::mm::bytes_at_mut(base, crate::exc::SRET_FRAME_LEN);
-    for byte in consumed.iter_mut() {
-        *byte = 0;
-    }
-    Ok(())
+    // Lock order: resume buffer -> bootstrap state -> scheduler cells.
+    // Never call install/read recursively from a state commit or transfer control.
+    RESUME_FRAME_BUFFER.with_mut(|buffer| {
+        buffer.consume(frame_offset, |bytes| {
+            let frame = crate::exc::SretFrame::decode(bytes);
+            if crate::exc::validate_for_kernel_resume(&frame, landing, stack_bottom, stack_top)
+                .is_err()
+            {
+                return Err(ExcResumeError::InvalidFrame);
+            }
+            BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+                Some(state) => state.exc_resume_faulted(task_id, frame),
+                None => Err(ExcResumeError::NoSuchTask),
+            })
+        })
+    })
 }
 
 /// SPEC-073：§12.10 的完整见证（`KernelActor` 代故障任务 `exc_resume`）。
@@ -8438,6 +8467,20 @@ pub fn record_resume_witness(
     stack_top: u64,
 ) -> Result<(), ExcResumeError> {
     let task_id = RECLAIM_NEGATIVE_TASK_ID;
+    let before = resume_frame_bytes(0);
+    let mut bounds_rejected = install_resume_frame(usize::MAX, &[1])
+        == Err(ExcResumeError::OutOfBounds)
+        && install_resume_frame(RESUME_FRAME_BUFFER_LEN, &[1]) == Err(ExcResumeError::OutOfBounds);
+    for offset in [
+        RESUME_FRAME_BUFFER_LEN - crate::exc::SRET_FRAME_LEN + 1,
+        usize::MAX - crate::exc::SRET_FRAME_LEN + 1,
+        usize::MAX,
+    ] {
+        bounds_rejected &= resume_frame_bytes(offset).is_none()
+            && kernel_exc_resume(task_id, offset, landing, stack_bottom, stack_top)
+                == Err(ExcResumeError::OutOfBounds);
+    }
+    bounds_rejected &= resume_frame_bytes(0) == before;
     let mut frame = crate::exc::SretFrame::ZERO;
     frame.rip = landing;
     frame.rsp = stack_top - 16;
@@ -8514,6 +8557,7 @@ pub fn record_resume_witness(
         pending_cleared: u32::from(pending_cleared),
         frame_saved: u32::from(frame_saved),
         frame_bytes_zeroed: u32::from(frame_bytes_zeroed),
+        bounds_rejected: u32::from(bounds_rejected),
         frame_consumed: u32::from(frame_consumed),
         unrecoverable_rejected: u32::from(unrecoverable_rejected),
         reclaimed_after: u32::from(reclaimed_after),
@@ -10171,6 +10215,74 @@ mod tests {
     };
     use crate::mem::FrameInventory;
     use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
+
+    #[test]
+    fn resume_buffer_rejects_overflow_and_bounds_without_mutation() {
+        let mut buffer = super::ResumeFrameBuffer([0x5a; super::RESUME_FRAME_BUFFER_LEN]);
+        for offset in (0..=super::RESUME_FRAME_BUFFER_LEN + 1).chain([usize::MAX, usize::MAX - 100])
+        {
+            for len in [
+                0,
+                1,
+                crate::exc::SRET_FRAME_LEN,
+                super::RESUME_FRAME_BUFFER_LEN,
+            ] {
+                let input = [0x33; super::RESUME_FRAME_BUFFER_LEN];
+                let before = buffer.0;
+                let valid = offset <= before.len() && len <= before.len() - offset;
+                assert_eq!(buffer.install(offset, &input[..len]).is_ok(), valid);
+                if !valid {
+                    assert_eq!(buffer.0, before);
+                }
+            }
+            assert_eq!(
+                buffer.frame(offset).is_some(),
+                offset <= super::RESUME_FRAME_BUFFER_LEN - crate::exc::SRET_FRAME_LEN
+            );
+        }
+    }
+
+    #[test]
+    fn resume_buffer_consumes_only_the_successfully_committed_window() {
+        use super::{ExcResumeError, RESUME_FRAME_BUFFER_LEN, ResumeFrameBuffer};
+        let mut buffer = ResumeFrameBuffer([0x5a; RESUME_FRAME_BUFFER_LEN]);
+        for offset in [
+            0,
+            1,
+            RESUME_FRAME_BUFFER_LEN - crate::exc::SRET_FRAME_LEN,
+            usize::MAX,
+        ] {
+            let before = buffer.0;
+            let mut called = false;
+            let result: Result<(), _> = buffer.consume(offset, |_| {
+                called = true;
+                Err(ExcResumeError::AuditFull)
+            });
+            assert_eq!(
+                result,
+                Err(if offset == usize::MAX {
+                    ExcResumeError::OutOfBounds
+                } else {
+                    ExcResumeError::AuditFull
+                })
+            );
+            assert_eq!(called, offset != usize::MAX);
+            assert_eq!(buffer.0, before);
+        }
+        let offset = 7;
+        let result = buffer.consume(offset, |frame| {
+            assert_eq!(frame, &[0x5a; crate::exc::SRET_FRAME_LEN]);
+            Ok(42)
+        });
+        assert_eq!(result, Ok(42));
+        assert!(buffer.0[..offset].iter().all(|&b| b == 0x5a));
+        assert_eq!(buffer.frame(offset), Some([0; crate::exc::SRET_FRAME_LEN]));
+        assert!(
+            buffer.0[offset + crate::exc::SRET_FRAME_LEN..]
+                .iter()
+                .all(|&b| b == 0x5a)
+        );
+    }
 
     #[test]
     fn tlb_flush_only_for_current_root() {

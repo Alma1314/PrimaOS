@@ -17,6 +17,7 @@ updated: 2026-10-24
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-asterinas-pod-buffer-design.md](2026-10-24-asterinas-pod-buffer-design.md) | Asterinas 参考续篇：POD 与恢复帧缓冲边界 |
 | 2026-10-24 | [2026-10-24-asterinas-reuse-design.md](2026-10-24-asterinas-reuse-design.md) | Asterinas 复用与 OSTD 同步契约 |
 
 ## 跨阶段 / 文档体系

@@ -56,7 +56,11 @@
       "OSTD",
       "StaticCell",
       "IRQ guard",
-      "AlignExt"
+      "AlignExt",
+      "Pod",
+      "bytes_of",
+      "ResumeFrameBuffer",
+      "bounds_rejected"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -70,7 +74,9 @@
       "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md",
       "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
-      "docs/architecture/asterinas-provenance.md"
+      "docs/architecture/asterinas-provenance.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -84,7 +90,8 @@
       "xtask/src/image.rs",
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
-      "prima-ostd/src/sync/lock.rs"
+      "prima-ostd/src/sync/lock.rs",
+      "prima-ostd/src/pod.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -93,7 +100,8 @@
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "prima-ostd/src/entry.rs"
+      "prima-ostd/src/entry.rs",
+      "prima-ostd/src/pod.rs"
     ],
     "guide": "docs/architecture/topics/boot.md"
   },
@@ -111,7 +119,11 @@
       "mprotect",
       "W^X",
       "AlignExt",
-      "checked_align_up"
+      "checked_align_up",
+      "Pod",
+      "bytes_of",
+      "ResumeFrameBuffer",
+      "bounds_rejected"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -130,7 +142,9 @@
       "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md",
       "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
-      "docs/architecture/asterinas-provenance.md"
+      "docs/architecture/asterinas-provenance.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -145,7 +159,8 @@
       "prima-user/c/prima_syscall.c",
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
-      "prima-ostd/src/sync/lock.rs"
+      "prima-ostd/src/sync/lock.rs",
+      "prima-ostd/src/pod.rs"
     ],
     "tests": [
       "cosir/src/memseg_refine_tests.rs",
@@ -157,7 +172,8 @@
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "prima-ostd/src/entry.rs"
+      "prima-ostd/src/entry.rs",
+      "prima-ostd/src/pod.rs"
     ],
     "guide": "docs/architecture/topics/memory.md"
   },

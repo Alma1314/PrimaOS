@@ -65,37 +65,7 @@ impl Descriptor {
     }
 }
 
-/// 最小 TSS：为 trap 提供内核栈切换（rsp0）。`#[repr(C, packed)]` 使其保持标准
-/// x86-64 104 字节 byte-packed 布局（rsp0 位于偏移 4）。
-#[repr(C, packed)]
-#[derive(Clone, Copy)]
-pub struct Tss {
-    reserved0: u32,
-    rsp0: u64,
-    rsp1: u64,
-    rsp2: u64,
-    reserved1: u64,
-    ist: [u64; 7],
-    reserved2: u64,
-    reserved3: u16,
-    iopb: u16,
-}
-
-impl Tss {
-    const fn new(rsp0: u64) -> Self {
-        Tss {
-            reserved0: 0,
-            rsp0,
-            rsp1: 0,
-            rsp2: 0,
-            reserved1: 0,
-            ist: [0; 7],
-            reserved2: 0,
-            reserved3: 0,
-            iopb: 104,
-        }
-    }
-}
+pub use prima_ostd::entry::Tss;
 
 /// GDT 的 x86 字节偏移常量（index * 8）。
 const CODE_OFF: usize = 8; // 槽 1: index*8 = 内核 code
@@ -210,7 +180,7 @@ pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
 /// 单核、无并发；在任务切换（[`crate::sched::resume`]）时指向目标任务的内核栈，实现
 /// per-task 内核栈。TSS 描述子已在 [`init_kernel_gdt`] 装载，此处只改内存中的字段。
 pub fn set_rsp0(rsp0: u64) {
-    TSS_ITEM.with_mut(|tss| tss.rsp0 = rsp0);
+    TSS_ITEM.with_mut(|tss| tss.set_rsp0(rsp0));
 }
 
 #[cfg(test)]

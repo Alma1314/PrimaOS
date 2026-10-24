@@ -81,7 +81,7 @@
 | [接口、号段与版本边界](interfaces.md) | current | `docs/architecture/interfaces.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（168）
+## report（169）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -248,6 +248,7 @@
 | [阶段 5 / M21：出口评审（未签署）](../superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | historical | `docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md` |
 | [阶段 5 / ISSUE-THREAD-CAPACITY-001 调查记录](../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md) | historical | `docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md` |
 | [VFS / LibOS 基础重构验证报告](../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | historical | `docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md` |
+| [Asterinas 参考续篇：POD 与恢复帧缓冲验证](../superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md) | historical | `docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md` |
 | [Asterinas 复用与 OSTD 临界区验证报告](../superpowers/reports/2026-10-24-asterinas-reuse-report.md) | historical | `docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md` |
 | [文档生命周期治理与过时材料清理报告](../superpowers/reports/2026-10-24-documentation-lifecycle-report.md) | historical | `docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md` |
 | [内核句柄、权限与 Lean 模型补强](../superpowers/reports/2026-10-24-kernel-handle-model-report.md) | historical | `docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md` |
@@ -263,7 +264,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（68）
+## specification（69）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -334,6 +335,7 @@
 | [阶段 5 / M17：fork/execve/wait4 设计（D3 提案）](../superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md) | unclassified | `docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md` |
 | [阶段 5 / M17c-2：execve 的 syscall 契约（设计）](../superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md) | unclassified | `docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md` |
 | [阶段 5 / M19：用户态 loopback IPv4/UDP 子集设计](../superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md) | unclassified | `docs/superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md` |
+| [Asterinas 参考续篇：POD 类型边界与恢复帧所有权](../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md) | current | `docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md` |
 | [Asterinas 代码复用与 OSTD 同步契约](../superpowers/specs/2026-10-24-asterinas-reuse-design.md) | current | `docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md` |
 
 ## template（4）

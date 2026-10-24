@@ -20,4 +20,5 @@ pub mod align;
 pub mod arch;
 pub mod entry;
 pub mod mm;
+pub mod pod;
 pub mod sync;

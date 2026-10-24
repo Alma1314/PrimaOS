@@ -299,6 +299,8 @@ pub(crate) fn resume_ready(witness: &kernel::bootstrap::ResumeWitness) {
     write_u32(witness.frame_saved);
     serial::write_bytes(b";frame_bytes_zeroed=");
     write_u32(witness.frame_bytes_zeroed);
+    serial::write_bytes(b";bounds_rejected=");
+    write_u32(witness.bounds_rejected);
     serial::write_bytes(b";frame_consumed=");
     write_u32(witness.frame_consumed);
     serial::write_bytes(b";unrecoverable_rejected=");

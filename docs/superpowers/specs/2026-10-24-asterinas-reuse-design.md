@@ -38,6 +38,9 @@ updated: 2026-10-24
 | Linux syscall、inode/dentry/VFS、socket/process 层 | 保留为 personality 实现参考，未复制进通用内核；Linux errno/对象/策略不替代 PrimaOS 运行时和跨 OS 边界 |
 | OSDK、驱动整体与平台启动代码 | 本轮不迁入；现有 bootloader/manifest/QEMU 门禁继续使用。引入设备时再按实际硬件范围适配 |
 
+POD 候选的局部后继已由[POD/恢复帧契约](2026-10-24-asterinas-pod-buffer-design.md)覆盖：
+有限类型的人工审计和自有缓冲借用，完整 VmReader/VmWriter、用户缺页恢复及剩余 VA 契约仍未迁入。
+
 ## 对齐契约
 
 `AlignExt` 支持上游相同的 `u8/u16/u32/u64/usize`。align_up/down 要求 alignment 为 ≥2 的二次幂，

@@ -32,3 +32,17 @@ updated: 2026-10-24
 | `ostd/src/arch/x86/irq/ops.rs` | `2eaac6896c7ae83a51dff7fcc320c62c197b9329a5a762f8804685b45132c755` |
 | `LICENSE-MPL` | `86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae` |
 | `ostd/src/task/kernel_stack.rs`（设计参考，未移植源码） | `cfa6de805080350735e092dbdd439c608091494badc5e7834cee6c3656500ca8` |
+
+## POD 与借用访问设计参考（后继）
+
+本轮 [pod.rs](../../prima-ostd/src/pod.rs) 参考 ostd-pod 的类型边界重新实现，保留 MPL-2.0 标识；
+不是复制上游 zerocopy trait 栈/derive 宏，也不具有上游自动布局检查。
+恢复缓冲采用 VmReader/VmWriter 对已借用内核切片的生命周期原则，直接使用本地 Rust slices，
+不复制用户缺页恢复、copy 汇编或读写器类。Tss 是 PrimaOS 原类型的层次迁移。
+来源版本与许可证沿用上表；适配契约见[POD 与恢复帧设计](../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)。
+
+| 设计输入（逐个核对锁定 Git blob） | SHA-256 |
+|---|---|
+| `ostd/libs/ostd-pod/src/lib.rs` | `55c9c8cff15f66ed464535c80dd78f0a02ccaacf08405ed593f0656b7b080c6b` |
+| `ostd/libs/ostd-pod/README.md` | `f66d28d773320b7763184fa3473148cb0cbab47d0c45882a7781f3f2eb73b684` |
+| `ostd/src/mm/io/mod.rs` | `6b374ca6c1a066ec11df8ff1fcc6b3cd7c5a2f5a032fbd85c050876ff641450a` |

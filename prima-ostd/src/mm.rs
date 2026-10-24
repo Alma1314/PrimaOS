@@ -78,23 +78,9 @@ pub fn fill_zero(va: u64, len: usize) {
     unsafe { ptr::write_bytes(va as *mut u8, 0, len) }
 }
 
-/// 取 `value` 的字节视图。
-///
-/// 契约：`T` 无未初始化填充（本项目用于 `repr(C)` 的 TSS 等 POD）。
-#[inline]
-pub fn bytes_of<T>(value: &T) -> &[u8] {
-    // SAFETY: 见函数契约——`T` 视为 POD，整个 size_of::<T>() 区域已初始化、可读。
-    unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), size_of::<T>()) }
-}
-
-/// 把 `va` 起 `len` 字节当作可变切片。
-///
-/// 契约：`[va, va+len)` 已映射且可写；同一区段在借用期内不得被他处可变访问（单核顺序访问）。
-#[inline]
-pub fn bytes_at_mut(va: u64, len: usize) -> &'static mut [u8] {
-    // SAFETY: 见函数契约——调用方保证映射范围与独占性。
-    unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) }
-}
+// Preserve the existing path, with an enforced type boundary instead of a
+// caller-only assertion that arbitrary T happens to have initialized bytes.
+pub use crate::pod::bytes_of;
 
 /// 把 `va` 起 `len` 字节当作只读切片。
 ///

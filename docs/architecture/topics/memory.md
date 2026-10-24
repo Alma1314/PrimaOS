@@ -80,3 +80,10 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 ## 限制与修改注意
 
 匿名 mmap 是受限 arena，不能宣称文件映射/MAP_SHARED 等已实现。M17 COW 的工作路径不消除 fork 包装续执行问题。涉及帧池/映射容量的改动要保留 ENOSPC、清零、失败回滚与回收见证。
+
+## POD 与借用缓冲后继
+
+[Asterinas POD/恢复帧契约](../../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)和
+[本轮证据](../../superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)覆盖
+[pod.rs](../../../prima-ostd/src/pod.rs) 的类型审计、TSS 布局及恢复缓冲的 checked slice / 临界区。
+仍不提供完整用户内存权限验证或 fault-safe 拷贝；原始 VA 接口的契约边界保留。

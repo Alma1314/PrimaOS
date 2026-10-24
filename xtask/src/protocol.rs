@@ -1350,6 +1350,7 @@ fn validate_resume_data(data: Option<&str>) -> Result<(), String> {
         "pending_cleared",
         "frame_saved",
         "frame_bytes_zeroed",
+        "bounds_rejected",
         "frame_consumed",
         "unrecoverable_rejected",
         "reclaimed_after",
@@ -4412,6 +4413,15 @@ mod tests {
     }
 
     #[test]
+    fn resume_trace_requires_successful_bounds_rejection() {
+        for replacement in ["", ";bounds_rejected=0", ";bounds_rejected=2"] {
+            let output = VALID.replace(";bounds_rejected=1", replacement);
+            let error = validate_output(&output).unwrap_err();
+            assert!(error.contains("bounds_rejected"), "{error}");
+        }
+    }
+
+    #[test]
     fn stage5_tty_requires_c_writes_and_tty_ioport_answers() {
         let good = concat!(
             "h\r\n",
@@ -4588,7 +4598,7 @@ mod tests {
         "PRIMA|v=1|seq=39|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
         "PRIMA|v=1|seq=40|event=state_audit_ready|status=ok|data=total=135;to_running=54;to_ready=45;to_blocked=32;to_faulted=4;used=475;cap=512\n",
         "PRIMA|v=1|seq=41|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
-        "PRIMA|v=1|seq=42|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
+        "PRIMA|v=1|seq=42|event=resume_ready|status=ok|data=task=5;resumed=1;status_after=0;pending_cleared=1;frame_saved=1;frame_bytes_zeroed=1;bounds_rejected=1;frame_consumed=1;unrecoverable_rejected=1;reclaimed_after=1;invariant_ok=1\n",
         "PRIMA|v=1|seq=43|event=boot_complete|status=ok\r\n",
     );
 

@@ -101,6 +101,11 @@ pub struct SretFrame {
     pub ss: u64,
 }
 
+// SAFETY: repr(C) with only u64 fields; the size equals their summed sizes,
+// so there is no internal or trailing padding, and every bit pattern is valid.
+unsafe impl crate::pod::Pod for SretFrame {}
+const _: () = assert!(size_of::<SretFrame>() == SRET_FRAME_LEN);
+
 impl SretFrame {
     /// 全零帧（供静态初始化与默认值）。
     pub const ZERO: Self = Self {
@@ -294,6 +299,53 @@ pub struct UserFrame {
     pub rsp: u64,
     pub ss: u64,
 }
+
+// SAFETY: repr(C) with only u64 fields; the size equals their summed sizes,
+// so there is no internal or trailing padding, and every bit pattern is valid.
+unsafe impl crate::pod::Pod for UserFrame {}
+const _: () = assert!(size_of::<UserFrame>() == 5 * 8);
+
+/// 最小 TSS：为 trap 提供内核栈切换（rsp0）。`#[repr(C, packed)]` 使其保持标准
+/// x86-64 104 字节 byte-packed 布局（rsp0 位于偏移 4）。
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct Tss {
+    reserved0: u32,
+    rsp0: u64,
+    rsp1: u64,
+    rsp2: u64,
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
+    iopb: u16,
+}
+
+impl Tss {
+    pub const fn new(rsp0: u64) -> Self {
+        Tss {
+            reserved0: 0,
+            rsp0,
+            rsp1: 0,
+            rsp2: 0,
+            reserved1: 0,
+            ist: [0; 7],
+            reserved2: 0,
+            reserved3: 0,
+            iopb: 104,
+        }
+    }
+
+    /// Updates the privilege-switch kernel stack without exposing packed fields.
+    pub fn set_rsp0(&mut self, rsp0: u64) {
+        self.rsp0 = rsp0;
+    }
+}
+
+// SAFETY: repr(C, packed) contains only integer fields/arrays: no padding,
+// references or invalid bit patterns. The architectural size is checked below.
+unsafe impl crate::pod::Pod for Tss {}
+const _: () = assert!(size_of::<Tss>() == 104);
 
 // ---------------------------------------------------------------------------
 // handler 注册（回调反转的核心）
@@ -1057,6 +1109,11 @@ pub struct InterruptStackFrame {
     pub cpu_flags: u64,
 }
 
+// SAFETY: repr(C) with only u64 fields; the size equals their summed sizes,
+// so there is no internal or trailing padding, and every bit pattern is valid.
+unsafe impl crate::pod::Pod for InterruptStackFrame {}
+const _: () = assert!(size_of::<InterruptStackFrame>() == 3 * 8);
+
 /// vector 3（breakpoint）handler。
 ///
 /// 若已注册用户收尾回调（进入用户态前注册），则调用它（不返回）；否则按普通 int3
@@ -1122,6 +1179,24 @@ pub fn trigger_page_fault(addr: u64) {
 mod tests {
     use super::*;
     use core::mem::{align_of, size_of};
+
+    #[test]
+    fn audited_hardware_types_match_independent_byte_encodings() {
+        use crate::pod::{Pod, bytes_of};
+        let wire: [u8; SRET_FRAME_LEN] = core::array::from_fn(|index| index as u8);
+        let frame = SretFrame::decode(&wire);
+        assert_eq!(bytes_of(&frame), wire);
+        assert_eq!(SretFrame::from_bytes(&wire), Some(frame));
+        let mut tss = Tss::new(0x1234_5678_9abc_def0);
+        tss.set_rsp0(0xfedc_ba98_7654_3210);
+        let mut expected = [0u8; 104];
+        expected[4..12].copy_from_slice(&0xfedc_ba98_7654_3210u64.to_le_bytes());
+        expected[102..104].copy_from_slice(&104u16.to_le_bytes());
+        assert_eq!(bytes_of(&tss), expected);
+        // Rust representation validity does not imply CPU configuration validity.
+        let all_bits = Tss::from_bytes(&[0xff; 104]).unwrap();
+        assert_eq!(bytes_of(&all_bits), &[0xff; 104]);
+    }
 
     #[test]
     fn sret_frame_layout_is_pinned() {

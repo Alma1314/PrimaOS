@@ -68,3 +68,10 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 ## 限制与修改注意
 
 kernel/src 必须零 unsafe，必要特权操作放在 prima-ostd 并说明不变量。Authority 退出条件已接受的 image/vspace 细化分叉不等于完整§14 细化证明。BIOS 验收不能外推为 UEFI 执行已验收。
+
+## POD 与借用缓冲后继
+
+[Asterinas POD/恢复帧契约](../../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)和
+[本轮证据](../../superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)覆盖
+[pod.rs](../../../prima-ostd/src/pod.rs) 的类型审计、TSS 布局及恢复缓冲的 checked slice / 临界区。
+仍不提供完整用户内存权限验证或 fault-safe 拷贝；原始 VA 接口的契约边界保留。
