@@ -27,7 +27,7 @@ updated: 2026-10-24
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | Asterinas POD/借用缓冲后继 Rust 922 项、lint、完整单次 62 轮 BIOS 通过 | [POD/恢复帧报告](docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)限本轮实现与验收；[前轮报告](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)保留栈溢出修复、V1/W1 超时与分段范围，旧超时根因未定。[原生服务/W9 前序](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[内核/Lean](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)、[musl](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)与[历史 VFS 超时](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)保留各自范围 |
+| 最近验证记录 | Asterinas 一次发布后继 Rust929项、lint通过；BIOS成功覆盖60/62轮，完整命令仍超时 | [一次发布报告](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)保留三次完整命令超时及后缀隔离重试的全部失败，不宣称连续双轮稳定；[POD/恢复帧前序](docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)限其实现与验收；[前轮报告](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)保留栈溢出修复、V1/W1 超时与分段范围，旧超时根因未定。[原生服务/W9 前序](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[内核/Lean](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)、[musl](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)与[历史 VFS 超时](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)保留各自范围 |
 | 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -39,7 +39,7 @@ updated: 2026-10-24
 | 抽象状态与研究目标 | [规范](COSIR%20原语规范.md)、[白皮书](Prima%20OS.md) | 预期语义与研究假设，不是实现证明 |
 | 阶段0–4签署 | 上方 SPEC-145–149 | 以各自退出条件及证据范围为限 |
 | 签署后整改 | [SPEC-150](docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)、[151](docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)、[阶段2 IPC](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段3](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)、[1–4复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md) | 旧签署后的局部修订，不抹去旧报告 |
-| OSTD 跨项目复用 | [契约](docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md)、[验证](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[来源与许可](docs/architecture/asterinas-provenance.md) | 对齐/临界区及[POD/缓冲后继](docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)；不等于完整框架 soundness 或 SMP |
+| OSTD 跨项目复用 | [契约](docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md)、[验证](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[来源与许可](docs/architecture/asterinas-provenance.md) | 对齐/临界区、[POD/缓冲](docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)及[一次发布](docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md)后继；不等于完整框架 soundness 或 SMP |
 | 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
@@ -61,11 +61,13 @@ Asterinas OSTD 复用后继见[移植报告](docs/superpowers/reports/2026-10-24
 Asterinas 参考续篇见[POD 与恢复帧报告](docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)：
 字节视图的类型审计、TSS 下沉与恢复帧的溢出/借用/锁边界。验证范围以该报告为准，不改变阶段勾选或前轮超时结论。
 
+Asterinas 一次发布后继见[报告](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)：Once错误/unwind重试、所有权析构及根/镜像描述整体发布；完整验收超时仍未收口，未改变阶段签署。
+
 ## 已知问题与当前阻塞
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位 | [OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；保留门限/断言/失败证据；不以本次栈溢出解释旧超时 |
+| QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留验证缺口 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；保留门限/断言/失败证据；不以本次栈溢出解释旧超时 |
 | 系统调用栈保护边界 | 锁迁入时的 16 KiB 溢出已定位，改为 32 KiB 并增加栈底 64 字节哨兵；尚无 MMU guard page 或所有路径的峰值证明 | [契约与证据](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)；新增深调用链须继续验证 |
 | BLK-003 | 仍 Open：候选基座库的 ABI/profile 假设未全部裁决；工作实现不等于组织级采纳 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M21；保留号段/命名/错误映射与阶段归属待决项 |
 | S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 未编写；Rust target/core-std 未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |

@@ -18,6 +18,19 @@ impl Lock {
         Self(AtomicBool::new(false))
     }
 
+    /// A failed attempt restores the IRQ state through the local guard.
+    #[inline(always)]
+    pub(super) fn try_lock(&self) -> Option<Guard<'_>> {
+        let irq = IrqGuard::new();
+        self.0
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()?;
+        Some(Guard {
+            lock: self,
+            _irq: irq,
+        })
+    }
+
     #[inline(always)]
     pub(super) fn lock(&self) -> Guard<'_> {
         // Disable local IRQs before acquiring: an IRQ on this CPU must not
@@ -158,5 +171,47 @@ mod tests {
         assert!(!lock.0.load(Ordering::Relaxed));
         assert!(IRQ_ENABLED.with(|flag| flag.get()));
         drop(lock.lock());
+    }
+
+    #[test]
+    fn once_initialization_and_failed_try_lock_restore_original_irq_state() {
+        use super::super::Once;
+        for initial in [false, true] {
+            IRQ_ENABLED.with(|flag| flag.set(initial));
+            let once = Once::new();
+            assert_eq!(
+                once.get_or_try_init(|| {
+                    assert!(!IRQ_ENABLED.with(|flag| flag.get()));
+                    assert!(once.get().is_none());
+                    assert_eq!(once.set(5), Err(5));
+                    assert!(!IRQ_ENABLED.with(|flag| flag.get()));
+                    Err::<u8, _>(())
+                }),
+                Err(())
+            );
+            assert_eq!(IRQ_ENABLED.with(|flag| flag.get()), initial);
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    once.get_or_init(|| {
+                        assert!(!IRQ_ENABLED.with(|flag| flag.get()));
+                        panic!("test once unwind");
+                    });
+                }))
+                .is_err()
+            );
+            assert_eq!(IRQ_ENABLED.with(|flag| flag.get()), initial);
+            assert_eq!(
+                once.get_or_init(|| {
+                    assert!(!IRQ_ENABLED.with(|flag| flag.get()));
+                    7
+                }),
+                &7
+            );
+            assert_eq!(IRQ_ENABLED.with(|flag| flag.get()), initial);
+            assert_eq!(once.get_or_init(|| panic!("already ready")), &7);
+            assert_eq!(once.set(9), Err(9));
+            assert_eq!(IRQ_ENABLED.with(|flag| flag.get()), initial);
+        }
+        IRQ_ENABLED.with(|flag| flag.set(true));
     }
 }

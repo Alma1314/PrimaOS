@@ -202,6 +202,8 @@ pub(crate) fn self_root_ready(witness: &kernel::user::SelfRootWitness) {
     write_u64(witness.pages);
     serial::write_bytes(b";translated=");
     write_hex_u64(witness.translated);
+    serial::write_bytes(b";published_once=");
+    write_u32(witness.published_once as u32);
     serial::write_bytes(b"\r\n");
 }
 

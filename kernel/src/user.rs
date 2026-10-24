@@ -41,7 +41,7 @@ use crate::syscall::{
     USER2_RECV_BUF2, USER2_RECV_BUF3, USER2_SHARED_VA,
 };
 use crate::vspace::{self, VspaceError};
-use prima_ostd::sync::StaticCell;
+use prima_ostd::sync::{Once, StaticCell};
 
 /// EXO-1：一个 boot image 条目——只暴露 opaque ELF 字节与装载布局。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -768,13 +768,18 @@ fn region_frame(frames: &SegmentFrames) -> Result<u64, VspaceError> {
 ///
 /// 任务根由它克隆而来，故内核高半区（镜像、直映射、启动栈）在本内核下**全部是自有页表**，
 /// 不再是 bootloader 页表的共享上级。
-static KERNEL_ROOT: StaticCell<Option<u64>> = StaticCell::new(None);
+static KERNEL_ROOT: Once<KernelRootInfo> = Once::new();
+
+/// 小型描述整体发布；页表本体仍通过既有映射/帧归属入口管理。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KernelRootInfo {
+    root: u64,
+    image_va: u64,
+    image_pages: usize,
+}
 
 /// 镜像所在的 PML4 槽（`kernel_image_offset = 0x10000000000`）——自建根的镜像链入口。
 pub const IMAGE_SLOT: usize = 2;
-
-/// SPEC-069：自建内核根对应的镜像 VA 基址与页数（见证用）。
-static KERNEL_IMAGE: StaticCell<Option<(u64, usize)>> = StaticCell::new(None);
 
 /// SPEC-069：自建 CR3 的判决性见证（必须在内核已运行于自建根**之后**采集）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -791,12 +796,25 @@ pub struct SelfRootWitness {
     pub pages: u64,
     /// 当前根解析 `kernel_image_offset` 得到的物理地址（应等于内核镜像物理基址）。
     pub translated: u64,
+    /// 再次构建返回同一根/描述，且空闲帧计数不变。
+    pub published_once: bool,
 }
 
 /// 采集自建 CR3 见证；自建根或 COW 上下文尚未建立时返回 `None`。
 pub fn self_root_witness() -> Option<SelfRootWitness> {
-    let kernel_root = kernel_root()?;
-    let (image_va, image_pages) = KERNEL_IMAGE.with(|slot| *slot)?;
+    let info = *KERNEL_ROOT.get()?;
+    let KernelRootInfo {
+        root: kernel_root,
+        image_va,
+        image_pages,
+    } = info;
+    // 全量 W6 审计已由 frames_ready 执行，此处只需常数时间的分配计数。
+    let before = crate::frames::free_frames().ok()?;
+    // 已发布才执行：全零参数若误入构造路径，本见证应失败。
+    let repeated = build_kernel_root(0, 0, 0, 0, 0, 0, 0);
+    let published_once = repeated == Ok(kernel_root)
+        && KERNEL_ROOT.get() == Some(&info)
+        && crate::frames::free_frames().ok() == Some(before);
     let (_, offset) = crate::cow::root_and_offset()?;
     let map = |phys: u64| phys_to_virt(phys, offset);
     let root = crate::sched::current_root().unwrap_or(kernel_root);
@@ -820,12 +838,13 @@ pub fn self_root_witness() -> Option<SelfRootWitness> {
         owned,
         pages,
         translated,
+        published_once,
     })
 }
 
 /// 已构造的自建内核根（未构造时为 `None`）。
 pub fn kernel_root() -> Option<u64> {
-    KERNEL_ROOT.with(|slot| *slot)
+    KERNEL_ROOT.get().map(|info| info.root)
 }
 
 /// 切片 X：构造自建内核根并登记，供随后所有任务根克隆。
@@ -836,6 +855,8 @@ pub fn kernel_root() -> Option<u64> {
 /// [`crate::cpu::translate`]（只认 4 KiB 叶）。
 ///
 /// 用户槽不在本根中建立：任务根克隆后再各自加载自己的用户页（同 VA 不同帧的隔离不变）。
+/// 首次成功整体发布根/镜像描述；之后返回原根，忽略后续构造参数且不分配帧。
+/// 首次失败不发布，可重试；普通 Err 沿用底层页表回滚，Once 不回滚闭包外部副作用。
 pub fn build_kernel_root(
     boot_root: u64,
     offset: u64,
@@ -845,35 +866,41 @@ pub fn build_kernel_root(
     stack_va: u64,
     stack_pages: usize,
 ) -> Result<u64, VspaceError> {
-    let map = |phys: u64| phys_to_virt(phys, offset);
-    let stack_phys = |index: usize| {
-        vspace::leaf_phys_or_none(boot_root, stack_va + (index as u64) * FRAME_SIZE, map)
-    };
-    let direct_pages = max_phys.div_ceil(FRAME_SIZE) as usize;
-    let image_phys = |index: usize| {
-        vspace::leaf_phys_or_none(boot_root, image_va + (index as u64) * FRAME_SIZE, map)
-    };
-    let root = vspace::build_self_root(
-        map,
-        || frames::allocate_table_frame().ok(),
-        vspace::SelfRootSpec {
-            direct: vspace::SelfMap {
-                va: offset,
-                phys: 0,
-                pages: direct_pages,
-                writable: true,
-            },
-            image_va,
-            image_pages,
-            stack_va,
-            stack_pages,
-        },
-        image_phys,
-        stack_phys,
-    )?;
-    KERNEL_ROOT.with_mut(|slot| *slot = Some(root));
-    KERNEL_IMAGE.with_mut(|slot| *slot = Some((image_va, image_pages)));
-    Ok(root)
+    KERNEL_ROOT
+        .get_or_try_init(|| {
+            let map = |phys: u64| phys_to_virt(phys, offset);
+            let stack_phys = |index: usize| {
+                vspace::leaf_phys_or_none(boot_root, stack_va + (index as u64) * FRAME_SIZE, map)
+            };
+            let direct_pages = max_phys.div_ceil(FRAME_SIZE) as usize;
+            let image_phys = |index: usize| {
+                vspace::leaf_phys_or_none(boot_root, image_va + (index as u64) * FRAME_SIZE, map)
+            };
+            let root = vspace::build_self_root(
+                map,
+                || frames::allocate_table_frame().ok(),
+                vspace::SelfRootSpec {
+                    direct: vspace::SelfMap {
+                        va: offset,
+                        phys: 0,
+                        pages: direct_pages,
+                        writable: true,
+                    },
+                    image_va,
+                    image_pages,
+                    stack_va,
+                    stack_pages,
+                },
+                image_phys,
+                stack_phys,
+            )?;
+            Ok(KernelRootInfo {
+                root,
+                image_va,
+                image_pages,
+            })
+        })
+        .map(|info| info.root)
 }
 
 /// 切片 O / X：为一任务构造独立 PML4——克隆**自建内核根**（本内核自有的内核高半区）后，

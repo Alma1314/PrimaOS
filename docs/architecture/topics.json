@@ -60,7 +60,11 @@
       "Pod",
       "bytes_of",
       "ResumeFrameBuffer",
-      "bounds_rejected"
+      "bounds_rejected",
+      "Once",
+      "get_or_try_init",
+      "KernelRootInfo",
+      "published_once"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -76,7 +80,9 @@
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
       "docs/architecture/asterinas-provenance.md",
       "docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md",
-      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md"
+      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -91,7 +97,8 @@
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "prima-ostd/src/pod.rs"
+      "prima-ostd/src/pod.rs",
+      "kernel/src/user.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -123,7 +130,11 @@
       "Pod",
       "bytes_of",
       "ResumeFrameBuffer",
-      "bounds_rejected"
+      "bounds_rejected",
+      "Once",
+      "get_or_try_init",
+      "KernelRootInfo",
+      "published_once"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -144,7 +155,9 @@
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
       "docs/architecture/asterinas-provenance.md",
       "docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md",
-      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md"
+      "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -160,7 +173,8 @@
       "prima-ostd/src/align.rs",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "prima-ostd/src/pod.rs"
+      "prima-ostd/src/pod.rs",
+      "kernel/src/user.rs"
     ],
     "tests": [
       "cosir/src/memseg_refine_tests.rs",
@@ -173,7 +187,8 @@
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
       "prima-ostd/src/entry.rs",
-      "prima-ostd/src/pod.rs"
+      "prima-ostd/src/pod.rs",
+      "xtask/src/protocol.rs"
     ],
     "guide": "docs/architecture/topics/memory.md"
   },
@@ -438,7 +453,11 @@
       "PIT",
       "StaticCell",
       "IRQ guard",
-      "spinlock"
+      "spinlock",
+      "Once",
+      "get_or_try_init",
+      "KernelRootInfo",
+      "published_once"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -453,7 +472,9 @@
       "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md",
       "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
-      "docs/architecture/asterinas-provenance.md"
+      "docs/architecture/asterinas-provenance.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -464,7 +485,8 @@
       "prima-user/src/servicemgr.rs",
       "prima-user/c/prima_syscall.c",
       "prima-ostd/src/sync.rs",
-      "prima-ostd/src/sync/lock.rs"
+      "prima-ostd/src/sync/lock.rs",
+      "kernel/src/user.rs"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",
@@ -474,7 +496,8 @@
       "prima-user/c/stage5_ttyin.c",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "prima-ostd/src/entry.rs"
+      "prima-ostd/src/entry.rs",
+      "xtask/src/protocol.rs"
     ],
     "guide": "docs/architecture/topics/synchronization.md"
   },

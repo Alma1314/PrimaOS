@@ -1725,6 +1725,7 @@ fn validate_self_root_data(
     let mut owned = None;
     let mut pages = None;
     let mut translated = None;
+    let mut published_once = None;
     for field in data.split(';') {
         let (key, value) = field
             .split_once('=')
@@ -1736,6 +1737,7 @@ fn validate_self_root_data(
             "owned" => owned = Some(parse_count(value)?),
             "pages" => pages = Some(parse_count(value)?),
             "translated" => translated = Some(parse_addr(value)?),
+            "published_once" => published_once = Some(parse_count(value)?),
             other => return Err(format!("unexpected self_root_ready field: {other}")),
         }
     }
@@ -1748,6 +1750,9 @@ fn validate_self_root_data(
     let pages = pages.ok_or_else(|| "self_root_ready is missing pages".to_owned())?;
     let translated =
         translated.ok_or_else(|| "self_root_ready is missing translated".to_owned())?;
+    if published_once != Some(1) {
+        return Err("self_root_ready requires published_once=1".to_owned());
+    }
     for (name, value) in [
         ("root", root),
         ("kernel_root", kernel_root),
@@ -4594,7 +4599,7 @@ mod tests {
         "PRIMA|v=1|seq=35|event=platform_segments_ready|status=ok|data=segments=13;first_id=2;last_id=14;roots=13;user_roots=11;kernel_roots=2;holders=0,0,1,1,1,1,2,2,2,1,1,2,2;task_caps=2;task_holders=1,2;mapped=11;direct=2;direct_ids=2,3;vspace=13;slot_base=32;task1_cap=0x10000002d;task2_cap=0x10000002e;caps=0x100000020,0x100000021,0x100000022,0x100000023,0x100000024,0x100000025,0x100000026,0x100000027,0x100000028,0x100000029,0x10000002a,0x10000002b,0x10000002c;frames=2,3,2,1,1,1,1,1,1,1,1,1,1;unified=1\n",
         "PRIMA|v=1|seq=36|event=authority_ready|status=ok|data=caps=3;segments=1;namespaces=1;booted=1;initial_status=ready;entry_in_image=1;root_ns=0x100000002;init_running=1\n",
         "PRIMA|v=1|seq=37|event=frames_ready|status=ok|data=universe=31358;free=30036;segment=69;table=131;image=1122;conserved=1;disjoint=1\n",
-        "PRIMA|v=1|seq=38|event=self_root_ready|status=ok|data=root=0x5c000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=406;translated=0x1000000\n",
+        "PRIMA|v=1|seq=38|event=self_root_ready|status=ok|data=root=0x5c000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=406;translated=0x1000000;published_once=1\n",
         "PRIMA|v=1|seq=39|event=fault_ready|status=ok|data=task=7;before=1;after=3;raised=1;pending_source=1;pending_kind=1;precond_rejected=1;invariant_ok=1;unschedulable=1\n",
         "PRIMA|v=1|seq=40|event=state_audit_ready|status=ok|data=total=135;to_running=54;to_ready=45;to_blocked=32;to_faulted=4;used=475;cap=512\n",
         "PRIMA|v=1|seq=41|event=reclaim_ready|status=ok|data=task=6;negative_task=5;unrecoverable=1;reclaimed=1;negative_rejected=1;after_dead=1;pending_cleared=1;invariant_ok=1\n",
@@ -6176,5 +6181,19 @@ mod tests {
         let output = VALID.replace(AUDIT_DATA, &AUDIT_DATA.replace("stale_ok=1", "stale_ok=0"));
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("stale_ok: expected 1"), "{error}");
+    }
+
+    #[test]
+    fn self_root_requires_successful_once_publication_evidence() {
+        use super::validate_self_root_data;
+        let data = "root=0x5c000;kernel_root=0xa000;image_table=0xb000;owned=1;pages=406;translated=0x1000000";
+        assert!(validate_self_root_data(Some(data), Some("0x1000000")).is_err());
+        for value in [0, 1, 2, u64::MAX] {
+            let data = format!("{data};published_once={value}");
+            assert_eq!(
+                validate_self_root_data(Some(&data), Some("0x1000000")).is_ok(),
+                value == 1
+            );
+        }
     }
 }

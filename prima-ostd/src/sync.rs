@@ -10,7 +10,7 @@ mod lock;
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 /// 闭包访问期间持有 IRQ-safe 互斥锁的全局单元。
@@ -60,85 +60,93 @@ impl<T> StaticCell<T> {
     }
 }
 
-const ONCE_EMPTY: u8 = 0;
-const ONCE_BUSY: u8 = 1;
-const ONCE_READY: u8 = 2;
-
-/// 只初始化一次的全局单元（boot-once 语义，`no_std` 下无 `std::sync::Once`）。
+/// 一次发布的只读单元；设计参考 Asterinas 的 boot/ACPI/logger Once。
 ///
-/// 初始化后只读；`get_or_init` 返回的 `&T` 在 `Once` 存活期内有效且不变。
+/// 未就绪的初始化由 IRQ-safe 锁串行化；Err/unwind 不发布，后续调用可重试。
+/// 初始化闭包不得递归初始化同一单元、阻塞、切换任务或不返回。
+/// bare-metal panic=abort 不保证恢复；不会回滚闭包外部副作用。
+/// 发布后引用绑定到单元生命周期，快路径不取锁、不改变 IF。
+///
+/// ```compile_fail
+/// use prima_ostd::sync::Once;
+/// let value = {
+///     let cell = Once::new();
+///     cell.get_or_init(|| 7u8)
+/// };
+/// assert_eq!(*value, 7);
+/// ```
 pub struct Once<T> {
-    state: AtomicU8,
     value: UnsafeCell<MaybeUninit<T>>,
+    ready: AtomicBool,
+    lock: lock::Lock,
 }
 
-// SAFETY: 初始化后 `value` 不再被写；`T: Send + Sync` 允许共享引用跨上下文。
+// SAFETY: 发布前唯一写者持锁；Release/Acquire 发布完整 T 后不再写入。
+// T: Send + Sync 允许初始化所有权和只读引用跨线程。
 unsafe impl<T: Send + Sync> Sync for Once<T> {}
 
 impl<T> Once<T> {
-    /// 构造未初始化的单元（`const`）。
     pub const fn new() -> Self {
         Self {
-            state: AtomicU8::new(ONCE_EMPTY),
             value: UnsafeCell::new(MaybeUninit::uninit()),
+            ready: AtomicBool::new(false),
+            lock: lock::Lock::new(),
         }
     }
 
-    /// 已初始化则返回其值，否则 `None`。
+    /// 未发布（含正在初始化）返回 None，否则借用完整值。
     pub fn get(&self) -> Option<&T> {
-        if self.state.load(Ordering::Acquire) == ONCE_READY {
-            // SAFETY: 状态为 READY 表示 `value` 已初始化且此后不再被写。
+        if self.ready.load(Ordering::Acquire) {
+            // SAFETY: Release 发布前已写入完整值，之后没有写者。
             Some(unsafe { (*self.value.get()).assume_init_ref() })
         } else {
             None
         }
     }
 
-    /// 取已初始化值，否则用 `f` 初始化后返回。
     pub fn get_or_init(&self, f: impl FnOnce() -> T) -> &T {
-        if let Some(value) = self.get() {
-            return value;
+        match self.get_or_try_init(|| Ok::<T, core::convert::Infallible>(f())) {
+            Ok(value) => value,
+            Err(never) => match never {},
         }
-        match self.state.compare_exchange(
-            ONCE_EMPTY,
-            ONCE_BUSY,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                // SAFETY: 本调用者抢到 EMPTY→BUSY 的所有权，独占写 `value`。
-                unsafe {
-                    (*self.value.get()).write(f());
-                }
-                self.state.store(ONCE_READY, Ordering::Release);
-            }
-            Err(_) => {
-                // 单核下不应发生；为不使语义依赖"不会发生"，自旋等待另一个初始化者完成。
-                while self.state.load(Ordering::Acquire) != ONCE_READY {
-                    core::hint::spin_loop();
-                }
-            }
-        }
-        self.get().expect("Once 在 get_or_init 返回前必为 READY")
     }
 
-    /// 尝试写入初值；已初始化则返回原值。
+    /// 只执行胜者的闭包；Err/unwind 保持未发布并释放锁，可由后续调用重试。
+    pub fn get_or_try_init<E>(&self, f: impl FnOnce() -> Result<T, E>) -> Result<&T, E> {
+        if let Some(value) = self.get() {
+            return Ok(value);
+        }
+        let _guard = self.lock.lock();
+        if let Some(value) = self.get() {
+            return Ok(value);
+        }
+        let value = f()?;
+        // SAFETY: 持锁且尚未发布，没有其他写者或指向内部 T 的引用。
+        unsafe { (*self.value.get()).write(value) };
+        self.ready.store(true, Ordering::Release);
+        Ok(self.get().expect("Once published before returning"))
+    }
+
+    /// 无等待地尝试发布；就绪或锁繁忙时原样返回 value。
     pub fn set(&self, value: T) -> Result<(), T> {
-        match self.state.compare_exchange(
-            ONCE_EMPTY,
-            ONCE_BUSY,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {
-                // SAFETY: 抢到 EMPTY→BUSY 所有权，独占写 `value`。
-                unsafe {
-                    (*self.value.get()).write(value);
-                }
-                self.state.store(ONCE_READY, Ordering::Release);
-                Ok(())
-            }
-            Err(_) => Err(value),
+        let Some(_guard) = self.lock.try_lock() else {
+            return Err(value);
+        };
+        if self.get().is_some() {
+            return Err(value);
+        }
+        // SAFETY: 持锁且未发布，独占未初始化的内部存储。
+        unsafe { (*self.value.get()).write(value) };
+        self.ready.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl<T> Drop for Once<T> {
+    fn drop(&mut self) {
+        if *self.ready.get_mut() {
+            // SAFETY: &mut self 排除读者/初始化者；ready 只在完整写入后置位。
+            unsafe { self.value.get_mut().assume_init_drop() };
         }
     }
 }
@@ -236,5 +244,140 @@ mod tests {
         let cell = StaticCell::new(0x2au64);
         // SAFETY: 单核测试、无并发写；仅解引用读取。
         assert_eq!(unsafe { *cell.as_ptr() }, 0x2a);
+    }
+
+    #[test]
+    fn once_publishes_one_complete_value_to_contending_readers() {
+        use std::sync::{Barrier, atomic::AtomicUsize};
+        let once = Once::new();
+        let starts = Barrier::new(8);
+        let calls = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    starts.wait();
+                    let value = once.get_or_init(|| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        (0..128u64).map(|i| i * 17 + 3).collect::<Vec<_>>()
+                    });
+                    assert_eq!(value.len(), 128);
+                    for (i, &item) in value.iter().enumerate() {
+                        assert_eq!(item, i as u64 * 17 + 3);
+                    }
+                    assert!(core::ptr::eq(value, once.get().unwrap()));
+                });
+            }
+        });
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn once_waiter_can_initialize_after_error_or_unwind() {
+        use std::sync::{Arc, mpsc};
+        for unwind in [false, true] {
+            let once = Arc::new(Once::new());
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let first_cell = once.clone();
+            let first = std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    first_cell
+                        .get_or_try_init(|| {
+                            assert!(first_cell.get().is_none());
+                            assert_eq!(
+                                first_cell.set(String::from("busy")),
+                                Err(String::from("busy"))
+                            );
+                            entered_tx.send(()).unwrap();
+                            release_rx.recv().unwrap();
+                            if unwind {
+                                panic!("test init unwind");
+                            }
+                            Err::<String, _>("retry")
+                        })
+                        .map(|_| ())
+                }));
+                if unwind {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), Err("retry"));
+                }
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(once.get().is_none());
+            assert_eq!(
+                once.set(String::from("rejected")),
+                Err(String::from("rejected"))
+            );
+            let (waiting_tx, waiting_rx) = mpsc::channel();
+            let next_cell = once.clone();
+            let next = std::thread::spawn(move || {
+                waiting_tx.send(()).unwrap();
+                assert_eq!(next_cell.get_or_init(|| String::from("winner")), "winner");
+            });
+            waiting_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            release_tx.send(()).unwrap();
+            first.join().unwrap();
+            next.join().unwrap();
+            assert_eq!(once.get().map(String::as_str), Some("winner"));
+        }
+    }
+
+    #[test]
+    fn once_failed_initialization_does_not_publish_and_success_skips_later_closures() {
+        let once = Once::new();
+        assert_eq!(once.get_or_try_init(|| Err::<u64, _>(7)), Err(7));
+        assert!(once.get().is_none());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                once.get_or_init(|| panic!("test init unwind"));
+            }))
+            .is_err()
+        );
+        assert!(once.get().is_none());
+        assert_eq!(once.set(42), Ok(()));
+        assert_eq!(
+            once.get_or_try_init(|| -> Result<_, ()> { panic!("must skip") }),
+            Ok(&42)
+        );
+        assert_eq!(once.get_or_init(|| panic!("must skip")), &42);
+        assert_eq!(once.set(9), Err(9));
+    }
+
+    #[test]
+    fn once_drops_only_published_value_and_returns_rejected_ownership() {
+        use core::sync::atomic::AtomicUsize;
+        struct Counted<'a>(&'a AtomicUsize);
+        impl Drop for Counted<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let drops = AtomicUsize::new(0);
+        drop(Once::<Counted<'_>>::new());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        let once = Once::new();
+        assert!(
+            once.get_or_try_init(|| {
+                let _unpublished = Counted(&drops);
+                Err::<Counted<'_>, _>(())
+            })
+            .is_err()
+        );
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert!(once.set(Counted(&drops)).is_ok());
+        let rejected = match once.set(Counted(&drops)) {
+            Err(value) => value,
+            Ok(()) => panic!("second set must fail"),
+        };
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        drop(rejected);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        drop(once);
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
     }
 }

@@ -69,3 +69,13 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 ## 限制与修改注意
 
 futex 仅冻结 WAIT/WAKE 子集。TTY 有读者时仍轮询 COM1；WaitObject 已实现并不意味着轮询已替换。线程惰性回收保留 task_create 满容量 ENOSPC 见证；不能用扩容隐藏负例。
+
+## 启动信息的一次发布（OSTD 后继）
+
+[契约](../../superpowers/specs/2026-10-24-asterinas-once-publication-design.md)与
+[验证报告](../../superpowers/reports/2026-10-24-asterinas-once-publication-report.md)限定 Once 的错误/unwind 重试、
+IRQ-safe 初始化和析构，以及 user::KernelRootInfo 的根/镜像描述整体发布。
+get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_ready.published_once 来自重复构建与帧计数不变见证。
+检索：Once、get_or_try_init、KernelRootInfo、published_once；实现见
+[sync.rs](../../../prima-ostd/src/sync.rs)、[user.rs](../../../kernel/src/user.rs)、
+[trace 校验](../../../xtask/src/protocol.rs)。该机制未替换所有 boot 标志或证明 SMP。

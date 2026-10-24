@@ -63,6 +63,8 @@ POD 候选的局部后继已由[POD/恢复帧契约](2026-10-24-asterinas-pod-bu
    单元锁不使多个全局单元之间的事务自动原子化，也没有引入抢占/SMP/锁公平性/优先级继承。
 6. unwind 析构释放锁并恢复 IF，不回滚闭包已完成的值修改。bare-metal panic=abort 不承诺恢复执行。
    Once 的初始化协议保持原样，不纳入此次移植或更强声明。
+   局部后继：[一次发布契约](2026-10-24-asterinas-once-publication-design.md)另行修订 Once，
+   仅将小型自建根描述接入，原报告不追溯扩充为该后继的验证。
 
 调度器删除持锁 `SCRATCH.with_mut(... resume ...)`：已有局部帧在当前栈上存活，
 exc_resume_entry 先压目标 iret 帧并加载全部寄存器，最后才通过 iretq 换栈；因此可以直接 resume(&frame)，

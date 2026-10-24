@@ -46,3 +46,16 @@ updated: 2026-10-24
 | `ostd/libs/ostd-pod/src/lib.rs` | `55c9c8cff15f66ed464535c80dd78f0a02ccaacf08405ed593f0656b7b080c6b` |
 | `ostd/libs/ostd-pod/README.md` | `f66d28d773320b7763184fa3473148cb0cbab47d0c45882a7781f3f2eb73b684` |
 | `ostd/src/mm/io/mod.rs` | `6b374ca6c1a066ec11df8ff1fcc6b3cd7c5a2f5a032fbd85c050876ff641450a` |
+
+## 一次发布的设计参考（后继）
+
+[Once 与内核根描述](../superpowers/specs/2026-10-24-asterinas-once-publication-design.md)借鉴上游用 Once
+整体发布 boot/平台只读信息的用法；本地复用已迁入的 IRQ-safe 锁，独立修订既有 Once，增加错误重试与析构。
+没有复制 Asterinas 的 boot/ACPI/logger 源码或其 spin crate 依赖，没有移植依赖 crate 的完整状态机。
+本次没有新的逐字源码移植或许可证文件；前轮 MPL 标识保留，新增 lock::try_lock 属既有适配文件的本地修改。
+
+| 设计输入（锁定提交 Git blob 已核对） | SHA-256 |
+|---|---|
+| `ostd/src/boot/mod.rs` | `8d5adf5603324edf3ffbdfe22b11c9436db74246843df3927926e54d28a4b76e` |
+| `ostd/src/arch/x86/kernel/acpi/mod.rs` | `4b5f77e77e261ef2ceb9d48ef56c2dd00dbea87970c58eaee4afc898c4b69ab8` |
+| `ostd/src/log/logger.rs` | `93a4a18caa4c37a69b54767c7a4072e60c4f742c60bef1e65f527e97f974d4f6` |
