@@ -3,6 +3,7 @@ id: spec-vfs-libos-foundation
 kind: spec
 authority: design
 status: implementation-contract
+lifecycle: current
 updated: 2026-10-23
 ---
 

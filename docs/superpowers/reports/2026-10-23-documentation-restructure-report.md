@@ -3,6 +3,7 @@ id: report-documentation-restructure
 kind: report
 authority: documentation-evidence
 status: maintained
+lifecycle: historical
 updated: 2026-10-23
 ---
 
@@ -10,7 +11,7 @@ updated: 2026-10-23
 
 本次将文档改为“任务入口 → 主题阅读包 → 权威章节 → 实现/证据 → 限制”的检索体系，保留历史工件路径和失败结论。没有修改 Rust/C/Lean 运行行为，没有发布新 profile，也没有改变阶段退出勾选或代替组织级签署。
 
-基线：`d48d5ef42247b40845997607e83ef717920bb8ab`，开始时工作树干净。设计见[文档系统契约](../specs/2026-10-23-documentation-system-design.md)，执行顺序见[计划](../plans/2026-10-23-documentation-restructure-plan.md)。
+基线：`d48d5ef42247b40845997607e83ef717920bb8ab`，开始时工作树干净。设计见[文档系统契约](../specs/2026-10-23-documentation-system-design.md)，执行计划已在 2026-10-24 清理一次性搭建步骤时移除；原路径与恢复版本见[生命周期台账](../../lifecycle.json)。本报告的原验收结果保留。
 
 ## 1. 交付内容
 

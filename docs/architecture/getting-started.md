@@ -3,6 +3,7 @@ id: guide-getting-started
 kind: guide
 authority: explanatory
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 
@@ -39,4 +40,4 @@ updated: 2026-10-23
 
 行为变更依次更新契约、实现、相关验证、报告、阶段跟踪和主题路由；纯导航变更记录链接与目录检查。命令和证据范围见[开发手册](development.md)，报告字段见[维护手册](documentation-maintenance.md)。
 
-大型架构问答保存在[原始问答整理](primaos-architecture-qa.md)，适合作为解释材料；遇到冲突返回白皮书、原语规范和阶段跟踪。
+架构解释从[系统与代码地图](system-map.md)和主题包进入；旧对话摘要已移除，原因与恢复版本见[生命周期台账](../lifecycle.json)。遇到冲突返回白皮书、原语规范和阶段跟踪。

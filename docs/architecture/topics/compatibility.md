@@ -3,6 +3,7 @@ id: topic-compatibility
 kind: topic
 authority: explanatory
 status: maintained
+lifecycle: current
 updated: 2026-10-24
 ---
 

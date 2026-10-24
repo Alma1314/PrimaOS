@@ -3,6 +3,7 @@ id: project-status
 kind: reference
 authority: current-status
 status: maintained
+lifecycle: current
 updated: 2026-10-24
 ---
 
@@ -284,6 +285,8 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 - [ ] 第二硬件架构。
 
 只有在阶段 0–6 的证据揭示实际优先级后，才把候选项拆成带退出条件的独立里程碑。
+
+文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 
 ## 阶段晋级规则
 

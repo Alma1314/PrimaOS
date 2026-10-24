@@ -3,12 +3,13 @@ id: docs-home
 kind: index
 authority: navigation
 status: maintained
-updated: 2026-10-23
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # PrimaOS 文档中心
 
-PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与可替换的 OS personality。文档按“问题 → 权威契约 → 实现 → 证据 → 限制”组织；历史切片按原路径保留。
+PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与可替换的 OS personality。文档按“问题 → 权威契约 → 实现 → 证据 → 限制”组织；有效证据链保留；冗余或废弃材料按生命周期规则清理。
 
 **当前阶段与退出结论只查[实现阶段](../Prima%20OS%20实现阶段.md)**。本入口不复制进度快照，避免多个入口各自过期。
 
@@ -52,7 +53,8 @@ Prima OS 实现阶段.md              当前阶段、退出条件、活跃问题
 lean/README.md                    Lean ↔ Rust 映照契约
 docs/
   README.md                       本入口
-  catalog.json                    自动生成：文档/章节/关系/行号/哈希
+  catalog.json                    自动生成：文档/章节/关系/行号/哈希/生命周期
+  lifecycle.json                  人工维护：废弃/删除理由、替代入口和 Git 恢复
   architecture/
     ai-retrieval.md                AI 检索与上下文组装协议
     system-map.md                 层次、源码归属与调用路径
@@ -80,3 +82,7 @@ rg -n 'SYS_FORK|space_of' kernel/src prima-user/c
 ```
 
 主题路由提供精选材料，全文检索覆盖所有源文档。机器目录记录所有 Markdown 标题的起止行；按需读章节，无需把整个历史档案载入上下文。
+
+## 编写与废弃入口
+
+先更新既有权威来源；需要新工件时用[模板与维护手册](architecture/documentation-maintenance.md)。文档的 status 与生命周期独立：历史报告不等于失效，current 不等于批准。默认检索排除 deprecated，但保留历史证据；`search --lifecycle all` 可读全部保留材料，`inspect <旧路径>` 查询删除记录。[生命周期台账](lifecycle.json)保留删除理由、替代入口、原身份与可验证的 Git 恢复版本。

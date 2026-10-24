@@ -3,6 +3,7 @@ id: report-vfs-libos-foundation
 kind: report
 authority: evidence
 status: verified-with-limits
+lifecycle: historical
 updated: 2026-10-23
 ---
 

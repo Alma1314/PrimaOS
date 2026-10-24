@@ -3,6 +3,7 @@ id: guide-evidence
 kind: reference
 authority: evidence-policy
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

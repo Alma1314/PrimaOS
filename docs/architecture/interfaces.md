@@ -3,6 +3,7 @@ id: guide-interfaces
 kind: reference
 authority: explanatory
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

@@ -3,6 +3,7 @@ id: spec-musl-port-boundary
 kind: spec
 authority: implementation-contract
 status: implemented-with-limits
+lifecycle: current
 updated: 2026-10-24
 ---
 

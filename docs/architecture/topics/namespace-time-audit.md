@@ -3,6 +3,7 @@ id: topic-namespace-time-audit
 kind: topic
 authority: explanatory
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

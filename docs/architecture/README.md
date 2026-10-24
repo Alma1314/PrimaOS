@@ -3,7 +3,8 @@ id: architecture-home
 kind: index
 authority: navigation
 status: maintained
-updated: 2026-10-23
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # 架构、开发与检索手册
@@ -21,10 +22,10 @@ updated: 2026-10-23
 | [证据规则](evidence.md) | host/Lean/QEMU/差分/签署的范围 |
 | [开发与验证](development.md) | 依赖、命令、构建产物与故障定位 |
 | [文档维护](documentation-maintenance.md) | 放置、更新事务、生成与验收 |
+| [计划模板](templates/plan.md) | 复杂任务的目标/依赖/预期验收/收口 |
 | [设计模板](templates/spec.md) | 参数/权限/迁移/失败/验证契约 |
 | [报告模板](templates/report.md) | 版本/输入/命令/结果/反例/后继 |
 | [决策模板](templates/decision.md) | 工作决定/批准状态/备选/后果 |
 | [全量目录](catalog.md) | 自动生成的源文档索引 |
-| [历史架构问答](primaos-architecture-qa.md) | 原对话整理；其实现描述保留当时范围 |
 
 机器接口为[topics.json](topics.json)与[catalog.json](../catalog.json)。维护规则见[文档系统契约](../superpowers/specs/2026-10-23-documentation-system-design.md)。

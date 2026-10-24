@@ -1,3 +1,12 @@
+---
+id: reports-home
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # Reports 索引
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
@@ -8,6 +17,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-documentation-lifecycle-report.md](2026-10-24-documentation-lifecycle-report.md) | 文档生命周期治理与过时材料清理 |
 | 2026-10-23 | [2026-10-23-documentation-restructure-report.md](2026-10-23-documentation-restructure-report.md) | 文档体系重构与验收报告 |
 
 ## 阶段 5
@@ -201,7 +211,6 @@
 | 日期 | 文档 | 标题 |
 |---|---|---|
 | 2026-10-14 | [2026-10-14-dual-personality-holder-model-h0-review.md](2026-10-14-dual-personality-holder-model-h0-review.md) | 双人格 Holder 模型 H0 评审报告 |
-| 2026-10-14 | [2026-10-14-dual-personality-handoff.md](2026-10-14-dual-personality-handoff.md) | 双人格工作流交接与上下文压缩 |
 
 ## 跨阶段 / 架构评估
 

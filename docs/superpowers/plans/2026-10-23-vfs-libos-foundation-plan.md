@@ -3,6 +3,7 @@ id: plan-vfs-libos-foundation
 kind: plan
 authority: historical
 status: execution-record
+lifecycle: historical
 updated: 2026-10-23
 ---
 

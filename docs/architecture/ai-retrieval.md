@@ -3,7 +3,8 @@ id: guide-ai-retrieval
 kind: guide
 authority: retrieval-protocol
 status: maintained
-updated: 2026-10-23
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # AI 检索与上下文组装协议
@@ -27,17 +28,19 @@ rg -n 'SYS_FORK|space_of' kernel/src prima-user/c
 sed -n '127,310p' 'COSIR 原语规范.md'
 ```
 
-`search` 实时读文件，返回至多 100 个文档（默认 8），每个文档至多 4 条正文片段，每条至多 240 字符。查询以空格分词、AND 匹配，保留大小写不敏感的符号精度；多个同义词请分别查询。它是词法检索，不是语义搜索，也不判定主张真伪。
+`search` 实时读文件，返回至多 100 个文档（默认 8），每个文档至多 4 条正文片段，每条至多 240 字符。查询以空格分词、AND 匹配，保留大小写不敏感的符号精度；多个同义词请分别查询。默认排除 deprecated，但保留 historical，以免隐藏前序失败；`--lifecycle all` 包含废弃材料，`--lifecycle current` 只读显式当前材料。已移除正文用 `inspect <旧路径>` 查询替代与 Git 恢复信息。它是词法检索，不是语义搜索，也不判定主张真伪。
 
 目录的 `sections` 提供标题层级、`line`、`end_line`、`anchor`；父章节范围包含子章节，可选最小相关子节读取。`sha256` 表示文件内容，行号只对同一哈希有效。更改文档后重新生成，不能引用旧目录的行号。
 
-## 机器目录字段契约（schema_version 1）
+## 机器目录字段契约（schema_version 2）
 
 | 字段 | 解释 |
 |---|---|
 | path_base / documents[].path | 源文档路径相对于仓库根；不是机器绝对路径 |
 | documents[].id | front matter 明确 id，否则使用完整相对路径；跨目录同名文件不合并 |
 | kind / authority / status / date | 类型、权威角色、文档状态和日期线索；未知历史状态保留显式占位 |
+| lifecycle / lifecycle_reason / replacements | 阅读用途、人工废弃理由、保留的替代入口；current 不等于批准或实现，historical 不等于失效；unclassified 须读正文 |
+| retired_documents[] | 已移除路径、保留身份、原因、替代入口、恢复 revision/sha256；不含旧正文 |
 | sha256 / lines | 当前 UTF-8 内容哈希与总行数，用于判断引用是否陈旧 |
 | sections[] | level/title/line/end_line/anchor；ATX 标题，行号从1开始 |
 | topic_ids[] | 人工精选关系反向映射到文档，供搜索结果继续路由；未分配不等于失效 |
@@ -45,7 +48,7 @@ sed -n '127,310p' 'COSIR 原语规范.md'
 | mentioned_ids[] | 正文中提及的 SPEC/DOC/BLK/ISSUE/阶段条件；不等于本文身份或完成状态 |
 | topics[] | 与 topics.json 相同的精选路由；sources 不是隐式实现/证明/取代关系 |
 
-目录不含完整正文。消费端按 path 和章节行号读取需要的文本；先校验哈希再缓存片段。顶层 schema_version 变更表示消费契约变化，不能靠默默改变字段语义迁移。
+目录不含完整正文。消费端按 path 和章节行号读取需要的文本；先校验哈希再缓存片段。v1 → v2 新增 lifecycle/lifecycle_reason/replacements 与 retired_documents，旧字段意义不变。消费端必须识别 v2 后按生命周期解释结果；原始日期、status 和 mentioned_ids 都没有升级为批准证据。topic 命令在精选路由之外附 source_lifecycle；默认路由仍可保留被纠偏文档作为历史上下文。
 
 ## 上下文包最少保留什么
 

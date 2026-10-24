@@ -3,6 +3,7 @@ id: guide-development
 kind: guide
 authority: operational
 status: maintained
+lifecycle: current
 updated: 2026-10-24
 ---
 

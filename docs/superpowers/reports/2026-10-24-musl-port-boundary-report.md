@@ -3,6 +3,7 @@ id: report-musl-port-boundary
 kind: report
 authority: evidence
 status: verified-with-limits
+lifecycle: historical
 updated: 2026-10-24
 ---
 

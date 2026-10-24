@@ -1,3 +1,12 @@
+---
+id: project-home
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # Prima OS
 
 PrimaOS 是研究型操作系统项目，探索以小型对象能力内核支撑可替换的用户态 OS personality。仓库包含 POSIR 抽象规范、cosir 可执行模型、Lean 工件、Rust x86_64 内核、原生运行时与 C/musl 适配原型。模型、测试、QEMU 执行和证明各有不同范围。

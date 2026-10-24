@@ -1,14 +1,17 @@
+---
+id: plans-home
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # Plans 索引
 
 本目录保存**执行计划**：它们记录当时的任务拆分、顺序和验收方式。计划是历史工件，不表示任务已经完成；证据以 `reports/` 中的报告为准。
 
 > 本索引按阶段/主题分组，文件日期用于历史定位。新增文档同步更新本页和相关主题路由，再运行 `python3 scripts/docs.py build` / `check`。统一入口见[文档中心](../../README.md)。
-
-## 跨阶段 / 文档体系
-
-| 日期 | 文档 | 标题 |
-|---|---|---|
-| 2026-10-23 | [2026-10-23-documentation-restructure-plan.md](2026-10-23-documentation-restructure-plan.md) | 文档体系重构执行计划 |
 
 ## 阶段 5
 
@@ -27,13 +30,6 @@
 |---|---|---|
 | 2026-09-16 | [2026-09-16-stage1-closure.md](2026-09-16-stage1-closure.md) | Stage 1 closure: frame ownership + initial Authority Implementation Plan |
 | 2026-08-04 | [2026-08-04-stage1-boot-slice.md](2026-08-04-stage1-boot-slice.md) | Prima OS 阶段 1 启动闭环 Implementation Plan |
-
-## 阶段 0 / 规范
-
-| 日期 | 文档 | 标题 |
-|---|---|---|
-| 2026-07-30 | [2026-07-30-implementation-stage-tracker.md](2026-07-30-implementation-stage-tracker.md) | Prima OS 实现阶段跟踪文档实施计划 |
-| 2026-07-30 | [2026-07-30-cosir-primitive-fixes.md](2026-07-30-cosir-primitive-fixes.md) | COSIR 原语规范修复计划 |
 
 ## 阶段 0–1 细化 / 审计
 

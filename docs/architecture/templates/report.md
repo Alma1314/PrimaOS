@@ -2,13 +2,16 @@
 id: template-report
 kind: template
 authority: template
-status: maintained
-updated: 2026-10-23
+status: template
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # 实现/验证/整改报告模板
 
 复制到 reports/日期-主题.md 并替换元数据；未运行项写“未运行”及原因。
+
+复制后替换 id/kind/authority/status；设计或活跃决策使用 lifecycle=current，带版本的证据报告通常使用 historical。正文必须给适用范围与重审触发；退役时遵守[治理契约](../../superpowers/specs/2026-10-23-documentation-system-design.md)。
 
 ## 结论与范围
 

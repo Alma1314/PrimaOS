@@ -1,3 +1,12 @@
+---
+id: compatibility-home
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # 兼容性台账索引
 
 本目录保存阶段 5 的**兼容性状态台账**：冻结 profile 的 API 行、符号级状态和已知偏差。状态以最新报告与 [`Prima OS 实现阶段.md`](../../../Prima%20OS%20实现阶段.md) 为准。

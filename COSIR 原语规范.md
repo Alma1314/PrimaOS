@@ -3,6 +3,7 @@ id: posir-abstract-semantics
 kind: specification
 authority: abstract-semantics
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

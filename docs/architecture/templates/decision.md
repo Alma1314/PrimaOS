@@ -2,13 +2,16 @@
 id: template-decision
 kind: template
 authority: template
-status: maintained
-updated: 2026-10-23
+status: template
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # 决策记录模板
 
 按性质放入 specs/ 或 reports/，不建立与现有阶段决策日志平行的批准系统。
+
+复制后替换 id/kind/authority/status；设计或活跃决策使用 lifecycle=current，带版本的证据报告通常使用 historical。正文必须给适用范围与重审触发；退役时遵守[治理契约](../../superpowers/specs/2026-10-23-documentation-system-design.md)。
 
 ## 决策身份与状态
 

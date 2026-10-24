@@ -3,6 +3,7 @@ id: project-architecture
 kind: reference
 authority: architecture-contract
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

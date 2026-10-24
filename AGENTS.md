@@ -1,3 +1,12 @@
+---
+id: repository-instructions
+kind: agent-instructions
+authority: operational
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization
@@ -22,7 +31,7 @@ Authority depends on the question:
 
 Before changing behavior, read the relevant spec, plan and report chain, including failures and limitations. If implementation and contract differ, record the deviation rather than silently making implementation normative. Changes to phase status or evidence must update the stage tracker and relevant evidence indexes.
 
-New documents belong under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`; keep the docs root for navigation and generated machine catalogs. Follow `docs/superpowers/specs/2026-10-23-documentation-system-design.md` and the templates in `docs/architecture/templates/`. Preserve historical paths and conclusions; use portable relative Markdown links, not wiki links.
+New documents belong under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`; keep the docs root for navigation and generated machine catalogs. Follow `docs/superpowers/specs/2026-10-23-documentation-system-design.md` and the templates in `docs/architecture/templates/`. Preserve contracts, decisions, failures and scoped evidence. Remove redundant or obsolete process/explanatory documents only through docs/lifecycle.json with retained replacements, reserved identities and verifiable Git recovery; use portable relative Markdown links, not wiki links. New documents require explicit lifecycle metadata; document lifecycle never implies implementation or approval status.
 
 For documentation changes, run:
 
@@ -30,9 +39,10 @@ For documentation changes, run:
 python3 scripts/docs.py self-test
 python3 scripts/docs.py build
 python3 scripts/docs.py check
+python3 scripts/docs.py check --base <pre-change-commit>
 ```
 
-`docs/catalog.json` and `docs/architecture/catalog.md` are generated; do not hand-edit them. `topics.json` is curated. The catalog includes heading line ranges, hashes and identifier mentions; mentions are not unique document IDs or approval evidence. `python3 scripts/docs.py topic <id>` and `search '<terms>' --limit 5 --json` support bounded offline retrieval.
+`docs/catalog.json` and `docs/architecture/catalog.md` are generated; do not hand-edit them. `topics.json` and `docs/lifecycle.json` are curated. The catalog uses schema_version 2; default search excludes deprecated documents but retains historical evidence. `inspect <path>` finds lifecycle, inbound links and retired-path recovery. The base check enforces metadata on new documents and recovery registration for deletions. The catalog includes heading line ranges, hashes and identifier mentions; mentions are not unique document IDs or approval evidence. `python3 scripts/docs.py topic <id>` and `search '<terms>' --limit 5 --json` support bounded offline retrieval.
 
 ## Build, Test, and Development Commands
 

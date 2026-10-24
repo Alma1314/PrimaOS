@@ -2,13 +2,16 @@
 id: template-spec
 kind: template
 authority: template
-status: maintained
-updated: 2026-10-23
+status: template
+lifecycle: current
+updated: 2026-10-24
 ---
 
 # 设计/接口规格模板
 
 复制到 specs/日期-主题.md 并替换元数据。本模板没有批准或实现效力。
+
+复制后替换 id/kind/authority/status；设计或活跃决策使用 lifecycle=current，带版本的证据报告通常使用 historical。正文必须给适用范围与重审触发；退役时遵守[治理契约](../../superpowers/specs/2026-10-23-documentation-system-design.md)。
 
 ## 问题与范围
 

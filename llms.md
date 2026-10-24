@@ -1,3 +1,12 @@
+---
+id: ai-entry
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # PrimaOS
 
 > Research OS: object-capability mechanisms, native runtime, user-space OS personalities.
@@ -23,7 +32,9 @@
 - [Full catalog](docs/catalog.json): paths, roles, hashes, headings, line ranges, links, mentioned ids.
 - Run: python3 scripts/docs.py topic process
 - Run: python3 scripts/docs.py search 'fork' --kind report --limit 5 --json
-- Run: python3 scripts/docs.py check
+- [Document lifecycle](docs/lifecycle.json): retirement reasons, replacements, reserved IDs and Git recovery.
+- Run: python3 scripts/docs.py inspect <repository-relative-path>
+- Run: python3 scripts/docs.py check --base <pre-change-commit>
 
 Dates and search scores do not establish approval. Preserve failures and unresolved limits.
 Do not equate source compatibility with unmodified Linux binary compatibility.

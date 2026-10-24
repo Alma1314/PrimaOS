@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "path": "docs/superpowers/plans/2026-07-30-implementation-stage-tracker.md",
+      "lifecycle": "removed",
+      "id": "docs/superpowers/plans/2026-07-30-implementation-stage-tracker.md",
+      "updated": "2026-10-24",
+      "reason": "初建阶段跟踪的执行脚本；仍断言无代码、非 Git 和旧 Windows 路径。维护规则已由阶段跟踪与治理契约承接，不含运行证据。",
+      "replacements": [
+        "Prima OS 实现阶段.md",
+        "docs/architecture/documentation-maintenance.md"
+      ],
+      "revision": "e71caef0ef1bfeb9dfd5d200615d6f96ee1d2abc",
+      "sha256": "3232cd11e7a71d8603ad1dc63d09b238e76cc0eccef716d583949f4c224b0943"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-30-cosir-primitive-fixes.md",
+      "lifecycle": "removed",
+      "id": "docs/superpowers/plans/2026-07-30-cosir-primitive-fixes.md",
+      "updated": "2026-10-24",
+      "reason": "一次性早期修文步骤；Faulted/跨节点规则已发生后继修订，不能继续执行旧替换块。现行语义与签署材料保留。",
+      "replacements": [
+        "COSIR 原语规范.md",
+        "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md"
+      ],
+      "revision": "e71caef0ef1bfeb9dfd5d200615d6f96ee1d2abc",
+      "sha256": "ca23ed694cf9afd0fbfcf72a13c91c6e61e1afa31404808109544a9e3e5df66e"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-23-documentation-restructure-plan.md",
+      "lifecycle": "removed",
+      "id": "plan-documentation-restructure",
+      "updated": "2026-10-24",
+      "reason": "已完成的文档搭建步骤，与维护手册重复；验收报告单独保留。",
+      "replacements": [
+        "docs/architecture/documentation-maintenance.md",
+        "docs/superpowers/reports/2026-10-23-documentation-restructure-report.md"
+      ],
+      "revision": "e71caef0ef1bfeb9dfd5d200615d6f96ee1d2abc",
+      "sha256": "084c6d1e922b6b9498cf3bb1b413f0301ff3944f1922413003153dadafe552d0"
+    },
+    {
+      "path": "docs/superpowers/reports/2026-10-14-dual-personality-handoff.md",
+      "lifecycle": "removed",
+      "id": "docs/superpowers/reports/2026-10-14-dual-personality-handoff.md",
+      "updated": "2026-10-24",
+      "reason": "明确声明非证据的会话交接快照；旧的下一阶段描述已失效，采纳审核与 H0 原始评审保留。",
+      "replacements": [
+        "COSIR 原语规范.md",
+        "docs/architecture/topics/process.md",
+        "docs/superpowers/reports/2026-10-14-dual-personality-holder-model-h0-review.md"
+      ],
+      "revision": "e71caef0ef1bfeb9dfd5d200615d6f96ee1d2abc",
+      "sha256": "ccc271e5c71c9a2fa0c561c4bedfefde4d1c329aa9eb7886ceb88f9b5a865081"
+    },
+    {
+      "path": "docs/architecture/primaos-architecture-qa.md",
+      "lifecycle": "removed",
+      "id": "docs/architecture/primaos-architecture-qa.md",
+      "updated": "2026-10-24",
+      "reason": "重复的对话整理，含单文件存储、缺 stdin/exec 等过时实现摘要；无独立契约或实验效力。",
+      "replacements": [
+        "Prima OS.md",
+        "docs/architecture/system-map.md",
+        "docs/architecture/topics/vfs.md",
+        "docs/architecture/topics/process.md"
+      ],
+      "revision": "e71caef0ef1bfeb9dfd5d200615d6f96ee1d2abc",
+      "sha256": "985df15dd38667e3ee547a279707d1c353c1eec2246220bbfb2238f64a135a4d"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-12-memseg-pagewalk-refinement-design.md",
+      "lifecycle": "deprecated",
+      "updated": "2026-10-24",
+      "reason": "正文已明确被纠偏设计修订；保留原设计及其边界纠偏链，不作为当前硬件实现蓝本。",
+      "replacements": [
+        "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md"
+      ]
+    },
+    {
+      "path": "docs/superpowers/plans/2026-08-12-memseg-pagewalk-refinement-slice.md",
+      "lifecycle": "deprecated",
+      "updated": "2026-10-24",
+      "reason": "正文目标与架构已标 superseded；保留错误假设与纠偏上下文，禁止照此执行。",
+      "replacements": [
+        "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
+        "docs/superpowers/plans/2026-08-12-memseg-refinement-remediation.md"
+      ]
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
+      "lifecycle": "current",
+      "updated": "2026-10-24",
+      "reason": "阶段 5 未签署前仍是剩余工作排序入口；步骤完成与否只由阶段跟踪和报告判断。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md",
+      "lifecycle": "historical",
+      "updated": "2026-10-24",
+      "reason": "外部候选提案，BLK-003 尚未裁决；保留设计输入，不视为已废弃或已接受。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md",
+      "lifecycle": "historical",
+      "updated": "2026-10-24",
+      "reason": "外部候选的风险审查，仍被白皮书和阶段跟踪引用；保留候选范围。",
+      "replacements": []
+    }
+  ]
+}

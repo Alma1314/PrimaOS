@@ -3,6 +3,7 @@ id: topics-home
 kind: index
 authority: navigation
 status: maintained
+lifecycle: current
 updated: 2026-10-23
 ---
 

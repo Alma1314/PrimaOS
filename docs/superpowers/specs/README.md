@@ -1,3 +1,12 @@
+---
+id: specifications-home
+kind: index
+authority: navigation
+status: maintained
+lifecycle: current
+updated: 2026-10-24
+---
+
 # Specs 索引
 
 本目录保存**设计/规格工件**：它们说明预期语义、接口与实现方案，不代表实现完成。当前实现状态以 [`Prima OS 实现阶段.md`](../../../Prima%20OS%20实现阶段.md) 和实现报告为准。
