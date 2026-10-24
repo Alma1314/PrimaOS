@@ -16,6 +16,7 @@
 // 框架层打开，上层内核因此不再需要它。
 #![feature(abi_x86_interrupt)]
 
+pub mod align;
 pub mod arch;
 pub mod entry;
 pub mod mm;

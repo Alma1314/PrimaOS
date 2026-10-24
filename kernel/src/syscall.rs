@@ -3027,6 +3027,8 @@ pub struct FastWitness {
     pub fmask: u64,
     /// 实测 IA32_LSTAR 是否等于快路径入口地址。
     pub lstar_ok: u32,
+    /// 快路径栈底 64 字节哨兵在完整执行后仍保持初值。
+    pub stack_canary: u32,
 }
 
 impl FastWitness {
@@ -3042,6 +3044,7 @@ impl FastWitness {
             && self.star == crate::msr::STAR_VALUE
             && self.fmask == crate::msr::SYSCALL_FMASK
             && self.lstar_ok == 1
+            && self.stack_canary == 1
     }
 }
 
@@ -3062,6 +3065,7 @@ pub fn fast_witness() -> FastWitness {
         star,
         fmask,
         lstar_ok: (lstar == prima_ostd::entry::syscall_fast_entry_addr()) as u32,
+        stack_canary: prima_ostd::entry::syscall_stack_canary_intact() as u32,
     }
 }
 
@@ -3680,6 +3684,16 @@ mod tests {
             star: crate::msr::STAR_VALUE,
             fmask: crate::msr::SYSCALL_FMASK,
             lstar_ok: 1,
+            stack_canary: 1,
+        }
+    }
+
+    #[test]
+    fn rejects_fast_path_corrupted_stack_canary() {
+        for value in [0, 2, u32::MAX] {
+            let mut witness = valid_fast();
+            witness.stack_canary = value;
+            assert!(!witness.evidence_ok());
         }
     }
 

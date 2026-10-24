@@ -1,4 +1,5 @@
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+use prima_ostd::align::AlignExt;
 
 pub const FRAME_SIZE: u64 = 4096;
 const MAX_FREE_RANGES: usize = 128;
@@ -47,10 +48,10 @@ pub fn probe_physical_memory(probed_phys: u64, phys_map_offset: u64) -> (u64, u8
 pub fn first_usable_frame_phys(regions: &[MemoryRegion]) -> Option<u64> {
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
-            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+            let Some(lo) = region.start.checked_align_up(FRAME_SIZE) else {
                 continue;
             };
-            let hi = align_down(region.end, FRAME_SIZE);
+            let hi = region.end.align_down(FRAME_SIZE);
             if hi > lo {
                 return Some(lo);
             }
@@ -130,10 +131,10 @@ impl FreeFrameAllocator {
             if region.kind != MemoryRegionKind::Usable {
                 continue;
             }
-            let Some(start) = align_up(region.start, FRAME_SIZE) else {
+            let Some(start) = region.start.checked_align_up(FRAME_SIZE) else {
                 continue;
             };
-            let end = align_down(region.end, FRAME_SIZE);
+            let end = region.end.align_down(FRAME_SIZE);
             if end <= start {
                 continue;
             }
@@ -339,20 +340,20 @@ pub fn build_inventory(
     for region in regions {
         if region.kind == MemoryRegionKind::Usable {
             usable_regions += 1;
-            let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+            let Some(lo) = region.start.checked_align_up(FRAME_SIZE) else {
                 continue;
             };
-            let hi = align_down(region.end, FRAME_SIZE);
+            let hi = region.end.align_down(FRAME_SIZE);
             if hi > lo {
                 usable_frames += ((hi - lo) / FRAME_SIZE) as usize;
             }
         }
     }
 
-    let kernel_phys_start = align_down(kernel_addr, FRAME_SIZE);
+    let kernel_phys_start = kernel_addr.align_down(FRAME_SIZE);
     let kernel_phys_end = kernel_addr
         .checked_add(kernel_len)
-        .and_then(|end| align_up(end, FRAME_SIZE))
+        .and_then(|end| end.checked_align_up(FRAME_SIZE))
         .ok_or(MemError::InvalidImageRange)?;
     let image_frames = ((kernel_phys_end - kernel_phys_start) / FRAME_SIZE) as usize;
 
@@ -362,11 +363,11 @@ pub fn build_inventory(
         if region.kind != MemoryRegionKind::Usable {
             continue;
         }
-        let Some(lo) = align_up(region.start, FRAME_SIZE) else {
+        let Some(lo) = region.start.checked_align_up(FRAME_SIZE) else {
             continue;
         };
         let lo = lo.max(kernel_phys_start);
-        let hi = align_down(region.end, FRAME_SIZE).min(kernel_phys_end);
+        let hi = region.end.align_down(FRAME_SIZE).min(kernel_phys_end);
         if hi > lo {
             return Err(MemError::ImageOverlapsUsable);
         }
@@ -381,14 +382,6 @@ pub fn build_inventory(
         kernel_phys_start,
         kernel_phys_end,
     })
-}
-
-fn align_up(value: u64, align: u64) -> Option<u64> {
-    value.checked_add((align - value % align) % align)
-}
-
-fn align_down(value: u64, align: u64) -> u64 {
-    value / align * align
 }
 
 #[cfg(test)]

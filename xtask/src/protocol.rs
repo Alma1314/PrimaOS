@@ -2139,6 +2139,7 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
     let mut star = None;
     let mut fmask = None;
     let mut lstar_ok = None;
+    let mut stack_canary = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -2153,6 +2154,7 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
             "star" => star = Some(parse_addr(value)?),
             "fmask" => fmask = Some(parse_addr(value)?),
             "lstar_ok" => lstar_ok = Some(parse_decimal(value, "lstar_ok")?),
+            "stack_canary" => stack_canary = Some(parse_decimal(value, "stack_canary")?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -2167,6 +2169,10 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
     let fmask = fmask.ok_or_else(|| "missing fmask in syscall_fast_ready data".to_owned())?;
     let lstar_ok =
         lstar_ok.ok_or_else(|| "missing lstar_ok in syscall_fast_ready data".to_owned())?;
+
+    if stack_canary != Some(1) {
+        return Err("syscall_fast_ready stack_canary must be present and 1".to_owned());
+    }
 
     if cs != USER_CS || cs & 3 != 3 {
         return Err(format!(
@@ -4562,7 +4568,7 @@ mod tests {
         "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
         "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
-        "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1\n",
+        "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
@@ -5685,6 +5691,15 @@ mod tests {
         assert!(error.contains("receipt_denied"), "{error}");
     }
 
+    #[test]
+    fn rejects_missing_or_corrupt_syscall_stack_canary() {
+        for replacement in ["", ";stack_canary=0", ";stack_canary=2"] {
+            let output = VALID.replace(";stack_canary=1", replacement);
+            let error = validate_output(&output).unwrap_err();
+            assert!(error.contains("stack_canary"), "{error}");
+        }
+    }
+
     /// 切片 L 的完整证据串（与 `VALID` 中的两行一致），便于替换构造反例。
     const EXC_DATA: &str = "cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1";
     const PENDING_DATA: &str =
@@ -5891,7 +5906,7 @@ mod tests {
     }
 
     /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const FAST_DATA: &str = "cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1";
+    const FAST_DATA: &str = "cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1";
 
     #[test]
     fn rejects_fast_not_from_cpl3() {

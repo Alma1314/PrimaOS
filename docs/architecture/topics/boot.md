@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 启动、硬件与可信边界
@@ -37,6 +37,10 @@ stage1 boot 设计/计划 → SPEC-146 退出复核 → SPEC-150/151 后续整�
 - [2026-10-18-stage1-open-issues-spec151.md](../../superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)
 - [2026-10-16-exo2d-manifest-boot-abi-report.md](../../superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md)
 
+OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-asterinas-reuse-design.md)与
+[验证报告](../../superpowers/reports/2026-10-24-asterinas-reuse-report.md)限定对齐工具、StaticCell IRQ-safe 锁与调度跳转；
+来源与许可见 [来源与许可](../asterinas-provenance.md)。候选组件不等于已迁入。
+
 ## 源码定位
 
 - [main.rs](../../../kernel/src/main.rs)
@@ -48,6 +52,10 @@ stage1 boot 设计/计划 → SPEC-146 退出复核 → SPEC-150/151 后续整�
 - [lib.rs](../../../prima-initgen/src/lib.rs)
 - [lib.rs](../../../prima-abi/src/lib.rs)
 - [image.rs](../../../xtask/src/image.rs)
+
+- [align.rs](../../../prima-ostd/src/align.rs)
+- [sync.rs](../../../prima-ostd/src/sync.rs)
+- [lock.rs](../../../prima-ostd/src/sync/lock.rs)
 
 ## 测试与观察入口
 

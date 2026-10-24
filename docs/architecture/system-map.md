@@ -4,7 +4,7 @@ kind: guide
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 系统层次与源码地图
@@ -36,7 +36,7 @@ flowchart TD
 |---|---|---|---|
 | cosir | 宿主可执行模型、抽象投影与细化设计实验 | [lib.rs](../../cosir/src/lib.rs)、[state.rs](../../cosir/src/state.rs)、[abstract_ops.rs](../../cosir/src/abstract_ops.rs) | 模型覆盖范围不等于完整内核 |
 | kernel | 对象、授权、调度、syscall 与页表机制编排 | [main.rs](../../kernel/src/main.rs)、[bootstrap.rs](../../kernel/src/bootstrap.rs)、[syscall.rs](../../kernel/src/syscall.rs) | `kernel/src` 零 unsafe；容量与失败原子性 |
-| prima-ostd | 唯一允许必要 privileged unsafe 的硬件框架 | [entry.rs](../../prima-ostd/src/entry.rs)、[arch.rs](../../prima-ostd/src/arch.rs)、[mm.rs](../../prima-ostd/src/mm.rs)、[sync.rs](../../prima-ostd/src/sync.rs) | 每个硬件操作的安全不变量 |
+| prima-ostd | 唯一允许必要 privileged unsafe 的硬件框架 | [entry.rs](../../prima-ostd/src/entry.rs)、[arch.rs](../../prima-ostd/src/arch.rs)、[mm.rs](../../prima-ostd/src/mm.rs)、[sync.rs](../../prima-ostd/src/sync.rs)、[IRQ 锁](../../prima-ostd/src/sync/lock.rs)、[align.rs](../../prima-ostd/src/align.rs) | 每个硬件操作的安全不变量 |
 | prima-abi | 原生号段、boot manifest、boot info、trace 布局 | [lib.rs](../../prima-abi/src/lib.rs) | 实验性 ABI，号段只追加、不复用空洞 |
 | prima-runtime | 原生 safe API、传输抽象、服务协议与 VFS 辅助 | [lib.rs](../../prima-runtime/src/lib.rs)、[transport.rs](../../prima-runtime/src/transport.rs)、[protocol.rs](../../prima-runtime/src/protocol.rs) | 包装检查不替代内核授权 |
 | prima-user | ring3 服务、驱动、应用；C 适配与 musl 补丁 | [servicemgr.rs](../../prima-user/src/servicemgr.rs)、[prima_syscall.c](../../prima-user/c/prima_syscall.c) | 原生/兼容语义、按 Task 授权和探针边界 |
@@ -66,3 +66,5 @@ IPC、文件、网络等语义可跨多次调用；一次 syscall 成功不代�
 | ring3 协议 | runtime 协议 + 服务/管理器 + 调用端 + QEMU 校验 |
 | 兼容 API | profile/台账 + symbol-trace + C 探针 + Linux 参考范围 |
 | 状态/退出证据 | 阶段跟踪 + 报告 + 主题阅读链 |
+
+跨项目复用的锁定来源与许可证见[Asterinas 来源登记](asterinas-provenance.md)，适用边界与执行证据见[移植契约](../superpowers/specs/2026-10-24-asterinas-reuse-design.md)。

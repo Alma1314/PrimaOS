@@ -13,6 +13,12 @@ updated: 2026-10-24
 
 > 本索引按阶段/主题分组，文件日期用于历史定位。新增文档同步更新本页和相关主题路由，再运行 `python3 scripts/docs.py build` / `check`。统一入口见[文档中心](../../README.md)。
 
+## OSTD / 跨项目代码复用
+
+| 日期 | 文档 | 标题 |
+|---|---|---|
+| 2026-10-24 | [2026-10-24-asterinas-reuse-report.md](2026-10-24-asterinas-reuse-report.md) | Asterinas 复用与 OSTD 临界区验证 |
+
 ## 跨阶段 / 文档体系
 
 | 日期 | 文档 | 标题 |

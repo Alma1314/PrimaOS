@@ -1,12 +1,11 @@
-//! 单核内核的可变全局状态原语。
+//! 内核可变全局状态原语。
 //!
-//! 内核里大量 `static mut` 其实由"单核 + 顺序访问"这一运行环境保证安全，但 Rust 强制
-//! 每一次触碰都写 `unsafe`。本模块把这份 unsafe 收敛到两个封装里，暴露**安全**的闭包式
-//! API，使上层无需 `unsafe`。
-//!
-//! **口径**：这些类型的安全前提是调用方遵守单核顺序访问契约（无并发、不跨中断重入持有
-//! 引用）。违反会产生错误行为（数据竞争），本层**不宣称已消除该风险**——与 `arch` 的
-//! "信任调用方"取向一致。
+//! StaticCell 的闭包访问由原子锁互斥；bare-metal 下先屏蔽本地 IRQ，释放锁后恢复原 IF。
+//! 锁实现按 Asterinas OSTD 移植。host 下只做原子互斥，便于并行验证内核纯逻辑。
+//! 同一单元不可递归加锁，闭包不得阻塞、切换任务或不返回；裸指针/汇编访问仍由调用方
+//! 保证独占与生命周期，本模块没有把整个框架变为 sound。
+
+mod lock;
 
 use core::{
     cell::UnsafeCell,
@@ -14,15 +13,17 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-/// 单核可变全局单元。
+/// 闭包访问期间持有 IRQ-safe 互斥锁的全局单元。
 ///
-/// 契约：`with`/`with_mut` 的闭包不得重入同一 `StaticCell`（否则产生别名 `&mut`），
-/// 且不得跨中断/其他核共享。除此外，从 safe 上下文读写无需 `unsafe`。
+/// 闭包不得递归访问同一单元（会死锁）、阻塞或转移控制权而不返回。
+/// `repr(C)` 与首字段 value 保证裸入口的 `sym CELL` 仍指向 T 的第一个字节。
+#[repr(C)]
 pub struct StaticCell<T> {
     value: UnsafeCell<T>,
+    lock: lock::Lock,
 }
 
-// SAFETY: 见类型契约——单核顺序访问；`T: Send` 允许其跨执行上下文转移。
+// SAFETY: 所有闭包访问由同一 Acquire/Release 锁串行化；T: Send 允许所有权跨上下文。
 unsafe impl<T: Send> Sync for StaticCell<T> {}
 
 impl<T> StaticCell<T> {
@@ -30,24 +31,30 @@ impl<T> StaticCell<T> {
     pub const fn new(value: T) -> Self {
         Self {
             value: UnsafeCell::new(value),
+            lock: lock::Lock::new(),
         }
     }
 
     /// 以共享引用调用 `f`。
+    #[inline(always)]
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
-        // SAFETY: 见类型契约——调用方保证无并发写与重入。
+        let _guard = self.lock.lock();
+        // SAFETY: guard 保证该闭包期间没有其他闭包访问同一值。
         f(unsafe { &*self.value.get() })
     }
 
     /// 以可变引用调用 `f`。
+    #[inline(always)]
     pub fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
-        // SAFETY: 见类型契约——调用方保证无并发访问与重入。
+        let _guard = self.lock.lock();
+        // SAFETY: guard 保证该闭包期间独占访问。
         f(unsafe { &mut *self.value.get() })
     }
 
     /// 取内部值的地址（供"只关心地址、不按元素读写"的场合，如内核栈缓冲区）。
     ///
-    /// 仅给出地址、不解引用，故本身安全；用该地址读写属调用方按契约负责。
+    /// 仅给出地址、不解引用，故本身安全。该指针不持锁；调用方必须另外保证裸访问不会
+    /// 与闭包/汇编访问冲突。适用于既有栈缓冲与硬件入口，不是绕过锁的安全读写接口。
     pub fn as_ptr(&self) -> *mut T {
         self.value.get()
     }
@@ -145,6 +152,49 @@ impl<T> Default for Once<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_cell_serializes_parallel_read_modify_write() {
+        let cell = StaticCell::new(0usize);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..2000 {
+                        cell.with_mut(|value| *value += 1);
+                    }
+                });
+            }
+        });
+        assert_eq!(cell.with(|value| *value), 16000);
+    }
+
+    #[test]
+    fn static_cell_unlocks_after_panicking_closure() {
+        let cell = StaticCell::new(1u8);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cell.with_mut(|value| {
+                    *value = 2;
+                    panic!("test unwind");
+                });
+            }))
+            .is_err()
+        );
+        assert_eq!(cell.with(|value| *value), 2);
+        cell.with_mut(|value| *value = 3);
+        assert_eq!(cell.with(|value| *value), 3);
+    }
+
+    #[test]
+    fn assembly_visible_value_starts_at_the_cell_address() {
+        #[repr(align(4096))]
+        struct Page([u8; 4096]);
+        let cell = StaticCell::new(Page([0; 4096]));
+        assert_eq!(core::mem::offset_of!(StaticCell<Page>, value), 0);
+        assert_eq!(&cell as *const _ as usize, cell.as_ptr() as usize);
+        assert!(core::mem::offset_of!(StaticCell<Page>, lock) >= size_of::<Page>());
+        assert_eq!(cell.with(|page| page.0[0]), 0);
+    }
 
     #[test]
     fn static_cell_reads_and_mutates() {

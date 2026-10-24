@@ -10,7 +10,8 @@
 //! panic（不静默复用他人区段）。
 //!
 //! **口径**：本模块不引入 `unsafe`（内核 crate 是 `#![deny(unsafe_code)]`）；可变性由
-//! [`StaticCell`] 的「单核顺序访问」契约承担，与框架其余部分同构。
+//! [`StaticCell`] 的 IRQ-safe 锁承担；不同 host 实例也经原子互斥，不能仅凭区段不同
+//! 就构造对整个二维数组的并发可变引用。
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 

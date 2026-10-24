@@ -55,7 +55,12 @@
         "trap",
         "CR3",
         "EXO",
-        "TCB"
+        "TCB",
+        "Asterinas",
+        "OSTD",
+        "StaticCell",
+        "IRQ guard",
+        "AlignExt"
       ],
       "sources": [
         "COSIR 原语规范.md",
@@ -66,7 +71,10 @@
         "docs/superpowers/reports/2026-09-25-framekernel-closure-report.md",
         "docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md",
         "docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md",
-        "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md"
+        "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md",
+        "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+        "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+        "docs/architecture/asterinas-provenance.md"
       ],
       "code": [
         "kernel/src/main.rs",
@@ -77,12 +85,19 @@
         "prima-ostd/src/entry.rs",
         "prima-initgen/src/lib.rs",
         "prima-abi/src/lib.rs",
-        "xtask/src/image.rs"
+        "xtask/src/image.rs",
+        "prima-ostd/src/align.rs",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs"
       ],
       "tests": [
         "xtask/src/protocol.rs",
         "xtask/src/qemu.rs",
-        "xtask/src/lint.rs"
+        "xtask/src/lint.rs",
+        "prima-ostd/src/align.rs",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs",
+        "prima-ostd/src/entry.rs"
       ],
       "guide": "docs/architecture/topics/boot.md"
     },
@@ -98,7 +113,9 @@
         "COW",
         "mmap",
         "mprotect",
-        "W^X"
+        "W^X",
+        "AlignExt",
+        "checked_align_up"
       ],
       "sources": [
         "COSIR 原语规范.md",
@@ -114,7 +131,10 @@
         "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md",
         "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
         "docs/superpowers/plans/2026-08-12-memseg-refinement-remediation.md",
-        "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md"
+        "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md",
+        "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+        "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+        "docs/architecture/asterinas-provenance.md"
       ],
       "code": [
         "kernel/src/frames.rs",
@@ -126,7 +146,10 @@
         "cosir/src/pagewalk.rs",
         "cosir/src/tlb_refine.rs",
         "cosir/src/cow_refine.rs",
-        "prima-user/c/prima_syscall.c"
+        "prima-user/c/prima_syscall.c",
+        "prima-ostd/src/align.rs",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs"
       ],
       "tests": [
         "cosir/src/memseg_refine_tests.rs",
@@ -134,7 +157,11 @@
         "cosir/src/tlb_refine_tests.rs",
         "cosir/src/cow_refine_tests.rs",
         "prima-user/c/stage5_mem.c",
-        "prima-user/c/stage5_proc.c"
+        "prima-user/c/stage5_proc.c",
+        "prima-ostd/src/align.rs",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs",
+        "prima-ostd/src/entry.rs"
       ],
       "guide": "docs/architecture/topics/memory.md"
     },
@@ -396,7 +423,10 @@
         "COM1",
         "termios",
         "tty",
-        "PIT"
+        "PIT",
+        "StaticCell",
+        "IRQ guard",
+        "spinlock"
       ],
       "sources": [
         "COSIR 原语规范.md",
@@ -408,7 +438,10 @@
         "docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md",
         "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md",
         "docs/superpowers/reports/2026-10-19-stage5-m6-time.md",
-        "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md"
+        "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md",
+        "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+        "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+        "docs/architecture/asterinas-provenance.md"
       ],
       "code": [
         "kernel/src/bootstrap.rs",
@@ -417,14 +450,19 @@
         "kernel/src/preempt.rs",
         "prima-user/src/tty.rs",
         "prima-user/src/servicemgr.rs",
-        "prima-user/c/prima_syscall.c"
+        "prima-user/c/prima_syscall.c",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs"
       ],
       "tests": [
         "prima-user/c/stage5_wait.c",
         "prima-user/c/stage5_wait2.c",
         "prima-user/c/stage5_futex.c",
         "prima-user/c/stage5_time.c",
-        "prima-user/c/stage5_ttyin.c"
+        "prima-user/c/stage5_ttyin.c",
+        "prima-ostd/src/sync.rs",
+        "prima-ostd/src/sync/lock.rs",
+        "prima-ostd/src/entry.rs"
       ],
       "guide": "docs/architecture/topics/synchronization.md"
     },
@@ -1663,18 +1701,18 @@
       "authority": "current-status",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "12cc87fa00fcd12bceb0223ea49275ce3041effd0e79990468edec4b1c5f7aca",
+      "sha256": "93623d552e796ce20543aed7132543c8b0ff884c95044d8331b84dc86b8ab0dc",
       "topic_ids": [
         "compatibility"
       ],
-      "lines": 301,
+      "lines": 306,
       "sections": [
         {
           "level": 1,
           "title": "Prima OS 实现阶段",
           "line": 10,
           "anchor": "prima-os-实现阶段",
-          "end_line": 301
+          "end_line": 306
         },
         {
           "level": 2,
@@ -1695,203 +1733,203 @@
           "title": "证据索引",
           "line": 35,
           "anchor": "证据索引",
-          "end_line": 56
+          "end_line": 60
         },
         {
           "level": 2,
           "title": "已知问题与当前阻塞",
-          "line": 57,
+          "line": 61,
           "anchor": "已知问题与当前阻塞",
-          "end_line": 83
+          "end_line": 88
         },
         {
           "level": 3,
           "title": "已收口问题的后继入口",
-          "line": 75,
+          "line": 80,
           "anchor": "已收口问题的后继入口",
-          "end_line": 83
+          "end_line": 88
         },
         {
           "level": 2,
           "title": "决策日志",
-          "line": 84,
+          "line": 89,
           "anchor": "决策日志",
-          "end_line": 93
+          "end_line": 98
         },
         {
           "level": 2,
           "title": "阶段 0 — 语义基线",
-          "line": 94,
+          "line": 99,
           "anchor": "阶段-0--语义基线",
-          "end_line": 116
+          "end_line": 121
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 98,
+          "line": 103,
           "anchor": "交付检查",
-          "end_line": 106
+          "end_line": 111
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 107,
+          "line": 112,
           "anchor": "退出条件",
-          "end_line": 116
+          "end_line": 121
         },
         {
           "level": 2,
           "title": "阶段 1 — 启动与最小平台层",
-          "line": 117,
+          "line": 122,
           "anchor": "阶段-1--启动与最小平台层",
-          "end_line": 138
+          "end_line": 143
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 121,
+          "line": 126,
           "anchor": "交付检查-1",
-          "end_line": 128
+          "end_line": 133
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 129,
+          "line": 134,
           "anchor": "退出条件-1",
-          "end_line": 138
+          "end_line": 143
         },
         {
           "level": 2,
           "title": "阶段 2 — Capability、Segment、Task 与 IPC",
-          "line": 139,
+          "line": 144,
           "anchor": "阶段-2--capabilitysegmenttask-与-ipc",
-          "end_line": 160
+          "end_line": 165
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 146,
+          "line": 151,
           "anchor": "交付检查-2",
-          "end_line": 153
+          "end_line": 158
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 154,
+          "line": 159,
           "anchor": "退出条件-2",
-          "end_line": 160
+          "end_line": 165
         },
         {
           "level": 2,
           "title": "阶段 3 — Namespace、Timer 与 Audit",
-          "line": 161,
+          "line": 166,
           "anchor": "阶段-3--namespacetimer-与-audit",
-          "end_line": 181
+          "end_line": 186
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 167,
+          "line": 172,
           "anchor": "交付检查-3",
-          "end_line": 174
+          "end_line": 179
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 175,
+          "line": 180,
           "anchor": "退出条件-3",
-          "end_line": 181
+          "end_line": 186
         },
         {
           "level": 2,
           "title": "阶段 4 — Prima 原生运行时与服务",
-          "line": 182,
+          "line": 187,
           "anchor": "阶段-4--prima-原生运行时与服务",
-          "end_line": 204
+          "end_line": 209
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 189,
+          "line": 194,
           "anchor": "交付检查-4",
-          "end_line": 196
+          "end_line": 201
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 197,
+          "line": 202,
           "anchor": "退出条件-4",
-          "end_line": 204
+          "end_line": 209
         },
         {
           "level": 2,
           "title": "阶段 5 — POSIX 源码兼容",
-          "line": 205,
+          "line": 210,
           "anchor": "阶段-5--posix-源码兼容",
-          "end_line": 255
+          "end_line": 260
         },
         {
           "level": 3,
           "title": "里程碑证据与边界",
-          "line": 209,
+          "line": 214,
           "anchor": "里程碑证据与边界",
-          "end_line": 225
+          "end_line": 230
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 226,
+          "line": 231,
           "anchor": "交付检查-5",
-          "end_line": 239
+          "end_line": 244
         },
         {
           "level": 3,
           "title": "上游 ABI 与候选规格归属",
-          "line": 240,
+          "line": 245,
           "anchor": "上游-abi-与候选规格归属",
-          "end_line": 247
+          "end_line": 252
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 248,
+          "line": 253,
           "anchor": "退出条件-5",
-          "end_line": 255
+          "end_line": 260
         },
         {
           "level": 2,
           "title": "阶段 6 — Linux x86_64 静态 ELF",
-          "line": 256,
+          "line": 261,
           "anchor": "阶段-6--linux-x86_64-静态-elf",
-          "end_line": 276
+          "end_line": 281
         },
         {
           "level": 3,
           "title": "交付检查",
-          "line": 260,
+          "line": 265,
           "anchor": "交付检查-6",
-          "end_line": 267
+          "end_line": 272
         },
         {
           "level": 3,
           "title": "退出条件",
-          "line": 268,
+          "line": 273,
           "anchor": "退出条件-6",
-          "end_line": 276
+          "end_line": 281
         },
         {
           "level": 2,
           "title": "阶段 7 — 扩展与硬化",
-          "line": 277,
+          "line": 282,
           "anchor": "阶段-7--扩展与硬化",
-          "end_line": 294
+          "end_line": 299
         },
         {
           "level": 2,
           "title": "阶段晋级规则",
-          "line": 295,
+          "line": 300,
           "anchor": "阶段晋级规则",
-          "end_line": 301
+          "end_line": 306
         }
       ],
       "mentioned_ids": [
@@ -2061,6 +2099,10 @@
         },
         {
           "line": 30,
+          "target": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
+          "line": 30,
           "target": "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
         },
         {
@@ -2105,414 +2147,438 @@
         },
         {
           "line": 42,
+          "target": "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 42,
+          "target": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
+          "line": 42,
+          "target": "docs/architecture/asterinas-provenance.md"
+        },
+        {
+          "line": 43,
           "target": "docs/superpowers/reports/2026-10-16-stage4-closure-report.md"
         },
         {
-          "line": 42,
+          "line": 43,
           "target": "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
         },
         {
-          "line": 42,
+          "line": 43,
           "target": "docs/architecture/topics/runtime.md"
         },
         {
-          "line": 43,
+          "line": 44,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md"
         },
         {
-          "line": 43,
+          "line": 44,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 44,
+          "line": 45,
           "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
         },
         {
-          "line": 45,
+          "line": 46,
           "target": "docs/architecture/catalog.md"
         },
         {
-          "line": 45,
+          "line": 46,
           "target": "docs/architecture/topics/README.md"
         },
         {
-          "line": 47,
+          "line": 48,
           "target": "https://github.com/Alma1314/PrimaOS/blob/a434a2f0c515ac3421e999be3c436b7d7c6c5313/Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md"
         },
         {
-          "line": 47,
+          "line": 48,
           "target": "docs/superpowers/reports/2026-10-23-documentation-restructure-report.md"
         },
         {
-          "line": 49,
+          "line": 50,
           "target": "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
         },
         {
-          "line": 51,
+          "line": 52,
           "target": "docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md"
         },
         {
-          "line": 53,
+          "line": 54,
           "target": "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md"
         },
         {
-          "line": 55,
+          "line": 56,
           "target": "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
         },
         {
-          "line": 61,
-          "target": "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
-        },
-        {
-          "line": 61,
-          "target": "docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md"
-        },
-        {
-          "line": 61,
-          "target": "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
-        },
-        {
-          "line": 62,
-          "target": "docs/superpowers/plans/2026-10-18-stage5-revised-plan.md"
-        },
-        {
-          "line": 62,
-          "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
-        },
-        {
-          "line": 63,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
-        },
-        {
-          "line": 64,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md"
+          "line": 58,
+          "target": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md"
         },
         {
           "line": 65,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md"
+          "target": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
+          "line": 65,
+          "target": "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
+        },
+        {
+          "line": 65,
+          "target": "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
+        },
+        {
+          "line": 65,
+          "target": "docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md"
         },
         {
           "line": 66,
-          "target": "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md"
+          "target": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md"
         },
         {
           "line": 67,
-          "target": "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md"
-        },
-        {
-          "line": 67,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md"
-        },
-        {
-          "line": 68,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md"
-        },
-        {
-          "line": 68,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md"
-        },
-        {
-          "line": 69,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md"
-        },
-        {
-          "line": 70,
-          "target": "docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md"
-        },
-        {
-          "line": 71,
-          "target": "docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md"
-        },
-        {
-          "line": 71,
-          "target": "lean/README.md"
-        },
-        {
-          "line": 73,
-          "target": "docs/superpowers/specs/2026-08-14-cow-refinement-design.md"
-        },
-        {
-          "line": 78,
-          "target": "docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md"
-        },
-        {
-          "line": 79,
-          "target": "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md"
-        },
-        {
-          "line": 80,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md"
-        },
-        {
-          "line": 81,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md"
-        },
-        {
-          "line": 82,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md"
-        },
-        {
-          "line": 88,
-          "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
-        },
-        {
-          "line": 89,
-          "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
-        },
-        {
-          "line": 90,
           "target": "docs/superpowers/plans/2026-10-18-stage5-revised-plan.md"
         },
         {
-          "line": 92,
-          "target": "docs/superpowers/reports/2026-10-23-documentation-restructure-report.md"
+          "line": 67,
+          "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
         },
         {
-          "line": 102,
-          "target": "COSIR%20原语规范.md"
+          "line": 68,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 104,
-          "target": "Prima%20OS.md"
+          "line": 69,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md"
         },
         {
-          "line": 105,
-          "target": "docs/superpowers/specs/2026-08-07-blk002-refinement-design.md"
+          "line": 70,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md"
         },
         {
-          "line": 111,
-          "target": "docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md"
+          "line": 71,
+          "target": "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md"
         },
         {
-          "line": 111,
-          "target": "docs/superpowers/reports/2026-10-17-stage0-re-review-spec144.md"
+          "line": 72,
+          "target": "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md"
         },
         {
-          "line": 111,
-          "target": "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md"
+          "line": 72,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md"
         },
         {
-          "line": 113,
-          "target": "docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md"
+          "line": 73,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md"
         },
         {
-          "line": 113,
+          "line": 73,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md"
+        },
+        {
+          "line": 74,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md"
+        },
+        {
+          "line": 75,
+          "target": "docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md"
+        },
+        {
+          "line": 76,
+          "target": "docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md"
+        },
+        {
+          "line": 76,
           "target": "lean/README.md"
         },
         {
-          "line": 115,
+          "line": 78,
+          "target": "docs/superpowers/specs/2026-08-14-cow-refinement-design.md"
+        },
+        {
+          "line": 83,
+          "target": "docs/superpowers/reports/2026-10-18-stage5-c-elf-qemu.md"
+        },
+        {
+          "line": 84,
+          "target": "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md"
+        },
+        {
+          "line": 85,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md"
+        },
+        {
+          "line": 86,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md"
+        },
+        {
+          "line": 87,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md"
+        },
+        {
+          "line": 93,
+          "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
+        },
+        {
+          "line": 94,
+          "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
+        },
+        {
+          "line": 95,
+          "target": "docs/superpowers/plans/2026-10-18-stage5-revised-plan.md"
+        },
+        {
+          "line": 97,
+          "target": "docs/superpowers/reports/2026-10-23-documentation-restructure-report.md"
+        },
+        {
+          "line": 107,
+          "target": "COSIR%20原语规范.md"
+        },
+        {
+          "line": 109,
+          "target": "Prima%20OS.md"
+        },
+        {
+          "line": 110,
+          "target": "docs/superpowers/specs/2026-08-07-blk002-refinement-design.md"
+        },
+        {
+          "line": 116,
+          "target": "docs/superpowers/reports/2026-10-17-stage0-review-remediation-spec143.md"
+        },
+        {
+          "line": 116,
+          "target": "docs/superpowers/reports/2026-10-17-stage0-re-review-spec144.md"
+        },
+        {
+          "line": 116,
+          "target": "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md"
+        },
+        {
+          "line": 118,
+          "target": "docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md"
+        },
+        {
+          "line": 118,
+          "target": "lean/README.md"
+        },
+        {
+          "line": 120,
           "target": "docs/architecture/topics/semantics.md"
         },
         {
-          "line": 137,
+          "line": 142,
           "target": "docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md"
         },
         {
-          "line": 137,
+          "line": 142,
           "target": "docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md"
         },
         {
-          "line": 144,
+          "line": 149,
           "target": "docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md"
         },
         {
-          "line": 144,
+          "line": 149,
           "target": "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md"
         },
         {
-          "line": 152,
+          "line": 157,
           "target": "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md"
         },
         {
-          "line": 165,
+          "line": 170,
           "target": "docs/superpowers/reports/2026-10-18-stage3-review-remediation.md"
         },
         {
-          "line": 184,
+          "line": 189,
           "target": "docs/superpowers/reports/2026-10-16-stage4-closure-report.md"
         },
         {
-          "line": 187,
+          "line": 192,
           "target": "docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md"
         },
         {
-          "line": 187,
+          "line": 192,
           "target": "docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md"
         },
         {
-          "line": 195,
+          "line": 200,
           "target": "docs/superpowers/reports/2026-10-16-stage4-native-shared-segment-app-report.md"
-        },
-        {
-          "line": 195,
-          "target": "docs/superpowers/reports/2026-10-16-stage4-closure-report.md"
         },
         {
           "line": 200,
           "target": "docs/superpowers/reports/2026-10-16-stage4-closure-report.md"
         },
         {
-          "line": 207,
+          "line": 205,
+          "target": "docs/superpowers/reports/2026-10-16-stage4-closure-report.md"
+        },
+        {
+          "line": 212,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md"
         },
         {
-          "line": 207,
+          "line": 212,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 213,
+          "line": 218,
           "target": "docs/superpowers/reports/2026-10-18-stage5-musl-m0-inventory.md"
         },
         {
-          "line": 213,
+          "line": 218,
           "target": "docs/superpowers/reports/2026-10-18-stage5-musl-m2-boundary.md"
         },
         {
-          "line": 213,
+          "line": 218,
           "target": "docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md"
         },
         {
-          "line": 213,
+          "line": 218,
           "target": "docs/superpowers/reports/2026-10-18-stage5-musl-m4-file.md"
         },
         {
-          "line": 214,
+          "line": 219,
           "target": "docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md"
         },
         {
-          "line": 214,
+          "line": 219,
           "target": "docs/superpowers/reports/2026-10-19-stage5-m6-time.md"
         },
         {
-          "line": 214,
+          "line": 219,
           "target": "docs/superpowers/reports/2026-10-19-stage5-m7-fd-table.md"
         },
         {
-          "line": 215,
+          "line": 220,
           "target": "docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md"
         },
         {
-          "line": 215,
+          "line": 220,
           "target": "docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md"
         },
         {
-          "line": 215,
+          "line": 220,
           "target": "docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md"
         },
         {
-          "line": 215,
+          "line": 220,
           "target": "docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md"
         },
         {
-          "line": 216,
+          "line": 221,
           "target": "docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md"
         },
         {
-          "line": 216,
+          "line": 221,
           "target": "docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md"
         },
         {
-          "line": 216,
+          "line": 221,
           "target": "docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md"
         },
         {
-          "line": 217,
+          "line": 222,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md"
         },
         {
-          "line": 218,
+          "line": 223,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m15a-waitobject.md"
         },
         {
-          "line": 218,
+          "line": 223,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md"
         },
         {
-          "line": 218,
+          "line": 223,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md"
         },
         {
-          "line": 218,
+          "line": 223,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md"
         },
         {
-          "line": 218,
+          "line": 223,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md"
         },
         {
-          "line": 219,
+          "line": 224,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md"
         },
         {
-          "line": 219,
+          "line": 224,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md"
         },
         {
-          "line": 219,
+          "line": 224,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md"
         },
         {
-          "line": 220,
+          "line": 225,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md"
         },
         {
-          "line": 220,
+          "line": 225,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md"
         },
         {
-          "line": 221,
+          "line": 226,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md"
         },
         {
-          "line": 222,
+          "line": 227,
           "target": "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md"
         },
         {
-          "line": 222,
+          "line": 227,
           "target": "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
         },
         {
-          "line": 223,
+          "line": 228,
           "target": "docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md"
         },
         {
-          "line": 223,
+          "line": 228,
           "target": "docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md"
         },
         {
-          "line": 224,
+          "line": 229,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md"
         },
         {
-          "line": 224,
+          "line": 229,
           "target": "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 242,
+          "line": 247,
           "target": "prima-abi/src/lib.rs"
         },
         {
-          "line": 242,
+          "line": 247,
           "target": "docs/superpowers/compat/compat-state.md"
         },
         {
-          "line": 242,
+          "line": 247,
           "target": "docs/architecture/interfaces.md"
         },
         {
-          "line": 244,
+          "line": 249,
           "target": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
         },
         {
-          "line": 246,
+          "line": 251,
           "target": "docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md"
         },
         {
-          "line": 246,
+          "line": 251,
           "target": "docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md"
         },
         {
-          "line": 293,
+          "line": 298,
           "target": "docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md"
         }
       ]
@@ -3713,6 +3779,64 @@
       ]
     },
     {
+      "path": "docs/architecture/asterinas-provenance.md",
+      "id": "ostd-third-party",
+      "title": "Asterinas 来源与修改",
+      "kind": "reference",
+      "lifecycle": "current",
+      "lifecycle_reason": null,
+      "replacements": [],
+      "authority": "source-provenance",
+      "status": "maintained",
+      "date": "2026-10-24",
+      "sha256": "cbf339d1e6b1dd2fb4c9b69b6fdd9283a75de67aaec6c54d905f3014d6cecf3b",
+      "topic_ids": [
+        "boot",
+        "memory",
+        "synchronization"
+      ],
+      "lines": 34,
+      "sections": [
+        {
+          "level": 1,
+          "title": "Asterinas 来源与修改",
+          "line": 10,
+          "anchor": "asterinas-来源与修改",
+          "end_line": 34
+        },
+        {
+          "level": 2,
+          "title": "上游输入 SHA-256",
+          "line": 25,
+          "anchor": "上游输入-sha-256",
+          "end_line": 34
+        }
+      ],
+      "mentioned_ids": [],
+      "links": [
+        {
+          "line": 12,
+          "target": "https://github.com/asterinas/asterinas"
+        },
+        {
+          "line": 15,
+          "target": "../../prima-ostd/LICENSE-MPL"
+        },
+        {
+          "line": 20,
+          "target": "../../prima-ostd/src/align.rs"
+        },
+        {
+          "line": 21,
+          "target": "../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 23,
+          "target": "../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
+        }
+      ]
+    },
+    {
       "path": "docs/architecture/development.md",
       "id": "guide-development",
       "title": "开发、构建与验证手册",
@@ -4263,17 +4387,17 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "36edc81587ef72094a2558f929cf919a994dd46b1af8cefe2fde84e46aa7e69b",
+      "date": "2026-10-24",
+      "sha256": "3810a8fd4c806346332a0bc5e5533f8013fe5c34cfe13cdfa561045040334839",
       "topic_ids": [],
-      "lines": 68,
+      "lines": 70,
       "sections": [
         {
           "level": 1,
           "title": "系统层次与源码地图",
           "line": 10,
           "anchor": "系统层次与源码地图",
-          "end_line": 68
+          "end_line": 70
         },
         {
           "level": 2,
@@ -4308,7 +4432,7 @@
           "title": "改动影响检查",
           "line": 59,
           "anchor": "改动影响检查",
-          "end_line": 68
+          "end_line": 70
         }
       ],
       "mentioned_ids": [],
@@ -4364,6 +4488,14 @@
         {
           "line": 39,
           "target": "../../prima-ostd/src/sync.rs"
+        },
+        {
+          "line": 39,
+          "target": "../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 39,
+          "target": "../../prima-ostd/src/align.rs"
         },
         {
           "line": 40,
@@ -4428,6 +4560,14 @@
         {
           "line": 57,
           "target": "topics/process.md"
+        },
+        {
+          "line": 70,
+          "target": "asterinas-provenance.md"
+        },
+        {
+          "line": 70,
+          "target": "../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
         }
       ]
     },
@@ -4811,19 +4951,19 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "c9164a7ce25e34363f7c9b988a8cab69ffbff528af122ef4542b0d377ec576ef",
+      "date": "2026-10-24",
+      "sha256": "bc5f48aab9421f950b9cf73cb138914bedd7e8e69fa78408c879ba2935c28b6b",
       "topic_ids": [
         "boot"
       ],
-      "lines": 62,
+      "lines": 70,
       "sections": [
         {
           "level": 1,
           "title": "启动、硬件与可信边界",
           "line": 10,
           "anchor": "启动硬件与可信边界",
-          "end_line": 62
+          "end_line": 70
         },
         {
           "level": 2,
@@ -4844,28 +4984,28 @@
           "title": "契约、计划与证据入口",
           "line": 28,
           "anchor": "契约计划与证据入口",
-          "end_line": 39
+          "end_line": 43
         },
         {
           "level": 2,
           "title": "源码定位",
-          "line": 40,
+          "line": 44,
           "anchor": "源码定位",
-          "end_line": 51
-        },
-        {
-          "level": 2,
-          "title": "测试与观察入口",
-          "line": 52,
-          "anchor": "测试与观察入口",
           "end_line": 59
         },
         {
           "level": 2,
-          "title": "限制与修改注意",
+          "title": "测试与观察入口",
           "line": 60,
+          "anchor": "测试与观察入口",
+          "end_line": 67
+        },
+        {
+          "level": 2,
+          "title": "限制与修改注意",
+          "line": 68,
           "anchor": "限制与修改注意",
-          "end_line": 62
+          "end_line": 70
         }
       ],
       "mentioned_ids": [
@@ -4922,59 +5062,83 @@
           "target": "../../superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md"
         },
         {
+          "line": 40,
+          "target": "../../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 41,
+          "target": "../../superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
           "line": 42,
-          "target": "../../../kernel/src/main.rs"
-        },
-        {
-          "line": 43,
-          "target": "../../../kernel/src/bootstrap.rs"
-        },
-        {
-          "line": 44,
-          "target": "../../../kernel/src/gdt.rs"
-        },
-        {
-          "line": 45,
-          "target": "../../../kernel/src/idt.rs"
+          "target": "../asterinas-provenance.md"
         },
         {
           "line": 46,
-          "target": "../../../prima-ostd/src/arch.rs"
+          "target": "../../../kernel/src/main.rs"
         },
         {
           "line": 47,
-          "target": "../../../prima-ostd/src/entry.rs"
+          "target": "../../../kernel/src/bootstrap.rs"
         },
         {
           "line": 48,
-          "target": "../../../prima-initgen/src/lib.rs"
+          "target": "../../../kernel/src/gdt.rs"
         },
         {
           "line": 49,
-          "target": "../../../prima-abi/src/lib.rs"
+          "target": "../../../kernel/src/idt.rs"
         },
         {
           "line": 50,
-          "target": "../../../xtask/src/image.rs"
+          "target": "../../../prima-ostd/src/arch.rs"
+        },
+        {
+          "line": 51,
+          "target": "../../../prima-ostd/src/entry.rs"
+        },
+        {
+          "line": 52,
+          "target": "../../../prima-initgen/src/lib.rs"
+        },
+        {
+          "line": 53,
+          "target": "../../../prima-abi/src/lib.rs"
         },
         {
           "line": 54,
-          "target": "../../../xtask/src/protocol.rs"
-        },
-        {
-          "line": 55,
-          "target": "../../../xtask/src/qemu.rs"
+          "target": "../../../xtask/src/image.rs"
         },
         {
           "line": 56,
+          "target": "../../../prima-ostd/src/align.rs"
+        },
+        {
+          "line": 57,
+          "target": "../../../prima-ostd/src/sync.rs"
+        },
+        {
+          "line": 58,
+          "target": "../../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 62,
+          "target": "../../../xtask/src/protocol.rs"
+        },
+        {
+          "line": 63,
+          "target": "../../../xtask/src/qemu.rs"
+        },
+        {
+          "line": 64,
           "target": "../../../xtask/src/lint.rs"
         },
         {
-          "line": 58,
+          "line": 66,
           "target": "../development.md"
         },
         {
-          "line": 58,
+          "line": 66,
           "target": "../evidence.md"
         }
       ]
@@ -5393,19 +5557,19 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "c8a78eaacad23ee90b583f1bec09daa95e4743ccf7651cf1ac66b50d00e0c462",
+      "date": "2026-10-24",
+      "sha256": "48f62b2d4233f88b16773f5dcee326b5d16bd895f610111f7d5f50aaa05776b4",
       "topic_ids": [
         "memory"
       ],
-      "lines": 74,
+      "lines": 82,
       "sections": [
         {
           "level": 1,
           "title": "页帧、映射、TLB 与 COW",
           "line": 10,
           "anchor": "页帧映射tlb-与-cow",
-          "end_line": 74
+          "end_line": 82
         },
         {
           "level": 2,
@@ -5426,28 +5590,28 @@
           "title": "契约、计划与证据入口",
           "line": 30,
           "anchor": "契约计划与证据入口",
-          "end_line": 47
+          "end_line": 51
         },
         {
           "level": 2,
           "title": "源码定位",
-          "line": 48,
+          "line": 52,
           "anchor": "源码定位",
-          "end_line": 60
+          "end_line": 68
         },
         {
           "level": 2,
           "title": "测试与观察入口",
-          "line": 61,
+          "line": 69,
           "anchor": "测试与观察入口",
-          "end_line": 71
+          "end_line": 79
         },
         {
           "level": 2,
           "title": "限制与修改注意",
-          "line": 72,
+          "line": 80,
           "anchor": "限制与修改注意",
-          "end_line": 74
+          "end_line": 82
         }
       ],
       "mentioned_ids": [],
@@ -5521,75 +5685,99 @@
           "target": "../../superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md"
         },
         {
+          "line": 48,
+          "target": "../../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 49,
+          "target": "../../superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
           "line": 50,
-          "target": "../../../kernel/src/frames.rs"
-        },
-        {
-          "line": 51,
-          "target": "../../../kernel/src/mem.rs"
-        },
-        {
-          "line": 52,
-          "target": "../../../kernel/src/vspace.rs"
-        },
-        {
-          "line": 53,
-          "target": "../../../kernel/src/cow.rs"
+          "target": "../asterinas-provenance.md"
         },
         {
           "line": 54,
-          "target": "../../../prima-ostd/src/mm.rs"
+          "target": "../../../kernel/src/frames.rs"
         },
         {
           "line": 55,
-          "target": "../../../cosir/src/memseg_refine.rs"
+          "target": "../../../kernel/src/mem.rs"
         },
         {
           "line": 56,
-          "target": "../../../cosir/src/pagewalk.rs"
+          "target": "../../../kernel/src/vspace.rs"
         },
         {
           "line": 57,
-          "target": "../../../cosir/src/tlb_refine.rs"
+          "target": "../../../kernel/src/cow.rs"
         },
         {
           "line": 58,
-          "target": "../../../cosir/src/cow_refine.rs"
+          "target": "../../../prima-ostd/src/mm.rs"
         },
         {
           "line": 59,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../cosir/src/memseg_refine.rs"
+        },
+        {
+          "line": 60,
+          "target": "../../../cosir/src/pagewalk.rs"
+        },
+        {
+          "line": 61,
+          "target": "../../../cosir/src/tlb_refine.rs"
+        },
+        {
+          "line": 62,
+          "target": "../../../cosir/src/cow_refine.rs"
         },
         {
           "line": 63,
-          "target": "../../../cosir/src/memseg_refine_tests.rs"
-        },
-        {
-          "line": 64,
-          "target": "../../../cosir/src/pagewalk_tests.rs"
+          "target": "../../../prima-user/c/prima_syscall.c"
         },
         {
           "line": 65,
-          "target": "../../../cosir/src/tlb_refine_tests.rs"
+          "target": "../../../prima-ostd/src/align.rs"
         },
         {
           "line": 66,
-          "target": "../../../cosir/src/cow_refine_tests.rs"
+          "target": "../../../prima-ostd/src/sync.rs"
         },
         {
           "line": 67,
+          "target": "../../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 71,
+          "target": "../../../cosir/src/memseg_refine_tests.rs"
+        },
+        {
+          "line": 72,
+          "target": "../../../cosir/src/pagewalk_tests.rs"
+        },
+        {
+          "line": 73,
+          "target": "../../../cosir/src/tlb_refine_tests.rs"
+        },
+        {
+          "line": 74,
+          "target": "../../../cosir/src/cow_refine_tests.rs"
+        },
+        {
+          "line": 75,
           "target": "../../../prima-user/c/stage5_mem.c"
         },
         {
-          "line": 68,
+          "line": 76,
           "target": "../../../prima-user/c/stage5_proc.c"
         },
         {
-          "line": 70,
+          "line": 78,
           "target": "../development.md"
         },
         {
-          "line": 70,
+          "line": 78,
           "target": "../evidence.md"
         }
       ]
@@ -6352,19 +6540,19 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "11847718bd5686da7a30d70dbfa7e6bd2386b8209e9796c9ca3521d0bb08f2be",
+      "date": "2026-10-24",
+      "sha256": "edf1b370812dbb359655c6cb4f8ee0a5e0cd2952a93c5a50a423497cea65d742",
       "topic_ids": [
         "synchronization"
       ],
-      "lines": 63,
+      "lines": 71,
       "sections": [
         {
           "level": 1,
           "title": "等待、唤醒、futex、时间与 TTY",
           "line": 10,
           "anchor": "等待唤醒futex时间与-tty",
-          "end_line": 63
+          "end_line": 71
         },
         {
           "level": 2,
@@ -6385,28 +6573,28 @@
           "title": "契约、计划与证据入口",
           "line": 28,
           "anchor": "契约计划与证据入口",
-          "end_line": 40
+          "end_line": 44
         },
         {
           "level": 2,
           "title": "源码定位",
-          "line": 41,
+          "line": 45,
           "anchor": "源码定位",
-          "end_line": 50
+          "end_line": 58
         },
         {
           "level": 2,
           "title": "测试与观察入口",
-          "line": 51,
+          "line": 59,
           "anchor": "测试与观察入口",
-          "end_line": 60
+          "end_line": 68
         },
         {
           "level": 2,
           "title": "限制与修改注意",
-          "line": 61,
+          "line": 69,
           "anchor": "限制与修改注意",
-          "end_line": 63
+          "end_line": 71
         }
       ],
       "mentioned_ids": [],
@@ -6464,59 +6652,83 @@
           "target": "../../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md"
         },
         {
+          "line": 41,
+          "target": "../../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 42,
+          "target": "../../superpowers/reports/2026-10-24-asterinas-reuse-report.md"
+        },
+        {
           "line": 43,
-          "target": "../../../kernel/src/bootstrap.rs"
-        },
-        {
-          "line": 44,
-          "target": "../../../kernel/src/syscall.rs"
-        },
-        {
-          "line": 45,
-          "target": "../../../kernel/src/sched.rs"
-        },
-        {
-          "line": 46,
-          "target": "../../../kernel/src/preempt.rs"
+          "target": "../asterinas-provenance.md"
         },
         {
           "line": 47,
-          "target": "../../../prima-user/src/tty.rs"
+          "target": "../../../kernel/src/bootstrap.rs"
         },
         {
           "line": 48,
-          "target": "../../../prima-user/src/servicemgr.rs"
+          "target": "../../../kernel/src/syscall.rs"
         },
         {
           "line": 49,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../kernel/src/sched.rs"
+        },
+        {
+          "line": 50,
+          "target": "../../../kernel/src/preempt.rs"
+        },
+        {
+          "line": 51,
+          "target": "../../../prima-user/src/tty.rs"
+        },
+        {
+          "line": 52,
+          "target": "../../../prima-user/src/servicemgr.rs"
         },
         {
           "line": 53,
-          "target": "../../../prima-user/c/stage5_wait.c"
-        },
-        {
-          "line": 54,
-          "target": "../../../prima-user/c/stage5_wait2.c"
+          "target": "../../../prima-user/c/prima_syscall.c"
         },
         {
           "line": 55,
-          "target": "../../../prima-user/c/stage5_futex.c"
+          "target": "../../../prima-ostd/src/align.rs"
         },
         {
           "line": 56,
-          "target": "../../../prima-user/c/stage5_time.c"
+          "target": "../../../prima-ostd/src/sync.rs"
         },
         {
           "line": 57,
+          "target": "../../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 61,
+          "target": "../../../prima-user/c/stage5_wait.c"
+        },
+        {
+          "line": 62,
+          "target": "../../../prima-user/c/stage5_wait2.c"
+        },
+        {
+          "line": 63,
+          "target": "../../../prima-user/c/stage5_futex.c"
+        },
+        {
+          "line": 64,
+          "target": "../../../prima-user/c/stage5_time.c"
+        },
+        {
+          "line": 65,
           "target": "../../../prima-user/c/stage5_ttyin.c"
         },
         {
-          "line": 59,
+          "line": 67,
           "target": "../development.md"
         },
         {
-          "line": 59,
+          "line": 67,
           "target": "../evidence.md"
         }
       ]
@@ -23360,6 +23572,119 @@
       ]
     },
     {
+      "path": "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+      "id": "report-asterinas-reuse",
+      "title": "Asterinas 复用与 OSTD 临界区验证报告",
+      "kind": "report",
+      "lifecycle": "historical",
+      "lifecycle_reason": null,
+      "replacements": [],
+      "authority": "scoped-evidence",
+      "status": "verified-with-limits",
+      "date": "2026-10-24",
+      "sha256": "3c56a6bf61d11b7b177d2310b22a3536284a791d5d13875e48f3b4a817f26e65",
+      "topic_ids": [
+        "boot",
+        "memory",
+        "synchronization"
+      ],
+      "lines": 124,
+      "sections": [
+        {
+          "level": 1,
+          "title": "Asterinas 复用与 OSTD 临界区验证报告",
+          "line": 10,
+          "anchor": "asterinas-复用与-ostd-临界区验证报告",
+          "end_line": 124
+        },
+        {
+          "level": 2,
+          "title": "结论与范围",
+          "line": 12,
+          "anchor": "结论与范围",
+          "end_line": 18
+        },
+        {
+          "level": 2,
+          "title": "基线与输入",
+          "line": 19,
+          "anchor": "基线与输入",
+          "end_line": 31
+        },
+        {
+          "level": 2,
+          "title": "实现与影响",
+          "line": 32,
+          "anchor": "实现与影响",
+          "end_line": 58
+        },
+        {
+          "level": 3,
+          "title": "实际复用",
+          "line": 34,
+          "anchor": "实际复用",
+          "end_line": 45
+        },
+        {
+          "level": 3,
+          "title": "布局、调度与栈",
+          "line": 46,
+          "anchor": "布局调度与栈",
+          "end_line": 58
+        },
+        {
+          "level": 2,
+          "title": "实跑命令与结果",
+          "line": 59,
+          "anchor": "实跑命令与结果",
+          "end_line": 81
+        },
+        {
+          "level": 2,
+          "title": "本次失败与修复链",
+          "line": 82,
+          "anchor": "本次失败与修复链",
+          "end_line": 111
+        },
+        {
+          "level": 2,
+          "title": "限制、阶段与重审",
+          "line": 112,
+          "anchor": "限制阶段与重审",
+          "end_line": 124
+        }
+      ],
+      "mentioned_ids": [
+        "BLK-003"
+      ],
+      "links": [
+        {
+          "line": 16,
+          "target": "../specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 27,
+          "target": "../specs/2026-10-24-asterinas-reuse-design.md"
+        },
+        {
+          "line": 29,
+          "target": "../../architecture/asterinas-provenance.md"
+        },
+        {
+          "line": 120,
+          "target": "2026-10-24-native-runtime-service-report.md"
+        },
+        {
+          "line": 121,
+          "target": "2026-10-23-vfs-libos-foundation-report.md"
+        },
+        {
+          "line": 123,
+          "target": "../../../Prima%20OS%20实现阶段.md"
+        }
+      ]
+    },
+    {
       "path": "docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md",
       "id": "report-documentation-lifecycle",
       "title": "文档生命周期治理与过时材料清理报告",
@@ -23787,100 +24112,107 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "baf767593149844b8fd169ad10b20e933ff46d967c8602b19290628221ef2ae3",
+      "sha256": "ad7955d64f7db56ea69ede168dab9db2fb135c8347f99e76067425060e54f5ef",
       "topic_ids": [],
-      "lines": 241,
+      "lines": 247,
       "sections": [
         {
           "level": 1,
           "title": "Reports 索引",
           "line": 10,
           "anchor": "reports-索引",
-          "end_line": 241
+          "end_line": 247
+        },
+        {
+          "level": 2,
+          "title": "OSTD / 跨项目代码复用",
+          "line": 16,
+          "anchor": "ostd--跨项目代码复用",
+          "end_line": 21
         },
         {
           "level": 2,
           "title": "跨阶段 / 文档体系",
-          "line": 16,
+          "line": 22,
           "anchor": "跨阶段--文档体系",
-          "end_line": 22
+          "end_line": 28
         },
         {
           "level": 2,
           "title": "阶段 5",
-          "line": 23,
+          "line": 29,
           "anchor": "阶段-5",
-          "end_line": 77
+          "end_line": 83
         },
         {
           "level": 2,
           "title": "阶段 4",
-          "line": 78,
+          "line": 84,
           "anchor": "阶段-4",
-          "end_line": 134
+          "end_line": 140
         },
         {
           "level": 2,
           "title": "阶段 3",
-          "line": 135,
+          "line": 141,
           "anchor": "阶段-3",
-          "end_line": 145
+          "end_line": 151
         },
         {
           "level": 2,
           "title": "阶段 2 / Framekernel",
-          "line": 146,
+          "line": 152,
           "anchor": "阶段-2--framekernel",
-          "end_line": 173
+          "end_line": 179
         },
         {
           "level": 2,
           "title": "阶段 1",
-          "line": 174,
+          "line": 180,
           "anchor": "阶段-1",
-          "end_line": 183
+          "end_line": 189
         },
         {
           "level": 2,
           "title": "阶段 0 / 模型",
-          "line": 184,
+          "line": 190,
           "anchor": "阶段-0--模型",
-          "end_line": 210
-        },
-        {
-          "level": 2,
-          "title": "跨阶段 / 双人格",
-          "line": 211,
-          "anchor": "跨阶段--双人格",
           "end_line": 216
         },
         {
           "level": 2,
-          "title": "跨阶段 / 架构评估",
+          "title": "跨阶段 / 双人格",
           "line": 217,
-          "anchor": "跨阶段--架构评估",
+          "anchor": "跨阶段--双人格",
           "end_line": 222
         },
         {
           "level": 2,
-          "title": "跨阶段 / 兼容性",
+          "title": "跨阶段 / 架构评估",
           "line": 223,
-          "anchor": "跨阶段--兼容性",
+          "anchor": "跨阶段--架构评估",
           "end_line": 228
         },
         {
           "level": 2,
-          "title": "跨阶段 / 文档治理",
+          "title": "跨阶段 / 兼容性",
           "line": 229,
-          "anchor": "跨阶段--文档治理",
+          "anchor": "跨阶段--兼容性",
           "end_line": 234
         },
         {
           "level": 2,
-          "title": "跨阶段 / 其他",
+          "title": "跨阶段 / 文档治理",
           "line": 235,
+          "anchor": "跨阶段--文档治理",
+          "end_line": 240
+        },
+        {
+          "level": 2,
+          "title": "跨阶段 / 其他",
+          "line": 241,
           "anchor": "跨阶段--其他",
-          "end_line": 241
+          "end_line": 247
         }
       ],
       "mentioned_ids": [
@@ -23983,670 +24315,674 @@
         },
         {
           "line": 20,
+          "target": "2026-10-24-asterinas-reuse-report.md"
+        },
+        {
+          "line": 26,
           "target": "2026-10-24-documentation-lifecycle-report.md"
         },
         {
-          "line": 21,
+          "line": 27,
           "target": "2026-10-23-documentation-restructure-report.md"
         },
         {
-          "line": 27,
+          "line": 33,
           "target": "2026-10-24-musl-port-boundary-report.md"
         },
         {
-          "line": 28,
+          "line": 34,
           "target": "2026-10-23-vfs-libos-foundation-report.md"
         },
         {
-          "line": 29,
+          "line": 35,
           "target": "2026-10-22-stage5-m11-file-mutation.md"
         },
         {
-          "line": 30,
+          "line": 36,
           "target": "2026-10-22-stage5-m12-c-startup.md"
         },
         {
-          "line": 31,
+          "line": 37,
           "target": "2026-10-22-stage5-m13a-vfs-links.md"
         },
         {
-          "line": 32,
+          "line": 38,
           "target": "2026-10-22-stage5-m13b-permissions-stdio.md"
         },
         {
-          "line": 33,
+          "line": 39,
           "target": "2026-10-23-stage5-m19-loopback-udp.md"
         },
         {
-          "line": 34,
+          "line": 40,
           "target": "2026-10-23-stage5-m14-tty-input.md"
         },
         {
-          "line": 35,
+          "line": 41,
           "target": "2026-10-23-stage5-m15a-waitobject.md"
         },
         {
-          "line": 36,
+          "line": 42,
           "target": "2026-10-23-stage5-m15a2-waitobject-blocking.md"
         },
         {
-          "line": 37,
+          "line": 43,
           "target": "2026-10-23-stage5-m15b1-process-metadata.md"
         },
         {
-          "line": 38,
+          "line": 44,
           "target": "2026-10-23-stage5-m15b2a-thread-create.md"
         },
         {
-          "line": 39,
+          "line": 45,
           "target": "2026-10-23-stage5-thread-capacity-investigation.md"
         },
         {
-          "line": 40,
+          "line": 46,
           "target": "2026-10-23-stage5-m15b2b-thread-slots.md"
         },
         {
-          "line": 41,
+          "line": 47,
           "target": "2026-10-23-stage5-m16a-futex.md"
         },
         {
-          "line": 42,
+          "line": 48,
           "target": "2026-10-23-stage5-m16b1-clone-basis.md"
         },
         {
-          "line": 43,
+          "line": 49,
           "target": "2026-10-23-stage5-m16b2-musl-clone.md"
         },
         {
-          "line": 44,
+          "line": 50,
           "target": "2026-10-23-stage5-m16b3-pthread-join.md"
         },
         {
-          "line": 45,
+          "line": 51,
           "target": "2026-10-23-stage5-m17b1-wait4-model.md"
         },
         {
-          "line": 46,
+          "line": 52,
           "target": "2026-10-23-stage5-m17b2-cow-primitives.md"
         },
         {
-          "line": 47,
+          "line": 53,
           "target": "2026-10-23-stage5-m17b2-cow-fork.md"
         },
         {
-          "line": 48,
+          "line": 54,
           "target": "2026-10-23-stage5-m17b3-zombie-wait.md"
         },
         {
-          "line": 49,
+          "line": 55,
           "target": "2026-10-23-stage5-m17b4-fork-wait.md"
         },
         {
-          "line": 50,
+          "line": 56,
           "target": "2026-10-23-stage5-m17c1-elf-plan.md"
         },
         {
-          "line": 51,
+          "line": 57,
           "target": "2026-10-23-stage5-m18a-signal-kill.md"
         },
         {
-          "line": 52,
+          "line": 58,
           "target": "2026-10-23-stage5-m18b-sigaction.md"
         },
         {
-          "line": 53,
+          "line": 59,
           "target": "2026-10-23-stage5-m17c3-exec.md"
         },
         {
-          "line": 54,
+          "line": 60,
           "target": "2026-10-23-stage5-m17c4-execve-vfs.md"
         },
         {
-          "line": 55,
+          "line": 61,
           "target": "2026-10-23-stage5-m20-compat-final.md"
         },
         {
-          "line": 56,
+          "line": 62,
           "target": "2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 57,
+          "line": 63,
           "target": "2026-10-21-stage5-m10-anon-memory.md"
         },
         {
-          "line": 58,
+          "line": 64,
           "target": "2026-10-21-stage5-m9-metadata-cwd.md"
         },
         {
-          "line": 59,
+          "line": 65,
           "target": "2026-10-20-stage5-m8-user-vfs.md"
         },
         {
-          "line": 60,
+          "line": 66,
           "target": "2026-10-19-stage5-m7-fd-table.md"
         },
         {
-          "line": 61,
+          "line": 67,
           "target": "2026-10-19-stage5-m6-time.md"
         },
         {
-          "line": 62,
+          "line": 68,
           "target": "2026-10-19-stage5-m5-sbase-echo.md"
         },
         {
-          "line": 63,
+          "line": 69,
           "target": "2026-10-18-stage5-task16-qemu.md"
         },
         {
-          "line": 64,
+          "line": 70,
           "target": "2026-10-18-stage5-ptload-wx.md"
         },
         {
-          "line": 65,
+          "line": 71,
           "target": "2026-10-18-stage5-native-abi-check.md"
         },
         {
-          "line": 66,
+          "line": 72,
           "target": "2026-10-18-stage5-musl-m4-file.md"
         },
         {
-          "line": 67,
+          "line": 73,
           "target": "2026-10-18-stage5-musl-m3-base.md"
         },
         {
-          "line": 68,
+          "line": 74,
           "target": "2026-10-18-stage5-musl-m2-boundary.md"
         },
         {
-          "line": 69,
+          "line": 75,
           "target": "2026-10-18-stage5-musl-m0-inventory.md"
         },
         {
-          "line": 70,
+          "line": 76,
           "target": "2026-10-18-stage5-main-return-status.md"
         },
         {
-          "line": 71,
+          "line": 77,
           "target": "2026-10-18-stage5-kickoff.md"
         },
         {
-          "line": 72,
+          "line": 78,
           "target": "2026-10-18-stage5-entry-analysis.md"
         },
         {
-          "line": 73,
+          "line": 79,
           "target": "2026-10-18-stage5-capacity-watermarks.md"
         },
         {
-          "line": 74,
+          "line": 80,
           "target": "2026-10-18-stage5-c-tty-write.md"
         },
         {
-          "line": 75,
+          "line": 81,
           "target": "2026-10-18-stage5-c-start-stack.md"
         },
         {
-          "line": 76,
+          "line": 82,
           "target": "2026-10-18-stage5-c-elf-qemu.md"
         },
         {
-          "line": 82,
+          "line": 88,
           "target": "2026-10-24-native-runtime-service-report.md"
         },
         {
-          "line": 83,
+          "line": 89,
           "target": "2026-10-17-stage4-manifest-index-report.md"
         },
         {
-          "line": 84,
+          "line": 90,
           "target": "2026-10-17-stage4-init-dynamic-handles-report.md"
         },
         {
-          "line": 85,
+          "line": 91,
           "target": "2026-10-17-stage4-exit-review-spec149.md"
         },
         {
-          "line": 86,
+          "line": 92,
           "target": "2026-10-17-exo3m-kernel-service-witness-retirement-report.md"
         },
         {
-          "line": 87,
+          "line": 93,
           "target": "2026-10-17-exo3l-shared-trace-only-report.md"
         },
         {
-          "line": 88,
+          "line": 94,
           "target": "2026-10-17-exo3k-shared-trace-bytes-report.md"
         },
         {
-          "line": 89,
+          "line": 95,
           "target": "2026-10-17-exo3j-raw-trace-validation-report.md"
         },
         {
-          "line": 90,
+          "line": 96,
           "target": "2026-10-16-stage4-native-shared-segment-app-report.md"
         },
         {
-          "line": 91,
+          "line": 97,
           "target": "2026-10-16-stage4-closure-report.md"
         },
         {
-          "line": 92,
+          "line": 98,
           "target": "2026-10-16-exo3i-raw-trace-debug-channel-report.md"
         },
         {
-          "line": 93,
+          "line": 99,
           "target": "2026-10-16-exo3h-servicemgr-trace-report.md"
         },
         {
-          "line": 94,
+          "line": 100,
           "target": "2026-10-16-exo3g-service-selected-trace-report.md"
         },
         {
-          "line": 95,
+          "line": 101,
           "target": "2026-10-16-exo3f-service-negotiated-trace-report.md"
         },
         {
-          "line": 96,
+          "line": 102,
           "target": "2026-10-16-exo3e-service-reply-trace-report.md"
         },
         {
-          "line": 97,
+          "line": 103,
           "target": "2026-10-16-exo3d-generic-trace-runtime-hello-report.md"
         },
         {
-          "line": 98,
+          "line": 104,
           "target": "2026-10-16-exo3c-protocol-tag-decoupling-report.md"
         },
         {
-          "line": 99,
+          "line": 105,
           "target": "2026-10-16-exo2d-manifest-boot-abi-report.md"
         },
         {
-          "line": 100,
+          "line": 106,
           "target": "2026-10-16-exo2c-init-loader-report.md"
         },
         {
-          "line": 101,
+          "line": 107,
           "target": "2026-10-15-stage4-user-driver-ioport-report.md"
         },
         {
-          "line": 102,
+          "line": 108,
           "target": "2026-10-15-stage4-service-storage-segment-report.md"
         },
         {
-          "line": 103,
+          "line": 109,
           "target": "2026-10-15-stage4-device-ioport-capability-report.md"
         },
         {
-          "line": 104,
+          "line": 110,
           "target": "2026-10-15-exo5-mechanism-baseline-review.md"
         },
         {
-          "line": 105,
+          "line": 111,
           "target": "2026-10-15-exo3b-witness-expectations-report.md"
         },
         {
-          "line": 106,
+          "line": 112,
           "target": "2026-10-15-exo3a-kernel-name-decoupling-report.md"
         },
         {
-          "line": 107,
+          "line": 113,
           "target": "2026-10-15-exo2b-exo4a-report.md"
         },
         {
-          "line": 108,
+          "line": 114,
           "target": "2026-10-15-exo2a-name-free-service-directory-report.md"
         },
         {
-          "line": 109,
+          "line": 115,
           "target": "2026-10-15-exo1-boot-image-report.md"
         },
         {
-          "line": 110,
+          "line": 116,
           "target": "2026-10-14-stage4-three-base-services-report.md"
         },
         {
-          "line": 111,
+          "line": 117,
           "target": "2026-10-14-stage4-stateful-service-protocol-report.md"
         },
         {
-          "line": 112,
+          "line": 118,
           "target": "2026-10-14-stage4-stack-segment-creation-sink-report.md"
         },
         {
-          "line": 113,
+          "line": 119,
           "target": "2026-10-14-stage4-servicemgr-migration-body-report.md"
         },
         {
-          "line": 114,
+          "line": 120,
           "target": "2026-10-14-stage4-servicemgr-endpoint-creation-report.md"
         },
         {
-          "line": 115,
+          "line": 121,
           "target": "2026-10-14-stage4-service-image-segment-report.md"
         },
         {
-          "line": 116,
+          "line": 122,
           "target": "2026-10-14-stage4-ring3-servicemgr-task-report.md"
         },
         {
-          "line": 117,
+          "line": 123,
           "target": "2026-10-14-stage4-peer-id-entry-report.md"
         },
         {
-          "line": 118,
+          "line": 124,
           "target": "2026-10-14-stage4-namespace-service-proxy-report.md"
         },
         {
-          "line": 119,
+          "line": 125,
           "target": "2026-10-14-stage4-destroy-stack-snapshot-report.md"
         },
         {
-          "line": 120,
+          "line": 126,
           "target": "2026-10-13-stage4-string-service-names-report.md"
         },
         {
-          "line": 121,
+          "line": 127,
           "target": "2026-10-12-stage4-runtime-service-registry-report.md"
         },
         {
-          "line": 122,
+          "line": 128,
           "target": "2026-10-12-stage4-cap-slot-separation-report.md"
         },
         {
-          "line": 123,
+          "line": 129,
           "target": "2026-10-12-stage4-alpha-independent-stack-report.md"
         },
         {
-          "line": 124,
+          "line": 130,
           "target": "2026-10-11-stage4-vspace-arena-report.md"
         },
         {
-          "line": 125,
+          "line": 131,
           "target": "2026-10-11-stage4-service-manager-report.md"
         },
         {
-          "line": 126,
+          "line": 132,
           "target": "2026-10-11-stage4-multi-endpoint-service-report.md"
         },
         {
-          "line": 127,
+          "line": 133,
           "target": "2026-10-11-stage4-malformed-handle-bounds-report.md"
         },
         {
-          "line": 128,
+          "line": 134,
           "target": "2026-10-11-stage4-independent-service-images-report.md"
         },
         {
-          "line": 129,
+          "line": 135,
           "target": "2026-10-10-stage4-service-negotiation-report.md"
         },
         {
-          "line": 130,
+          "line": 136,
           "target": "2026-10-10-stage4-ring3-runtime-hello-report.md"
         },
         {
-          "line": 131,
+          "line": 137,
           "target": "2026-10-10-stage4-mm-vspace-fixes-report.md"
         },
         {
-          "line": 132,
+          "line": 138,
           "target": "2026-10-10-stage4-init-client-handshake-report.md"
         },
         {
-          "line": 133,
+          "line": 139,
           "target": "2026-09-25-stage4-runtime-api-prototype-report.md"
         },
         {
-          "line": 139,
+          "line": 145,
           "target": "2026-10-18-stage3-review-remediation.md"
         },
         {
-          "line": 140,
+          "line": 146,
           "target": "2026-10-17-stage3-exit-review-spec148.md"
         },
         {
-          "line": 141,
+          "line": 147,
           "target": "2026-10-10-stage3-audit-trace-restore-report.md"
         },
         {
-          "line": 142,
+          "line": 148,
           "target": "2026-09-25-stage3-timer-report.md"
         },
         {
-          "line": 143,
+          "line": 149,
           "target": "2026-09-25-stage3-namespace-report.md"
         },
         {
-          "line": 144,
+          "line": 150,
           "target": "2026-09-25-stage3-audit-trace-report.md"
         },
         {
-          "line": 150,
+          "line": 156,
           "target": "2026-10-24-kernel-handle-model-report.md"
         },
         {
-          "line": 151,
+          "line": 157,
           "target": "2026-10-18-stage2-ipc-review-remediation.md"
         },
         {
-          "line": 152,
+          "line": 158,
           "target": "2026-10-17-stage2-exit-review-spec147.md"
         },
         {
-          "line": 153,
+          "line": 159,
           "target": "2026-09-25-framekernel-skeleton-report.md"
         },
         {
-          "line": 154,
+          "line": 160,
           "target": "2026-09-25-framekernel-mm-pod-report.md"
         },
         {
-          "line": 155,
+          "line": 161,
           "target": "2026-09-25-framekernel-global-state-report.md"
         },
         {
-          "line": 156,
+          "line": 162,
           "target": "2026-09-25-framekernel-entry-inversion-report.md"
         },
         {
-          "line": 157,
+          "line": 163,
           "target": "2026-09-25-framekernel-closure-report.md"
         },
         {
-          "line": 158,
+          "line": 164,
           "target": "2026-09-24-stage2-self-built-cr3-report.md"
         },
         {
-          "line": 159,
+          "line": 165,
           "target": "2026-09-24-stage2-scheduler-state-audit-report.md"
         },
         {
-          "line": 160,
+          "line": 166,
           "target": "2026-09-24-stage2-reclaim-predicate-tightening-report.md"
         },
         {
-          "line": 161,
+          "line": 167,
           "target": "2026-09-24-stage2-kernel-reclaim-report.md"
         },
         {
-          "line": 162,
+          "line": 168,
           "target": "2026-09-24-stage2-faulted-state-machine-report.md"
         },
         {
-          "line": 163,
+          "line": 169,
           "target": "2026-09-24-stage2-exc-resume-report.md"
         },
         {
-          "line": 164,
+          "line": 170,
           "target": "2026-09-24-stage2-audit-storage-refactor-report.md"
         },
         {
-          "line": 165,
+          "line": 171,
           "target": "2026-09-23-stage2-image-frame-vector-report.md"
         },
         {
-          "line": 166,
+          "line": 172,
           "target": "2026-09-17-stage2-task-self-destroy-report.md"
         },
         {
-          "line": 167,
+          "line": 173,
           "target": "2026-09-17-stage2-task-lifecycle-report.md"
         },
         {
-          "line": 168,
+          "line": 174,
           "target": "2026-09-17-stage2-platform-cap-handover-report.md"
         },
         {
-          "line": 169,
+          "line": 175,
           "target": "2026-09-16-stage2-opening-report.md"
         },
         {
-          "line": 170,
+          "line": 176,
           "target": "2026-09-16-stage2-ipc-user-surface-report.md"
         },
         {
-          "line": 171,
+          "line": 177,
           "target": "2026-09-16-stage2-bringup-segment-migration-report.md"
         },
         {
-          "line": 172,
+          "line": 178,
           "target": "2026-08-16-framekernel-gap-analysis.md"
         },
         {
-          "line": 178,
+          "line": 184,
           "target": "2026-10-18-stage1-open-issues-spec151.md"
         },
         {
-          "line": 179,
+          "line": 185,
           "target": "2026-10-18-stage1-4-implementation-review.md"
         },
         {
-          "line": 180,
+          "line": 186,
           "target": "2026-10-17-stage1-review-remediation-spec150.md"
         },
         {
-          "line": 181,
+          "line": 187,
           "target": "2026-10-17-stage1-exit-review-spec146.md"
         },
         {
-          "line": 182,
+          "line": 188,
           "target": "2026-09-16-stage1-closure-report.md"
         },
         {
-          "line": 188,
+          "line": 194,
           "target": "2026-10-17-stage0-thirdparty-organizational-review-verdict.md"
         },
         {
-          "line": 189,
+          "line": 195,
           "target": "2026-10-17-stage0-third-party-review-remediation.md"
         },
         {
-          "line": 190,
+          "line": 196,
           "target": "2026-10-17-stage0-review-remediation-spec143.md"
         },
         {
-          "line": 191,
+          "line": 197,
           "target": "2026-10-17-stage0-review-remediation-spec141.md"
         },
         {
-          "line": 192,
+          "line": 198,
           "target": "2026-10-17-stage0-review-remediation-spec140.md"
         },
         {
-          "line": 193,
+          "line": 199,
           "target": "2026-10-17-stage0-re-review-spec144.md"
         },
         {
-          "line": 194,
+          "line": 200,
           "target": "2026-10-17-stage0-organizational-review-remediation.md"
         },
         {
-          "line": 195,
+          "line": 201,
           "target": "2026-10-17-stage0-frozen-re-review-spec145.md"
         },
         {
-          "line": 196,
+          "line": 202,
           "target": "2026-10-17-stage0-4-gap-audit.md"
         },
         {
-          "line": 197,
+          "line": 203,
           "target": "2026-10-17-s0x2-coverage-increment-doc007.md"
         },
         {
-          "line": 198,
+          "line": 204,
           "target": "2026-10-14-cosir-dual-personality-gap-analysis.md"
         },
         {
-          "line": 199,
+          "line": 205,
           "target": "2026-10-14-cosir-dual-personality-adoption-review.md"
         },
         {
-          "line": 200,
+          "line": 206,
           "target": "2026-10-13-stage0-bootstrap-taskcreated-report.md"
         },
         {
-          "line": 201,
+          "line": 207,
           "target": "2026-10-13-lean-cdt-invariant-report.md"
         },
         {
-          "line": 202,
+          "line": 208,
           "target": "2026-10-13-lean-cdt-forest-report.md"
         },
         {
-          "line": 203,
+          "line": 209,
           "target": "2026-10-13-cosir-cdt-parent-report.md"
         },
         {
-          "line": 204,
+          "line": 210,
           "target": "2026-10-12-stage0-code-review.md"
         },
         {
-          "line": 205,
+          "line": 211,
           "target": "2026-09-13-spec058-lifecycle-unification.md"
         },
         {
-          "line": 206,
+          "line": 212,
           "target": "2026-09-13-s0x2-operation-coverage.md"
         },
         {
-          "line": 207,
+          "line": 213,
           "target": "2026-09-13-s0x1-independent-lifecycle-review.md"
         },
         {
-          "line": 208,
+          "line": 214,
           "target": "2026-09-13-s0x1-fix-reverification.md"
         },
         {
-          "line": 209,
+          "line": 215,
           "target": "2026-08-17-capability-derivation-model-gap.md"
         },
         {
-          "line": 215,
+          "line": 221,
           "target": "2026-10-14-dual-personality-holder-model-h0-review.md"
         },
         {
-          "line": 221,
+          "line": 227,
           "target": "2026-10-17-kernel-primitives-comparative-review.md"
         },
         {
-          "line": 227,
+          "line": 233,
           "target": "2026-09-15-linux-trace-compat-report.md"
         },
         {
-          "line": 233,
+          "line": 239,
           "target": "2026-08-13-task-6-historical-artifact-consistency.md"
         },
         {
-          "line": 239,
+          "line": 245,
           "target": "2026-10-13-task-create-capability-audit-report.md"
         },
         {
-          "line": 240,
+          "line": 246,
           "target": "2026-10-13-ipc-capability-move-audit-report.md"
         },
         {
-          "line": 241,
+          "line": 247,
           "target": "2026-10-13-exc-source-destroy-report.md"
         }
       ]
@@ -33025,6 +33361,119 @@
       ]
     },
     {
+      "path": "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+      "id": "spec-asterinas-reuse",
+      "title": "Asterinas 代码复用与 OSTD 同步契约",
+      "kind": "specification",
+      "lifecycle": "current",
+      "lifecycle_reason": null,
+      "replacements": [],
+      "authority": "implementation-contract",
+      "status": "current-contract",
+      "date": "2026-10-24",
+      "sha256": "46246472bf381d7a8205f12ae6f9cd5c58ac8e2fd9fa6c1338402c0bf7fbcc35",
+      "topic_ids": [
+        "boot",
+        "memory",
+        "synchronization"
+      ],
+      "lines": 94,
+      "sections": [
+        {
+          "level": 1,
+          "title": "Asterinas 代码复用与 OSTD 同步契约",
+          "line": 10,
+          "anchor": "asterinas-代码复用与-ostd-同步契约",
+          "end_line": 94
+        },
+        {
+          "level": 2,
+          "title": "状态、来源与范围",
+          "line": 12,
+          "anchor": "状态来源与范围",
+          "end_line": 27
+        },
+        {
+          "level": 2,
+          "title": "复用选择",
+          "line": 28,
+          "anchor": "复用选择",
+          "end_line": 40
+        },
+        {
+          "level": 2,
+          "title": "对齐契约",
+          "line": 41,
+          "anchor": "对齐契约",
+          "end_line": 47
+        },
+        {
+          "level": 2,
+          "title": "StaticCell 临界区契约",
+          "line": 48,
+          "anchor": "staticcell-临界区契约",
+          "end_line": 67
+        },
+        {
+          "level": 2,
+          "title": "调试构建的系统调用栈边界",
+          "line": 68,
+          "anchor": "调试构建的系统调用栈边界",
+          "end_line": 83
+        },
+        {
+          "level": 2,
+          "title": "验证、影响与重审触发",
+          "line": 84,
+          "anchor": "验证影响与重审触发",
+          "end_line": 94
+        }
+      ],
+      "mentioned_ids": [],
+      "links": [
+        {
+          "line": 17,
+          "target": "../../architecture/asterinas-provenance.md"
+        },
+        {
+          "line": 19,
+          "target": "../../../Prima%20OS.md"
+        },
+        {
+          "line": 20,
+          "target": "../../../COSIR%20原语规范.md"
+        },
+        {
+          "line": 20,
+          "target": "../../../Prima%20OS%20实现阶段.md"
+        },
+        {
+          "line": 21,
+          "target": "../reports/2026-08-16-framekernel-gap-analysis.md"
+        },
+        {
+          "line": 22,
+          "target": "2026-09-25-framekernel-skeleton-design.md"
+        },
+        {
+          "line": 23,
+          "target": "2026-09-25-framekernel-global-state-design.md"
+        },
+        {
+          "line": 24,
+          "target": "../reports/2026-09-25-framekernel-global-state-report.md"
+        },
+        {
+          "line": 25,
+          "target": "../reports/2026-09-25-framekernel-closure-report.md"
+        },
+        {
+          "line": 89,
+          "target": "../reports/2026-10-24-asterinas-reuse-report.md"
+        }
+      ]
+    },
+    {
       "path": "docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md",
       "id": "spec-kernel-handle-model",
       "title": "内核句柄耗尽与 Lean 迁移模型",
@@ -33290,79 +33739,86 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "173ea954bac812062bab3fd67f0e57845b63d5af05b1497e9bf7d836e3d2c31e",
+      "sha256": "0cd4969db027e08b2a58208adacff80f34d15ce972c083199bb3428e2920113e",
       "topic_ids": [],
-      "lines": 129,
+      "lines": 135,
       "sections": [
         {
           "level": 1,
           "title": "Specs 索引",
           "line": 10,
           "anchor": "specs-索引",
-          "end_line": 129
+          "end_line": 135
         },
         {
           "level": 2,
-          "title": "跨阶段 / 文档体系",
+          "title": "OSTD / 跨项目代码复用",
           "line": 16,
-          "anchor": "跨阶段--文档体系",
+          "anchor": "ostd--跨项目代码复用",
           "end_line": 21
         },
         {
           "level": 2,
-          "title": "阶段 5",
+          "title": "跨阶段 / 文档体系",
           "line": 22,
+          "anchor": "跨阶段--文档体系",
+          "end_line": 27
+        },
+        {
+          "level": 2,
+          "title": "阶段 5",
+          "line": 28,
           "anchor": "阶段-5",
-          "end_line": 43
+          "end_line": 49
         },
         {
           "level": 2,
           "title": "阶段 4",
-          "line": 44,
+          "line": 50,
           "anchor": "阶段-4",
-          "end_line": 61
+          "end_line": 67
         },
         {
           "level": 2,
           "title": "阶段 3",
-          "line": 62,
+          "line": 68,
           "anchor": "阶段-3",
-          "end_line": 69
+          "end_line": 75
         },
         {
           "level": 2,
           "title": "阶段 2 / Framekernel",
-          "line": 70,
+          "line": 76,
           "anchor": "阶段-2--framekernel",
-          "end_line": 94
+          "end_line": 100
         },
         {
           "level": 2,
           "title": "阶段 1",
-          "line": 95,
+          "line": 101,
           "anchor": "阶段-1",
-          "end_line": 104
+          "end_line": 110
         },
         {
           "level": 2,
           "title": "阶段 0–2 / 形式化与细化",
-          "line": 105,
+          "line": 111,
           "anchor": "阶段-02--形式化与细化",
-          "end_line": 117
-        },
-        {
-          "level": 2,
-          "title": "跨阶段 / 兼容性验证",
-          "line": 118,
-          "anchor": "跨阶段--兼容性验证",
           "end_line": 123
         },
         {
           "level": 2,
-          "title": "跨阶段 / 架构专题",
+          "title": "跨阶段 / 兼容性验证",
           "line": 124,
-          "anchor": "跨阶段--架构专题",
+          "anchor": "跨阶段--兼容性验证",
           "end_line": 129
+        },
+        {
+          "level": 2,
+          "title": "跨阶段 / 架构专题",
+          "line": 130,
+          "anchor": "跨阶段--架构专题",
+          "end_line": 135
         }
       ],
       "mentioned_ids": [
@@ -33408,282 +33864,286 @@
         },
         {
           "line": 20,
-          "target": "2026-10-23-documentation-system-design.md"
+          "target": "2026-10-24-asterinas-reuse-design.md"
         },
         {
           "line": 26,
-          "target": "2026-10-24-musl-port-boundary-design.md"
-        },
-        {
-          "line": 27,
-          "target": "2026-10-23-vfs-libos-foundation-design.md"
-        },
-        {
-          "line": 28,
-          "target": "2026-10-22-stage5-m11-file-mutation-design.md"
-        },
-        {
-          "line": 29,
-          "target": "2026-10-22-stage5-m12-c-startup-exit-design.md"
-        },
-        {
-          "line": 30,
-          "target": "2026-10-22-stage5-m13a-vfs-links-design.md"
-        },
-        {
-          "line": 31,
-          "target": "2026-10-22-stage5-m13b-permissions-stdio-design.md"
+          "target": "2026-10-23-documentation-system-design.md"
         },
         {
           "line": 32,
-          "target": "2026-10-23-stage5-m19-loopback-udp-design.md"
+          "target": "2026-10-24-musl-port-boundary-design.md"
         },
         {
           "line": 33,
-          "target": "2026-10-23-stage5-m14-tty-input-design.md"
+          "target": "2026-10-23-vfs-libos-foundation-design.md"
         },
         {
           "line": 34,
-          "target": "2026-10-23-stage5-m15-process-thread-wait-design.md"
+          "target": "2026-10-22-stage5-m11-file-mutation-design.md"
         },
         {
           "line": 35,
-          "target": "2026-10-23-stage5-m17-fork-exec-design.md"
+          "target": "2026-10-22-stage5-m12-c-startup-exit-design.md"
         },
         {
           "line": 36,
-          "target": "2026-10-23-stage5-m17c2-exec-syscall.md"
+          "target": "2026-10-22-stage5-m13a-vfs-links-design.md"
         },
         {
           "line": 37,
-          "target": "2026-10-21-stage5-m10-anon-memory-design.md"
+          "target": "2026-10-22-stage5-m13b-permissions-stdio-design.md"
         },
         {
           "line": 38,
-          "target": "2026-10-20-stage5-user-vfs-design.md"
+          "target": "2026-10-23-stage5-m19-loopback-udp-design.md"
         },
         {
           "line": 39,
-          "target": "2026-10-20-stage5-profile-v1.md"
+          "target": "2026-10-23-stage5-m14-tty-input-design.md"
         },
         {
           "line": 40,
-          "target": "2026-10-18-stage5-profile-v0.md"
+          "target": "2026-10-23-stage5-m15-process-thread-wait-design.md"
         },
         {
           "line": 41,
-          "target": "2026-10-11-baselib-stack-walkthrough.md"
+          "target": "2026-10-23-stage5-m17-fork-exec-design.md"
         },
         {
           "line": 42,
-          "target": "2026-10-11-baselib-stack-spec-v1.1.md"
+          "target": "2026-10-23-stage5-m17c2-exec-syscall.md"
+        },
+        {
+          "line": 43,
+          "target": "2026-10-21-stage5-m10-anon-memory-design.md"
+        },
+        {
+          "line": 44,
+          "target": "2026-10-20-stage5-user-vfs-design.md"
+        },
+        {
+          "line": 45,
+          "target": "2026-10-20-stage5-profile-v1.md"
+        },
+        {
+          "line": 46,
+          "target": "2026-10-18-stage5-profile-v0.md"
+        },
+        {
+          "line": 47,
+          "target": "2026-10-11-baselib-stack-walkthrough.md"
         },
         {
           "line": 48,
-          "target": "2026-10-24-native-runtime-service-design.md"
-        },
-        {
-          "line": 49,
-          "target": "2026-10-13-stage4-string-service-names-design.md"
-        },
-        {
-          "line": 50,
-          "target": "2026-10-13-stage4-ring3-service-manager-design.md"
-        },
-        {
-          "line": 51,
-          "target": "2026-10-12-stage4-runtime-service-registry-design.md"
-        },
-        {
-          "line": 52,
-          "target": "2026-10-12-stage4-alpha-independent-stack-design.md"
-        },
-        {
-          "line": 53,
-          "target": "2026-10-11-stage4-vspace-arena-design.md"
+          "target": "2026-10-11-baselib-stack-spec-v1.1.md"
         },
         {
           "line": 54,
-          "target": "2026-10-11-stage4-service-manager-design.md"
+          "target": "2026-10-24-native-runtime-service-design.md"
         },
         {
           "line": 55,
-          "target": "2026-10-11-stage4-multi-endpoint-service-design.md"
+          "target": "2026-10-13-stage4-string-service-names-design.md"
         },
         {
           "line": 56,
-          "target": "2026-10-11-stage4-independent-service-images-design.md"
+          "target": "2026-10-13-stage4-ring3-service-manager-design.md"
         },
         {
           "line": 57,
-          "target": "2026-10-10-stage4-service-negotiation-design.md"
+          "target": "2026-10-12-stage4-runtime-service-registry-design.md"
         },
         {
           "line": 58,
-          "target": "2026-10-10-stage4-ring3-runtime-hello-design.md"
+          "target": "2026-10-12-stage4-alpha-independent-stack-design.md"
         },
         {
           "line": 59,
-          "target": "2026-10-10-stage4-init-client-handshake-design.md"
+          "target": "2026-10-11-stage4-vspace-arena-design.md"
         },
         {
           "line": 60,
-          "target": "2026-09-25-stage4-runtime-api-design.md"
+          "target": "2026-10-11-stage4-service-manager-design.md"
+        },
+        {
+          "line": 61,
+          "target": "2026-10-11-stage4-multi-endpoint-service-design.md"
+        },
+        {
+          "line": 62,
+          "target": "2026-10-11-stage4-independent-service-images-design.md"
+        },
+        {
+          "line": 63,
+          "target": "2026-10-10-stage4-service-negotiation-design.md"
+        },
+        {
+          "line": 64,
+          "target": "2026-10-10-stage4-ring3-runtime-hello-design.md"
+        },
+        {
+          "line": 65,
+          "target": "2026-10-10-stage4-init-client-handshake-design.md"
         },
         {
           "line": 66,
+          "target": "2026-09-25-stage4-runtime-api-design.md"
+        },
+        {
+          "line": 72,
           "target": "2026-09-25-stage3-timer-design.md"
         },
         {
-          "line": 67,
+          "line": 73,
           "target": "2026-09-25-stage3-namespace-design.md"
         },
         {
-          "line": 68,
+          "line": 74,
           "target": "2026-09-25-stage3-audit-trace-design.md"
         },
         {
-          "line": 74,
+          "line": 80,
           "target": "2026-10-24-kernel-handle-model-design.md"
         },
         {
-          "line": 75,
+          "line": 81,
           "target": "2026-09-25-framekernel-skeleton-design.md"
         },
         {
-          "line": 76,
+          "line": 82,
           "target": "2026-09-25-framekernel-mm-pod-design.md"
         },
         {
-          "line": 77,
+          "line": 83,
           "target": "2026-09-25-framekernel-global-state-design.md"
         },
         {
-          "line": 78,
+          "line": 84,
           "target": "2026-09-25-framekernel-entry-inversion-design.md"
         },
         {
-          "line": 79,
+          "line": 85,
           "target": "2026-09-25-framekernel-closure-design.md"
         },
         {
-          "line": 80,
+          "line": 86,
           "target": "2026-09-24-stage2-self-built-cr3-design.md"
         },
         {
-          "line": 81,
+          "line": 87,
           "target": "2026-09-24-stage2-scheduler-state-audit-design.md"
         },
         {
-          "line": 82,
+          "line": 88,
           "target": "2026-09-24-stage2-reclaim-predicate-tightening-design.md"
         },
         {
-          "line": 83,
+          "line": 89,
           "target": "2026-09-24-stage2-kernel-reclaim-design.md"
         },
         {
-          "line": 84,
+          "line": 90,
           "target": "2026-09-24-stage2-faulted-state-machine-design.md"
         },
         {
-          "line": 85,
+          "line": 91,
           "target": "2026-09-24-stage2-exc-resume-design.md"
         },
         {
-          "line": 86,
+          "line": 92,
           "target": "2026-09-24-stage2-audit-storage-refactor-design.md"
         },
         {
-          "line": 87,
+          "line": 93,
           "target": "2026-09-23-stage2-image-frame-vector-design.md"
         },
         {
-          "line": 88,
+          "line": 94,
           "target": "2026-09-17-stage2-task-self-destroy-design.md"
         },
         {
-          "line": 89,
+          "line": 95,
           "target": "2026-09-17-stage2-task-lifecycle-design.md"
         },
         {
-          "line": 90,
+          "line": 96,
           "target": "2026-09-17-stage2-platform-cap-handover-design.md"
         },
         {
-          "line": 91,
+          "line": 97,
           "target": "2026-09-16-stage2-ipc-user-surface-design.md"
         },
         {
-          "line": 92,
+          "line": 98,
           "target": "2026-09-16-stage2-handles-caps-segments-design.md"
         },
         {
-          "line": 93,
+          "line": 99,
           "target": "2026-09-16-stage2-bringup-segment-migration-design.md"
         },
         {
-          "line": 99,
+          "line": 105,
           "target": "2026-09-16-stage1-closure-design.md"
         },
         {
-          "line": 100,
+          "line": 106,
           "target": "2026-09-05-pf-error-code-semantics-design.md"
         },
         {
-          "line": 101,
+          "line": 107,
           "target": "2026-08-17-physmem-discovery-design.md"
         },
         {
-          "line": 102,
+          "line": 108,
           "target": "2026-08-17-page-gdt-idt-trap-design.md"
         },
         {
-          "line": 103,
+          "line": 109,
           "target": "2026-08-04-stage1-boot-slice-design.md"
         },
         {
-          "line": 109,
+          "line": 115,
           "target": "2026-08-18-blk001-lean-formal-model-design.md"
         },
         {
-          "line": 110,
+          "line": 116,
           "target": "2026-08-16-primaos-audit-remediation-design.md"
         },
         {
-          "line": 111,
+          "line": 117,
           "target": "2026-08-15-tlb-refine-design.md"
         },
         {
-          "line": 112,
+          "line": 118,
           "target": "2026-08-14-cow-refinement-design.md"
         },
         {
-          "line": 113,
+          "line": 119,
           "target": "2026-08-12-refinement-audit-remediation-design.md"
         },
         {
-          "line": 114,
+          "line": 120,
           "target": "2026-08-12-memseg-pagewalk-refinement-design.md"
         },
         {
-          "line": 115,
+          "line": 121,
           "target": "2026-08-07-exc-resume-design.md"
         },
         {
-          "line": 116,
+          "line": 122,
           "target": "2026-08-07-blk002-refinement-design.md"
         },
         {
-          "line": 122,
+          "line": 128,
           "target": "2026-09-15-linux-trace-compat-design.md"
         },
         {
-          "line": 128,
+          "line": 134,
           "target": "2026-10-15-exokernel-alignment-design.md"
         },
         {
-          "line": 129,
+          "line": 135,
           "target": "2026-10-14-dual-personality-holder-model-design.md"
         }
       ]

@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 等待、唤醒、futex、时间与 TTY
@@ -38,6 +38,10 @@ M15a-1 立即路径 → M15a-2 阻塞模型 → 线程容量调查 → M15b-2b W
 - [2026-10-19-stage5-m6-time.md](../../superpowers/reports/2026-10-19-stage5-m6-time.md)
 - [2026-10-23-stage5-thread-capacity-investigation.md](../../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md)
 
+OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-asterinas-reuse-design.md)与
+[验证报告](../../superpowers/reports/2026-10-24-asterinas-reuse-report.md)限定对齐工具、StaticCell IRQ-safe 锁与调度跳转；
+来源与许可见 [来源与许可](../asterinas-provenance.md)。候选组件不等于已迁入。
+
 ## 源码定位
 
 - [bootstrap.rs](../../../kernel/src/bootstrap.rs)
@@ -47,6 +51,10 @@ M15a-1 立即路径 → M15a-2 阻塞模型 → 线程容量调查 → M15b-2b W
 - [tty.rs](../../../prima-user/src/tty.rs)
 - [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
 - [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+
+- [align.rs](../../../prima-ostd/src/align.rs)
+- [sync.rs](../../../prima-ostd/src/sync.rs)
+- [lock.rs](../../../prima-ostd/src/sync/lock.rs)
 
 ## 测试与观察入口
 

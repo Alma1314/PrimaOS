@@ -374,17 +374,44 @@ static USER_FRAME: StaticCell<UserFrame> = StaticCell::new(UserFrame {
 static CONTEXT_BASE: AtomicU64 = AtomicU64::new(0);
 
 /// `syscall` 快路径的专用内核栈容量。
-pub const SYSCALL_STACK_SIZE: usize = 16 * 1024;
+// The debug build's authorization/segment lookup path exceeds the old 16 KiB
+// once closure accesses acquire locks. Match the existing per-task 32 KiB budget.
+pub const SYSCALL_STACK_SIZE: usize = 32 * 1024;
+const STACK_CANARY_BYTES: usize = 64;
+const STACK_CANARY: [u8; 8] = 0x6b73_7461_636b_a55au64.to_le_bytes();
 
 #[repr(align(16))]
 struct SyscallStack(
-    #[allow(dead_code)] // 只经 asm 取地址使用，从不按字段读取。
+    #[allow(dead_code)] // 生产代码经 asm/volatile 访问；host 测试直接修改哨兵。
     [u8; SYSCALL_STACK_SIZE],
 );
 
 /// `syscall` 快路径的专用内核栈。
-static SYSCALL_STACK: StaticCell<SyscallStack> =
-    StaticCell::new(SyscallStack([0; SYSCALL_STACK_SIZE]));
+static SYSCALL_STACK: StaticCell<SyscallStack> = StaticCell::new(SyscallStack::new());
+
+impl SyscallStack {
+    const fn new() -> Self {
+        let mut bytes = [0; SYSCALL_STACK_SIZE];
+        let mut index = 0;
+        while index < STACK_CANARY_BYTES {
+            bytes[index] = STACK_CANARY[index % STACK_CANARY.len()];
+            index += 1;
+        }
+        Self(bytes)
+    }
+}
+
+fn stack_canary_at(base: u64) -> bool {
+    (0..STACK_CANARY_BYTES / 8)
+        .all(|index| mm::read_u64_at(base, index as u64) == u64::from_le_bytes(STACK_CANARY))
+}
+
+/// Checks the bottom 64 bytes after execution. This is an evidence sentinel,
+/// not a guard page or prevention of arbitrary stack overflow. Raw reads avoid
+/// borrowing the entire buffer while it may contain a live Rust stack.
+pub fn syscall_stack_canary_intact() -> bool {
+    stack_canary_at(SYSCALL_STACK.as_ptr() as u64)
+}
 
 /// `syscall` 进入前的用户 `rsp`（`sysretq` 前恢复）。
 static USER_RSP: AtomicU64 = AtomicU64::new(0);
@@ -941,6 +968,7 @@ static RESUME_FRAME_PTR: AtomicU64 = AtomicU64::new(0);
 /// （`ss, rsp, rflags, cs, rip`），加载除 `rsp` 外的全部 GPR，再 `iretq`。
 ///
 /// 契约（信任调用方）：`frame` 必须已由内核校验器校验、在整个跳转期间有效；
+/// 跳板在换栈前读完全部帧字段，故允许使用当前内核栈上的局部帧；不得在此处遗留锁 guard。
 /// `frame.rsp` 指向可写的 canonical 栈；`frame.cs`/`frame.ss` 是当前 GDT 中合法的
 /// 内核选择子。该函数不返回：控制权转移至 `frame.rip`。
 pub fn resume(frame: &SretFrame) -> ! {
@@ -1200,6 +1228,39 @@ mod tests {
         assert_eq!(user_frame(), UserFrame::default());
         assert_eq!(trap_seen(), 0);
         assert!(context_base().is_none());
+    }
+
+    #[test]
+    fn stack_canary_detects_each_boundary_byte_change() {
+        let mut stack = SyscallStack::new();
+        let base = &stack as *const SyscallStack as u64;
+        assert_eq!(SYSCALL_STACK_SIZE, 32 * 1024);
+        assert!(stack_canary_at(base));
+        for index in 0..STACK_CANARY_BYTES {
+            stack.0[index] ^= 1;
+            assert!(!stack_canary_at(base), "byte {index}");
+            stack.0[index] ^= 1;
+        }
+        stack.0[STACK_CANARY_BYTES] = 1;
+        assert_eq!(stack.0[STACK_CANARY_BYTES], 1);
+        assert!(stack_canary_at(base));
+    }
+
+    #[test]
+    fn raw_entry_symbols_still_start_at_their_values() {
+        assert_eq!(
+            &FAULT_FRAME as *const _ as usize,
+            FAULT_FRAME.as_ptr() as usize
+        );
+        assert_eq!(
+            &USER_FRAME as *const _ as usize,
+            USER_FRAME.as_ptr() as usize
+        );
+        assert_eq!(
+            &SYSCALL_STACK as *const _ as usize,
+            SYSCALL_STACK.as_ptr() as usize
+        );
+        assert!((SYSCALL_STACK.as_ptr() as usize).is_multiple_of(16));
     }
 
     #[test]

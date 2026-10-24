@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 页帧、映射、TLB 与 COW
@@ -45,6 +45,10 @@ host memseg/pagewalk、COW、TLB 设计实验 → 阶段1/2 实际页表与帧�
 - [2026-08-12-memseg-refinement-remediation.md](../../superpowers/plans/2026-08-12-memseg-refinement-remediation.md)
 - [2026-08-13-task-6-historical-artifact-consistency.md](../../superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md)
 
+OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-asterinas-reuse-design.md)与
+[验证报告](../../superpowers/reports/2026-10-24-asterinas-reuse-report.md)限定对齐工具、StaticCell IRQ-safe 锁与调度跳转；
+来源与许可见 [来源与许可](../asterinas-provenance.md)。候选组件不等于已迁入。
+
 ## 源码定位
 
 - [frames.rs](../../../kernel/src/frames.rs)
@@ -57,6 +61,10 @@ host memseg/pagewalk、COW、TLB 设计实验 → 阶段1/2 实际页表与帧�
 - [tlb_refine.rs](../../../cosir/src/tlb_refine.rs)
 - [cow_refine.rs](../../../cosir/src/cow_refine.rs)
 - [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+
+- [align.rs](../../../prima-ostd/src/align.rs)
+- [sync.rs](../../../prima-ostd/src/sync.rs)
+- [lock.rs](../../../prima-ostd/src/sync/lock.rs)
 
 ## 测试与观察入口
 

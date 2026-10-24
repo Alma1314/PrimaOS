@@ -59,9 +59,6 @@ impl FpuArea {
 /// M3：每个 Task 的 x87/SSE 状态。索引即 Task id。
 static FPU_AREAS: StaticCell<[FpuArea; MAX_TASKS]> = StaticCell::new([FpuArea::DEFAULT; MAX_TASKS]);
 
-/// `exc::resume` 需要帧指针；复制到静态以避免指向将废弃的内核栈局部量。
-static SCRATCH: StaticCell<SretFrame> = StaticCell::new(SretFrame::ZERO);
-
 /// SPEC-070 / §5.2：每个 Task 的 `kernel_resume_frame`（**细化层持有**的 `Option<Bytes>`）。
 ///
 /// 放细化层而非 `BootstrapState`：`Option<SretFrame>` 是 168 B，×8 任务 ≈ 1344 B，单独即超出
@@ -409,10 +406,9 @@ pub fn resume(task_id: u32) -> ! {
     restore_fpu(task_id);
     // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
     flush_deferred_frames();
-    SCRATCH.with_mut(|scratch| {
-        *scratch = frame;
-        crate::exc::resume(scratch)
-    })
+    // 跳板在 iretq 换栈前读完所有帧字段，当前栈上的 frame 在此期间仍有效。
+    // 不跨不返回的控制转移持有 StaticCell 锁，避免锁 guard 被永久遗留。
+    crate::exc::resume(&frame)
 }
 
 #[cfg(test)]

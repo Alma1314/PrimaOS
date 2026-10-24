@@ -51,7 +51,12 @@
       "trap",
       "CR3",
       "EXO",
-      "TCB"
+      "TCB",
+      "Asterinas",
+      "OSTD",
+      "StaticCell",
+      "IRQ guard",
+      "AlignExt"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -62,7 +67,10 @@
       "docs/superpowers/reports/2026-09-25-framekernel-closure-report.md",
       "docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md",
       "docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md",
-      "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md"
+      "docs/superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+      "docs/architecture/asterinas-provenance.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -73,12 +81,19 @@
       "prima-ostd/src/entry.rs",
       "prima-initgen/src/lib.rs",
       "prima-abi/src/lib.rs",
-      "xtask/src/image.rs"
+      "xtask/src/image.rs",
+      "prima-ostd/src/align.rs",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
       "xtask/src/qemu.rs",
-      "xtask/src/lint.rs"
+      "xtask/src/lint.rs",
+      "prima-ostd/src/align.rs",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs",
+      "prima-ostd/src/entry.rs"
     ],
     "guide": "docs/architecture/topics/boot.md"
   },
@@ -94,7 +109,9 @@
       "COW",
       "mmap",
       "mprotect",
-      "W^X"
+      "W^X",
+      "AlignExt",
+      "checked_align_up"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -110,7 +127,10 @@
       "docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md",
       "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
       "docs/superpowers/plans/2026-08-12-memseg-refinement-remediation.md",
-      "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md"
+      "docs/superpowers/reports/2026-08-13-task-6-historical-artifact-consistency.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+      "docs/architecture/asterinas-provenance.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -122,7 +142,10 @@
       "cosir/src/pagewalk.rs",
       "cosir/src/tlb_refine.rs",
       "cosir/src/cow_refine.rs",
-      "prima-user/c/prima_syscall.c"
+      "prima-user/c/prima_syscall.c",
+      "prima-ostd/src/align.rs",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs"
     ],
     "tests": [
       "cosir/src/memseg_refine_tests.rs",
@@ -130,7 +153,11 @@
       "cosir/src/tlb_refine_tests.rs",
       "cosir/src/cow_refine_tests.rs",
       "prima-user/c/stage5_mem.c",
-      "prima-user/c/stage5_proc.c"
+      "prima-user/c/stage5_proc.c",
+      "prima-ostd/src/align.rs",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs",
+      "prima-ostd/src/entry.rs"
     ],
     "guide": "docs/architecture/topics/memory.md"
   },
@@ -392,7 +419,10 @@
       "COM1",
       "termios",
       "tty",
-      "PIT"
+      "PIT",
+      "StaticCell",
+      "IRQ guard",
+      "spinlock"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -404,7 +434,10 @@
       "docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md",
       "docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md",
       "docs/superpowers/reports/2026-10-19-stage5-m6-time.md",
-      "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md"
+      "docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md",
+      "docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md",
+      "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
+      "docs/architecture/asterinas-provenance.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -413,14 +446,19 @@
       "kernel/src/preempt.rs",
       "prima-user/src/tty.rs",
       "prima-user/src/servicemgr.rs",
-      "prima-user/c/prima_syscall.c"
+      "prima-user/c/prima_syscall.c",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",
       "prima-user/c/stage5_wait2.c",
       "prima-user/c/stage5_futex.c",
       "prima-user/c/stage5_time.c",
-      "prima-user/c/stage5_ttyin.c"
+      "prima-user/c/stage5_ttyin.c",
+      "prima-ostd/src/sync.rs",
+      "prima-ostd/src/sync/lock.rs",
+      "prima-ostd/src/entry.rs"
     ],
     "guide": "docs/architecture/topics/synchronization.md"
   },
