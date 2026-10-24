@@ -113,25 +113,60 @@ pub fn set_pending_status(task_id: u32, ptr: u64, status: i64) {
     }
 }
 
-fn write_pending_status(task_id: u32, root: u64) {
+/// Linux wait status is an int (4 bytes), never an 8-byte syscall word.
+pub const fn wait_status_bytes(status: i64) -> [u8; 4] {
+    (((status as u32) & 0xff) << 8).to_le_bytes()
+}
+
+/// Resolve the output while its owner is current, before wait can block/reap.
+pub fn prepare_wait_status(task: u32, ptr: u64) -> Result<(), crate::syscall::Errno> {
+    if ptr == 0 {
+        return Ok(());
+    }
+    let root = root(task).ok_or(crate::syscall::Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(crate::syscall::Errno::Fault)?;
+    let segment = bootstrap::task_segment_id(task).ok_or(crate::syscall::Errno::Fault)?;
+    crate::vspace::prepare_user_u32_write(
+        root,
+        ptr,
+        |phys| crate::mem::phys_to_virt(phys, offset),
+        || crate::frames::allocate_for_segment(segment).ok(),
+        prima_ostd::arch::invlpg,
+    )
+    .map_err(wait_copy_errno)
+}
+
+fn wait_copy_errno(error: crate::vspace::VspaceError) -> crate::syscall::Errno {
+    match error {
+        crate::vspace::VspaceError::NoFrame => crate::syscall::Errno::NoSpace,
+        _ => crate::syscall::Errno::Fault,
+    }
+}
+
+pub fn write_wait_status(task: u32, ptr: u64, status: i64) -> Result<(), crate::syscall::Errno> {
+    if ptr == 0 {
+        return Ok(());
+    }
+    let root = root(task).ok_or(crate::syscall::Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(crate::syscall::Errno::Fault)?;
+    let segment = bootstrap::task_segment_id(task).ok_or(crate::syscall::Errno::Fault)?;
+    crate::vspace::write_user_u32(
+        root,
+        ptr,
+        wait_status_bytes(status),
+        |phys| crate::mem::phys_to_virt(phys, offset),
+        || crate::frames::allocate_for_segment(segment).ok(),
+        prima_ostd::arch::invlpg,
+    )
+    .map_err(wait_copy_errno)
+}
+
+fn write_pending_status(task_id: u32) {
     let pending = PENDING_STATUS.with_mut(|slots| slots[task_id as usize].take());
     if let Some((ptr, status)) = pending
-        && ptr != 0
+        && let Err(error) = write_wait_status(task_id, ptr, status)
     {
-        let va = ptr & !0xfff;
-        if let Some(segment) = crate::bootstrap::task_segment_id(task_id) {
-            let offset = crate::cow::root_and_offset()
-                .map(|(_, off)| off)
-                .unwrap_or(0);
-            let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
-            let _ = crate::vspace::resolve_cow(root, va, map, || {
-                crate::frames::allocate_for_segment(segment).ok()
-            });
-        }
-        let encoded = ((status as u64) & 0xff) << 8;
-        for (index, byte) in encoded.to_le_bytes().iter().enumerate() {
-            prima_ostd::mm::write_u8_at(ptr, index as u64, *byte);
-        }
+        set_frame_rax(task_id, crate::syscall::encode_errno(error));
     }
 }
 
@@ -293,6 +328,7 @@ pub fn clear_task(task_id: u32) {
         FPU_AREAS.with_mut(|areas| areas[task_id as usize] = FpuArea::DEFAULT);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
         clear_recv_out(task_id);
+        PENDING_STATUS.with_mut(|slots| slots[task_id as usize] = None);
     }
 }
 
@@ -392,14 +428,14 @@ pub fn flush_deferred_frames() {
 /// [`crate::vspace::clone_root`] 复制了 bootloader 根的全部 PML4 项，故内核高半区
 /// （本函数所在代码、当前栈、直映射）在新根下仍然可见。
 pub fn resume(task_id: u32) -> ! {
-    let frame = frame(task_id).expect("task frame must exist");
     if let Some(top) = kstack_top(task_id) {
         crate::gdt::set_rsp0(top);
     }
     if let Some(root) = root(task_id) {
         crate::cpu::write_cr3(root);
-        write_pending_status(task_id, root);
+        write_pending_status(task_id);
     }
+    let frame = frame(task_id).expect("task frame must exist");
     // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
     activate_fs(task_id);
     // M3：x87/SSE 状态按 Task 恢复（保存发生在各切换函数的 set_current 之前）。
@@ -414,6 +450,15 @@ pub fn resume(task_id: u32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_status_has_exact_int_width_and_clear_task_discards_pending_output() {
+        assert_eq!(wait_status_bytes(7), [0, 7, 0, 0]);
+        assert_eq!(wait_status_bytes(-1), [0, 255, 0, 0]);
+        set_pending_status(15, 0x1000, 7);
+        clear_task(15);
+        assert_eq!(PENDING_STATUS.with(|slots| slots[15]), None);
+    }
 
     /// SPEC-070：§5.2 的 `kernel_resume_frame` 由**细化层**持有——存储契约（设置/读取/清空，
     /// 越界 id 为无操作）。两条清空路径（§8.4 步骤 3 `schedule`、§8.2 步骤 6 `task_destroy`）

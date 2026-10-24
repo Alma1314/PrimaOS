@@ -2557,8 +2557,14 @@ impl TaskVspaceTable {
     /// 循环使用——免去 `[u64; MAX_VSPACE_ENTRIES]` 栈快照随容量常量放大内核栈占用。
     /// M17b：把 `from` 的映射条目复制给 `to`（fork 子进程的模型视图）。
     fn clone_entries_for(&mut self, from: u32, to: u32) -> Result<(), MemsegError> {
+        let count = self.count;
+        let mut needed = 0;
+        self.for_each_entry(|entry| needed += usize::from(entry.task_id.get() == from));
+        if needed > MAX_VSPACE_ENTRIES - count {
+            return Err(MemsegError::CapacityExceeded);
+        }
         let mut index = 0;
-        while index < self.count {
+        while index < count {
             if let Some(entry) = self
                 .entry(index)
                 .filter(|entry| entry.task_id.get() == from)
@@ -9122,8 +9128,8 @@ impl BootstrapState {
         found
     }
 
-    /// M17b：fork 的模型部分（新 Process + 新 Task；地址空间由 syscall 层 COW 克隆）。
-    pub fn fork_create(&mut self, caller: u32, entry: u64) -> Result<u32, ThreadError> {
+    /// Read-only admission check before any hardware page-table allocation/change.
+    pub fn check_fork(&self, caller: u32) -> Result<(), ThreadError> {
         if !self.tasks.is_live(caller) {
             return Err(ThreadError::InvalidCaller);
         }
@@ -9134,6 +9140,28 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(ThreadError::AuditFull);
         }
+        let mut mappings = 0;
+        self.vspace
+            .for_each_entry(|entry| mappings += usize::from(entry.task_id.get() == caller));
+        if self.processes.count == MAX_PROCESSES
+            || mappings > MAX_VSPACE_ENTRIES - self.vspace.count
+            || (self.tasks.next_free_id().is_none()
+                && !self
+                    .tasks
+                    .entries
+                    .iter()
+                    .flatten()
+                    .any(|task| task.status == TaskStatus::Dead))
+        {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        Ok(())
+    }
+
+    /// M17b：fork 的模型部分（新 Process + 新 Task；地址空间由 syscall 层 COW 克隆）。
+    pub fn fork_create(&mut self, caller: u32, entry: u64) -> Result<u32, ThreadError> {
+        self.check_fork(caller)?;
+        let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;
         let new_id = self
             .ensure_thread_slot()
             .ok_or(ThreadError::CapacityExceeded)?;
@@ -9141,23 +9169,40 @@ impl BootstrapState {
             .create_process(new_id)
             .ok_or(ThreadError::CapacityExceeded)?;
         if !self.inherit_cap_space(process, parent_process) {
+            let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
         }
         if self.create_task_record(new_id, entry).is_err() {
+            let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
         }
         if !self.attach_thread(process, new_id) {
             let _ = self.tasks.remove(new_id);
+            let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
         }
         // M17b：子进程继承父的 vspace 模型条目（COW 帧归属与销毁路径）。
         if self.vspace.clone_entries_for(caller, new_id).is_err() {
             let _ = self.tasks.remove(new_id);
+            let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
         }
         self.audit
             .append(AuditEvent::TaskCreated { task_id: new_id });
         Ok(new_id)
+    }
+
+    /// Cancel an unpublished fork child, not a running process/zombie.
+    pub fn fork_abort(&mut self, child: u32) {
+        let process = self.process_of(child);
+        while let Some(va) = self.vspace.first_mapping(child) {
+            self.vspace.remove(child, va);
+        }
+        self.detach_thread(child);
+        let _ = self.tasks.remove(child);
+        if let Some(process) = process {
+            let _ = self.processes.remove(process);
+        }
     }
 
     pub fn wait_status_ptr(&self, task_id: u32) -> u64 {
@@ -9631,6 +9676,21 @@ pub fn process_leader(process_id: u32) -> Option<u32> {
         slot.as_ref()
             .and_then(|state| state.process_leader(process_id))
     })
+}
+
+pub fn check_fork(caller: u32) -> Result<(), ThreadError> {
+    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
+        Some(state) => state.check_fork(caller),
+        None => Err(ThreadError::InvalidCaller),
+    })
+}
+
+pub fn fork_abort(child: u32) {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        if let Some(state) = slot.as_mut() {
+            state.fork_abort(child);
+        }
+    });
 }
 
 pub fn fork_create(caller: u32, entry: u64) -> Result<u32, ThreadError> {
@@ -10994,6 +11054,58 @@ mod tests {
         let orphan = state.create_process(3).expect("orphan");
         assert!(state.attach_thread(orphan, 3));
         assert_eq!(state.wait4(3, -1, 0, true), Err(Wait4Error::EChild));
+    }
+
+    #[test]
+    fn fork_capacity_failure_and_abort_leave_no_partial_process_or_mappings() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).unwrap();
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        // Fill vspace so cloning one parent entry cannot fit. The precheck and
+        // create path must both reject without task/process/audit mutation.
+        let entry = VspaceEntry {
+            task_id: core::num::NonZeroU32::new(INIT_TASK_ID).unwrap(),
+            va: 0x1000,
+            seg_id: 1,
+            seg_offset: 0,
+            access: Rights::EMPTY,
+        };
+        for i in 0..super::MAX_VSPACE_ENTRIES {
+            state
+                .vspace
+                .insert(VspaceEntry {
+                    va: 0x1000 + i as u64 * 4096,
+                    ..entry
+                })
+                .unwrap();
+        }
+        let tasks = state.tasks;
+        let processes = state.processes;
+        let audit = state.audit.count;
+        assert_eq!(
+            state.fork_create(INIT_TASK_ID, 0x1000),
+            Err(ThreadError::CapacityExceeded)
+        );
+        assert_eq!(state.tasks, tasks);
+        assert_eq!(state.processes, processes);
+        assert_eq!(state.audit.count, audit);
+        while let Some(va) = state.vspace.first_mapping(INIT_TASK_ID) {
+            state.vspace.remove(INIT_TASK_ID, va);
+        }
+        state.vspace.insert(entry).unwrap();
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        assert_eq!(state.vspace.count, 2);
+        let process = state.process_of(child).unwrap();
+        state.fork_abort(child);
+        assert!(state.tasks.find(child).is_none());
+        assert!(state.processes.find(process).is_none());
+        assert_eq!(state.processes, processes);
+        assert_eq!(state.vspace.count, 1);
+        assert!(state.vspace.find(INIT_TASK_ID, 0x1000).is_some());
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Err(Wait4Error::EChild)
+        );
     }
 
     #[test]

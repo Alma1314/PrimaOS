@@ -4,7 +4,7 @@ kind: reference
 authority: source-provenance
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # Asterinas 来源与修改
@@ -59,3 +59,15 @@ updated: 2026-10-24
 | `ostd/src/boot/mod.rs` | `8d5adf5603324edf3ffbdfe22b11c9436db74246843df3927926e54d28a4b76e` |
 | `ostd/src/arch/x86/kernel/acpi/mod.rs` | `4b5f77e77e261ef2ceb9d48ef56c2dd00dbea87970c58eaee4afc898c4b69ab8` |
 | `ostd/src/log/logger.rs` | `93a4a18caa4c37a69b54767c7a4072e60c4f742c60bef1e65f527e97f974d4f6` |
+
+## fork COW 提交顺序的设计参考（后继）
+
+[fork 续执行契约](../superpowers/specs/2026-10-24-fork-continuation-design.md)参考 VMAR fork 的
+“父写保护后、返回前同步 TLB”责任以及 VmSpace protect 不自动刷新的契约。
+本地独立实现两阶段子表构造、失败归还及既有 CR3 重装；没有复制上游函数、导入 VmSpace/RCU 或新增许可文件。
+现有 MPL 文件标识保持不变；以下仅为设计输入，不表示 API/并发模型等价。
+
+| 设计输入（逐字核对锁定提交 Git blob） | SHA-256 |
+|---|---|
+| `kernel/core/src/vm/vmar/vmar_impls/fork.rs` | `ce7e624d5333513a7e0fddafaacaf69b144917e25d1ae2a3607a9c5a2fca98e4` |
+| `ostd/src/mm/vm_space.rs` | `6baec94428aa053d3cfb32f402f021db0b3d28e8cc4dce4b01ab8d3dfef64a84` |

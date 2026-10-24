@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # Reports 索引
@@ -29,6 +29,8 @@ updated: 2026-10-24
 | 2026-10-23 | [2026-10-23-documentation-restructure-report.md](2026-10-23-documentation-restructure-report.md) | 文档体系重构与验收报告 |
 
 ## 阶段 5
+
+本轮进程后继：[fork 续执行与进程边界整改记录](2026-10-24-fork-continuation-report.md)。
 
 | 日期 | 文档 | 标题 |
 |---|---|---|

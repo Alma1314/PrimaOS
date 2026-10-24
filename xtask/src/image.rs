@@ -1413,7 +1413,7 @@ pub(crate) fn check_stage5_linux_proc() -> Result<(), String> {
 }
 
 pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
-    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1|ok=1;err=0\n";
+    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1;guard=1|ok=1;err=0\n";
 
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
 

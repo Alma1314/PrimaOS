@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # 页帧、映射、TLB 与 COW
@@ -79,7 +79,7 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 
 ## 限制与修改注意
 
-匿名 mmap 是受限 arena，不能宣称文件映射/MAP_SHARED 等已实现。M17 COW 的工作路径不消除 fork 包装续执行问题。涉及帧池/映射容量的改动要保留 ENOSPC、清零、失败回滚与回收见证。
+匿名 mmap 是受限 arena，不能宣称文件映射/MAP_SHARED 等已实现。M17 COW 原工作路径与 fork 续执行后继的范围须分别读取下方报告。涉及帧池/映射容量的改动要保留 ENOSPC、清零、失败回滚与回收见证。
 
 ## POD 与借用缓冲后继
 
@@ -97,3 +97,11 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 检索：Once、get_or_try_init、KernelRootInfo、published_once；实现见
 [sync.rs](../../../prima-ostd/src/sync.rs)、[user.rs](../../../kernel/src/user.rs)、
 [trace 校验](../../../xtask/src/protocol.rs)。该机制未替换所有 boot 标志或证明 SMP。
+
+## fork / 等待写回整改后继
+
+[工作契约](../../superpowers/specs/2026-10-24-fork-continuation-design.md)与
+[实际验证](../../superpowers/reports/2026-10-24-fork-continuation-report.md)接续 M17b 的续执行失败链：
+clone_root_cow 的构造/写保护/同步刷新顺序，分配失败回收、NX 保留、wait_status_bytes 的四字节边界、
+跨页/COW 输出以及 musl 子进程退出。`cargo xtask test-process [W6|W7|W7b|W8]` 使用原双轮验收。
+没有新增抽象原语、SMP、fd close 隔离或子任务完整 VFS 授权；历史失败不删除。

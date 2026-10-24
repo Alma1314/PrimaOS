@@ -10,11 +10,6 @@
 extern long syscall(long number, ...);
 #ifndef PRIMA_HOST
 extern long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5);
-static long raw_fork(void) {
-    long r;
-    __asm__ volatile("syscall" : "=a"(r) : "a"(51L) : "rcx", "r11", "memory");
-    return r;
-}
 #endif
 static int failures, first_error = 0, first_field = 1;
 static unsigned long text_len(const char *t){unsigned long n=0;while(t[n])n++;return n;}
@@ -31,7 +26,7 @@ int main(void) {
     }
     field("read", len > 100, len);
 
-    long pid = raw_fork();
+    long pid = fork();
     if (pid == 0) {
         char *argv[2] = {"tiny", "x"};
         long r = prima_native(55, (long)image, (unsigned long)len, (long)argv, 2, 0, 0);

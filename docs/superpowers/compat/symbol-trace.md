@@ -111,8 +111,9 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 | W8 kill | `kill` 62 | 62 | `SYS_SIGNAL(56)` | M18a 报告 |
 | W9 sigaction | `sigaction`/`kill`（Linux 参考） | 13/62 | `SYS_SIGACTION(57)`、`SYS_SIGRETURN(58)` | M18b 报告 |
 
-`syscall(57)` 的 musl 包装路径在 fork 子进程中返回值损坏（`ISSUE-FORK-CONTINUATION-001`）：
-W6/W7b 使用内联 asm 直发 51；适配层 57 仍待修。
+上表记录 M17 原始路径；`syscall(57)` 包装损坏及原生 51 绕行的发现保留在 M17b-3/4。
+当前 COW/TLB 和 musl 子退出整改见[fork 后继报告](../reports/2026-10-24-fork-continuation-report.md)，
+实际验收范围以该报告为准，不能把原始绕行证据作为 libc fork 支持。
 
 ## 6. 2026-10-24 musl 边界与 fd/stdio 后继
 
@@ -130,3 +131,15 @@ W6/W7b 使用内联 asm 直发 51；适配层 57 仍待修。
 | `__restore_rt` | 替换 src/signal/x86_64/restore.s | 无 | 原生 58 | 归档检查；不宣称 libc sigaction 端到端 |
 
 全 libc.a 的直接 syscall 只允许 clone.lo 的原生 48/49 与 restore.lo 的原生 58。syscall_arch.h、TLS 与 clone 旧补丁及本次五个新增替换文件共八项，清单由 musl-snapshot.lock.toml 驱动。`build.py --check` 在输入匹配、缓存完整时反汇编检查产物；构建成功只代表静态基座，不代表所有可链接符号已支持。
+
+## 7. fork C 续执行整改后继
+
+| 调用路径 | Linux 号 | Prima 边界 | 验证入口与限制 |
+|---|---:|---|---|
+| musl `fork()` / `syscall()` / 原始 C `__syscall0` | 57 | SYS_FORK 51 → COW提交/同步TLB → 子返回0/父返回id | W6三路径；[报告](../reports/2026-10-24-fork-continuation-report.md)列实际结果 |
+| musl `waitpid` / `syscall(wait4)` | 61 | SYS_WAIT4 53 → 四字节int / 跨页+COW写回 | 只支持pid>0或-1、options=0/WNOHANG；无rusage/完整故障恢复 |
+| fork子 musl `_exit` / exit_group | 231/60 | 私有child标记 → SYS_PROCESS_EXIT 54 | 不发送继承fd的CLOSE；共享cap/close隔离仍未解决 |
+| W7/W7b/W8 的 fork | 57 | musl fork → 同一内核路径 | 撤去内联51；exec镜像及默认信号仅按原探针范围解释 |
+
+未增加 libc 补丁或放宽 musl 归档原生陷入白名单；信号掩码、完整 pthread_atfork/多线程 fork、
+任意原始51调用后的libc退出、子VFS授权、CLOEXEC及完整POSIX生命周期均不能由本节外推。

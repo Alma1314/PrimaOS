@@ -4,14 +4,7 @@
 #include <stdint.h>
 #include <unistd.h>
 extern long syscall(long number, ...);
-#ifndef PRIMA_HOST
-extern long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5);
-static long raw_fork(void) {
-    long r;
-    __asm__ volatile("syscall" : "=a"(r) : "a"(51L) : "rcx", "r11", "memory");
-    return r;
-}
-#endif
+
 static int failures, first_error = 0, first_field = 1;
 static unsigned long text_len(const char *t){unsigned long n=0;while(t[n])n++;return n;}
 static void emit(const char *t){ssize_t i=write(1,t,text_len(t));(void)i;}
@@ -19,11 +12,7 @@ static void emit_dec(long v){char d[20];int i=20;unsigned long m=v<0?(unsigned l
 static void field(const char *n,int p,long e){emit(first_field?"|":";");first_field=0;emit(n);emit("=");emit_dec(p?1:0);if(!p){failures=1;if(!first_error)first_error=(int)e;}}
 int main(void) {
     emit("SIG");
-#ifdef PRIMA_HOST
-    long pid = syscall(57L);
-#else
-    long pid = raw_fork();
-#endif
+    long pid = fork();
     if (pid == 0) {
         for (;;) {
         }

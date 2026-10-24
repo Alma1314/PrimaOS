@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # 开发、构建与验证手册
@@ -31,6 +31,7 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask test-musl` | 上述检查 + F1/W4 各双轮 BIOS | 共享原有 30 秒门限、trace、容量和清理断言 |
 | `sh prima-user/musl/build.sh --check` | 锁定输入与缓存检查；命中时审查归档 | 不构建、不下载；不是运行时兼容证据 |
 | `cargo xtask test-vfs [V1|V2|V3]` | V1/V2/V3 的 Linux 参考与 BIOS 双轮 | 与全量 test 共用同一实现、30 秒门限和断言；便于文件服务迭代 |
+| `cargo xtask test-process [W6|W7|W7b|W8]` | fork/exec/信号相关探针的聚焦双轮 | 同一 validator、30 秒门限、stdout 和 IPC 基线，无自动重试 |
 | `cargo xtask test` | BIOS 双轮与各冻结 C/开源程序探针 | 实现定义的 trace、字节流、退出码、输入注入与 Linux 参考 |
 | `cargo xtask compat` | 兼容差分入口 | 当前 cow-write-fault 有界场景；不是全部阶段5 API 验收 |
 | `cargo xtask linux-trace` | Linux 参考 trace 工作流 | 参数与再生成语义见 xtask main/linux |

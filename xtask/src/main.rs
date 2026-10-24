@@ -34,6 +34,16 @@ fn run() -> Result<(), String> {
             require_no_args(&rest)?;
             test_boot_slice()
         }
+        "test-process" => {
+            let case = match rest.as_slice() {
+                [] => None,
+                [name] if matches!(name.as_str(), "W6" | "W7" | "W7b" | "W8") => {
+                    Some(name.as_str())
+                }
+                _ => return Err(usage()),
+            };
+            test_process_slice(case)
+        }
         "test-vfs" => {
             let program = match rest.as_slice() {
                 [] => None,
@@ -85,6 +95,41 @@ fn test_vfs_slice(program: Option<&str>) -> Result<(), String> {
             image::build_images_for_vfs3()?,
             "V3",
             image::VFS3_EXPECTED_STDOUT,
+        )?;
+    }
+    Ok(())
+}
+
+/// Focused process acceptance, with the same validators and two-run IPC baseline as test.
+fn test_process_slice(case: Option<&str>) -> Result<(), String> {
+    if case.is_none() || case == Some("W6") {
+        image::check_stage5_linux_proc()?;
+        test_program_twice(
+            image::build_images_for_proc()?,
+            "W6",
+            image::PROC_EXPECTED_STDOUT,
+        )?;
+    }
+    if case.is_none() || case == Some("W7") {
+        test_program_twice(
+            image::build_images_for_exec()?,
+            "W7",
+            image::EXEC_EXPECTED_STDOUT,
+        )?;
+    }
+    if case.is_none() || case == Some("W7b") {
+        test_program_twice(
+            image::build_images_for_execve()?,
+            "W7b",
+            image::EXECVE_EXPECTED_STDOUT,
+        )?;
+    }
+    if case.is_none() || case == Some("W8") {
+        image::check_stage5_linux_sig()?;
+        test_program_twice(
+            image::build_images_for_sig()?,
+            "W8",
+            image::SIG_EXPECTED_STDOUT,
         )?;
     }
     Ok(())
@@ -536,8 +581,9 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-vfs|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      cargo xtask test-process [W6|W7|W7b|W8]\n\
      \x20      cargo xtask test-musl [--host-only]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"

@@ -995,6 +995,13 @@ fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
 /// M17b：fork（COW 地址空间；子进程独立用户栈）。
 fn fork_call() -> u64 {
     let caller = sched::current();
+    if let Err(error) = bootstrap::check_fork(caller) {
+        return encode_errno(match error {
+            bootstrap::ThreadError::Busy => Errno::Again,
+            bootstrap::ThreadError::InvalidCaller => Errno::Invalid,
+            _ => Errno::NoSpace,
+        });
+    }
     let Some(parent_root) = sched::root(caller) else {
         return encode_errno(Errno::Fault);
     };
@@ -1009,9 +1016,14 @@ fn fork_call() -> u64 {
         prima_ostd::mm::write_u64(root_va + index * 8, 0);
     }
     let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
-    if crate::vspace::clone_root_cow(parent_root, new_root, map, || {
-        crate::frames::allocate_table_frame().ok()
-    })
+    if crate::vspace::clone_root_cow(
+        parent_root,
+        new_root,
+        map,
+        || crate::frames::allocate_table_frame().ok(),
+        |frame| crate::frames::release_table_frame(frame).expect("private fork table is owned"),
+        || crate::cpu::write_cr3(crate::cpu::cr3().0),
+    )
     .is_err()
     {
         let _ = crate::frames::release_table_frame(new_root);
@@ -1021,39 +1033,47 @@ fn fork_call() -> u64 {
     let child = match bootstrap::fork_create(caller, frame.rip) {
         Ok(child) => child,
         Err(bootstrap::ThreadError::Busy) => {
+            crate::vspace::discard_cow_root(new_root, map, |frame| {
+                crate::frames::release_table_frame(frame).expect("private fork table is owned")
+            });
             let _ = crate::frames::release_table_frame(new_root);
             return encode_errno(Errno::Again);
         }
         Err(_) => {
+            crate::vspace::discard_cow_root(new_root, map, |frame| {
+                crate::frames::release_table_frame(frame).expect("private fork table is owned")
+            });
             let _ = crate::frames::release_table_frame(new_root);
             return encode_errno(Errno::NoSpace);
         }
     };
     let fs_base = sched::fs_base(caller).unwrap_or(0);
     if crate::user::register_clone_task(child, new_root, frame, frame.rsp, fs_base).is_err() {
-        bootstrap::thread_abort(child);
+        bootstrap::fork_abort(child);
+        crate::vspace::discard_cow_root(new_root, map, |frame| {
+            crate::frames::release_table_frame(frame).expect("private fork table is owned")
+        });
         let _ = crate::frames::release_table_frame(new_root);
         return encode_errno(Errno::Invalid);
     }
     child as u64
 }
 
-fn write_status(ptr: u64, status: i64) {
-    let encoded = ((status as u64) & 0xff) << 8;
-    for (index, byte) in encoded.to_le_bytes().iter().enumerate() {
-        prima_ostd::mm::write_u8_at(ptr, index as u64, *byte);
-    }
-}
-
 fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
     let cur = sched::current();
+    if options & !1 != 0 || (pid as i64 != -1 && pid as i64 <= 0) {
+        return encode_errno(Errno::Invalid);
+    }
+    if let Err(error) = sched::prepare_wait_status(cur, status_ptr) {
+        return encode_errno(error);
+    }
     let no_hang = options & 1 != 0;
     match bootstrap::wait4(cur, pid as i64, status_ptr, no_hang) {
         Ok(bootstrap::Wait4Outcome::Exited(child, status)) => {
-            if status_ptr != 0 {
-                write_status(status_ptr, status);
+            match sched::write_wait_status(cur, status_ptr, status) {
+                Ok(()) => child as u64,
+                Err(error) => encode_errno(error),
             }
-            child as u64
         }
         Ok(bootstrap::Wait4Outcome::None) => 0,
         Ok(bootstrap::Wait4Outcome::Blocked) => {

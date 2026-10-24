@@ -35,7 +35,7 @@ pub const MAGIC_B: u64 = 0xBBBB_0000_3333_4444;
 /// 映射构建失败原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VspaceError {
-    /// 需要新建页表页但帧分配器已耗尽（不产生任何写入）。
+    /// 页表或 COW 数据帧不足；失败副作用以各操作的契约为准。
     NoFrame,
     /// 目标映射的中间层级不存在，或路径上已有大页。
     BadRoot,
@@ -517,72 +517,118 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
     })
 }
 
-/// M17b：COW 克隆用户页表。
+/// Clone an inactive child root, then write-protect the parent's user pages.
 ///
-/// 深拷贝 `src_root` 的用户页表层级（非 user 的 PML4 项原样复制），叶帧父子共享；
-/// 可写叶在**父子两侧**都清除 `PT_WRITABLE` 并置 `PT_COW`，由
-/// [`resolve_cow`] 在写故障时复制。`dst_root` 必须已清零。
+/// Requires distinct valid roots, a zeroed destination, exclusive page-table access,
+/// and non-global 4 KiB user mappings. Supervisor subtrees remain shared. No child can run
+/// until this returns. `alloc` returns exclusive table frames; `release` must
+/// reclaim them without failure. On Err all new tables are released, dst is zero,
+/// and src is unchanged. User huge pages are rejected rather than shared writable.
+///
+/// `flush_parent` MUST synchronously invalidate the current CPU's parent user
+/// translations after PTE protection, before returning to any parent user code.
+/// Prima currently has one CPU and no PCID; SMP needs remote shootdown as well.
+/// Callbacks must not panic or reenter page-table mutation.
 pub fn clone_root_cow<F: Fn(u64) -> u64 + Copy>(
     src_root: u64,
     dst_root: u64,
     map: F,
     mut alloc: impl FnMut() -> Option<u64>,
+    mut release: impl FnMut(u64),
+    flush_parent: impl FnOnce(),
 ) -> Result<(), VspaceError> {
-    let src = map(src_root);
-    let dst = map(dst_root);
-    for i4 in 0..512u64 {
-        let entry = read_raw(src + i4 * 8);
-        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
-            // 内核/非用户槽原样复制。
-            write_raw(dst + i4 * 8, entry);
-            continue;
-        }
-        let Some(pdpt) = alloc() else {
-            return Err(VspaceError::NoFrame);
-        };
-        write_raw(dst + i4 * 8, pdpt | (entry & 0xfff));
-        clone_level(pdpt, entry & PT_ADDR_MASK, 3, map, &mut alloc)?;
+    if src_root == dst_root {
+        return Err(VspaceError::BadRoot);
     }
+    if let Err(error) = clone_level(dst_root, src_root, 4, map, &mut alloc) {
+        release_cow_tables(dst_root, 4, map, &mut release);
+        return Err(error);
+    }
+    // No fallible work remains: only now alter the parent and invalidate stale
+    // writable translations. A C return may immediately write the parent's stack.
+    protect_cow_parent(src_root, 4, map);
+    flush_parent();
     Ok(())
 }
 
 fn clone_level<F: Fn(u64) -> u64 + Copy>(
-    dst_table_phys: u64,
-    src_table_phys: u64,
+    dst_table: u64,
+    src_table: u64,
     level: u32,
     map: F,
     alloc: &mut impl FnMut() -> Option<u64>,
 ) -> Result<(), VspaceError> {
-    let src = map(src_table_phys);
-    let dst = map(dst_table_phys);
     for index in 0..512u64 {
-        let entry = read_raw(src + index * 8);
-        if entry & PT_PRESENT == 0 {
+        let entry = read_raw(map(src_table) + index * 8);
+        let at = map(dst_table) + index * 8;
+        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
+            write_raw(at, entry);
+        } else if level == 1 {
+            // A CR3 reload does not evict global translations. User globals are
+            // outside this prototype's mapping contract; reject rather than leak.
+            if entry & (1 << 8) != 0 {
+                return Err(VspaceError::BadRoot);
+            }
+            write_raw(at, cow_leaf(entry));
+        } else {
+            if entry & PT_HUGE != 0 {
+                return Err(VspaceError::BadRoot);
+            }
+            let next = alloc().ok_or(VspaceError::NoFrame)?;
+            zero_table(map(next));
+            write_raw(at, next | (entry & !PT_ADDR_MASK));
+            clone_level(next, entry & PT_ADDR_MASK, level - 1, map, alloc)?;
+        }
+    }
+    Ok(())
+}
+
+fn cow_leaf(entry: u64) -> u64 {
+    if entry & PT_WRITABLE != 0 {
+        (entry & !PT_WRITABLE) | PT_COW
+    } else {
+        entry
+    }
+}
+
+fn protect_cow_parent(table: u64, level: u32, map: impl Fn(u64) -> u64 + Copy) {
+    for index in 0..512u64 {
+        let at = map(table) + index * 8;
+        let entry = read_raw(at);
+        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
             continue;
         }
         if level == 1 {
-            let mut leaf = entry;
-            if entry & PT_WRITABLE != 0 {
-                leaf &= !PT_WRITABLE;
-                leaf |= PT_COW;
-                // 父子两侧都写保护；父页表页是共享的。
-                write_raw(src + index * 8, leaf);
-            }
-            write_raw(dst + index * 8, leaf);
-            continue;
+            write_raw(at, cow_leaf(entry));
+        } else {
+            protect_cow_parent(entry & PT_ADDR_MASK, level - 1, map);
         }
-        if entry & PT_HUGE != 0 {
-            // 大页按原样共享（当前用户映射均为 4 KiB）。
-            write_raw(dst + index * 8, entry);
-            continue;
-        }
-        let Some(next) = alloc() else {
-            return Err(VspaceError::NoFrame);
-        };
-        write_raw(dst + index * 8, next | (entry & 0xfff));
-        clone_level(next, entry & PT_ADDR_MASK, level - 1, map, alloc)?;
     }
-    Ok(())
+}
+
+/// Release only private page-table nodes of an inactive COW clone; never data
+/// frames or shared supervisor subtrees. Also clears the supplied root, which
+/// remains owned by the caller. Valid before child publication, not after edits.
+pub fn discard_cow_root(root: u64, map: impl Fn(u64) -> u64 + Copy, mut release: impl FnMut(u64)) {
+    release_cow_tables(root, 4, map, &mut release);
+}
+
+fn release_cow_tables(
+    table: u64,
+    level: u32,
+    map: impl Fn(u64) -> u64 + Copy,
+    release: &mut impl FnMut(u64),
+) {
+    for index in 0..512u64 {
+        let at = map(table) + index * 8;
+        let entry = read_raw(at);
+        if level > 1 && entry & (PT_PRESENT | PT_USER) == (PT_PRESENT | PT_USER) {
+            let next = entry & PT_ADDR_MASK;
+            release_cow_tables(next, level - 1, map, release);
+            release(next);
+        }
+        write_raw(at, 0);
+    }
 }
 
 /// M17b：解析一次 COW 写故障——复制叶帧并把 PTE 恢复为可写。
@@ -597,15 +643,19 @@ pub fn resolve_cow<F: Fn(u64) -> u64 + Copy>(
 ) -> Result<u64, VspaceError> {
     let idx = indices(va);
     let pml4 = read_raw(map(root) + idx[0] as u64 * 8);
-    if pml4 & PT_PRESENT == 0 || pml4 & PT_USER == 0 {
+    if pml4 & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE) {
         return Err(VspaceError::BadRoot);
     }
     let pdpt = read_raw(map(pml4 & PT_ADDR_MASK) + idx[1] as u64 * 8);
-    if pdpt & PT_PRESENT == 0 || pdpt & PT_HUGE != 0 {
+    if pdpt & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE)
+        || pdpt & PT_HUGE != 0
+    {
         return Err(VspaceError::BadRoot);
     }
     let pd = read_raw(map(pdpt & PT_ADDR_MASK) + idx[2] as u64 * 8);
-    if pd & PT_PRESENT == 0 || pd & PT_HUGE != 0 {
+    if pd & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE)
+        || pd & PT_HUGE != 0
+    {
         return Err(VspaceError::BadRoot);
     }
     let pt = map(pd & PT_ADDR_MASK);
@@ -625,9 +675,81 @@ pub fn resolve_cow<F: Fn(u64) -> u64 + Copy>(
     let flags = (pte | PT_WRITABLE) & !PT_COW;
     write_raw(
         pt + idx[3] as u64 * 8,
-        (new & PT_ADDR_MASK) | (flags & 0xfff),
+        (new & PT_ADDR_MASK) | (flags & !PT_ADDR_MASK),
     );
     Ok(new)
+}
+
+/// Validate a four-byte user output and resolve COW before any data write.
+/// The range may span two pages. Requires exclusive access to this root and its
+/// mappings; supports only 4 KiB pages. Failure preserves user bytes, but a COW
+/// page already privatized before a later allocation failure remains private.
+pub fn prepare_user_u32_write(
+    root: u64,
+    ptr: u64,
+    map: impl Fn(u64) -> u64 + Copy,
+    mut alloc: impl FnMut() -> Option<u64>,
+    mut invalidate: impl FnMut(u64),
+) -> Result<(), VspaceError> {
+    let end = ptr.checked_add(3).ok_or(VspaceError::BadRoot)?;
+    if ptr == 0 || end >> 47 != 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let first = ptr & !0xfff;
+    let last = end & !0xfff;
+    // Validate both pages before allocating or changing either PTE.
+    for page in [first, last] {
+        user_write_leaf(root, page, map)?;
+    }
+    for page in [first, last] {
+        let leaf = user_write_leaf(root, page, map)?;
+        if leaf & PT_WRITABLE == 0 {
+            resolve_cow(root, page, map, &mut alloc)?;
+            invalidate(page);
+        }
+    }
+    Ok(())
+}
+
+fn user_write_leaf(root: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<u64, VspaceError> {
+    let mut table = root;
+    for (level, index) in indices(va).into_iter().enumerate() {
+        let entry = read_raw(map(table) + index as u64 * 8);
+        if entry & (PT_PRESENT | PT_USER) != (PT_PRESENT | PT_USER) {
+            return Err(VspaceError::BadRoot);
+        }
+        if level == 3 {
+            return if entry & (PT_WRITABLE | PT_COW) != 0 {
+                Ok(entry)
+            } else {
+                Err(VspaceError::BadRoot)
+            };
+        }
+        if entry & PT_HUGE != 0 || entry & PT_WRITABLE == 0 {
+            return Err(VspaceError::BadRoot);
+        }
+        table = entry & PT_ADDR_MASK;
+    }
+    Err(VspaceError::BadRoot)
+}
+
+/// Write a Linux int output through the validated physical mapping, never by
+/// blindly dereferencing a user VA while running with supervisor privileges.
+pub fn write_user_u32(
+    root: u64,
+    ptr: u64,
+    value: [u8; 4],
+    map: impl Fn(u64) -> u64 + Copy,
+    alloc: impl FnMut() -> Option<u64>,
+    invalidate: impl FnMut(u64),
+) -> Result<(), VspaceError> {
+    prepare_user_u32_write(root, ptr, map, alloc, invalidate)?;
+    for (index, byte) in value.into_iter().enumerate() {
+        let va = ptr + index as u64;
+        let leaf = user_write_leaf(root, va, map)?;
+        prima_ostd::mm::write_u8_at(map(leaf & PT_ADDR_MASK), va & 0xfff, byte);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -639,6 +761,307 @@ mod tests {
         phys
     }
 
+    fn table_snapshot(root: u64, level: u32, out: &mut Vec<(u64, Vec<u64>)>) {
+        let words: Vec<u64> = (0..512).map(|i| read_raw(root + i * 8)).collect();
+        if level > 1 {
+            for &entry in &words {
+                if entry & (PT_PRESENT | PT_USER) == PT_PRESENT | PT_USER && entry & PT_HUGE == 0 {
+                    table_snapshot(entry & PT_ADDR_MASK, level - 1, out);
+                }
+            }
+        }
+        out.push((root, words));
+    }
+
+    #[test]
+    fn cow_clone_rolls_back_every_allocation_failure_and_flushes_only_after_commit() {
+        // Two PML4 slots and two PTs in the first: seven private table pages.
+        for budget in 0..=7 {
+            let mut pool = PagePool::new();
+            let src = pool.alloc().unwrap();
+            let dst = pool.alloc().unwrap();
+            let data = pool.alloc().unwrap();
+            let vas = [VSPACE_VA, VSPACE_VA + 0x20_0000, VSPACE_VA * 2];
+            for va in vas {
+                map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+            }
+            let mut before = Vec::new();
+            table_snapshot(src, 4, &mut before);
+            let mut allocated = Vec::new();
+            let mut released = Vec::new();
+            let mut flushes = 0;
+            let result = clone_root_cow(
+                src,
+                dst,
+                identity,
+                || {
+                    if allocated.len() == budget {
+                        return None;
+                    }
+                    // Parent must be untouched throughout the fallible phase.
+                    for (table, words) in &before {
+                        for (i, word) in words.iter().enumerate() {
+                            assert_eq!(read_raw(*table + i as u64 * 8), *word);
+                        }
+                    }
+                    let frame = pool.alloc().unwrap();
+                    // The production allocator may return dirty released frames.
+                    for i in 0..512 {
+                        write_raw(frame + i * 8, u64::MAX);
+                    }
+                    allocated.push(frame);
+                    Some(frame)
+                },
+                |frame| released.push(frame),
+                || {
+                    flushes += 1;
+                    for va in vas {
+                        for root in [src, dst] {
+                            let leaf = read_leaf(root, va, identity).unwrap();
+                            assert_eq!(leaf & PT_WRITABLE, 0);
+                            assert_ne!(leaf & PT_COW, 0);
+                        }
+                    }
+                },
+            );
+            if budget < 7 {
+                assert_eq!(result, Err(VspaceError::NoFrame));
+                assert_eq!(flushes, 0);
+                let mut after = Vec::new();
+                table_snapshot(src, 4, &mut after);
+                assert_eq!(after, before);
+                assert!((0..512).all(|i| read_raw(dst + i * 8) == 0));
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(flushes, 1);
+                assert!(released.is_empty());
+                discard_cow_root(dst, identity, |frame| released.push(frame));
+            }
+            allocated.sort();
+            released.sort();
+            assert_eq!(
+                allocated, released,
+                "every private table must be reclaimed exactly once"
+            );
+            assert!(
+                !released.contains(&src) && !released.contains(&dst) && !released.contains(&data)
+            );
+        }
+    }
+
+    #[test]
+    fn cow_clone_rejects_user_huge_pages_and_alias_without_changing_parent() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        map_4k(src, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        let pdpt = read_raw(src + indices(VSPACE_VA)[0] as u64 * 8) & PT_ADDR_MASK;
+        write_raw(
+            pdpt + 8,
+            0x4000_0000 | PT_PRESENT | PT_USER | PT_WRITABLE | PT_HUGE,
+        );
+        let mut before = Vec::new();
+        table_snapshot(src, 4, &mut before);
+        let mut allocated = Vec::new();
+        let mut released = Vec::new();
+        assert_eq!(
+            clone_root_cow(
+                src,
+                dst,
+                identity,
+                || {
+                    let frame = pool.alloc().unwrap();
+                    allocated.push(frame);
+                    Some(frame)
+                },
+                |frame| released.push(frame),
+                || panic!("failed clone must not flush")
+            ),
+            Err(VspaceError::BadRoot)
+        );
+        let mut after = Vec::new();
+        table_snapshot(src, 4, &mut after);
+        assert_eq!(before, after);
+        allocated.sort();
+        released.sort();
+        assert_eq!(allocated, released);
+        assert!((0..512).all(|i| read_raw(dst + i * 8) == 0));
+        assert_eq!(
+            clone_root_cow(
+                src,
+                src,
+                identity,
+                || panic!("alias"),
+                |_| panic!("alias"),
+                || panic!("alias")
+            ),
+            Err(VspaceError::BadRoot)
+        );
+    }
+
+    #[test]
+    fn cow_resolve_preserves_nx_and_supervisor_siblings_are_never_protected() {
+        const NX: u64 = 1 << 63;
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        let supervisor = pool.alloc().unwrap();
+        map_4k(src, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA + 4096,
+            identity,
+            || pool.alloc(),
+            supervisor,
+            true,
+            false,
+        )
+        .unwrap();
+        let pt = walk_to_leaf_table(src, VSPACE_VA, identity).unwrap();
+        let at = pt + indices(VSPACE_VA)[3] as u64 * 8;
+        write_raw(at, read_raw(at) | NX);
+        let sup_before = read_leaf(src, VSPACE_VA + 4096, identity).unwrap();
+        clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
+        assert_eq!(
+            read_leaf(src, VSPACE_VA + 4096, identity).unwrap(),
+            sup_before
+        );
+        assert_eq!(
+            read_leaf(dst, VSPACE_VA + 4096, identity).unwrap(),
+            sup_before
+        );
+        resolve_cow(dst, VSPACE_VA, identity, || pool.alloc()).unwrap();
+        let leaf = read_leaf(dst, VSPACE_VA, identity).unwrap();
+        assert_ne!(leaf & NX, 0);
+        assert_ne!(leaf & PT_WRITABLE, 0);
+        assert_eq!(leaf & PT_COW, 0);
+    }
+
+    #[test]
+    fn user_int_write_resolves_both_cow_pages_and_preserves_neighbor_bytes_and_parent() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let a = pool.alloc().unwrap();
+        let b = pool.alloc().unwrap();
+        for (va, data) in [(VSPACE_VA, a), (VSPACE_VA + 4096, b)] {
+            map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+            for word in 0..512 {
+                write_raw(data + word * 8, u64::MAX);
+            }
+        }
+        clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
+        let mut invalidated = Vec::new();
+        let value = [0x78, 0x56, 0x34, 0x12];
+        write_user_u32(
+            dst,
+            VSPACE_VA + 4094,
+            value,
+            identity,
+            || pool.alloc(),
+            |va| invalidated.push(va),
+        )
+        .unwrap();
+        assert_eq!(invalidated, [VSPACE_VA, VSPACE_VA + 4096]);
+        let pa = read_leaf(dst, VSPACE_VA, identity).unwrap() & PT_ADDR_MASK;
+        let pb = read_leaf(dst, VSPACE_VA + 4096, identity).unwrap() & PT_ADDR_MASK;
+        assert_eq!(read_raw(pa + 4088), 0x5678_ffff_ffff_ffff);
+        assert_eq!(read_raw(pb), 0xffff_ffff_ffff_1234);
+        assert_eq!(read_raw(a + 4088), u64::MAX);
+        assert_eq!(read_raw(b), u64::MAX);
+        // Rewriting an already-private page needs no allocation/invalidation.
+        write_user_u32(
+            dst,
+            VSPACE_VA,
+            value,
+            identity,
+            || panic!("already writable"),
+            |_| panic!("already private"),
+        )
+        .unwrap();
+        assert_eq!(read_raw(pa), 0xffff_ffff_1234_5678);
+    }
+
+    #[test]
+    fn user_int_write_rejects_bad_ranges_and_all_protection_levels_without_data_changes() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        map_4k(root, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        write_raw(data, 0xdead_beef_face_feed);
+        for ptr in [0, u64::MAX - 1, 0x0000_7fff_ffff_fffe, VSPACE_VA + 4094] {
+            assert_eq!(
+                write_user_u32(
+                    root,
+                    ptr,
+                    [0; 4],
+                    identity,
+                    || panic!("invalid"),
+                    |_| panic!("invalid")
+                ),
+                Err(VspaceError::BadRoot)
+            );
+        }
+        let idx = indices(VSPACE_VA);
+        let mut table = root;
+        for (level, slot) in idx.into_iter().enumerate() {
+            let at = table + slot as u64 * 8;
+            let saved = read_raw(at);
+            for bit in [PT_USER, PT_WRITABLE, PT_PRESENT] {
+                write_raw(at, saved & !bit);
+                assert_eq!(
+                    write_user_u32(
+                        root,
+                        VSPACE_VA,
+                        [0; 4],
+                        identity,
+                        || panic!("invalid permission"),
+                        |_| panic!("invalid permission")
+                    ),
+                    Err(VspaceError::BadRoot),
+                    "level {level}, bit {bit}"
+                );
+                write_raw(at, saved);
+            }
+            table = saved & PT_ADDR_MASK;
+        }
+        assert_eq!(read_raw(data), 0xdead_beef_face_feed);
+    }
+
+    #[test]
+    fn user_int_write_allocation_failure_never_partially_writes_bytes() {
+        let mut pool = PagePool::new();
+        let src = pool.alloc().unwrap();
+        let dst = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        for va in [VSPACE_VA, VSPACE_VA + 4096] {
+            map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+        }
+        write_raw(data, u64::MAX);
+        write_raw(data + 4088, u64::MAX);
+        clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
+        let mut allocations = 0;
+        assert_eq!(
+            write_user_u32(
+                dst,
+                VSPACE_VA + 4094,
+                [0; 4],
+                identity,
+                || {
+                    allocations += 1;
+                    if allocations == 1 { pool.alloc() } else { None }
+                },
+                |_| {}
+            ),
+            Err(VspaceError::NoFrame)
+        );
+        let first = read_leaf(dst, VSPACE_VA, identity).unwrap() & PT_ADDR_MASK;
+        assert_eq!(read_raw(first + 4088), u64::MAX);
+        assert_eq!(read_raw(data), u64::MAX);
+    }
+
     #[test]
     fn cow_clone_shares_frames_and_resolve_copies_on_write() {
         let mut pool = PagePool::new();
@@ -647,7 +1070,7 @@ mod tests {
         let frame = pool.alloc().unwrap();
         map_4k(src, VSPACE_VA, identity, || pool.alloc(), frame, true, true).unwrap();
         write_raw(frame, 0x1122_3344_5566_7788);
-        clone_root_cow(src, dst, identity, || pool.alloc()).unwrap();
+        clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
 
         let src_leaf = read_leaf(src, VSPACE_VA, identity).unwrap();
         assert_eq!(src_leaf & PT_ADDR_MASK, frame);
@@ -689,7 +1112,7 @@ mod tests {
             false,
         )
         .unwrap();
-        clone_root_cow(src, dst, identity, || pool.alloc()).unwrap();
+        clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
 
         let ro_leaf = read_leaf(dst, VSPACE_VA, identity).unwrap();
         assert_eq!(ro_leaf & PT_ADDR_MASK, ro);

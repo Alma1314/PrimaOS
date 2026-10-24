@@ -139,7 +139,7 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 | 48 | `SYS_CLONE` | 已实现 | W4（musl clone 路由、pthread_create/join） |
 | 49 | `SYS_THREAD_EXIT` | 已实现 | W4、W2 |
 | 50 | `SYS_THREAD_CLEAR_TID` | 已实现 | M16b-3（clear_child_tid 唤醒） |
-| 51 | `SYS_FORK` | 已实现（单线程；W6 双轮）：COW 克隆/写隔离/子进程退出；`syscall(57)` 包装路径的子进程返回值损坏，W6 用原生 51 | M17b-4 报告 |
+| 51 | `SYS_FORK` | 单线程 COW；本轮 W6 双轮覆盖真实 musl fork/syscall/C适配层续执行，父同步 TLB、子正常 `_exit` | [续执行后继](../reports/2026-10-24-fork-continuation-report.md)；M17b-4 保留原绕行 |
 | 52 | （预留） | — | — |
 | 53 | `SYS_WAIT4` | 已实现（W6 双轮）：阻塞/唤醒/回收/ECHILD；WNOHANG 有 host 用例 | M17b-4 报告 |
 | 57 | `SYS_SIGACTION` | 已实现（W9 双轮）：登记 handler；无掩码/siginfo | M18b 报告 |
@@ -194,3 +194,12 @@ VFS 子任务内路径；动态链接。
 | 分离线程自清理 | unsupported | __unmapself 不再发 Linux 11/60，改走现有退出适配层 | 保留映射到进程生命周期结束；没有栈回收/资源不泄漏验收 |
 
 构建默认 make -j2，`PRIMA_MUSL_JOBS` 可调整。该约束仅作用于 musl 编译；不代表 QEMU 低 CPU 或修复已有启动超时。锁定快照、补丁重放和归档检查由 build.sh/build.py 实施，测试命令 `cargo xtask test-musl --host-only` 可独立执行，不启动 QEMU。
+
+## 8. fork 续执行与等待输出后继（2026-10-24）
+
+[工作契约](../specs/2026-10-24-fork-continuation-design.md)与
+[实际运行](../reports/2026-10-24-fork-continuation-report.md)接续 M17b-4：W6 三种C路径、
+父子栈/全局/TLS errno、musl子 `_exit`、waitpid/wait4、int邻接哨兵与ECHILD；W7/W7b/W8撤去内联51。
+COW克隆增加同步TLB、构造失败回收及NX保留，wait状态四字节、跨页/逐级权限检查和COW写回。
+本片不扩充已冻结profile：共享cap/close隔离、子VFS授权、CLOEXEC、信号掩码、多线程fork和完整生命周期仍受原限制。
+聚焦与完整命令的结果分别读取报告，不能将host用例或某一双轮外推为全套验收。

@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-25
 ---
 
 # 进程、线程、fork、exec 与信号
@@ -68,4 +68,12 @@ M16b-1/2 的 clone/join 阻塞 → M16b-3 clear_child_tid 与 W4/W5。M17b-2/3 �
 
 ## 限制与修改注意
 
-W6 使用原生 SYS_FORK=51；Linux 风格 syscall(57) 包装的子进程续执行缺陷仍保留。W7b 不是子任务直接 execve(path) 完整闭环。共享 cap 空间导致 close 隔离偏差；信号掩码/EINTR/SA_RESTART/SIGCHLD 自动通知、pthread 取消/分离/属性未覆盖。不要把工作决定视为组织级确认。
+原生 fork 绕行及续执行缺陷的发现链见 M17b-3/4；当前整改与实际通过范围见下方后继报告。W7b 不是子任务直接 execve(path) 完整闭环。共享 cap 空间导致 close 隔离偏差；信号掩码/EINTR/SA_RESTART/SIGCHLD 自动通知、pthread 取消/分离/属性未覆盖。不要把工作决定视为组织级确认。
+
+## fork / 等待写回整改后继
+
+[工作契约](../../superpowers/specs/2026-10-24-fork-continuation-design.md)与
+[实际验证](../../superpowers/reports/2026-10-24-fork-continuation-report.md)接续 M17b 的续执行失败链：
+clone_root_cow 的构造/写保护/同步刷新顺序，分配失败回收、NX 保留、wait_status_bytes 的四字节边界、
+跨页/COW 输出以及 musl 子进程退出。`cargo xtask test-process [W6|W7|W7b|W8]` 使用原双轮验收。
+没有新增抽象原语、SMP、fd close 隔离或子任务完整 VFS 授权；历史失败不删除。

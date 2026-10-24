@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 
 # Specs 索引
@@ -28,6 +28,8 @@ updated: 2026-10-24
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
 ## 阶段 5
+
+本轮进程后继：[fork 续执行、COW 提交与等待写回](2026-10-24-fork-continuation-design.md)。
 
 | 日期 | 文档 | 标题 |
 |---|---|---|

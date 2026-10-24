@@ -81,7 +81,7 @@
 | [接口、号段与版本边界](interfaces.md) | current | `docs/architecture/interfaces.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（170）
+## report（171）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -252,6 +252,7 @@
 | [Asterinas 参考续篇：POD 与恢复帧缓冲验证](../superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md) | historical | `docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md` |
 | [Asterinas 复用与 OSTD 临界区验证报告](../superpowers/reports/2026-10-24-asterinas-reuse-report.md) | historical | `docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md` |
 | [文档生命周期治理与过时材料清理报告](../superpowers/reports/2026-10-24-documentation-lifecycle-report.md) | historical | `docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md` |
+| [fork 续执行与进程边界整改验证](../superpowers/reports/2026-10-24-fork-continuation-report.md) | historical | `docs/superpowers/reports/2026-10-24-fork-continuation-report.md` |
 | [内核句柄、权限与 Lean 模型补强](../superpowers/reports/2026-10-24-kernel-handle-model-report.md) | historical | `docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md` |
 | [musl 移植补强：调用边界与 fd/stdio 验证](../superpowers/reports/2026-10-24-musl-port-boundary-report.md) | historical | `docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md` |
 | [原生运行时与服务重构验证](../superpowers/reports/2026-10-24-native-runtime-service-report.md) | historical | `docs/superpowers/reports/2026-10-24-native-runtime-service-report.md` |
@@ -265,7 +266,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（70）
+## specification（71）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -339,6 +340,7 @@
 | [Asterinas 参考续篇：启动信息的一次发布](../superpowers/specs/2026-10-24-asterinas-once-publication-design.md) | current | `docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md` |
 | [Asterinas 参考续篇：POD 类型边界与恢复帧所有权](../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md) | current | `docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md` |
 | [Asterinas 代码复用与 OSTD 同步契约](../superpowers/specs/2026-10-24-asterinas-reuse-design.md) | current | `docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md` |
+| [fork 续执行、COW 提交与等待写回](../superpowers/specs/2026-10-24-fork-continuation-design.md) | current | `docs/superpowers/specs/2026-10-24-fork-continuation-design.md` |
 
 ## template（4）
 

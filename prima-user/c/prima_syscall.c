@@ -10,6 +10,9 @@
 #include "prima_syscall.h"
 
 struct prima_entry_ctx prima_ctx;
+/* Private COW state: a fork child exits via its Process, never the inherited
+ * manager/self capability. Descriptor close isolation is still a separate issue. */
+static int prima_fork_child;
 
 static long prima_futex(int *uaddr, int op, int value, const void *timeout);
 
@@ -2381,6 +2384,10 @@ __attribute__((noreturn)) static void prima_thread_exit(void) {
 }
 
 __attribute__((noreturn)) static void prima_exit_group(int status) {
+    if (prima_fork_child) {
+        (void)prima_raw(PRIMA_SYS_PROCESS_EXIT, status, 0, 0, 0, 0, 0);
+        __builtin_trap();
+    }
     prima_close_all_fds();
     long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
     uint64_t payload = PRIMA_STAGE5_C_PROBE_TAG |
@@ -2517,8 +2524,12 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_tty_ioctl((int)a0, a1, a2);
     case PRIMA_LINUX_SYS_futex:
         return prima_futex((int *)a0, (int)a1, (int)a2, (void *)a3);
-    case PRIMA_LINUX_SYS_fork:
-        return prima_native(PRIMA_SYS_FORK, 0, 0, 0, 0, 0, 0);
+    case PRIMA_LINUX_SYS_fork: {
+        long result = prima_raw(PRIMA_SYS_FORK, 0, 0, 0, 0, 0, 0);
+        if (result == 0)
+            prima_fork_child = 1;
+        return result;
+    }
     case PRIMA_LINUX_SYS_kill:
         return prima_native(PRIMA_SYS_SIGNAL, a0, a1, 0, 0, 0, 0);
     case PRIMA_LINUX_SYS_wait4:
