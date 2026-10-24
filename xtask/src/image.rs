@@ -924,7 +924,7 @@ pub(crate) fn check_stage5_linux_time() -> Result<(), String> {
 
 /// M7 冻结的 Linux 参考输出：同一份 `stage5_fd.c` 在宿主上必须全项通过。
 pub(crate) const FD_EXPECTED_STDOUT: &[u8] =
-    b"FD|ok=1;pid=1;ppid=1;open=1;dup=1;share=1;dup2=1;dup3=1;close=1;self=1;reuse=1;bad=1;cloexec=1;held=1\n";
+    b"FD|ok=1;pid=1;ppid=1;open=1;dup=1;share=1;dup2=1;dup3=1;close=1;self=1;reuse=1;bad=1;cloexec=1;fcntl=1;fdopen=1;iov=1;append=1;boundary=1;held=1\n";
 
 /// M7：用宿主 glibc 重建 `stage5_fd.c`，取得 dup/dup2/dup3/getpid 的参考结果。
 /// 在一次性 cwd 中运行，使探针的路径 `f` 与 Prima 的单文件服务等价。
@@ -935,8 +935,11 @@ pub(crate) fn check_stage5_linux_fd() -> Result<(), String> {
         .to_path_buf();
     let source = workspace.join("prima-user/c/stage5_fd.c");
     let binary = workspace.join("target/prima-os/fd-linux");
+    fs::create_dir_all(binary.parent().expect("probe has output directory"))
+        .map_err(|error| format!("failed to create fd probe output directory: {error}"))?;
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror"])
+        .arg("-DPRIMA_HOST")
         .arg(&source)
         .arg("-o")
         .arg(&binary)

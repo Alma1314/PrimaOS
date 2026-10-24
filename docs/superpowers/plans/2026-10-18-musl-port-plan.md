@@ -161,3 +161,7 @@ M11 之后的里程碑不在本文件重复展开，统一由[阶段 5 收尾与
 - **时间和内存**：M6 已冻结 `CLOCK_MONOTONIC` 的 10 ms PIT 轮询子集并落地；`SYS_TIME_NOW` 仍是
   供 Timer 使用的抽象时钟，与 POSIX 时间分离。墙上时钟、`EINTR`、阻塞睡眠仍未冻结；
   `memseg_map` 也未覆盖 `mmap` flags 或 W^X 全路径。两者只能在语义与错误边界冻结后进入支持表。
+
+## 2026-10-24 后继实现入口
+
+本计划中的历史基线不改写。后继[调用边界设计](../specs/2026-10-24-musl-port-boundary-design.md)和[验证报告](../reports/2026-10-24-musl-port-boundary-report.md)补强八补丁重放、锁定构建、fd 控制与向量 I/O；libc-test 全量、线程取消/分离、信号及阶段签署义务继续保留。

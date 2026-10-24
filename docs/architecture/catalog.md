@@ -20,7 +20,7 @@
 | [阶段 5 兼容状态台账与历史基线](../superpowers/compat/compat-state.md) | `docs/superpowers/compat/compat-state.md` |
 | [阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo）](../superpowers/compat/symbol-trace.md) | `docs/superpowers/compat/symbol-trace.md` |
 
-## guide（6）
+## guide（7）
 
 | 文档 | 路径 |
 |---|---|
@@ -30,6 +30,7 @@
 | [入门与任务阅读路线](getting-started.md) | `docs/architecture/getting-started.md` |
 | [PrimaOS 架构问答整理](primaos-architecture-qa.md) | `docs/architecture/primaos-architecture-qa.md` |
 | [系统层次与源码地图](system-map.md) | `docs/architecture/system-map.md` |
+| [PrimaOS](../../llms.md) | `llms.md` |
 
 ## index（10）
 
@@ -83,7 +84,7 @@
 | [术语与检索别名](glossary.md) | `docs/architecture/glossary.md` |
 | [接口、号段与版本边界](interfaces.md) | `docs/architecture/interfaces.md` |
 
-## report（164）
+## report（165）
 
 | 文档 | 路径 |
 |---|---|
@@ -251,12 +252,14 @@
 | [阶段 5 / M21：出口评审（未签署）](../superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | `docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md` |
 | [阶段 5 / ISSUE-THREAD-CAPACITY-001 调查记录](../superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md) | `docs/superpowers/reports/2026-10-23-stage5-thread-capacity-investigation.md` |
 | [VFS / LibOS 基础重构验证报告](../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | `docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md` |
+| [musl 移植补强：调用边界与 fd/stdio 验证](../superpowers/reports/2026-10-24-musl-port-boundary-report.md) | `docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md` |
 
-## spec（1）
+## spec（2）
 
 | 文档 | 路径 |
 |---|---|
 | [VFS 打开对象与 LibOS 适配边界](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md) | `docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md` |
+| [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 
 ## specification（67）
 

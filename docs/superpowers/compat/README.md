@@ -18,4 +18,6 @@
 
 ## 按范围读取
 
-两表的开头保留早期盘点，不能按首个表格概括整个当前实现。compat-state §5–6 / symbol-trace §5记录后继汇总；组织级签署与未满足条件仍查阶段跟踪/M21。源码号段以prima-abi为准，历史候选号不得直接用于调用。
+两表的开头保留早期盘点，不能按首个表格概括整个当前实现。compat-state §5–7 / symbol-trace §5–6记录后继汇总；组织级签署与未满足条件仍查阶段跟踪/M21。源码号段以prima-abi为准，历史候选号不得直接用于调用。
+
+2026-10-24 musl 子集与证据见[边界设计](../specs/2026-10-24-musl-port-boundary-design.md)、[验证报告](../reports/2026-10-24-musl-port-boundary-report.md)；快照重放输入见 [musl-snapshot.lock.toml](musl-snapshot.lock.toml)。

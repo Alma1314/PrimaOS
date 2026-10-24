@@ -42,6 +42,11 @@ fn run() -> Result<(), String> {
             };
             test_vfs_slice(program)
         }
+        "test-musl" => match rest.as_slice() {
+            [] => test_musl_slice(false),
+            [flag] if flag == "--host-only" => test_musl_slice(true),
+            _ => Err(usage()),
+        },
         "compat" => compat_command(&rest),
         "linux-trace" => linux_trace_command(&rest),
         "lint" => lint::lint_command(&rest),
@@ -97,7 +102,41 @@ fn test_program_twice(images: image::Images, name: &str, stdout: &[u8]) -> Resul
     Ok(())
 }
 
+fn check_musl_host() -> Result<(), String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask must be under workspace root");
+    let status = process::Command::new("python3")
+        .arg(root.join("prima-user/musl/test_port.py"))
+        .status()
+        .map_err(|error| format!("failed to run musl port host checks: {error}"))?;
+    if !status.success() {
+        return Err("musl port host checks failed".into());
+    }
+    image::check_stage5_linux_fd()
+}
+
+/// Focused libc acceptance; host-only never starts QEMU or rebuilds musl.
+fn test_musl_slice(host_only: bool) -> Result<(), String> {
+    check_musl_host()?;
+    if !host_only {
+        test_program_twice(
+            image::build_images_for_fd()?,
+            "F1",
+            image::FD_EXPECTED_STDOUT,
+        )?;
+        image::check_stage5_linux_pthread()?;
+        test_program_twice(
+            image::build_images_for_pthread()?,
+            "W4",
+            image::PTHREAD_EXPECTED_STDOUT,
+        )?;
+    }
+    Ok(())
+}
+
 fn test_boot_slice() -> Result<(), String> {
+    check_musl_host()?;
     // 既有探针路径保持不变：两次 BIOS 运行逐字节校验阶段 1–5 的既有事件。
     let images = build_and_report()?;
     image::check_stage5_linux_probe()?;
@@ -497,8 +536,9 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-vfs|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-vfs|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      cargo xtask test-musl [--host-only]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"
         .to_owned()

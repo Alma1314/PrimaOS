@@ -3,7 +3,7 @@ id: topic-compatibility
 kind: topic
 authority: explanatory
 status: maintained
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # POSIX profile、musl、网络与 Linux 路线
@@ -25,6 +25,9 @@ updated: 2026-10-23
 阶段5准入/修订计划 → profile v0 → musl M0–M4 → sbase 与各子系统里程碑 → M20 两表汇总 → M21 技术出口评审（未签署）。profile v1 是 delta 提案；M21 记录 profile v2 未编写与 Rust target 缺口。阶段6不能由 exec_replace 探针直接宣告启动。
 
 ## 契约、计划与证据入口
+
+- [musl 调用边界与可重放构建设计](../../superpowers/specs/2026-10-24-musl-port-boundary-design.md)
+- [musl fd/stdio 验证报告](../../superpowers/reports/2026-10-24-musl-port-boundary-report.md)
 
 - [VFS / LibOS 基础设计](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)
 - [VFS / LibOS 验证报告](../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)
@@ -55,6 +58,8 @@ updated: 2026-10-23
 
 ## 测试与观察入口
 
+- [musl 宿主边界测试](../../../prima-user/musl/test_port.py)
+- [fd/stdio 同源探针](../../../prima-user/c/stage5_fd.c)
 - [stage5_probe.c](../../../prima-user/c/stage5_probe.c)
 - [stage5_net.c](../../../prima-user/c/stage5_net.c)
 - [image.rs](../../../xtask/src/image.rs)
@@ -65,3 +70,5 @@ updated: 2026-10-23
 ## 限制与修改注意
 
 网络仅用户态 loopback IPv4/UDP，未包含 NIC/TCP/DNS。W7/W7b 无 Linux 同源参考。cargo xtask compat 是 cow-write-fault 场景，不等于所有 API 都被差分。完整 POSIX、未修改 Linux 静态 ELF 和动态链接是不同范围。
+
+2026-10-24 后继补强限定 fcntl、fdopen/已有 append、向量 I/O 和 musl 汇编陷入边界；台账新增章节记录实际状态。`test-musl --host-only` 可独立检验 C 适配层；取消点转发正确不表示完整取消或分离线程已经验收。

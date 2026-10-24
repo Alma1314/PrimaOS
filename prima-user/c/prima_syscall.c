@@ -3,7 +3,7 @@
  * 边界规则：
  * - Linux 调用号只在本文件出现，翻译后只向内核发 Prima 原生号；
  * - 所有失败返回原始负 errno（不设置 errno，musl 的 syscall 约定）；
- * - fd 0 是 null（读 EOF/写丢弃）、fd 1/2 是管理器的 tty 字节流；fd 3..18 是通用
+ * - fd 0 是 tty 输入、fd 1/2 是管理器的 tty 输出；fd 3..18 是通用
  *   本地表，文件/目录项经用户态 VFS 存储服务；
  * - 每次 SEND 后显式 YIELD：自毁会清掉仍在接收队列里的消息，退出状态必须先被取走。
  */
@@ -459,7 +459,7 @@ struct prima_fd_entry {
     unsigned char kind;
     unsigned char object; /* tty fd（1/2）、服务端句柄（3..10）或 0 */
     unsigned char node;   /* 服务端节点编号（目录相对 open 用） */
-    unsigned char cloexec; /* M12b：记录 O_CLOEXEC；本阶段无 exec 语义 */
+    unsigned char cloexec; /* Per-fd flag; exec-time close is not wired yet. */
 };
 
 static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT] = {
@@ -468,6 +468,8 @@ static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT] = {
     {PRIMA_FD_TTY, 2, 0, 0},
 };
 static unsigned char prima_file_refs[PRIMA_FILE_HANDLES];
+/* Open status is shared by fd aliases, unlike the descriptor CLOEXEC bit. */
+static unsigned int prima_file_flags[PRIMA_FILE_HANDLES];
 // M19：socket 服务端句柄的本地引用计数（dup 共享）。
 static unsigned char prima_net_refs[PRIMA_NET_SOCKETS];
 
@@ -951,6 +953,8 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
         return -PRIMA_ERRNO_EINVAL;
     }
     prima_file_refs[handle - PRIMA_FILE_FIRST_FD] = 1;
+    prima_file_flags[handle - PRIMA_FILE_FIRST_FD] = (unsigned int)flags &
+        (PRIMA_O_ACCMODE | PRIMA_O_APPEND | PRIMA_O_DIRECTORY | PRIMA_O_LARGEFILE);
     prima_dir_reset((unsigned char)handle);
     int local = prima_fd_install(
         kind == PRIMA_VFS_KIND_DIR ? PRIMA_FD_DIR : PRIMA_FD_FILE,
@@ -2050,14 +2054,19 @@ static long prima_fd_close(int fd) {
     return prima_fd_drop(fd);
 }
 
-static long prima_fd_dup(int oldfd) {
+static long prima_fd_dup_min(int oldfd, long minimum, unsigned char cloexec) {
     struct prima_fd_entry *entry = prima_fd_entry(oldfd);
     if (!entry)
         return -PRIMA_ERRNO_EBADF;
-    int newfd =
-        prima_fd_install(entry->kind, entry->object, entry->node, entry->cloexec);
-    if (newfd < 0)
-        return -PRIMA_ERRNO_EAGAIN;
+    if (minimum < PRIMA_LOCAL_FD_FIRST || minimum > PRIMA_LOCAL_FD_LAST)
+        return -PRIMA_ERRNO_EINVAL;
+    int newfd = (int)minimum;
+    while (newfd <= PRIMA_LOCAL_FD_LAST && prima_fd_entry(newfd))
+        newfd++;
+    if (newfd > PRIMA_LOCAL_FD_LAST)
+        return -PRIMA_ERRNO_EMFILE;
+    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST] = *entry;
+    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].cloexec = cloexec;
     if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR)
         prima_file_refs[entry->object - PRIMA_FILE_FIRST_FD]++;
     else if (entry->kind == PRIMA_FD_SOCKET && entry->object < PRIMA_NET_SOCKETS)
@@ -2066,14 +2075,56 @@ static long prima_fd_dup(int oldfd) {
     return newfd;
 }
 
+static long prima_fd_dup(int oldfd) {
+    long result = prima_fd_dup_min(oldfd, PRIMA_LOCAL_FD_FIRST, 0);
+    /* Preserve the existing profile's table-full errno for dup. */
+    return result == -PRIMA_ERRNO_EMFILE ? -PRIMA_ERRNO_EAGAIN : result;
+}
+
+static long prima_fd_fcntl(int fd, long command, long arg) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry)
+        return -PRIMA_ERRNO_EBADF;
+    switch (command) {
+    case PRIMA_F_GETFD:
+        return entry->cloexec ? PRIMA_FD_CLOEXEC : 0;
+    case PRIMA_F_SETFD:
+        entry->cloexec = (arg & PRIMA_FD_CLOEXEC) != 0;
+        return 0;
+    case PRIMA_F_DUPFD:
+    case PRIMA_F_DUPFD_CLOEXEC:
+        return prima_fd_dup_min(fd, arg, command == PRIMA_F_DUPFD_CLOEXEC);
+    case PRIMA_F_GETFL:
+        if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR)
+            return prima_file_flags[entry->object - PRIMA_FILE_FIRST_FD];
+        if (entry->kind == PRIMA_FD_NULL)
+            return PRIMA_O_RDWR;
+        if (entry->kind == PRIMA_FD_TTY)
+            return entry->object == 0 ? PRIMA_O_RDONLY : PRIMA_O_WRONLY;
+        return -PRIMA_ERRNO_EINVAL;
+    case PRIMA_F_SETFL: {
+        /* The current service protocol cannot change an open handle's append
+         * mode. Accept a no-op only; fdopen must propagate a failed change. */
+        long current = prima_fd_fcntl(fd, PRIMA_F_GETFL, 0);
+        long allowed = PRIMA_O_ACCMODE | PRIMA_O_APPEND | PRIMA_O_DIRECTORY | PRIMA_O_LARGEFILE;
+        if (current < 0 || (arg & ~allowed) || ((arg ^ current) & PRIMA_O_APPEND))
+            return -PRIMA_ERRNO_EINVAL;
+        return 0;
+    }
+    default:
+        return -PRIMA_ERRNO_EINVAL;
+    }
+}
+
 /* dup2/dup3 共用：oldfd 已校验；newfd 必须落在本地表内。先为新引用加计数，
  * 再关闭目标项——即使两者指向同一服务端句柄，也不会在中途误发 CLOSE。 */
 static long prima_fd_dup_to(int oldfd, int newfd) {
     struct prima_fd_entry *source = prima_fd_entry(oldfd);
+    if (!source || newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
+        return -PRIMA_ERRNO_EBADF;
     unsigned char kind = source->kind;
     unsigned char object = source->object;
     unsigned char node = source->node;
-    unsigned char cloexec = source->cloexec;
     if (kind == PRIMA_FD_FILE || kind == PRIMA_FD_DIR)
         prima_file_refs[object - PRIMA_FILE_FIRST_FD]++;
     else if (kind == PRIMA_FD_SOCKET && object < PRIMA_NET_SOCKETS)
@@ -2083,7 +2134,7 @@ static long prima_fd_dup_to(int oldfd, int newfd) {
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].kind = kind;
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].object = object;
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].node = node;
-    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].cloexec = cloexec;
+    prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].cloexec = 0;
     if (kind == PRIMA_FD_DIR)
         prima_fd_path_copy(newfd, oldfd);
     else
@@ -2112,6 +2163,40 @@ static long prima_fd_dup3(int oldfd, int newfd, long flags) {
     if (result >= 0 && (flags & PRIMA_O_CLOEXEC) != 0)
         prima_fds[result - PRIMA_LOCAL_FD_FIRST].cloexec = 1;
     return result;
+}
+
+/* Validate all lengths before any I/O, then retain progress on a later error
+ * or short transfer. Multi-IPC operations are not atomic across threads. */
+static long prima_fd_iov(int fd, const struct iovec *iov, long count, int writing) {
+    if (!prima_fd_entry(fd))
+        return -PRIMA_ERRNO_EBADF;
+    if (count < 0 || count > 1024)
+        return -PRIMA_ERRNO_EINVAL;
+    if (count == 0)
+        return 0;
+    if (!iov)
+        return -PRIMA_ERRNO_EFAULT;
+    const unsigned long limit = (~0UL) >> 1; /* SSIZE_MAX on x86_64 */
+    unsigned long length = 0;
+    for (long i = 0; i < count; i++) {
+        if (iov[i].iov_len > limit - length)
+            return -PRIMA_ERRNO_EINVAL;
+        length += iov[i].iov_len;
+    }
+    unsigned long done = 0;
+    for (long i = 0; i < count; i++) {
+        if (iov[i].iov_len == 0)
+            continue;
+        long transferred = writing
+            ? prima_fd_write(fd, iov[i].iov_base, iov[i].iov_len)
+            : prima_fd_read(fd, iov[i].iov_base, iov[i].iov_len);
+        if (transferred < 0)
+            return done ? (long)done : transferred;
+        done += (unsigned long)transferred;
+        if ((unsigned long)transferred < iov[i].iov_len)
+            break;
+    }
+    return (long)done;
 }
 
 /* ---------- M6：POSIX 时间（PIT tick，10 ms 粒度） ----------
@@ -2328,44 +2413,10 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_brk((uint64_t)a0);
     case PRIMA_LINUX_SYS_write:
         return prima_fd_write((int)a0, (const void *)a1, (unsigned long)a2);
-    case PRIMA_LINUX_SYS_writev: {
-        const struct iovec *iov = (const struct iovec *)a1;
-        long count = a2;
-        if (count <= 0)
-            return -PRIMA_ERRNO_EINVAL;
-        if (!iov)
-            return -PRIMA_ERRNO_EFAULT;
-        unsigned long total = 0;
-        for (long i = 0; i < count; i++) {
-            unsigned long len = iov[i].iov_len;
-            if (len > ~(unsigned long)0 - total)
-                return -PRIMA_ERRNO_EINVAL;
-            long written = prima_fd_write((int)a0, iov[i].iov_base, len);
-            if (written < 0)
-                return written;
-            total += (unsigned long)written;
-        }
-        return (long)total;
-    }
-    case PRIMA_LINUX_SYS_readv: {
-        // M13b：musl 的 stdio 读走 readv；按 iovec 顺序调用同一 fd 读路径。
-        const struct iovec *iov = (const struct iovec *)a1;
-        long count = a2;
-        if (count <= 0)
-            return -PRIMA_ERRNO_EINVAL;
-        if (!iov)
-            return -PRIMA_ERRNO_EFAULT;
-        unsigned long total = 0;
-        for (long i = 0; i < count; i++) {
-            long got = prima_fd_read((int)a0, iov[i].iov_base, iov[i].iov_len);
-            if (got < 0)
-                return total > 0 ? (long)total : got;
-            total += (unsigned long)got;
-            if ((unsigned long)got < iov[i].iov_len)
-                break;
-        }
-        return (long)total;
-    }
+    case PRIMA_LINUX_SYS_writev:
+        return prima_fd_iov((int)a0, (const struct iovec *)a1, a2, 1);
+    case PRIMA_LINUX_SYS_readv:
+        return prima_fd_iov((int)a0, (const struct iovec *)a1, a2, 0);
     case PRIMA_LINUX_SYS_close:
         return prima_fd_close((int)a0);
     case PRIMA_LINUX_SYS_read:
@@ -2403,6 +2454,8 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3,
         return prima_fd_dup2((int)a0, (int)a1);
     case PRIMA_LINUX_SYS_dup3:
         return prima_fd_dup3((int)a0, (int)a1, a2);
+    case PRIMA_LINUX_SYS_fcntl:
+        return prima_fd_fcntl((int)a0, a1, a2);
     case PRIMA_LINUX_SYS_getppid:
         return (long)prima_ctx.manager_id;
     case PRIMA_LINUX_SYS_getpid:

@@ -3,7 +3,7 @@ id: project-status
 kind: reference
 authority: current-status
 status: maintained
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # Prima OS 实现阶段
@@ -26,7 +26,7 @@ updated: 2026-10-23
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | VFS 后继 host 876 测试执行项、lint PASS；QEMU 新 V3 单轮 PASS，双轮/全量因启动超时未通过 | [VFS 后继报告](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)；历史 M21 的 427/114 PASS 仅属于当时版本，不覆盖本次变更 |
+| 最近验证记录 | musl 后继 Rust 876 项、lint、4 个 host 检查、F1/W4 定向双轮和沙箱外全量 62 轮 BIOS PASS；沙箱内 UDP EPERM 单独保留 | [musl 后继报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[前次 VFS 超时记录](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)保留；历史 M21 的 427/114 PASS 只属于当时版本 |
 | 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -47,11 +47,13 @@ updated: 2026-10-23
 
 VFS 后继实现与验证见[LibOS 基础重构报告](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)：原生打开对象、普通文件延迟回收和数据边界修复；不改变阶段出口勾选。
 
+musl 后继实现见[调用边界与 fd/stdio 报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)：fcntl、fdopen/已有 append、向量 I/O、汇编边界与锁定构建；不改变阶段出口勾选。
+
 ## 已知问题与当前阻塞
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| VFS 后继 QEMU 验证 | 多次启动在 bootloader、空输出或后续内核阶段 30 秒超时；V1 双轮、V2/V3 单轮有成功记录，尚未达到本次双轮/全量门槛 | [验证报告](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)；根因待定位，不扩大超时或放宽断言 |
+| VFS 历史启动超时 | 2026-10-23 多次出现 30 秒超时；2026-10-24 musl 后继版本的 V1/V2/V3 均已双轮通过，未宣称历史超时根因已修复 | [历史记录](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继验证](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；保留 30 秒门限及所有断言 |
 | BLK-003 | 仍 Open：候选基座库的 ABI/profile 假设未全部裁决；工作实现不等于组织级采纳 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M21；保留号段/命名/错误映射与阶段归属待决项 |
 | S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 未编写；Rust target/core-std 未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |
 | ISSUE-FORK-CONTINUATION-001 | Linux 风格 `syscall(57)` 包装的 fork 子返回值损坏；W6 用原生 51 绕过 | [M17b-4](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)；修复包装续执行并补对应探针 |
@@ -213,6 +215,7 @@ VFS 后继实现与验证见[LibOS 基础重构报告](docs/superpowers/reports/
 | M18 | [默认终止 W8](docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)、[handler/sigreturn W9](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md) | 无掩码/EINTR 等；前序“handler未做”已被后继限定 |
 | M19 | [loopback UDP N1](docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md) | 仅环回 IPv4/UDP，无 NIC/TCP/DNS |
 | VFS / LibOS 基础 | [设计](docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)、[验证](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | 打开对象独立于 ABI；普通文件延迟回收；每 LibOS 根视图/会话授权、多 OS personality 仍未实现 |
+| musl 后继补强 | [设计](docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md)、[验证](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md) | 汇编陷入边界、fd 控制/stdio/向量 I/O、锁定构建；取消/分离、信号、fork 包装与 exec CLOEXEC 义务继续保留 |
 | M20–M21 | [兼容两表汇总](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[技术出口评审](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | 未完成 Rust target/profile v2/组织级确认，未签署 |
 
 ### 交付检查
@@ -224,7 +227,7 @@ VFS 后继实现与验证见[LibOS 基础重构报告](docs/superpowers/reports/
 | S5-D1 | 冻结且版本化 POSIX profile | [ ] | v0已冻结、待组织级；v1提案；v2未编写 |
 | S5-D2 | libc适配 | [ ] | 部分满足；musl/线程/等待已有证据，信号等仍有缺口 |
 | S5-D3 | fd、路径、线程和基础网络子集 | [ ] | 部分满足；线程与网络已有最小集证据，不能再写“均未实现” |
-| S5-D4 | 逐API语义映射矩阵 | [ ] | 当前子集满足：compat-state §6 / symbol-trace §5 |
+| S5-D4 | 逐API语义映射矩阵 | [ ] | 当前子集满足：compat-state §6–7 / symbol-trace §5–6 |
 | S5-D5 | Linux差分矩阵 | [ ] | 部分满足；W7/W7b无Linux参考 |
 | S5-D6 | Rust target/core/std | [ ] | 未满足；M20只完成矩阵部分 |
 | S5-D7 | persona、符号版本、台账与ABI护栏 | [ ] | 部分满足；ABI握手/台账已有，persona/符号版本未见 |

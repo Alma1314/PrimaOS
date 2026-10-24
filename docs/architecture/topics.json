@@ -440,7 +440,9 @@
       "docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md",
       "docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md",
       "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md",
-      "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
+      "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md",
+      "docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md",
+      "docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
@@ -449,13 +451,20 @@
       "prima-user/musl/build.sh",
       "prima-user/musl/patches/syscall_arch.h",
       "xtask/src/compat.rs",
-      "xtask/src/linux.rs"
+      "xtask/src/linux.rs",
+      "prima-user/musl/build.py",
+      "prima-user/musl/patches/syscall_cp.s",
+      "prima-user/musl/patches/__fdopen.c"
     ],
     "tests": [
       "prima-user/c/stage5_probe.c",
       "prima-user/c/stage5_net.c",
       "xtask/src/image.rs",
-      "xtask/src/protocol.rs"
+      "xtask/src/protocol.rs",
+      "prima-user/musl/test_port.py",
+      "prima-user/musl/test_adapter.c",
+      "prima-user/musl/test_cp.c",
+      "prima-user/c/stage5_fd.c"
     ],
     "guide": "docs/architecture/topics/compatibility.md"
   }

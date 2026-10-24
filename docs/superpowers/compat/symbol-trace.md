@@ -113,3 +113,20 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 
 `syscall(57)` 的 musl 包装路径在 fork 子进程中返回值损坏（`ISSUE-FORK-CONTINUATION-001`）：
 W6/W7b 使用内联 asm 直发 51；适配层 57 仍待修。
+
+## 6. 2026-10-24 musl 边界与 fd/stdio 后继
+
+本节补强前述历史表，不把未实现 syscall 或原生机制探针当成 libc 符号支持。工作契约和实际运行范围见[设计](../specs/2026-10-24-musl-port-boundary-design.md)、[报告](../reports/2026-10-24-musl-port-boundary-report.md)。
+
+| 符号/路径 | musl 实现或本地替换 | Linux 号 | Prima 后端 | 验证 |
+|---|---|---|---|---|
+| `fcntl` | src/fcntl/fcntl.c → __syscall3 | 72 | C fd 表的 flags/dup；GETFL 读共享打开状态 | F1 + host adapter |
+| `fdopen` | 替换 src/stdio/__fdopen.c → GETFL/SETFL/SETFD → stdio 读写 | 72/19/20/3 | fd 表 + VFS；append 切换失败传播并释放 FILE | F1 Linux/Prima；Prima 专有失败分支 |
+| `fopen("a")` | src/stdio/fopen.c → open → __fdopen | 2/72/20 | 服务端已有 append 写入语义 | F1 内容 abcZefBC |
+| `readv/writev` | src/unistd/readv.c/writev.c → syscall_cp → adapter prima_fd_iov | 19/20 | 相同 fd 的分段读写；先预校验长度 | F1 + host 边界 |
+| `__syscall_cp_asm` | 替换 src/thread/x86_64/syscall_cp.s | n+完整六参数 | __syscall6 → prima_translate | host stub 检查每个参数；F1 真实调用 |
+| `vfork` | 替换 src/process/x86_64/vfork.s | 不陷入 | __syscall_ret(-ENOSYS) | F1 Prima 负例 |
+| `__unmapself` | 替换 src/thread/x86_64/__unmapself.s | 60（只交适配层） | 正常 thread exit / clear_child_tid；保留映射 | 归档检查；不宣称 detach 端到端 |
+| `__restore_rt` | 替换 src/signal/x86_64/restore.s | 无 | 原生 58 | 归档检查；不宣称 libc sigaction 端到端 |
+
+全 libc.a 的直接 syscall 只允许 clone.lo 的原生 48/49 与 restore.lo 的原生 58。syscall_arch.h、TLS 与 clone 旧补丁及本次五个新增替换文件共八项，清单由 musl-snapshot.lock.toml 驱动。`build.py --check` 在输入匹配、缓存完整时反汇编检查产物；构建成功只代表静态基座，不代表所有可链接符号已支持。

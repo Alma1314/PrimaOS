@@ -37,7 +37,6 @@
 #define PRIMA_LINUX_SYS_rt_sigaction 13
 #define PRIMA_LINUX_SYS_rt_sigreturn 15
 #define PRIMA_LINUX_SYS_kill 62
-#define PRIMA_LINUX_SYS_kill 62
 #define PRIMA_LINUX_SYS_fork 57
 #define PRIMA_LINUX_SYS_wait4 61
 #define PRIMA_ERRNO_ECHILD 10
@@ -88,6 +87,14 @@
 #define PRIMA_LINUX_SYS_unlink 87
 #define PRIMA_LINUX_SYS_dup 32
 #define PRIMA_LINUX_SYS_dup2 33
+#define PRIMA_LINUX_SYS_fcntl 72
+#define PRIMA_F_DUPFD 0
+#define PRIMA_F_GETFD 1
+#define PRIMA_F_SETFD 2
+#define PRIMA_F_GETFL 3
+#define PRIMA_F_SETFL 4
+#define PRIMA_F_DUPFD_CLOEXEC 1030
+#define PRIMA_FD_CLOEXEC 1
 #define PRIMA_LINUX_SYS_getpid 39
 #define PRIMA_LINUX_SYS_getppid 110
 #define PRIMA_LINUX_SYS_nanosleep 35
@@ -133,6 +140,7 @@
 #define PRIMA_ERRNO_EEXIST 17
 #define PRIMA_ERRNO_ENOTDIR 20
 #define PRIMA_ERRNO_EINVAL 22
+#define PRIMA_ERRNO_EMFILE 24
 #define PRIMA_ERRNO_ENOSPC 28
 #define PRIMA_ERRNO_ERANGE 34
 #define PRIMA_ERRNO_ENOSYS 38
@@ -144,8 +152,8 @@
 #define PRIMA_ERRNO_AFNOSUPPORT 97
 #define PRIMA_ERRNO_ADDRINUSE 98
 
-/* M4：openat 的冻结 flag 子集。adapter 归一化后只把 access/CREAT/TRUNC 传给服务端；
- * O_LARGEFILE/O_CLOEXEC 被接受但无语义效果（单线程、无 exec）。 */
+/* Linux open flags are translated to the VFS protocol. CLOEXEC is maintained
+ * per descriptor; exec-time closing is not implemented. */
 #define PRIMA_O_ACCMODE 3
 #define PRIMA_O_RDONLY 0
 #define PRIMA_O_WRONLY 1

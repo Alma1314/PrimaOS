@@ -14,6 +14,7 @@
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-musl-port-boundary-report.md](2026-10-24-musl-port-boundary-report.md) | musl 移植补强：调用边界与 fd/stdio 验证 |
 | 2026-10-23 | [2026-10-23-vfs-libos-foundation-report.md](2026-10-23-vfs-libos-foundation-report.md) | VFS / LibOS 基础重构验证报告 |
 | 2026-10-22 | [2026-10-22-stage5-m11-file-mutation.md](2026-10-22-stage5-m11-file-mutation.md) | 阶段 5 M11：文件树变更（`mkdir`/`rmdir`/`unlink`） |
 | 2026-10-22 | [2026-10-22-stage5-m12-c-startup.md](2026-10-22-stage5-m12-c-startup.md) | 阶段 5 M12：C 启动栈与退出清理（envp/auxv、自动关闭 fd） |

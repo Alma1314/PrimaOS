@@ -1,6 +1,6 @@
 # 阶段 5 兼容状态台账与历史基线
 
-> 阅读范围：§1–4 保留 M0–M11 时期的 profile/链接盘点与实现基线，其中“未实现”不是当前总状态。§5–6 为 M20 后继汇总；当前阶段与签署以[阶段跟踪](../../../Prima%20OS%20实现阶段.md)和[M21](../reports/2026-10-23-stage5-m21-exit-review.md)为准。本文维护不发布新 profile。
+> 阅读范围：§1–4 保留 M0–M11 时期的 profile/链接盘点与实现基线，其中“未实现”不是当前总状态。§5–6 为 M20 后继汇总，§7 记录 2026-10-24 musl 补强；当前阶段与签署以[阶段跟踪](../../../Prima%20OS%20实现阶段.md)和[M21](../reports/2026-10-23-stage5-m21-exit-review.md)为准。本文维护不发布新 profile。
 
 **日期**：2026-10-18（2026-10-23 更新 M14–M18 与 M20 矩阵）。**性质**：M0 依赖盘点的状态记录，不是新的 ABI 承诺；M3/M3b 补充了
 musl 基座与 `malloc/free` 证据，M4 首切片补充了单文件 fd 生命周期与 `printf` 输出证据。
@@ -177,3 +177,20 @@ sbase `echo` 在锁定 commit 上的对象级未解析符号（`nm -u`，`-O2 -s
 
 **不得据此宣称**：完整 POSIX 进程/信号/线程/文件/网络语义；`execve` 的
 VFS 子任务内路径；动态链接。
+
+## 7. 2026-10-24 musl 调用边界与 fd/stdio 后继
+
+下表为[工作实现契约](../specs/2026-10-24-musl-port-boundary-design.md)中的子集，证据见[本次报告](../reports/2026-10-24-musl-port-boundary-report.md)。未发布新冻结 profile，已有 API 行保持 partial，不用此表覆盖历史验收或阶段签署。
+
+| API / 关联行 | 当前子集状态 | 已实现与实跑证据 | 仍有限制 |
+|---|---|---|---|
+| `fcntl` / P5-FD-01 | partial | F_GETFD/SETFD、F_DUPFD/CLOEXEC、F_GETFL；F1 Linux 参考 + Prima 双轮；host 包含 EINVAL/EBADF/EMFILE | fd 0..18；F_SETFL 仅 APPEND 不变的受限 no-op；无锁/异步/非阻塞/动态 append 切换 |
+| `dup/dup2/dup3` / P5-FD-01 | partial | 修正新 fd 的 CLOEXEC：dup/dup2 清除、dup2(fd,fd) 保留、dup3 显式设置；F1 双轮 | 既有 open/dup 表满 EAGAIN 不变；exec 尚不自动关闭；fork close 隔离未修 |
+| `fdopen/fopen` / P5-LIB-02 | partial | fdopen 读模式、已 O_APPEND fd 的追加模式、fopen("a") 与内容校验；F1 Linux 参考 + Prima 双轮 | 对非 append fd 的 fdopen("a") 返回 EINVAL；完整 freopen/setvbuf 未验收 |
+| `readv/writev` / P5-IO-01/02 | partial | 0 向量、0 长度、数量上限、SSIZE_MAX 预校验、后续错误保留进度、EOF/短传输结束；F1 + host | 多 IPC 不原子；非 NULL 坏指针可终止任务；无取消/EINTR；不复刻所有 Linux MAX_RW_COUNT 细节 |
+| 取消点内部调用 | partial（内部边界） | __syscall_cp_asm 检查 pending 状态并完整转发 n+六参数；host 汇编测试与 F1 实跑；W4 create/join 重跑双轮 | 不能据此提升 pthread_cancel/detach 为 supported；没有异步信号取消机制 |
+| `vfork` | unsupported | 确定 -1/ENOSYS，F1 Prima 专有负例 | 不发送 Linux 58，避免调用 Prima sigreturn |
+| libc 信号入口 | unsupported（本切片） | restorer 改为原生 58；归档陷入检查 | rt_sigaction 仍无完整 libc 映射；W9 的原生机制证据不等于 libc sigaction 可用 |
+| 分离线程自清理 | unsupported | __unmapself 不再发 Linux 11/60，改走现有退出适配层 | 保留映射到进程生命周期结束；没有栈回收/资源不泄漏验收 |
+
+构建默认 make -j2，`PRIMA_MUSL_JOBS` 可调整。该约束仅作用于 musl 编译；不代表 QEMU 低 CPU 或修复已有启动超时。锁定快照、补丁重放和归档检查由 build.sh/build.py 实施，测试命令 `cargo xtask test-musl --host-only` 可独立执行，不启动 QEMU。
