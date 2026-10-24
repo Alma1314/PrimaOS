@@ -4,6 +4,8 @@
 pub const MESSAGE_HEADER_LEN: usize = 20;
 /// Hello offer 固定长度。
 pub const OFFER_LEN: usize = 24;
+/// 当前 Hello 请求的 opcode；flags 必须为零。
+pub const HELLO_OPCODE: u16 = 1;
 const MAGIC: [u8; 4] = *b"PRIM";
 
 /// SPEC-103：ring3 服务管理器向 init **自报存活**的消息 tag（高 16 位）；低 8 位为自身 task id。
@@ -12,9 +14,8 @@ pub const SERVICEMGR_HELLO_TAG: u64 = 0x5E56_0000_0000_0000;
 
 /// SPEC-104：端点/客户端向服务管理器发送**带 cap 消息之前**先发的**无 cap 唤醒** tag。
 ///
-/// 内核拒绝向处于 `BlockedRecv` 的接收者投递带 cap 消息（`kernel/src/syscall.rs::send_call`），
-/// 而服务管理器常态阻塞在 `recv`，故发送方先发一条无 cap 消息直投唤醒它，再发带 cap 消息。
-/// 该 tag 不被任何接收分支匹配，接收方忽略之。
+/// 该两消息次序源于历史的阻塞带 cap 直投限制；阶段 2 整改已修复该限制。
+/// 现有双方协议与见证仍保留此消息，接收方忽略它；它不是当前内核的投递前置条件。
 pub const SERVICE_WAKE_TAG: u64 = 0x5ECA_0000_0000_0000;
 
 /// SPEC-105：`init` 向服务管理器移交**建端点所需 cap 与参数**的消息 tag。
@@ -694,10 +695,7 @@ pub fn negotiation_word(
     offer_bytes: &[u8; OFFER_LEN],
     server_offer: ProtocolOffer,
 ) -> u64 {
-    if MessageHeader::decode(*header_bytes).is_err() {
-        return 0;
-    }
-    let Ok(offer) = ProtocolOffer::decode(*offer_bytes) else {
+    let Ok(offer) = decode_hello(*header_bytes, *offer_bytes) else {
         return 0;
     };
     match negotiate(offer, server_offer) {
@@ -706,8 +704,28 @@ pub fn negotiation_word(
     }
 }
 
-/// SPEC-088：两个负例——`major` 不匹配的协商与魔数错误的解码；命中给显式码，否则给 `0xffff`
-/// 哨兵（使「逻辑没跑」不可能伪装成成功）。
+/// 验证完整 Hello：头部版本与 offer 一致，操作/flags/声明长度符合当前 wire 格式。
+/// request_id 是调用方的关联标识，不限定为示例值。
+pub fn decode_hello(
+    header_bytes: [u8; MESSAGE_HEADER_LEN],
+    offer_bytes: [u8; OFFER_LEN],
+) -> Result<ProtocolOffer, CodecError> {
+    let header = MessageHeader::decode(header_bytes)?;
+    let offer = ProtocolOffer::decode(offer_bytes)?;
+    if header.opcode != HELLO_OPCODE
+        || header.flags != 0
+        || header.payload_len != OFFER_LEN as u32
+        || header.major != offer.major
+        || header.minor != offer.minor
+    {
+        return Err(CodecError::InvalidHello);
+    }
+    Ok(offer)
+}
+
+/// ring3 负例见证：高 32 位 MajorMismatch；低 16 位 BadMagic；bits 16..21
+/// 分别证明 opcode/flags/短长 payload/头部 major/minor 矛盾均被拒绝。
+/// 未执行或错误接受会产生不同于期望的字，不允许静默成功。
 pub fn negotiation_negatives() -> u64 {
     let client = ProtocolOffer {
         major: 1,
@@ -728,7 +746,38 @@ pub fn negotiation_negatives() -> u64 {
         Err(CodecError::BadMagic) => 0u64,
         _ => 0xffff,
     };
-    (major_mismatch << 32) | bad_magic
+    let header = MessageHeader {
+        major: client.major,
+        minor: client.minor,
+        opcode: HELLO_OPCODE,
+        flags: 0,
+        request_id: 3,
+        payload_len: OFFER_LEN as u32,
+    };
+    let malformed = [
+        MessageHeader {
+            opcode: 2,
+            ..header
+        },
+        MessageHeader { flags: 1, ..header },
+        MessageHeader {
+            payload_len: OFFER_LEN as u32 - 1,
+            ..header
+        },
+        MessageHeader {
+            payload_len: OFFER_LEN as u32 + 1,
+            ..header
+        },
+        MessageHeader { major: 2, ..header },
+        MessageHeader { minor: 1, ..header },
+    ];
+    let mut rejected = 0;
+    for (index, invalid) in malformed.into_iter().enumerate() {
+        if decode_hello(invalid.encode(), client.encode()) == Err(CodecError::InvalidHello) {
+            rejected |= 1 << index;
+        }
+    }
+    (major_mismatch << 32) | (rejected << 16) | bad_magic
 }
 
 /// 单条服务消息的 wire header。
@@ -836,6 +885,7 @@ pub enum CodecError {
     BadMagic,
     InvalidVersion,
     InvalidOffer,
+    InvalidHello,
 }
 
 const fn put_u16<const N: usize>(bytes: &mut [u8; N], offset: usize, value: u16) {
@@ -947,4 +997,159 @@ pub const fn negotiate(
             server.max_message_size
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hello(offer: ProtocolOffer) -> MessageHeader {
+        MessageHeader {
+            major: offer.major,
+            minor: offer.minor,
+            opcode: HELLO_OPCODE,
+            flags: 0,
+            request_id: u32::MAX,
+            payload_len: OFFER_LEN as u32,
+        }
+    }
+
+    #[test]
+    fn hello_roundtrips_and_negotiates_version_features_and_size() {
+        let client = ProtocolOffer {
+            major: 1,
+            minor: 3,
+            features: 0b111,
+            required_features: 1,
+            max_message_size: 4096,
+        };
+        let server = ProtocolOffer {
+            minor: 2,
+            ..SERVICE_OFFER_ALPHA
+        };
+        let header = hello(client);
+        assert_eq!(MessageHeader::decode(header.encode()), Ok(header));
+        assert_eq!(decode_hello(header.encode(), client.encode()), Ok(client));
+        assert_eq!(
+            negotiate(client, server),
+            Ok(NegotiatedProtocol {
+                major: 1,
+                minor: 2,
+                features: 0b101,
+                max_message_size: 2048,
+            })
+        );
+        assert_eq!(
+            negotiation_word(&header.encode(), &client.encode(), server),
+            0x0001_0002_0800_0005
+        );
+    }
+
+    #[test]
+    fn hello_rejects_each_inconsistent_header_before_negotiating() {
+        let client = SERVICE_OFFER_ALPHA;
+        let header = hello(client);
+        for invalid in [
+            MessageHeader { major: 2, ..header },
+            MessageHeader { minor: 1, ..header },
+            MessageHeader {
+                opcode: 0,
+                ..header
+            },
+            MessageHeader {
+                opcode: u16::MAX,
+                ..header
+            },
+            MessageHeader { flags: 1, ..header },
+            MessageHeader {
+                flags: u16::MAX,
+                ..header
+            },
+            MessageHeader {
+                payload_len: 0,
+                ..header
+            },
+            MessageHeader {
+                payload_len: OFFER_LEN as u32 - 1,
+                ..header
+            },
+            MessageHeader {
+                payload_len: OFFER_LEN as u32 + 1,
+                ..header
+            },
+            MessageHeader {
+                payload_len: u32::MAX,
+                ..header
+            },
+        ] {
+            assert_eq!(
+                decode_hello(invalid.encode(), client.encode()),
+                Err(CodecError::InvalidHello)
+            );
+            assert_eq!(
+                negotiation_word(&invalid.encode(), &client.encode(), client),
+                0
+            );
+        }
+        let mut bad_magic = header.encode();
+        bad_magic[0] ^= 1;
+        assert_eq!(
+            decode_hello(bad_magic, client.encode()),
+            Err(CodecError::BadMagic)
+        );
+    }
+
+    #[test]
+    fn invalid_offers_and_missing_required_features_remain_distinguishable() {
+        let offer = SERVICE_OFFER_ALPHA;
+        for invalid in [
+            ProtocolOffer { major: 0, ..offer },
+            ProtocolOffer {
+                max_message_size: 0,
+                ..offer
+            },
+            ProtocolOffer {
+                required_features: 0b1000,
+                ..offer
+            },
+        ] {
+            assert_eq!(
+                ProtocolOffer::decode(invalid.encode()),
+                Err(CodecError::InvalidOffer)
+            );
+            assert_eq!(
+                negotiate(invalid, offer),
+                Err(NegotiationError::InvalidOffer)
+            );
+            assert_eq!(
+                negotiate(offer, invalid),
+                Err(NegotiationError::InvalidOffer)
+            );
+        }
+        let required = ProtocolOffer {
+            required_features: 0b100,
+            ..offer
+        };
+        let missing = ProtocolOffer {
+            features: 1,
+            ..offer
+        };
+        assert_eq!(
+            negotiate(required, missing),
+            Err(NegotiationError::RequiredFeatureUnavailable)
+        );
+        assert_eq!(
+            negotiate(missing, required),
+            Err(NegotiationError::RequiredFeatureUnavailable)
+        );
+        assert_eq!(
+            negotiate(offer, ProtocolOffer { major: 2, ..offer }),
+            Err(NegotiationError::MajorMismatch)
+        );
+    }
+
+    #[test]
+    fn ring3_negatives_include_all_six_structural_rejections() {
+        assert_eq!(negotiation_negatives(), 0x0000_0001_003f_0000);
+    }
 }

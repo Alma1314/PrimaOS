@@ -27,7 +27,7 @@ updated: 2026-10-24
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 内核/Lean 后继 Rust 882 项、lint、Lean 12 条一般性定理/6 条求值锚、完整 62 轮 BIOS PASS | [内核/Lean 报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)；[musl 前序](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)与[历史 VFS 超时](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)的失败/限制继续保留；各证据不相互替代 |
+| 最近验证记录 | 原生运行时/服务后继 Rust 896 项、lint、完整重跑 62 轮 BIOS PASS | [本轮报告](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)保留首次 W9 超时及同镜像复跑；[内核/Lean 前序](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)、[musl 前序](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)与[历史 VFS 超时](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)的范围/失败/限制继续保留 |
 | 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -39,7 +39,7 @@ updated: 2026-10-24
 | 抽象状态与研究目标 | [规范](COSIR%20原语规范.md)、[白皮书](Prima%20OS.md) | 预期语义与研究假设，不是实现证明 |
 | 阶段0–4签署 | 上方 SPEC-145–149 | 以各自退出条件及证据范围为限 |
 | 签署后整改 | [SPEC-150](docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)、[151](docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)、[阶段2 IPC](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段3](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)、[1–4复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md) | 旧签署后的局部修订，不抹去旧报告 |
-| 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
+| 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
 | 历史切片与反例 | [全量目录](docs/architecture/catalog.md)、[主题阅读链](docs/architecture/topics/README.md) | 文件不因未进入精选表而失效；必须保留失败与后继 |
@@ -52,11 +52,13 @@ musl 后继实现见[调用边界与 fd/stdio 报告](docs/superpowers/reports/2
 
 内核句柄与 Lean 后继补强见[验证报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)：generation 耗尽永久退役、权限未知位拒绝、分配失败不推进逻辑 CapId，以及单槽任意后续迁移中的旧句柄不复活证明；证据分层及未覆盖项以报告/Lean 映照为准，不改变阶段签署。
 
+原生运行时与服务后继见[握手/路径重构报告](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)：Hello 一致性验证、顺序分片、双路径事务重置与单次消费；仍限单客户端/单在途，未改变阶段签署。
+
 ## 已知问题与当前阻塞
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| VFS 历史启动超时 | 2026-10-23 多次出现 30 秒超时；2026-10-24 musl 后继版本的 V1/V2/V3 均已双轮通过，未宣称历史超时根因已修复 | [历史记录](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继验证](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；保留 30 秒门限及所有断言 |
+| QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继 V1/V2/V3 双轮通过。2026-10-24 原生服务验证首次 W9 30 秒无输出超时，同镜像隔离双轮通过；根因未定位 | [VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)、[W9 记录](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)；保留门限、断言和失败证据 |
 | BLK-003 | 仍 Open：候选基座库的 ABI/profile 假设未全部裁决；工作实现不等于组织级采纳 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M21；保留号段/命名/错误映射与阶段归属待决项 |
 | S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 未编写；Rust target/core-std 未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |
 | ISSUE-FORK-CONTINUATION-001 | Linux 风格 `syscall(57)` 包装的 fork 子返回值损坏；W6 用原生 51 绕过 | [M17b-4](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)；修复包装续执行并补对应探针 |

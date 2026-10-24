@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 用户态 VFS、文件描述符与路径
@@ -27,6 +27,9 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 
 ## 契约、计划与证据入口
 
+- [原生握手与分片事务契约](../../superpowers/specs/2026-10-24-native-runtime-service-design.md)
+- [运行时/服务后继验证](../../superpowers/reports/2026-10-24-native-runtime-service-report.md)
+
 - [LibOS 基础设计](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)
 - [LibOS 重构计划](../../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md)
 - [LibOS 重构验证报告](../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)
@@ -43,6 +46,8 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 - [compat-state.md](../../superpowers/compat/compat-state.md)
 
 ## 源码定位
+
+- [staging.rs](../../../prima-user/src/staging.rs) — 生产使用且可 host 验证的路径状态机
 
 - [vfs.rs](../../../prima-runtime/src/vfs.rs) — 路径、RAM 镜像与节点生命周期
 - [handles.rs](../../../prima-runtime/src/vfs/handles.rs) — 原生打开对象、类型化访问意图与游标

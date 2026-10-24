@@ -45,6 +45,7 @@ updated: 2026-10-24
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-native-runtime-service-design.md](2026-10-24-native-runtime-service-design.md) | 原生运行时与服务：握手和分片事务边界 |
 | 2026-10-13 | [2026-10-13-stage4-string-service-names-design.md](2026-10-13-stage4-string-service-names-design.md) | SPEC-101 设计：字符串服务名与端点名的运行期指派（闭合 SPEC-095 §5.1） |
 | 2026-10-13 | [2026-10-13-stage4-ring3-service-manager-design.md](2026-10-13-stage4-ring3-service-manager-design.md) | SPEC-102 设计：把服务管理器迁到 ring3 Rust（服务机制收敛） |
 | 2026-10-12 | [2026-10-12-stage4-runtime-service-registry-design.md](2026-10-12-stage4-runtime-service-registry-design.md) | SPEC-095 设计：运行期服务注册表（闭合 SPEC-093 §5.2） |

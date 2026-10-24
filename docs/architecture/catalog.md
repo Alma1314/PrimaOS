@@ -80,7 +80,7 @@
 | [接口、号段与版本边界](interfaces.md) | current | `docs/architecture/interfaces.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（166）
+## report（167）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -250,14 +250,16 @@
 | [文档生命周期治理与过时材料清理报告](../superpowers/reports/2026-10-24-documentation-lifecycle-report.md) | historical | `docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md` |
 | [内核句柄、权限与 Lean 模型补强](../superpowers/reports/2026-10-24-kernel-handle-model-report.md) | historical | `docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md` |
 | [musl 移植补强：调用边界与 fd/stdio 验证](../superpowers/reports/2026-10-24-musl-port-boundary-report.md) | historical | `docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md` |
+| [原生运行时与服务重构验证](../superpowers/reports/2026-10-24-native-runtime-service-report.md) | historical | `docs/superpowers/reports/2026-10-24-native-runtime-service-report.md` |
 
-## spec（3）
+## spec（4）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [VFS 打开对象与 LibOS 适配边界](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md) | current | `docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md` |
 | [内核句柄耗尽与 Lean 迁移模型](../superpowers/specs/2026-10-24-kernel-handle-model-design.md) | current | `docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md` |
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
+| [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
 ## specification（67）
 

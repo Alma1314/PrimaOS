@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-24
 ---
 
 # 原生运行时、ring3 服务与用户态 I/O
@@ -27,6 +27,9 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 
 ## 契约、计划与证据入口
 
+- [原生握手与分片事务契约](../../superpowers/specs/2026-10-24-native-runtime-service-design.md)
+- [运行时/服务后继验证](../../superpowers/reports/2026-10-24-native-runtime-service-report.md)
+
 - [Prima OS.md](../../../Prima%20OS.md)
 - [2026-09-25-stage4-runtime-api-design.md](../../superpowers/specs/2026-09-25-stage4-runtime-api-design.md)
 - [2026-10-13-stage4-ring3-service-manager-design.md](../../superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md)
@@ -38,6 +41,8 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 - [2026-10-17-exo3m-kernel-service-witness-retirement-report.md](../../superpowers/reports/2026-10-17-exo3m-kernel-service-witness-retirement-report.md)
 
 ## 源码定位
+
+- [staging.rs](../../../prima-user/src/staging.rs) — 生产使用且可 host 验证的路径状态机
 
 - [lib.rs](../../../prima-runtime/src/lib.rs)
 - [transport.rs](../../../prima-runtime/src/transport.rs)
@@ -60,4 +65,4 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 
 ## 限制与修改注意
 
-原生 API/版本规则与稳定外部 ABI 不同。用户态驱动的受控 COM1/IO port 子集不能当成通用设备栈、NIC 或 IOMMU 已完成。测试见证属于 xtask/用户态协议，不应把服务语义重新耦合进内核。
+原生 API/版本规则与稳定外部 ABI 不同。用户态驱动的受控 COM1/IO port 子集不能当成通用设备栈、NIC 或 IOMMU 已完成。测试见证属于 xtask/用户态协议，不应把服务语义重新耦合进内核。Hello 先校验头/offer 一致性；路径分片仅接受顺序组装，错误后必须重新开始，双路径确认与消费规则见后继契约。

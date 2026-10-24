@@ -24,6 +24,10 @@
 //! 句柄、路径解析、`O_CREAT`/`O_TRUNC`/`O_APPEND`/`O_EXCL`/`O_DIRECTORY` 与目录字节流都在本
 //! 服务内完成；管理器只做授权与路由，内核不解析文件树。
 
+use prima_user::staging::{
+    LinkTarget, OpenStaging, PairStaging, STAGED_CHMOD, STAGED_MKDIR, STAGED_RMDIR, STAGED_UNLINK,
+};
+
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
@@ -44,15 +48,14 @@ use prima_runtime::{
         SERVICE_VFS_FLAG_TRUNC, SERVICE_VFS_FLAGS_MASK, SERVICE_VFS_FLAGS_SHIFT,
         SERVICE_VFS_LINK_CHUNK, SERVICE_VFS_LINK_OFFSET_SHIFT, SERVICE_VFS_LINK_READ_TAG,
         SERVICE_VFS_LINK_REPLY_TAG, SERVICE_VFS_MUTATE_OP_MASK, SERVICE_VFS_MUTATE_OP_SHIFT,
-        SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OP_MKDIR, SERVICE_VFS_OP_RMDIR, SERVICE_VFS_OP_UNLINK,
-        SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PAIR_COMMIT_TAG, SERVICE_VFS_PAIR_OP_MASK,
-        SERVICE_VFS_PAIR_OP_READLINK, SERVICE_VFS_PAIR_OP_RENAME, SERVICE_VFS_PAIR_OP_SHIFT,
-        SERVICE_VFS_PAIR_OP_SYMLINK, SERVICE_VFS_PAIR_SLOT_SHIFT, SERVICE_VFS_PAIR_TAG,
-        SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT, SERVICE_VFS_PATH_MAX,
-        SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG, SERVICE_VFS_START_SHIFT,
-        SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK, SERVICE_VFS_STATUS_TAG,
-        SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker, pack_service_reply, pack_vfs_node,
-        pack_vfs_pair_reply,
+        SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PAIR_COMMIT_TAG,
+        SERVICE_VFS_PAIR_OP_MASK, SERVICE_VFS_PAIR_OP_READLINK, SERVICE_VFS_PAIR_OP_RENAME,
+        SERVICE_VFS_PAIR_OP_SHIFT, SERVICE_VFS_PAIR_OP_SYMLINK, SERVICE_VFS_PAIR_SLOT_SHIFT,
+        SERVICE_VFS_PAIR_TAG, SERVICE_VFS_PATH_BYTES_MASK, SERVICE_VFS_PATH_LEN_SHIFT,
+        SERVICE_VFS_PATH_MAX, SERVICE_VFS_PATH_OFFSET_SHIFT, SERVICE_VFS_PATH_TAG,
+        SERVICE_VFS_START_SHIFT, SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK,
+        SERVICE_VFS_STATUS_TAG, SERVICE_WAKE_TAG, pack_file_reply, pack_service_marker,
+        pack_service_reply, pack_vfs_node, pack_vfs_pair_reply,
     },
     vfs::{self, AccessMode, HandleId, NodeKind, OpenFiles, OpenFlags, SeekFrom, Storage},
 };
@@ -76,12 +79,6 @@ const RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
 const BOOTSTRAP_TASK: u32 = 1;
 /// M8：VFS 镜像在持久化段内的起点。偏移 0..8 留给 SPEC-112 的状态字。
 const SERVICE_VFS_BASE: u64 = SERVICE_FILE_SIZE_OFFSET;
-/// M11：暂存操作码（0 保留给 open/stat；线上 0..2 映射为 1..3）。
-const STAGED_MKDIR: u8 = SERVICE_VFS_OP_MKDIR as u8 + 1;
-const STAGED_UNLINK: u8 = SERVICE_VFS_OP_UNLINK as u8 + 1;
-const STAGED_RMDIR: u8 = SERVICE_VFS_OP_RMDIR as u8 + 1;
-/// M13b：chmod/fchmod 的单路径暂存（0..3 已分配）。
-const STAGED_CHMOD: u8 = 4;
 /// M8：文件/目录服务端句柄的编号起点。
 const SERVICE_FILE_FIRST_FD: u64 = 3;
 
@@ -294,9 +291,11 @@ pub fn run(
             let slot = ((message.payload >> SERVICE_VFS_PAIR_SLOT_SHIFT) & 1) as u8;
             let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
             let first = message.payload & SERVICE_VFS_FIRST_BYTES_MASK;
-            if vfs_ready && pair.begin(op, slot, len, first) {
-                staged.active = false;
-            } else {
+            staged.active = false;
+            if op == SERVICE_VFS_PAIR_OP_READLINK as u8 {
+                link = LinkTarget::EMPTY;
+            }
+            if !vfs_ready || !pair.begin(op, slot, len, first) {
                 pair.active = false;
             }
         } else if tag == SERVICE_VFS_PAIR_COMMIT_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
@@ -304,16 +303,11 @@ pub fn run(
             let op =
                 ((message.payload >> SERVICE_VFS_PAIR_OP_SHIFT) & SERVICE_VFS_PAIR_OP_MASK) as u8;
             let slot = ((message.payload >> SERVICE_VFS_PAIR_SLOT_SHIFT) & 1) as u8;
-            let reply = if vfs_ready && pair.active && pair.op == op {
-                if slot == 0 && op != SERVICE_VFS_PAIR_OP_READLINK as u8 {
-                    if pair.ready(0) {
-                        pack_vfs_pair_reply(op as u64, 0, 0)
-                    } else {
-                        pair.active = false;
-                        pack_vfs_pair_reply(op as u64, SERVICE_FILE_EINVAL, 0)
-                    }
-                } else {
-                    pair_staged(&runtime, &mut pair, &mut link)
+            let reply = if vfs_ready {
+                match pair.commit(op, slot) {
+                    Ok(false) => pack_vfs_pair_reply(op as u64, 0, 0),
+                    Ok(true) => pair_staged(&runtime, &mut pair, &mut link),
+                    Err(status) => pack_vfs_pair_reply(op as u64, status, 0),
                 }
             } else {
                 pair.active = false;
@@ -351,183 +345,6 @@ pub fn run(
             let _ = runtime.send(peer, send_cap, response, &[]);
         }
     }
-}
-
-/// M8：一次 open 的分阶段状态。路径经 `OPEN`（前 3 字节）+ `PATH`（随后每段 5 字节）装入。
-#[derive(Clone, Copy)]
-struct OpenStaging {
-    active: bool,
-    /// 0 = open/stat；1 = mkdir；2 = unlink；3 = rmdir（M11）；4 = chmod（M13b）。
-    op: u8,
-    flags: u8,
-    len: u8,
-    got: u8,
-    start: u8,
-    path: [u8; SERVICE_VFS_PATH_MAX],
-}
-
-impl OpenStaging {
-    const EMPTY: Self = Self {
-        active: false,
-        op: 0,
-        flags: 0,
-        len: 0,
-        got: 0,
-        start: 0,
-        path: [0u8; SERVICE_VFS_PATH_MAX],
-    };
-
-    fn begin(&mut self, flags: u8, len: usize, start: u8, first: u64) -> u64 {
-        // M9：STAT 允许空路径，表示“直接查询 start 节点”（fstat 用）。
-        let stat_only = flags & SERVICE_VFS_FLAG_STAT as u8 != 0;
-        if (len == 0 && !stat_only) || len > SERVICE_VFS_PATH_MAX {
-            self.active = false;
-            return SERVICE_FILE_EINVAL;
-        }
-        self.active = true;
-        self.op = 0;
-        self.flags = flags;
-        self.len = len as u8;
-        self.got = len.min(3) as u8;
-        self.start = start;
-        self.path = [0u8; SERVICE_VFS_PATH_MAX];
-        for (index, byte) in self.path.iter_mut().take(self.got as usize).enumerate() {
-            *byte = ((first >> (8 * index)) & 0xff) as u8;
-        }
-        0
-    }
-
-    /// M11：开始一次单路径变更（mkdir/unlink/rmdir）；空路径一律拒绝。
-    /// M13b：开始一次 chmod/fchmod；空路径合法（改 `start` 节点），故不复用
-    /// `begin` 的“非 stat 必须非空路径”检查。
-    fn begin_chmod(&mut self, len: usize, start: u8, first: u64) -> u64 {
-        if len > SERVICE_VFS_PATH_MAX {
-            self.active = false;
-            return SERVICE_FILE_EINVAL;
-        }
-        self.active = true;
-        self.op = STAGED_CHMOD;
-        self.flags = 0;
-        self.len = len as u8;
-        self.got = len.min(3) as u8;
-        self.start = start;
-        self.path = [0u8; SERVICE_VFS_PATH_MAX];
-        for index in 0..self.got as usize {
-            self.path[index] = ((first >> (8 * index)) & 0xff) as u8;
-        }
-        0
-    }
-
-    fn begin_mutate(&mut self, op: u8, len: usize, start: u8, first: u64) -> u64 {
-        if len == 0 || len > SERVICE_VFS_PATH_MAX {
-            self.active = false;
-            return SERVICE_FILE_EINVAL;
-        }
-        let status = self.begin(0, len, start, first);
-        if status == 0 {
-            self.op = op;
-        }
-        status
-    }
-
-    fn append(&mut self, offset: usize, bytes: u64) -> u64 {
-        if !self.active
-            || offset > self.len as usize
-            || offset + 5 < self.got as usize
-            || offset > self.got as usize
-        {
-            return SERVICE_FILE_EINVAL;
-        }
-        let count = (self.len as usize - offset).min(5);
-        for (index, byte) in self.path[offset..offset + count].iter_mut().enumerate() {
-            *byte = ((bytes >> (8 * index)) & 0xff) as u8;
-        }
-        self.got = (offset + count) as u8;
-        0
-    }
-}
-
-/// M13a：rename/symlink 的双字符串暂存，以及 readlink 最近一次目标。
-///
-/// 槽 0 与槽 1 各自按 `OPEN`（前 3 字节）+ `PATH`（随后每段 5 字节）填充；A 的
-/// COMMIT 只确认，B 的 COMMIT（readlink 是 A）执行操作。两个槽都只保存字节，
-/// 目标字符串不要求是合法路径。
-#[derive(Clone, Copy)]
-struct PairStaging {
-    active: bool,
-    op: u8,
-    slot: u8,
-    lens: [u8; 2],
-    got: [u8; 2],
-    paths: [[u8; SERVICE_VFS_PATH_MAX]; 2],
-}
-
-impl PairStaging {
-    const EMPTY: Self = Self {
-        active: false,
-        op: 0,
-        slot: 0,
-        lens: [0; 2],
-        got: [0; 2],
-        paths: [[0u8; SERVICE_VFS_PATH_MAX]; 2],
-    };
-
-    fn begin(&mut self, op: u8, slot: u8, len: usize, first: u64) -> bool {
-        if slot > 1
-            || op > SERVICE_VFS_PAIR_OP_READLINK as u8
-            || len == 0
-            || len > SERVICE_VFS_PATH_MAX
-        {
-            self.active = false;
-            return false;
-        }
-        self.active = true;
-        self.op = op;
-        self.slot = slot;
-        self.lens[slot as usize] = len as u8;
-        self.got[slot as usize] = len.min(3) as u8;
-        self.paths[slot as usize] = [0u8; SERVICE_VFS_PATH_MAX];
-        for index in 0..self.got[slot as usize] as usize {
-            self.paths[slot as usize][index] = ((first >> (8 * index)) & 0xff) as u8;
-        }
-        true
-    }
-
-    fn append(&mut self, offset: usize, bytes: u64) -> bool {
-        if !self.active {
-            return false;
-        }
-        let slot = self.slot as usize;
-        let len = self.lens[slot] as usize;
-        let got = self.got[slot] as usize;
-        if offset != got || offset > len {
-            return false;
-        }
-        let count = (len - offset).min(5);
-        for index in 0..count {
-            self.paths[slot][offset + index] = ((bytes >> (8 * index)) & 0xff) as u8;
-        }
-        self.got[slot] = (offset + count) as u8;
-        true
-    }
-
-    fn ready(&self, slot: usize) -> bool {
-        self.lens[slot] != 0 && self.got[slot] == self.lens[slot]
-    }
-}
-
-/// M13a：readlink 最近一次目标，供后续 3 字节分段读取。
-#[derive(Clone, Copy)]
-struct LinkTarget {
-    len: u8,
-    bytes: [u8; SERVICE_VFS_PATH_MAX],
-}
-
-impl LinkTarget {
-    const EMPTY: Self = Self {
-        len: 0,
-        bytes: [0u8; SERVICE_VFS_PATH_MAX],
-    };
 }
 
 fn open_flags(bits: u8) -> Result<OpenFlags, vfs::VfsError> {

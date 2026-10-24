@@ -79,6 +79,7 @@ updated: 2026-10-24
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-24 | [2026-10-24-native-runtime-service-report.md](2026-10-24-native-runtime-service-report.md) | 原生运行时与服务重构验证 |
 | 2026-10-17 | [2026-10-17-stage4-manifest-index-report.md](2026-10-17-stage4-manifest-index-report.md) | SPEC-132：从 manifest 顺序确定 init 服务索引 |
 | 2026-10-17 | [2026-10-17-stage4-init-dynamic-handles-report.md](2026-10-17-stage4-init-dynamic-handles-report.md) | SPEC-131：init 自检读取动态 Capability 句柄 |
 | 2026-10-17 | [2026-10-17-stage4-exit-review-spec149.md](2026-10-17-stage4-exit-review-spec149.md) | SPEC-149：阶段 4 退出条件复核与签署 |

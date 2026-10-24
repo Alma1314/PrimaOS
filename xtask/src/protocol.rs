@@ -920,7 +920,7 @@ pub(crate) fn validate_service_traces(output: &str) -> Result<(), String> {
     }
     if shared[4].args[0] != SERVICE_EXPECTED_NEGATIVES {
         return Err(format!(
-            "service_negotiated negatives (0x{:x}) must be 0x{SERVICE_EXPECTED_NEGATIVES:x} — the ring3 service must observe MajorMismatch (1) and BadMagic (0)",
+            "service_negotiated negatives (0x{:x}) must be 0x{SERVICE_EXPECTED_NEGATIVES:x} — the ring3 service must observe MajorMismatch (1), BadMagic (0), and all six malformed Hello rejections (0x3f)",
             shared[4].args[0]
         ));
     }
@@ -4055,8 +4055,8 @@ const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 /// `{features 0b101, required 0b001, max 2048}` 协商得 `{major 1, minor 0, features 1, max 2048}`。
 /// `max=2048` 只可能来自**服务端** offer（客户端是 4096），是「服务端真的参与协商」的判决性字段。
 const SERVICE_EXPECTED_NEGOTIATED: u64 = 0x0001_0000_0800_0001;
-/// `MajorMismatch(1)<<32 | BadMagic(0)`：两个负例由服务端 ring3 Rust 计算，证明 `decode`/`negotiate` 真跑过。
-const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_0000_0000;
+/// `MajorMismatch(1)<<32 | InvalidHello(0x3f)<<16 | BadMagic(0)`，由 ring3 实际验证。
+const SERVICE_EXPECTED_NEGATIVES: u64 = 0x0000_0001_003f_0000;
 
 /// SPEC-088：init（broker）与 ring3 Rust 服务端点解析/协商的期望字段。
 ///
@@ -4483,6 +4483,27 @@ mod tests {
         // 语义负例：Y 页自报 id 低字节与 trace 的 self_id 不符。
         let wrong_hello = output.replace("080000000000565e", "0c0000000000565e");
         assert!(validate_service_traces(&wrong_hello).is_err());
+    }
+
+    #[test]
+    fn service_trace_requires_every_malformed_hello_rejection() {
+        let (output, _) = service_trace_fixture();
+        let encode = |word: u64| -> String {
+            word.to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        };
+        let expected = encode(super::SERVICE_EXPECTED_NEGATIVES);
+        for bit in 16..22 {
+            let missing = encode(super::SERVICE_EXPECTED_NEGATIVES & !(1 << bit));
+            let altered = output.replace(&expected, &missing);
+            assert_ne!(altered, output);
+            let error = validate_service_traces(&altered).unwrap_err();
+            assert!(error.contains("six malformed Hello"), "{error}");
+        }
+        let legacy = output.replace(&expected, &encode(0x0000_0001_0000_0000));
+        assert!(validate_service_traces(&legacy).is_err());
     }
 
     #[test]
