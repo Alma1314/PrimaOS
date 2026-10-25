@@ -281,7 +281,8 @@ const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
 ];
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
-    validate_output_impl(output, Some((55, 164, 172))).map(|_| ())
+    // Managed exit now parks once in RECV before the manager destroys it.
+    validate_output_impl(output, Some((55, 164, 173))).map(|_| ())
 }
 
 /// M5：echo 用例的 IPC 高水位依赖该程序实际的字节数，不是固定探针基线。
@@ -709,6 +710,7 @@ pub(crate) fn validate_stage5_echo(
     {
         return Err(format!("{case} kernel task state mismatch: {lines:?}"));
     }
+    // The extra managed-exit BlockedRecv transition contributes one audit event.
     let capacity: Vec<_> = output
         .lines()
         .filter(|line| line.starts_with("CAPACITY|"))
@@ -784,7 +786,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1346;audit_limit=8192"
+            != "CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1347;audit_limit=8192"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -2146,6 +2148,7 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
     let mut fmask = None;
     let mut lstar_ok = None;
     let mut stack_canary = None;
+    let mut stack_guard = None;
     for pair in data.split(';') {
         let (key, value) = pair
             .split_once('=')
@@ -2161,6 +2164,7 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
             "fmask" => fmask = Some(parse_addr(value)?),
             "lstar_ok" => lstar_ok = Some(parse_decimal(value, "lstar_ok")?),
             "stack_canary" => stack_canary = Some(parse_decimal(value, "stack_canary")?),
+            "stack_guard" => stack_guard = Some(parse_decimal(value, "stack_guard")?),
             _ => return Err(format!("unknown data key: {key}")),
         }
     }
@@ -2178,6 +2182,9 @@ fn validate_syscall_fast_data(data: Option<&str>) -> Result<(), String> {
 
     if stack_canary != Some(1) {
         return Err("syscall_fast_ready stack_canary must be present and 1".to_owned());
+    }
+    if stack_guard != Some(1) {
+        return Err("syscall_fast_ready stack_guard must be present and 1".to_owned());
     }
 
     if cs != USER_CS || cs & 3 != 3 {
@@ -3112,7 +3119,7 @@ fn validate_ipc_data(
         && (queued != expected_queued || direct != expected_direct || blocks != expected_blocks)
     {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected {expected_queued}/{expected_direct}/{expected_blocks}; stage5 片 C adds the C Task 17 write stream, M4 adds the synchronous file request/reply round trips, and M13b adds one chmod request per O_CREAT/mkdir (each one blocks the C task and direct-delivers the reply)"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected {expected_queued}/{expected_direct}/{expected_blocks}; stage5 片 C adds the C Task 17 write stream, M4 adds the synchronous file request/reply round trips, and M13b adds one chmod request per O_CREAT/mkdir (each one blocks the C task and direct-delivers the reply); managed exit parks once more before manager-owned destruction"
         ));
     }
     Ok((queued, direct, blocks))
@@ -4462,7 +4469,7 @@ mod tests {
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
         output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132\r\n");
-        output.push_str("CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1346;audit_limit=8192\r\n");
+        output.push_str("CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1347;audit_limit=8192\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);
@@ -4583,13 +4590,13 @@ mod tests {
         "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
         "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
-        "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1\n",
+        "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1;stack_guard=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1\n",
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=55;direct=164;blocks=172\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=55;direct=164;blocks=173\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=132;root_cleared=1;grandchild=4;tasks_after=12;caps_after=132;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=3;binds=4;unbinds=2;mounts=2;unmounts=1;resolves=4;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
@@ -4781,7 +4788,7 @@ mod tests {
     fn rejects_ipc_ready_without_the_direct_wake_path() {
         let output = VALID.replace(";direct=164;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 55/164/172"), "{error}");
+        assert!(error.contains("expected 55/164/173"), "{error}");
     }
 
     #[test]
@@ -5715,6 +5722,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rejects_missing_or_mapped_syscall_stack_guard() {
+        for replacement in ["", ";stack_guard=0", ";stack_guard=2"] {
+            let output = VALID.replace(";stack_guard=1", replacement);
+            let error = validate_output(&output).unwrap_err();
+            assert!(error.contains("stack_guard"), "{error}");
+        }
+    }
+
     /// 切片 L 的完整证据串（与 `VALID` 中的两行一致），便于替换构造反例。
     const EXC_DATA: &str = "cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1";
     const PENDING_DATA: &str =
@@ -5921,7 +5937,7 @@ mod tests {
     }
 
     /// 切片 J 的完整证据串（与 `VALID` 中的一行一致），便于替换构造反例。
-    const FAST_DATA: &str = "cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1";
+    const FAST_DATA: &str = "cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1;stack_guard=1";
 
     #[test]
     fn rejects_fast_not_from_cpl3() {

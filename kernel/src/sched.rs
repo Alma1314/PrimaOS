@@ -298,6 +298,17 @@ fn save_fpu(task_id: u32) {
     });
 }
 
+/// Snapshot the running caller before publishing a fork/clone child. A parent's
+/// saved slot may predate its last user-space floating-point instruction.
+pub fn inherit_current_fpu(child: u32) {
+    let parent = current();
+    if child as usize >= MAX_TASKS || parent as usize >= MAX_TASKS {
+        return;
+    }
+    save_fpu(parent);
+    FPU_AREAS.with_mut(|areas| areas[child as usize] = areas[parent as usize]);
+}
+
 /// 用 `task_id` 的槽位覆盖硬件 x87/SSE 状态。
 fn restore_fpu(task_id: u32) {
     FPU_AREAS.with_mut(|areas| {

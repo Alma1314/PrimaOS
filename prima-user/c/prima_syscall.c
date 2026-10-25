@@ -5,7 +5,7 @@
  * - 所有失败返回原始负 errno（不设置 errno，musl 的 syscall 约定）；
  * - fd 0 是 tty 输入、fd 1/2 是管理器的 tty 输出；fd 3..18 是通用
  *   本地表，文件/目录项经用户态 VFS 存储服务；
- * - 每次 SEND 后显式 YIELD：自毁会清掉仍在接收队列里的消息，退出状态必须先被取走。
+ * - tty SEND 后 YIELD；退出上报后停驻 RECV，由管理器消费状态并销毁任务。
  */
 #include "prima_syscall.h"
 
@@ -2393,11 +2393,11 @@ __attribute__((noreturn)) static void prima_exit_group(int status) {
     uint64_t payload = PRIMA_STAGE5_C_PROBE_TAG |
                        ((uint64_t)(uint8_t)status << 16) |
                        ((uint64_t)id & 0xff);
-    if (prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
-                  (long)prima_ctx.send_cap, (long)payload, 0, 0, 0) == 0) {
-        (void)prima_raw(PRIMA_SYS_TASK_DESTROY, (long)prima_ctx.self_cap, 0, 0,
-                        0, 0, 0);
-    }
+    /* Keep the exit notification alive until the manager receives it. A task
+     * destroy removes its queued outgoing messages. The manager owns the final
+     * destroy and releases the arena only after the task can no longer run. */
+    (void)prima_raw(PRIMA_SYS_SEND, (long)prima_ctx.manager_id,
+                    (long)prima_ctx.send_cap, (long)payload, 0, 0, 0);
     for (;;) {
         long sink[3];
         (void)prima_raw(PRIMA_SYS_RECV, (long)sink, 0, 0, 0, 0, 0);

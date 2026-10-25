@@ -429,13 +429,14 @@ static CONTEXT_BASE: AtomicU64 = AtomicU64::new(0);
 // The debug build's authorization/segment lookup path exceeds the old 16 KiB
 // once closure accesses acquire locks. Match the existing per-task 32 KiB budget.
 pub const SYSCALL_STACK_SIZE: usize = 32 * 1024;
+pub const SYSCALL_GUARD_SIZE: usize = 4096;
 const STACK_CANARY_BYTES: usize = 64;
 const STACK_CANARY: [u8; 8] = 0x6b73_7461_636b_a55au64.to_le_bytes();
 
-#[repr(align(16))]
+#[repr(align(4096))]
 struct SyscallStack(
     #[allow(dead_code)] // 生产代码经 asm/volatile 访问；host 测试直接修改哨兵。
-    [u8; SYSCALL_STACK_SIZE],
+    [u8; SYSCALL_GUARD_SIZE + SYSCALL_STACK_SIZE],
 );
 
 /// `syscall` 快路径的专用内核栈。
@@ -443,10 +444,10 @@ static SYSCALL_STACK: StaticCell<SyscallStack> = StaticCell::new(SyscallStack::n
 
 impl SyscallStack {
     const fn new() -> Self {
-        let mut bytes = [0; SYSCALL_STACK_SIZE];
+        let mut bytes = [0; SYSCALL_GUARD_SIZE + SYSCALL_STACK_SIZE];
         let mut index = 0;
         while index < STACK_CANARY_BYTES {
-            bytes[index] = STACK_CANARY[index % STACK_CANARY.len()];
+            bytes[SYSCALL_GUARD_SIZE + index] = STACK_CANARY[index % STACK_CANARY.len()];
             index += 1;
         }
         Self(bytes)
@@ -458,11 +459,16 @@ fn stack_canary_at(base: u64) -> bool {
         .all(|index| mm::read_u64_at(base, index as u64) == u64::from_le_bytes(STACK_CANARY))
 }
 
-/// Checks the bottom 64 bytes after execution. This is an evidence sentinel,
-/// not a guard page or prevention of arbitrary stack overflow. Raw reads avoid
-/// borrowing the entire buffer while it may contain a live Rust stack.
+/// Virtual page to omit from the kernel image mapping, immediately below the
+/// usable syscall stack. The physical direct-map alias remains kernel-only.
+pub fn syscall_stack_guard_page() -> u64 {
+    SYSCALL_STACK.as_ptr() as u64
+}
+
+/// Checks the bottom 64 usable bytes after execution. Raw reads avoid borrowing
+/// the unmapped guard or the entire buffer while it contains a live Rust stack.
 pub fn syscall_stack_canary_intact() -> bool {
-    stack_canary_at(SYSCALL_STACK.as_ptr() as u64)
+    stack_canary_at(syscall_stack_guard_page() + SYSCALL_GUARD_SIZE as u64)
 }
 
 /// `syscall` 进入前的用户 `rsp`（`sysretq` 前恢复）。
@@ -932,7 +938,7 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         "mov rsp, qword ptr [rip + {user_rsp}]",
         "sysretq",
         stack = sym SYSCALL_STACK,
-        size = const SYSCALL_STACK_SIZE,
+        size = const SYSCALL_GUARD_SIZE + SYSCALL_STACK_SIZE,
         user_rsp = sym USER_RSP,
         handle = sym FAST_SYSCALL_HANDLER,
         user_cs = sym FAST_SYSCALL_CS,
@@ -1308,16 +1314,16 @@ mod tests {
     #[test]
     fn stack_canary_detects_each_boundary_byte_change() {
         let mut stack = SyscallStack::new();
-        let base = &stack as *const SyscallStack as u64;
+        let base = &stack as *const SyscallStack as u64 + SYSCALL_GUARD_SIZE as u64;
         assert_eq!(SYSCALL_STACK_SIZE, 32 * 1024);
         assert!(stack_canary_at(base));
         for index in 0..STACK_CANARY_BYTES {
-            stack.0[index] ^= 1;
+            stack.0[SYSCALL_GUARD_SIZE + index] ^= 1;
             assert!(!stack_canary_at(base), "byte {index}");
-            stack.0[index] ^= 1;
+            stack.0[SYSCALL_GUARD_SIZE + index] ^= 1;
         }
-        stack.0[STACK_CANARY_BYTES] = 1;
-        assert_eq!(stack.0[STACK_CANARY_BYTES], 1);
+        stack.0[SYSCALL_GUARD_SIZE + STACK_CANARY_BYTES] = 1;
+        assert_eq!(stack.0[SYSCALL_GUARD_SIZE + STACK_CANARY_BYTES], 1);
         assert!(stack_canary_at(base));
     }
 
@@ -1335,7 +1341,7 @@ mod tests {
             &SYSCALL_STACK as *const _ as usize,
             SYSCALL_STACK.as_ptr() as usize
         );
-        assert!((SYSCALL_STACK.as_ptr() as usize).is_multiple_of(16));
+        assert!((SYSCALL_STACK.as_ptr() as usize).is_multiple_of(SYSCALL_GUARD_SIZE));
     }
 
     #[test]

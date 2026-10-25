@@ -15,6 +15,10 @@ static void emit(const char *t){ssize_t i=write(1,t,text_len(t));(void)i;}
 static void emit_dec(long v){char d[20];int i=20;unsigned long m=v<0?(unsigned long)(-v):(unsigned long)v;do{d[--i]=(char)('0'+m%10);m/=10;}while(m);if(v<0)d[--i]='-';ssize_t g=write(1,&d[i],(unsigned long)(20-i));(void)g;}
 static void field(const char *n,int p,long e){emit(first_field?"|":";");first_field=0;emit(n);emit("=");emit_dec(p?1:0);if(!p){failures=1;if(!first_error)first_error=(int)e;}}
 static volatile unsigned long g_value;
+static unsigned mxcsr(void) { unsigned value; __asm__ volatile("stmxcsr %0" : "=m"(value)); return value; }
+static void set_mxcsr(unsigned value) { __asm__ volatile("ldmxcsr %0" :: "m"(value)); }
+static unsigned short fcw(void) { unsigned short value; __asm__ volatile("fnstcw %0" : "=m"(value)); return value; }
+static void set_fcw(unsigned short value) { __asm__ volatile("fldcw %0" :: "m"(value)); }
 __attribute__((noinline)) static long fork_path(int mode) {
     if (mode == 1)
         return fork();
@@ -25,16 +29,20 @@ __attribute__((noinline)) static long fork_path(int mode) {
     return syscall(57L);
 }
 int main(void) {
-    int forks=1, waits=1, statuses=1, snapshots=1, guards=1, errors=1;
+    int forks=1, waits=1, statuses=1, snapshots=1, guards=1, errors=1, fpu=1;
     emit("PROC");
     for (int mode=0; mode<3; mode++) {
         volatile unsigned long stack[64];
         for (unsigned i=0; i<64; i++) stack[i]=0x12340000UL+i+(unsigned)mode;
         g_value=0xabcdef00UL+(unsigned)mode;
         errno=77;
+        unsigned old_mxcsr=mxcsr(), inherited_mxcsr=(old_mxcsr & ~0x6000u) | 0x2000u;
+        unsigned short old_fcw=fcw(), inherited_fcw=(unsigned short)((old_fcw & ~0x0c00u) | 0x0400u);
+        set_mxcsr(inherited_mxcsr); set_fcw(inherited_fcw);
         long pid=fork_path(mode);
         if (pid==0) {
-            int ok=g_value==0xabcdef00UL+(unsigned)mode && errno==77;
+            int ok=g_value==0xabcdef00UL+(unsigned)mode && errno==77 &&
+                mxcsr()==inherited_mxcsr && fcw()==inherited_fcw;
             for (unsigned i=0; i<64; i++) ok=ok && stack[i]==0x12340000UL+i+(unsigned)mode;
             stack[0]=0;
             g_value=0;
@@ -42,6 +50,8 @@ int main(void) {
             _exit(ok ? 7+mode : 99);
         }
         forks=forks && pid>0;
+        set_mxcsr((old_mxcsr & ~0x6000u) | 0x4000u);
+        set_fcw((unsigned short)((old_fcw & ~0x0c00u) | 0x0800u));
         g_value=0x98760000UL+(unsigned)mode;
         for (unsigned i=0; i<64; i++) stack[i]=0x56780000UL+i+(unsigned)mode;
         struct { int status; uint32_t guard; } result={-1,UINT32_C(0xfacefeed)};
@@ -49,6 +59,9 @@ int main(void) {
         waits=waits && pid>0 && waited==pid;
         statuses=statuses && ((result.status>>8)&0xff)==7+mode;
         guards=guards && result.guard==UINT32_C(0xfacefeed);
+        fpu=fpu && mxcsr()==((old_mxcsr & ~0x6000u) | 0x4000u) &&
+            fcw()==(unsigned short)((old_fcw & ~0x0c00u) | 0x0800u);
+        set_mxcsr(old_mxcsr); set_fcw(old_fcw);
         snapshots=snapshots && g_value==0x98760000UL+(unsigned)mode && errno==77;
         for (unsigned i=0; i<64; i++) snapshots=snapshots && stack[i]==0x56780000UL+i+(unsigned)mode;
         errno=0;
@@ -57,6 +70,7 @@ int main(void) {
     }
     field("fork",forks,1); field("wait",waits,2); field("status",statuses,3);
     field("cow",snapshots,4); field("echild",errors,5); field("guard",guards,6);
+    field("fpu",fpu,7);
     emit("|ok=");emit_dec(failures?0:1);emit(";err=");emit_dec(first_error);emit("\n");
     return failures?1:0;
 }

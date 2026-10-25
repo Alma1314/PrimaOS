@@ -1,0 +1,10 @@
+{
+  "compiler_commit": "1a833e165",
+  "license": "MIT OR Apache-2.0",
+  "upstream_sha256": {
+    "std/src/sys/alloc/mod.rs": "7c40f1c30fcf850a5fa25361f779b7b1205c94486fb42acf83e9dda1e71915da",
+    "std/src/sys/io/error/mod.rs": "1b591042fe82bc290244f6099db38bdb233578cdbcb2d927eab1181f035389d7",
+    "std/src/sys/thread_local/mod.rs": "b3656d1052cac05f530572f0cb292757d54106e82dfdf04d1d85436bb3ea03bf",
+    "std/src/sys/random/mod.rs": "38d7c91c3fee07226c5071a4e8edd75dd693f54cd76bc7f2a06fd8b80d0cb794"
+  }
+}

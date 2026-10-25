@@ -1127,6 +1127,8 @@ pub(crate) fn syscall_fast_ready(witness: &kernel::syscall::FastWitness) {
     write_u32(witness.lstar_ok);
     serial::write_bytes(b";stack_canary=");
     write_u32(witness.stack_canary);
+    serial::write_bytes(b";stack_guard=");
+    write_u32(witness.stack_guard);
     serial::write_bytes(b"\r\n");
 }
 

@@ -174,8 +174,6 @@ const SERVICE_STACK_PAGES: u64 = 1;
 /// C 入口栈页数：musl 的 `__libc_start_main` 与 `snprintf` 调用链合计超过 4 页；
 /// 8 页容纳启动初始化与格式化路径，同时把映射条目控制在新的 vspace 预算内。
 const C_STACK_PAGES: u64 = 8;
-/// C 入口栈顶从最高页的页内 0xf00 开始，保持 16 字节对齐。
-const C_STACK_OFFSET: u64 = C_STACK_PAGES * FRAME_SIZE - 0x100;
 /// M3b/M9：C 任务的匿名内存 arena（96 页 RW），与栈**同一 Segment** 的不同偏移。
 ///
 /// 适配层按固定 VA bump 分配（首 40 页 brk、其余 56 页 mmap），因此映射必须在任务运行
@@ -932,14 +930,18 @@ pub extern "C" fn _start(
                 let _ = runtime.send(TaskId::from_raw(client), send, pack_vma_cap_reply(1), &[]);
             }
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
-            // C 程序（id 17）自报后调用 SYS_TASK_DESTROY(self)；内核 TASKCAP 独立核验
-            // Dead 与根清理，不能只相信这条消息。
+            // Sender parks in receive after reporting exit. Destroy it before
+            // reclaiming its stack/data; sender-side self-destroy could discard
+            // a queued notification before this manager had consumed it.
             // 屏蔽状态字节与 ID 字节后必须等于固定标签（含 0x5a 见证），再记录两者。
             if message.payload & !((0xff << 16) | 0xff) == (STAGE5_C_PROBE_TAG & !0xff) {
                 capacity_id = message.payload & 0xff;
                 capacity_exit_status = (message.payload >> 16) & 0xff;
             }
             if let Some((manager, entry_offset, stack, data)) = capacity_probe {
+                if runtime.task_destroy(manager).is_err() {
+                    continue;
+                }
                 let stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
                 let data_reclaimed = match data {
                     Some(data) => runtime.memseg_destroy(data).is_ok(),
@@ -1795,14 +1797,19 @@ fn create_service(
         drop_data_segments(runtime, &mut data_segments);
         return None;
     };
-    if c_stack && prepare_c_stack(runtime, self_cap, stack, c_args, &aux).is_none() {
+    let stack_offset = if c_stack {
+        prepare_c_stack(runtime, self_cap, stack, c_args, &aux)
+    } else {
+        Some(SERVICE_STACK_PAGES * FRAME_SIZE)
+    };
+    let Some(stack_offset) = stack_offset else {
         let _ = runtime.memseg_destroy(stack);
         let _ = runtime.cap_drop(stack);
         let _ = runtime.cap_drop(initial0);
         let _ = runtime.cap_drop(initial1);
         drop_data_segments(runtime, &mut data_segments);
         return None;
-    }
+    };
     let entry = ENDPOINT_CODE_VA + e_entry;
     let Ok(manager) = runtime.task_create(&TaskSpec {
         code_segment: spec.code,
@@ -1810,12 +1817,7 @@ fn create_service(
         code_pages: spec.pages,
         load_base: ENDPOINT_CODE_VA,
         entry,
-        stack_top: ENDPOINT_STACK_VA
-            + if c_stack {
-                C_STACK_OFFSET
-            } else {
-                SERVICE_STACK_PAGES * FRAME_SIZE
-            },
+        stack_top: ENDPOINT_STACK_VA + stack_offset,
         parent_namespace: Some(ns_cap),
         root_rights: NS_RESOLVE_RIGHTS,
         initial_capabilities: [Some(initial0), Some(initial1)],
@@ -2190,21 +2192,27 @@ fn write_c_stack(
     source: CArgSource<'_>,
     meta: &CArgMeta,
     aux: &ElfAux,
-) -> bool {
-    let stack = ENDPOINT_CODE_PROBE_VA + C_STACK_OFFSET;
-    let base = ENDPOINT_STACK_VA + C_STACK_OFFSET;
+) -> Option<u64> {
     let argc = meta.argc as usize;
     let envc = meta.envc as usize;
+    let offset = prima_user::startup::stack_offset(
+        C_STACK_PAGES * FRAME_SIZE,
+        &meta.lens[..argc],
+        &meta.env_lens[..envc],
+        AUX_WORDS,
+    )?;
+    let stack = ENDPOINT_CODE_PROBE_VA + offset;
+    let base = ENDPOINT_STACK_VA + offset;
     let aux_index = 3 + argc + envc;
     let header_words = aux_index + AUX_WORDS;
     let mut cursor = ((header_words as u64 * 8) + 15) & !15;
-    let limit = C_STACK_PAGES * FRAME_SIZE - C_STACK_OFFSET;
+    let limit = C_STACK_PAGES * FRAME_SIZE - offset;
     let mut written = cursor <= limit && write_stack_word(runtime, stack, 0, argc as u64);
     let mut offsets = [0u64; MAX_C_ARGS];
     for (index, offset) in offsets.iter_mut().enumerate().take(argc) {
         let len = meta.lens[index] as usize;
         if cursor + len as u64 + 1 > limit {
-            return false;
+            return None;
         }
         *offset = cursor;
         written &= write_stack_word(runtime, stack, 1 + index, base + cursor);
@@ -2223,7 +2231,7 @@ fn write_c_stack(
     for index in 0..envc {
         let len = meta.env_lens[index] as usize;
         if cursor + len as u64 + 1 > limit {
-            return false;
+            return None;
         }
         written &= write_stack_word(runtime, stack, 2 + argc + index, base + cursor);
         written &= copy_stack_string(
@@ -2239,7 +2247,7 @@ fn write_c_stack(
     }
     written &= write_stack_word(runtime, stack, 2 + argc + envc, 0);
     written &= write_auxv(runtime, stack, aux_index, base + offsets[0], aux);
-    written && cursor <= limit
+    (written && cursor <= limit).then_some(offset)
 }
 
 /// 将 C 的 argc/argv/envp/auxv 写入同一栈段，再卸载管理器内的临时映射。
@@ -2254,7 +2262,7 @@ fn prepare_c_stack(
     stack: Capability,
     args: Option<ArgsImage>,
     aux: &ElfAux,
-) -> Option<()> {
+) -> Option<u64> {
     let alias = ENDPOINT_CODE_PROBE_VA;
     runtime
         .memseg_map(stack, *self_cap, 0, alias, C_STACK_PAGES, RW)
@@ -2304,7 +2312,7 @@ fn prepare_c_stack(
                 )
             }
         };
-        write_c_stack(runtime, source, &meta, aux).then_some(())
+        write_c_stack(runtime, source, &meta, aux)
     })();
     if let Some((_image, pages)) = mapped_args {
         let _ = runtime.memseg_unmap(*self_cap, ARGS_PROBE_VA, pages);
@@ -2312,7 +2320,7 @@ fn prepare_c_stack(
     let unmapped = runtime
         .memseg_unmap(*self_cap, alias, C_STACK_PAGES)
         .is_ok();
-    (result.is_some() && unmapped).then_some(())
+    result.filter(|_| unmapped)
 }
 
 /// SPEC-105：把「管理器确实创建了端点」的证据、收到的建端点参数与**自解出的 ELF 入口**

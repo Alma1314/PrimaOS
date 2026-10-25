@@ -874,7 +874,12 @@ pub fn build_kernel_root(
             };
             let direct_pages = max_phys.div_ceil(FRAME_SIZE) as usize;
             let image_phys = |index: usize| {
-                vspace::leaf_phys_or_none(boot_root, image_va + (index as u64) * FRAME_SIZE, map)
+                let va = image_va + (index as u64) * FRAME_SIZE;
+                if va == prima_ostd::entry::syscall_stack_guard_page() {
+                    None
+                } else {
+                    vspace::leaf_phys_or_none(boot_root, va, map)
+                }
             };
             let root = vspace::build_self_root(
                 map,
@@ -1715,6 +1720,7 @@ pub fn register_clone_task(
     crate::sched::set_kstack_top(task_id, kstack);
     crate::sched::set_frame(task_id, frame);
     crate::sched::set_fs_base(task_id, fs_base);
+    crate::sched::inherit_current_fpu(task_id);
     Ok(())
 }
 

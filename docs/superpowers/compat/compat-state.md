@@ -203,3 +203,19 @@ VFS 子任务内路径；动态链接。
 COW克隆增加同步TLB、构造失败回收及NX保留，wait状态四字节、跨页/逐级权限检查和COW写回。
 本片不扩充已冻结profile：共享cap/close隔离、子VFS授权、CLOEXEC、信号掩码、多线程fork和完整生命周期仍受原限制。
 聚焦与完整命令的结果分别读取报告，不能将host用例或某一双轮外推为全套验收。
+
+
+## 9. 2026-10-25 启动/退出/Rust 工作增量
+
+本节依据[工作契约](../specs/2026-10-25-stage5-gap-closure-design.md)，运行结果读取
+[本轮报告](../reports/2026-10-25-stage5-gap-closure-report.md)。新profile为[v2提案](../specs/2026-10-25-stage5-profile-v2.md)，仍待组织级评审；旧冻结边界不改。
+
+| 路径 | 当前工作边界 | 测试与未覆盖项 |
+|---|---|---|
+| C启动参数 | 实际参数大小决定16对齐RSP；保留16/8项、单串255B、一页载体；拒绝NUL | A2独立版本化载体、Linux与QEMU；不是任意程序保证 |
+| 托管main/_exit/exit_group | 报告后停在RECV，管理器收到状态后先销毁Task再回收段 | 默认/F1及全部既有组；fork子仍原生54、不关闭继承fd |
+| fork/clone FPU | 当前运行父任务FXSAVE后复制子槽 | W6三种C路径检查非默认MXCSR/x87控制字；非XSAVE/AVX/SMP证明 |
+| Rust core/alloc | x86_64-prima，单线程静态PIE，原生Runtime，应用自带allocator | R1；一次生命周期的有限单调arena，无生产回收保证 |
+| restricted std | BTreeMap、内存Read等无需OS初始化的子集 | R2；metadata明确Unsupported，默认System返回NULL；无std文件/线程/网络/时间/进程后端 |
+
+Rust最小目标不关闭S5-D6，profile提案不关闭S5-D1；能力隔离、子VFS授权、完整exec/CLOEXEC、信号、TTY IRQ及模型位置/溯源仍按阶段跟踪登记。

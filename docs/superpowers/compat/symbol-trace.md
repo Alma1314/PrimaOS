@@ -143,3 +143,17 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 
 未增加 libc 补丁或放宽 musl 归档原生陷入白名单；信号掩码、完整 pthread_atfork/多线程 fork、
 任意原始51调用后的libc退出、子VFS授权、CLOEXEC及完整POSIX生命周期均不能由本节外推。
+
+
+## 8. 2026-10-25 工作增量调用链
+
+[契约](../specs/2026-10-25-stage5-gap-closure-design.md)与[实跑范围](../reports/2026-10-25-stage5-gap-closure-report.md)分别解释：
+
+| 符号/入口 | 输入边界 | 实际调用链 | 限制 |
+|---|---|---|---|
+| 托管C main/_exit/exit_group | Linux60/231进入适配层 | CLOSE本地fd → 原生SEND17报告 → RECV18停驻 → manager TASK_DESTROY20 → 段回收 | fork子走Process exit54；不误用父self cap |
+| A2 main(argc,argv,envp) | 版本化参数载体 | ring3按实际块大小构栈 → task_create入口 → musl启动 | 固定边界集，无新增syscall |
+| fork/clone | 原生51/48 | register_clone_task → 保存当前父FPU → 子槽复制 | MXCSR/x87控制字见证，非完整向量寄存器机器证明 |
+| Rust R1/R2 _start | Prima五寄存器入口、16对齐初始RSP | 汇编call建立C ABI对齐 → rust_start → Runtime TASK_ID7/SEND17/YIELD8/RECV18 | 不经过Linux libc号表；托管退出由manager销毁 |
+| Rust std::fs::metadata | restricted std | unsupported PAL → ErrorKind::Unsupported | 无VFS调用，不能称为已支持std::fs |
+| Rust std::alloc::System | restricted std | Prima PAL → NULL/OOM | 实际Vec/Box由探针自带GlobalAlloc供给；默认System不支持 |

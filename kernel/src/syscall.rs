@@ -3049,6 +3049,8 @@ pub struct FastWitness {
     pub lstar_ok: u32,
     /// 快路径栈底 64 字节哨兵在完整执行后仍保持初值。
     pub stack_canary: u32,
+    /// The current task root leaves the complete lower guard page unmapped.
+    pub stack_guard: u32,
 }
 
 impl FastWitness {
@@ -3065,6 +3067,7 @@ impl FastWitness {
             && self.fmask == crate::msr::SYSCALL_FMASK
             && self.lstar_ok == 1
             && self.stack_canary == 1
+            && self.stack_guard == 1
     }
 }
 
@@ -3086,7 +3089,23 @@ pub fn fast_witness() -> FastWitness {
         fmask,
         lstar_ok: (lstar == prima_ostd::entry::syscall_fast_entry_addr()) as u32,
         stack_canary: prima_ostd::entry::syscall_stack_canary_intact() as u32,
+        stack_guard: syscall_guard_unmapped() as u32,
     }
+}
+
+fn syscall_guard_unmapped() -> bool {
+    let Some(root) = sched::current_root() else {
+        return false;
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return false;
+    };
+    crate::vspace::leaf_phys_or_none(
+        root,
+        prima_ostd::entry::syscall_stack_guard_page(),
+        |phys| crate::mem::phys_to_virt(phys, offset),
+    )
+    .is_none()
 }
 
 /// 一次 syscall ABI 见证的实测证据。
@@ -3705,6 +3724,7 @@ mod tests {
             fmask: crate::msr::SYSCALL_FMASK,
             lstar_ok: 1,
             stack_canary: 1,
+            stack_guard: 1,
         }
     }
 
@@ -3713,6 +3733,15 @@ mod tests {
         for value in [0, 2, u32::MAX] {
             let mut witness = valid_fast();
             witness.stack_canary = value;
+            assert!(!witness.evidence_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_fast_path_without_unmapped_guard() {
+        for value in [0, 2, u32::MAX] {
+            let mut witness = valid_fast();
+            witness.stack_guard = value;
             assert!(!witness.evidence_ok());
         }
     }

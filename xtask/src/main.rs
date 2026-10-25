@@ -34,6 +34,10 @@ fn run() -> Result<(), String> {
             require_no_args(&rest)?;
             test_boot_slice()
         }
+        "test-rust" => {
+            require_no_args(&rest)?;
+            test_rust_slice()
+        }
         "test-process" => {
             let case = match rest.as_slice() {
                 [] => None,
@@ -137,14 +141,21 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
 
 fn test_program_twice(images: image::Images, name: &str, stdout: &[u8]) -> Result<(), String> {
     let mut ipc_baseline = None;
+    let mut failures = Vec::new();
     for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(&images.bios, name, stdout, ipc_baseline)
-                .map_err(|error| format!("BIOS {name} run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios {name} run={run}");
+        match qemu::run_bios_test_program(&images.bios, name, stdout, ipc_baseline) {
+            Ok(ipc) => {
+                ipc_baseline = Some(ipc);
+                println!("PASS qemu bios {name} run={run}");
+            }
+            Err(error) => failures.push(format!("BIOS {name} run {run} failed: {error}")),
+        }
     }
-    Ok(())
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n\n"))
+    }
 }
 
 fn check_musl_host() -> Result<(), String> {
@@ -180,324 +191,251 @@ fn test_musl_slice(host_only: bool) -> Result<(), String> {
     Ok(())
 }
 
+fn test_rust_slice() -> Result<(), String> {
+    test_program_twice(
+        image::build_images_for_rust(false)?,
+        "R1",
+        image::RUST_CORE_STDOUT,
+    )?;
+    test_program_twice(
+        image::build_images_for_rust(true)?,
+        "R2",
+        image::RUST_STD_STDOUT,
+    )
+}
+
+type ImageBuilder = fn() -> Result<image::Images, String>;
+type ReferenceCheck = fn() -> Result<(), String>;
+
+fn record_result(failures: &mut Vec<String>, name: &str, result: Result<(), String>) {
+    if let Err(error) = result {
+        let error = format!("{name}: {error}");
+        eprintln!("FAIL {error}");
+        failures.push(error);
+    }
+}
+
+/// Each image still runs exactly twice. Failed independent groups remain failures
+/// while later groups execute; there are no retries or relaxed validators.
 fn test_boot_slice() -> Result<(), String> {
-    check_musl_host()?;
-    // 既有探针路径保持不变：两次 BIOS 运行逐字节校验阶段 1–5 的既有事件。
-    let images = build_and_report()?;
-    image::check_stage5_linux_probe()?;
-    for run in 1..=2 {
-        qemu::run_bios_test(&images.bios)
-            .map_err(|error| format!("BIOS run {run} failed: {error}"))?;
-        println!("PASS qemu bios run={run}");
+    let mut failures = Vec::new();
+    record_result(&mut failures, "musl host", check_musl_host());
+    let references: &[(&str, ReferenceCheck)] = &[
+        ("default", image::check_stage5_linux_probe),
+        ("echo", image::check_stage5_linux_echo),
+        ("cat/ls", image::check_stage5_linux_cat_ls),
+        ("A2", image::check_stage5_linux_start),
+        ("T1", image::check_stage5_linux_time),
+        ("F1", image::check_stage5_linux_fd),
+        ("V1", image::check_stage5_linux_vfs),
+        ("V2", image::check_stage5_linux_vfs2),
+        ("V3", image::check_stage5_linux_vfs3),
+        ("N1", image::check_stage5_linux_net),
+        ("W6", image::check_stage5_linux_proc),
+        ("W8", image::check_stage5_linux_sig),
+        ("W9", image::check_stage5_linux_sigact),
+        ("W4", image::check_stage5_linux_pthread),
+        ("I1", image::check_stage5_linux_ttyin),
+        ("M1", image::check_stage5_linux_meta),
+        ("D1", image::check_stage5_linux_mut),
+        ("A1", image::check_stage5_linux_mem),
+    ];
+    for (name, check) in references {
+        record_result(&mut failures, &format!("Linux {name}"), check());
     }
-    // M5：sbase `echo` 的六个冻结用例各跑两轮；每个用例单独构建一次 ramdisk，
-    // 使被冻结的 argv 成为该次启动输入。
-    image::check_stage5_linux_echo()?;
+    match build_and_report() {
+        Ok(images) => {
+            for run in 1..=2 {
+                let result = qemu::run_bios_test(&images.bios);
+                if result.is_ok() {
+                    println!("PASS qemu bios run={run}");
+                }
+                record_result(&mut failures, &format!("default run={run}"), result);
+            }
+        }
+        Err(error) => record_result(&mut failures, "default build", Err(error)),
+    }
     for case in &image::ECHO_CASES {
-        let images = image::build_images_for_echo(case.args)?;
-        let mut ipc_baseline = None;
-        for run in 1..=2 {
-            ipc_baseline = Some(
-                qemu::run_bios_test_echo(&images.bios, case, ipc_baseline)
-                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
-            );
-            println!("PASS qemu bios {} run={run}", case.name);
-        }
+        let result = image::build_images_for_echo(case.args)
+            .and_then(|images| test_program_twice(images, case.name, case.stdout));
+        record_result(&mut failures, case.name, result);
     }
-    // M6：POSIX 时间探针走同一托管程序通道，各跑两轮并逐轮比较 IPC 计数。
-    image::check_stage5_linux_time()?;
-    let images = image::build_images_for_time()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "T1",
-                image::TIME_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS T1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios T1 run={run}");
+    let programs: &[(&str, ImageBuilder, &[u8])] = &[
+        (
+            "A2",
+            image::build_images_for_start,
+            image::START_EXPECTED_STDOUT,
+        ),
+        (
+            "T1",
+            image::build_images_for_time,
+            image::TIME_EXPECTED_STDOUT,
+        ),
+        ("F1", image::build_images_for_fd, image::FD_EXPECTED_STDOUT),
+        (
+            "V1",
+            image::build_images_for_vfs,
+            image::VFS_EXPECTED_STDOUT,
+        ),
+        (
+            "V2",
+            image::build_images_for_vfs2,
+            image::VFS2_EXPECTED_STDOUT,
+        ),
+        (
+            "V3",
+            image::build_images_for_vfs3,
+            image::VFS3_EXPECTED_STDOUT,
+        ),
+        (
+            "N1",
+            image::build_images_for_net,
+            image::NET_EXPECTED_STDOUT,
+        ),
+        (
+            "W1",
+            image::build_images_for_wait,
+            image::WAIT_EXPECTED_STDOUT,
+        ),
+        (
+            "W2",
+            image::build_images_for_wait2,
+            image::WAIT2_EXPECTED_STDOUT,
+        ),
+        (
+            "W3",
+            image::build_images_for_futex,
+            image::FUTEX_EXPECTED_STDOUT,
+        ),
+        (
+            "W6",
+            image::build_images_for_proc,
+            image::PROC_EXPECTED_STDOUT,
+        ),
+        (
+            "W8",
+            image::build_images_for_sig,
+            image::SIG_EXPECTED_STDOUT,
+        ),
+        (
+            "W9",
+            image::build_images_for_sigact,
+            image::SIGACT_EXPECTED_STDOUT,
+        ),
+        (
+            "W7",
+            image::build_images_for_exec,
+            image::EXEC_EXPECTED_STDOUT,
+        ),
+        (
+            "W7b",
+            image::build_images_for_execve,
+            image::EXECVE_EXPECTED_STDOUT,
+        ),
+        (
+            "W4",
+            image::build_images_for_pthread,
+            image::PTHREAD_EXPECTED_STDOUT,
+        ),
+        (
+            "W5",
+            image::build_images_for_share,
+            image::SHARE_EXPECTED_STDOUT,
+        ),
+        (
+            "I1",
+            image::build_images_for_ttyin,
+            image::TTYIN_EXPECTED_STDOUT,
+        ),
+        (
+            "M1",
+            image::build_images_for_meta,
+            image::META_EXPECTED_STDOUT,
+        ),
+        (
+            "D1",
+            image::build_images_for_mut,
+            image::MUT_EXPECTED_STDOUT,
+        ),
+        (
+            "A1",
+            image::build_images_for_mem,
+            image::MEM_EXPECTED_STDOUT,
+        ),
+    ];
+    for (name, build, stdout) in programs {
+        let result = build().and_then(|images| {
+            if *name == "I1" {
+                test_tty_twice(images)
+            } else {
+                test_program_twice(images, name, stdout)
+            }
+        });
+        record_result(&mut failures, name, result);
     }
-    // M7：本地 fd 表 / dup / getpid 探针，各跑两轮并逐轮比较 IPC 计数。
-    image::check_stage5_linux_fd()?;
-    let images = image::build_images_for_fd()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "F1",
-                image::FD_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS F1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios F1 run={run}");
-    }
-    test_vfs_slice(None)?;
-    // M19：用户态 loopback IPv4/UDP，各跑两轮。
-    image::check_stage5_linux_net()?;
-    let images = image::build_images_for_net()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "N1",
-                image::NET_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS N1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios N1 run={run}");
-    }
-    // M15a-1：WaitObject 原生机制（Prima 专用），各跑两轮。
-    let images = image::build_images_for_wait()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W1",
-                image::WAIT_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W1 run={run}");
-    }
-    // M15b-2：共享线程 signal 唤醒阻塞等待（Prima 专用），各跑两轮。
-    let images = image::build_images_for_wait2()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W2",
-                image::WAIT2_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W2 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W2 run={run}");
-    }
-    // M16a：futex WAIT/WAKE（Prima 专用），各跑两轮。
-    let images = image::build_images_for_futex()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W3",
-                image::FUTEX_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W3 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W3 run={run}");
-    }
-    // M17b：fork/wait/COW 隔离/退出码/ECHILD（同源 Linux 参考），跑两轮。
-    image::check_stage5_linux_proc()?;
-    let images = image::build_images_for_proc()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W6",
-                image::PROC_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W6 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W6 run={run}");
-    }
-    // M18a：kill/默认终止/wait4 信号状态（同源 Linux 参考），跑两轮。
-    image::check_stage5_linux_sig()?;
-    let images = image::build_images_for_sig()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W8",
-                image::SIG_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W8 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W8 run={run}");
-    }
-    // M18b：sigaction/handler/sigreturn（同源 Linux 参考），跑两轮。
-    image::check_stage5_linux_sigact()?;
-    let images = image::build_images_for_sigact()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W9",
-                image::SIGACT_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W9 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W9 run={run}");
-    }
-    // M17c：exec_replace（内存中的静态 ELF、argv、ENOEXEC 负例），跑两轮。
-    let images = image::build_images_for_exec()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W7",
-                image::EXEC_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W7 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W7 run={run}");
-    }
-    // M17c-4：VFS 读取镜像 → fork → exec_replace，跑两轮。
-    let images = image::build_images_for_execve()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W7b",
-                image::EXECVE_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W7b run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W7b run={run}");
-    }
-    // M16b：pthread 创建/join 与共享内存可见性（同源 Linux 参考），各跑两轮。
-    image::check_stage5_linux_pthread()?;
-    let images = image::build_images_for_pthread()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W4",
-                image::PTHREAD_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W4 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W4 run={run}");
-    }
-    let images = image::build_images_for_share()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "W5",
-                image::SHARE_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS W5 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios W5 run={run}");
-    }
-    // M14：fd 0 tty 输入（canonical/raw/EOF），marker 驱动串口输入，各跑两轮。
-    image::check_stage5_linux_ttyin()?;
-    let images = image::build_images_for_ttyin()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_input(
-                &images.bios,
-                "I1",
-                image::TTYIN_EXPECTED_STDOUT,
-                ipc_baseline,
-                &[("TTYREADY", b"hi\n"), ("TTYRAW", b"xy"), ("TTYEOF", &[4u8])],
-            )
-            .map_err(|error| format!("BIOS I1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios I1 run={run}");
-    }
-    // M9：statx / chdir / getcwd 元数据与工作目录探针，各跑两轮。
-    image::check_stage5_linux_meta()?;
-    let images = image::build_images_for_meta()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "M1",
-                image::META_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS M1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios M1 run={run}");
-    }
-    // M9：sbase `cat` 读取 rootfs 文件，Linux 参考与 Prima 逐字节比较。
-    image::check_stage5_linux_cat_ls()?;
     for case in &image::CAT_CASES {
-        let images = image::build_images_for_cat(case.args)?;
-        let mut ipc_baseline = None;
-        for run in 1..=2 {
-            ipc_baseline = Some(
-                qemu::run_bios_test_program(&images.bios, case.name, case.stdout, ipc_baseline)
-                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
-            );
-            println!("PASS qemu bios {} run={run}", case.name);
-        }
+        let result = image::build_images_for_cat(case.args)
+            .and_then(|images| test_program_twice(images, case.name, case.stdout));
+        record_result(&mut failures, case.name, result);
     }
-    // M9：sbase `ls`（opendir/readdir + stat/lstat + chdir/getcwd），各跑两轮。
     for case in &image::LS_CASES {
-        let images = image::build_images_for_ls(case.args)?;
-        let mut ipc_baseline = None;
-        for run in 1..=2 {
-            ipc_baseline = Some(
-                qemu::run_bios_test_program(&images.bios, case.name, case.stdout, ipc_baseline)
-                    .map_err(|error| format!("BIOS {} run {run} failed: {error}", case.name))?,
-            );
-            println!("PASS qemu bios {} run={run}", case.name);
-        }
+        let result = image::build_images_for_ls(case.args)
+            .and_then(|images| test_program_twice(images, case.name, case.stdout));
+        record_result(&mut failures, case.name, result);
     }
-    // M11：mkdir/rmdir/unlink（含 *at）文件树变更探针，各跑两轮。
-    image::check_stage5_linux_mut()?;
-    let images = image::build_images_for_mut()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "D1",
-                image::MUT_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS D1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios D1 run={run}");
+    for (standard, name, stdout) in [
+        (false, "R1", image::RUST_CORE_STDOUT),
+        (true, "R2", image::RUST_STD_STDOUT),
+    ] {
+        let result = image::build_images_for_rust(standard)
+            .and_then(|images| test_program_twice(images, name, stdout));
+        record_result(&mut failures, name, result);
     }
-    // M10：匿名 mmap/munmap/mprotect 与原生 memseg_protect 探针，各跑两轮。
-    image::check_stage5_linux_mem()?;
-    let images = image::build_images_for_mem()?;
-    let mut ipc_baseline = None;
-    for run in 1..=2 {
-        ipc_baseline = Some(
-            qemu::run_bios_test_program(
-                &images.bios,
-                "A1",
-                image::MEM_EXPECTED_STDOUT,
-                ipc_baseline,
-            )
-            .map_err(|error| format!("BIOS A1 run {run} failed: {error}"))?,
-        );
-        println!("PASS qemu bios A1 run={run}");
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target/prima-os");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::write(
+        directory.join("full-suite-errors.log"),
+        failures.join("\n\n"),
+    )
+    .map_err(|error| error.to_string())?;
+    if !failures.is_empty() {
+        return Err(format!(
+            "full BIOS suite: {} failed groups/checks; details in target/prima-os/full-suite-errors.log",
+            failures.len()
+        ));
     }
+    println!("PASS full BIOS suite: 34 programs, 68 runs");
     println!("PASS stage1 boot slice");
     Ok(())
+}
+
+fn test_tty_twice(images: image::Images) -> Result<(), String> {
+    let mut baseline = None;
+    let mut failures = Vec::new();
+    for run in 1..=2 {
+        let result = qemu::run_bios_test_input(
+            &images.bios,
+            "I1",
+            image::TTYIN_EXPECTED_STDOUT,
+            baseline,
+            &[("TTYREADY", b"hi\n"), ("TTYRAW", b"xy"), ("TTYEOF", &[4u8])],
+        );
+        match result {
+            Ok(ipc) => {
+                baseline = Some(ipc);
+                println!("PASS qemu bios I1 run={run}");
+            }
+            Err(error) => failures.push(format!("I1 run={run}: {error}")),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n\n"))
+    }
 }
 
 /// 切片 P：跑一次 Prima 镜像，把 `user_cow_ready` 观测与参考 Linux 基线做有界差分。
@@ -581,7 +519,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-rust|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask test-process [W6|W7|W7b|W8]\n\
      \x20      cargo xtask test-musl [--host-only]\n\

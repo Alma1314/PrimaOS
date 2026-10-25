@@ -95,6 +95,8 @@ pub(crate) const ECHO_CASES: [EchoCase; 6] = [
 enum Stage5Program<'a> {
     /// 既有固定 C 探针（argv 冻结在服务管理器里）。
     Probe,
+    Start,
+    Rust(bool),
     /// M5：sbase `echo` 冻结用例，argv 由单页参数块传入。
     Echo(&'a [&'a str]),
     /// M6：POSIX 时间探针（无 argv 语义，走同一托管程序通道）。
@@ -138,6 +140,14 @@ enum Stage5Program<'a> {
 
 pub(crate) fn build_images() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Probe)
+}
+
+pub(crate) fn build_images_for_rust(standard: bool) -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Rust(standard))
+}
+
+pub(crate) fn build_images_for_start() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Start)
 }
 
 /// M5：用 sbase `echo` 替换 C 探针映像，并打包本次用例的 argv。
@@ -323,6 +333,16 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     let adapter = c_dir.join("prima_syscall.c");
     let sbase = workspace.join("target").join("sbase");
     let (binary, sources, label) = match &program {
+        Stage5Program::Rust(standard) => (
+            build_rust_probe(&workspace, *standard)?,
+            Vec::new(),
+            "Rust probe",
+        ),
+        Stage5Program::Start => (
+            path.with_file_name("stage5-start.elf"),
+            vec![c_dir.join("stage5_start.c")],
+            "C startup argv/envp",
+        ),
         Stage5Program::Echo(_) => {
             ensure_sbase(&sbase)?;
             (
@@ -541,21 +561,28 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         .arg("-lgcc")
         .arg("-o")
         .arg(&binary);
-    let compiled = clang
-        .output()
-        .map_err(|error| format!("failed to run clang for {label}: {error}"))?;
-    if !compiled.status.success() {
-        return Err(format!(
-            "failed to build {label}: {}",
-            String::from_utf8_lossy(&compiled.stderr)
-        ));
+    if !matches!(program, Stage5Program::Rust(_)) {
+        let compiled = clang
+            .output()
+            .map_err(|error| format!("failed to run clang for {label}: {error}"))?;
+        if !compiled.status.success() {
+            return Err(format!(
+                "failed to build {label}: {}",
+                String::from_utf8_lossy(&compiled.stderr)
+            ));
+        }
     }
     ensure_non_empty(&binary, "stage5 C ELF")?;
     let c_image = fs::read(&binary)
         .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
     validate_static_pie(&c_image)?;
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
+    let (start_args_owned, start_env_owned) = start_parameters();
+    let start_args: Vec<&str> = start_args_owned.iter().map(String::as_str).collect();
+    let start_env: Vec<&str> = start_env_owned.iter().map(String::as_str).collect();
     let program_args: Option<(&[&str], &[&str])> = match &program {
+        Stage5Program::Start => Some((&start_args, &start_env)),
+        Stage5Program::Rust(_) => Some((&["rust-probe"], &[])),
         Stage5Program::Echo(args) => Some((args, &[])),
         // 时间/fd/vfs/meta 探针不需要参数；托管程序通道仍要求一个非空 argv。
         Stage5Program::Time => Some((&["stage5-time"], &[])),
@@ -710,6 +737,9 @@ fn pack_program_args(args: &[&str], env: &[&str]) -> Result<Vec<u8>, String> {
         payload.push(args.len() as u8);
     }
     for arg in args {
+        if arg.contains('\0') {
+            return Err("program argument contains NUL".to_owned());
+        }
         if arg.len() > 255 {
             return Err(format!("program argument too long: {} bytes", arg.len()));
         }
@@ -719,6 +749,9 @@ fn pack_program_args(args: &[&str], env: &[&str]) -> Result<Vec<u8>, String> {
     if !env.is_empty() {
         payload.push(env_strings.len() as u8);
         for item in &env_strings {
+            if item.contains('\0') {
+                return Err("program environment contains NUL".to_owned());
+            }
             if item.len() > 255 {
                 return Err(format!(
                     "program environment too long: {} bytes",
@@ -767,6 +800,94 @@ fn stage5_probe_source() -> PathBuf {
 ///
 /// 片 C：另断言同源探针在 Linux 上 `write(1)`/`write(2)` 各输出一个字节——与 Prima QEMU
 /// 侧 `CIO|` 见证（同一 `main` 路径写的 'h'/'i'）构成同源差分。
+pub(crate) const RUST_CORE_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=0;native=1|ok=1\n";
+pub(crate) const RUST_STD_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=1;native=1|ok=1\n";
+
+fn build_rust_probe(workspace: &Path, standard: bool) -> Result<PathBuf, String> {
+    let directory = workspace.join("target/rust-probe");
+    let mut command = Command::new("python3");
+    command.arg(workspace.join("scripts/build_rust_probe.py"));
+    if standard {
+        command.arg("--std");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("Rust probe build failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Rust probe build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let artifact = directory.join("x86_64-prima/release/prima-rust-probe");
+    ensure_non_empty(&artifact, "Rust probe")?;
+    Ok(artifact)
+}
+
+pub(crate) const START_EXPECTED_STDOUT: &[u8] = b"START|argv=1;envp=1;auxv=1|ok=1\n";
+
+fn start_parameters() -> (Vec<String>, Vec<String>) {
+    let mut args: Vec<String> = ["stage5-start", "", "argument with spaces", "中文启动"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    args.push("x".repeat(255));
+    args.resize(16, "x".to_owned());
+    let env = vec![
+        "PRIMA_ABI=1".to_owned(),
+        "START_ENV=with spaces".to_owned(),
+        "START_EMPTY=".to_owned(),
+        format!("START_LONG={}", "y".repeat(200)),
+        "START_4=x".to_owned(),
+        "START_5=x".to_owned(),
+        "START_6=x".to_owned(),
+        "START_7=x".to_owned(),
+    ];
+    (args, env)
+}
+
+pub(crate) fn check_stage5_linux_start() -> Result<(), String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let directory = root.join("target/prima-os");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let binary = directory.join("stage5-start-linux");
+    let output = Command::new("cc")
+        .args(["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .arg(root.join("prima-user/c/stage5_start.c"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Linux startup compile failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let (args, env) = start_parameters();
+    let mut command = Command::new(&binary);
+    command.args(&args[1..]).env_clear();
+    for item in env {
+        let (name, value) = item.split_once('=').unwrap();
+        command.env(name, value);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.arg0(&args[0]);
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() || output.stdout != START_EXPECTED_STDOUT {
+        return Err(format!(
+            "Linux startup mismatch: {:?}, {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout)
+        ));
+    }
+    println!("PASS linux stage5 startup references");
+    Ok(())
+}
+
 pub(crate) fn check_stage5_linux_probe() -> Result<(), String> {
     let source = stage5_probe_source();
     let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1413,7 +1534,7 @@ pub(crate) fn check_stage5_linux_proc() -> Result<(), String> {
 }
 
 pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
-    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1;guard=1|ok=1;err=0\n";
+    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1;guard=1;fpu=1|ok=1;err=0\n";
 
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
 
@@ -2031,5 +2152,7 @@ mod tests {
         assert!(pack_program_args(&["p"], &env).is_err());
         let long = "x".repeat(256);
         assert!(pack_program_args(&[&long], &[]).is_err());
+        assert!(pack_program_args(&["a\0b"], &[]).is_err());
+        assert!(pack_program_args(&["p"], &["X=a\0b"]).is_err());
     }
 }

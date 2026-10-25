@@ -30,6 +30,8 @@ updated: 2026-10-25
 
 ## 阶段 5
 
+本批增量：[启动、栈保护、退出与 Rust 工作目标](2026-10-25-stage5-gap-closure-report.md)。
+
 本轮进程后继：[fork 续执行与进程边界整改记录](2026-10-24-fork-continuation-report.md)。
 
 | 日期 | 文档 | 标题 |

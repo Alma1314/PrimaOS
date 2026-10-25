@@ -27,7 +27,7 @@ updated: 2026-10-25
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | 进行中；M21 技术评审完成，未签署 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)：S5-D1/D6、profile v2、组织级复核与已知限制未收口 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容 | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | fork续执行后继 Rust937项、lint与聚焦8轮通过；BIOS分段覆盖62/62，完整命令仍超时 | [fork整改报告](docs/superpowers/reports/2026-10-24-fork-continuation-report.md)：真实musl/C返回、COW提交与失败回收、四字节等待输出及子退出；[Once前轮](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)60/62分段及超时保留，[POD前序](docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md)按其版本解释；本轮完整命令W8 run2超时，历史启动超时根因仍未定位 |
+| 最近验证记录 | 本批Rust941项、lint、Rust双模式Clippy及完整BIOS68/68轮单次通过 | [缺口补强报告](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)列实际命令、失败整改链与边界；历史QEMU超时根因仍未全部定位，不能用本轮PASS改写旧失败 |
 | 阶段 6 | 未开始；D10 入口未启动 | 已有 exec_replace 机制不等于未修改 Linux ELF 路线已完成 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -66,25 +66,30 @@ Asterinas 一次发布后继见[报告](docs/superpowers/reports/2026-10-24-aste
 fork 续执行与进程边界后继见[报告](docs/superpowers/reports/2026-10-24-fork-continuation-report.md)：
 COW写保护后同步TLB、分配失败回收、musl子退出与四字节跨页/COW等待输出；没有修改阶段签署。
 
+本批增量见[2026-10-25 缺口补强记录](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)：启动栈空间、syscall保护页、托管退出交接、fork FPU继承及Rust最小工作目标；本次验证范围按报告解释。
+[profile v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)已形成提案，仍待评审；受限std实验不关闭S5-D6。
+
 ## 已知问题与当前阻塞
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留该版本验证缺口；本轮fork后继分段覆盖62/62，完整命令在35轮后W8 run2超时，根因仍未定位 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；保留门限/断言/失败证据；不以本次栈溢出解释旧超时 |
-| 系统调用栈保护边界 | 锁迁入时的 16 KiB 溢出已定位，改为 32 KiB 并增加栈底 64 字节哨兵；尚无 MMU guard page 或所有路径的峰值证明 | [契约与证据](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)；新增深调用链须继续验证 |
+| QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留该版本验证缺口；本轮fork后继分段覆盖62/62，完整命令在35轮后W8 run2超时，根因仍未定位；2026-10-25本批最终完整68轮单次PASS，保留全部旧失败与其版本范围 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[本批完整验收](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；保留门限/断言/失败证据，不以栈保护或退出整改自动解释全部历史超时 |
+| 系统调用栈保护边界 | syscall专用栈已加下界未映射保护页，32KiB可用容量及64字节哨兵保留；per-Task中断栈仍无MMU guard，尚无所有路径峰值证明 | [本批契约与证据](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；当前根实际页表由stack_guard=1强制校验 |
 | BLK-003 | 仍 Open：候选基座库的 ABI/profile 假设未全部裁决；工作实现不等于组织级采纳 | [修订计划](docs/superpowers/plans/2026-10-18-stage5-revised-plan.md)、[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M21；保留号段/命名/错误映射与阶段归属待决项 |
-| S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 未编写；Rust target/core-std 未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |
+| S5-D1 / S5-D6 / S5-X3 | profile v0 待组织级确认、v1 delta 待评审、v2 已有提案、待评审；Rust target/core/alloc/restricted std已有工作实现，POSIX std OS后端未实现；开源程序证据就绪但待组织级复核 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)；未签署、不启动阶段6 |
 | fork 子任务 VFS 授权 | 子任务内直接 execve(path) 受按任务授权限制；W7b 使用父任务预读镜像 | [M17c-4](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md)；不能据此宣称完整 execve |
 | ISSUE-FORK-CAPS-001 | fork 父子共享能力空间，子 close 服务句柄影响父，存在 POSIX close 隔离偏差 | [M17设计](docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md)；需评估 per-Process 空间/多 holder 方案 |
 | ISSUE-PTHREAD-CAPS-001（工作决定） | 同 Process 线程共享 leader 能力空间，组织级语义确认仍待完成 | [M15设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)、[M15b-2a](docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md) |
 | 信号/线程未覆盖项 | 无掩码、siginfo、EINTR、SA_RESTART、SIGCHLD 自动通知；pthread 取消/分离/属性未验证 | [M18b](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)、[M16b-3](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md)、M21 |
 | ISSUE-TTYIN-001（部分关闭） | 输入子集已通过；有读者时仍轮询 COM1，尚未由 WaitObject/IRQ 替换 | [M14](docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md)；WaitObject 存在不自动关闭此偏差 |
-| ISSUE-START-ARGS-001 | M12 独立参数载体组合的启动回归未定位；固定探针证据不能代替任意 argv 闭环 | [M12](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)；保留调度断言，单独复现 |
+| ISSUE-START-ARGS-001（有界子集收口） | 已定位256字节预留不足，改为按参数实际尺寸分配；A2独立版本化载体16/8项、长串、空值及UTF-8的Linux参考和QEMU双轮通过 | [本批后继](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；不外推任意用户程序，无AT_RANDOM等边界保留 |
 | ISSUE-CAP-001 | host 模型仍缺完整位置/溯源；不能当成当前内核缺陷 | [模型缺口](docs/superpowers/reports/2026-08-17-capability-derivation-model-gap.md)、[Lean映照契约](lean/README.md)；parent/CDT 后续补强不消除 HeldBy 边界 |
 | ISSUE-AUTH-001 | SPEC-146 接受的 image/vspace 细化分叉，不阻断 S1-X2 | 保留与§14完整细化的区别；新装载路径另按阶段5报告取证 |
 | ISSUE-COW-001/002 | 抽象 COW 的映射/并发责任澄清，不是自动阻断项 | [SPEC-015](docs/superpowers/specs/2026-08-14-cow-refinement-design.md)；扩大语义时再验证 |
 
 ### 已收口问题的后继入口
+
+- ISSUE-START-ARGS-001在M12有界参数载体范围技术收口：[A2后继](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)，保留M12原始失败，不外推任意用户程序或AT_RANDOM。
 
 - ISSUE-FORK-CONTINUATION-001 在当前单核/单线程C/musl续执行范围技术收口：[fork后继](docs/superpowers/reports/2026-10-24-fork-continuation-report.md)，W6/W7/W7b/W8聚焦双轮通过，完整命令仍超时；本轮仅62/62分段成功覆盖。M17b-3/4的原生绕行和失败保留；cap/close隔离及VFS授权仍按各自问题跟踪。
 
@@ -227,15 +232,15 @@ COW写保护后同步TLB、分配失败回收、musl子退出与四字节跨页/
 | M0–M4 | [M0盘点](docs/superpowers/reports/2026-10-18-stage5-musl-m0-inventory.md)、[M2边界](docs/superpowers/reports/2026-10-18-stage5-musl-m2-boundary.md)、[M3 musl](docs/superpowers/reports/2026-10-18-stage5-musl-m3-base.md)、[M4文件](docs/superpowers/reports/2026-10-18-stage5-musl-m4-file.md) | 首切片不等于完整 libc；固定初始栈/单文件后端由后继扩展 |
 | M5–M7 | [sbase echo](docs/superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md)、[时间](docs/superpowers/reports/2026-10-19-stage5-m6-time.md)、[fd/dup](docs/superpowers/reports/2026-10-19-stage5-m7-fd-table.md) | 冻结用例与 partial 边界；S5-X3 待复核 |
 | M8–M11 | [VFS](docs/superpowers/reports/2026-10-20-stage5-m8-user-vfs.md)、[metadata/cwd](docs/superpowers/reports/2026-10-21-stage5-m9-metadata-cwd.md)、[匿名内存](docs/superpowers/reports/2026-10-21-stage5-m10-anon-memory.md)、[树变更](docs/superpowers/reports/2026-10-22-stage5-m11-file-mutation.md) | 固定容量、匿名 arena 与有限文件语义 |
-| M12–M13 | [启动/退出](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)、[链接/rename](docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md)、[权限/stdio](docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md) | 参数载体回归、无硬链接/持久化；exec CLOEXEC 未收口 |
+| M12–M13 | [启动/退出](docs/superpowers/reports/2026-10-22-stage5-m12-c-startup.md)、[链接/rename](docs/superpowers/reports/2026-10-22-stage5-m13a-vfs-links.md)、[权限/stdio](docs/superpowers/reports/2026-10-22-stage5-m13b-permissions-stdio.md) | A2已补版本化参数载体边界集；无硬链接/持久化，exec CLOEXEC未收口 |
 | M14 | [TTY 输入 I1](docs/superpowers/reports/2026-10-23-stage5-m14-tty-input.md) | canonical/raw/EOF 子集；有读者时轮询 |
 | M15–M16 | [WaitObject](docs/superpowers/reports/2026-10-23-stage5-m15a-waitobject.md)、[阻塞模型](docs/superpowers/reports/2026-10-23-stage5-m15a2-waitobject-blocking.md)、[W2](docs/superpowers/reports/2026-10-23-stage5-m15b2b-thread-slots.md)、[futex](docs/superpowers/reports/2026-10-23-stage5-m16a-futex.md)、[pthread W4/W5](docs/superpowers/reports/2026-10-23-stage5-m16b3-pthread-join.md) | WAIT/WAKE、create/join 最小集；共享能力空间待确认 |
-| M17 | [fork/COW/wait W6](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)、[exec W7](docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md)、[父预读 VFS 镜像 W7b](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md) | 包装续执行、子任务 VFS 授权、fd close 隔离；W7/W7b 无 Linux 参考 |
+| M17 | [fork/COW/wait W6](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)、[exec W7](docs/superpowers/reports/2026-10-23-stage5-m17c3-exec.md)、[父预读 VFS 镜像 W7b](docs/superpowers/reports/2026-10-23-stage5-m17c4-execve-vfs.md) | C/musl续执行及FPU继承见后继；子任务VFS授权、fd close隔离仍未收口，W7/W7b无Linux参考 |
 | M18 | [默认终止 W8](docs/superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)、[handler/sigreturn W9](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md) | 无掩码/EINTR 等；前序“handler未做”已被后继限定 |
 | M19 | [loopback UDP N1](docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md) | 仅环回 IPv4/UDP，无 NIC/TCP/DNS |
 | VFS / LibOS 基础 | [设计](docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)、[验证](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md) | 打开对象独立于 ABI；普通文件延迟回收；每 LibOS 根视图/会话授权、多 OS personality 仍未实现 |
 | musl 后继补强 | [设计](docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md)、[验证](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md) | 汇编陷入边界、fd 控制/stdio/向量 I/O、锁定构建；取消/分离、信号、fork 包装与 exec CLOEXEC 义务继续保留 |
-| M20–M21 | [兼容两表汇总](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[技术出口评审](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | 未完成 Rust target/profile v2/组织级确认，未签署 |
+| M20–M21 | [兼容两表汇总](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[技术出口评审](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) | 已有工作target/受限std与v2提案；std OS后端、范围冻结和组织级确认未完成，未签署 |
 
 ### 交付检查
 
@@ -243,12 +248,12 @@ COW写保护后同步TLB、分配失败回收、musl子退出与四字节跨页/
 
 | ID | 交付物 | 勾选 | M21 当前判定 |
 |---|---|---|---|
-| S5-D1 | 冻结且版本化 POSIX profile | [ ] | v0已冻结、待组织级；v1提案；v2未编写 |
+| S5-D1 | 冻结且版本化 POSIX profile | [ ] | v0已冻结、待组织级；v1提案；v2提案待评审 |
 | S5-D2 | libc适配 | [ ] | 部分满足；musl/线程/等待已有证据，信号等仍有缺口 |
 | S5-D3 | fd、路径、线程和基础网络子集 | [ ] | 部分满足；线程与网络已有最小集证据，不能再写“均未实现” |
 | S5-D4 | 逐API语义映射矩阵 | [ ] | 当前子集满足：compat-state §6–7 / symbol-trace §5–6 |
 | S5-D5 | Linux差分矩阵 | [ ] | 部分满足；W7/W7b无Linux参考 |
-| S5-D6 | Rust target/core/std | [ ] | 未满足；M20只完成矩阵部分 |
+| S5-D6 | Rust target/core/std | [ ] | 部分工作实现；受限std无OS后端，D6范围未冻结 |
 | S5-D7 | persona、符号版本、台账与ABI护栏 | [ ] | 部分满足；ABI握手/台账已有，persona/符号版本未见 |
 
 ### 上游 ABI 与候选规格归属

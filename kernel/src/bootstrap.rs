@@ -12629,6 +12629,35 @@ mod tests {
     }
 
     #[test]
+    fn managed_exit_must_consume_queued_status_before_destroying_sender() {
+        // Each scenario owns its own arena-backed state; Copy is not a deep
+        // snapshot of capability/audit storage.
+        for consume_first in [false, true] {
+            let mut state = fresh_state();
+            state.activate_init().unwrap();
+            state.create_task(2).unwrap();
+            let send = state
+                .derive_capability(INIT_TASK_ID, TASK_CAP_HANDLE, rights("TaskSend"))
+                .unwrap();
+            state.move_capability(send, INIT_TASK_ID, 2).unwrap();
+            state.send_message(2, INIT_TASK_ID, send, 37).unwrap();
+            assert_eq!(state.ipc.count, 1);
+            if consume_first {
+                assert_eq!(state.receive_message(INIT_TASK_ID).unwrap().payload, 37);
+            }
+            state.destroy_task(2).unwrap();
+            assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Dead));
+            assert_eq!(state.ipc.count, 0);
+            if !consume_first {
+                assert_eq!(
+                    state.receive_message(INIT_TASK_ID),
+                    Err(IpcError::QueueEmpty)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ipc_transfers_capability_atomically_through_message() {
         let mut state = fresh_state();
         state.activate_init().unwrap();

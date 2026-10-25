@@ -1,0 +1,22 @@
+[package]
+name = "prima-rust-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# A separate build-std invocation keeps the host/kernel workspace on its pinned
+# built-in targets. The target and all dependencies still live in this repo.
+[workspace]
+
+[features]
+std = []
+
+[dependencies]
+prima-runtime = { path = "../../prima-runtime" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"
