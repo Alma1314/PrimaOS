@@ -330,6 +330,110 @@ fn empty_and_sparse_writes_do_not_expose_old_bytes() {
 }
 
 #[test]
+fn positioned_io_and_resize_preserve_shared_cursor_and_open_access() {
+    let mut storage = mounted();
+    let mut files = OpenFiles::<4>::new();
+    let (fd, info) = files
+        .open(&mut storage, ROOT, b"/tmp/ext", create_flags())
+        .unwrap();
+    files.write(&mut storage, fd, b"secret").unwrap();
+    let (read_only, _) = files
+        .open(&mut storage, ROOT, b"/tmp/ext", OpenFlags::default())
+        .unwrap();
+    let (write_only, _) = files
+        .open(
+            &mut storage,
+            ROOT,
+            b"/tmp/ext",
+            OpenFlags {
+                access: AccessMode::WriteOnly,
+                append: true,
+                ..OpenFlags::default()
+            },
+        )
+        .unwrap();
+    chmod(&mut storage, ROOT, b"/tmp/ext", 0).unwrap();
+    files.fork_owner(0, 1).unwrap();
+    files.set_owner(1).unwrap();
+    assert_eq!(files.resize(&mut storage, fd, 2), Ok(()));
+    assert_eq!(files.resize(&mut storage, fd, 6), Ok(()));
+    let mut bytes = [0u8; 6];
+    assert_eq!(files.read_at(&mut storage, fd, 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"se\0\0\0\0");
+    assert_eq!(files.write_at(&mut storage, write_only, 1, b"X"), Ok(1));
+    assert_eq!(files.info(&mut storage, fd).unwrap().size, 6);
+    assert_eq!(
+        files.resize(&mut storage, read_only, 0),
+        Err(VfsError::BadHandle)
+    );
+    assert_eq!(
+        files.write_at(&mut storage, read_only, 0, b""),
+        Err(VfsError::BadHandle)
+    );
+    assert_eq!(
+        files.read_at(&mut storage, write_only, 0, &mut []),
+        Err(VfsError::BadHandle)
+    );
+    assert_eq!(files.read_at(&mut storage, fd, u64::MAX, &mut bytes), Ok(0));
+    assert_eq!(files.write_at(&mut storage, fd, u64::MAX, b""), Ok(0));
+    assert_eq!(
+        files.write_at(&mut storage, fd, u64::MAX, b"x"),
+        Err(VfsError::NoSpace)
+    );
+    assert_eq!(
+        files.resize(&mut storage, fd, u64::MAX),
+        Err(VfsError::NoSpace)
+    );
+    assert_eq!(files.seek(&mut storage, fd, SeekFrom::Current(0)), Ok(6));
+    files.set_owner(0).unwrap();
+    assert_eq!(files.seek(&mut storage, fd, SeekFrom::Current(0)), Ok(6));
+    unlink(&mut storage, ROOT, b"/tmp/ext", false).unwrap();
+    assert_eq!(files.resize(&mut storage, fd, 8), Ok(()));
+    assert_eq!(files.read_at(&mut storage, fd, 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"sX\0\0\0\0");
+    files.close_owner(&mut storage, 1).unwrap();
+    files.close_all(&mut storage).unwrap();
+    assert_eq!(metadata(&mut storage, info.id), Err(VfsError::NoEnt));
+}
+
+#[test]
+fn resize_relocation_preserves_neighbor_and_capacity_failure_preserves_contents() {
+    let mut storage = mounted();
+    let mut files = OpenFiles::<2>::new();
+    let (a, _) = files
+        .open(&mut storage, ROOT, b"/tmp/a", create_flags())
+        .unwrap();
+    files.write(&mut storage, a, b"abc").unwrap();
+    let (b, _) = files
+        .open(&mut storage, ROOT, b"/tmp/b", create_flags())
+        .unwrap();
+    files.write(&mut storage, b, b"neighbor").unwrap();
+    files.resize(&mut storage, a, 512).unwrap();
+    let mut bytes = [1u8; 512];
+    assert_eq!(files.read_at(&mut storage, a, 0, &mut bytes), Ok(512));
+    assert_eq!(&bytes[..3], b"abc");
+    assert!(bytes[3..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        files.resize(&mut storage, a, CONTENT_CAPACITY as u64),
+        Err(VfsError::NoSpace)
+    );
+    assert_eq!(files.info(&mut storage, a).unwrap().size, 512);
+    bytes.fill(1);
+    files.read_at(&mut storage, a, 0, &mut bytes).unwrap();
+    assert_eq!(&bytes[..3], b"abc");
+    assert!(bytes[3..].iter().all(|byte| *byte == 0));
+    assert_eq!(read_file(&mut storage, b"/tmp/b"), b"neighbor");
+    storage.fail_write = true;
+    assert_eq!(files.resize(&mut storage, a, 2), Err(VfsError::Io));
+    assert_eq!(files.write_at(&mut storage, a, 0, b"X"), Err(VfsError::Io));
+    storage.fail_write = false;
+    assert_eq!(files.seek(&mut storage, a, SeekFrom::Current(0)), Ok(3));
+    assert_eq!(files.info(&mut storage, a).unwrap().size, 512);
+    assert_eq!(read_file(&mut storage, b"/tmp/b"), b"neighbor");
+    files.close_all(&mut storage).unwrap();
+}
+
+#[test]
 fn path_checks_apply_to_dot_components_links_and_creation() {
     let mut storage = mounted();
     for path in [b"/f/.".as_slice(), b"/f/..", b"/f/../README"] {

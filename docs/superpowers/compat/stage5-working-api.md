@@ -10,7 +10,8 @@ updated: 2026-10-27
 # 阶段 5 当前工作 API 与符号调用边界
 
 本表是当前源码的逐入口映射；全部行均为 **partial**，不提升为完整POSIX支持。
-具体执行、失败修复和未覆盖范围见[本轮分层验证](../reports/2026-10-25-stage0-5-gap-followup.md)；完整单次68轮及20项Linux参考已通过，仍按下表限制解释。
+前序执行范围见[分层验证](../reports/2026-10-25-stage0-5-gap-followup.md)；其68轮及20项Linux参考保留。
+最新[文件I/O与接收归账后继](../reports/2026-10-27-posix-std-file-io-report.md)取得单次36组72轮及22项Linux参考PASS，仍按下表限制解释。
 历史支持范围仍查[兼容台账](compat-state.md)、[符号追溯](symbol-trace.md)及其报告链。
 本轮预期范围见[profile v2](../specs/2026-10-25-stage5-profile-v2.md)，尚未发布。
 公开libc符号走musl对应包装及 `__syscall0..6`，下表按实际Linux号单列，不等同整个POSIX符号闭包。
@@ -31,7 +32,10 @@ updated: 2026-10-27
 | `fcntl` (72) | 本地fd与共享OFD holder | 17/60 | EBADF/EMFILE/EINVAL；fd0..18；SETFL仅支持APPEND不变，不支持通用fcntl命令 | F1/W6/W7b/N1 |
 | `open` (2) | 认证会话/VFS路径打开 | 17/60/63 | ENOENT/ENOTDIR/EACCES/ELOOP/EMFILE/ENOSPC/EINVAL；固定RAM树；64B路径/16B名称；非一般设备文件系统 | V1/V2/V3/W6 |
 | `openat` (257) | 认证会话/VFS路径打开 | 17/60/63 | ENOENT/ENOTDIR/EACCES/ELOOP/EMFILE/ENOSPC/EINVAL；固定RAM树；64B路径/16B名称；非一般设备文件系统 | V1/V2/V3/W6 |
-| `lseek` (8) | 共享OFD游标 | 17/60 | EBADF/EINVAL；SET/CUR/END；dup和fork共享；无pread/pwrite | F1/W6/W7b |
+| `lseek` (8) | 共享OFD游标 | 17/60 | EBADF/EINVAL；SET/CUR/END；dup和fork共享 | F1/W6/W7b |
+| `pread64` (17) | 认证OFD的显式偏移读取，保留共享游标 | 17/60 | EBADF/EINVAL/EFAULT/EISDIR/ESPIPE；每RPC≤2B；超出RAM树的正偏移EOF；非NULL坏地址不承诺恢复 | V4/R3 |
+| `pwrite64` (18) | 认证OFD的显式偏移写入，保留共享游标 | 17/60 | EBADF/EINVAL/EFAULT/ENOSPC/ESPIPE；每RPC≤2B；按POSIX忽略APPEND，与Linux不同；多RPC非原子 | V4/R3 |
+| `ftruncate` (77) | 认证OFD按打开权限缩小/清零增长 | 17/60 | EBADF/EINVAL/ENOSPC；保留共享游标；固定RAM内容区，无持久化或fsync | V4/R3 |
 | `getdents64` (217) | 目录记录翻译 | 17/60 | EBADF/ENOTDIR/EINVAL；8字节对齐，不承诺跨变更稳定cookie | L1–L3 |
 | `stat` (4) | 元数据翻译 | 17/60 | ENOENT/EBADF/EINVAL/EFAULT/ENOTDIR；newfstatat对应musl fstatat；无真实时间戳/device/mount同步 | M1/V2/V3 |
 | `lstat` (6) | 元数据翻译 | 17/60 | ENOENT/EBADF/EINVAL/EFAULT/ENOTDIR；newfstatat对应musl fstatat；无真实时间戳/device/mount同步 | M1/V2/V3 |
@@ -114,7 +118,13 @@ updated: 2026-10-27
 
 R1/R2直接经原生Runtime，使用persona 0 / adapter 0.0。core/alloc、stdio/time/thread和所有
 明确Unsupported/NULL/panic边界逐模块见[D6具体裁决表](../specs/2026-10-26-rust-d6-scope-decision.md)。
-D6用户已选择A；本表不把C文件/网络/线程符号支持外推到Rust std。
+D6原选择A的记录保留；2026-10-27后继任务扩到B，新增 `x86_64-prima-posix`、标准main/lang_start、
+默认System/musl allocator、Unix文件/环境/网络/进程/线程与pthread-key TLS后端。
+R3逐项验证文件/UDP/环境/线程及同步，初始证据见[POSIX std报告](../reports/2026-10-27-posix-std-backend-report.md)。
+后继补入File::set_len与FileExt显式偏移I/O，经V4/R3同源参考及各双轮通过；
+范围和全量状态见[文件I/O与接收归账报告](../reports/2026-10-27-posix-std-file-io-report.md)。
+C符号可链接不自动构成Rust API支持；Command创建子进程、TCP/DNS、wall-clock、安全随机数、
+文件同步等底层尚未支持的功能不升级。后端的模块接入不等于完整POSIX符合性。
 
 ## 号段、协议和检查边界
 
@@ -126,3 +136,7 @@ QueueFull→EAGAIN、AuditFull→ENOSPC的区别必须保留。
 
 xtask的台账回归只检查C分派入口均有行，不证明符号执行、错误全集或语义正确。
 实际执行/容量/差分结果按版本及轮次记录于[工作报告](../reports/2026-10-25-stage0-5-gap-followup.md)。
+
+
+2026-10-27：sendto接受MSG_NOSIGNAL（UDP本就不产生SIGPIPE），其余未登记flags仍EINVAL；
+R3实际使用该flag，适配层host检查接受后进入长度检查并拒绝未知组合。

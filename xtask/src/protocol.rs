@@ -296,26 +296,89 @@ pub(crate) fn validate_output_echo(
     validate_output_impl(output, expected_ipc)
 }
 
-/// UART arrival can move a SEND between queued/direct delivery. Interactive
-/// runs must preserve the complete message count and receive-block count;
-/// the capability-transfer witnesses and both path counters remain required.
-pub(crate) fn validate_interactive_ipc(
-    actual: (u64, u64, u64),
-    expected: Option<(u64, u64, u64)>,
-) -> Result<(), String> {
-    let (queued, direct, blocks) = actual;
-    let total = queued
-        .checked_add(direct)
-        .ok_or("interactive IPC count overflow")?;
-    if queued == 0 || direct == 0 || blocks == 0 {
-        return Err("interactive IPC must exercise queued, direct and blocked paths".to_owned());
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InteractiveIpc {
+    pub(crate) paths: (u64, u64, u64),
+    // kernel completions, UART subset, interruptions, retirement, faults, live calls
+    pub(crate) receives: [u64; 6],
+}
+
+pub(crate) fn interactive_ipc(
+    output: &str,
+    paths: (u64, u64, u64),
+) -> Result<InteractiveIpc, String> {
+    let mut records = output
+        .lines()
+        .filter_map(|line| line.strip_prefix("IPCRECV|"));
+    let record = records.next().ok_or("missing IPCRECV receive accounting")?;
+    if records.next().is_some() {
+        return Err("duplicate IPCRECV receive accounting".to_owned());
     }
-    if let Some((old_queued, old_direct, old_blocks)) = expected
-        && (old_queued.checked_add(old_direct) != Some(total) || blocks != old_blocks)
-    {
-        return Err(format!(
-            "interactive IPC total/blocks changed: {actual:?}, baseline {expected:?}"
-        ));
+    let names = ["kernel", "uart", "interrupted", "retired", "faults", "live"];
+    let mut counts = [None; 6];
+    for field in record.split(';') {
+        let (key, value) = field.split_once('=').ok_or("malformed IPCRECV field")?;
+        let index = names
+            .iter()
+            .position(|name| *name == key)
+            .ok_or("unknown IPCRECV field")?;
+        if counts[index].replace(parse_decimal(value, key)?).is_some() {
+            return Err(format!("duplicate IPCRECV field: {key}"));
+        }
+    }
+    let mut receives = [0; 6];
+    for (index, count) in counts.into_iter().enumerate() {
+        receives[index] =
+            count.ok_or_else(|| format!("missing IPCRECV field: {}", names[index]))?;
+    }
+    Ok(InteractiveIpc { paths, receives })
+}
+
+fn validate_ipc_paths((queued, direct, blocks): (u64, u64, u64)) -> Result<u64, String> {
+    let total = queued.checked_add(direct).ok_or("IPC count overflow")?;
+    if queued == 0 || direct == 0 || blocks == 0 {
+        return Err("IPC must exercise queued, direct and blocked paths".to_owned());
+    }
+    Ok(total)
+}
+
+/// UART notifications and user SENDs can each complete SYS_RECV. Account for
+/// every blocked call, and compare all non-UART endings across runs. Physical
+/// UART IRQ coalescing need not have a fixed count; user traffic must still match.
+pub(crate) fn validate_interactive_ipc(
+    actual: InteractiveIpc,
+    expected: Option<InteractiveIpc>,
+) -> Result<(), String> {
+    let total = validate_ipc_paths(actual.paths)?;
+    let [kernel, uart, interrupted, retired, faults, live] = actual.receives;
+    let non_uart = kernel
+        .checked_sub(uart)
+        .ok_or("UART receives exceed kernel receives")?;
+    let accounted = [actual.paths.1, kernel, interrupted, retired, faults, live]
+        .into_iter()
+        .try_fold(0u64, |sum, count| sum.checked_add(count))
+        .ok_or("receive accounting overflow")?;
+    if faults != 0 || accounted != actual.paths.2 {
+        return Err(format!("unaccounted/faulted receive blocks: {actual:?}"));
+    }
+    if let Some(old) = expected {
+        let [
+            old_kernel,
+            old_uart,
+            old_interrupted,
+            old_retired,
+            old_faults,
+            old_live,
+        ] = old.receives;
+        if old.paths.0.checked_add(old.paths.1) != Some(total)
+            || old_kernel.checked_sub(old_uart) != Some(non_uart)
+            || [interrupted, retired, faults, live]
+                != [old_interrupted, old_retired, old_faults, old_live]
+        {
+            return Err(format!(
+                "interactive IPC traffic/non-UART endings changed: {actual:?}, baseline {old:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -327,7 +390,7 @@ pub(crate) fn validate_timed_ipc(
     actual: (u64, u64, u64),
     expected: Option<(u64, u64, u64)>,
 ) -> Result<(), String> {
-    validate_interactive_ipc(actual, None)?;
+    validate_ipc_paths(actual)?;
     let balance = actual
         .2
         .checked_sub(actual.1)
@@ -4365,18 +4428,92 @@ mod tests {
     }
 
     #[test]
-    fn interactive_ipc_preserves_traffic_and_blocks_across_uart_arrival_orders() {
-        let baseline = Some((84, 339, 353));
-        assert!(super::validate_interactive_ipc((84, 339, 353), baseline).is_ok());
-        assert!(super::validate_interactive_ipc((83, 340, 353), baseline).is_ok());
+    fn interactive_ipc_accounts_for_every_receive_across_uart_arrival_orders() {
+        use super::InteractiveIpc;
+        let first = InteractiveIpc {
+            paths: (84, 339, 354),
+            receives: [4, 3, 2, 1, 0, 8],
+        };
+        let baseline = Some(first);
+        assert!(super::validate_interactive_ipc(first, baseline).is_ok());
+        // Both physical IRQ coalescing and user queued/direct timing may vary.
+        let second = InteractiveIpc {
+            paths: (83, 340, 353),
+            receives: [2, 1, 2, 1, 0, 8],
+        };
+        assert!(super::validate_interactive_ipc(second, baseline).is_ok());
         for invalid in [
-            (83, 339, 353),
-            (85, 339, 353),
-            (83, 340, 354),
-            (0, 423, 353),
-            (u64::MAX, 1, 353),
+            InteractiveIpc {
+                paths: (83, 339, 354),
+                ..first
+            }, // message loss
+            InteractiveIpc {
+                paths: (85, 339, 354),
+                ..first
+            }, // message duplication
+            InteractiveIpc {
+                paths: (84, 339, 353),
+                ..first
+            }, // unexplained block
+            InteractiveIpc {
+                receives: [4, 2, 2, 1, 0, 8],
+                ..first
+            }, // non-UART change
+            InteractiveIpc {
+                receives: [4, 5, 2, 1, 0, 8],
+                ..first
+            }, // invalid subset
+            InteractiveIpc {
+                receives: [4, 3, 1, 1, 0, 8],
+                ..first
+            }, // missing interruption
+            InteractiveIpc {
+                receives: [4, 3, 2, 0, 0, 8],
+                ..first
+            }, // missing retirement
+            InteractiveIpc {
+                receives: [4, 3, 2, 1, 0, 7],
+                ..first
+            }, // missing live call
+            InteractiveIpc {
+                receives: [4, 3, 2, 0, 1, 8],
+                ..first
+            }, // output fault
+            InteractiveIpc {
+                paths: (0, 423, 438),
+                ..first
+            }, // missing queued path
+            InteractiveIpc {
+                paths: (u64::MAX, 1, 16),
+                ..first
+            }, // traffic overflow
+            InteractiveIpc {
+                receives: [u64::MAX, 3, 2, 1, 0, 8],
+                ..first
+            },
         ] {
-            assert!(super::validate_interactive_ipc(invalid, baseline).is_err());
+            assert!(
+                super::validate_interactive_ipc(invalid, baseline).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_ipc_requires_complete_unambiguous_receive_accounting() {
+        let valid = "IPCRECV|kernel=4;uart=3;interrupted=2;retired=1;faults=0;live=8\r\n";
+        assert!(super::interactive_ipc(valid, (84, 339, 354)).is_ok());
+        for invalid in [
+            String::new(),
+            valid.repeat(2),
+            valid.replace(";live=8", ""),
+            valid.replace(";live=8", ";live=8;live=8"),
+            valid.replace("live=8", "unknown=8"),
+            valid.replace("live=8", "live=-1"),
+            valid.replace("live=8", "live=18446744073709551616"),
+            valid.replace("live=8", "live"),
+        ] {
+            assert!(super::interactive_ipc(&invalid, (84, 339, 354)).is_err());
         }
     }
 

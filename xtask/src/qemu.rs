@@ -231,21 +231,27 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 pub(crate) fn run_bios_test_input(
     image: &Path,
     name: &str,
+    run: usize,
     expected_stdout: &[u8],
-    expected_ipc: Option<(u64, u64, u64)>,
+    expected_ipc: Option<protocol::InteractiveIpc>,
     script: &[(&'static str, &'static [u8])],
-) -> Result<(u64, u64, u64), String> {
-    let output = run_captured_input(image, script)?;
+) -> Result<protocol::InteractiveIpc, String> {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask must be directly under the workspace root");
-    let log = workspace
-        .join("target/prima-os")
-        .join(format!("{name}.log"));
+    let directory = workspace.join("target/prima-os");
+    let run_log = directory.join(format!("{name}-run{run}.log"));
+    let output = run_captured_input(image, script).inspect_err(|error| {
+        let _ = std::fs::write(&run_log, error);
+    })?;
+    let _ = std::fs::write(run_log, &output.stdout);
+    let log = directory.join(format!("{name}.log"));
     let _ = std::fs::write(log, &output.stdout);
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     let ipc = protocol::validate_output_echo(&output.stdout, None)
+        .map_err(|error| with_output(error, &output))?;
+    let ipc = protocol::interactive_ipc(&output.stdout, ipc)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_interactive_ipc(ipc, expected_ipc)
         .map_err(|error| with_output(error, &output))?;

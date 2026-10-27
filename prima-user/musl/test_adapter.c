@@ -4,6 +4,31 @@
 #include <assert.h>
 
 int main(void) {
+    /* All these reject locally or use the null device, without a native trap. */
+    char positioned[2] = {'X', 'Y'};
+    assert(prima_file_at_arg(1, 2, (const unsigned char *)positioned) == UINT64_C(0x59582001));
+    assert(prima_file_at_arg(UINT64_MAX, 0, 0) == PRIMA_FILE_AT_OFFSET_MASK);
+    assert(prima_fd_at(-1, positioned, 1, 0, 0) == -PRIMA_ERRNO_EBADF);
+    assert(prima_fd_resize(-1, 0) == -PRIMA_ERRNO_EBADF);
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, 3, 0, 0};
+    assert(prima_fd_resize(3, -1) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_fd_at(3, positioned, 1, -1, 0) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_fd_at(3, positioned, ~0UL, 0, 1) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_fd_at(3, 0, 1, 0, 0) == -PRIMA_ERRNO_EFAULT);
+    prima_fds[3].kind = PRIMA_FD_DIR;
+    assert(prima_fd_resize(3, 0) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_fd_at(3, positioned, 1, 0, 0) == -PRIMA_ERRNO_EISDIR);
+    prima_fds[3].kind = PRIMA_FD_TTY;
+    assert(prima_fd_at(3, positioned, 1, 0, 1) == -PRIMA_ERRNO_ESPIPE);
+    prima_fds[3].kind = PRIMA_FD_NULL;
+    assert(prima_fd_at(3, positioned, 2, 0, 1) == 2);
+    assert(prima_fd_at(3, positioned, 2, 0, 0) == 0);
+    assert(prima_fd_resize(3, 0) == -PRIMA_ERRNO_EINVAL);
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_SOCKET, 0, 0, 0};
+    assert(prima_net_sendto(3, 0, 0, 1, 0, 0) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_net_sendto(3, 0, 0, PRIMA_MSG_NOSIGNAL | 1, 0, 0) == -PRIMA_ERRNO_EINVAL);
+    /* Accepted flag advances to datagram-size validation, without a native call. */
+    assert(prima_net_sendto(3, 0, 65, PRIMA_MSG_NOSIGNAL, 0, 0) == -PRIMA_ERRNO_MSGSIZE);
     assert(!(prima_upcall_flags(33, PRIMA_SA_RESTART) & 4));
     assert(prima_upcall_flags(32, PRIMA_SA_RESTART) & 4);
     assert(prima_upcall_flags(10, PRIMA_SA_RESTART) & 4);

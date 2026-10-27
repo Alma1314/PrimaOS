@@ -420,7 +420,7 @@ pub fn clear_task(task_id: u32) {
         FS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
         FPU_AREAS.with_mut(|areas| areas[task_id as usize] = FpuArea::DEFAULT);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
-        clear_recv_out(task_id);
+        crate::syscall::end_pending_recv(task_id, crate::syscall::RecvEnd::Retired);
         PENDING_STATUS.with_mut(|slots| slots[task_id as usize] = None);
     }
 }

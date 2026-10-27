@@ -97,6 +97,7 @@ enum Stage5Program<'a> {
     Probe,
     Start,
     Rust(bool),
+    RustPosix,
     /// M5：sbase `echo` 冻结用例，argv 由单页参数块传入。
     Echo(&'a [&'a str]),
     /// M6：POSIX 时间探针（无 argv 语义，走同一托管程序通道）。
@@ -115,6 +116,7 @@ enum Stage5Program<'a> {
     Vfs2,
     /// M13b：chmod/fchmod/umask 与 stdio 文件 API 探针。
     Vfs3,
+    FileExt,
     /// M19：用户态 loopback IPv4/UDP 探针。
     Net,
     /// M14：fd 0 tty 输入（canonical/raw/EOF/termios）探针。
@@ -144,6 +146,10 @@ pub(crate) fn build_images() -> Result<Images, String> {
 
 pub(crate) fn build_images_for_rust(standard: bool) -> Result<Images, String> {
     build_images_with_program(Stage5Program::Rust(standard))
+}
+
+pub(crate) fn build_images_for_rust_posix() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::RustPosix)
 }
 
 pub(crate) fn build_images_for_start() -> Result<Images, String> {
@@ -193,6 +199,10 @@ pub(crate) fn build_images_for_vfs2() -> Result<Images, String> {
 /// M13b：用 chmod/umask/stdio 探针替换 C 探针映像并跑同一双轮验证。
 pub(crate) fn build_images_for_vfs3() -> Result<Images, String> {
     build_images_with_program(Stage5Program::Vfs3)
+}
+
+pub(crate) fn build_images_for_file_ext() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::FileExt)
 }
 
 /// M19：用 loopback UDP 探针替换 C 探针映像并跑同一双轮验证。
@@ -333,6 +343,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     let adapter = c_dir.join("prima_syscall.c");
     let sbase = workspace.join("target").join("sbase");
     let (binary, sources, label) = match &program {
+        Stage5Program::RustPosix => (build_posix_std(&workspace)?, Vec::new(), "Rust POSIX std"),
         Stage5Program::Rust(standard) => (
             build_rust_probe(&workspace, *standard)?,
             Vec::new(),
@@ -396,6 +407,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             path.with_file_name("stage5-vfs3.elf"),
             vec![c_dir.join("stage5_vfs3.c")],
             "stage5 vfs3 probe",
+        ),
+        Stage5Program::FileExt => (
+            path.with_file_name("stage5-file-ext.elf"),
+            vec![c_dir.join("stage5_file_ext.c")],
+            "stage5 positional file probe",
         ),
         Stage5Program::Net => (
             path.with_file_name("stage5-net.elf"),
@@ -579,7 +595,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         .arg("-lgcc")
         .arg("-o")
         .arg(&binary);
-    if !matches!(program, Stage5Program::Rust(_)) {
+    if !matches!(program, Stage5Program::Rust(_) | Stage5Program::RustPosix) {
         let compiled = clang
             .output()
             .map_err(|error| format!("failed to run clang for {label}: {error}"))?;
@@ -608,6 +624,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     let program_args: Option<(&[&str], &[&str])> = match &program {
         Stage5Program::Start => Some((&start_args, &start_env)),
         Stage5Program::Rust(_) => Some((&["rust-probe"], &[])),
+        Stage5Program::RustPosix => {
+            Some((&["rust-probe", "", "中文 std"], &["PRIMA_BOOT=std env"]))
+        }
         Stage5Program::Echo(args) => Some((args, &[])),
         // 时间/fd/vfs/meta 探针不需要参数；托管程序通道仍要求一个非空 argv。
         Stage5Program::Time => Some((&["stage5-time"], &[])),
@@ -618,6 +637,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Mut => Some((&["stage5-mut"], &[])),
         Stage5Program::Vfs2 => Some((&["stage5-vfs2"], &[])),
         Stage5Program::Vfs3 => Some((&["stage5-vfs3"], &[])),
+        Stage5Program::FileExt => Some((&["stage5-file-ext"], &[])),
         Stage5Program::Net => Some((&["stage5-net"], &[])),
         Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),
@@ -827,6 +847,49 @@ fn stage5_probe_source() -> PathBuf {
 /// 侧 `CIO|` 见证（同一 `main` 路径写的 'h'/'i'）构成同源差分。
 pub(crate) const RUST_CORE_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=0;native=1;pal=0|ok=1\n";
 pub(crate) const RUST_STD_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=1;native=1;pal=1|ok=1\n";
+
+pub(crate) const RUST_POSIX_STDOUT: &[u8] = b"RUST|posix=1;fs=1;env=1;udp=1;thread=1|ok=1\n";
+
+pub(crate) fn check_rust_posix_linux() -> Result<(), String> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let directory = workspace.join("target/linux-ref");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let binary = directory.join("rust-probe");
+    let compiled = Command::new("rustc")
+        .args(["--edition=2024", "-O", "-Cpanic=abort"])
+        .arg(workspace.join("prima-user/rust-probe/src/posix.rs"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !compiled.status.success() {
+        return Err(String::from_utf8_lossy(&compiled.stderr).into_owned());
+    }
+    let output = Command::new(binary)
+        .args(["", "中文 std"])
+        .env("PRIMA_BOOT", "std env")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() || output.stdout != RUST_POSIX_STDOUT {
+        return Err(format!("R3 Linux reference: {output:?}"));
+    }
+    println!("PASS R3 Linux reference");
+    Ok(())
+}
+
+fn build_posix_std(workspace: &Path) -> Result<PathBuf, String> {
+    let output = Command::new("python3")
+        .arg(workspace.join("scripts/build_posix_std.py"))
+        .output()
+        .map_err(|error| format!("POSIX std build: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "POSIX std build: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(workspace.join("target/rust-posix/x86_64-prima-posix/release/prima-rust-probe"))
+}
 
 fn build_rust_probe(workspace: &Path, standard: bool) -> Result<PathBuf, String> {
     let directory = workspace.join("target/rust-probe");
@@ -1219,42 +1282,51 @@ pub(crate) fn check_stage5_linux_vfs2() -> Result<(), String> {
 
 /// M13b：chmod/fchmod/umask 与 stdio 文件 API 的 Linux 参考运行（同一源码）。
 pub(crate) fn check_stage5_linux_vfs3() -> Result<(), String> {
+    check_stage5_linux_file_probe("vfs3", VFS3_EXPECTED_STDOUT)
+}
+
+pub(crate) fn check_stage5_linux_file_ext() -> Result<(), String> {
+    check_stage5_linux_file_probe("file_ext", FILE_EXT_EXPECTED_STDOUT)
+}
+
+fn check_stage5_linux_file_probe(name: &str, expected: &[u8]) -> Result<(), String> {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_vfs3.c");
-    let binary = workspace.join("target/prima-os/vfs3-linux");
+    let source = workspace.join(format!("prima-user/c/stage5_{name}.c"));
+    let binary = workspace.join(format!("target/prima-os/{name}-linux"));
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
         .arg(&source)
         .arg("-o")
         .arg(&binary)
         .output()
-        .map_err(|error| format!("failed to run Linux cc for stage5 vfs3: {error}"))?;
+        .map_err(|error| format!("failed to run Linux cc for stage5 {name}: {error}"))?;
     if !compiled.status.success() {
         return Err(format!(
-            "failed to build Linux stage5 vfs3 probe: {}",
+            "failed to build Linux stage5 {name} probe: {}",
             String::from_utf8_lossy(&compiled.stderr)
         ));
     }
-    let run_dir = workspace.join("target/prima-os/vfs3-linux-run");
+    let run_dir = workspace.join(format!("target/prima-os/{name}-linux-run"));
     prepare_stage5_reference_tree(&run_dir)?;
     let output = Command::new(&binary)
         .current_dir(&run_dir)
         .env_clear()
         .stdin(Stdio::null())
         .output()
-        .map_err(|error| format!("failed to run Linux stage5 vfs3 probe: {error}"))?;
-    if output.status.code() != Some(0) || output.stdout != VFS3_EXPECTED_STDOUT {
+        .map_err(|error| format!("failed to run Linux stage5 {name} probe: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != expected {
         return Err(format!(
-            "Linux stage5 vfs3 mismatch: exit {:?}, stdout {:?}, expected exit 0, stdout {:?}",
+            "Linux stage5 {name} mismatch: exit {:?}, stdout {:?}, expected {:?}, stderr {}",
             output.status.code(),
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(VFS3_EXPECTED_STDOUT)
+            String::from_utf8_lossy(expected),
+            String::from_utf8_lossy(&output.stderr)
         ));
     }
-    println!("PASS linux stage5 chmod/umask/stdio references");
+    println!("PASS linux stage5 {name} references");
     Ok(())
 }
 
@@ -1418,6 +1490,8 @@ pub(crate) const MUT_EXPECTED_STDOUT: &[u8] = b"MUT|ok=1;mkdir=1;exists=1;stat_d
 pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlink=1;dir=1;subtree=1;nonempty=1;fchdir=1;ro=1;loop=1;type=1;trunc=1;missing=1|ok=1;err=0\n";
 
 /// M13b + LibOS 文件对象生命周期/稀疏写探针输出（Linux 与 Prima 逐字节相同）。
+pub(crate) const FILE_EXT_EXPECTED_STDOUT: &[u8] =
+    b"FILEEXT|resize=1;pread=1;pwrite=1;cursor=1;access=1;orphan=1|ok=1\n";
 pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
     b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1;unlink_open=1;rename_open=1;unlink_link=1;sparse=1|ok=1;err=0\n";
 

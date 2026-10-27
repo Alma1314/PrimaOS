@@ -235,7 +235,8 @@
       "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md",
       "docs/superpowers/specs/2026-10-25-capability-location-model-design.md",
       "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
-      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -393,7 +394,8 @@
       "docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md",
       "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md",
       "docs/superpowers/specs/2026-10-24-native-runtime-service-design.md",
-      "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md"
+      "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md",
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
     ],
     "code": [
       "prima-runtime/src/vfs.rs",
@@ -616,7 +618,10 @@
       "docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md",
       "docs/superpowers/specs/2026-10-26-static-program-contract-design.md",
       "docs/superpowers/specs/2026-10-26-stage5-release-decisions.md",
-      "docs/superpowers/compat/stage5-working-api.md"
+      "docs/superpowers/compat/stage5-working-api.md",
+      "docs/superpowers/specs/2026-10-27-posix-std-backend-design.md",
+      "docs/superpowers/reports/2026-10-27-posix-std-backend-report.md",
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
@@ -643,7 +648,10 @@
       "prima-user/rust-probe/pal/thread.rs",
       "prima-abi/src/program_contract.rs",
       "prima-user/c/prima_contract.h",
-      "prima-user/c/prima_libc.map"
+      "prima-user/c/prima_libc.map",
+      "scripts/build_posix_std.py",
+      "targets/x86_64-prima-posix.json",
+      "prima-user/src/file_ops.rs"
     ],
     "tests": [
       "prima-user/c/stage5_probe.c",
@@ -662,7 +670,11 @@
       "prima-user/rust-probe/src/main.rs",
       "prima-user/c/stage5_start.c",
       "prima-abi/src/program_contract.rs",
-      "xtask/src/compat.rs"
+      "xtask/src/compat.rs",
+      "prima-user/rust-probe/src/posix.rs",
+      "prima-user/rust-probe/src/native.rs",
+      "prima-user/c/stage5_file_ext.c",
+      "scripts/test_posix_std.py"
     ],
     "guide": "docs/architecture/topics/compatibility.md"
   }

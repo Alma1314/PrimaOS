@@ -151,3 +151,5 @@ updated: 2026-10-27
 
 - [Rust D6范围裁决](2026-10-26-rust-d6-scope-decision.md)：用户已选择A；原生单线程std的R2双轮及Clippy通过，不代替阶段签署。
 - [事件/位置模型组合](2026-10-26-event-authority-model-design.md)：Timer、异常、等待、远端数据的host回归及Lean有界位置证明构建已通过；机器统一验收仍进行中。
+
+- [POSIX std 后端：目标、ABI、标准入口及验证](2026-10-27-posix-std-backend-design.md)

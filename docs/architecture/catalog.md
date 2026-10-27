@@ -82,7 +82,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（173）
+## report（175）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -259,6 +259,8 @@
 | [原生运行时与服务重构验证](../superpowers/reports/2026-10-24-native-runtime-service-report.md) | historical | `docs/superpowers/reports/2026-10-24-native-runtime-service-report.md` |
 | [阶段 0–5 缺口后继工作记录与统一验收](../superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | historical | `docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md` |
 | [阶段 5 缺口补强验证记录](../superpowers/reports/2026-10-25-stage5-gap-closure-report.md) | historical | `docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md` |
+| [POSIX std 后端实现与验证](../superpowers/reports/2026-10-27-posix-std-backend-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-backend-report.md` |
+| [POSIX std 后继：文件I/O与IPC接收归账](../superpowers/reports/2026-10-27-posix-std-file-io-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md` |
 
 ## spec（4）
 
@@ -269,7 +271,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（80）
+## specification（81）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -353,6 +355,7 @@
 | [S5-D6：Rust 目标与 std 范围裁决](../superpowers/specs/2026-10-26-rust-d6-scope-decision.md) | current | `docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md` |
 | [阶段 5 出口的具体评审工件](../superpowers/specs/2026-10-26-stage5-release-decisions.md) | current | `docs/superpowers/specs/2026-10-26-stage5-release-decisions.md` |
 | [静态程序的 persona 与适配层版本护栏](../superpowers/specs/2026-10-26-static-program-contract-design.md) | current | `docs/superpowers/specs/2026-10-26-static-program-contract-design.md` |
+| [Prima POSIX std 后端](../superpowers/specs/2026-10-27-posix-std-backend-design.md) | current | `docs/superpowers/specs/2026-10-27-posix-std-backend-design.md` |
 
 ## template（4）
 

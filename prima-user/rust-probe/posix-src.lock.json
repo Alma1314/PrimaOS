@@ -1,0 +1,10 @@
+{
+  "compiler_commit": "1a833e165",
+  "license": "MIT OR Apache-2.0",
+  "upstream_sha256": {
+    "std": "c9e5e596ddeb3c5ee82906252d0987501420b0fecb855d1602268e9f50c1fecd",
+    "libc": "282fa5105ddaa4c588e23edbed08d4868675ec13a217a31caff81ceeb49b625f",
+    "unwind": "c276c4fe91b97c606df26e2b9e8b1bbae44c3eff9a342a500ceb6b89ed05c632",
+    "backtrace": "ab4c4bf673e9bffc94a65f8b49188a137d0f3c1f39674f7d5ab5668d6a050749"
+  }
+}

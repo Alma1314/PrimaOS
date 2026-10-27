@@ -929,6 +929,20 @@ pub(crate) fn ipc_ready(witness: &kernel::syscall::IpcWitness) {
     serial::write_bytes(b";blocks=");
     write_u32(witness.blocks as u32);
     serial::write_bytes(b"\r\n");
+    serial::write_bytes(b"IPCRECV|");
+    for (index, (name, value)) in ["kernel", "uart", "interrupted", "retired", "faults", "live"]
+        .iter()
+        .zip(kernel::syscall::ipc_receive_counts())
+        .enumerate()
+    {
+        if index != 0 {
+            serial::write_bytes(b";");
+        }
+        serial::write_bytes(name.as_bytes());
+        serial::write_bytes(b"=");
+        write_u64(value);
+    }
+    serial::write_bytes(b"\r\n");
 }
 
 /// S2-D4：Task create/yield/destroy 用户原语（单核调度）见证。

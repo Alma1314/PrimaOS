@@ -86,6 +86,9 @@
 #define PRIMA_LINUX_SYS_munmap 11
 #define PRIMA_LINUX_SYS_brk 12
 #define PRIMA_LINUX_SYS_ioctl 16
+#define PRIMA_LINUX_SYS_pread64 17
+#define PRIMA_LINUX_SYS_pwrite64 18
+#define PRIMA_LINUX_SYS_ftruncate 77
 #define PRIMA_LINUX_SYS_execve 59
 #define PRIMA_LINUX_SYS_futex 202
 #define PRIMA_LINUX_SYS_clone 56
@@ -164,9 +167,11 @@
 #define PRIMA_ERRNO_EFAULT 14
 #define PRIMA_ERRNO_EEXIST 17
 #define PRIMA_ERRNO_ENOTDIR 20
+#define PRIMA_ERRNO_EISDIR 21
 #define PRIMA_ERRNO_EINVAL 22
 #define PRIMA_ERRNO_EMFILE 24
 #define PRIMA_ERRNO_ENOSPC 28
+#define PRIMA_ERRNO_ESPIPE 29
 #define PRIMA_ERRNO_ERANGE 34
 #define PRIMA_ERRNO_ENOSYS 38
 #define PRIMA_ERRNO_ETIMEDOUT 110
@@ -227,6 +232,16 @@
 #define PRIMA_FILE_OP_LSEEK 3
 #define PRIMA_FILE_OP_CLOSE 4
 #define PRIMA_FILE_OP_STAT 5
+#define PRIMA_FILE_OP_RESIZE 6
+#define PRIMA_FILE_OP_READ_AT 7
+#define PRIMA_FILE_OP_WRITE_AT 8
+/* Positional request: 12-bit offset, 2-bit count, 2 reserved zero bits,
+ * 16-bit data. Offset 4095 is the out-of-capacity sentinel (RAM content=2920B).
+ * Reply uses the existing READ/WRITE layout. */
+#define PRIMA_FILE_AT_OFFSET_MASK UINT64_C(0xfff)
+#define PRIMA_FILE_AT_COUNT_SHIFT 12
+#define PRIMA_FILE_AT_DATA_SHIFT 16
+#define PRIMA_FILE_AT_CHUNK 2
 #define PRIMA_FILE_OPEN_FLAGS_SHIFT 28
 #define PRIMA_FILE_OPEN_PATH_LEN_SHIFT 26
 #define PRIMA_FILE_OPEN_PATH_MASK UINT64_C(0xffffff)
@@ -358,6 +373,7 @@
 #define PRIMA_NET_SOCKETS 4
 #define PRIMA_AF_INET 2
 #define PRIMA_SOCK_DGRAM 2
+#define PRIMA_MSG_NOSIGNAL 0x4000
 
 /* M8：本地 fd 表（0..18）。fd 0 预置 `/dev/null` 语义（读 EOF、写丢弃），1/2 预置
  * tty；文件/目录项指向服务端句柄（3..10），dup 出的多项共享同一句柄与 offset。

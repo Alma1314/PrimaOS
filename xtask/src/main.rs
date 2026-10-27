@@ -37,7 +37,7 @@ fn run() -> Result<(), String> {
         "test-rust" => {
             let case = match rest.as_slice() {
                 [] => None,
-                [name] if matches!(name.as_str(), "R1" | "R2") => Some(name.as_str()),
+                [name] if matches!(name.as_str(), "R1" | "R2" | "R3") => Some(name.as_str()),
                 _ => return Err(usage()),
             };
             test_rust_slice(case)
@@ -69,7 +69,7 @@ fn run() -> Result<(), String> {
         "test-vfs" => {
             let program = match rest.as_slice() {
                 [] => None,
-                [name] if matches!(name.as_str(), "V1" | "V2" | "V3") => Some(name.as_str()),
+                [name] if matches!(name.as_str(), "V1" | "V2" | "V3" | "V4") => Some(name.as_str()),
                 _ => return Err(usage()),
             };
             test_vfs_slice(program)
@@ -117,6 +117,14 @@ fn test_vfs_slice(program: Option<&str>) -> Result<(), String> {
             image::build_images_for_vfs3()?,
             "V3",
             image::VFS3_EXPECTED_STDOUT,
+        )?;
+    }
+    if program.is_none() || program == Some("V4") {
+        image::check_stage5_linux_file_ext()?;
+        test_program_twice(
+            image::build_images_for_file_ext()?,
+            "V4",
+            image::FILE_EXT_EXPECTED_STDOUT,
         )?;
     }
     Ok(())
@@ -228,6 +236,14 @@ fn test_musl_slice(host_only: bool) -> Result<(), String> {
 }
 
 fn test_rust_slice(case: Option<&str>) -> Result<(), String> {
+    if case.is_none() || case == Some("R3") {
+        image::check_rust_posix_linux()?;
+        test_program_twice(
+            image::build_images_for_rust_posix()?,
+            "R3",
+            image::RUST_POSIX_STDOUT,
+        )?;
+    }
     for (standard, name, stdout) in [
         (false, "R1", image::RUST_CORE_STDOUT),
         (true, "R2", image::RUST_STD_STDOUT),
@@ -265,6 +281,7 @@ fn test_boot_slice() -> Result<(), String> {
         ("V1", image::check_stage5_linux_vfs),
         ("V2", image::check_stage5_linux_vfs2),
         ("V3", image::check_stage5_linux_vfs3),
+        ("V4", image::check_stage5_linux_file_ext),
         ("N1", image::check_stage5_linux_net),
         ("W6", image::check_stage5_linux_proc),
         ("W7", image::check_stage5_linux_exec),
@@ -323,6 +340,11 @@ fn test_boot_slice() -> Result<(), String> {
             "V3",
             image::build_images_for_vfs3,
             image::VFS3_EXPECTED_STDOUT,
+        ),
+        (
+            "V4",
+            image::build_images_for_file_ext,
+            image::FILE_EXT_EXPECTED_STDOUT,
         ),
         (
             "N1",
@@ -428,6 +450,10 @@ fn test_boot_slice() -> Result<(), String> {
             .and_then(|images| test_program_twice(images, name, stdout));
         record_result(&mut failures, name, result);
     }
+    let result = image::check_rust_posix_linux()
+        .and_then(|()| image::build_images_for_rust_posix())
+        .and_then(|images| test_program_twice(images, "R3", image::RUST_POSIX_STDOUT));
+    record_result(&mut failures, "R3", result);
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -444,7 +470,13 @@ fn test_boot_slice() -> Result<(), String> {
             failures.len()
         ));
     }
-    println!("PASS full BIOS suite: 34 programs, 68 runs");
+    let count = 1
+        + image::ECHO_CASES.len()
+        + programs.len()
+        + image::CAT_CASES.len()
+        + image::LS_CASES.len()
+        + 3;
+    println!("PASS full BIOS suite: {count} programs, {} runs", count * 2);
     println!("PASS stage1 boot slice");
     Ok(())
 }
@@ -456,6 +488,7 @@ fn test_tty_twice(images: image::Images) -> Result<(), String> {
         let result = qemu::run_bios_test_input(
             &images.bios,
             "I1",
+            run,
             image::TTYIN_EXPECTED_STDOUT,
             baseline,
             &[
@@ -566,7 +599,7 @@ fn usage() -> String {
     "usage: cargo xtask <build|run|test|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
-     \x20      cargo xtask test-rust [R1|R2]\n\
+     \x20      cargo xtask test-rust [R1|R2|R3]\n\
      \x20      cargo xtask test-musl [--host-only]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"

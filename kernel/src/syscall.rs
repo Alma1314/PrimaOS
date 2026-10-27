@@ -2019,7 +2019,7 @@ fn upcall_control(args: &[u64; MAX_ARGS]) -> u64 {
                     ));
                 }
                 if !masked && bootstrap::interrupt_for_upcall(target).map_err(task_destroy_errno)? {
-                    sched::clear_recv_out(target);
+                    end_pending_recv(target, RecvEnd::Interrupted);
                     sched::set_frame_rax(target, encode_errno(Errno::Interrupted));
                     UPCALL_INTERRUPTED.with_mut(|flags| flags[target as usize] = true);
                 }
@@ -2105,7 +2105,7 @@ fn notify_child_exit(parent: u32, child_cookie: u64, status: bootstrap::ProcessE
     if crate::signal::mask(parent) & (1 << (slot - 1)) == 0
         && bootstrap::interrupt_for_upcall(parent).expect("exit callback audit preflight")
     {
-        sched::clear_recv_out(parent);
+        end_pending_recv(parent, RecvEnd::Interrupted);
         sched::set_frame_rax(parent, encode_errno(Errno::Interrupted));
         UPCALL_INTERRUPTED.with_mut(|flags| flags[parent as usize] = true);
     }
@@ -3026,13 +3026,66 @@ struct IpcPathState {
     queued: u64,
     direct: u64,
     blocks: u64,
+    kernel: u64,
+    uart: u64,
+    interrupted: u64,
+    retired: u64,
+    faults: u64,
 }
 
 static IPC_PATHS: StaticCell<IpcPathState> = StaticCell::new(IpcPathState {
     queued: 0,
     direct: 0,
     blocks: 0,
+    kernel: 0,
+    uart: 0,
+    interrupted: 0,
+    retired: 0,
+    faults: 0,
 });
+
+/// Non-SEND endings of an outstanding SYS_RECV(_META), counted separately
+/// from user message delivery. An IRQ can finish a receive without a SEND.
+pub(crate) enum RecvEnd {
+    Kernel,
+    Uart,
+    Interrupted,
+    Retired,
+    Fault,
+}
+
+pub(crate) fn end_pending_recv(task: u32, reason: RecvEnd) {
+    if sched::recv_out(task).is_some() {
+        IPC_PATHS.with_mut(|paths| match reason {
+            RecvEnd::Kernel => paths.kernel += 1,
+            RecvEnd::Uart => {
+                paths.kernel += 1;
+                paths.uart += 1;
+            }
+            RecvEnd::Interrupted => paths.interrupted += 1,
+            RecvEnd::Retired => paths.retired += 1,
+            RecvEnd::Fault => paths.faults += 1,
+        });
+    }
+    sched::clear_recv_out(task);
+}
+
+/// Every blocked receive either returned through a classified path, was
+/// retired with its task, or still has a saved output pointer at the snapshot.
+pub fn ipc_receive_counts() -> [u64; 6] {
+    let paths = ipc_paths();
+    let live = (0..sched::MAX_TASKS as u32)
+        .filter(|task| sched::recv_out(*task).is_some())
+        .count() as u64;
+    [
+        paths.kernel,
+        paths.uart,
+        paths.interrupted,
+        paths.retired,
+        paths.faults,
+        live,
+    ]
+}
 
 fn ipc_paths() -> IpcPathState {
     IPC_PATHS.with(|paths| *paths)
@@ -3236,14 +3289,19 @@ pub fn complete_pending_recv(task: u32) {
     let out = match recv_out_phys(task, ptr) {
         Ok(out) => out,
         Err(error) => {
-            sched::clear_recv_out(task);
+            end_pending_recv(task, RecvEnd::Fault);
             sched::set_frame_rax(task, encode_errno(error));
             return;
         }
     };
     if let Some(message) = bootstrap::take_pending_global(task) {
         write_recv_out(task, out, Some(&message));
-        sched::clear_recv_out(task);
+        let uart = message.sender == bootstrap::KERNEL_ACTOR
+            && bootstrap::irq_source(4).is_some_and(|source| {
+                message.payload
+                    == bootstrap::exc_notification_payload(source, ExcKind::ExternalInterrupt)
+            });
+        end_pending_recv(task, if uart { RecvEnd::Uart } else { RecvEnd::Kernel });
         sched::set_frame_rax(task, message.payload);
     }
 }

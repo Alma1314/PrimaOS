@@ -1938,7 +1938,8 @@ static long prima_net_sendto(int fd, const void *buf, unsigned long len, int fla
     struct prima_fd_entry *entry = prima_socket_entry(fd);
     if (!entry)
         return -PRIMA_ERRNO_EBADF;
-    if (flags != 0)
+    /* UDP sends never raise SIGPIPE; accept the standard per-send suppression. */
+    if ((flags & ~PRIMA_MSG_NOSIGNAL) != 0)
         return -PRIMA_ERRNO_EINVAL;
     if (len > PRIMA_NET_DATAGRAM_MAX)
         return -PRIMA_ERRNO_MSGSIZE;
@@ -2490,6 +2491,63 @@ static long prima_fd_lseek(int fd, long offset, int whence) {
     if (entry->kind != PRIMA_FD_FILE)
         return -PRIMA_ERRNO_EBADF;
     return prima_handle_lseek(entry->object, offset, whence);
+}
+
+/* Native positional ops never mutate the shared OFD cursor. Like POSIX pwrite,
+ * WRITE_AT ignores O_APPEND (Linux's pwrite-on-append behavior differs).
+ * Do not emulate this with seek/read/restore: fork holders share the cursor. */
+static uint64_t prima_file_at_arg(uint64_t offset, unsigned count, const unsigned char *bytes) {
+    if (offset > PRIMA_FILE_AT_OFFSET_MASK) offset = PRIMA_FILE_AT_OFFSET_MASK;
+    uint64_t arg = offset | ((uint64_t)count << PRIMA_FILE_AT_COUNT_SHIFT);
+    if (bytes)
+        for (unsigned i = 0; i < count; i++)
+            arg |= (uint64_t)bytes[i] << (PRIMA_FILE_AT_DATA_SHIFT + 8 * i);
+    return arg;
+}
+
+static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int writing) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry) return -PRIMA_ERRNO_EBADF;
+    if (offset < 0 || len > (~0UL >> 1)) return -PRIMA_ERRNO_EINVAL;
+    if (entry->kind == PRIMA_FD_DIR)
+        return writing ? -PRIMA_ERRNO_EBADF : -PRIMA_ERRNO_EISDIR;
+    if (entry->kind != PRIMA_FD_FILE && entry->kind != PRIMA_FD_NULL)
+        return -PRIMA_ERRNO_ESPIPE;
+    if (!buf && len) return -PRIMA_ERRNO_EFAULT;
+    if (entry->kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
+    unsigned char *bytes = buf;
+    unsigned long done = 0;
+    /* Even a zero-length request reaches the OFD access check. */
+    do {
+        unsigned count = len - done > PRIMA_FILE_AT_CHUNK ? PRIMA_FILE_AT_CHUNK : (unsigned)(len - done);
+        uint64_t arg = prima_file_at_arg((uint64_t)offset + done, count,
+                                          writing && count ? bytes + done : 0);
+        long reply = prima_file_call(writing ? PRIMA_FILE_OP_WRITE_AT : PRIMA_FILE_OP_READ_AT,
+                                     entry->object, arg);
+        if (reply < 0) return done ? (long)done : reply;
+        long status = prima_reply_status((uint64_t)reply);
+        if (status) return done ? (long)done : -status;
+        unsigned received = writing ? (unsigned)((uint64_t)reply & PRIMA_FILE_ARG_MASK)
+                                    : (unsigned)(((uint64_t)reply >> PRIMA_FILE_WRITE_COUNT_SHIFT) & 0xff);
+        if (received > count) return done ? (long)done : -PRIMA_ERRNO_EINVAL;
+        if (!writing)
+            for (unsigned i = 0; i < received; i++)
+                bytes[done + i] = (unsigned char)((uint64_t)reply >> (8 * i));
+        done += received;
+        if (received < count) break;
+    } while (done < len);
+    return (long)done;
+}
+
+static long prima_fd_resize(int fd, long size) {
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (!entry) return -PRIMA_ERRNO_EBADF;
+    if (size < 0 || entry->kind != PRIMA_FD_FILE) return -PRIMA_ERRNO_EINVAL;
+    /* Preserve every oversize request as oversize; never narrow to zero. */
+    uint64_t arg = (uint64_t)size > UINT32_MAX ? UINT32_MAX : (uint64_t)size;
+    long reply = prima_file_call(PRIMA_FILE_OP_RESIZE, entry->object, arg);
+    if (reply < 0) return reply;
+    return -prima_reply_status((uint64_t)reply);
 }
 
 static long prima_fd_close(int fd) {
@@ -3127,6 +3185,12 @@ static long prima_translate_body(long number, long a0, long a1, long a2, long a3
         return prima_getdents64((int)a0, (void *)a1, (unsigned long)a2);
     case PRIMA_LINUX_SYS_lseek:
         return prima_fd_lseek((int)a0, (long)a1, (int)a2);
+    case PRIMA_LINUX_SYS_ftruncate:
+        return prima_fd_resize((int)a0, a1);
+    case PRIMA_LINUX_SYS_pread64:
+        return prima_fd_at((int)a0, (void *)a1, (unsigned long)a2, a3, 0);
+    case PRIMA_LINUX_SYS_pwrite64:
+        return prima_fd_at((int)a0, (void *)a1, (unsigned long)a2, a3, 1);
     case PRIMA_LINUX_SYS_mkdir:
         return prima_mkdirat(PRIMA_AT_FDCWD, (const char *)a0, a1);
     case PRIMA_LINUX_SYS_mkdirat:
@@ -3479,6 +3543,8 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3, lon
     case PRIMA_LINUX_SYS_symlink: case PRIMA_LINUX_SYS_symlinkat:
     case PRIMA_LINUX_SYS_readlink: case PRIMA_LINUX_SYS_readlinkat:
     case PRIMA_LINUX_SYS_getdents64: case PRIMA_LINUX_SYS_lseek:
+    case PRIMA_LINUX_SYS_ftruncate: case PRIMA_LINUX_SYS_pread64:
+    case PRIMA_LINUX_SYS_pwrite64:
     case PRIMA_LINUX_SYS_ioctl: case PRIMA_LINUX_SYS_fork:
     case PRIMA_LINUX_SYS_socket: case PRIMA_LINUX_SYS_bind:
     case PRIMA_LINUX_SYS_getsockname: case PRIMA_LINUX_SYS_sendto:

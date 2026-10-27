@@ -241,6 +241,59 @@ impl<const N: usize> OpenFiles<N> {
         Ok(next)
     }
 
+    /// 显式偏移读取；不触及共享 OFD 游标。
+    pub fn read_at<S: Storage>(
+        &self,
+        storage: &mut S,
+        id: HandleId,
+        offset: u64,
+        out: &mut [u8],
+    ) -> Result<usize, VfsError> {
+        let file = self.get(id)?;
+        if !file.access.allows_read() {
+            return Err(VfsError::BadHandle);
+        }
+        let node = fs::read_node(storage, file.node)?;
+        if node.kind != NodeKind::File {
+            return Err(VfsError::Invalid);
+        }
+        fs::read(storage, &node, offset, out)
+    }
+
+    /// 显式偏移写入，忽略 append 且不触及共享 OFD 游标。
+    pub fn write_at<S: Storage>(
+        &self,
+        storage: &mut S,
+        id: HandleId,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<usize, VfsError> {
+        let file = self.get(id)?;
+        if !file.access.allows_write() {
+            return Err(VfsError::BadHandle);
+        }
+        let mut node = fs::read_node(storage, file.node)?;
+        if node.kind != NodeKind::File {
+            return Err(VfsError::Invalid);
+        }
+        fs::write(storage, file.node, &mut node, offset, bytes)
+    }
+
+    /// 按打开时授予的 access 调整长度；后续 chmod 不撤销该授权。
+    pub fn resize<S: Storage>(
+        &self,
+        storage: &mut S,
+        id: HandleId,
+        size: u64,
+    ) -> Result<(), VfsError> {
+        let file = self.get(id)?;
+        if !file.access.allows_write() {
+            return Err(VfsError::BadHandle);
+        }
+        let mut node = fs::read_node(storage, file.node)?;
+        fs::resize(storage, file.node, &mut node, size)
+    }
+
     /// 更新镜像成功后才释放表项；I/O 失败可重试，不让槽位提前复用。
     pub fn close<S: Storage>(&mut self, storage: &mut S, id: HandleId) -> Result<(), VfsError> {
         let file = self.get(id)?;

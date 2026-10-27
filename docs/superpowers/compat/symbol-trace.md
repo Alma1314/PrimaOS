@@ -218,3 +218,20 @@ musl八补丁归档/5项host、compat、20项Linux参考和完整单次68轮BIOS
 旧supported、planned、UNTEST均保留其历史范围，本轮不据此发布profile v2或自动勾选阶段。
 #AC仅有host路由，没有机器见证；最终profile/静态护栏/组织级签署仍见
 [具体评审工件](../specs/2026-10-26-stage5-release-decisions.md)。
+
+
+## POSIX std与文件I/O后继（2026-10-27）
+
+[初始std后端](../reports/2026-10-27-posix-std-backend-report.md)接通persona1/adapter1的R3，
+其69/70失败保留；[文件I/O与接收归账后继](../reports/2026-10-27-posix-std-file-io-report.md)
+补强下表范围，最新完整命令状态以该报告为准。
+
+| 符号 | musl/ABI入口 | Prima后端 | 本次见证与边界 |
+|---|---|---|---|
+| std::fs::File::set_len / ftruncate | src/unistd/ftruncate.c → Linux77 | C适配层 → file op6 →认证OFD resize | V4/R3；RAM树长度/增长清零、共享游标不变；无fsync |
+| std::os::unix::fs::FileExt::read_at / pread | src/unistd/pread.c → Linux17 | C适配层 → file op7 →认证OFD read_at | V4/R3；显式偏移；超大正偏移EOF；每RPC≤2B |
+| std::os::unix::fs::FileExt::write_at / pwrite | src/unistd/pwrite.c → Linux18 | C适配层 → file op8 →认证OFD write_at | V4/R3；按POSIX忽略APPEND，与Linux不同；非整体原子 |
+| I1的SYS_RECV(_META) | 原生18/60 | SEND/内核通知/中断/回收/活跃调用归账 | 每轮严格全量归账；跨轮用户消息总数及非UART出口固定，取代旧blocks固定假设 |
+
+前文原生std A的unsupported文件范围仅适用于R1/R2；R3的实际支持仍逐项读取
+[当前工作API表](stage5-working-api.md)，不能由Unix模块可编译推导完整POSIX支持。

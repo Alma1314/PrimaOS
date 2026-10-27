@@ -1504,7 +1504,30 @@ fn relocate<S: Storage>(
     write_node(storage, id, node)
 }
 
-/// 把文件截断到 `size`；只允许缩小或保持不变。
+/// 调整普通文件长度；访问权限由打开对象检查，与 [`write`] 一致。
+/// 增长复用稀疏写的容量检查、搬迁和清零，不改变任何打开对象的游标。
+pub fn resize<S: Storage>(
+    storage: &mut S,
+    id: NodeId,
+    node: &mut Node,
+    size: u64,
+) -> Result<(), VfsError> {
+    if node.kind != NodeKind::File {
+        return Err(VfsError::Invalid);
+    }
+    if size > CONTENT_CAPACITY as u64 {
+        return Err(VfsError::NoSpace);
+    }
+    if size > node.size as u64 {
+        write(storage, id, node, size - 1, &[0])?;
+    } else if size != node.size as u64 {
+        node.size = size as u16;
+        write_node(storage, id, node)?;
+    }
+    Ok(())
+}
+
+/// 把文件截断到 `size`；保留原节点级接口的权限及只缩小契约。
 pub fn truncate<S: Storage>(
     storage: &mut S,
     id: NodeId,

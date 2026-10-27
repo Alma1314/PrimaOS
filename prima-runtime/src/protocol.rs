@@ -191,6 +191,19 @@ pub const SERVICE_FILE_OP_LSEEK: u64 = 3;
 pub const SERVICE_FILE_OP_CLOSE: u64 = 4;
 /// M9：路径元数据查询（`statx`）的应答 op；不复用 OPEN，便于区分“只读查询、无句柄”。
 pub const SERVICE_FILE_OP_STAT: u64 = 5;
+pub const SERVICE_FILE_OP_RESIZE: u64 = 6;
+pub const SERVICE_FILE_OP_READ_AT: u64 = 7;
+pub const SERVICE_FILE_OP_WRITE_AT: u64 = 8;
+
+/// Positional requests fit one 32-bit argument: offset[0..12], count[12..14],
+/// reserved[14..16]=0, data[16..32]. Two bytes per request; replies retain the
+/// existing READ/WRITE layouts. Offset 4095 is beyond the bounded RAM tree and
+/// represents every larger offset without wrapping. RESIZE uses the full u32.
+/// WRITE_AT ignores append: this native operation always uses its given offset.
+pub const SERVICE_FILE_AT_OFFSET_MASK: u64 = 0xfff;
+pub const SERVICE_FILE_AT_COUNT_SHIFT: u64 = 12;
+pub const SERVICE_FILE_AT_DATA_SHIFT: u64 = 16;
+pub const SERVICE_FILE_AT_CHUNK: usize = 2;
 
 /// M4：open 的 `arg` 布局——`flags(28..31) | path_len(26..27) | path(0..23)`。
 pub const SERVICE_FILE_OPEN_FLAGS_SHIFT: u64 = 28;

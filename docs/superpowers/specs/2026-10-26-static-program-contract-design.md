@@ -19,7 +19,8 @@ updated: 2026-10-27
 owner 为六字节 `Prima\0`（补齐到八字节），type 为 `0x5052494d`。
 24 字节小端描述依次为六个 u32：布局版本 1、原生 major 1、要求的原生 minor 0、
 persona、适配层 major、适配层 minor。persona 0 表示原生程序，1 表示本仓库静态 POSIX 子集；
-其它值拒绝。C 使用 persona 1 / adapter 1.0；Rust 使用 persona 0 / adapter 0.0。
+其它值拒绝。C 使用 persona 1 / adapter 1.0；Rust原生R1/R2使用 persona 0 / adapter 0.0。
+[POSIX std后继](2026-10-27-posix-std-backend-design.md)的R3走musl/适配层，要求persona 1 / adapter 1.0。
 profile 的提案/冻结状态不编码成 ABI 版本，也不能从 note 推导 API 支持。
 
 构建工具必须拒绝缺失、重复、截断、版本不匹配或与所选程序 persona 不符的声明。

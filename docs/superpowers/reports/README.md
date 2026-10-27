@@ -32,6 +32,8 @@ updated: 2026-10-27
 
 ## 阶段 5
 
+POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-report.md)，单次36组72/72轮、workspace1020、lint与三模式Clippy通过；初始69/70失败保留，底层支持仍有界。
+
 本批增量：[启动、栈保护、退出与 Rust 工作目标](2026-10-25-stage5-gap-closure-report.md)。
 
 本轮进程后继：[fork 续执行与进程边界整改记录](2026-10-24-fork-continuation-report.md)。
@@ -253,3 +255,5 @@ updated: 2026-10-27
 | 2026-10-13 | [2026-10-13-task-create-capability-audit-report.md](2026-10-13-task-create-capability-audit-report.md) | Task Capability 审计与派生链（ISSUE-EXC-011）+ 审计存储扩容 |
 | 2026-10-13 | [2026-10-13-ipc-capability-move-audit-report.md](2026-10-13-ipc-capability-move-audit-report.md) | IPC 携带 Capability 的位置变化审计（ISSUE-EXC-012） |
 | 2026-10-13 | [2026-10-13-exc-source-destroy-report.md](2026-10-13-exc-source-destroy-report.md) | 异常源销毁 `exc_source_destroy`（§12.6 补齐） |
+
+- [POSIX std 后端：目标、ABI、标准入口及验证](2026-10-27-posix-std-backend-report.md)

@@ -2,7 +2,7 @@
 id: decision-rust-d6-scope
 kind: specification
 authority: user-selected-stage-scope
-status: user-selected-A-scoped-validation
+status: user-selected-posix-backend-extension
 lifecycle: current
 updated: 2026-10-27
 ---
@@ -65,3 +65,11 @@ Prima覆盖在共同spawn入口分配前返回Unsupported，保留System失败�
 R2继续实际调用Builder::spawn验证失败类型，不通过跳过调用规避此路径。
 
 干净R2原生stdout/stderr、Instant/sleep/yield及stdin/spawn/System负例已两轮PASS；覆盖层重新编译后的core/alloc与std Clippy均PASS。完整单次BIOS68轮已通过；阶段签署仍单独跟踪。
+
+
+## 本任务范围扩展（2026-10-27）
+
+用户在后继任务明确要求“完成完整 POSIX std 后端”，因此本任务按选项 B 继续，
+原 A 的选择和验证记录保留。新增独立 Prima Unix/musl 目标，具体实现契约见
+[POSIX std 后端](2026-10-27-posix-std-backend-design.md)。B 的编译/机器结果单独取证，
+不把原 R1/R2 结果升级为 B 已完成，也不自动签署 D6 或扩大底层 POSIX profile。
