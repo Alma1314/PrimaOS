@@ -48,6 +48,27 @@ impl<T: SyscallTransport> Runtime<T> {
         self.call(syscall::TIME_NOW, [0; 6])
     }
 
+    /// 启用单 CPU 校准物理时钟及期限唤醒；不推进抽象 Timer。
+    pub fn physical_time_enable(&self) -> Result<()> {
+        self.call_unit(prima_abi::syscall::SYS_TIME_ENABLE, [0; 6])
+    }
+
+    /// 返回物理单调时钟的 100 Hz tick；先调用 `physical_time_enable`。
+    pub fn physical_ticks(&self) -> Result<u64> {
+        self.call(prima_abi::syscall::SYS_TIME_TICKS, [0; 6])
+    }
+
+    /// 等待物理绝对期限。信号中断返回 Interrupted，调用者决定是否续等。
+    pub fn wait_physical_deadline(&self, deadline: u64) -> Result<()> {
+        match self.call(
+            prima_abi::syscall::SYS_TASK_WAIT_DEADLINE,
+            [deadline, 0, 0, 0, 0, 0],
+        )? {
+            1 => Ok(()),
+            _ => Err(Error::InvalidResponse),
+        }
+    }
+
     /// 创建一个 Timer，并返回调用者持有的 Timer Capability。
     pub fn timer_set(&self, deadline: u64) -> Result<Capability> {
         let raw = self.call(syscall::TIMER_SET, [deadline, 0, 0, 0, 0, 0])?;

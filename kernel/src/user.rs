@@ -177,7 +177,7 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
     if !init_seen {
         return Err(BootImageError::MissingInit);
     }
-    if total_pages > crate::bootstrap::MAX_SEGMENT_FRAMES {
+    if total_pages > crate::bootstrap::MAX_BOOT_SERVICE_FRAMES {
         return Err(BootImageError::ImageSegmentTooLarge);
     }
 
@@ -272,12 +272,16 @@ pub const SPIN_CODE_LEN: usize = 19;
 /// `None` → `panic` 事件）。与 `config.rs` 里启动栈 80→256 KiB 的既有取向一致。
 pub const KSTACK_SIZE: usize = 32 * 1024;
 
-/// 内核栈数组（只经地址使用，字段从不按元素读）。
-#[repr(align(16))]
-pub struct KStack(#[allow(dead_code)] [u8; KSTACK_SIZE]);
+/// 下界保护页；自建根不映射，不能借用或读取整个 KStack。
+pub const KSTACK_GUARD_SIZE: usize = 4096;
+const KSTACK_STORAGE_SIZE: usize = KSTACK_GUARD_SIZE + KSTACK_SIZE;
 
-pub static KSTACK_TASK1: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_SIZE]));
-pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_SIZE]));
+/// 内核栈数组（只经裸地址使用，字段从不按元素读）。
+#[repr(align(4096))]
+pub struct KStack(#[allow(dead_code)] [u8; KSTACK_STORAGE_SIZE]);
+
+pub static KSTACK_TASK1: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_STORAGE_SIZE]));
+pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_STORAGE_SIZE]));
 
 /// S2-D4：`task_create` 创建的 Task 的每任务内核栈（索引 = task id）。
 ///
@@ -293,21 +297,45 @@ pub static KSTACK_TASK2: StaticCell<KStack> = StaticCell::new(KStack([0; KSTACK_
 pub const USER_TASK_KSTACK_COUNT: usize = 16;
 
 pub static KSTACK_TASKS: StaticCell<[KStack; USER_TASK_KSTACK_COUNT]> =
-    StaticCell::new([const { KStack([0; KSTACK_SIZE]) }; USER_TASK_KSTACK_COUNT]);
+    StaticCell::new([const { KStack([0; KSTACK_STORAGE_SIZE]) }; USER_TASK_KSTACK_COUNT]);
 
 /// S2-D4：task id（≥3）的内核栈顶；越界或未分配返回 `None`。
 pub fn task_kstack_top(task_id: u32) -> Option<u64> {
+    if task_id == 1 {
+        return Some(kstack_top(KSTACK_TASK1.as_ptr()));
+    }
+    if task_id == 2 {
+        return Some(kstack_top(KSTACK_TASK2.as_ptr()));
+    }
     let index = task_id.checked_sub(3)? as usize;
     if index >= USER_TASK_KSTACK_COUNT {
         return None;
     }
-    let stack = KSTACK_TASKS.with(|stacks| &stacks[index] as *const KStack);
-    Some(kstack_top(stack))
+    // 地址计算避免借用整个含未映射页的数组或单个栈。
+    let stack = KSTACK_TASKS.as_ptr() as u64 + (index * KSTACK_STORAGE_SIZE) as u64;
+    Some(stack + KSTACK_STORAGE_SIZE as u64)
 }
 
 /// 内核栈顶（one-past-end，16 对齐）。
 fn kstack_top(stack: *const KStack) -> u64 {
-    stack as u64 + KSTACK_SIZE as u64
+    stack as u64 + KSTACK_STORAGE_SIZE as u64
+}
+
+/// 每个静态 Task 栈的下界页；只返回地址，不读取其内容。
+pub fn task_stack_guard_page(index: usize) -> Option<u64> {
+    match index {
+        0 => Some(KSTACK_TASK1.as_ptr() as u64),
+        1 => Some(KSTACK_TASK2.as_ptr() as u64),
+        i if i < USER_TASK_KSTACK_COUNT + 2 => {
+            Some(KSTACK_TASKS.as_ptr() as u64 + ((i - 2) * KSTACK_STORAGE_SIZE) as u64)
+        }
+        _ => None,
+    }
+}
+
+pub fn is_stack_guard_page(va: u64) -> bool {
+    va == prima_ostd::entry::syscall_stack_guard_page()
+        || (0..USER_TASK_KSTACK_COUNT + 2).any(|i| task_stack_guard_page(i) == Some(va))
 }
 
 /// 任务 2 回执页 Y2 的物理帧（切片 O：task1 根下不可见 Y2 VA，witness 按物理读）。
@@ -875,7 +903,7 @@ pub fn build_kernel_root(
             let direct_pages = max_phys.div_ceil(FRAME_SIZE) as usize;
             let image_phys = |index: usize| {
                 let va = image_va + (index as u64) * FRAME_SIZE;
-                if va == prima_ostd::entry::syscall_stack_guard_page() {
+                if is_stack_guard_page(va) {
                     None
                 } else {
                     vspace::leaf_phys_or_none(boot_root, va, map)
@@ -1807,6 +1835,31 @@ mod tests {
         bytes[104..112].copy_from_slice(&memsz.to_le_bytes());
         bytes[120..128].copy_from_slice(&0x5A5A_5A5A_5A5A_5A5Au64.to_le_bytes());
         bytes
+    }
+
+    #[test]
+    fn every_task_stack_has_a_distinct_page_aligned_lower_guard() {
+        assert_eq!(core::mem::align_of::<KStack>(), 4096);
+        assert_eq!(
+            core::mem::size_of::<KStack>(),
+            KSTACK_GUARD_SIZE + KSTACK_SIZE
+        );
+        for index in 0..USER_TASK_KSTACK_COUNT + 2 {
+            let page = task_stack_guard_page(index).unwrap();
+            assert_eq!(page & 0xfff, 0);
+            assert!(is_stack_guard_page(page));
+            assert!(!is_stack_guard_page(page + KSTACK_GUARD_SIZE as u64));
+            for other in 0..index {
+                assert_ne!(Some(page), task_stack_guard_page(other));
+            }
+            if index >= 2 {
+                assert_eq!(
+                    task_kstack_top(index as u32 + 1),
+                    Some(page + KSTACK_STORAGE_SIZE as u64)
+                );
+            }
+        }
+        assert_eq!(task_stack_guard_page(USER_TASK_KSTACK_COUNT + 2), None);
     }
 
     #[test]

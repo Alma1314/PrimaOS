@@ -20,11 +20,8 @@ pub enum ResumeError {
 /// 探针构造级不变量（§12.10 raise 侧）：Task 必须存在且处于 Running。无合法失败路径，
 /// 以 assert 表达而非错误码，避免复用 exc_resume 的 `ResumeError` 域污染错误域。
 ///
-/// 模型范围边界：本函数只建模同步侧（Faulted + `pending_exc` 绑定 + 现场帧保存 +
-/// §12.5 动作 1/3 的两条 Audit）。规范 §9.12/§17.7 定义的"订阅者经 `enqueue_or_deliver`
-/// 收到通知"这条异步投递语义（§12.5 动作 2）(subscriptions 集合存在、但异常路径上不被
-/// 读取以生成投递) **未在 host MODEL-TEST 建模**，与整个 Send/Recv 消息机制未建模一致。
-/// 这是一个文档化的模型范围边界，不得据此未来在无实现的情况下宣称"通知递送已模型化/已验证"。
+/// 订阅者通知复用 authority 的本地 FIFO/直投。硬件执行异常另提交 Faulted；
+/// SyscallTrap/IRQ/TaskExit 仅递送通知，不改变目标运行状态。非机器细化证明。
 pub fn raise_exception(
     st: &mut State,
     faulting_task: TaskId,
@@ -33,12 +30,17 @@ pub fn raise_exception(
     fault_va: Option<u64>,
     save_frame: SretFrame,
 ) {
+    assert!(
+        st.exc_sources
+            .get(&source_id)
+            .is_some_and(|source| source.active && source.supports_kind(kind))
+    );
     assert_eq!(
         matches!(kind, ExceptionKind::PageFault { .. }),
         fault_va.is_some(),
         "raise_exception: PageFault must carry a fault VA and other exceptions must not"
     );
-    {
+    if kind.is_hardware_fault() {
         let task = st
             .tasks
             .get(&faulting_task)
@@ -58,6 +60,10 @@ pub fn raise_exception(
             fault_va,
         },
     );
+    crate::authority::notify_exception(st, source_id, kind, fault_va);
+    if !kind.is_hardware_fault() {
+        return;
+    }
     // §12.5 成功动作 3：置 Faulted、写唯一 `pending_exc`，再追加 `TaskStateChanged`。
     st.tasks
         .get_mut(&faulting_task)
@@ -131,11 +137,11 @@ pub fn exc_resume(
     let source_cap = st
         .capabilities
         .get(&exc_source_cap)
-        .filter(|cap| cap.active && cap.owner == caller)
+        .filter(|cap| cap.active && st.held(caller, exc_source_cap))
         .ok_or(ResumeError::InvalidExcSource)?;
     let source_id = match source_cap.object {
         CapObject::ExceptionSource(source_id) => source_id,
-        CapObject::Segment(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
+        _ => {
             return Err(ResumeError::InvalidExcSource);
         }
     };
@@ -147,7 +153,6 @@ pub fn exc_resume(
         .get(&source_id)
         .filter(|source| source.active)
         .ok_or(ResumeError::InvalidExcSource)?;
-    let supported_kind = source.supported_kind;
     if !st.subscriptions.contains(&(caller, source_id)) {
         return Err(ResumeError::NotSubscribed);
     }
@@ -155,11 +160,11 @@ pub fn exc_resume(
     let frame_cap = st
         .capabilities
         .get(&sret_frame_seg_cap)
-        .filter(|cap| cap.active && cap.owner == caller)
+        .filter(|cap| cap.active && st.held(caller, sret_frame_seg_cap))
         .ok_or(ResumeError::InvalidFrameAddr)?;
     let frame_seg_id = match frame_cap.object {
         CapObject::Segment(seg_id) => seg_id,
-        CapObject::ExceptionSource(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
+        _ => {
             return Err(ResumeError::InvalidFrameAddr);
         }
     };
@@ -190,9 +195,7 @@ pub fn exc_resume(
     // §12.3：source 的 `kind` 是「类型签名」（约束此源可产生的异常**类别**，非具体实例），
     // 故按变体比较而非整值——异因同类（如 `page_present`/`writable_fault` 位不同）的
     // `PageFault` 属同一类型签名，应当匹配。
-    if pending.source_id != source_id
-        || std::mem::discriminant(&pending.kind) != std::mem::discriminant(&supported_kind)
-    {
+    if pending.source_id != source_id || !source.supports_kind(pending.kind) {
         return Err(ResumeError::InvalidExcSource);
     }
     if !pending.kind.is_recoverable() {

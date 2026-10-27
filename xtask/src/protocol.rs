@@ -130,7 +130,8 @@ const TASK_MANAGER_CAP: u64 = 0x0000_0001_0000_000A;
 /// 实测 114 → 123；阶段 5 PT_LOAD/W^X 为每个由管理器创建的服务各持一块私有可写数据段
 /// （6 服务 + tty + C 探针 = 8 条），故 123 → **131**。
 /// M4：文件授权令牌在 Namespace 中占一个长期存活的 cap（131 → 132）。
-const TASK_READY_LIVE_CAPS: usize = 132;
+/// COM1 IRQ4 adds a device token and its independent exception-source token.
+const TASK_READY_LIVE_CAPS: usize = 134;
 /// SPEC-067：`task_create` 第二次调用选定的 task id（自毁见证载体，id 不复用已销毁的 3）。
 const TASK_SELF_DESTROY_ID: usize = 4;
 /// SPEC-066：切片 U 的 ring3 块读回自持段映射首 qword 的期望值（X 段共享帧的 COW 模式）。
@@ -282,7 +283,8 @@ const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     // Managed exit now parks once in RECV before the manager destroys it.
-    validate_output_impl(output, Some((55, 164, 173))).map(|_| ())
+    // Authenticated direct C↔Store sessions replace the previous Manager forwarding hops.
+    validate_output_impl(output, Some((51, 123, 132))).map(|_| ())
 }
 
 /// M5：echo 用例的 IPC 高水位依赖该程序实际的字节数，不是固定探针基线。
@@ -292,6 +294,53 @@ pub(crate) fn validate_output_echo(
     expected_ipc: Option<(u64, u64, u64)>,
 ) -> Result<(u64, u64, u64), String> {
     validate_output_impl(output, expected_ipc)
+}
+
+/// UART arrival can move a SEND between queued/direct delivery. Interactive
+/// runs must preserve the complete message count and receive-block count;
+/// the capability-transfer witnesses and both path counters remain required.
+pub(crate) fn validate_interactive_ipc(
+    actual: (u64, u64, u64),
+    expected: Option<(u64, u64, u64)>,
+) -> Result<(), String> {
+    let (queued, direct, blocks) = actual;
+    let total = queued
+        .checked_add(direct)
+        .ok_or("interactive IPC count overflow")?;
+    if queued == 0 || direct == 0 || blocks == 0 {
+        return Err("interactive IPC must exercise queued, direct and blocked paths".to_owned());
+    }
+    if let Some((old_queued, old_direct, old_blocks)) = expected
+        && (old_queued.checked_add(old_direct) != Some(total) || blocks != old_blocks)
+    {
+        return Err(format!(
+            "interactive IPC total/blocks changed: {actual:?}, baseline {expected:?}"
+        ));
+    }
+    Ok(())
+}
+
+/// N1's timed signals can let a receive consume a queued message instead of
+/// blocking for direct delivery. That changes direct/blocks together; neither
+/// the message total nor the unmatched receive-block balance may change.
+pub(crate) fn validate_timed_ipc(
+    actual: (u64, u64, u64),
+    expected: Option<(u64, u64, u64)>,
+) -> Result<(), String> {
+    validate_interactive_ipc(actual, None)?;
+    let balance = actual
+        .2
+        .checked_sub(actual.1)
+        .ok_or("IPC direct count exceeds receive blocks")?;
+    if let Some(old) = expected
+        && (old.0.checked_add(old.1) != actual.0.checked_add(actual.1)
+            || old.2.checked_sub(old.1) != Some(balance))
+    {
+        return Err(format!(
+            "timed IPC total/block balance changed: {actual:?}, baseline {old:?}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_output_impl(
@@ -706,7 +755,7 @@ pub(crate) fn validate_stage5_echo(
         .collect();
     if lines.len() != 1
         || lines[0].trim_end_matches('\r')
-            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132"
+            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=134"
     {
         return Err(format!("{case} kernel task state mismatch: {lines:?}"));
     }
@@ -716,10 +765,10 @@ pub(crate) fn validate_stage5_echo(
         .filter(|line| line.starts_with("CAPACITY|"))
         .collect();
     if capacity.len() != 1
-        || !capacity[0].contains("caps_limit=160")
+        || !capacity[0].contains("caps_limit=192")
         || !capacity[0].contains("segment_limit=48")
         || !capacity[0].contains("messages_limit=32")
-        || !capacity[0].contains("audit_limit=8192")
+        || !capacity[0].contains("audit_limit=16384")
     {
         return Err(format!("{case} capacity high-water mismatch: {capacity:?}"));
     }
@@ -776,7 +825,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if lines.len() != 1
         || lines[0].trim_end_matches('\r')
-            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132"
+            != "TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=134"
     {
         return Err(format!("stage5 kernel task state mismatch: {lines:?}"));
     }
@@ -786,7 +835,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1347;audit_limit=8192"
+            != "CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -2436,9 +2485,10 @@ fn validate_exc_data(data: Option<&str>) -> Result<(), String> {
             "exc_ready receipts must equal their syscall returns (sub 0x{receipt_sub:x}/0x{sub_ret:x}, dup 0x{receipt_dup:x}/0x{dup_ret:x}, kind 0x{receipt_kind:x}/0x{kind_ret:x}, sub2 0x{receipt_sub2:x}/0x{sub2_ret:x}, unsub 0x{receipt_unsub:x}/0x{unsub_ret:x}, unsub2 0x{receipt_unsub2:x}/0x{unsub2_ret:x})"
         ));
     }
-    if audit_created != 2 || audit_subscribed != 3 || audit_unsubscribed != 1 {
+    // COM1 IRQ4 contributes one live source and one Manager subscription.
+    if audit_created != 3 || audit_subscribed != 4 || audit_unsubscribed != 1 {
         return Err(format!(
-            "exc_ready audit counts must be created=2 subscribed=3 unsubscribed=1, got created={audit_created} subscribed={audit_subscribed} unsubscribed={audit_unsubscribed}"
+            "exc_ready audit counts must be created=3 subscribed=4 unsubscribed=1, got created={audit_created} subscribed={audit_subscribed} unsubscribed={audit_unsubscribed}"
         ));
     }
     Ok(())
@@ -3119,7 +3169,7 @@ fn validate_ipc_data(
         && (queued != expected_queued || direct != expected_direct || blocks != expected_blocks)
     {
         return Err(format!(
-            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected {expected_queued}/{expected_direct}/{expected_blocks}; stage5 片 C adds the C Task 17 write stream, M4 adds the synchronous file request/reply round trips, and M13b adds one chmod request per O_CREAT/mkdir (each one blocks the C task and direct-delivers the reply); managed exit parks once more before manager-owned destruction"
+            "ipc_ready queued/direct/blocks are {queued}/{direct}/{blocks}, expected {expected_queued}/{expected_direct}/{expected_blocks}; baseline includes the C tty stream, authenticated direct VFS transactions, and manager-owned exit cleanup"
         ));
     }
     Ok((queued, direct, blocks))
@@ -3352,7 +3402,7 @@ fn validate_task_data(data: Option<&str>) -> Result<(), String> {
     }
     if caps != TASK_READY_LIVE_CAPS {
         return Err(format!(
-            "task_ready caps is {caps}, expected {TASK_READY_LIVE_CAPS} — the destroyed child's self/root-ns caps must be revoked while the caller's manager cap stays live"
+            "task_ready caps is {caps}, expected {TASK_READY_LIVE_CAPS} — the destroyed child's self/root-ns tokens must be dropped while the caller's manager cap stays live"
         ));
     }
     Ok(())
@@ -3999,7 +4049,7 @@ fn validate_memory_data(data: Option<&str>) -> Result<u64, String> {
 
 /// SPEC-087：`service_reply_ready` 的镜像常量，与 `kernel/src/{user,syscall}.rs` 一致
 /// （跨 crate 需人工同步）。
-const SERVICE_REPLY_CLIENT_CAP: u64 = 0x0000_0001_0000_001c;
+const SERVICE_REPLY_CLIENT_CAP: u64 = 0x0000_0001_0000_001d;
 const SERVICE_REPLY_CLIENT_ID: u64 = 9;
 const SERVICE_REPLY_WORD: u64 = 0x0003_8001_474E_4F50;
 
@@ -4064,10 +4114,10 @@ const IOPORT_MAGIC_READBACK: u64 = 0x5A;
 /// SPEC-105：端点令牌由 **ring3 服务管理器**从代码段派生（不再是 init 自建回执，故句柄值改变）。
 // SPEC-151：init 先为服务管理器派生 Namespace 副本（ISSUE-AUTH-004），新增 cap 占用一个最低
 // 空闲槽，使后续管理器派生句柄整体平移。此处按实际运行证据更新常量。
-const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_0037;
+const SERVICE_NEGOTIATED_TOKEN: u64 = 0x0000_0001_0000_0038;
 /// 阶段 5 PT_LOAD/W^X：端点创建路径为可写 `PT_LOAD` 额外铸私有段 cap，改变了管理器侧
 /// 句柄槽位的分配序。令牌仍为 0x37（先于数据段分配），管理器 cap 实测 0x39 → **0x3c**。
-const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_003c;
+const SERVICE_NEGOTIATED_CAP: u64 = 0x0000_0001_0000_003d;
 const SERVICE_NEGOTIATED_ID: u64 = 10;
 const SERVICE_DONE_TAG: u64 = 0x5EC2_0000_0000_0000;
 /// `major<<48 | minor<<32 | max<<16 | features` —— 客户端 offer 与服务端 offer
@@ -4297,6 +4347,39 @@ fn parse_line(line: &str) -> Result<Event, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timed_ipc_preserves_traffic_and_unmatched_receive_blocks() {
+        let baseline = Some((55, 461, 472));
+        assert!(super::validate_timed_ipc((55, 461, 472), baseline).is_ok());
+        assert!(super::validate_timed_ipc((56, 460, 471), baseline).is_ok());
+        for invalid in [
+            (55, 460, 471),
+            (57, 460, 471),
+            (56, 460, 472),
+            (56, 460, 459),
+            (0, 516, 527),
+            (u64::MAX, 1, 12),
+        ] {
+            assert!(super::validate_timed_ipc(invalid, baseline).is_err());
+        }
+    }
+
+    #[test]
+    fn interactive_ipc_preserves_traffic_and_blocks_across_uart_arrival_orders() {
+        let baseline = Some((84, 339, 353));
+        assert!(super::validate_interactive_ipc((84, 339, 353), baseline).is_ok());
+        assert!(super::validate_interactive_ipc((83, 340, 353), baseline).is_ok());
+        for invalid in [
+            (83, 339, 353),
+            (85, 339, 353),
+            (83, 340, 354),
+            (0, 423, 353),
+            (u64::MAX, 1, 353),
+        ] {
+            assert!(super::validate_interactive_ipc(invalid, baseline).is_err());
+        }
+    }
+
     use super::{
         validate_native_app_trace, validate_output, validate_service_traces,
         validate_user_fault_trace,
@@ -4468,8 +4551,8 @@ mod tests {
     #[test]
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
-        output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=132\r\n");
-        output.push_str("CAPACITY|caps_live=132;caps_peak=140;caps_limit=160;segment_slots=41;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1347;audit_limit=8192\r\n");
+        output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=134\r\n");
+        output.push_str("CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);
@@ -4477,7 +4560,7 @@ mod tests {
         assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
         assert!(
-            super::validate_stage5_capacity(&output.replace("caps_peak=140", "caps_peak=160"))
+            super::validate_stage5_capacity(&output.replace("caps_peak=146", "caps_peak=160"))
                 .is_err()
         );
     }
@@ -4588,7 +4671,7 @@ mod tests {
         "PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef\n",
         "PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda\n",
         "PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe\n",
-        "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1\n",
+        "PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=3;audit_subscribed=4;audit_unsubscribed=1\n",
         "PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1\n",
         "PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1;stack_guard=1\n",
         "PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3\n",
@@ -4596,8 +4679,8 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=55;direct=164;blocks=173\n",
-        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=132;root_cleared=1;grandchild=4;tasks_after=12;caps_after=132;root4_cleared=1\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=51;direct=123;blocks=132\n",
+        "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=134;root_cleared=1;grandchild=4;tasks_after=12;caps_after=134;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=3;binds=4;unbinds=2;mounts=2;unmounts=1;resolves=4;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
         "PRIMA|v=1|seq=32|event=timer_ready|status=ok|data=now=4;timers=2;sets=3;fired=2;cancelled=1;destroyed=1;immediate_fired=1;already_cancelled=1;exactly_once_ok=1;sets_ok=1;cancel_ok=1;already_cancelled_ok=1;evidence_ok=1\n",
@@ -4688,10 +4771,10 @@ mod tests {
 
     #[test]
     fn rejects_task_ready_when_child_caps_stay_live() {
-        let output = VALID.replace(";caps=132;root_cleared", ";caps=65;root_cleared");
+        let output = VALID.replace(";caps=134;root_cleared", ";caps=65;root_cleared");
         let error = validate_output(&output).unwrap_err();
         assert!(
-            error.contains("self/root-ns caps must be revoked"),
+            error.contains("self/root-ns tokens must be dropped"),
             "{error}"
         );
     }
@@ -4786,9 +4869,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=164;", ";direct=0;");
+        let output = VALID.replace(";direct=123;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 55/164/173"), "{error}");
+        assert!(error.contains("expected 51/123/132"), "{error}");
     }
 
     #[test]
@@ -5732,7 +5815,7 @@ mod tests {
     }
 
     /// 切片 L 的完整证据串（与 `VALID` 中的两行一致），便于替换构造反例。
-    const EXC_DATA: &str = "cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=2;audit_subscribed=3;audit_unsubscribed=1";
+    const EXC_DATA: &str = "cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=3;audit_subscribed=4;audit_unsubscribed=1";
     const PENDING_DATA: &str =
         "delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1";
 
@@ -5767,7 +5850,7 @@ mod tests {
     fn rejects_exc_wrong_audit_counts() {
         let output = VALID.replace(
             EXC_DATA,
-            &EXC_DATA.replace("audit_subscribed=3", "audit_subscribed=2"),
+            &EXC_DATA.replace("audit_subscribed=4", "audit_subscribed=3"),
         );
         let error = validate_output(&output).unwrap_err();
         assert!(error.contains("audit counts"), "{error}");

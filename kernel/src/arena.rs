@@ -68,6 +68,21 @@ impl<T: Copy, const SLOTS: usize, const REGIONS: usize> Arena<T, SLOTS, REGIONS>
         self.cells.with(|cells| cells[slice.region][index])
     }
 
+    /// Project a small value without copying the whole stored object onto the
+    /// kernel stack. The borrowed record cannot escape the locked callback.
+    pub fn project<R>(
+        &self,
+        slice: ArenaSlice,
+        index: usize,
+        project: impl FnOnce(&T) -> R,
+    ) -> Option<R> {
+        if index >= SLOTS {
+            return None;
+        }
+        self.cells
+            .with(|cells| cells[slice.region][index].as_ref().map(project))
+    }
+
     /// 写第 `index` 槽；越界为 no-op（调用方以 `slot_count` 自限）。
     pub fn set(&self, slice: ArenaSlice, index: usize, value: Option<T>) {
         if index >= SLOTS {

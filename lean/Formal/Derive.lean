@@ -39,7 +39,14 @@ def derive (s : State) (parent newId : Nat) : Option State :=
   | some pcap =>
       if pcap.active = true ∧ pcap.rights &&& capDerive ≠ 0
           ∧ parent < newId ∧ s.caps newId = none then
-        some { s with caps := update s.caps newId (some ({ pcap with parent := some parent })) }
+        some { s with
+          caps := update s.caps newId (some ({ pcap with parent := some parent }))
+          locations := fun id =>
+            if id = newId then
+              match s.locations parent with
+              | some (.heldBy holder) => some (.heldBy holder)
+              | _ => none
+            else s.locations id }
       else none
 
 /-- §4.4 保持性：**若状态良构，则 `derive` 成功后的状态仍良构**（本切片的实质证明义务）。

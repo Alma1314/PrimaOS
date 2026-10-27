@@ -8,6 +8,7 @@
 .global _start
 .type _start,@function
 _start:
+    mov %r15, prima_exec_state_pointer(%rip)
     mov %rsp, %r9
     lea prima_ctx(%rip), %rax
     mov %rdi, 0(%rax)

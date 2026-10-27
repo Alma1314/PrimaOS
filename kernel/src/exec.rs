@@ -36,6 +36,8 @@ pub struct ExecPlan {
     pub entry: u64,
     pub segments: [Option<ExecSegment>; MAX_EXEC_SEGMENTS],
     pub count: usize,
+    pub phdr: u64,
+    pub phnum: u64,
 }
 
 /// 解析/栈构造失败原因。
@@ -52,6 +54,10 @@ pub enum ExecError {
     SegmentOutsideImage,
     StackTooSmall,
     StackEmpty,
+    InvalidAddress,
+    OverlappingSegments,
+    InvalidEntry,
+    InvalidString,
 }
 
 fn u16_at(data: &[u8], offset: usize) -> Result<u16, ExecError> {
@@ -122,6 +128,21 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
         if vaddr & 0xfff != 0 || memsz == 0 {
             return Err(ExecError::Misaligned);
         }
+        let end = vaddr.checked_add(memsz).ok_or(ExecError::InvalidAddress)?;
+        if vaddr < 4096 || end > 0x0000_7f00_0000_0000 {
+            return Err(ExecError::InvalidAddress);
+        }
+        let page_end = end.checked_add(4095).ok_or(ExecError::InvalidAddress)? & !4095;
+        if segments[..count]
+            .iter()
+            .flatten()
+            .any(|part: &ExecSegment| {
+                let other_end = (part.vaddr + part.memsz + 4095) & !4095;
+                vaddr < other_end && part.vaddr < page_end
+            })
+        {
+            return Err(ExecError::OverlappingSegments);
+        }
         if count == MAX_EXEC_SEGMENTS {
             return Err(ExecError::TooManySegments);
         }
@@ -138,7 +159,27 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
     if count == 0 {
         return Err(ExecError::NotExecutable);
     }
+    if !segments
+        .iter()
+        .flatten()
+        .any(|part| part.executable && entry >= part.vaddr && entry < part.vaddr + part.memsz)
+    {
+        return Err(ExecError::InvalidEntry);
+    }
+    let header_end = (phoff as u64)
+        .checked_add((phnum * PROGRAM_HEADER_LEN) as u64)
+        .ok_or(ExecError::BadProgramHeaders)?;
+    let phdr = segments
+        .iter()
+        .flatten()
+        .find_map(|part| {
+            (part.offset <= phoff as u64 && header_end <= part.offset + part.filesz)
+                .then(|| part.vaddr + phoff as u64 - part.offset)
+        })
+        .unwrap_or(0);
     Ok(ExecPlan {
+        phdr,
+        phnum: phnum as u64,
         entry,
         segments,
         count,
@@ -171,6 +212,16 @@ pub fn build_stack(
 ) -> Result<StackLayout, ExecError> {
     if buffer.len() < 64 || top & 7 != 0 {
         return Err(ExecError::Misaligned);
+    }
+    if top < buffer.len() as u64 {
+        return Err(ExecError::InvalidAddress);
+    }
+    if argv.iter().chain(envp).any(|s| s.contains(&0)) {
+        return Err(ExecError::InvalidString);
+    }
+    let word_count_needed = 1 + argv.len() + 1 + envp.len() + 1 + 2 * auxv.len() + 2;
+    if word_count_needed > 64 {
+        return Err(ExecError::StackTooSmall);
     }
     let mut pos = 0usize; // 距栈顶的字节数（向下增长）
     let mut argv_ptrs = [0u64; 16];
@@ -223,6 +274,12 @@ pub fn build_stack(
     if pos + bytes > buffer.len() {
         return Err(ExecError::StackTooSmall);
     }
+    // Linux x86_64 starts a new image with a 16-byte-aligned stack pointer.
+    let padding = (top - (pos + bytes) as u64) as usize & 15;
+    pos += padding;
+    if pos + bytes > buffer.len() {
+        return Err(ExecError::StackTooSmall);
+    }
     let start = buffer.len() - pos - bytes;
     for (index, word) in words.iter().take(word_count).enumerate() {
         buffer[start + index * 8..start + index * 8 + 8].copy_from_slice(&word.to_le_bytes());
@@ -244,7 +301,7 @@ mod tests {
         image[5] = 1;
         image[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
         image[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
-        image[24..32].copy_from_slice(&0x401000u64.to_le_bytes());
+        image[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
         image[32..40].copy_from_slice(&64u64.to_le_bytes());
         image[54..56].copy_from_slice(&(PROGRAM_HEADER_LEN as u16).to_le_bytes());
         image[56..58].copy_from_slice(&(segments.len() as u16).to_le_bytes());
@@ -268,7 +325,7 @@ mod tests {
         let prefix = &image[..64 + PROGRAM_HEADER_LEN];
         assert_eq!(plan(prefix), Err(ExecError::SegmentOutsideImage));
         let plan = plan_len(prefix, image.len() as u64).expect("plan_len");
-        assert_eq!(plan.entry, 0x401000);
+        assert_eq!(plan.entry, 0x400000);
         assert_eq!(plan.count, 1);
     }
 
@@ -276,7 +333,7 @@ mod tests {
     fn plan_accepts_static_elf_with_two_load_segments() {
         let image = synthetic_elf(&[(0x400000, 16, 16, PF_X), (0x600000, 8, 24, PF_W)]);
         let plan = plan(&image).expect("plan");
-        assert_eq!(plan.entry, 0x401000);
+        assert_eq!(plan.entry, 0x400000);
         assert_eq!(plan.count, 2);
         let first = plan.segments[0].expect("first");
         assert_eq!(first.vaddr, 0x400000);
@@ -352,6 +409,27 @@ mod tests {
     }
 
     #[test]
+    fn malformed_load_ranges_and_entry_are_rejected_before_loading() {
+        let overlap = synthetic_elf(&[(0x400000, 8, 8192, PF_X), (0x401000, 8, 8, PF_W)]);
+        assert_eq!(plan(&overlap), Err(ExecError::OverlappingSegments));
+        let invalid = synthetic_elf(&[(0xffff_ffff_ffff_f000, 8, 8192, PF_X)]);
+        assert_eq!(plan(&invalid), Err(ExecError::InvalidAddress));
+        let non_exec = synthetic_elf(&[(0x400000, 8, 8, PF_W)]);
+        assert_eq!(plan(&non_exec), Err(ExecError::InvalidEntry));
+    }
+
+    #[test]
+    fn stack_rejects_oversized_auxv_and_aligns_rsp_to_sixteen_bytes() {
+        let mut bytes = [0; 4096];
+        assert_eq!(
+            build_stack(0x8000, &[], &[], &[(1, 2); 32], &mut bytes),
+            Err(ExecError::StackTooSmall)
+        );
+        let out = build_stack(0x8000, &[b"a", b"bb"], &[b"X=y"], &[(6, 4096)], &mut bytes).unwrap();
+        assert_eq!(out.rsp & 15, 0);
+    }
+
+    #[test]
     fn stack_rejects_tiny_buffers() {
         let mut buffer = [0u8; 32];
         assert_eq!(
@@ -371,3 +449,11 @@ mod tests {
         );
     }
 }
+
+/// Retained mapping snapshot for an explicit exec handoff, independent of libc.
+#[derive(Clone, Copy)]
+pub(crate) struct RetainedPage {
+    pub entry: crate::bootstrap::VspaceEntry,
+    pub pte: u64,
+}
+pub(crate) const MAX_RETAINED_PAGES: usize = 128;

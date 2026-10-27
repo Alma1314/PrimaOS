@@ -92,8 +92,15 @@ pub(crate) fn run_bios_test_program(
     let _ = std::fs::write(log, &output.stdout);
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
-    let ipc = protocol::validate_output_echo(&output.stdout, expected_ipc)
-        .map_err(|error| with_output(error, &output))?;
+    let ipc = protocol::validate_output_echo(
+        &output.stdout,
+        if name == "N1" { None } else { expected_ipc },
+    )
+    .map_err(|error| with_output(error, &output))?;
+    if name == "N1" {
+        protocol::validate_timed_ipc(ipc, expected_ipc)
+            .map_err(|error| with_output(error, &output))?;
+    }
     protocol::validate_service_traces(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_native_app_trace(&output.stdout)
@@ -238,7 +245,9 @@ pub(crate) fn run_bios_test_input(
     let _ = std::fs::write(log, &output.stdout);
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
-    let ipc = protocol::validate_output_echo(&output.stdout, expected_ipc)
+    let ipc = protocol::validate_output_echo(&output.stdout, None)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_interactive_ipc(ipc, expected_ipc)
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_service_traces(&output.stdout)
         .map_err(|error| with_output(error, &output))?;
@@ -382,7 +391,7 @@ pub(crate) fn locate_qemu() -> Result<PathBuf, String> {
 }
 
 fn qemu_args(image: &Path) -> Vec<OsString> {
-    vec![
+    let mut args = vec![
         "-machine".into(),
         "pc-i440fx-8.2".into(),
         "-accel".into(),
@@ -408,7 +417,11 @@ fn qemu_args(image: &Path) -> Vec<OsString> {
         format!("format=raw,file={}", image.display()).into(),
         "-boot".into(),
         "order=c,strict=on".into(),
-    ]
+    ];
+    if let Some(path) = env::var_os("PRIMA_QEMU_DEBUG_LOG") {
+        args.extend(["-d".into(), "int,cpu_reset".into(), "-D".into(), path]);
+    }
+    args
 }
 
 fn validate_exit_code(actual: Option<i32>, expected: i32) -> Result<(), String> {

@@ -41,12 +41,14 @@ struct OpenFile {
     offset: u64,
     access: AccessMode,
     append: bool,
+    owners: u32,
 }
 
 /// 固定容量、无分配的打开文件表。一个表项对应一个打开对象；dup 的 fd 别名由
 /// LibOS 管理并继续引用同一 HandleId。独立 open 得到独立游标。
 pub struct OpenFiles<const N: usize> {
     files: [Option<OpenFile>; N],
+    owner: u8,
 }
 
 impl<const N: usize> Default for OpenFiles<N> {
@@ -57,7 +59,49 @@ impl<const N: usize> Default for OpenFiles<N> {
 
 impl<const N: usize> OpenFiles<N> {
     pub const fn new() -> Self {
-        Self { files: [None; N] }
+        Self {
+            files: [None; N],
+            owner: 0,
+        }
+    }
+
+    /// Select an authenticated service-side Process/reservation slot.
+    pub fn set_owner(&mut self, owner: u8) -> Result<(), VfsError> {
+        if owner >= 32 {
+            return Err(VfsError::Invalid);
+        }
+        self.owner = owner;
+        Ok(())
+    }
+
+    /// Reserve every inherited OFD before publishing a fork child. The VFS
+    /// open reference counts OFDs, while these bits count Process holders.
+    pub fn fork_owner(&mut self, from: u8, to: u8) -> Result<(), VfsError> {
+        if from >= 32 || to >= 32 || from == to {
+            return Err(VfsError::Invalid);
+        }
+        if self
+            .files
+            .iter()
+            .flatten()
+            .any(|f| f.owners & (1 << to) != 0)
+        {
+            return Err(VfsError::Invalid);
+        }
+        for file in self.files.iter_mut().flatten() {
+            if file.owners & (1 << from) != 0 {
+                file.owners |= 1 << to;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn close_owner<S: Storage>(&mut self, storage: &mut S, owner: u8) -> Result<(), VfsError> {
+        let previous = self.owner;
+        self.set_owner(owner)?;
+        let result = self.close_all(storage);
+        self.owner = previous;
+        result
     }
 
     pub fn len(&self) -> usize {
@@ -73,6 +117,7 @@ impl<const N: usize> OpenFiles<N> {
             .get(id.0)
             .copied()
             .flatten()
+            .filter(|file| file.owners & (1 << self.owner) != 0)
             .ok_or(VfsError::BadHandle)
     }
 
@@ -98,6 +143,7 @@ impl<const N: usize> OpenFiles<N> {
             offset: 0,
             access: flags.access,
             append: flags.append,
+            owners: 1 << self.owner,
         });
         Ok((HandleId(index), FileInfo::new(opened.id, &node)))
     }
@@ -198,6 +244,11 @@ impl<const N: usize> OpenFiles<N> {
     /// 更新镜像成功后才释放表项；I/O 失败可重试，不让槽位提前复用。
     pub fn close<S: Storage>(&mut self, storage: &mut S, id: HandleId) -> Result<(), VfsError> {
         let file = self.get(id)?;
+        let remaining = file.owners & !(1 << self.owner);
+        if remaining != 0 {
+            self.files[id.0].as_mut().unwrap().owners = remaining;
+            return Ok(());
+        }
         let mut node = fs::read_node(storage, file.node)?;
         node.open_refs = node.open_refs.checked_sub(1).ok_or(VfsError::Invalid)?;
         if node.parent == fs::ORPHAN_PARENT && node.open_refs == 0 {
@@ -213,7 +264,7 @@ impl<const N: usize> OpenFiles<N> {
     /// 显式会话清理；首个 I/O 错误后保留剩余表项供重试。
     pub fn close_all<S: Storage>(&mut self, storage: &mut S) -> Result<(), VfsError> {
         for index in 0..N {
-            if self.files[index].is_some() {
+            if self.files[index].is_some_and(|file| file.owners & (1 << self.owner) != 0) {
                 self.close(storage, HandleId(index))?;
             }
         }

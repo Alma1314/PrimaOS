@@ -6,6 +6,7 @@
 
 pub mod arena;
 pub mod bootstrap;
+pub mod cap_view;
 pub mod cow;
 pub mod cpu;
 pub mod exc;
@@ -16,6 +17,7 @@ pub mod frames;
 pub mod gdt;
 pub mod handle;
 pub mod idt;
+pub mod irq;
 pub mod mem;
 pub mod msr;
 pub mod namespace;
@@ -29,3 +31,5 @@ pub mod syscall;
 pub mod test_support;
 pub mod user;
 pub mod vspace;
+
+pub mod fork_tx;

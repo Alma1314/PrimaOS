@@ -24,8 +24,16 @@
 //! 句柄、路径解析、`O_CREAT`/`O_TRUNC`/`O_APPEND`/`O_EXCL`/`O_DIRECTORY` 与目录字节流都在本
 //! 服务内完成；管理器只做授权与路由，内核不解析文件树。
 
+use prima_runtime::protocol::SERVICE_SESSION_PREPARED_FLAG;
+use prima_runtime::protocol::{
+    SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_CLOSE_TAG,
+    SERVICE_SESSION_FORK_ACK_TAG, SERVICE_SESSION_PUBLISH_TAG, SERVICE_SESSION_RELEASE_TAG,
+    SERVICE_SESSION_RESERVE_TAG,
+};
+use prima_user::sessions::Sessions;
 use prima_user::staging::{
-    LinkTarget, OpenStaging, PairStaging, STAGED_CHMOD, STAGED_MKDIR, STAGED_RMDIR, STAGED_UNLINK,
+    LinkTarget, OpenStaging, PairStaging, SESSION_WIRE_BYTES, STAGED_CHMOD, STAGED_MKDIR,
+    STAGED_RMDIR, STAGED_UNLINK, decode_session, encode_session,
 };
 
 use prima_runtime::{
@@ -149,6 +157,8 @@ pub fn run(
     let mut data_seg: Option<Capability> = None;
     // M4/M8：存储服务的文件/目录句柄表。服务端 fd 3..10 对应下标 0..7；close 立即释放并可复用。
     let mut files = OpenFiles::<SERVICE_FILE_HANDLES>::new();
+    let mut sessions = Sessions::new();
+    let manager_cookie = runtime.task_cookie(peer).unwrap_or(0);
     // M8：rootfs 是否已在该段内成功格式化/挂载。
     let mut vfs_ready = false;
     // M8：一次 `openat` 的分阶段路径暂存（OPEN / PATH* / COMMIT）。
@@ -161,6 +171,211 @@ pub fn run(
             continue;
         };
         let tag = message.payload >> 48;
+        let source_cookie = message.sender.map_or(0, |id| {
+            u64::from(id.as_raw()) | (u64::from(message.sender_generation) << 32)
+        });
+        let from_manager = source_cookie == manager_cookie && manager_cookie != 0;
+        let mut reply_peer = peer;
+        let mut reply_send = send_cap;
+        let mut staging_slot = 0usize;
+        if kind == SERVICE_BEHAVIOR_STORE && vfs_ready {
+            // Reclaim dead incarnations, including a killed client that could not
+            // send CLOSE. Leader destruction is guarded while workers are live.
+            for i in 1..sessions.owners.len() {
+                if let Some(owner) = sessions.owners[i]
+                    && (if owner.cookie != 0 {
+                        runtime
+                            .task_cookie(TaskId::from_raw(owner.cookie as u32))
+                            .ok()
+                            != Some(owner.cookie)
+                    } else {
+                        runtime
+                            .task_cookie(TaskId::from_raw(owner.parent as u32))
+                            .ok()
+                            != Some(owner.parent)
+                    })
+                {
+                    let mut storage = SegmentStorage { runtime: &runtime };
+                    if files.close_owner(&mut storage, i as u8).is_ok() {
+                        sessions.owners[i] = None;
+                    }
+                }
+            }
+            for slot in &mut sessions.clients {
+                if let Some(client) = *slot
+                    && runtime
+                        .task_cookie(TaskId::from_raw(client.cookie as u32))
+                        .ok()
+                        != Some(client.cookie)
+                {
+                    let _ = runtime.cap_drop(client.reply);
+                    *slot = None;
+                }
+            }
+        }
+        if tag == SERVICE_SESSION_ADD_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            if !from_manager || !vfs_ready {
+                continue;
+            }
+            let (Some(reply), Some(store_send)) =
+                (message.capabilities[0], message.capabilities[1])
+            else {
+                continue;
+            };
+            let cookie = runtime.send_target_cookie(reply).unwrap_or(0);
+            let task = TaskId::from_raw(cookie as u32);
+            let process = runtime.task_process_cookie(task).unwrap_or(0);
+            let parent = runtime.task_parent_cookie(task).unwrap_or(0);
+            let preparing = message.payload & SERVICE_SESSION_PREPARED_FLAG != 0;
+            let parent_client = sessions.client(parent);
+            let valid = !preparing
+                || message.payload as u32 != 0
+                    && parent_client.is_some()
+                    && runtime.task_prepared(task).ok() == Some(true);
+            let old = sessions.client(cookie);
+            let accepted = valid
+                && sessions
+                    .register(cookie, process, parent, reply, message.payload as u32)
+                    .is_some();
+            let status = if accepted {
+                if let Some(old) = old {
+                    let _ = runtime.cap_drop(old.reply);
+                }
+                let address =
+                    SERVICE_DATA_VA + 4096 + task.as_raw() as u64 * SESSION_WIRE_BYTES as u64;
+                let _ = runtime.write_user_bytes(address, &[0; SESSION_WIRE_BYTES]);
+                if runtime
+                    .send(task, reply, SERVICE_SESSION_ACK_TAG, &[store_send])
+                    .is_ok()
+                {
+                    0
+                } else {
+                    let _ = runtime.cap_drop(store_send);
+                    SERVICE_FILE_EAGAIN
+                }
+            } else {
+                if !preparing {
+                    let _ = runtime.send(
+                        task,
+                        reply,
+                        SERVICE_SESSION_ACK_TAG | SERVICE_FILE_EACCES,
+                        &[],
+                    );
+                }
+                let _ = runtime.cap_drop(reply);
+                let _ = runtime.cap_drop(store_send);
+                SERVICE_FILE_EACCES
+            };
+            if preparing && let Some(parent) = parent_client {
+                let _ = runtime.send(
+                    TaskId::from_raw(parent.cookie as u32),
+                    parent.reply,
+                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    &[],
+                );
+            }
+            continue;
+        }
+        if !from_manager {
+            if kind != SERVICE_BEHAVIOR_STORE {
+                continue;
+            }
+            let Some(client) = sessions.client(source_cookie) else {
+                continue;
+            };
+            reply_peer = TaskId::from_raw(client.cookie as u32);
+            reply_send = client.reply;
+            staging_slot = client.cookie as u32 as usize;
+            let _ = files.set_owner(client.owner);
+            if tag == SERVICE_SESSION_RESERVE_TAG >> 48 {
+                let key = if let Some((owner, key)) = sessions.reserve(client.process) {
+                    if files.fork_owner(client.owner, owner).is_ok() {
+                        key
+                    } else {
+                        sessions.owners[owner as usize] = None;
+                        0
+                    }
+                } else {
+                    0
+                };
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | u64::from(key),
+                    &[],
+                );
+                continue;
+            }
+            if tag == SERVICE_SESSION_PUBLISH_TAG >> 48 {
+                let child = TaskId::from_raw((message.payload >> 32) as u8 as u32);
+                let cookie = runtime.task_cookie(child).unwrap_or(0);
+                let valid = runtime.task_parent_cookie(child).ok() == Some(client.process)
+                    && sessions.publish(client.process, message.payload as u32, cookie);
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | u64::from(!valid),
+                    &[],
+                );
+                continue;
+            }
+            if tag == SERVICE_SESSION_RELEASE_TAG >> 48 {
+                let valid = if let Some((owner, record)) =
+                    sessions.reservation(client.process, message.payload as u32)
+                {
+                    if record.cookie == 0
+                        || runtime
+                            .task_prepared(TaskId::from_raw(record.cookie as u32))
+                            .ok()
+                            == Some(true)
+                        || runtime
+                            .task_cookie(TaskId::from_raw(record.cookie as u32))
+                            .ok()
+                            != Some(record.cookie)
+                    {
+                        let mut storage = SegmentStorage { runtime: &runtime };
+                        if files.close_owner(&mut storage, owner).is_ok() {
+                            sessions.owners[owner as usize] = None;
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    true
+                }; // Already reclaimed after an observed death.
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | u64::from(!valid),
+                    &[],
+                );
+                continue;
+            }
+            if tag == SERVICE_SESSION_CLOSE_TAG >> 48 {
+                let mut storage = SegmentStorage { runtime: &runtime };
+                let status = files
+                    .close_owner(&mut storage, client.owner)
+                    .map_or_else(vfs_status, |_| 0);
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    &[],
+                );
+                continue;
+            }
+        } else {
+            let _ = files.set_owner(0);
+        }
+        if kind == SERVICE_BEHAVIOR_STORE && vfs_ready {
+            let mut wire = [0; SESSION_WIRE_BYTES];
+            let address = SERVICE_DATA_VA + 4096 + staging_slot as u64 * SESSION_WIRE_BYTES as u64;
+            let _ = runtime.read_user_bytes(address, &mut wire);
+            decode_session(&wire, &mut staged, &mut pair, &mut link);
+        }
         if tag == SERVICE_NS_CAP_TAG >> 48 {
             // SPEC-111：接管移交的只读 Namespace 副本（带 cap 消息）。
             if let Some(cap) = message.capabilities[0] {
@@ -171,7 +386,14 @@ pub fn run(
             // （不 panic）——但那样管理器侧的内存句柄见证会落空，故失败可见。
             if let Some(seg) = message.capabilities[0]
                 && runtime
-                    .memseg_map(seg, self_cap, 0, SERVICE_DATA_VA, 1, RW)
+                    .memseg_map(
+                        seg,
+                        self_cap,
+                        0,
+                        SERVICE_DATA_VA,
+                        if kind == SERVICE_BEHAVIOR_STORE { 6 } else { 1 },
+                        RW,
+                    )
                     .is_ok()
             {
                 data_seg = Some(seg);
@@ -211,7 +433,12 @@ pub fn run(
                     state
                 }
             };
-            let _ = runtime.send(peer, send_cap, pack_service_reply(kind, result), &[]);
+            let _ = runtime.send(
+                reply_peer,
+                reply_send,
+                pack_service_reply(kind, result),
+                &[],
+            );
         } else if tag == SERVICE_VFS_OPEN_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M8/M9：open/stat 元数据。清空暂存路径并写入第一段字节。
             let flags =
@@ -251,7 +478,7 @@ pub fn run(
             } else {
                 pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOSYS, 0)
             };
-            let _ = runtime.send(peer, send_cap, reply, &[]);
+            let _ = runtime.send(reply_peer, reply_send, reply, &[]);
         } else if tag == SERVICE_VFS_STATUS_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M12b：只读句柄计数，供服务管理器在 C 退出后核对清理结果。
             let client = (message.payload >> SERVICE_VFS_STATUS_CLIENT_SHIFT) & 0xff;
@@ -259,7 +486,7 @@ pub fn run(
             let reply = SERVICE_VFS_STATUS_TAG
                 | (client << SERVICE_VFS_STATUS_CLIENT_SHIFT)
                 | (open & SERVICE_VFS_STATUS_COUNT_MASK);
-            let _ = runtime.send(peer, send_cap, reply, &[]);
+            let _ = runtime.send(reply_peer, reply_send, reply, &[]);
         } else if tag == SERVICE_VFS_CHMOD_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M13b：chmod/fchmod 的路径暂存；mode 在 COMMIT 消息里携带。
             let len = ((message.payload >> SERVICE_VFS_PATH_LEN_SHIFT) & 0xff) as usize;
@@ -313,7 +540,7 @@ pub fn run(
                 pair.active = false;
                 pack_vfs_pair_reply(op as u64, SERVICE_FILE_EINVAL, 0)
             };
-            let _ = runtime.send(peer, send_cap, reply, &[]);
+            let _ = runtime.send(reply_peer, reply_send, reply, &[]);
         } else if tag == SERVICE_VFS_LINK_READ_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M13a：readlink 目标按 3 字节分段取回。
             let offset = ((message.payload >> SERVICE_VFS_LINK_OFFSET_SHIFT) & 0xff) as usize;
@@ -329,7 +556,7 @@ pub fn run(
             }
             let reply =
                 SERVICE_VFS_LINK_REPLY_TAG | (status << SERVICE_VFS_LINK_OFFSET_SHIFT) | bytes;
-            let _ = runtime.send(peer, send_cap, reply, &[]);
+            let _ = runtime.send(reply_peer, reply_send, reply, &[]);
         } else if tag == SERVICE_FILE_REQUEST_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
             // M4/M8：读/写/lseek/close 只在存储服务、且持久化段已映射后处理；否则明确拒绝。
             let response = if vfs_ready {
@@ -342,7 +569,11 @@ pub fn run(
                     0,
                 )
             };
-            let _ = runtime.send(peer, send_cap, response, &[]);
+            let _ = runtime.send(reply_peer, reply_send, response, &[]);
+        }
+        if kind == SERVICE_BEHAVIOR_STORE && vfs_ready {
+            let address = SERVICE_DATA_VA + 4096 + staging_slot as u64 * SESSION_WIRE_BYTES as u64;
+            let _ = runtime.write_user_bytes(address, &encode_session(&staged, &pair, &link));
         }
     }
 }

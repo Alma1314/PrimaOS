@@ -78,7 +78,7 @@ pub fn abstract_state(m: &MachineState) -> State {
             },
         );
         // §14 步骤 5/6：三条无父根 Capability（parent=None），放入 HeldBy(init)。
-        s.capabilities.insert(
+        s.insert_capability(
             1,
             Capability {
                 owner: init,
@@ -88,7 +88,7 @@ pub fn abstract_state(m: &MachineState) -> State {
                 parent: None,
             },
         );
-        s.capabilities.insert(
+        s.insert_capability(
             2,
             Capability {
                 owner: init,
@@ -103,7 +103,7 @@ pub fn abstract_state(m: &MachineState) -> State {
                 parent: None,
             },
         );
-        s.capabilities.insert(
+        s.insert_capability(
             3,
             Capability {
                 owner: init,
@@ -195,13 +195,19 @@ pub fn derive_capability(s: &mut State, parent: CapId, new_id: CapId) -> Result<
     if s.capabilities.contains_key(&new_id) {
         return Err(DeriveError::SlotOccupied);
     }
-    s.capabilities.insert(
+    let location = s.locations.get(&parent).cloned();
+    s.insert_capability(
         new_id,
         Capability {
             parent: Some(parent),
             ..pcap
         },
     );
+    if let Some(location @ crate::state::CapLocation::HeldBy(_)) = location {
+        s.locations.insert(new_id, location);
+    } else {
+        s.locations.remove(&new_id);
+    }
     Ok(())
 }
 

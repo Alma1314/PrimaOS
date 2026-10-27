@@ -62,7 +62,12 @@ pub const MAX_SEGMENTS: usize = 48;
 /// **M9 256 → 320**：C 任务的栈 + arena 段从 72 页扩到 104 页（sbase `ls` 的
 /// 64 KiB visited 表需要更大的 brk 区）。按同一上界算式 184 + 104 = 288，320 留出
 /// 32 项余量；`memseg_create` 仍以 `owner_count == MAX_FRAME_OWNERS` 确定失败。
-pub const MAX_FRAME_OWNERS: usize = 320;
+/// The exec handoff can retain the old arena, prepare up to 149 image/stack
+/// frames, and privatize all 96 retained heap pages: 320+149+96+3=568 entries.
+/// With the 192-page boot vector the bound is 320+192+96+3=611. Keep 640
+/// external owner entries; the matching recycle budget must also fit the
+/// FrameRegistry's unchanged 32 KiB value-size guard.
+pub const MAX_FRAME_OWNERS: usize = 640;
 /// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
 ///
 /// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`
@@ -343,6 +348,23 @@ impl FrameRegistry {
         Ok(())
     }
 
+    /// Reclaim the actual ownership ledger, including later COW allocations.
+    /// The caller must first prove that no address space references the Segment.
+    pub fn release_segment_frames(&mut self, id: u32) -> Result<(), FrameError> {
+        loop {
+            let frame = (0..self.owner_count).find_map(|index| {
+                self.owner(index)
+                    .filter(|(_, owner)| *owner == id)
+                    .map(|(frame, _)| frame)
+            });
+            let Some(frame) = frame else {
+                break;
+            };
+            self.release_frame(id, frame)?;
+        }
+        self.close_segment(id)
+    }
+
     /// 逐帧归属查询（W6 三类划分 + image 类；空闲帧返回 [`FrameOwner::Free`]）。
     ///
     /// SPEC-068：image 归属经**物化向量**逐帧判定，不再用 `(start, end)` 区间。
@@ -509,6 +531,10 @@ pub fn close_segment(id: u32) -> Result<(), FrameError> {
 /// 归还某 Segment 的一帧（销毁或回收路径）。
 pub fn release_frame(id: u32, frame: u64) -> Result<(), FrameError> {
     with_registry(|registry| registry.release_frame(id, frame))
+}
+
+pub fn release_segment_frames(id: u32) -> Result<(), FrameError> {
+    with_registry(|registry| registry.release_segment_frames(id))
 }
 
 /// 归还一帧保留页表帧（空表结点回收路径）。
@@ -692,10 +718,10 @@ mod tests {
             image_frames: 1,
             free_frames: count,
             usable_regions: 1,
-            kernel_phys_start: 0x40_0000,
-            kernel_phys_end: 0x40_1000,
+            kernel_phys_start: 0x1000_0000,
+            kernel_phys_end: 0x1000_1000,
         };
-        let alloc = FreeFrameAllocator::from_regions(&regions, 0x40_0000, 0x40_1000).unwrap();
+        let alloc = FreeFrameAllocator::from_regions(&regions, 0x1000_0000, 0x1000_1000).unwrap();
         let mut registry = FrameRegistry::new(&inventory, alloc).unwrap();
         registry.open_segment(1, Pool::Cpu).unwrap();
         let mut data = [0; MAX_FRAME_OWNERS];
@@ -779,6 +805,21 @@ mod tests {
         registry.owner_count += 1;
         assert_eq!(registry.check_disjoint(), Err(FrameError::Overlap));
         assert!(!registry.witness().disjoint);
+    }
+
+    #[test]
+    fn segment_destruction_reclaims_initial_and_later_copy_frames_only() {
+        let mut registry = registry();
+        registry.open_segment(1, Pool::Cpu).unwrap();
+        registry.open_segment(2, Pool::Cpu).unwrap();
+        let initial = registry.allocate_for_segment(1).unwrap();
+        let copied = registry.allocate_for_segment(1).unwrap();
+        let other = registry.allocate_for_segment(2).unwrap();
+        registry.release_segment_frames(1).unwrap();
+        assert_eq!(registry.owner_of(initial), FrameOwner::Free);
+        assert_eq!(registry.owner_of(copied), FrameOwner::Free);
+        assert_eq!(registry.owner_of(other), FrameOwner::Segment(2));
+        assert!(registry.check_conservation().is_ok());
     }
 
     #[test]

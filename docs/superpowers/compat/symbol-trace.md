@@ -157,3 +157,64 @@ Linux 号只存在于 musl/适配层；内核仍只认 Prima `SYS_*`。未列出
 | Rust R1/R2 _start | Prima五寄存器入口、16对齐初始RSP | 汇编call建立C ABI对齐 → rust_start → Runtime TASK_ID7/SEND17/YIELD8/RECV18 | 不经过Linux libc号表；托管退出由manager销毁 |
 | Rust std::fs::metadata | restricted std | unsupported PAL → ErrorKind::Unsupported | 无VFS调用，不能称为已支持std::fs |
 | Rust std::alloc::System | restricted std | Prima PAL → NULL/OOM | 实际Vec/Box由探针自带GlobalAlloc供给；默认System不支持 |
+
+
+## 2026-10-26 未验收调用链
+
+以下只追溯新工作代码，不继承历史成功证据；范围见[后继契约](../specs/2026-10-25-process-boundary-followup-design.md)。
+
+| 符号/路径 | 工作调用链 | 验证状态 |
+|---|---|---|
+| sigaction/sigprocmask/sigsuspend | musl → C边界 → 原生65 → Task现场/Process动作 | W9未运行 |
+| pthread detach/futex | musl取消/出口 → C边界 → 66/67及WaitObject | W4未运行 |
+| execve(path) | musl → C边界实际OFD读取 → 69 → 独立RX关闭CLOEXEC → 新入口/crt | W7b未运行；完整crt见证已写入、未运行 |
+| read(tty) | musl → C序号事务 → Manager FIFO → IRQ4/70/71 → 60回复/5EEB–5EED确认 | I1未运行 |
+| nanosleep/clock_nanosleep | musl → C期限/rem → 72 → 物理期限/IRQ0/idle | T1/W9未运行 |
+
+原生18旧三字布局保持；C元数据接收使用60。Linux调用号只在C边界解释。
+
+
+### Socket 后继待统一验收（2026-10-26）
+
+[后继记录](../reports/2026-10-25-stage0-5-gap-followup.md)第11节已写入Process holder/fork关闭隔离、逐Task发送与接收快照、请求序号/认证来源及CANCEL/FINISH握手。N1扩充fork/dup、EINTR/取消、SA_RESTART/嵌套stat；内部网络布局替换历史client字段，范围见[工作契约](../specs/2026-10-25-process-boundary-followup-design.md)。全部待运行，不扩大M19证据或profile支持状态。
+
+
+### 完整新 C crt 后继待统一验收（2026-10-26）
+
+W7b保留真实execve(path)紧凑ELF，另经共享交接的原生C `prima_exec_image`执行独立静态C/musl子映像，检查TLS/构造/fd状态后再次从新libc execve rootfs tiny ELF。Linux同源memfd参考与crt/reexec/ofd字段已接入，均未执行。2920B rootfs内容预算不扩大；不宣称可存储完整C文件或动态链接。范围见[工作契约](../specs/2026-10-25-process-boundary-followup-design.md)。
+
+
+### 当前工作逐入口与静态护栏（2026-10-26，未验收）
+
+[当前表](stage5-working-api.md)逐项登记C Linux分派入口、非分派符号、原生后端、主要失败及预定见证。
+前文“Rust OS后端未实现/完整新crt待补”等是对应版本记录；当前有界PAL和完整新C映像已写入，均未统一验收。
+[静态护栏](../specs/2026-10-26-static-program-contract-design.md)增加persona/adapter声明、C exec拒绝、crt版本化链接锚点
+和符号可见性脚本；不宣称动态版本解析、AS persona或Linux二进制人格。
+[具体评审工件](../specs/2026-10-26-stage5-release-decisions.md)保留D6待选择及组织级签署边界，全部新探针未执行。
+
+
+上述2026-10-24归档48/49白名单属于历史补丁；当前clone.s出口经C清理，白名单收紧为clone.lo仅48、
+restore.lo仅58，49/66只由适配层发出。build.py与拒绝用例已同步，新的归档仍须重建/审计。
+
+
+## 2026-10-27 当前后继证据与历史范围
+
+上文2026-10-26“未运行/待选择”是当时工作记录；当前以
+[逐入口表](stage5-working-api.md)与[统一报告](../reports/2026-10-25-stage0-5-gap-followup.md)为准。
+用户已选择D6 A，原生stdout/stderr/Instant/sleep/yield及确定失败路径完成R2双轮，R1也双轮通过；
+不支持的std文件/网络/进程等仍不纳入。workspace1016、lint、两种Rust Clippy、Lean、
+musl八补丁归档/5项host、compat、20项Linux参考和完整单次68轮BIOS均通过。
+
+| 后继调用链 | 本轮见证及边界 |
+|---|---|
+| fork64准备/认证holder交接/受控发布 → 独立视图、共享OFD | W6/N1；用户选定继承A，单线程fork |
+| execve实际OFD读取/静态声明检查 → 69/RX桥/新crt → 再exec | W7/W7b；CLOEXEC/envp/原子失败，完整C内存映像不等于rootfs可存完整C文件 |
+| musl信号/取消 → C适配层65/66/67 | W4/W9；SIGCANCEL=33，有界现场/合并通知，不提供完整signal/pthread |
+| read(tty) → 序号/取消/确认 → IRQ4/70/71及60认证回复 | I1；总消息/阻塞数守恒，保留功能与清理断言 |
+| UDP等待 → Process holder/逐Task快照/CANCEL/FINISH | N1；总消息及blocks-direct守恒，不是NIC/TCP/DNS |
+| Instant/sleep → 原生39/40/72 → PIT单CPU物理期限 | T1/W9/R2；100Hz，无wall-clock/SMP保证 |
+
+当前clone.lo仅原生48，restore.lo仅58；线程出口通过C清理再49/66，新的锁定归档已审计。
+旧supported、planned、UNTEST均保留其历史范围，本轮不据此发布profile v2或自动勾选阶段。
+#AC仅有host路由，没有机器见证；最终profile/静态护栏/组织级签署仍见
+[具体评审工件](../specs/2026-10-26-stage5-release-decisions.md)。

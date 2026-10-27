@@ -66,17 +66,18 @@ W6 三种 fork 路径检查非默认 MXCSR/x87 舍入控制字继承、父先改
 `R1` 构建 core/alloc，`R2` 从同一固定 rust-src 构建受限 std。
 
 该 nightly 未为 none 提供完整 std 配置。构建脚本仅修改 ignored 的 rust-src 副本，
-显式为 prima 选择 generic 错误、单线程 TLS、unsupported 随机与 OS PAL。
-记录编译器版本、四个上游源文件 SHA-256、overlay hash；源许可证 MIT/Apache-2.0。
-安装的工具链不修改，副本与产物不入 Git。构建无网络，依赖缺失明确失败。
+显式为 prima 选择generic错误、单线程TLS以及原生stdio/time/sleep/yield模块；其它OS模块保留unsupported。
+记录编译器版本、九个上游输入SHA-256、三个PAL源hash及overlay hash；源许可证MIT/Apache-2.0。
+安装的工具链不修改，副本与产物不入Git。构建无网络，依赖缺失明确失败。
 
-承诺范围仅 core 运算、alloc 容器/格式化、std 的纯内存 BTreeMap/Read trait；
-R2仅验收metadata返回Unsupported及System返回NULL；其他OS API不进入支持契约，不能称为POSIX std，也不承诺所有函数的失败/初始化语义。
-应用须自带 GlobalAlloc：探针使用管理器映射的私有 96 页 arena、单调分配、进程销毁整体释放；
-不宣称可复用生产 allocator、长运行无泄漏或内存不足恢复。
-`std::alloc::System` 在此 PAL 返回 NULL（OOM），不能把默认 System 视为已支持。
-不支持 std OS 文件、线程、网络、时间、进程、环境初始化和随机数；未接标准 lang_start。
-stdio 使用既有原生 Runtime/tty 消息链，不伪装为 std::io::stdout。
+2026-10-26工作增量及D6待选范围见[裁决工件](2026-10-26-rust-d6-scope-decision.md)。
+原生入口先初始化时钟及TTY权限，链接值参数hooks；stdout/stderr通过Runtime发送真实字节，
+Instant读100Hz物理单调时钟，sleep使用72绝对期限、向上取整且中断后续等，yield使用8。
+R2在原内存API及metadata/System负例基础上，新增stdout/stderr逐字节、期限和stdin/spawn负例，尚未执行。
+应用仍须自带GlobalAlloc：探针私有96页arena单调分配、进程销毁整体释放；
+System返回NULL，非空stdin和线程创建返回Unsupported，SystemTime::now仍panic。
+文件/网络/进程/环境/随机/标准lang_start和完整POSIX std未实现，不把有界PAL称为完整std移植。
+这些工作不自动冻结D6；以用户对裁决工件的选择继续实施，之后仍需统一验收与出口评审。
 
 可重复构建和检查：
 

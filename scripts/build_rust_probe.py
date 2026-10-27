@@ -3,8 +3,9 @@
 
 Only an ignored copy of the pinned rust-src is patched. No installed toolchain
 files are modified, no dependency is downloaded, and Linux/wasm cfgs are not
-impersonated. This PAL provides pure-memory std APIs and Unsupported OS APIs;
-applications must supply a global allocator. std::alloc::System fails with OOM.
+impersonated. This PAL provides native stdout/stderr, monotonic Instant and
+sleep/yield. Applications supply entry hooks and an allocator; other OS APIs
+retain the explicitly documented unsupported scope. System fails with OOM.
 """
 import hashlib
 import json
@@ -24,12 +25,20 @@ def prepare_sysroot():
         raise ValueError("Prima std overlay requires the repository's pinned rustc 1a833e165")
     library = source_root / "lib/rustlib/src/rust/library"
     files = ["std/src/sys/alloc/mod.rs", "std/src/sys/io/error/mod.rs",
-             "std/src/sys/thread_local/mod.rs", "std/src/sys/random/mod.rs"]
+             "std/src/sys/thread_local/mod.rs", "std/src/sys/random/mod.rs",
+             "std/src/sys/stdio/mod.rs", "std/src/sys/time/mod.rs",
+             "std/src/sys/thread/mod.rs", "std/src/sys/time/unsupported.rs",
+             "std/src/sys/thread/unsupported.rs", "std/src/thread/lifecycle.rs"]
     hashes = {name: hashlib.sha256((library / name).read_bytes()).hexdigest() for name in files}
     lock = json.loads((ROOT / "prima-user/rust-probe/rust-src.lock.json").read_text())
     if hashes != lock["upstream_sha256"] or lock["compiler_commit"] not in version:
         raise ValueError("pinned rust-src patch inputs differ from rust-src.lock.json")
-    digest = hashlib.sha256(Path(__file__).read_bytes() + version.encode() + json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    pal_sources = {name: ROOT / f"prima-user/rust-probe/pal/{name}.rs"
+                   for name in ("stdio", "time", "thread")}
+    overlay_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                      for name, path in pal_sources.items()}
+    digest = hashlib.sha256(Path(__file__).read_bytes() + version.encode()
+                            + json.dumps([hashes, overlay_hashes], sort_keys=True).encode()).hexdigest()
     destination = ROOT / "target/prima-rust-sysroot"
     stamp = destination / ".stamp"
     copied = destination / "lib/rustlib/src/rust/library"
@@ -38,13 +47,18 @@ def prepare_sysroot():
             shutil.rmtree(copied)
         copied.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(library, copied, symlinks=True)
-        # The explicit Prima branches reuse Rust's honest unsupported PAL,
-        # generic I/O errors, and single-thread TLS. There is no Unix backend.
+        # Explicit native modules; unsupported operations retain upstream PAL.
+        # No Unix identity or libc ABI is introduced.
         replacements = {
             files[0]: ('cfg_select! {\n    any(\n        target_family = "unix",', 'cfg_select! {\n    target_vendor = "prima" => { mod prima; use prima as imp; }\n    any(\n        target_family = "unix",'),
             files[1]: ("cfg_select! {", 'cfg_select! {\n    target_vendor = "prima" => { mod generic; pub use generic::*; }'),
             files[2]: ('cfg_select! {\n    any(\n        all(target_family = "wasm", not(target_feature = "atomics"), not(target_os = "wasi")),', 'cfg_select! {\n    any(\n        target_vendor = "prima",\n        all(target_family = "wasm", not(target_feature = "atomics"), not(target_os = "wasi")),'),
             files[3]: ('        target_os = "vexos",', '        target_vendor = "prima",\n        target_os = "vexos",'),
+            files[4]: ('cfg_select! {', 'cfg_select! {\n    target_vendor = "prima" => { mod prima; pub use prima::*; }'),
+            files[5]: ('cfg_select! {', 'cfg_select! {\n    target_vendor = "prima" => {\n        mod prima; use prima as imp;\n        #[expect(dead_code)] mod unsupported;\n    }'),
+            files[6]: ('cfg_select! {', 'cfg_select! {\n    target_vendor = "prima" => {\n        mod prima; pub use prima::{sleep, yield_now};\n        #[expect(dead_code)] mod unsupported;\n        pub use unsupported::{Thread, available_parallelism, current_os_id, set_name, DEFAULT_MIN_STACK_SIZE};\n    }'),
+            # Reject before Thread::new uses System for its internal handle.
+            files[9]: ('{\n    let stack_size = stack_size.unwrap_or_else', '{\n    if cfg!(target_vendor = "prima") {\n        return Err(io::Error::UNSUPPORTED_PLATFORM);\n    }\n    let stack_size = stack_size.unwrap_or_else'),
         }
         for name, (before, after) in replacements.items():
             path = copied / name
@@ -69,6 +83,8 @@ pub unsafe fn alloc_zeroed(_: Layout) -> *mut u8 { crate::ptr::null_mut() }
 pub unsafe fn dealloc(_: *mut u8, _: Layout) {}
 pub unsafe fn realloc(_: *mut u8, _: Layout, _: usize) -> *mut u8 { crate::ptr::null_mut() }
 ''')
+        for name, path in pal_sources.items():
+            shutil.copyfile(path, copied / f"std/src/sys/{name}/prima.rs")
         for name in (source_root / "lib/rustlib").iterdir():
             if name.name == "src":
                 continue
@@ -78,9 +94,10 @@ pub unsafe fn realloc(_: *mut u8, _: Layout, _: usize) -> *mut u8 { crate::ptr::
         (destination / "source-provenance.json").write_text(json.dumps({
             "compiler": version, "source_root": str(library), "upstream_sha256": hashes,
             "overlay_sha256": digest, "license": "MIT OR Apache-2.0",
+            "prima_pal_sha256": overlay_hashes,
         }, indent=2) + "\n")
         stamp.write_text(digest)
-    return source_root / "bin/rustc", destination
+    return source_root / "bin/rustc", destination, digest
 
 
 def main():
@@ -88,10 +105,17 @@ def main():
     if not flags <= {"--std", "--clippy"} or len(flags) != len(sys.argv[1:]):
         raise ValueError("usage: build_rust_probe.py [--std] [--clippy]")
     standard, clippy = "--std" in flags, "--clippy" in flags
-    compiler, sysroot = prepare_sysroot()
+    compiler, sysroot, overlay_digest = prepare_sysroot()
     env = os.environ.copy()
     env.update(RUSTC=str(ROOT / "scripts/rustc_prima.py"),
                PRIMA_REAL_RUSTC=str(compiler), PRIMA_RUST_SYSROOT=str(sysroot))
+    # Cargo treats sysroot sources as immutable and can otherwise reuse an old
+    # build-std rlib after a local overlay changes. Make its input hash part of
+    # every compilation fingerprint, preserving caller-provided flags.
+    rustflags = (env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+                 if env.get("CARGO_ENCODED_RUSTFLAGS") else env.get("RUSTFLAGS", "").split())
+    rustflags += ["--cfg", f'prima_overlay_hash="{overlay_digest}"']
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(rustflags)
     if clippy:
         # Clippy recognizes a compiler wrapper by its rustc basename. Its own
         # driver must also query this sysroot, without cached installed paths.

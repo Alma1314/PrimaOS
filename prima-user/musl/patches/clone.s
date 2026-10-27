@@ -21,8 +21,6 @@ __clone:
 	pop %rdi
 	call *%r9
 	mov %eax,%edi
-	xor %eax,%eax
-	mov $49,%al
-	syscall
-	hlt
+	call __prima_thread_exit
+	ud2
 1:	ret

@@ -54,7 +54,7 @@ fn build_state() -> State {
             kernel_readable: true,
         },
     );
-    st.capabilities.insert(
+    st.insert_capability(
         10,
         state::Capability {
             owner: 1,
@@ -64,7 +64,7 @@ fn build_state() -> State {
             parent: None,
         },
     );
-    st.capabilities.insert(
+    st.insert_capability(
         11,
         state::Capability {
             owner: 1,
@@ -79,6 +79,7 @@ fn build_state() -> State {
         1,
         state::ExceptionSource {
             supported_kind: page_fault(),
+            additional_kinds: vec![],
             active: true,
         },
     );
@@ -457,7 +458,8 @@ mod tests {
     #[test]
     fn exc_resume_rejects_foreign_source_cap_atomically() {
         let mut st = resumable_state();
-        st.capabilities.get_mut(&SOURCE_CAP).unwrap().owner = CALLER + 1;
+        st.locations
+            .insert(SOURCE_CAP, crate::state::CapLocation::HeldBy(CALLER + 1));
         assert_resume_failure_unchanged(st, ResumeError::InvalidExcSource);
     }
 
@@ -513,7 +515,8 @@ mod tests {
     #[test]
     fn exc_resume_rejects_foreign_frame_cap_atomically() {
         let mut st = resumable_state();
-        st.capabilities.get_mut(&FRAME_CAP).unwrap().owner = CALLER + 1;
+        st.locations
+            .insert(FRAME_CAP, crate::state::CapLocation::HeldBy(CALLER + 1));
         assert_resume_failure_unchanged(st, ResumeError::InvalidFrameAddr);
     }
 
@@ -788,6 +791,22 @@ mod tests {
                 ev(
                     1,
                     Actor::Kernel,
+                    AuditKind::MessageSent {
+                        message: 1,
+                        origin: state::MessageOrigin::Kernel(state::KernelEvent::ExceptionRaised {
+                            source: SOURCE,
+                            kind: page_fault(),
+                            fault_va: Some(0x5000_0000),
+                        }),
+                        receiver: CALLER,
+                        data: vec![],
+                        caps: vec![],
+                        transport_message: None,
+                    }
+                ),
+                ev(
+                    2,
+                    Actor::Kernel,
                     AuditKind::TaskStateChanged {
                         task: 1,
                         from: TaskStatus::Running,
@@ -797,7 +816,7 @@ mod tests {
             ]
         );
         // W13：EventId 严格递增，且 next_event 已推进。
-        assert_eq!(st.next_event, 2);
+        assert_eq!(st.next_event, 3);
     }
 
     #[test]
@@ -817,11 +836,23 @@ mod tests {
     }
 
     #[test]
+    fn exc_resume_does_not_authorize_owner_after_token_location_is_removed() {
+        let mut st = resumable_state();
+        st.locations.remove(&SOURCE_CAP);
+        let before = st.clone();
+        assert_eq!(
+            exc_resume(&mut st, CALLER, SOURCE_CAP, FRAME_CAP, FRAME_OFF),
+            Err(ResumeError::InvalidExcSource)
+        );
+        assert_eq!(st, before);
+    }
+
+    #[test]
     fn exc_resume_rejects_namespace_object_caps() {
         // 复核 minor：新增的 `CapObject::Namespace` 拒绝臂必须被实际走到（match 穷尽不构成覆盖）。
         let mut st = build_state();
         const NS_CAP: CapId = 20;
-        st.capabilities.insert(
+        st.insert_capability(
             NS_CAP,
             state::Capability {
                 owner: CALLER,
@@ -897,6 +928,22 @@ mod tests {
                 ev(
                     1,
                     Actor::Kernel,
+                    AuditKind::MessageSent {
+                        message: 1,
+                        origin: state::MessageOrigin::Kernel(state::KernelEvent::ExceptionRaised {
+                            source: SOURCE,
+                            kind: page_fault(),
+                            fault_va: Some(0x5000_0000),
+                        }),
+                        receiver: CALLER,
+                        data: vec![],
+                        caps: vec![],
+                        transport_message: None,
+                    }
+                ),
+                ev(
+                    2,
+                    Actor::Kernel,
                     AuditKind::TaskStateChanged {
                         task: CALLER,
                         from: TaskStatus::Running,
@@ -904,7 +951,7 @@ mod tests {
                     }
                 ),
                 ev(
-                    2,
+                    3,
                     Actor::Task(CALLER),
                     AuditKind::TaskResumed {
                         source_id: SOURCE,
@@ -959,6 +1006,22 @@ mod tests {
                 ),
                 ev(
                     1,
+                    Actor::Kernel,
+                    AuditKind::MessageSent {
+                        message: 1,
+                        origin: state::MessageOrigin::Kernel(state::KernelEvent::ExceptionRaised {
+                            source: SOURCE,
+                            kind: page_fault(),
+                            fault_va: Some(0x5000_0000),
+                        }),
+                        receiver: CALLER,
+                        data: vec![],
+                        caps: vec![],
+                        transport_message: None,
+                    }
+                ),
+                ev(
+                    2,
                     Actor::Kernel,
                     AuditKind::TaskStateChanged {
                         task: CALLER,

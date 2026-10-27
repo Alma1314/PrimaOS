@@ -4,6 +4,26 @@
 #include <assert.h>
 
 int main(void) {
+    assert(!(prima_upcall_flags(33, PRIMA_SA_RESTART) & 4));
+    assert(prima_upcall_flags(32, PRIMA_SA_RESTART) & 4);
+    assert(prima_upcall_flags(10, PRIMA_SA_RESTART) & 4);
+    unsigned char elf[208] = {127,'E','L','F',2,1,1};
+    elf[18]=62; elf[32]=64; elf[54]=56; elf[56]=1;
+    elf[64]=4; elf[72]=120; elf[96]=44;
+    const uint32_t note[11] = PRIMA_CONTRACT_WORDS;
+    prima_copy(elf+120,note,sizeof note);
+    assert(prima_contract_accepts(elf,sizeof elf));
+    assert(!prima_contract_accepts(elf,163));
+    for (unsigned at=140; at<=160; at+=4) {
+        unsigned char saved=elf[at]; elf[at]=9;
+        assert(!prima_contract_accepts(elf,sizeof elf)); elf[at]=saved;
+    }
+    elf[64]=1; assert(!prima_contract_accepts(elf,sizeof elf)); elf[64]=4;
+    prima_copy(elf+164,elf+120,44); elf[96]=88;
+    assert(!prima_contract_accepts(elf,sizeof elf)); elf[96]=44;
+    for (unsigned i=0; i<4; i++) elf[120+i]=255;
+    assert(!prima_contract_accepts(elf,sizeof elf));
+
     prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_NULL, 0, 0, 1};
     assert(prima_fd_dup(3) == 4);
     assert(prima_fd_fcntl(4, PRIMA_F_GETFD, 0) == 0);

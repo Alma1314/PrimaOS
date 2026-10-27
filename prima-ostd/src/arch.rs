@@ -6,6 +6,19 @@
 
 use core::arch::asm;
 
+/// Serialized x86_64 timestamp sample. The single-CPU kernel calibrates this
+/// counter against PIT channel 0; no cross-CPU or invariant-frequency claim.
+pub fn timestamp_counter() -> u64 {
+    let low: u32;
+    let high: u32;
+    // SAFETY: LFENCE/RDTSC access no memory and are available on the x86_64 target.
+    unsafe {
+        asm!("lfence", "rdtsc", out("eax") low, out("edx") high,
+             options(nomem, nostack, preserves_flags));
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
 /// 向 I/O 端口写一个字节。
 #[inline]
 pub fn outb(port: u16, value: u8) {
@@ -268,6 +281,15 @@ pub fn sti() {
     // SAFETY: 仅修改 RFLAGS.IF；CPL0 下合法。
     unsafe {
         asm!("sti", options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// CPL0 idle wait. The STI shadow closes the enable/HLT race; return with IF=0.
+/// No lock or borrowed shared state may be held across this operation.
+pub fn wait_for_interrupt() {
+    // SAFETY: called only by the kernel idle loop with a live interrupt stack/IDT.
+    unsafe {
+        asm!("sti", "hlt", "cli", options(nomem, nostack));
     }
 }
 

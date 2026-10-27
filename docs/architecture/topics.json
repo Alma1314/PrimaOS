@@ -82,7 +82,9 @@
       "docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-pod-buffer-report.md",
       "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
-      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md"
+      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
+      "docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md",
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -230,7 +232,10 @@
       "docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md",
       "docs/superpowers/reports/2026-10-13-ipc-capability-move-audit-report.md",
       "docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md",
-      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md"
+      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md",
+      "docs/superpowers/specs/2026-10-25-capability-location-model-design.md",
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -241,11 +246,18 @@
       "prima-runtime/src/capability.rs",
       "prima-runtime/src/ipc.rs",
       "prima-runtime/src/task.rs",
-      "lean/Formal/KernelHandle.lean"
+      "lean/Formal/KernelHandle.lean",
+      "cosir/src/authority.rs",
+      "cosir/src/authority/events.rs",
+      "cosir/src/authority/remote.rs",
+      "cosir/src/authority/wait.rs",
+      "lean/Formal/Location.lean"
     ],
     "tests": [
       "kernel/src/test_support.rs",
-      "xtask/src/protocol.rs"
+      "xtask/src/protocol.rs",
+      "cosir/src/authority/tests.rs",
+      "cosir/src/authority/event_tests.rs"
     ],
     "guide": "docs/architecture/topics/capability-ipc.md"
   },
@@ -271,18 +283,24 @@
       "docs/superpowers/reports/2026-09-25-stage3-timer-report.md",
       "docs/superpowers/reports/2026-10-10-stage3-audit-trace-restore-report.md",
       "docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md",
-      "docs/superpowers/reports/2026-10-18-stage3-review-remediation.md"
+      "docs/superpowers/reports/2026-10-18-stage3-review-remediation.md",
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
     ],
     "code": [
       "kernel/src/namespace.rs",
       "kernel/src/bootstrap.rs",
       "kernel/src/preempt.rs",
       "prima-runtime/src/namespace.rs",
-      "prima-runtime/src/transport.rs"
+      "prima-runtime/src/transport.rs",
+      "cosir/src/authority/events.rs",
+      "cosir/src/authority/remote.rs",
+      "cosir/src/authority/wait.rs",
+      "lean/Formal/Location.lean"
     ],
     "tests": [
       "xtask/src/protocol.rs",
-      "kernel/src/namespace.rs"
+      "kernel/src/namespace.rs",
+      "cosir/src/authority/event_tests.rs"
     ],
     "guide": "docs/architecture/topics/namespace-time-audit.md"
   },
@@ -438,7 +456,9 @@
       "docs/superpowers/specs/2026-10-24-fork-continuation-design.md",
       "docs/superpowers/reports/2026-10-24-fork-continuation-report.md",
       "docs/superpowers/specs/2026-10-25-stage5-gap-closure-design.md",
-      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md"
+      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md",
+      "docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md",
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -504,7 +524,8 @@
       "docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md",
       "docs/architecture/asterinas-provenance.md",
       "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
-      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md"
+      "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -516,7 +537,15 @@
       "prima-user/c/prima_syscall.c",
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
-      "kernel/src/user.rs"
+      "kernel/src/user.rs",
+      "kernel/src/irq.rs",
+      "kernel/src/signal.rs",
+      "prima-user/src/console.rs",
+      "prima-user/src/network.rs",
+      "cosir/src/authority/events.rs",
+      "cosir/src/authority/remote.rs",
+      "cosir/src/authority/wait.rs",
+      "lean/Formal/Location.lean"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",
@@ -527,7 +556,10 @@
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
       "prima-ostd/src/entry.rs",
-      "xtask/src/protocol.rs"
+      "xtask/src/protocol.rs",
+      "prima-user/src/console.rs",
+      "prima-user/c/stage5_sigaction.c",
+      "cosir/src/authority/event_tests.rs"
     ],
     "guide": "docs/architecture/topics/synchronization.md"
   },
@@ -578,7 +610,13 @@
       "docs/superpowers/reports/2026-10-24-fork-continuation-report.md",
       "docs/superpowers/specs/2026-10-25-stage5-profile-v2.md",
       "docs/superpowers/specs/2026-10-25-stage5-gap-closure-design.md",
-      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md"
+      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md",
+      "docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md",
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
+      "docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md",
+      "docs/superpowers/specs/2026-10-26-static-program-contract-design.md",
+      "docs/superpowers/specs/2026-10-26-stage5-release-decisions.md",
+      "docs/superpowers/compat/stage5-working-api.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
@@ -595,7 +633,17 @@
       "kernel/src/sched.rs",
       "targets/x86_64-prima.json",
       "scripts/build_rust_probe.py",
-      "scripts/rustc_prima.py"
+      "scripts/rustc_prima.py",
+      "prima-user/src/network.rs",
+      "prima-user/c/stage5_exec_child.c",
+      "prima-user/c/prima_exec_bridge.S",
+      "prima-user/rust-probe/src/pal.rs",
+      "prima-user/rust-probe/pal/stdio.rs",
+      "prima-user/rust-probe/pal/time.rs",
+      "prima-user/rust-probe/pal/thread.rs",
+      "prima-abi/src/program_contract.rs",
+      "prima-user/c/prima_contract.h",
+      "prima-user/c/prima_libc.map"
     ],
     "tests": [
       "prima-user/c/stage5_probe.c",
@@ -612,7 +660,9 @@
       "prima-user/c/stage5_proc.c",
       "xtask/src/main.rs",
       "prima-user/rust-probe/src/main.rs",
-      "prima-user/c/stage5_start.c"
+      "prima-user/c/stage5_start.c",
+      "prima-abi/src/program_contract.rs",
+      "xtask/src/compat.rs"
     ],
     "guide": "docs/architecture/topics/compatibility.md"
   }

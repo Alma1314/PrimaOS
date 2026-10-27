@@ -4,7 +4,7 @@ kind: reference
 authority: model-mapping
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-26
 ---
 
 # 形式化模型与内核映照（Lean）
@@ -65,7 +65,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 |---|---|---|
 | `State.booted : Bool` | `state::State.booted : bool` | POSIR bootstrap 标志 |
 | `State.caps : Nat → Option Capability` | `state::State.capabilities : HashMap<CapId, Capability>` | 能力表：cap 部分函数 ↔ HashMap。空态两侧一致；**booted 态两侧亦一致**——均铸 §14 三条无父根 Capability（CapId 1/2/3） |
-| `Capability.owner/obj/rights/active` | `state::Capability.owner/object/rights/active` | 字段形态对应（`rights` 两侧均为 16 位位掩码，位值一致） |
+| `Capability.owner/obj/rights/active` | `state::Capability.owner/object/rights/active` | 字段形态对应（`rights` 两侧均为 32 位位掩码，位值一致） |
 | `Capability.parent : Option Nat` | `state::Capability.parent : Option<CapId>` | §4.2 派生树的父 CapId（`none` = 铸造根），seL4 CDT 对应物。内核（`CapRecord.parent`，`kernel/src/bootstrap.rs` 的 `CapabilityRecord`、`derive_capability`/`CapabilityDerived`）、Lean、cosir（**2026-10-13 补入**）**三方一致**；cosir 侧由 `abstract_ops::well_formed`/`derive_capability` 表达，`lean_backtrace::cdt_parity_lean` 对拍 |
 | `Object.segment/task/excSource/namespace` | `state::CapObject::Segment/Task/ExceptionSource/Namespace` | 对象引用和类型（名称差异） |
 | `initTaskId = 1` | `abstract_ops::init_task_id() = 1` | init Task 恒定量 ID |
@@ -92,7 +92,33 @@ elan run leanprover/lean4:v4.35.0 lake build
 - `memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图（见 cosir `memseg_refine.rs`，Lean 建模留待后续切片）。
 - `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
-- **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。cosir 的 `now` 无推进源（不建模 `time_advance`/Timer），`at` 恒为 0（规范 §20.4 已登记）。
+- **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
 - **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
-- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**仍不覆盖**（后续切片）：§4.5 `cap_drop`、§4.6 `HeldBy` 位置、W3 唯一位置、§4.7 撤销（规范第一版不提供）。
+- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：§4.5 `cap_drop`、§4.6 `HeldBy` 位置、W3 唯一位置、§4.7 撤销（规范第一版不提供）。
+  cosir 新增本地 Task/消息/Namespace Bound 的位置、drop 与溯源状态面，见[工作契约](../docs/superpowers/specs/2026-10-25-capability-location-model-design.md)与[分层验证记录](../docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)。
+  原 `Capability.owner` 仅映照创建时拥有者，移动不改它；当前授权改查 `State.locations`。
+  2026-10-26新增位置/载体更新的有界Lean证明，2026-10-27 lake build通过，见下节；完整消息/Namespace及事件迁移仍没有Lean保持性证明。CDT显式ID helper不升级为完整用户授权操作。
 - 以上内容在本切片**仅登记为待办**，不标为已完成。
+
+
+## 2026-10-26 映照增量与2026-10-27验证范围
+
+[工作契约](../docs/superpowers/specs/2026-10-26-event-authority-model-design.md)扩展cosir组合状态。
+本节明确取代上文关于“State无位置、rights16位、excResume查询owner”的旧映照描述；历史证明结论仍只对应各报告版本。
+本轮workspace 1016项与lake build（10 jobs）通过；只声明下表及既有对拍覆盖的字段，不外推完整组合状态或机器细化。
+
+| Lean | cosir | 边界 |
+|---|---|---|
+| Object.timer/node/waitObject | CapObject::Timer/Node/WaitObject | 只增加引用构造子，不含对象状态 |
+| Capability.rights UInt32 | Capability.rights u32 | 保留原bit0..14，新增bit15..22；非机器ABI位值 |
+| State.locations | State.locations | HeldBy/InMessage/InNamespace，owner保持创建投影；Bootstrap三根位置一致 |
+| excResume位置守卫 | ops::exc_resume的held检查 | 最小Lean模型仍不验证源类型/权限/帧/pending或成功提交；不能作为完整恢复证明 |
+| derive登记新HeldBy | 内部显式ID derive/helper | 新位置复制父HeldBy、非持有父则不产生位置；完整用户授权仍属于authority操作 |
+| TokenLocation.Snapshot.carriers | messages.caps/bindings/held位置的载体投影 | 仅逐token的存在关系；不表示FIFO顺序/对象存活 |
+| transfer/dropToken + Consistent | relocate/remove_location的原子更新核心 | 保持双索引一致、唯一载体、历史记录不变、当前持有者及结构根守卫；任务/目标合法性由外层操作预检 |
+
+Formal.Location已被Formal.lean导入，保持性和唯一载体证明通过lake build；不再声称位置完全未建模。
+Timer/异常fan-out/WaitObject/upcall/远端数据的cosir host回归已通过；Lean不证明这些迁移。
+原memseg/tlb/cow/GPU/设备/调度的范围限制继续有效；本次不自动升级REFINEMENT-PROOF或完整W1–W17。
+
+本轮cosir authority模型21项Miri检查通过；它属于host解释执行证据，不扩展本页Lean定理或机器细化范围。

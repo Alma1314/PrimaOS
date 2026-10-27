@@ -227,6 +227,66 @@ impl LinkTarget {
     };
 }
 
+/// Fixed private service-memory format, independent of Rust struct layout.
+pub const SESSION_WIRE_BYTES: usize = 1088;
+pub fn encode_session(
+    open: &OpenStaging,
+    pair: &PairStaging,
+    link: &LinkTarget,
+) -> [u8; SESSION_WIRE_BYTES] {
+    let mut out = [0; SESSION_WIRE_BYTES];
+    out[..6].copy_from_slice(&[
+        open.active as u8,
+        open.op,
+        open.flags,
+        open.len,
+        open.got,
+        open.start,
+    ]);
+    out[6..6 + SERVICE_VFS_PATH_MAX].copy_from_slice(&open.path);
+    out[264..272].copy_from_slice(&[
+        pair.active as u8,
+        pair.op,
+        pair.slot,
+        pair.confirmed as u8,
+        pair.lens[0],
+        pair.lens[1],
+        pair.got[0],
+        pair.got[1],
+    ]);
+    out[272..272 + SERVICE_VFS_PATH_MAX].copy_from_slice(&pair.paths[0]);
+    out[528..528 + SERVICE_VFS_PATH_MAX].copy_from_slice(&pair.paths[1]);
+    out[792] = link.len;
+    out[793..793 + SERVICE_VFS_PATH_MAX].copy_from_slice(&link.bytes);
+    out
+}
+pub fn decode_session(
+    input: &[u8; SESSION_WIRE_BYTES],
+    open: &mut OpenStaging,
+    pair: &mut PairStaging,
+    link: &mut LinkTarget,
+) {
+    open.active = input[0] != 0;
+    open.op = input[1];
+    open.flags = input[2];
+    open.len = input[3];
+    open.got = input[4];
+    open.start = input[5];
+    open.path
+        .copy_from_slice(&input[6..6 + SERVICE_VFS_PATH_MAX]);
+    pair.active = input[264] != 0;
+    pair.op = input[265];
+    pair.slot = input[266];
+    pair.confirmed = input[267] != 0;
+    pair.lens = [input[268], input[269]];
+    pair.got = [input[270], input[271]];
+    pair.paths[0].copy_from_slice(&input[272..272 + SERVICE_VFS_PATH_MAX]);
+    pair.paths[1].copy_from_slice(&input[528..528 + SERVICE_VFS_PATH_MAX]);
+    link.len = input[792];
+    link.bytes
+        .copy_from_slice(&input[793..793 + SERVICE_VFS_PATH_MAX]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

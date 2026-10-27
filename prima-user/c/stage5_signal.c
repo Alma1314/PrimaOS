@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 extern long syscall(long number, ...);
 
 static int failures, first_error = 0, first_field = 1;
@@ -24,7 +26,7 @@ int main(void) {
     errno = 0;
     long waited = pid > 0 ? syscall(61L, pid, (long)&status, 0L, 0L) : -1;
     field("wait", waited == pid, waited);
-    field("signal", (status & 0x7f) == 15 || ((status >> 8) & 0xff) == 143, status);
+    field("signal", WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM && !WIFEXITED(status), status);
     emit("|ok=");emit_dec(failures?0:1);emit(";err=");emit_dec(first_error);emit("\n");
     return failures?1:0;
 }

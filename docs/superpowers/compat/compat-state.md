@@ -219,3 +219,60 @@ COW克隆增加同步TLB、构造失败回收及NX保留，wait状态四字节�
 | restricted std | BTreeMap、内存Read等无需OS初始化的子集 | R2；metadata明确Unsupported，默认System返回NULL；无std文件/线程/网络/时间/进程后端 |
 
 Rust最小目标不关闭S5-D6，profile提案不关闭S5-D1；能力隔离、子VFS授权、完整exec/CLOEXEC、信号、TTY IRQ及模型位置/溯源仍按阶段跟踪登记。
+
+
+## 2026-10-26 未验收实现增量
+
+本节只登记工作代码，不能把上表状态升级为supported。契约见[进程边界后继](../specs/2026-10-25-process-boundary-followup-design.md)，
+状态见[工作记录](../reports/2026-10-25-stage0-5-gap-followup.md)。
+
+| 工作路径 | 增量 | 待验收入口 |
+|---|---|---|
+| 信号/线程 | 65通用upcall、66原子解除栈退出、67原子word等待；libc掩码/取消/嵌套现场 | W4/W9 |
+| execve | 62/69、envp、实际VFS读取、提交后CLOEXEC及新crt状态导入 | W7b；完整C新映像见证已写入、未运行 |
+| TTY | 70/71 IRQ4、有界FIFO、认证序号/取消/确认、受授权输入通知 | I1新增中断、取消后再读、重启与handler stat |
+| 时间 | PIT校准的单CPU物理时钟，72阻塞期限；相对EINTR rem | T1/W9；抽象44的时钟保持独立 |
+
+网络继承/等待事务已写入但待验收；Rust OS PAL及组织级门仍开放。上述探针均未执行。
+
+
+### Socket 后继待统一验收（2026-10-26）
+
+[后继记录](../reports/2026-10-25-stage0-5-gap-followup.md)第11节已写入Process holder/fork关闭隔离、逐Task发送与接收快照、请求序号/认证来源及CANCEL/FINISH握手。N1扩充fork/dup、EINTR/取消、SA_RESTART/嵌套stat；内部网络布局替换历史client字段，范围见[工作契约](../specs/2026-10-25-process-boundary-followup-design.md)。全部待运行，不扩大M19证据或profile支持状态。
+
+
+### 完整新 C crt 后继待统一验收（2026-10-26）
+
+W7b保留真实execve(path)紧凑ELF，另经共享交接的原生C `prima_exec_image`执行独立静态C/musl子映像，检查TLS/构造/fd状态后再次从新libc execve rootfs tiny ELF。Linux同源memfd参考与crt/reexec/ofd字段已接入，均未执行。2920B rootfs内容预算不扩大；不宣称可存储完整C文件或动态链接。范围见[工作契约](../specs/2026-10-25-process-boundary-followup-design.md)。
+
+
+### 当前工作逐入口与静态护栏（2026-10-26，未验收）
+
+[当前表](stage5-working-api.md)逐项登记C Linux分派入口、非分派符号、原生后端、主要失败及预定见证。
+前文“Rust OS后端未实现/完整新crt待补”等是对应版本记录；当前有界PAL和完整新C映像已写入，均未统一验收。
+[静态护栏](../specs/2026-10-26-static-program-contract-design.md)增加persona/adapter声明、C exec拒绝、crt版本化链接锚点
+和符号可见性脚本；不宣称动态版本解析、AS persona或Linux二进制人格。
+[具体评审工件](../specs/2026-10-26-stage5-release-decisions.md)保留D6待选择及组织级签署边界，全部新探针未执行。
+
+
+## 2026-10-27 当前后继证据与历史范围
+
+上文2026-10-26“未运行/待选择”是当时工作记录；当前以
+[逐入口表](stage5-working-api.md)与[统一报告](../reports/2026-10-25-stage0-5-gap-followup.md)为准。
+用户已选择D6 A，原生stdout/stderr/Instant/sleep/yield及确定失败路径完成R2双轮，R1也双轮通过；
+不支持的std文件/网络/进程等仍不纳入。workspace1016、lint、两种Rust Clippy、Lean、
+musl八补丁归档/5项host、compat、20项Linux参考和完整单次68轮BIOS均通过。
+
+| 后继调用链 | 本轮见证及边界 |
+|---|---|
+| fork64准备/认证holder交接/受控发布 → 独立视图、共享OFD | W6/N1；用户选定继承A，单线程fork |
+| execve实际OFD读取/静态声明检查 → 69/RX桥/新crt → 再exec | W7/W7b；CLOEXEC/envp/原子失败，完整C内存映像不等于rootfs可存完整C文件 |
+| musl信号/取消 → C适配层65/66/67 | W4/W9；SIGCANCEL=33，有界现场/合并通知，不提供完整signal/pthread |
+| read(tty) → 序号/取消/确认 → IRQ4/70/71及60认证回复 | I1；总消息/阻塞数守恒，保留功能与清理断言 |
+| UDP等待 → Process holder/逐Task快照/CANCEL/FINISH | N1；总消息及blocks-direct守恒，不是NIC/TCP/DNS |
+| Instant/sleep → 原生39/40/72 → PIT单CPU物理期限 | T1/W9/R2；100Hz，无wall-clock/SMP保证 |
+
+当前clone.lo仅原生48，restore.lo仅58；线程出口通过C清理再49/66，新的锁定归档已审计。
+旧supported、planned、UNTEST均保留其历史范围，本轮不据此发布profile v2或自动勾选阶段。
+#AC仅有host路由，没有机器见证；最终profile/静态护栏/组织级签署仍见
+[具体评审工件](../specs/2026-10-26-stage5-release-decisions.md)。

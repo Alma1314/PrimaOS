@@ -22,5 +22,6 @@ dependencies = [
 name = "prima-rust-probe"
 version = "0.1.0"
 dependencies = [
+ "prima-abi",
  "prima-runtime",
 ]

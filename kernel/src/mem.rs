@@ -13,7 +13,9 @@ const MAX_FREE_RANGES: usize = 128;
 ///
 /// **M9 512 → 640**：`MAX_FRAME_OWNERS` 256→320 后上界为 320 + 256 = 576；640 留 64 项余量，
 /// 上限仍由同一条宿主测试逐帧钉住。
-const MAX_RECYCLED_FRAMES: usize = 640;
+// Keep the reclamation bound tied to the live ownership budget, including exec.
+const MAX_RECYCLED_FRAMES: usize =
+    crate::frames::MAX_FRAME_OWNERS + crate::frames::MAX_TABLE_FRAMES;
 
 /// 物理地址经 bootloader 的物理内存直映射换算为虚拟地址（offset + phys）。
 pub fn phys_to_virt(phys: u64, phys_map_offset: u64) -> u64 {

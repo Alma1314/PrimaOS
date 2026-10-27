@@ -156,7 +156,10 @@ fn privatize_cow_public_rejections_are_independently_atomic() {
     );
 
     let (mut slice, private, task) = valid();
-    slice.ops.capabilities.get_mut(&private).unwrap().owner = PARENT;
+    slice
+        .ops
+        .locations
+        .insert(private, crate::state::CapLocation::HeldBy(PARENT));
     assert_privatize_rejected_atomically(
         slice,
         private,
@@ -339,7 +342,10 @@ fn privatize_cow_covers_remaining_reachable_public_rejections_atomically() {
     );
 
     let (mut slice, private, task) = valid();
-    slice.ops.capabilities.get_mut(&task).unwrap().owner = PARENT;
+    slice
+        .ops
+        .locations
+        .insert(task, crate::state::CapLocation::HeldBy(PARENT));
     assert_rejected(
         slice,
         CHILD,
@@ -1003,7 +1009,10 @@ fn authority_rejects_missing_segment_capability() {
 #[test]
 fn authority_rejects_foreign_segment_capability_holder() {
     let mut slice = CowSliceState::new_cow_fixture();
-    slice.ops.capabilities.get_mut(&DATA_SEG_CAP).unwrap().owner = CHILD;
+    slice
+        .ops
+        .locations
+        .insert(DATA_SEG_CAP, crate::state::CapLocation::HeldBy(CHILD));
     assert_authority_rejects(
         &slice,
         DATA_SEG_CAP,
@@ -1052,7 +1061,7 @@ fn authority_rejects_inactive_segment_capability() {
 #[test]
 fn authority_rejects_stale_segment_target() {
     let mut slice = CowSliceState::new_cow_fixture();
-    slice.ops.capabilities.insert(
+    slice.ops.insert_capability(
         99,
         Capability {
             owner: PARENT,
@@ -1130,10 +1139,8 @@ fn authority_checks_foreign_task_holder_before_allowed_access() {
         .rights |= CAP_SEG_MAP_X;
     slice
         .ops
-        .capabilities
-        .get_mut(&CHILD_TASK_CAP)
-        .unwrap()
-        .owner = CHILD;
+        .locations
+        .insert(CHILD_TASK_CAP, crate::state::CapLocation::HeldBy(CHILD));
     assert_authority_rejects(
         &slice,
         DATA_SEG_CAP,
@@ -1478,7 +1485,7 @@ fn authorize_mapping_rejects_namespace_object_caps() {
     // 复核 minor：新增的 `CapObject::Namespace` 拒绝臂必须被实际走到（match 穷尽不构成覆盖）。
     let mut slice = CowSliceState::new_cow_fixture();
     const NS_CAP: CapId = 90;
-    slice.ops.capabilities.insert(
+    slice.ops.insert_capability(
         NS_CAP,
         Capability {
             owner: CHILD,
@@ -1502,7 +1509,7 @@ fn authorize_mapping_rejects_namespace_object_caps() {
     );
     // 作为任务 cap：先给一个合法段 cap，再让任务 cap 落为 Namespace 对象。
     const SEG_CAP: CapId = 91;
-    slice.ops.capabilities.insert(
+    slice.ops.insert_capability(
         SEG_CAP,
         Capability {
             owner: CHILD,

@@ -1,6 +1,6 @@
 /* Cancellation points must cross the same adapter as ordinary musl calls.
- * This preserves the pending-cancel check; asynchronous cancellation and
- * interruption of an in-flight Prima IPC remain unsupported. */
+ * The pending-cancel check is preserved. Interrupted adapter calls return
+ * EINTR to __syscall_cp_c; native upcalls run musl's cancellation handler. */
 .text
 .global __syscall_cp_asm
 .hidden __syscall_cp_asm

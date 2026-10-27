@@ -110,6 +110,7 @@ mod tests {
         // 阶段 2 复核：阻塞接收者的直投见证携带 page-fault-source Capability。
         // 阶段 5 PT_LOAD/W^X：`TASK4_CODE_OFFSET` 0x100 → 0x800（避开首个服务页的 ELF
         // program header），生成码立即数改变，指纹随之更新。
-        assert_eq!(hash, 0x3a41_cb06_08e1_4987);
+        // Socket事务增加管理器帧：其用户栈从4页扩至8页，映射基址同步下移。
+        assert_eq!(hash, 0x7aba_ddd7_99c8_c0db);
     }
 }

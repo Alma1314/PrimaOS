@@ -39,15 +39,19 @@ use prima_ostd::sync::StaticCell;
 
 pub use prima_abi::syscall::{
     SYS_ABI_CHECK, SYS_AUDIT, SYS_AUTHORIZE, SYS_CAP_DERIVE, SYS_CAP_DROP, SYS_CLONE, SYS_COPY_IN,
-    SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT, SYS_ECHO,
-    SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE, SYS_EXC_WAIT, SYS_EXEC_REPLACE, SYS_FORK,
-    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP,
-    SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND,
-    SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_RECV, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN,
-    SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_SET_FS_BASE,
-    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TIME_ENABLE, SYS_TIME_NOW,
-    SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_WAIT_CREATE,
-    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT4, SYS_YIELD,
+    SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT,
+    SYS_DEV_IRQ_CREATE, SYS_DEV_IRQ_MASK, SYS_ECHO, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE,
+    SYS_EXC_WAIT, SYS_EXEC_HANDOFF, SYS_EXEC_REPLACE, SYS_EXEC_REPLACE_ENV, SYS_FORK,
+    SYS_FORK_TRANSACTION, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
+    SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
+    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID,
+    SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL,
+    SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
+    SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE,
+    SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL,
+    SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS,
+    SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -307,6 +311,7 @@ pub enum Errno {
     /// 找不到对象（不存在的 Capability）。
     /// POSIX `ENOEXEC`：不可执行的镜像格式。
     Exec = 8,
+    Interrupted = 4,
     NoEnt = 2,
     /// POSIX `ECHILD`：没有可等待的子进程。
     Child = 10,
@@ -342,6 +347,7 @@ pub const ERRNO_INVALID: u64 = encode_errno(Errno::Invalid);
 pub const fn errno_name(errno: Errno) -> &'static str {
     match errno {
         Errno::Exec => "ENOEXEC",
+        Errno::Interrupted => "EINTR",
         Errno::NoEnt => "ENOENT",
         Errno::Child => "ECHILD",
         Errno::Again => "EAGAIN",
@@ -469,7 +475,8 @@ pub const fn ipc_errno(error: bootstrap::IpcError) -> Errno {
         E::NoSuchTask | E::InvalidCapability | E::QueueEmpty => Errno::NoEnt,
         E::NotAuthorized | E::CapabilityHolderMismatch | E::StructuralCap => Errno::Access,
         E::TooManyCapabilities => Errno::Invalid,
-        E::AuditFull | E::QueueFull => Errno::NoSpace,
+        E::AuditFull => Errno::NoSpace,
+        E::QueueFull => Errno::Again,
     }
 }
 
@@ -493,12 +500,12 @@ fn authorize_call(raw_cap: u64, right_code: u64) -> u64 {
     let Some(right) = right_of(right_code) else {
         return encode_errno(Errno::Invalid);
     };
-    let cap = match bootstrap::decode_handle(raw_cap) {
+    let cap = match decode_caller_handle(raw_cap) {
         Ok(cap) => cap,
         Err(error) => return encode_errno(auth_errno(error)),
     };
     match bootstrap::authorize(sched::current(), cap, right) {
-        Ok(granted) => granted.encode(),
+        Ok(granted) => encode_caller_handle(granted),
         Err(error) => encode_errno(auth_errno(error)),
     }
 }
@@ -508,6 +515,7 @@ pub const fn kind_of(code: u64) -> Option<ExcKind> {
     match code {
         EXC_KIND_PAGEFAULT => Some(ExcKind::PageFault),
         EXC_KIND_SYSCALLTRAP => Some(ExcKind::SyscallTrap),
+        7 => Some(ExcKind::ExternalInterrupt),
         _ => None,
     }
 }
@@ -532,7 +540,7 @@ fn exc_subscribe_call(raw_cap: u64, kind_code: u64) -> u64 {
     let Some(kind) = kind_of(kind_code) else {
         return encode_errno(Errno::Invalid);
     };
-    let cap = match bootstrap::decode_handle(raw_cap) {
+    let cap = match decode_caller_handle(raw_cap) {
         Ok(cap) => cap,
         Err(_) => return encode_errno(Errno::Invalid),
     };
@@ -544,7 +552,7 @@ fn exc_subscribe_call(raw_cap: u64, kind_code: u64) -> u64 {
 
 /// 切片 L：取消订阅服务——经全局授权表移除订阅。
 fn exc_unsubscribe_call(raw_cap: u64) -> u64 {
-    let cap = match bootstrap::decode_handle(raw_cap) {
+    let cap = match decode_caller_handle(raw_cap) {
         Ok(cap) => cap,
         Err(_) => return encode_errno(Errno::Invalid),
     };
@@ -571,6 +579,15 @@ pub const fn derive_errno(error: bootstrap::DeriveError) -> Errno {
     }
 }
 
+fn decode_caller_handle(raw: u64) -> Result<Handle, AuthError> {
+    bootstrap::decode_handle(raw)
+        .map(|local| bootstrap::resolve_user_handle(sched::current(), local))
+}
+
+fn encode_caller_handle(token: Handle) -> u64 {
+    bootstrap::expose_user_handle(sched::current(), token).encode()
+}
+
 /// S2-D2：`cap_drop` 的 errno 映射。
 pub const fn drop_errno(error: DropError) -> Errno {
     match error {
@@ -585,19 +602,19 @@ pub const fn drop_errno(error: DropError) -> Errno {
 
 /// S2-D2：`cap_derive` 服务——`args[0]=parent handle`、`args[1]=rights bitset`。
 fn cap_derive_call(raw_parent: u64, rights_bits: u64) -> u64 {
-    let Ok(parent) = bootstrap::decode_handle(raw_parent) else {
+    let Ok(parent) = decode_caller_handle(raw_parent) else {
         return encode_errno(Errno::Invalid);
     };
     let rights = Rights::from_bits(rights_bits as u32);
     match bootstrap::derive_capability(sched::current(), parent, rights) {
-        Ok(child) => child.encode(),
+        Ok(child) => encode_caller_handle(child),
         Err(error) => encode_errno(derive_errno(error)),
     }
 }
 
 /// S2-D2：`cap_drop` 服务——`args[0]=handle`。
 fn cap_drop_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::drop_capability(sched::current(), cap) {
@@ -665,7 +682,7 @@ fn read_user_path(ptr: u64, len: u64) -> Result<Path, Errno> {
 /// SPEC-081：`ns_create` 服务。
 fn ns_create_call() -> u64 {
     match bootstrap::ns_create(sched::current()) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(ns_errno(error)),
     }
 }
@@ -673,10 +690,10 @@ fn ns_create_call() -> u64 {
 /// SPEC-081：`ns_bind` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`、
 /// `args[3]=cap`。
 fn ns_bind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, raw_cap: u64) -> u64 {
-    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+    let Ok(ns_cap) = decode_caller_handle(raw_ns_cap) else {
         return encode_errno(Errno::Invalid);
     };
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let path = match read_user_path(path_ptr, path_len) {
@@ -691,7 +708,7 @@ fn ns_bind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, raw_cap: u64) -> 
 
 /// SPEC-081：`ns_unbind` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`。
 fn ns_unbind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
-    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+    let Ok(ns_cap) = decode_caller_handle(raw_ns_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let path = match read_user_path(path_ptr, path_len) {
@@ -699,7 +716,7 @@ fn ns_unbind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
         Err(errno) => return encode_errno(errno),
     };
     match bootstrap::ns_unbind(sched::current(), ns_cap, path) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(ns_errno(error)),
     }
 }
@@ -707,10 +724,10 @@ fn ns_unbind_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
 /// SPEC-081：`ns_mount` 服务——`args[0]=destination cap`、`args[1]=path ptr`、
 /// `args[2]=path len`、`args[3]=source cap`。
 fn ns_mount_call(raw_dst_cap: u64, path_ptr: u64, path_len: u64, raw_src_cap: u64) -> u64 {
-    let Ok(destination_cap) = bootstrap::decode_handle(raw_dst_cap) else {
+    let Ok(destination_cap) = decode_caller_handle(raw_dst_cap) else {
         return encode_errno(Errno::Invalid);
     };
-    let Ok(source_cap) = bootstrap::decode_handle(raw_src_cap) else {
+    let Ok(source_cap) = decode_caller_handle(raw_src_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let path = match read_user_path(path_ptr, path_len) {
@@ -725,7 +742,7 @@ fn ns_mount_call(raw_dst_cap: u64, path_ptr: u64, path_len: u64, raw_src_cap: u6
 
 /// SPEC-081：`ns_unmount` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`。
 fn ns_unmount_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
-    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+    let Ok(ns_cap) = decode_caller_handle(raw_ns_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let path = match read_user_path(path_ptr, path_len) {
@@ -741,7 +758,7 @@ fn ns_unmount_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64) -> u64 {
 /// SPEC-081：`ns_resolve` 服务——`args[0]=ns cap`、`args[1]=path ptr`、`args[2]=path len`、
 /// `args[3]=requested rights bits`。
 fn ns_resolve_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, rights_bits: u64) -> u64 {
-    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+    let Ok(ns_cap) = decode_caller_handle(raw_ns_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let path = match read_user_path(path_ptr, path_len) {
@@ -750,7 +767,7 @@ fn ns_resolve_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, rights_bits: u
     };
     let rights = Rights::from_bits(rights_bits as u32);
     match bootstrap::ns_resolve(sched::current(), ns_cap, path, rights) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(ns_errno(error)),
     }
 }
@@ -843,7 +860,7 @@ pub fn ns_witness() -> NsWitness {
 
 /// SPEC-081：`ns_destroy` 服务——`args[0]=ns cap`。
 fn ns_destroy_call(raw_ns_cap: u64) -> u64 {
-    let Ok(ns_cap) = bootstrap::decode_handle(raw_ns_cap) else {
+    let Ok(ns_cap) = decode_caller_handle(raw_ns_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::ns_destroy(sched::current(), ns_cap) {
@@ -878,21 +895,68 @@ fn device_errno(error: bootstrap::DeviceError) -> Errno {
         }
         DeviceError::InvalidCap | DeviceError::NotADevice | DeviceError::DeadDevice => Errno::NoEnt,
         DeviceError::PortOutOfRange | DeviceError::EmptyRange => Errno::Invalid,
+        DeviceError::Overlap => Errno::Exist,
         DeviceError::CapacityExceeded | DeviceError::AuditFull => Errno::NoSpace,
     }
+}
+
+fn dev_irq_create_call(line: u64, pointer: u64) -> u64 {
+    if !(1..=15).contains(&line) || line == 2 {
+        return encode_errno(Errno::Invalid);
+    }
+    let mut old = [0; 16];
+    if let Err(error) =
+        copy_user_bytes(pointer, &mut old).and_then(|()| copy_out_user(pointer, &old))
+    {
+        return encode_errno(error);
+    }
+    let caller = sched::current();
+    match bootstrap::dev_irq_create(caller, line as u8) {
+        Ok((dev, source)) => {
+            let mut bytes = [0; 16];
+            bytes[..8].copy_from_slice(&encode_caller_handle(dev).to_le_bytes());
+            bytes[8..].copy_from_slice(&encode_caller_handle(source).to_le_bytes());
+            copy_out_user(pointer, &bytes).expect("IRQ output preflight");
+            crate::irq::disable(line as u8);
+            0
+        }
+        Err(error) => encode_errno(device_errno(error)),
+    }
+}
+fn dev_irq_mask_call(raw_cap: u64, masked: u64) -> u64 {
+    if masked > 1 {
+        return encode_errno(Errno::Invalid);
+    }
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let line = match bootstrap::irq_line(sched::current(), cap) {
+        Ok(line) => line,
+        Err(error) => return encode_errno(device_errno(error)),
+    };
+    crate::irq::set_mask(line, masked != 0);
+    if masked == 0 {
+        let task = sched::current();
+        let mut frame = current_context();
+        frame.rax = 0;
+        frame.rflags |= 1 << 9;
+        sched::set_frame(task, frame);
+        sched::resume(task)
+    }
+    0
 }
 
 /// SPEC-113 / §15.5：`dev_ioport_create` 服务——`args[0]=base_port`、`args[1]=port_count`。
 fn dev_ioport_create_call(base_port: u64, port_count: u64) -> u64 {
     match bootstrap::dev_ioport_create(sched::current(), base_port as u16, port_count as u16) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(device_errno(error)),
     }
 }
 
 /// SPEC-113 / §15.5：受控端口写服务——`args[0]=dev cap`、`args[1]=port`、`args[2]=value`。
 fn dev_ioport_out_call(raw_cap: u64, port: u64, value: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::dev_ioport_out(sched::current(), cap, port as u16, value as u8) {
@@ -903,7 +967,7 @@ fn dev_ioport_out_call(raw_cap: u64, port: u64, value: u64) -> u64 {
 
 /// SPEC-113 / §15.5：受控端口读服务——`args[0]=dev cap`、`args[1]=port`；成功返回读回的字节。
 fn dev_ioport_in_call(raw_cap: u64, port: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::dev_ioport_in(sched::current(), cap, port as u16) {
@@ -914,11 +978,17 @@ fn dev_ioport_in_call(raw_cap: u64, port: u64) -> u64 {
 
 /// EXO-4A / §15.8：销毁设备对象服务——`args[0]=dev cap`。
 fn dev_destroy_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
+    let irq = bootstrap::irq_for_cap(cap);
     match bootstrap::dev_destroy(sched::current(), cap) {
-        Ok(()) => 0,
+        Ok(()) => {
+            if let Some(line) = irq {
+                crate::irq::disable(line);
+            }
+            0
+        }
         Err(error) => encode_errno(device_errno(error)),
     }
 }
@@ -928,26 +998,29 @@ fn time_now_call() -> u64 {
     bootstrap::time_now().unwrap_or(0)
 }
 
-/// M6：`time_enable` 服务——启动 PIT 通道 0 的自由运行计数（幂等）。
-///
-/// 不配置 PIC、不打开 IF：既有协作阶段用户帧仍不可被中断，时间由
-/// [`SYS_TIME_TICKS`] 轮询硬件计数获得。
+/// 启用单 CPU 的物理单调时钟与 IRQ0 唤醒；抽象 Timer 时钟保持独立。
 fn time_enable_call() -> u64 {
-    crate::preempt::start_time_counter();
-    0
+    if !crate::preempt::start_time_counter() {
+        return encode_errno(Errno::Invalid);
+    }
+    let mut frame = current_context();
+    frame.rflags |= 1 << 9;
+    frame.rax = 0;
+    sched::set_frame(sched::current(), frame);
+    sched::resume(sched::current())
 }
 
 /// SPEC-082：`timer_set` 服务——`args[0]=deadline`。
 fn timer_set_call(deadline: u64) -> u64 {
     match bootstrap::timer_set(sched::current(), deadline) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(timer_errno(error)),
     }
 }
 
 /// SPEC-082：`timer_cancel` 服务——`args[0]=timer cap`。
 fn timer_cancel_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::timer_cancel(sched::current(), cap) {
@@ -962,7 +1035,7 @@ fn timer_cancel_call(raw_cap: u64) -> u64 {
 
 /// SPEC-082：`timer_destroy` 服务——`args[0]=timer cap`。
 fn timer_destroy_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::timer_destroy(sched::current(), cap) {
@@ -986,16 +1059,36 @@ pub const fn wait_errno(error: bootstrap::WaitError) -> Errno {
     }
 }
 
-fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
+pub(crate) fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
         sched::set_frame_rax(*task, result.code());
     }
 }
 
+static BLOCKED_CALL: StaticCell<[Option<u64>; sched::MAX_TASKS]> =
+    StaticCell::new([None; sched::MAX_TASKS]);
+static UPCALL_INTERRUPTED: StaticCell<[bool; sched::MAX_TASKS]> =
+    StaticCell::new([false; sched::MAX_TASKS]);
+pub fn clear_blocked_call(task: u32) {
+    if (task as usize) < sched::MAX_TASKS {
+        BLOCKED_CALL.with_mut(|calls| calls[task as usize] = None);
+        UPCALL_INTERRUPTED.with_mut(|calls| calls[task as usize] = false);
+    }
+}
+fn mark_blocked_call(task: u32, number: u64) {
+    BLOCKED_CALL.with_mut(|calls| calls[task as usize] = Some(number));
+    UPCALL_INTERRUPTED.with_mut(|calls| calls[task as usize] = false);
+}
+
 /// M17b：fork（COW 地址空间；子进程独立用户栈）。
-fn fork_call() -> u64 {
+fn fork_call(prepared: bool) -> u64 {
     let caller = sched::current();
-    if let Err(error) = bootstrap::check_fork(caller) {
+    let check = if prepared {
+        bootstrap::check_prepared_fork(caller)
+    } else {
+        bootstrap::check_fork(caller)
+    };
+    if let Err(error) = check {
         return encode_errno(match error {
             bootstrap::ThreadError::Busy => Errno::Again,
             bootstrap::ThreadError::InvalidCaller => Errno::Invalid,
@@ -1008,55 +1101,103 @@ fn fork_call() -> u64 {
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
+    if crate::fork_tx::capture(caller, parent_root, offset).is_err() {
+        return encode_errno(Errno::NoSpace);
+    }
     let Ok(new_root) = crate::frames::allocate_table_frame() else {
+        crate::fork_tx::forget(caller);
         return encode_errno(Errno::NoSpace);
     };
-    let root_va = crate::mem::phys_to_virt(new_root, offset);
-    for index in 0..512u64 {
-        prima_ostd::mm::write_u64(root_va + index * 8, 0);
+    let map = |phys| crate::mem::phys_to_virt(phys, offset);
+    for index in 0..512 {
+        prima_ostd::mm::write_u64_at(map(new_root), index, 0);
     }
-    let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
     if crate::vspace::clone_root_cow(
         parent_root,
         new_root,
         map,
         || crate::frames::allocate_table_frame().ok(),
-        |frame| crate::frames::release_table_frame(frame).expect("private fork table is owned"),
+        |frame| {
+            let _ = crate::frames::release_table_frame(frame);
+        },
         || crate::cpu::write_cr3(crate::cpu::cr3().0),
     )
     .is_err()
     {
         let _ = crate::frames::release_table_frame(new_root);
+        crate::fork_tx::forget(caller);
         return encode_errno(Errno::NoSpace);
     }
     let frame = current_context();
-    let child = match bootstrap::fork_create(caller, frame.rip) {
-        Ok(child) => child,
-        Err(bootstrap::ThreadError::Busy) => {
+    let outcome = if prepared {
+        bootstrap::prepare_fork(caller, frame.rip)
+    } else {
+        bootstrap::fork_create(caller, frame.rip).map(|child| (child, Handle::ZERO))
+    };
+    let (child, ticket) = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
             crate::vspace::discard_cow_root(new_root, map, |frame| {
-                crate::frames::release_table_frame(frame).expect("private fork table is owned")
+                let _ = crate::frames::release_table_frame(frame);
             });
             let _ = crate::frames::release_table_frame(new_root);
-            return encode_errno(Errno::Again);
-        }
-        Err(_) => {
-            crate::vspace::discard_cow_root(new_root, map, |frame| {
-                crate::frames::release_table_frame(frame).expect("private fork table is owned")
+            crate::fork_tx::restore(caller, offset);
+            return encode_errno(if error == bootstrap::ThreadError::Busy {
+                Errno::Again
+            } else {
+                Errno::NoSpace
             });
-            let _ = crate::frames::release_table_frame(new_root);
-            return encode_errno(Errno::NoSpace);
         }
     };
     let fs_base = sched::fs_base(caller).unwrap_or(0);
     if crate::user::register_clone_task(child, new_root, frame, frame.rsp, fs_base).is_err() {
-        bootstrap::fork_abort(child);
-        crate::vspace::discard_cow_root(new_root, map, |frame| {
-            crate::frames::release_table_frame(frame).expect("private fork table is owned")
-        });
-        let _ = crate::frames::release_table_frame(new_root);
+        if prepared {
+            bootstrap::abort_prepared_fork(caller, ticket, offset)
+                .expect("prepared cancellation reserved");
+        } else {
+            bootstrap::fork_abort(child);
+        }
+        {
+            sched::clear_task(child);
+            crate::vspace::discard_cow_root(new_root, map, |frame| {
+                let _ = crate::frames::release_table_frame(frame);
+            });
+            let _ = crate::frames::release_table_frame(new_root);
+        }
+        crate::fork_tx::restore(caller, offset);
         return encode_errno(Errno::Invalid);
     }
-    child as u64
+    crate::signal::inherit_process(caller, child);
+    if prepared {
+        bootstrap::set_prepared_fork_root(caller, ticket, new_root)
+            .expect("registered prepared root");
+        encode_caller_handle(ticket)
+    } else {
+        crate::fork_tx::forget(caller);
+        child as u64
+    }
+}
+
+fn fork_transaction_call(selector: u64, raw_ticket: u64) -> u64 {
+    if selector == 0 {
+        return fork_call(true);
+    }
+    let Ok(ticket) = decode_caller_handle(raw_ticket) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let parent = sched::current();
+    match selector {
+        1 => bootstrap::publish_fork(parent, ticket)
+            .map_or_else(|error| encode_errno(task_destroy_errno(error)), u64::from),
+        2 => {
+            let Some((_, offset)) = crate::cow::root_and_offset() else {
+                return encode_errno(Errno::Fault);
+            };
+            bootstrap::abort_prepared_fork(parent, ticket, offset)
+                .map_or_else(|error| encode_errno(task_destroy_errno(error)), |_| 0)
+        }
+        _ => encode_errno(Errno::Invalid),
+    }
 }
 
 fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
@@ -1080,8 +1221,8 @@ fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
             let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
-            let next = sched::pick_next(cur).expect("SYS_WAIT4: no Ready task to switch to");
-            sched::block_to(next)
+            mark_blocked_call(cur, SYS_WAIT4);
+            sched::block_current()
         }
         Err(bootstrap::Wait4Error::EChild) => encode_errno(Errno::Child),
     }
@@ -1090,8 +1231,405 @@ fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
 /// M17c：exec 的初始栈固定 VA（PML4 槽 254，单页）。
 const EXEC_STACK_VA: u64 = 0x0000_7f00_0000_0000;
 
-/// M17c：用静态 ELF 替换当前任务映像（拆旧映射、映射新段、构造初始栈）。
-fn exec_call(image: u64, image_len: u64, argv_ptr: u64, argv_count: u64) -> u64 {
+/// Page-checked copy-in, including unaligned buffers crossing page boundaries.
+fn copy_user_bytes(ptr: u64, output: &mut [u8]) -> Result<(), Errno> {
+    let end = ptr.checked_add(output.len() as u64).ok_or(Errno::Fault)?;
+    if ptr == 0 || end > (1 << 47) {
+        return Err(Errno::Fault);
+    }
+    let root = sched::current_root().ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let mut copied = 0;
+    while copied < output.len() {
+        let address = ptr + copied as u64;
+        let leaf = vspace::read_user_leaf(root, address, |phys| phys_to_virt(phys, offset))
+            .map_err(|_| Errno::Fault)?;
+        let count = core::cmp::min(4096 - (address as usize & 4095), output.len() - copied);
+        let source = phys_to_virt(leaf & PT_ADDR_MASK, offset) + (address & 4095);
+        for index in 0..count {
+            output[copied + index] = prima_ostd::mm::read_u8_at(source, index as u64);
+        }
+        copied += count;
+    }
+    Ok(())
+}
+
+fn copy_out_user(ptr: u64, bytes: &[u8]) -> Result<(), Errno> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let end = ptr
+        .checked_add(bytes.len() as u64 - 1)
+        .ok_or(Errno::Fault)?;
+    if ptr == 0 || end >> 47 != 0 {
+        return Err(Errno::Fault);
+    }
+    let task = sched::current();
+    let root = sched::root(task).ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let map = |phys| phys_to_virt(phys, offset);
+    let mut page = ptr & !4095;
+    while page <= (end & !4095) {
+        let leaf = vspace::read_user_leaf(root, page, map).map_err(|_| Errno::Fault)?;
+        if leaf & PT_WRITABLE == 0 {
+            let segment = bootstrap::task_segment_at(task, page).ok_or(Errno::Fault)?;
+            vspace::prepare_user_u32_write(
+                root,
+                page,
+                map,
+                || crate::frames::allocate_for_segment(segment).ok(),
+                prima_ostd::arch::invlpg,
+            )
+            .map_err(|error| {
+                if error == vspace::VspaceError::NoFrame {
+                    Errno::NoSpace
+                } else {
+                    Errno::Fault
+                }
+            })?;
+        }
+        page += 4096;
+    }
+    for (index, byte) in bytes.iter().enumerate() {
+        let va = ptr + index as u64;
+        let leaf = vspace::read_user_leaf(root, va, map).map_err(|_| Errno::Fault)?;
+        prima_ostd::mm::write_u8_at(map(leaf & PT_ADDR_MASK), va & 4095, *byte);
+    }
+    Ok(())
+}
+
+fn copy_exec_strings(
+    ptr: u64,
+    count: usize,
+    buffers: &mut [[u8; 128]; 16],
+    lengths: &mut [usize; 16],
+) -> Result<(), Errno> {
+    for index in 0..count {
+        let mut word = [0u8; 8];
+        copy_user_bytes(
+            ptr.checked_add(8 * index as u64).ok_or(Errno::Fault)?,
+            &mut word,
+        )?;
+        let string = u64::from_le_bytes(word);
+        let mut terminated = false;
+        for byte in 0..128 {
+            copy_user_bytes(
+                string.checked_add(byte as u64).ok_or(Errno::Fault)?,
+                &mut buffers[index][byte..byte + 1],
+            )?;
+            if buffers[index][byte] == 0 {
+                lengths[index] = byte;
+                terminated = true;
+                break;
+            }
+        }
+        if !terminated {
+            return Err(Errno::NoSpace);
+        }
+    }
+    Ok(())
+}
+
+const EXEC_STACK_PAGES: usize = 8;
+static EXEC_RETAINED: StaticCell<
+    [Option<crate::exec::RetainedPage>; crate::exec::MAX_RETAINED_PAGES],
+> = StaticCell::new([None; crate::exec::MAX_RETAINED_PAGES]);
+#[derive(Clone, Copy)]
+struct ExecTransfer {
+    regions: [(u64, usize); 4],
+    count: usize,
+    registers: [u64; 6],
+    adopt: Option<Handle>,
+    redirect: u64,
+}
+fn exec_handoff_call(pointer: u64) -> u64 {
+    let load = (|| -> Result<([u64; 6], ExecTransfer), Errno> {
+        let mut bytes = [0; 88];
+        copy_user_bytes(pointer, &mut bytes)?;
+        let word = |i| u64::from_le_bytes(bytes[8 * i..8 * i + 8].try_into().expect("exec word"));
+        let mut args = [0; 6];
+        for (i, arg) in args.iter_mut().enumerate() {
+            *arg = word(i);
+        }
+        let count = usize::try_from(word(7)).map_err(|_| Errno::Invalid)?;
+        if count > 4 {
+            return Err(Errno::Invalid);
+        }
+        let mut transfer = ExecTransfer {
+            regions: [(0, 0); 4],
+            count,
+            registers: [0; 6],
+            redirect: word(10),
+            adopt: if word(9) == 0 {
+                None
+            } else {
+                Some(decode_caller_handle(word(9)).map_err(|_| Errno::Access)?)
+            },
+        };
+        for index in 0..count {
+            let mut region = [0; 16];
+            copy_user_bytes(
+                word(6).checked_add(index as u64 * 16).ok_or(Errno::Fault)?,
+                &mut region,
+            )?;
+            transfer.regions[index] = (
+                u64::from_le_bytes(region[..8].try_into().expect("region base")),
+                u64::from_le_bytes(region[8..].try_into().expect("region pages")) as usize,
+            );
+        }
+        let mut registers = [0; 48];
+        copy_user_bytes(word(8), &mut registers)?;
+        for (i, reg) in transfer.registers.iter_mut().enumerate() {
+            *reg = u64::from_le_bytes(
+                registers[8 * i..8 * i + 8]
+                    .try_into()
+                    .expect("entry register"),
+            );
+        }
+        Ok((args, transfer))
+    })();
+    match load {
+        Ok((a, t)) => exec_call(a[0], a[1], a[2], a[3], a[4], a[5], Some(&t)),
+        Err(error) => encode_errno(error),
+    }
+}
+
+// These input scratch frames must unwind before allocating image Segments.
+// Inlining them into exec_call makes its construction path exceed the 32KiB
+// syscall stack in the unoptimized kernel; preserve the frame boundary.
+#[inline(never)]
+fn load_exec_plan(image: u64, length: u64) -> Result<crate::exec::ExecPlan, Errno> {
+    let mut header = [0; 4096];
+    let bytes = (length as usize).min(header.len());
+    copy_user_bytes(image, &mut header[..bytes])?;
+    crate::exec::plan_len(&header[..bytes], length).map_err(|_| Errno::Exec)
+}
+
+#[inline(never)]
+fn copy_exec_page(source: u64, target: u64, count: usize) -> Result<(), Errno> {
+    let mut bytes = [0; 4096];
+    copy_user_bytes(source, &mut bytes[..count])?;
+    for (index, &byte) in bytes[..count].iter().enumerate() {
+        prima_ostd::mm::write_u8_at(target, index as u64, byte);
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn prepare_exec_stack(
+    plan: &crate::exec::ExecPlan,
+    argv_ptr: u64,
+    argc: usize,
+    env_ptr: u64,
+    envc: usize,
+    stack: &mut [u8; 4096],
+) -> Result<crate::exec::StackLayout, Errno> {
+    let mut args = [[0u8; 128]; 16];
+    let mut envs = [[0u8; 128]; 16];
+    let mut arg_lens = [0usize; 16];
+    let mut env_lens = [0usize; 16];
+    copy_exec_strings(argv_ptr, argc, &mut args, &mut arg_lens)
+        .and_then(|()| copy_exec_strings(env_ptr, envc, &mut envs, &mut env_lens))?;
+    let mut arg_slices = [&[][..]; 16];
+    let mut env_slices = [&[][..]; 16];
+    for i in 0..argc {
+        arg_slices[i] = &args[i][..arg_lens[i]];
+    }
+    for i in 0..envc {
+        env_slices[i] = &envs[i][..env_lens[i]];
+    }
+    crate::exec::build_stack(
+        EXEC_STACK_VA + EXEC_STACK_PAGES as u64 * 4096,
+        &arg_slices[..argc],
+        &env_slices[..envc],
+        &[
+            (6, 4096),
+            (9, plan.entry),
+            (3, plan.phdr),
+            (4, 56),
+            (5, plan.phnum),
+            (7, 0),
+            (11, 0),
+            (12, 0),
+            (23, 0),
+        ],
+        stack,
+    )
+    .map_err(|_| Errno::NoSpace)
+}
+
+// Retire construction scratch before committing/reclaiming the old image.
+// The latter may destroy several private Segments during consecutive execs.
+#[inline(never)]
+fn prepare_exec_image(
+    root: u64,
+    offset: u64,
+    plan: &crate::exec::ExecPlan,
+    input: [u64; 5],
+    pages: usize,
+    retained_count: usize,
+) -> Result<(u64, u32, u64), Errno> {
+    let [image, argv_ptr, argv_count, env_ptr, env_count] = input;
+    let mut stack = [0u8; 4096];
+    let layout = prepare_exec_stack(
+        plan,
+        argv_ptr,
+        argv_count as usize,
+        env_ptr,
+        env_count as usize,
+        &mut stack,
+    )?;
+    let Ok(new_root) = crate::frames::allocate_table_frame() else {
+        return Err(Errno::NoSpace);
+    };
+    let map = |phys| phys_to_virt(phys, offset);
+    vspace::clone_supervisor_root(root, new_root, map);
+    let (segment, frames) = match bootstrap::allocate_exec_segment(pages, offset) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = crate::frames::release_table_frame(new_root);
+            return Err(memseg_errno(error));
+        }
+    };
+    // Track every table reservation, including map_4k's unlinked partial batch.
+    let mut tables = [0u64; crate::frames::MAX_TABLE_FRAMES];
+    let mut table_count = 0usize;
+    let result = (|| -> Result<(), Errno> {
+        let mut page_index = 0;
+        for part in plan.segments.iter().flatten() {
+            if part.vaddr < 4096
+                || part
+                    .vaddr
+                    .checked_add(part.memsz)
+                    .is_none_or(|end| end > EXEC_STACK_VA)
+            {
+                return Err(Errno::Exec);
+            }
+            for page in 0..part.memsz.div_ceil(4096) {
+                let va = part.vaddr + 4096 * page;
+                // Never extend a shared supervisor subtree with user access.
+                let pml4 =
+                    prima_ostd::mm::read_u64_at(map(new_root), vspace::indices(va)[0] as u64);
+                if pml4 & PT_PRESENT != 0 && pml4 & PT_USER == 0 {
+                    return Err(Errno::Exec);
+                }
+                let frame = frames
+                    .frame_at(page_index)
+                    .expect("exec Segment frame count");
+                vspace::map_4k(
+                    new_root,
+                    va,
+                    map,
+                    || {
+                        if table_count == tables.len() {
+                            return None;
+                        }
+                        let frame = crate::frames::allocate_table_frame().ok()?;
+                        tables[table_count] = frame;
+                        table_count += 1;
+                        Some(frame)
+                    },
+                    frame,
+                    part.writable,
+                    true,
+                    |_| {},
+                )
+                .map_err(|_| Errno::NoSpace)?;
+                let begin = 4096 * page;
+                let count = core::cmp::min(4096, part.filesz.saturating_sub(begin)) as usize;
+                if count > 0 {
+                    copy_exec_page(
+                        image
+                            .checked_add(part.offset)
+                            .and_then(|v| v.checked_add(begin))
+                            .ok_or(Errno::Fault)?,
+                        map(frame),
+                        count,
+                    )?;
+                }
+                page_index += 1;
+            }
+        }
+        for index in 0..EXEC_STACK_PAGES {
+            let stack_frame = frames
+                .frame_at(page_index + index)
+                .expect("exec stack frame");
+            vspace::map_4k(
+                new_root,
+                EXEC_STACK_VA + index as u64 * 4096,
+                map,
+                || {
+                    if table_count == tables.len() {
+                        return None;
+                    }
+                    let frame = crate::frames::allocate_table_frame().ok()?;
+                    tables[table_count] = frame;
+                    table_count += 1;
+                    Some(frame)
+                },
+                stack_frame,
+                true,
+                true,
+                |_| {},
+            )
+            .map_err(|_| Errno::NoSpace)?;
+            for (byte, &stack_value) in stack.iter().enumerate() {
+                let value = if index + 1 == EXEC_STACK_PAGES {
+                    stack_value
+                } else {
+                    0
+                };
+                prima_ostd::mm::write_u8_at(map(stack_frame), byte as u64, value);
+            }
+        }
+        for index in 0..retained_count {
+            let page = EXEC_RETAINED.with(|rows| rows[index].expect("retained page"));
+            vspace::map_4k(
+                new_root,
+                page.entry.va,
+                map,
+                || {
+                    if table_count == tables.len() {
+                        return None;
+                    }
+                    let frame = crate::frames::allocate_table_frame().ok()?;
+                    tables[table_count] = frame;
+                    table_count += 1;
+                    Some(frame)
+                },
+                page.pte & PT_ADDR_MASK,
+                page.pte & PT_WRITABLE != 0,
+                true,
+                |_| {},
+            )
+            .map_err(|_| Errno::NoSpace)?;
+            vspace::write_leaf_raw(new_root, page.entry.va, page.pte, map)
+                .map_err(|_| Errno::Fault)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        for frame in &tables[..table_count] {
+            let _ = crate::frames::release_table_frame(*frame);
+        }
+        let _ = crate::frames::release_table_frame(new_root);
+        bootstrap::reclaim_exec_segments().expect("exec rollback audit reserved");
+        return Err(error);
+    }
+    Ok((new_root, segment, layout.rsp))
+}
+
+/// Construct a complete private image before retiring any old mapping.
+#[allow(clippy::too_many_arguments)]
+fn exec_call(
+    image: u64,
+    image_len: u64,
+    argv_ptr: u64,
+    argv_count: u64,
+    env_ptr: u64,
+    env_count: u64,
+    transfer: Option<&ExecTransfer>,
+) -> u64 {
     let cur = sched::current();
     let Some(root) = sched::root(cur) else {
         return encode_errno(Errno::Fault);
@@ -1102,149 +1640,219 @@ fn exec_call(image: u64, image_len: u64, argv_ptr: u64, argv_count: u64) -> u64 
     if !(120..=(1 << 20)).contains(&image_len) {
         return encode_errno(Errno::Exec);
     }
-    let header_len = core::cmp::min(image_len as usize, 288);
-    let mut header = [0u8; 288];
-    for (index, byte) in header.iter_mut().enumerate().take(header_len) {
-        *byte = prima_ostd::mm::read_u8_at(image, index as u64);
+    if argv_count > 16 || env_count > 16 {
+        return encode_errno(Errno::NoSpace);
     }
-    let Ok(plan) = crate::exec::plan_len(&header[..header_len], image_len) else {
-        return encode_errno(Errno::Exec);
+    let plan = match load_exec_plan(image, image_len) {
+        Ok(plan) => plan,
+        Err(error) => return encode_errno(error),
     };
-    // argv copy-in（≤4 项、每项 ≤64 字节）。
-    let argc = core::cmp::min(argv_count as usize, 4);
-    let mut argv_buf = [[0u8; 64]; 4];
-    let mut argv_len = [0usize; 4];
-    for index in 0..argc {
-        let pointer = prima_ostd::mm::read_u64_at(argv_ptr, index as u64);
-        let mut len = 0usize;
-        while len < 64 {
-            let byte = prima_ostd::mm::read_u8_at(pointer, len as u64);
-            argv_buf[index][len] = byte;
-            if byte == 0 {
-                break;
-            }
-            len += 1;
+    let pages = EXEC_STACK_PAGES
+        + plan
+            .segments
+            .iter()
+            .flatten()
+            .map(|s| s.memsz.div_ceil(4096) as usize)
+            .sum::<usize>();
+    let mut retained_count = 0;
+    let mut retained_requested = 0;
+    EXEC_RETAINED.with_mut(|rows| rows.fill(None));
+    if let Some(transfer) = transfer {
+        if let Some(cap) = transfer.adopt
+            && let Err(error) = bootstrap::check_exec_adopt(cur, cap)
+        {
+            return encode_errno(memseg_errno(error));
         }
-        argv_len[index] = len;
-    }
-    let mut argv_slices: [&[u8]; 4] = [&[]; 4];
-    for index in 0..argc {
-        argv_slices[index] = &argv_buf[index][..argv_len[index]];
-    }
-    let Some(segment) = bootstrap::task_segment_id(cur) else {
-        return encode_errno(Errno::NoSpace);
-    };
-    if bootstrap::exec_teardown(cur, root, offset).is_err() {
-        return encode_errno(Errno::NoSpace);
-    }
-    let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
-    for segment_plan in plan.segments.iter().flatten() {
-        let pages = segment_plan.memsz.div_ceil(0x1000);
-        for page in 0..pages {
-            let va = segment_plan.vaddr + page * 0x1000;
-            let Ok(frame) = crate::frames::allocate_for_segment(segment) else {
-                return encode_errno(Errno::NoSpace);
-            };
-            if crate::vspace::map_4k(
-                root,
-                va,
-                map,
-                || crate::frames::allocate_table_frame().ok(),
-                frame,
-                segment_plan.writable,
-                true,
-            )
-            .is_err()
+        let result = (|| -> Result<(), Errno> {
+            for &(base, count) in &transfer.regions[..transfer.count] {
+                let end = base
+                    .checked_add((count as u64).checked_mul(4096).ok_or(Errno::Invalid)?)
+                    .ok_or(Errno::Invalid)?;
+                if base < 4096
+                    || base & 4095 != 0
+                    || end > EXEC_STACK_VA
+                    || count == 0
+                    || count > crate::exec::MAX_RETAINED_PAGES - retained_requested
+                    || plan
+                        .segments
+                        .iter()
+                        .flatten()
+                        .any(|s| base < (s.vaddr + s.memsz + 4095) & !4095 && s.vaddr < end)
+                {
+                    return Err(Errno::Invalid);
+                }
+                retained_requested += count;
+                for index in 0..count {
+                    let va = base + index as u64 * 4096;
+                    if EXEC_RETAINED.with(|rows| {
+                        rows[..retained_count]
+                            .iter()
+                            .flatten()
+                            .any(|p| p.entry.va == va)
+                    }) {
+                        return Err(Errno::Invalid);
+                    }
+                    let Some(entry) = bootstrap::task_mapping(cur, va) else {
+                        continue;
+                    };
+                    let pte =
+                        vspace::read_owned_user_leaf(root, va, |p| phys_to_virt(p, offset), true)
+                            .map_err(|_| Errno::Fault)?;
+                    EXEC_RETAINED.with_mut(|rows| {
+                        rows[retained_count] = Some(crate::exec::RetainedPage { entry, pte })
+                    });
+                    retained_count += 1;
+                }
+            }
+            if transfer.redirect != 0
+                && !EXEC_RETAINED.with(|rows| {
+                    rows[..retained_count].iter().flatten().any(|page| {
+                        page.entry.va == transfer.redirect & !4095
+                            && page.entry.access.contains(Right::SegMapX)
+                            && page.pte & vspace::PT_USER != 0
+                    })
+                })
             {
-                return encode_errno(Errno::NoSpace);
+                return Err(Errno::Access);
             }
-            let frame_va = crate::mem::phys_to_virt(frame, offset);
-            for byte_index in 0..0x1000u64 {
-                let source = segment_plan.offset + page * 0x1000 + byte_index;
-                let byte = if source < segment_plan.filesz {
-                    prima_ostd::mm::read_u8_at(image, source)
-                } else {
-                    0
-                };
-                prima_ostd::mm::write_u8_at(frame_va, byte_index, byte);
-            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            return encode_errno(error);
         }
     }
-    // 初始栈。
-    let Ok(stack_frame) = crate::frames::allocate_for_segment(segment) else {
-        return encode_errno(Errno::NoSpace);
-    };
-    if crate::vspace::map_4k(
+    if let Err(error) = bootstrap::check_exec(cur, pages + retained_requested) {
+        return encode_errno(task_destroy_errno(error));
+    }
+    let (new_root, segment, rsp) = match prepare_exec_image(
         root,
-        EXEC_STACK_VA,
-        map,
-        || crate::frames::allocate_table_frame().ok(),
-        stack_frame,
-        true,
-        true,
-    )
-    .is_err()
-    {
-        return encode_errno(Errno::NoSpace);
-    }
-    let mut stack = [0u8; 4096];
-    let auxv = [(6u64, 0x1000u64), (9, plan.entry), (0, 0)];
-    let Ok(layout) = crate::exec::build_stack(
-        EXEC_STACK_VA + 0x1000,
-        &argv_slices[..argc],
-        &[],
-        &auxv,
-        &mut stack,
-    ) else {
-        return encode_errno(Errno::NoSpace);
+        offset,
+        &plan,
+        [image, argv_ptr, argv_count, env_ptr, env_count],
+        pages,
+        retained_count,
+    ) {
+        Ok(image) => image,
+        Err(error) => return encode_errno(error),
     };
-    let stack_va = crate::mem::phys_to_virt(stack_frame, offset);
-    for (index, byte) in stack.iter().enumerate() {
-        prima_ostd::mm::write_u8_at(stack_va, index as u64, *byte);
+    if let Some(cap) = transfer.and_then(|t| t.adopt) {
+        bootstrap::adopt_exec_segment(cur, cap);
     }
+    EXEC_RETAINED
+        .with(|rows| {
+            bootstrap::commit_exec(
+                cur,
+                root,
+                offset,
+                segment,
+                &plan,
+                EXEC_STACK_VA,
+                EXEC_STACK_PAGES,
+                &rows[..retained_count],
+            )
+        })
+        .expect("validated exec commit");
+    sched::set_root(cur, new_root);
     let mut frame = current_context();
     frame.rip = plan.entry;
-    frame.rsp = layout.rsp;
+    frame.rsp = rsp;
     frame.rax = 0;
     frame.rdi = 0;
+    if let Some(t) = transfer {
+        [
+            frame.rdi, frame.rsi, frame.rdx, frame.rcx, frame.r8, frame.r15,
+        ] = t.registers;
+        frame.r12 = plan.entry;
+        if t.redirect != 0 {
+            frame.rip = t.redirect;
+        }
+    }
     sched::set_frame(cur, frame);
     sched::set_fs_base(cur, 0);
+    crate::signal::exec_reset(cur);
+    sched::reset_fpu(cur);
     sched::resume(cur)
 }
 
-/// M18a：最小信号——默认终止（status=128+sig）。
+/// M18a：默认信号终止，保留与普通 exit 不同的 wait 原因。
+fn task_info_call(selector: u64, argument: u64) -> u64 {
+    let caller = sched::current();
+    if selector == 7 {
+        return bootstrap::process_of(caller).map_or(1, bootstrap::process_threads) as u64;
+    }
+    if selector == 5 {
+        return match bootstrap::task_self_capability(caller) {
+            Ok(cap) => encode_caller_handle(cap),
+            Err(_) => encode_errno(Errno::Access),
+        };
+    }
+    let target = match selector {
+        0 => caller,
+        1..=3 | 6 => match u32::try_from(argument) {
+            Ok(task) => task,
+            Err(_) => return encode_errno(Errno::Invalid),
+        },
+        4 => {
+            let Ok(cap) = decode_caller_handle(argument) else {
+                return encode_errno(Errno::Invalid);
+            };
+            if bootstrap::authorize(caller, cap, Right::TaskSend).is_err() {
+                return encode_errno(Errno::Access);
+            }
+            let Some(task) = bootstrap::task_of_cap(cap) else {
+                return encode_errno(Errno::Invalid);
+            };
+            task
+        }
+        _ => return encode_errno(Errno::Invalid),
+    };
+    if bootstrap::task_cookie(target).is_none() {
+        return encode_errno(Errno::NoEnt);
+    }
+    if selector == 6 {
+        return u64::from(bootstrap::task_status(target) == Some(bootstrap::TaskStatus::Prepared));
+    }
+    let task = match selector {
+        2 => bootstrap::process_identity(target, 0).unwrap_or(target),
+        3 => bootstrap::process_identity(target, 1).unwrap_or(0),
+        _ => target,
+    };
+    if task == 0 {
+        0
+    } else {
+        bootstrap::task_cookie(task).unwrap_or(0)
+    }
+}
+
 fn signal_call(pid: u64, sig: u64) -> u64 {
     if !(1..=31).contains(&sig) {
         return encode_errno(Errno::Invalid);
     }
-    let cur = sched::current();
-    let target = pid as u32;
+    let Ok(target) = u32::try_from(pid) else {
+        return encode_errno(Errno::Invalid);
+    };
+    if !bootstrap::can_notify(sched::current(), target) {
+        return encode_errno(Errno::Access);
+    }
+    if bootstrap::task_status(target) == Some(bootstrap::TaskStatus::Prepared) {
+        return encode_errno(Errno::NoEnt);
+    }
     let Some(process) = bootstrap::process_of(target) else {
         return encode_errno(Errno::NoEnt);
     };
+    if sig == 9 {
+        let leader = bootstrap::process_leader(process).unwrap_or(target);
+        return finish_process(leader, bootstrap::ProcessExit::Signaled(9));
+    }
+    if crate::signal::handler_of(target, sig as u32) == 1 {
+        return 0;
+    }
     if crate::signal::handler_of(target, sig as u32) != 0 {
         crate::signal::set_pending(target, sig as u32);
         return 0;
     }
-    let status = 128 + sig as i64;
-    let wakes = bootstrap::process_exit(process, status);
-    for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
-        let ptr = bootstrap::wait_status_ptr(*task);
-        sched::set_pending_status(*task, ptr, status);
-        sched::set_frame_rax(*task, target as u64);
-    }
-    if target == cur {
-        return process_exit_call(status as u64);
-    }
-    if let Some(leader) = bootstrap::process_leader(process) {
-        let root = sched::root(leader);
-        let offset = crate::cow::root_and_offset()
-            .map(|(_, off)| off)
-            .unwrap_or(0);
-        let _ = bootstrap::task_destroy(cur, leader, root, offset);
-        sched::clear_task(leader);
-    }
-    0
+    let leader = bootstrap::process_leader(process).unwrap_or(target);
+    finish_process(leader, bootstrap::ProcessExit::Signaled(sig as u8))
 }
 
 /// M18b：登记信号 handler。
@@ -1253,6 +1861,9 @@ fn sigaction_call(signal: u64, handler: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     }
     let cur = sched::current();
+    if handler > 1 && handler >> 47 != 0 {
+        return encode_errno(Errno::Invalid);
+    }
     crate::signal::set_handler(cur, signal as u32, handler);
     0
 }
@@ -1269,60 +1880,356 @@ fn sigreturn_call() -> u64 {
     }
 }
 
-/// M18b：syscall 返回前递送 pending 信号（handler 或默认终止）。
-fn maybe_deliver_signals(result: u64) {
-    let cur = sched::current();
-    let pending = crate::signal::pending(cur);
+/// Called on every scheduler return after selecting root, TLS and FPU state.
+/// A wait interrupted by a restartable upcall replays the original native trap.
+pub fn prepare_signal_resume(task: u32, mut frame: SretFrame) -> Option<SretFrame> {
+    let blocked = BLOCKED_CALL.with_mut(|calls| calls[task as usize].take());
+    let interrupted =
+        UPCALL_INTERRUPTED.with_mut(|calls| core::mem::take(&mut calls[task as usize]));
+    let pending = crate::signal::pending(task);
     if pending == 0 {
-        return;
+        return None;
     }
-    let signal = pending.trailing_zeros();
-    let mut saved = current_context();
-    saved.rax = result;
-    if let Some(frame) = crate::signal::deliver(cur, signal, saved) {
-        sched::set_frame(cur, frame);
-        sched::resume(cur);
+    let slot = pending.trailing_zeros() + 1;
+    let action = crate::signal::action(task, slot)?;
+    if action.handler == 1
+        || action.handler == 0 && action.flags & crate::signal::IGNORE_DEFAULT != 0
+    {
+        crate::signal::clear_pending(task, slot);
+        return None;
     }
-    // 无 handler：默认终止。
-    terminate_current(128 + signal as i64);
-}
-
-fn terminate_current(status: i64) -> ! {
-    let cur = sched::current();
-    if let Some(process) = bootstrap::process_of(cur) {
-        let wakes = bootstrap::process_exit(process, status);
-        for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
-            let ptr = bootstrap::wait_status_ptr(*task);
-            sched::set_pending_status(*task, ptr, status);
-            sched::set_frame_rax(*task, cur as u64);
+    if action.handler == 0 {
+        terminate_current(bootstrap::ProcessExit::Signaled(slot as u8));
+    }
+    if interrupted
+        && action.flags & crate::signal::RESTART != 0
+        && let Some(number) = blocked
+        && number != SYS_TASK_WAIT_DEADLINE
+        && !(matches!(number, 18 | 60) && action.flags & crate::signal::IPC_RESTART_IN_USER != 0)
+        && frame.rip >= 2
+    {
+        let mut opcode = [0; 2];
+        if copy_user_bytes(frame.rip - 2, &mut opcode).is_ok()
+            && matches!(opcode, [0x0f, 0x05] | [0xcd, 0x80])
+        {
+            frame.rip -= 2;
+            frame.rax = number;
         }
     }
-    let root = sched::root(cur);
-    let next = sched::pick_next(cur).expect("terminate_current: no Ready successor");
-    let _ = bootstrap::task_destroy(cur, cur, root, 0);
-    sched::clear_task(cur);
-    sched::exit_to(next)
+    crate::signal::deliver(task, slot, frame)
+}
+fn maybe_deliver_signals(result: u64) {
+    let task = sched::current();
+    if crate::signal::pending(task) == 0 {
+        return;
+    }
+    let mut frame = current_context();
+    frame.rax = result;
+    if let Some(handler) = prepare_signal_resume(task, frame) {
+        sched::set_frame(task, handler);
+        sched::resume(task);
+    }
+}
+
+fn upcall_control(args: &[u64; MAX_ARGS]) -> u64 {
+    let task = sched::current();
+    let result = (|| -> Result<u64, Errno> {
+        match args[0] {
+            0 => {
+                let slot = u32::try_from(args[1]).map_err(|_| Errno::Invalid)?;
+                let action = crate::signal::Action {
+                    handler: args[2],
+                    mask: args[3],
+                    flags: args[4],
+                    context: args[5],
+                };
+                if action.handler > 1 && action.handler >> 47 != 0
+                    || action.flags
+                        & !(crate::signal::NO_DEFER
+                            | crate::signal::RESET_ACTION
+                            | crate::signal::RESTART
+                            | crate::signal::IGNORE_DEFAULT
+                            | crate::signal::WITH_INFO
+                            | crate::signal::IPC_RESTART_IN_USER)
+                        != 0
+                {
+                    return Err(Errno::Invalid);
+                }
+                crate::signal::set_action(task, slot, action).ok_or(Errno::Invalid)?;
+                Ok(0)
+            }
+            1 => {
+                let old = crate::signal::mask(task);
+                let new = if args[2] == 0 {
+                    None
+                } else {
+                    let mut bytes = [0; 8];
+                    copy_user_bytes(args[2], &mut bytes)?;
+                    let mask = u64::from_le_bytes(bytes);
+                    Some(match args[1] {
+                        0 => old | mask,
+                        1 => old & !mask,
+                        2 => mask,
+                        _ => return Err(Errno::Invalid),
+                    })
+                };
+                if args[3] != 0 {
+                    copy_out_user(args[3], &old.to_le_bytes())?;
+                }
+                if let Some(new) = new {
+                    crate::signal::set_mask(task, new).ok_or(Errno::Invalid)?;
+                }
+                Ok(0)
+            }
+            2 => {
+                copy_out_user(args[1], &crate::signal::all_pending(task).to_le_bytes())?;
+                Ok(0)
+            }
+            3 => {
+                let target = u32::try_from(args[1]).map_err(|_| Errno::Invalid)?;
+                let slot = u32::try_from(args[2]).map_err(|_| Errno::Invalid)?;
+                if bootstrap::task_cookie(target).is_none()
+                    || bootstrap::task_status(target) == Some(bootstrap::TaskStatus::Prepared)
+                {
+                    return Err(Errno::NoEnt);
+                }
+                if !bootstrap::can_notify(task, target) {
+                    return Err(Errno::Access);
+                }
+                if slot == 0 {
+                    return Ok(0);
+                }
+                let action = crate::signal::action(target, slot).ok_or(Errno::Invalid)?;
+                if args[3] > 1 {
+                    return Err(Errno::Invalid);
+                }
+                if action.handler == 1
+                    || action.handler == 0 && action.flags & crate::signal::IGNORE_DEFAULT != 0
+                {
+                    return Ok(0);
+                }
+                let masked = crate::signal::mask(target) & (1u64 << (slot - 1)) != 0;
+                if !masked && action.handler == 0 {
+                    let leader = bootstrap::process_of(target)
+                        .and_then(bootstrap::process_leader)
+                        .unwrap_or(target);
+                    return Ok(finish_process(
+                        leader,
+                        bootstrap::ProcessExit::Signaled(slot as u8),
+                    ));
+                }
+                if !masked && bootstrap::interrupt_for_upcall(target).map_err(task_destroy_errno)? {
+                    sched::clear_recv_out(target);
+                    sched::set_frame_rax(target, encode_errno(Errno::Interrupted));
+                    UPCALL_INTERRUPTED.with_mut(|flags| flags[target as usize] = true);
+                }
+                let source = bootstrap::process_identity(task, 0).unwrap_or(task);
+                crate::signal::queue_info(
+                    target,
+                    slot,
+                    crate::signal::Info {
+                        slot: slot as u64,
+                        sender: bootstrap::task_cookie(source).unwrap_or(0),
+                        kind: args[3],
+                        value: args[4],
+                    },
+                );
+                Ok(0)
+            }
+            4 => {
+                let bytes = crate::signal::export_context(task, args[1]).ok_or(Errno::Invalid)?;
+                copy_out_user(args[2], &bytes)?;
+                Ok(0)
+            }
+            5 => {
+                let mut bytes = [0; crate::signal::CONTEXT_BYTES];
+                copy_user_bytes(args[2], &mut bytes)?;
+                let frame =
+                    crate::signal::restore_context(task, args[1], &bytes).ok_or(Errno::Invalid)?;
+                sched::set_frame(task, frame);
+                sched::resume(task)
+            }
+            6 => {
+                // Atomic temporary mask + wait. SA_RESTART never replays this call.
+                let old = crate::signal::mask(task);
+                crate::signal::set_mask(task, args[1]).ok_or(Errno::Invalid)?;
+                if crate::signal::pending(task) == 0 {
+                    if let Err(error) = bootstrap::block_upcall(task) {
+                        crate::signal::set_mask(task, old);
+                        return Err(task_destroy_errno(error));
+                    }
+                    crate::signal::suspend_mask(task, old);
+                    let mut frame = current_context();
+                    frame.rax = encode_errno(Errno::Interrupted);
+                    sched::set_frame(task, frame);
+                    sched::block_current()
+                }
+                crate::signal::suspend_mask(task, old);
+                Err(Errno::Interrupted)
+            }
+            7 => {
+                let slot = u32::try_from(args[1]).map_err(|_| Errno::Invalid)?;
+                let action = crate::signal::action(task, slot).ok_or(Errno::Invalid)?;
+                let mut bytes = [0; 32];
+                for (i, value) in [action.handler, action.mask, action.flags, action.context]
+                    .iter()
+                    .enumerate()
+                {
+                    bytes[i * 8..i * 8 + 8].copy_from_slice(&value.to_le_bytes());
+                }
+                copy_out_user(args[2], &bytes)?;
+                Ok(0)
+            }
+            8 => {
+                if !crate::signal::set_route(
+                    task,
+                    args[1] as usize,
+                    u32::try_from(args[2]).map_err(|_| Errno::Invalid)?,
+                ) {
+                    return Err(Errno::Invalid);
+                }
+                Ok(0)
+            }
+            _ => Err(Errno::Invalid),
+        }
+    })();
+    result.unwrap_or_else(encode_errno)
+}
+
+/// Returns only when terminating a different Process or when preflight fails.
+fn notify_child_exit(parent: u32, child_cookie: u64, status: bootstrap::ProcessExit) {
+    let slot = crate::signal::route(parent, 0);
+    if !crate::signal::action(parent, slot).is_some_and(|a| a.handler > 1) {
+        return;
+    }
+    if crate::signal::mask(parent) & (1 << (slot - 1)) == 0
+        && bootstrap::interrupt_for_upcall(parent).expect("exit callback audit preflight")
+    {
+        sched::clear_recv_out(parent);
+        sched::set_frame_rax(parent, encode_errno(Errno::Interrupted));
+        UPCALL_INTERRUPTED.with_mut(|flags| flags[parent as usize] = true);
+    }
+    let value = match status {
+        bootstrap::ProcessExit::Exited(code) => u64::from(code),
+        bootstrap::ProcessExit::Signaled(slot) => (1 << 63) | u64::from(slot),
+    };
+    crate::signal::queue_info(
+        parent,
+        slot,
+        crate::signal::Info {
+            slot: slot as u64,
+            sender: child_cookie,
+            kind: 2,
+            value,
+        },
+    );
+}
+
+pub fn deliver_fault(frame: SretFrame, event: usize, value: u64, permission: bool) -> bool {
+    deliver_fault_kind(frame, event, value, if permission { 4 } else { 3 })
+}
+pub fn deliver_cpu_fault(frame: SretFrame, vector: u64, _error: u64) {
+    let (event, kind) = cpu_fault_route(vector);
+    deliver_fault_kind(frame, event, frame.rip, kind);
+}
+fn cpu_fault_route(vector: u64) -> (usize, u64) {
+    match vector {
+        6 => (2, 5),
+        0 => (3, 6),
+        16 | 19 => (3, 7),
+        17 => (4, 8), // #AC -> SIGBUS/BUS_ADRALN through the personality route.
+        _ => (1, 4),
+    }
+}
+fn deliver_fault_kind(frame: SretFrame, event: usize, value: u64, kind: u64) -> bool {
+    let task = sched::current();
+    let slot = crate::signal::route(task, event);
+    if slot == 0 {
+        return false;
+    }
+    let handler = crate::signal::handler_of(task, slot);
+    if handler <= 1 || crate::signal::mask(task) & (1 << (slot - 1)) != 0 {
+        terminate_current(bootstrap::ProcessExit::Signaled(slot as u8));
+    }
+    crate::signal::queue_info(
+        task,
+        slot,
+        crate::signal::Info {
+            slot: slot as u64,
+            sender: 0,
+            kind,
+            value,
+        },
+    );
+    sched::set_frame(task, frame);
+    sched::resume(task)
+}
+
+fn finish_process(leader: u32, status: bootstrap::ProcessExit) -> u64 {
+    let cur = sched::current();
+    let active = bootstrap::process_of(cur)
+        .is_some_and(|p| bootstrap::process_leader(p) == Some(leader))
+        || cur == leader;
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    let outcome =
+        match bootstrap::terminate_process(leader, status, sched::root(leader), offset, active) {
+            Ok(outcome) => outcome,
+            Err(error) => return encode_errno(task_destroy_errno(error)),
+        };
+    for (task, _) in outcome.wakes.tasks[..outcome.wakes.count].iter().flatten() {
+        let ptr = bootstrap::wait_status_ptr(*task);
+        sched::set_pending_status(*task, ptr, status);
+        sched::set_frame_rax(*task, leader as u64);
+    }
+    for id in 1..sched::MAX_TASKS as u32 {
+        if outcome.members & (1 << id) != 0 {
+            sched::clear_task(id);
+        }
+    }
+    if let Some(parent) = outcome.parent {
+        notify_child_exit(parent, outcome.cookie, status);
+    }
+    if active {
+        sched::exit_current();
+    }
+    0
+}
+
+fn terminate_current(status: bootstrap::ProcessExit) -> ! {
+    let cur = sched::current();
+    let leader = bootstrap::process_of(cur)
+        .and_then(bootstrap::process_leader)
+        .unwrap_or(cur);
+    let error = finish_process(leader, status);
+    // A fatal delivery cannot resume user execution after a failed teardown.
+    panic!("fatal Process termination failed: {error:#x}")
 }
 
 fn process_exit_call(status: u64) -> u64 {
     let cur = sched::current();
-    let Some(process) = bootstrap::process_of(cur) else {
+    let leader = bootstrap::process_of(cur)
+        .and_then(bootstrap::process_leader)
+        .unwrap_or(cur);
+    finish_process(leader, bootstrap::ProcessExit::Exited(status as u8))
+}
+
+fn process_terminate_call(raw_cap: u64, status: u64) -> u64 {
+    let caller = sched::current();
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
-    if bootstrap::process_leader(process) != Some(cur) {
+    if bootstrap::authorize(caller, cap, Right::TaskDestroy).is_err() {
+        return encode_errno(Errno::Access);
+    }
+    let Some(target) = bootstrap::task_of_cap(cap) else {
+        return encode_errno(Errno::NoEnt);
+    };
+    if bootstrap::task_is_thread(target) {
         return encode_errno(Errno::Invalid);
     }
-    let wakes = bootstrap::process_exit(process, status as i64);
-    for (task, _) in wakes.tasks[..wakes.count].iter().flatten() {
-        let ptr = bootstrap::wait_status_ptr(*task);
-        sched::set_pending_status(*task, ptr, status as i64);
-        sched::set_frame_rax(*task, cur as u64);
-    }
-    let root = sched::root(cur);
-    let next = sched::pick_next(cur).expect("SYS_PROCESS_EXIT: no Ready task to switch to");
-    let _ = bootstrap::task_destroy(cur, cur, root, 0);
-    sched::clear_task(cur);
-    sched::exit_to(next)
+    finish_process(target, bootstrap::ProcessExit::Exited(status as u8))
 }
 
 /// M16b：Linux `clone` 子集；复制调用者帧（rax=0、rsp=stack），
@@ -1358,6 +2265,19 @@ fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, child_tid: u64, tls: 
     let Some(root) = sched::root(caller) else {
         return encode_errno(Errno::Fault);
     };
+    if flags & CLONE_SETTLS != 0 && validate_fs_base(tls).is_err() {
+        return encode_errno(Errno::Invalid);
+    }
+    if flags & CLONE_PARENT_SETTID != 0
+        && let Err(error) = sched::prepare_wait_status(caller, parent_tid)
+    {
+        return encode_errno(error);
+    }
+    if flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID) != 0
+        && let Err(error) = sched::prepare_wait_status(caller, child_tid)
+    {
+        return encode_errno(error);
+    }
     let frame = current_context();
     let thread = match bootstrap::thread_create(caller, frame.rip, stack_top) {
         Ok(thread) => thread,
@@ -1372,20 +2292,20 @@ fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, child_tid: u64, tls: 
     };
     if crate::user::register_clone_task(thread, root, frame, stack_top, fs_base).is_err() {
         bootstrap::thread_abort(thread);
+        sched::clear_task(thread);
         return encode_errno(Errno::Invalid);
     }
-    // Linux CLONE_PARENT_SETTID / CLONE_CHILD_SETTID：写入子 tid；
-    // child_tid 同时作为线程退出时要清零并 futex 唤醒的地址。
-    if child_tid != 0 {
-        for (index, byte) in thread.to_le_bytes().iter().enumerate() {
-            prima_ostd::mm::write_u8_at(child_tid, index as u64, *byte);
-        }
+    crate::signal::bind_thread(caller, thread);
+    if flags & CLONE_CHILD_CLEARTID != 0 && child_tid != 0 {
         bootstrap::set_clear_child_tid(thread, child_tid);
     }
-    if parent_tid != 0 {
-        for (index, byte) in thread.to_le_bytes().iter().enumerate() {
-            prima_ostd::mm::write_u8_at(parent_tid, index as u64, *byte);
-        }
+    if flags & CLONE_CHILD_SETTID != 0 && child_tid != 0 {
+        sched::write_user_word(caller, child_tid, thread.to_le_bytes())
+            .expect("clone output preflight");
+    }
+    if flags & CLONE_PARENT_SETTID != 0 && parent_tid != 0 {
+        sched::write_user_word(caller, parent_tid, thread.to_le_bytes())
+            .expect("clone output preflight");
     }
     thread as u64
 }
@@ -1396,10 +2316,29 @@ fn thread_exit_call() -> u64 {
     if !bootstrap::task_is_thread(cur) {
         return encode_errno(Errno::Invalid);
     }
-    let next = sched::pick_next(cur).expect("SYS_THREAD_EXIT: no Ready task to switch to");
-    let _ = bootstrap::task_destroy(cur, cur, None, 0);
+    if let Err(error) = bootstrap::task_destroy(cur, cur, None, 0) {
+        return encode_errno(task_destroy_errno(error));
+    }
     sched::clear_task(cur);
-    sched::exit_to(next)
+    sched::exit_current()
+}
+
+fn thread_exit_unmap_call(raw_cap: u64, base: u64, pages: u64) -> u64 {
+    let cur = sched::current();
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
+        return encode_errno(Errno::Invalid);
+    };
+    let Some(root) = sched::root(cur) else {
+        return encode_errno(Errno::Fault);
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return encode_errno(Errno::Fault);
+    };
+    if let Err(error) = bootstrap::thread_exit_unmap(cur, cap, base, pages as usize, root, offset) {
+        return encode_errno(task_destroy_errno(error));
+    }
+    sched::clear_task(cur);
+    sched::exit_current()
 }
 
 fn thread_create_call(entry: u64, stack_top: u64, tls: u64) -> u64 {
@@ -1423,24 +2362,33 @@ fn thread_create_call(entry: u64, stack_top: u64, tls: u64) -> u64 {
     } else {
         tls
     };
-    if crate::user::register_thread_task(thread, root, entry, stack_top, self_cap.encode(), fs_base)
-        .is_err()
+    if crate::user::register_thread_task(
+        thread,
+        root,
+        entry,
+        stack_top,
+        bootstrap::expose_user_handle(thread, self_cap).encode(),
+        fs_base,
+    )
+    .is_err()
     {
         bootstrap::thread_abort(thread);
+        sched::clear_task(thread);
         return encode_errno(Errno::Invalid);
     }
+    crate::signal::bind_thread(caller, thread);
     thread as u64
 }
 
 fn wait_create_call() -> u64 {
     match bootstrap::wait_object_create(sched::current()) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(wait_errno(error)),
     }
 }
 
 fn wait_observe_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::wait_object_observe(sched::current(), cap) {
@@ -1450,7 +2398,7 @@ fn wait_observe_call(raw_cap: u64) -> u64 {
 }
 
 fn wait_signal_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::wait_object_signal(sched::current(), cap) {
@@ -1464,7 +2412,7 @@ fn wait_signal_call(raw_cap: u64) -> u64 {
 }
 
 fn wait_destroy_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::wait_object_destroy(sched::current(), cap) {
@@ -1484,17 +2432,28 @@ fn wait_objects_call(
     observed1: u64,
     mode: u64,
     timeout: u64,
+    physical: bool,
 ) -> u64 {
-    let Ok(first) = bootstrap::decode_handle(cap0) else {
+    let Ok(first) = decode_caller_handle(cap0) else {
         return encode_errno(Errno::Invalid);
     };
     let second = if cap1 == 0 {
         crate::handle::Handle::ZERO
     } else {
-        match bootstrap::decode_handle(cap1) {
+        match decode_caller_handle(cap1) {
             Ok(handle) => handle,
             Err(_) => return encode_errno(Errno::Invalid),
         }
+    };
+    if physical && timeout != u64::MAX && !crate::preempt::start_time_counter() {
+        return encode_errno(Errno::Invalid);
+    }
+    let model_timeout = if !physical {
+        timeout
+    } else if timeout <= crate::preempt::time_ticks() {
+        0
+    } else {
+        u64::MAX
     };
     match bootstrap::wait_objects(
         sched::current(),
@@ -1503,17 +2462,42 @@ fn wait_objects_call(
         second,
         observed1,
         mode,
-        timeout,
+        model_timeout,
     ) {
         Ok(bootstrap::WaitOutcome::Satisfied) => 0,
         Ok(bootstrap::WaitOutcome::TimedOut) => 1,
         Ok(bootstrap::WaitOutcome::Blocked) => {
             let cur = sched::current();
+            if physical && timeout != u64::MAX {
+                bootstrap::set_wait_physical_deadline(cur, timeout);
+            }
             let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
-            let next = sched::pick_next(cur).expect("SYS_WAIT: no Ready task to switch to");
-            sched::block_to(next)
+            mark_blocked_call(cur, current_context().rax);
+            sched::block_current()
+        }
+        Err(error) => encode_errno(wait_errno(error)),
+    }
+}
+
+fn task_wait_deadline_call(deadline: u64) -> u64 {
+    if !crate::preempt::start_time_counter() {
+        return encode_errno(Errno::Invalid);
+    }
+    let task = sched::current();
+    if crate::signal::pending(task) != 0 {
+        return encode_errno(Errno::Interrupted);
+    }
+    match bootstrap::wait_physical_deadline(task, deadline, crate::preempt::time_ticks()) {
+        Ok(bootstrap::WaitOutcome::TimedOut) => 1,
+        Ok(bootstrap::WaitOutcome::Satisfied) => 0,
+        Ok(bootstrap::WaitOutcome::Blocked) => {
+            let mut frame = current_context();
+            frame.rax = 0;
+            sched::set_frame(task, frame);
+            mark_blocked_call(task, SYS_TASK_WAIT_DEADLINE);
+            sched::block_current()
         }
         Err(error) => encode_errno(wait_errno(error)),
     }
@@ -1534,7 +2518,7 @@ fn pack_audit(trace: &AuditTrace) -> u64 {
 
 /// SPEC-083 / §13.2：`audit(cap)` 只查询；目标已销毁但只要 cap 仍被持有就仍接受。
 fn audit_call(raw_cap: u64) -> u64 {
-    let Ok(cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::NoEnt);
     };
     match bootstrap::audit_trace(sched::current(), cap) {
@@ -1851,17 +2835,19 @@ fn exc_wait_state() -> ExcWaitState {
 ///
 /// 若某订阅者正处于 `BlockedRecv`，raise 会把通知写入其 pending 并把 payload 注入其
 /// 保存帧的 `rax`，使其 `SYS_EXC_WAIT` 在恢复时直接返回 payload。
+pub(crate) fn complete_irq_wakes(outcome: &bootstrap::RaiseOutcome) {
+    for task in 1..sched::MAX_TASKS as u32 {
+        if outcome.woken_tasks & (1 << task) != 0 && sched::recv_out(task).is_none() {
+            let _ = bootstrap::take_pending_global(task);
+            sched::set_frame_rax(task, outcome.payload);
+        }
+    }
+}
+
 fn trap_call() -> u64 {
     match bootstrap::exc_raise(bootstrap::SYSCALL_TRAP_SOURCE_ID, ExcKind::SyscallTrap) {
         Ok(outcome) => {
-            if let Some(task) = outcome.woken {
-                // 直投的等价物：payload 已注入被唤醒任务的保存帧 `rax`，`pending` 里那条
-                // 消息必须同 `send_call` 的直投路径一样**吃掉**——否则它会滞留，被该任务
-                // 之后任意一次 `SYS_RECV` 当作新消息返回（`receive_message` 先取 pending）。
-                let _ = bootstrap::take_pending_global(task);
-                sched::clear_recv_out(task);
-                sched::set_frame_rax(task, outcome.payload);
-            }
+            complete_irq_wakes(&outcome);
             exc_trap_record(&outcome);
             outcome.delivered as u64
         }
@@ -1875,7 +2861,7 @@ fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     };
     let cur = sched::current();
-    let cap = match bootstrap::decode_handle(cap_id) {
+    let cap = match decode_caller_handle(cap_id) {
         Ok(cap) => cap,
         Err(_) => return encode_errno(Errno::Invalid),
     };
@@ -1890,20 +2876,21 @@ fn wait_call(cap_id: u64, kind_code: u64) -> u64 {
     if bootstrap::block_recv_global(cur).is_err() {
         return encode_errno(Errno::NoEnt);
     }
-    let next = sched::pick_next(cur).expect("SYS_EXC_WAIT: no Ready task to switch to");
-    sched::block_to(next)
+    sched::block_current()
 }
 
 /// `SYS_YIELD`：保存当前任务完整上下文，切到下一个 Ready 任务（不返回给当前调用者）。
 ///
 /// 当前 `syscall_entry` 栈帧被有意放弃——下一次 CPL3→CPL0 时硬件按 `TSS.rsp0` 重置 `rsp`，
 /// 不会泄漏；被让出的任务在其被重新调度时从保存的 `SretFrame` 直接恢复，`yield` 返回 0。
-fn yield_call() -> ! {
+fn yield_call() -> u64 {
     let cur = sched::current();
     let mut frame = current_context();
     frame.rax = 0;
     sched::set_frame(cur, frame);
-    let next = sched::pick_next(cur).expect("SYS_YIELD: no Ready task to switch to");
+    let Some(next) = sched::pick_next(cur) else {
+        return 0;
+    };
     mt_record_yield(cur, next);
     sched::switch_to(next)
 }
@@ -1915,7 +2902,7 @@ fn memseg_create_call(page_count: u64, access_bits: u64) -> u64 {
     };
     let access = Rights::from_bits(access_bits as u32);
     match bootstrap::memseg_create(sched::current(), page_count as usize, access, offset) {
-        Ok(handle) => handle.encode(),
+        Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(memseg_errno(error)),
     }
 }
@@ -1934,8 +2921,8 @@ fn memseg_map_call(
     access_bits: u64,
 ) -> u64 {
     let (Ok(seg_cap), Ok(task_cap)) = (
-        bootstrap::decode_handle(raw_seg),
-        bootstrap::decode_handle(raw_task),
+        decode_caller_handle(raw_seg),
+        decode_caller_handle(raw_task),
     ) else {
         return encode_errno(Errno::Invalid);
     };
@@ -1965,7 +2952,7 @@ fn memseg_map_call(
     }
 }
 fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
-    let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
+    let Ok(task_cap) = decode_caller_handle(raw_task) else {
         return encode_errno(Errno::Invalid);
     };
     let (Some(task_id), Some((_, offset))) = (
@@ -1992,7 +2979,7 @@ fn memseg_unmap_call(raw_task: u64, target_base: u64, page_count: u64) -> u64 {
 
 /// COSIR §7.4 / M10：`memseg_protect` 服务。
 fn memseg_protect_call(raw_task: u64, target_base: u64, page_count: u64, access_bits: u64) -> u64 {
-    let Ok(task_cap) = bootstrap::decode_handle(raw_task) else {
+    let Ok(task_cap) = decode_caller_handle(raw_task) else {
         return encode_errno(Errno::Invalid);
     };
     let (Some(task_id), Some((_, offset))) = (
@@ -2020,7 +3007,7 @@ fn memseg_protect_call(raw_task: u64, target_base: u64, page_count: u64, access_
 
 /// S2-D3：`memseg_destroy` 服务。
 fn memseg_destroy_call(raw_seg: u64) -> u64 {
-    let Ok(seg_cap) = bootstrap::decode_handle(raw_seg) else {
+    let Ok(seg_cap) = decode_caller_handle(raw_seg) else {
         return encode_errno(Errno::Invalid);
     };
     match bootstrap::memseg_destroy(sched::current(), seg_cap) {
@@ -2077,7 +3064,7 @@ fn send_call(
     let Ok(receiver) = u32::try_from(raw_receiver) else {
         return encode_errno(Errno::Invalid);
     };
-    let Ok(send_cap) = bootstrap::decode_handle(raw_send_cap) else {
+    let Ok(send_cap) = decode_caller_handle(raw_send_cap) else {
         return encode_errno(Errno::Invalid);
     };
     if cap_count > bootstrap::MAX_MESSAGE_CAPABILITIES as u64 {
@@ -2090,7 +3077,7 @@ fn send_call(
         return encode_errno(Errno::Access);
     }
     let was_blocked = bootstrap::is_blocked_recv_global(receiver);
-    let direct_out = if was_blocked && cap_count > 0 {
+    let direct_out = if was_blocked && (cap_count > 0 || sched::recv_extended(receiver)) {
         let Some(ptr) = sched::recv_out(receiver) else {
             return encode_errno(Errno::Invalid);
         };
@@ -2107,7 +3094,7 @@ fn send_call(
         .take(cap_count as usize)
         .enumerate()
     {
-        let Ok(cap) = bootstrap::decode_handle(raw) else {
+        let Ok(cap) = decode_caller_handle(raw) else {
             return encode_errno(Errno::Invalid);
         };
         caps[index] = cap;
@@ -2126,11 +3113,7 @@ fn send_call(
                 let message = bootstrap::take_pending_global(receiver)
                     .expect("successful direct send must leave a pending message");
                 if let Some(out) = direct_out {
-                    write_recv_out(
-                        out,
-                        &message.capabilities[..message.capability_count],
-                        message.capability_count as u64,
-                    );
+                    write_recv_out(receiver, out, Some(&message));
                 }
                 sched::clear_recv_out(receiver);
                 sched::set_frame_rax(receiver, payload);
@@ -2150,32 +3133,74 @@ pub const fn recv_out_bounds(ptr: u64) -> Result<(), Errno> {
     Ok(())
 }
 
-/// out 缓冲必须是当前任务根下 present|user|writable 的页。
-fn recv_out_ok(ptr: u64) -> Result<(), Errno> {
-    recv_out_bounds(ptr)?;
-    let Some((fallback_root, offset)) = crate::cow::root_and_offset() else {
-        return Err(Errno::Fault);
-    };
-    let root = crate::sched::current_root().unwrap_or(fallback_root);
-    let map = |phys: u64| phys_to_virt(phys, offset);
-    let pte = vspace::read_leaf(root, ptr, map).map_err(|_| Errno::Fault)?;
-    if pte & PT_PRESENT == 0 || pte & PT_USER == 0 || pte & PT_WRITABLE == 0 {
+#[derive(Clone, Copy)]
+struct RecvOutPhys {
+    words: [u64; 5],
+    len: usize,
+}
+
+pub const fn recv_extended_bounds(ptr: u64) -> Result<(), Errno> {
+    if ptr == 0 || !ptr.is_multiple_of(8) || ptr > (1u64 << 47) - 40 {
         return Err(Errno::Fault);
     }
     Ok(())
 }
 
-/// Translate a blocked receiver's out buffer through its own page tables before moving caps.
-/// The direct-map alias stays writable while the single-core send commits.
-fn recv_out_phys(receiver: u32, ptr: u64) -> Result<u64, Errno> {
-    recv_out_bounds(ptr)?;
+/// Validate/COW-prepare every destination page before consuming a message or
+/// moving a transferred token. Each u64 is aligned and stays within one page.
+fn prepare_recv_out(receiver: u32, ptr: u64, extended: bool) -> Result<RecvOutPhys, Errno> {
+    if extended {
+        recv_extended_bounds(ptr)?;
+    } else {
+        recv_out_bounds(ptr)?;
+    }
     let root = sched::root(receiver).ok_or(Errno::Fault)?;
     let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
-    let pte = vspace::read_leaf(root, ptr, |phys| phys_to_virt(phys, offset))
-        .map_err(|_| Errno::Fault)?;
-    recv_out_phys_from_pte(ptr, pte, offset)
+    let map = |phys| phys_to_virt(phys, offset);
+    let len = if extended { 5 } else { 3 };
+    let mut output = RecvOutPhys { words: [0; 5], len };
+    let mut prepared_page = None;
+    for index in 0..len {
+        let address = ptr + index as u64 * 8;
+        let page = address & !0xfff;
+        if prepared_page != Some(page) {
+            let leaf = vspace::read_user_leaf(root, address, map).map_err(|_| Errno::Fault)?;
+            if leaf & (PT_PRESENT | PT_USER) != (PT_PRESENT | PT_USER) {
+                return Err(Errno::Fault);
+            }
+            if leaf & PT_WRITABLE == 0 {
+                let segment = bootstrap::task_segment_at(receiver, address).ok_or(Errno::Fault)?;
+                vspace::prepare_user_u32_write(
+                    root,
+                    address,
+                    map,
+                    || crate::frames::allocate_for_segment(segment).ok(),
+                    prima_ostd::arch::invlpg,
+                )
+                .map_err(|error| {
+                    if error == vspace::VspaceError::NoFrame {
+                        Errno::NoSpace
+                    } else {
+                        Errno::Fault
+                    }
+                })?;
+            }
+            prepared_page = Some(page);
+        }
+        let leaf = vspace::read_user_leaf(root, address, map).map_err(|_| Errno::Fault)?;
+        if leaf & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE) {
+            return Err(Errno::Fault);
+        }
+        output.words[index] = phys_to_virt((leaf & PT_ADDR_MASK) + (address & 0xfff), offset);
+    }
+    Ok(output)
 }
 
+fn recv_out_phys(receiver: u32, ptr: u64) -> Result<RecvOutPhys, Errno> {
+    prepare_recv_out(receiver, ptr, sched::recv_extended(receiver))
+}
+
+#[cfg(test)]
 fn recv_out_phys_from_pte(ptr: u64, pte: u64, offset: u64) -> Result<u64, Errno> {
     recv_out_bounds(ptr)?;
     if pte & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE) {
@@ -2184,45 +3209,70 @@ fn recv_out_phys_from_pte(ptr: u64, pte: u64, offset: u64) -> Result<u64, Errno>
     Ok(phys_to_virt((pte & PT_ADDR_MASK) + (ptr & 0xfff), offset))
 }
 
-/// 把接收到的 Capability 句柄与条数写入用户 out 缓冲。
-fn write_recv_out(ptr: u64, caps: &[Handle], count: u64) {
-    let mut values = [0u64; 3];
-    for (index, cap) in caps.iter().enumerate().take(2) {
-        values[index] = cap.encode();
+fn write_recv_out(receiver: u32, out: RecvOutPhys, message: Option<&bootstrap::IpcMessage>) {
+    let mut values = [0u64; 5];
+    if let Some(message) = message {
+        for (index, cap) in message.capabilities[..message.capability_count]
+            .iter()
+            .enumerate()
+        {
+            values[index] = bootstrap::expose_user_handle(receiver, *cap).encode();
+        }
+        values[2] = message.capability_count as u64;
+        values[3] = ((message.sender_generation as u64) << 32) | message.sender as u64;
+        values[4] = message.id as u64;
     }
-    values[2] = count;
-    for (index, value) in values.iter().enumerate() {
-        prima_ostd::mm::write_u64_at(ptr, index as u64, *value);
+    for (phys, value) in out.words[..out.len].iter().zip(&values[..out.len]) {
+        prima_ostd::mm::write_u64_at(*phys, 0, *value);
     }
 }
 
-/// `SYS_RECV`：取一条发给自己的消息；队列为空则置 `BlockedRecv` 并切走。
-fn recv_call(out_ptr: u64) -> u64 {
-    let cur = sched::current();
-    // 坏指针必须在**消费消息之前**被拒，否则一条消息会被无声吃掉。
-    if let Err(errno) = recv_out_ok(out_ptr) {
-        return encode_errno(errno);
+/// Kernel-origin direct deliveries also complete a pending receive on resume.
+/// User sends materialize immediately after their atomic send preflight.
+pub fn complete_pending_recv(task: u32) {
+    let Some(ptr) = sched::recv_out(task) else {
+        return;
+    };
+    let out = match recv_out_phys(task, ptr) {
+        Ok(out) => out,
+        Err(error) => {
+            sched::clear_recv_out(task);
+            sched::set_frame_rax(task, encode_errno(error));
+            return;
+        }
+    };
+    if let Some(message) = bootstrap::take_pending_global(task) {
+        write_recv_out(task, out, Some(&message));
+        sched::clear_recv_out(task);
+        sched::set_frame_rax(task, message.payload);
     }
+}
+
+fn recv_call(out_ptr: u64, format: u64) -> u64 {
+    if format > 1 {
+        return encode_errno(Errno::Invalid);
+    }
+    let cur = sched::current();
+    let out = match prepare_recv_out(cur, out_ptr, format == 1) {
+        Ok(out) => out,
+        Err(error) => return encode_errno(error),
+    };
+    sched::set_recv_extended(cur, format == 1);
     match bootstrap::receive_message(cur) {
         Ok(message) => {
+            write_recv_out(cur, out, Some(&message));
             sched::clear_recv_out(cur);
-            write_recv_out(
-                out_ptr,
-                &message.capabilities[..message.capability_count],
-                message.capability_count as u64,
-            );
             message.payload
         }
         Err(bootstrap::IpcError::QueueEmpty) => {
-            // `receive_message` 已把本任务置为 `BlockedRecv`；保存帧、置零 out 缓冲后切走。
-            write_recv_out(out_ptr, &[], 0);
+            write_recv_out(cur, out, None);
             let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
+            mark_blocked_call(cur, if format == 1 { SYS_RECV_META } else { SYS_RECV });
             sched::set_recv_out(cur, out_ptr);
             IPC_PATHS.with_mut(|paths| paths.blocks += 1);
-            let next = sched::pick_next(cur).expect("SYS_RECV: no Ready task to switch to");
-            sched::block_to(next)
+            sched::block_current()
         }
         Err(error) => encode_errno(ipc_errno(error)),
     }
@@ -2332,7 +3382,7 @@ fn decode_optional_handle(raw: u64) -> Result<Handle, Errno> {
     if raw == 0 {
         return Ok(Handle::ZERO);
     }
-    bootstrap::decode_handle(raw).map_err(|_| Errno::Invalid)
+    decode_caller_handle(raw).map_err(|_| Errno::Invalid)
 }
 
 /// 读取并解码 `task_create` 请求块。
@@ -2385,6 +3435,7 @@ pub const fn task_destroy_errno(error: bootstrap::TaskError) -> Errno {
     use bootstrap::TaskError as E;
     match error {
         E::NoSuchTask => Errno::NoEnt,
+        E::HasLiveThreads => Errno::Again,
         E::CannotDestroyInit | E::CannotDestroyRunning => Errno::Access,
         E::DuplicateTask
         | E::AlreadyRunning
@@ -2460,7 +3511,7 @@ fn task_create_call(req_ptr: u64) -> u64 {
                 state.create_count += 1;
                 state.stack_top = req.stack_top;
             });
-            outcome.manager_cap.encode()
+            encode_caller_handle(outcome.manager_cap)
         }
         Err(error) => encode_errno(task_create_errno(error)),
     }
@@ -2474,7 +3525,7 @@ fn task_create_call(req_ptr: u64) -> u64 {
 /// `write_cr3` 之后归还。
 fn task_destroy_call(raw_cap: u64) -> u64 {
     let caller = sched::current();
-    let Ok(task_cap) = bootstrap::decode_handle(raw_cap) else {
+    let Ok(task_cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::Invalid);
     };
     let task_id = match bootstrap::authorize(caller, task_cap, Right::TaskDestroy) {
@@ -2488,13 +3539,6 @@ fn task_destroy_call(raw_cap: u64) -> u64 {
         return encode_errno(Errno::Fault);
     };
     let self_destroy = task_id == caller;
-    let mut next = 0;
-    if self_destroy {
-        match crate::sched::pick_next(caller) {
-            Some(successor) => next = successor,
-            None => return encode_errno(Errno::Again),
-        }
-    }
     // M16b：非 leader 线程退出不拆共享地址空间（root 归 leader/Process）。
     let root = if bootstrap::task_is_thread(task_id) {
         None
@@ -2504,7 +3548,7 @@ fn task_destroy_call(raw_cap: u64) -> u64 {
     match bootstrap::task_destroy(caller, task_id, root, offset) {
         Ok(()) if self_destroy => {
             crate::sched::clear_task(caller);
-            crate::sched::exit_to(next)
+            crate::sched::exit_current()
         }
         Ok(()) => {
             crate::sched::clear_task(task_id);
@@ -2812,6 +3856,9 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     let current = sched::current();
     // M15a-2：syscall 入口推进超时等待，并消费已注入的等待结果。
     inject_wait_wakes(&bootstrap::expire_waits_global());
+    inject_wait_wakes(&bootstrap::expire_physical_waits(
+        crate::preempt::time_ticks(),
+    ));
     let _ = bootstrap::take_wait_result(current);
 
     let ret = serve(num, &args);
@@ -2837,6 +3884,7 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
 ///
 /// [`SYS_YIELD`] 会切走当前任务、不返回给调用者，故必须在 `dispatch_plain` 之前分支。
 fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
+    crate::irq::retry_pending();
     if num == SYS_COPY_IN {
         match copy_in(args[0], args[1]) {
             Ok(value) => value,
@@ -2848,8 +3896,15 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         exc_subscribe_call(args[0], args[1])
     } else if num == SYS_EXC_UNSUBSCRIBE {
         exc_unsubscribe_call(args[0])
+    } else if num == SYS_UPCALL_CONTROL {
+        upcall_control(args)
+    } else if num == SYS_TASK_INFO {
+        task_info_call(args[0], args[1])
     } else if num == SYS_TASK_ID {
         sched::current() as u64
+    } else if num == SYS_PROCESS_ID {
+        bootstrap::process_identity(sched::current(), args[0])
+            .map_or_else(|| encode_errno(Errno::Invalid), u64::from)
     } else if num == SYS_TASK_SET_FS_BASE {
         set_fs_base_call(args[0])
     } else if num == SYS_YIELD {
@@ -2866,6 +3921,26 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         memseg_create_call(args[0], args[1])
     } else if num == SYS_MEMSEG_MAP {
         memseg_map_call(args[0], args[1], args[2], args[3], args[4], args[5])
+    } else if num == SYS_VSPACE_ACCESS_ENABLE {
+        match (decode_caller_handle(args[0]), crate::cow::root_and_offset()) {
+            (Ok(cap), Some((_, offset))) if args[3] <= 1 => {
+                let root = bootstrap::task_of_cap(cap).and_then(sched::root);
+                match root {
+                    Some(root) => bootstrap::vspace_access_enable(
+                        sched::current(),
+                        cap,
+                        args[1],
+                        args[2] as usize,
+                        args[3] != 0,
+                        root,
+                        offset,
+                    )
+                    .map_or_else(|e| encode_errno(memseg_errno(e)), |_| 0),
+                    None => encode_errno(Errno::NoEnt),
+                }
+            }
+            _ => encode_errno(Errno::Invalid),
+        }
     } else if num == SYS_MEMSEG_UNMAP {
         memseg_unmap_call(args[0], args[1], args[2])
     } else if num == SYS_MEMSEG_PROTECT {
@@ -2875,7 +3950,9 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     } else if num == SYS_SEND {
         send_call(args[0], args[1], args[2], args[3], args[4], args[5])
     } else if num == SYS_RECV {
-        recv_call(args[0])
+        recv_call(args[0], 0)
+    } else if num == SYS_RECV_META {
+        recv_call(args[0], 1)
     } else if num == SYS_TASK_CREATE {
         task_create_call(args[0])
     } else if num == SYS_TASK_DESTROY {
@@ -2906,10 +3983,16 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         timer_cancel_call(args[0])
     } else if num == SYS_TIMER_DESTROY {
         timer_destroy_call(args[0])
+    } else if num == SYS_FORK_TRANSACTION {
+        fork_transaction_call(args[0], args[1])
     } else if num == SYS_FORK {
-        fork_call()
+        fork_call(false)
+    } else if num == SYS_EXEC_HANDOFF {
+        exec_handoff_call(args[0])
+    } else if num == SYS_EXEC_REPLACE_ENV {
+        exec_call(args[0], args[1], args[2], args[3], args[4], args[5], None)
     } else if num == SYS_EXEC_REPLACE {
-        exec_call(args[0], args[1], args[2], args[3])
+        exec_call(args[0], args[1], args[2], args[3], 0, 0, None)
     } else if num == SYS_SIGACTION {
         sigaction_call(args[0], args[1])
     } else if num == SYS_SIGRETURN {
@@ -2918,12 +4001,16 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         signal_call(args[0], args[1])
     } else if num == SYS_WAIT4 {
         wait4_call(args[0], args[1], args[2])
+    } else if num == SYS_PROCESS_TERMINATE {
+        process_terminate_call(args[0], args[1])
     } else if num == SYS_PROCESS_EXIT {
         process_exit_call(args[0])
     } else if num == SYS_CLONE {
         clone_call(args[0], args[1], args[2], args[3], args[4])
     } else if num == SYS_THREAD_CREATE {
         thread_create_call(args[0], args[1], args[2])
+    } else if num == SYS_THREAD_EXIT_UNMAP {
+        thread_exit_unmap_call(args[0], args[1], args[2])
     } else if num == SYS_THREAD_EXIT {
         thread_exit_call()
     } else if num == SYS_THREAD_CLEAR_TID {
@@ -2932,14 +4019,27 @@ fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         wait_create_call()
     } else if num == SYS_WAIT_OBSERVE {
         wait_observe_call(args[0])
+    } else if num == SYS_WAIT_WORD {
+        let mut bytes = [0; 4];
+        match copy_user_bytes(args[2], &mut bytes) {
+            Err(error) => encode_errno(error),
+            Ok(()) if u32::from_le_bytes(bytes) != args[3] as u32 => encode_errno(Errno::Again),
+            Ok(()) => wait_objects_call(args[0], args[1], 0, 0, 0, args[4], true),
+        }
     } else if num == SYS_WAIT_OBJECTS {
-        wait_objects_call(args[0], args[1], args[2], args[3], args[4], args[5])
+        wait_objects_call(args[0], args[1], args[2], args[3], args[4], args[5], false)
+    } else if num == SYS_TASK_WAIT_DEADLINE {
+        task_wait_deadline_call(args[0])
     } else if num == SYS_WAIT_SIGNAL {
         wait_signal_call(args[0])
     } else if num == SYS_WAIT_DESTROY {
         wait_destroy_call(args[0])
     } else if num == SYS_AUDIT {
         audit_call(args[0])
+    } else if num == SYS_DEV_IRQ_CREATE {
+        dev_irq_create_call(args[0], args[1])
+    } else if num == SYS_DEV_IRQ_MASK {
+        dev_irq_mask_call(args[0], args[1])
     } else if num == SYS_DEV_IOPORT_CREATE {
         dev_ioport_create_call(args[0], args[1])
     } else if num == SYS_DEV_IOPORT_OUT {
@@ -3049,7 +4149,7 @@ pub struct FastWitness {
     pub lstar_ok: u32,
     /// 快路径栈底 64 字节哨兵在完整执行后仍保持初值。
     pub stack_canary: u32,
-    /// The current task root leaves the complete lower guard page unmapped.
+    /// The current root leaves syscall and every Task lower guard page unmapped.
     pub stack_guard: u32,
 }
 
@@ -3100,12 +4200,13 @@ fn syscall_guard_unmapped() -> bool {
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return false;
     };
-    crate::vspace::leaf_phys_or_none(
-        root,
-        prima_ostd::entry::syscall_stack_guard_page(),
-        |phys| crate::mem::phys_to_virt(phys, offset),
-    )
-    .is_none()
+    let unmapped = |va| {
+        crate::vspace::leaf_phys_or_none(root, va, |phys| crate::mem::phys_to_virt(phys, offset))
+            .is_none()
+    };
+    unmapped(prima_ostd::entry::syscall_stack_guard_page())
+        && (0..crate::user::USER_TASK_KSTACK_COUNT + 2)
+            .all(|i| crate::user::task_stack_guard_page(i).is_some_and(unmapped))
 }
 
 /// 一次 syscall ABI 见证的实测证据。
@@ -3547,6 +4648,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn alignment_fault_uses_the_bus_route_instead_of_page_fault_route() {
+        assert_eq!(cpu_fault_route(17), (4, 8));
+        assert_eq!(cpu_fault_route(13), (1, 4));
+        assert_eq!(cpu_fault_route(6), (2, 5));
+        assert_eq!(cpu_fault_route(0), (3, 6));
+    }
+
+    #[test]
     fn echo_returns_masked_arg() {
         let mut args = [0u64; MAX_ARGS];
         args[0] = SYS_ECHO_ARG;
@@ -3980,7 +5089,7 @@ mod tests {
         assert_eq!(ipc_errno(E::StructuralCap), Errno::Access);
         assert_eq!(ipc_errno(E::TooManyCapabilities), Errno::Invalid);
         assert_eq!(ipc_errno(E::AuditFull), Errno::NoSpace);
-        assert_eq!(ipc_errno(E::QueueFull), Errno::NoSpace);
+        assert_eq!(ipc_errno(E::QueueFull), Errno::Again);
     }
 
     #[test]
@@ -4018,6 +5127,7 @@ mod tests {
         assert_eq!(task_destroy_errno(E::NoSuchTask), Errno::NoEnt);
         assert_eq!(task_destroy_errno(E::CannotDestroyInit), Errno::Access);
         assert_eq!(task_destroy_errno(E::CannotDestroyRunning), Errno::Access);
+        assert_eq!(task_destroy_errno(E::HasLiveThreads), Errno::Again);
         assert_eq!(task_destroy_errno(E::NotRunning), Errno::Invalid);
         assert_eq!(task_destroy_errno(E::NotReady), Errno::Invalid);
         assert_eq!(task_destroy_errno(E::AlreadyRunning), Errno::Invalid);

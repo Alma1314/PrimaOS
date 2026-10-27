@@ -465,6 +465,10 @@ fn tiny_elf_fixture_is_readable() {
     assert_eq!(read_file(&mut storage, b"/tiny.elf"), TINY_ELF);
     assert!(TINY_ELF.len() > 100);
     assert_eq!(&TINY_ELF[..4], b"\x7fELF");
+    assert_eq!(
+        prima_abi::program_contract::validate(TINY_ELF, 1, 1),
+        Ok(())
+    );
 }
 
 #[test]
@@ -1059,4 +1063,34 @@ fn deleted_content_is_reclaimed_by_compaction() {
     assert_eq!(grown, Ok(1900));
     assert_eq!(read_file(&mut storage, b"/tmp/second"), vec![b'c'; 1900]);
     assert_eq!(content_used(&mut storage), Ok(1900 + initial));
+}
+
+#[test]
+fn fork_reservation_shares_offset_and_last_holder_controls_ofd_reclamation() {
+    let mut storage = TestStorage::new();
+    format(&mut storage).unwrap();
+    let mut files = OpenFiles::<2>::new();
+    files.set_owner(1).unwrap();
+    let (id, _) = files
+        .open(&mut storage, ROOT, b"/tmp/fork", create_flags())
+        .unwrap();
+    files.write(&mut storage, id, b"abc").unwrap();
+    files.seek(&mut storage, id, SeekFrom::Start(0)).unwrap();
+    files.fork_owner(1, 2).unwrap();
+    files.close(&mut storage, id).unwrap();
+    assert_eq!(files.len(), 1);
+    files.set_owner(3).unwrap();
+    assert_eq!(files.info(&mut storage, id), Err(VfsError::BadHandle));
+    files.set_owner(2).unwrap();
+    let mut out = [0; 1];
+    assert_eq!(files.read(&mut storage, id, &mut out), Ok(1));
+    assert_eq!(out, [b'a']);
+    files.fork_owner(2, 4).unwrap();
+    files.set_owner(4).unwrap();
+    files.read(&mut storage, id, &mut out).unwrap();
+    assert_eq!(out, [b'b']);
+    files.close_owner(&mut storage, 2).unwrap();
+    assert_eq!(files.len(), 1);
+    files.close_all(&mut storage).unwrap();
+    assert!(files.is_empty());
 }

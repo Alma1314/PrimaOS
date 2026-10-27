@@ -459,4 +459,22 @@ mod tests {
             .expect_err("missing user_cow_ready must fail");
         assert!(error.contains("no user_cow_ready event"));
     }
+
+    #[test]
+    fn every_c_linux_dispatch_entry_has_a_current_api_ledger_row() {
+        let source = include_str!("../../prima-user/c/prima_syscall.c");
+        let ledger = include_str!("../../docs/superpowers/compat/stage5-working-api.md");
+        let dispatch = source
+            .split_once("static long prima_translate_body(")
+            .unwrap()
+            .1;
+        let dispatch = dispatch.split_once("/* M15：").unwrap().0;
+        for case in dispatch.split("case PRIMA_LINUX_SYS_").skip(1) {
+            let name = case.split_once(':').unwrap().0;
+            assert!(
+                ledger.contains(&format!("| `{name}` (")),
+                "missing API row: {name}"
+            );
+        }
+    }
 }

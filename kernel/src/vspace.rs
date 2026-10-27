@@ -19,6 +19,10 @@ pub const PT_HUGE: u64 = 1 << 7;
 
 /// M17b：软件 COW 位（PTE bit 9，available）。
 pub const PT_COW: u64 = 1 << 9;
+/// A retained user leaf temporarily inaccessible to CPL3 (PROT_NONE).
+pub const PT_HIDDEN: u64 = 1 << 10;
+/// A fork-shared data frame, including a read-only or hidden leaf.
+pub const PT_SHARED: u64 = 1 << 11;
 
 /// PTE 物理地址掩码（bits 12..51）。
 pub const PT_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -106,10 +110,51 @@ fn count_missing(root_phys: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<us
     Ok(0)
 }
 
+/// Count a contiguous range's missing table pages without changing the root.
+/// Exclusive access to this root is required through the later commit.
+pub fn missing_range_tables(
+    root: u64,
+    base: u64,
+    pages: usize,
+    map: impl Fn(u64) -> u64,
+) -> Result<usize, VspaceError> {
+    let mut last = [u64::MAX; 3];
+    let mut needed = 0;
+    for page in 0..pages {
+        let va = base
+            .checked_add(
+                (page as u64)
+                    .checked_mul(4096)
+                    .ok_or(VspaceError::BadRoot)?,
+            )
+            .ok_or(VspaceError::BadRoot)?;
+        let mut table = root;
+        for (level, index) in indices(va)[..3].iter().enumerate() {
+            let entry = read_raw(map(table) + 8 * *index as u64);
+            if entry & PT_PRESENT == 0 {
+                for (depth, previous) in last.iter_mut().enumerate().skip(level) {
+                    let key = va >> (39 - 9 * depth);
+                    if *previous != key {
+                        needed += 1;
+                        *previous = key;
+                    }
+                }
+                break;
+            }
+            if entry & PT_HUGE != 0 {
+                return Err(VspaceError::BadRoot);
+            }
+            table = entry & PT_ADDR_MASK;
+        }
+    }
+    Ok(needed)
+}
+
 /// 建立 `va → frame_phys` 的 4KiB 映射，缺页表页时经 `alloc` 取新帧。
 ///
 /// 两阶段：先统计缺失页表页并**一次性**分配；任一分配失败则返回 [`VspaceError::NoFrame`]
 /// 且不产生任何写入（对分配失败保持原子）。随后沿路径装载，叶 PTE 按 `writable` 设位。
+#[allow(clippy::too_many_arguments)] // Page context plus atomic allocation/rollback hooks.
 pub fn map_4k(
     root_phys: u64,
     va: u64,
@@ -118,11 +163,20 @@ pub fn map_4k(
     frame_phys: u64,
     writable: bool,
     user: bool,
+    mut rollback: impl FnMut(u64),
 ) -> Result<(), VspaceError> {
     let needed = count_missing(root_phys, va, &map)?;
     let mut fresh = [0u64; 4];
-    for slot in fresh[..needed].iter_mut() {
-        *slot = alloc().ok_or(VspaceError::NoFrame)?;
+    for index in 0..needed {
+        match alloc() {
+            Some(frame) => fresh[index] = frame,
+            None => {
+                for frame in &fresh[..index] {
+                    rollback(*frame);
+                }
+                return Err(VspaceError::NoFrame);
+            }
+        }
     }
 
     // 中间层同样需要 U/S 位：CPL3 必须能穿越每一级；否则用户访问会在中间层被判为
@@ -304,6 +358,48 @@ pub fn clone_root(src_root: u64, dst_root: u64, map: impl Fn(u64) -> u64) {
     }
 }
 
+/// A new exec root shares only supervisor PML4 subtrees.
+pub fn clone_supervisor_root(src: u64, dst: u64, map: impl Fn(u64) -> u64) {
+    for index in 0..512u64 {
+        let entry = read_raw(map(src) + 8 * index);
+        write_raw(
+            map(dst) + 8 * index,
+            if entry & PT_USER == 0 { entry } else { 0 },
+        );
+    }
+}
+
+/// Check user access at every level, rather than trusting the leaf alone.
+pub fn read_user_leaf(root: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<u64, VspaceError> {
+    read_owned_user_leaf(root, va, map, false)
+}
+
+pub(crate) fn read_owned_user_leaf(
+    root: u64,
+    va: u64,
+    map: impl Fn(u64) -> u64,
+    include_hidden: bool,
+) -> Result<u64, VspaceError> {
+    if va == 0 || va >> 47 != 0 {
+        return Err(VspaceError::BadRoot);
+    }
+    let mut table = root;
+    for (level, index) in indices(va).into_iter().enumerate() {
+        let entry = read_raw(map(table) + 8 * index as u64);
+        if entry & PT_PRESENT == 0
+            || entry & PT_USER == 0 && !(include_hidden && level == 3 && entry & PT_HIDDEN != 0)
+            || level < 3 && entry & PT_HUGE != 0
+        {
+            return Err(VspaceError::BadRoot);
+        }
+        if level == 3 {
+            return Ok(entry);
+        }
+        table = entry & PT_ADDR_MASK;
+    }
+    Err(VspaceError::BadRoot)
+}
+
 /// 清零 `root` 的第 `slot` 个 PML4 项，用于隔离任务的用户槽（互不可见）。
 pub fn zero_slot(root: u64, slot: usize, map: impl Fn(u64) -> u64) {
     write_raw(map(root) + (slot as u64) * 8, 0);
@@ -388,6 +484,7 @@ pub fn build_self_root(
                     phys,
                     true,
                     false,
+                    |_| {},
                 )?;
             }
             for index in 0..spec.direct.pages {
@@ -400,6 +497,7 @@ pub fn build_self_root(
                     spec.direct.phys + delta,
                     spec.direct.writable,
                     false,
+                    |_| {},
                 )?;
             }
             for index in 0..spec.stack_pages {
@@ -412,6 +510,7 @@ pub fn build_self_root(
                     phys,
                     true,
                     false,
+                    |_| {},
                 )?;
             }
             Ok(root)
@@ -486,6 +585,9 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
         frame_a,
         true,
         false,
+        |frame| {
+            let _ = crate::frames::release_table_frame(frame);
+        },
     )?;
     prima_ostd::arch::invlpg(VSPACE_VA);
     let read_before = read_raw(VSPACE_VA);
@@ -515,6 +617,52 @@ pub fn run_witness(root_phys: u64, offset: u64) -> Result<Witness, VspaceError> 
         wp_err,
         wp_addr,
     })
+}
+
+/// Visit the complete 4 KiB user mapping tree without borrowing page memory.
+pub fn visit_user_leaves(
+    root: u64,
+    map: impl Fn(u64) -> u64 + Copy,
+    mut visit: impl FnMut(u64, u64) -> Result<(), VspaceError>,
+) -> Result<(), VspaceError> {
+    fn walk(
+        table: u64,
+        level: u32,
+        prefix: u64,
+        map: impl Fn(u64) -> u64 + Copy,
+        visit: &mut impl FnMut(u64, u64) -> Result<(), VspaceError>,
+    ) -> Result<(), VspaceError> {
+        for index in 0..512u64 {
+            let entry = read_raw(map(table) + 8 * index);
+            if entry & PT_PRESENT == 0
+                || entry & PT_USER == 0 && !(level == 1 && entry & PT_HIDDEN != 0)
+            {
+                continue;
+            }
+            let va = prefix | (index << (12 + 9 * (level - 1)));
+            if va >> 47 != 0 || level > 1 && entry & PT_HUGE != 0 {
+                return Err(VspaceError::BadRoot);
+            }
+            if level == 1 {
+                visit(va, entry)?;
+            } else {
+                walk(entry & PT_ADDR_MASK, level - 1, va, map, visit)?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, 4, 0, map, &mut visit)
+}
+
+pub fn write_leaf_raw(
+    root: u64,
+    va: u64,
+    value: u64,
+    map: impl Fn(u64) -> u64,
+) -> Result<(), VspaceError> {
+    let table = walk_to_leaf_table(root, va, &map)?;
+    write_raw(map(table) + indices(va)[3] as u64 * 8, value);
+    Ok(())
 }
 
 /// Clone an inactive child root, then write-protect the parent's user pages.
@@ -561,7 +709,9 @@ fn clone_level<F: Fn(u64) -> u64 + Copy>(
     for index in 0..512u64 {
         let entry = read_raw(map(src_table) + index * 8);
         let at = map(dst_table) + index * 8;
-        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
+        if entry & PT_PRESENT == 0
+            || entry & PT_USER == 0 && !(level == 1 && entry & PT_HIDDEN != 0)
+        {
             write_raw(at, entry);
         } else if level == 1 {
             // A CR3 reload does not evict global translations. User globals are
@@ -583,7 +733,8 @@ fn clone_level<F: Fn(u64) -> u64 + Copy>(
     Ok(())
 }
 
-fn cow_leaf(entry: u64) -> u64 {
+pub(crate) fn cow_leaf(entry: u64) -> u64 {
+    let entry = entry | PT_SHARED;
     if entry & PT_WRITABLE != 0 {
         (entry & !PT_WRITABLE) | PT_COW
     } else {
@@ -595,7 +746,9 @@ fn protect_cow_parent(table: u64, level: u32, map: impl Fn(u64) -> u64 + Copy) {
     for index in 0..512u64 {
         let at = map(table) + index * 8;
         let entry = read_raw(at);
-        if entry & PT_PRESENT == 0 || entry & PT_USER == 0 {
+        if entry & PT_PRESENT == 0
+            || entry & PT_USER == 0 && !(level == 1 && entry & PT_HIDDEN != 0)
+        {
             continue;
         }
         if level == 1 {
@@ -672,7 +825,7 @@ pub fn resolve_cow<F: Fn(u64) -> u64 + Copy>(
     for word in 0..512u64 {
         write_raw(dst + word * 8, read_raw(src + word * 8));
     }
-    let flags = (pte | PT_WRITABLE) & !PT_COW;
+    let flags = (pte | PT_WRITABLE) & !(PT_COW | PT_SHARED);
     write_raw(
         pt + idx[3] as u64 * 8,
         (new & PT_ADDR_MASK) | (flags & !PT_ADDR_MASK),
@@ -774,6 +927,102 @@ mod tests {
     }
 
     #[test]
+    fn hidden_and_readonly_leaves_are_retained_and_shared_on_fork() {
+        let mut pool = PagePool::new();
+        let parent = pool.alloc().unwrap();
+        let child = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        let va = 0x400000;
+        map_4k(
+            parent,
+            va,
+            identity,
+            || pool.alloc(),
+            data,
+            false,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        let original = read_leaf(parent, va, identity).unwrap();
+        write_leaf_raw(parent, va, (original & !PT_USER) | PT_HIDDEN, identity).unwrap();
+        clone_root_cow(parent, child, identity, || pool.alloc(), |_| {}, || {}).unwrap();
+        let p = read_leaf(parent, va, identity).unwrap();
+        let c = read_leaf(child, va, identity).unwrap();
+        assert_eq!(p, c);
+        assert_eq!(p & PT_ADDR_MASK, data);
+        assert_eq!(p & (PT_HIDDEN | PT_SHARED), PT_HIDDEN | PT_SHARED);
+        assert_eq!(p & (PT_USER | PT_WRITABLE), 0);
+        assert!(read_user_leaf(child, va, identity).is_err());
+        let mut pages = Vec::new();
+        visit_user_leaves(parent, identity, |address, _| {
+            pages.push(address);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(pages, [va]);
+        // Reenabling RW still leaves a write fault, then obtains a private copy.
+        write_leaf_raw(child, va, (c | PT_USER | PT_COW) & !PT_HIDDEN, identity).unwrap();
+        let private = resolve_cow(child, va, identity, || pool.alloc()).unwrap();
+        assert_ne!(private, data);
+        let c = read_leaf(child, va, identity).unwrap();
+        assert_eq!(c & (PT_COW | PT_SHARED | PT_HIDDEN), 0);
+        assert_ne!(c & PT_WRITABLE, 0);
+        assert_eq!(read_leaf(parent, va, identity).unwrap(), p);
+    }
+
+    #[test]
+    fn map_returns_each_unlinked_table_reservation_on_partial_allocation_failure() {
+        for budget in 0..3 {
+            let mut pool = PagePool::new();
+            let root = pool.alloc().unwrap();
+            let data = pool.alloc().unwrap();
+            let mut allocated = Vec::new();
+            let mut released = Vec::new();
+            let result = map_4k(
+                root,
+                0x400000,
+                identity,
+                || {
+                    if allocated.len() == budget {
+                        return None;
+                    }
+                    let frame = pool.alloc()?;
+                    allocated.push(frame);
+                    Some(frame)
+                },
+                data,
+                true,
+                true,
+                |frame| released.push(frame),
+            );
+            assert_eq!(result, Err(VspaceError::NoFrame));
+            assert_eq!(allocated, released);
+            assert!((0..512).all(|index| read_raw(root + 8 * index) == 0));
+        }
+    }
+
+    #[test]
+    fn range_planning_counts_shared_prefixes_once_across_pt_boundaries() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        assert_eq!(missing_range_tables(root, 0x1ff000, 2, identity), Ok(4));
+        map_4k(
+            root,
+            0x1ff000,
+            identity,
+            || pool.alloc(),
+            data,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(missing_range_tables(root, 0x200000, 1, identity), Ok(1));
+    }
+
+    #[test]
     fn cow_clone_rolls_back_every_allocation_failure_and_flushes_only_after_commit() {
         // Two PML4 slots and two PTs in the first: seven private table pages.
         for budget in 0..=7 {
@@ -783,7 +1032,7 @@ mod tests {
             let data = pool.alloc().unwrap();
             let vas = [VSPACE_VA, VSPACE_VA + 0x20_0000, VSPACE_VA * 2];
             for va in vas {
-                map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+                map_4k(src, va, identity, || pool.alloc(), data, true, true, |_| {}).unwrap();
             }
             let mut before = Vec::new();
             table_snapshot(src, 4, &mut before);
@@ -855,7 +1104,17 @@ mod tests {
         let src = pool.alloc().unwrap();
         let dst = pool.alloc().unwrap();
         let data = pool.alloc().unwrap();
-        map_4k(src, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            data,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
         let pdpt = read_raw(src + indices(VSPACE_VA)[0] as u64 * 8) & PT_ADDR_MASK;
         write_raw(
             pdpt + 8,
@@ -908,7 +1167,17 @@ mod tests {
         let dst = pool.alloc().unwrap();
         let data = pool.alloc().unwrap();
         let supervisor = pool.alloc().unwrap();
-        map_4k(src, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            data,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
         map_4k(
             src,
             VSPACE_VA + 4096,
@@ -917,6 +1186,7 @@ mod tests {
             supervisor,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         let pt = walk_to_leaf_table(src, VSPACE_VA, identity).unwrap();
@@ -947,7 +1217,7 @@ mod tests {
         let a = pool.alloc().unwrap();
         let b = pool.alloc().unwrap();
         for (va, data) in [(VSPACE_VA, a), (VSPACE_VA + 4096, b)] {
-            map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+            map_4k(src, va, identity, || pool.alloc(), data, true, true, |_| {}).unwrap();
             for word in 0..512 {
                 write_raw(data + word * 8, u64::MAX);
             }
@@ -989,7 +1259,17 @@ mod tests {
         let mut pool = PagePool::new();
         let root = pool.alloc().unwrap();
         let data = pool.alloc().unwrap();
-        map_4k(root, VSPACE_VA, identity, || pool.alloc(), data, true, true).unwrap();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            data,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
         write_raw(data, 0xdead_beef_face_feed);
         for ptr in [0, u64::MAX - 1, 0x0000_7fff_ffff_fffe, VSPACE_VA + 4094] {
             assert_eq!(
@@ -1037,7 +1317,7 @@ mod tests {
         let dst = pool.alloc().unwrap();
         let data = pool.alloc().unwrap();
         for va in [VSPACE_VA, VSPACE_VA + 4096] {
-            map_4k(src, va, identity, || pool.alloc(), data, true, true).unwrap();
+            map_4k(src, va, identity, || pool.alloc(), data, true, true, |_| {}).unwrap();
         }
         write_raw(data, u64::MAX);
         write_raw(data + 4088, u64::MAX);
@@ -1068,7 +1348,17 @@ mod tests {
         let src = pool.alloc().unwrap();
         let dst = pool.alloc().unwrap();
         let frame = pool.alloc().unwrap();
-        map_4k(src, VSPACE_VA, identity, || pool.alloc(), frame, true, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            frame,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
         write_raw(frame, 0x1122_3344_5566_7788);
         clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
 
@@ -1101,7 +1391,17 @@ mod tests {
         let dst = pool.alloc().unwrap();
         let ro = pool.alloc().unwrap();
         let sup = pool.alloc().unwrap();
-        map_4k(src, VSPACE_VA, identity, || pool.alloc(), ro, false, true).unwrap();
+        map_4k(
+            src,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            ro,
+            false,
+            true,
+            |_| {},
+        )
+        .unwrap();
         map_4k(
             src,
             VSPACE_VA + 0x1000,
@@ -1110,6 +1410,7 @@ mod tests {
             sup,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
@@ -1154,6 +1455,7 @@ mod tests {
             frame,
             true,
             false,
+            |_| {},
         )
         .unwrap();
 
@@ -1188,6 +1490,7 @@ mod tests {
             frame_a,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         let pages_after_first = pool.len();
@@ -1200,6 +1503,7 @@ mod tests {
             frame_b,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         assert_eq!(pool.len(), pages_after_first);
@@ -1221,7 +1525,16 @@ mod tests {
         let frame = pool.alloc().unwrap();
 
         // 空分配器：需要 4 个页表页，必然失败。
-        let result = map_4k(root, VSPACE_VA, identity, || None, frame, true, false);
+        let result = map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || None,
+            frame,
+            true,
+            false,
+            |_| {},
+        );
         assert_eq!(result, Err(VspaceError::NoFrame));
         // 未产生任何写入：PML4[1] 仍为 0。
         assert_eq!(read_raw(root + 8), 0);
@@ -1240,7 +1553,16 @@ mod tests {
         write_raw(data + idx[2] as u64 * 8, 0x1234);
 
         assert_eq!(
-            map_4k(root, va, identity, || pool.alloc(), data, true, false),
+            map_4k(
+                root,
+                va,
+                identity,
+                || pool.alloc(),
+                data,
+                true,
+                false,
+                |_| {},
+            ),
             Err(VspaceError::BadRoot)
         );
         assert_eq!(read_leaf(root, va, identity), Err(VspaceError::BadRoot));
@@ -1269,6 +1591,7 @@ mod tests {
             frame,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         set_leaf(root, VSPACE_VA, identity, frame, false, false).unwrap();
@@ -1483,6 +1806,7 @@ mod tests {
             frame,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         // 全新路径：PDPT + PD + PT，共 3 张。
@@ -1497,6 +1821,7 @@ mod tests {
             frame,
             true,
             false,
+            |_| {},
         )
         .unwrap();
         assert_eq!(pool.len(), mid);

@@ -236,6 +236,7 @@ fn status_code(status: kernel::bootstrap::TaskStatus) -> u32 {
     use kernel::bootstrap::TaskStatus;
     match status {
         TaskStatus::Ready => 0,
+        TaskStatus::Prepared => 6,
         TaskStatus::Running => 1,
         TaskStatus::BlockedRecv => 2,
         TaskStatus::BlockedWait => 5,

@@ -1,0 +1,13 @@
+/* Static output visibility policy; no dynamic GNU version resolution claimed. */
+PRIMA_LIBC_1_0 {
+    global:
+        _start;
+        prima_libc_contract_v1_0;
+        __syscall0; __syscall1; __syscall2; __syscall3;
+        __syscall4; __syscall5; __syscall6;
+        prima_native;
+        prima_native_syscall0; prima_native_syscall3; prima_native_syscall4;
+        prima_exec_image;
+        arch_prctl; set_tid_address;
+    local: *;
+};

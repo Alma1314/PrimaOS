@@ -7,6 +7,37 @@
 use crate::{Capability, Result, SyscallTransport, syscall, transport::Runtime};
 
 impl<T: SyscallTransport> Runtime<T> {
+    /// Notify a Task using a held TaskDestroy authority (or a permitted Process
+    /// relationship). Slots and payloads are interpreted by the target runtime.
+    pub fn notify_task(&self, target: crate::TaskId, slot: u32, value: u64) -> Result<()> {
+        self.call_unit(
+            syscall::UPCALL_CONTROL,
+            [3, u64::from(target.as_raw()), u64::from(slot), 1, value, 0],
+        )
+    }
+    /// §15.7: create an IRQ device and a separately delegable subscription token.
+    pub fn dev_irq_create(&self, line: u8) -> Result<(Capability, Capability)> {
+        let mut words = [0u64; 2];
+        self.call_unit(
+            syscall::DEV_IRQ_CREATE,
+            [line as u64, words.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )?;
+        Ok((
+            Capability::from_raw(words[0])?,
+            Capability::from_raw(words[1])?,
+        ))
+    }
+    pub fn dev_irq_subscribe(&self, source: Capability) -> Result<u32> {
+        self.call(syscall::EXC_SUBSCRIBE, [source.as_raw(), 7, 0, 0, 0, 0])
+            .map(|id| id as u32)
+    }
+    pub fn dev_irq_mask(&self, device: Capability) -> Result<()> {
+        self.call_unit(syscall::DEV_IRQ_MASK, [device.as_raw(), 1, 0, 0, 0, 0])
+    }
+    pub fn dev_irq_unmask(&self, device: Capability) -> Result<()> {
+        self.call_unit(syscall::DEV_IRQ_MASK, [device.as_raw(), 0, 0, 0, 0, 0])
+    }
+
     /// §15.5：铸造一个覆盖 `[base_port, base_port + port_count)` 的 `IOPortRange` 设备 Capability。
     pub fn dev_ioport_create(&self, base_port: u16, port_count: u16) -> Result<Capability> {
         let raw = self.call(

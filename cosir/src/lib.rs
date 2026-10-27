@@ -5,6 +5,7 @@
 //! CR3/PTE、KERNEL-TRACE 或 REFINEMENT-PROOF。
 
 pub mod abstract_ops;
+pub mod authority;
 pub mod cow_refine;
 pub mod machine;
 pub mod memseg_refine;

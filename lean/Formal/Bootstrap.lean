@@ -24,7 +24,10 @@ private def initCaps : Nat → Option Capability :=
 def emptyState : State := { caps := fun _ => none, booted := false }
 
 /-- 已 booted 态：init 铸造初始 Authority（对齐 cosir `abstract_ops::abstract_state(booted)`）。 -/
-def bootedState : State := { caps := initCaps, booted := true }
+def bootedState : State :=
+  { caps := initCaps
+    booted := true
+    locations := fun id => if id = 1 ∨ id = 2 ∨ id = 3 then some (.heldBy 1) else none }
 
 /-- bootstrap：空态 → booted 态；对已 booted 态返回 none（AlreadyBooted 且状态不变）。 -/
 def bootstrap (s : State) : Option State :=

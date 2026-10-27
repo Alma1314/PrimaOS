@@ -501,6 +501,16 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         program,
         Stage5Program::Echo(_) | Stage5Program::Cat(_) | Stage5Program::Ls(_)
     );
+    let exec_child = if matches!(program, Stage5Program::Execve) {
+        Some(build_exec_child(
+            &workspace,
+            &musl_prefix,
+            binary.parent().expect("binary directory"),
+            false,
+        )?)
+    } else {
+        None
+    };
     // `ls` 的 human.c 需要 double 转换；x86_64 libgcc 不提供 __floatdidf，故该程序
     // 允许编译器使用 SSE（M3 已启用 ring3 SSE 与 per-task FXSAVE/FXRSTOR）。
     let allow_sse = matches!(program, Stage5Program::Ls(_));
@@ -530,6 +540,10 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         flags.push("-mgeneral-regs-only");
     }
     clang.args(&flags);
+    clang.arg(format!(
+        "-Wl,--version-script={}",
+        c_dir.join("prima_libc.map").display()
+    ));
     clang.arg("-isystem").arg(musl_prefix.join("include"));
     if uses_sbase {
         // 与 sbase Makefile 的 CPPFLAGS 对齐（PATH_MAX、strdup、_FILE_OFFSET_BITS）。
@@ -551,9 +565,13 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     for source in &sources {
         clang.arg(source);
     }
+    if let Some(embed) = exec_child {
+        clang.arg(embed);
+    }
     clang
         .arg(&crt)
         .arg(&start)
+        .arg(c_dir.join("prima_exec_bridge.S"))
         .arg(&adapter)
         .arg("-L")
         .arg(musl_prefix.join("lib"))
@@ -576,6 +594,13 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     let c_image = fs::read(&binary)
         .map_err(|error| format!("failed to read {}: {error}", binary.display()))?;
     validate_static_pie(&c_image)?;
+    let (persona, adapter) = if matches!(program, Stage5Program::Rust(_)) {
+        (prima_abi::program_contract::NATIVE, 0)
+    } else {
+        (prima_abi::program_contract::POSIX_STATIC, 1)
+    };
+    prima_abi::program_contract::validate(&c_image, persona, adapter)
+        .map_err(|error| format!("static program contract: {error:?}"))?;
     manifest.push((prima_runtime::protocol::SERVICE_IMAGE_KIND_C_PROBE, c_image));
     let (start_args_owned, start_env_owned) = start_parameters();
     let start_args: Vec<&str> = start_args_owned.iter().map(String::as_str).collect();
@@ -800,8 +825,8 @@ fn stage5_probe_source() -> PathBuf {
 ///
 /// 片 C：另断言同源探针在 Linux 上 `write(1)`/`write(2)` 各输出一个字节——与 Prima QEMU
 /// 侧 `CIO|` 见证（同一 `main` 路径写的 'h'/'i'）构成同源差分。
-pub(crate) const RUST_CORE_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=0;native=1|ok=1\n";
-pub(crate) const RUST_STD_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=1;native=1|ok=1\n";
+pub(crate) const RUST_CORE_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=0;native=1;pal=0|ok=1\n";
+pub(crate) const RUST_STD_STDOUT: &[u8] = b"RUST|core=1;alloc=1;std=1;native=1;pal=1|ok=1\n";
 
 fn build_rust_probe(workspace: &Path, standard: bool) -> Result<PathBuf, String> {
     let directory = workspace.join("target/rust-probe");
@@ -1396,13 +1421,13 @@ pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlin
 pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
     b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1;unlink_open=1;rename_open=1;unlink_link=1;sparse=1|ok=1;err=0\n";
 
-/// M19 冻结的 loopback UDP 探针输出（Linux 与 Prima 逐字节相同）。
+/// M19 后继待验收的 loopback UDP 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const NET_EXPECTED_STDOUT: &[u8] =
-    b"NET|pair=1;zero=1;large=1;drop=1;reuse=1;badfam=1;closed=1|ok=1;err=0\n";
+    b"NET|pair=1;zero=1;large=1;drop=1;reuse=1;badfam=1;fork=1;interrupt=1;cancel=1;restart=1;closed=1|ok=1;err=0\n";
 
 /// M14：Prima 侧 tty 输入探针输出（含回显与 raw/EOF）。
 pub(crate) const TTYIN_EXPECTED_STDOUT: &[u8] =
-    b"TTYRD|termios=1\nTTYREADY\nhi\n;line=1\nTTYRAW\n;raw=1\nTTYEOF\n;eof=1|ok=1;err=0\n";
+    b"TTYRD|termios=1\nTTYREADY\nhi\n;line=1\nTTYINTRAISE\n;interrupt=1\nTTYAFTER\n;cancel=1\nTTYRESTART\n;restart=1\nTTYRAW\n;raw=1\nTTYEOF\n;eof=1|ok=1;err=0\n";
 
 /// M14：Linux 参考用管道 stdin，只验证行与 EOF（termios/回显需真实 tty）。
 pub(crate) const TTYIN_LINUX_STDOUT: &[u8] = b"TTYRD|line=1;eof=1|ok=1;err=0\n";
@@ -1534,18 +1559,161 @@ pub(crate) fn check_stage5_linux_proc() -> Result<(), String> {
 }
 
 pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
-    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1;guard=1;fpu=1|ok=1;err=0\n";
+    b"PROC|fork=1;wait=1;status=1;cow=1;echild=1;guard=1;fpu=1;isolate=1;vfs=1|ok=1;err=0\n";
 
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
 
-pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] = b"SIGACT|sigaction=1;kill=1;ran=1|ok=1;err=0\n";
+pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] =
+    b"SIGACT|sigaction=1;kill=1;ran=1;mask=1;info=1;nested=1;suspend=1;eintr=1;restart=1;child=1;sleep=1;fault=1;guard=1;ignore=1|ok=1;err=0\n";
+
+pub(crate) fn check_stage5_linux_exec() -> Result<(), String> {
+    check_linux_exec_reference("stage5_exec.c", "exec-linux", EXEC_EXPECTED_STDOUT)
+}
+
+pub(crate) fn check_stage5_linux_execve() -> Result<(), String> {
+    check_linux_exec_reference("stage5_execve.c", "execve-linux", EXECVE_EXPECTED_STDOUT)
+}
+
+/// Build an independent C image, then embed its file bytes in the old image.
+/// The 2920-byte RAM filesystem cannot contain a libc executable. The path
+/// witness and this native memory-image witness therefore make separate claims.
+fn build_exec_child(
+    workspace: &Path,
+    prefix: &Path,
+    directory: &Path,
+    host: bool,
+) -> Result<PathBuf, String> {
+    let label = if host { "host" } else { "prima" };
+    let binary = directory.join(format!("exec-crt-{label}.elf"));
+    let embed = directory.join(format!("exec-crt-{label}.S"));
+    let sources = workspace.join("prima-user/c");
+    let mut command = Command::new(if host { "cc" } else { "clang" });
+    command.args(["-O2", "-std=c11", "-Wall", "-Werror"]);
+    if host {
+        command.arg("-DPRIMA_HOST");
+    } else {
+        command.args([
+            "-target",
+            "x86_64-unknown-none",
+            "-ffreestanding",
+            "-fno-stack-protector",
+            "-DPRIMA_WITH_LIBC",
+            "-fPIC",
+            "-nostdlib",
+            "-fuse-ld=lld",
+            "-static",
+            "-Wl,-e,_start",
+            "-Wl,-z,separate-loadable-segments",
+            "-Wl,--build-id=none",
+            "-Wl,--gc-sections",
+            "-Wl,--strip-all",
+            "-nostdinc",
+            "-mgeneral-regs-only",
+            "-isystem",
+        ]);
+        command.arg(prefix.join("include"));
+        command.arg(format!(
+            "-Wl,--version-script={}",
+            sources.join("prima_libc.map").display()
+        ));
+        for file in [
+            "prima_crt.c",
+            "prima_crt_start.S",
+            "prima_exec_bridge.S",
+            "prima_syscall.c",
+        ] {
+            command.arg(sources.join(file));
+        }
+    }
+    command.arg(sources.join("stage5_exec_child.c"));
+    if !host {
+        command
+            .arg("-L")
+            .arg(prefix.join("lib"))
+            .args(["-lc", "-lgcc"]);
+    }
+    let compiled = command
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|e| format!("failed to build exec crt {label}: {e}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "exec crt {label} compile: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    ensure_non_empty(&binary, "exec crt image")?;
+    let bytes = fs::read(&binary).map_err(|e| format!("read exec crt {label}: {e}"))?;
+    if !host && bytes.get(16..18) != Some(&[2, 0]) {
+        return Err("exec crt must be ET_EXEC".to_string());
+    }
+    if !host {
+        prima_abi::program_contract::validate(&bytes, prima_abi::program_contract::POSIX_STATIC, 1)
+            .map_err(|error| format!("exec crt contract: {error:?}"))?;
+    }
+    fs::write(&embed, format!(
+        ".section .rodata.prima_exec_child,\"a\",@progbits\n.balign 16\n.global prima_exec_child_start, prima_exec_child_end\nprima_exec_child_start:\n.incbin {:?}\nprima_exec_child_end:\n.section .note.GNU-stack,\"\",@progbits\n", binary
+    )).map_err(|e| format!("write exec crt embedding: {e}"))?;
+    Ok(embed)
+}
+
+fn check_linux_exec_reference(source: &str, name: &str, expected: &[u8]) -> Result<(), String> {
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .to_path_buf();
+    let output_dir = workspace.join("target/prima-os");
+    fs::create_dir_all(&output_dir)
+        .map_err(|error| format!("failed to create reference directory: {error}"))?;
+    let binary = output_dir.join(name);
+    let mut command = Command::new("cc");
+    command
+        .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
+        .arg(workspace.join("prima-user/c").join(source));
+    if source == "stage5_execve.c" {
+        command.arg(build_exec_child(
+            &workspace,
+            &workspace.join("target/musl-prefix"),
+            &output_dir,
+            true,
+        )?);
+    }
+    let compiled = command
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .map_err(|error| format!("failed to compile {name}: {error}"))?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "failed to compile {name}: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        ));
+    }
+    let output = Command::new(&binary)
+        .stdin(Stdio::null())
+        .env_clear()
+        .output()
+        .map_err(|error| format!("failed to run {name}: {error}"))?;
+    if output.status.code() != Some(0) || output.stdout != expected {
+        return Err(format!(
+            "{name} mismatch: exit {:?}, stdout {:?}, stderr {:?}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    println!("PASS linux {name} stdout/exit references");
+    Ok(())
+}
 
 pub(crate) const EXEC_EXPECTED_STDOUT: &[u8] = b"EXEC|exec=1;wait=1;bad=1|ok=1;err=0\n";
 
-pub(crate) const EXECVE_EXPECTED_STDOUT: &[u8] = b"EXECVE|read=1;exec=1;wait=1|ok=1;err=0\n";
+pub(crate) const EXECVE_EXPECTED_STDOUT: &[u8] =
+    b"EXECVE|read=1;exec=1;wait=1;env=1;cloexec=1;atomic=1;contract=1;crt=1;reexec=1;ofd=1|ok=1;err=0\n";
 
 pub(crate) const PTHREAD_EXPECTED_STDOUT: &[u8] =
-    b"PTHREAD|create=1;join=1;ret=1;value=1;self=1|ok=1;err=0\n";
+    b"PTHREAD|create=1;join=1;ret=1;value=1;self=1;cancel=1;async=1;detach=1;attr=1|ok=1;err=0\n";
 
 /// M16b：pthread 的 Linux 参考（真实 pthread）。
 pub(crate) fn check_stage5_linux_pthread() -> Result<(), String> {

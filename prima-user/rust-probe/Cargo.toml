@@ -12,6 +12,7 @@ publish = false
 std = []
 
 [dependencies]
+prima-abi = { path = "../../prima-abi" }
 prima-runtime = { path = "../../prima-runtime" }
 
 [profile.release]

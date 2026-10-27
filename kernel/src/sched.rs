@@ -24,6 +24,7 @@ static FRAMES: StaticCell<[SretFrame; MAX_TASKS]> = StaticCell::new([SretFrame::
 
 /// A blocked SYS_RECV's validated user out pointer, indexed by Task id (0 = none).
 static RECV_OUTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
+static RECV_EXTENDED: StaticCell<[bool; MAX_TASKS]> = StaticCell::new([false; MAX_TASKS]);
 
 /// 每个 Task 的 PML4 物理地址（0 = 未设置，例如 boot 早期）。索引即 Task id。
 static ROOTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
@@ -40,9 +41,25 @@ const FXSAVE_SIZE: usize = 512;
 /// 一个 Task 的 x87/SSE 状态镜像；`FXSAVE` 要求 16 字节对齐。
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
-struct FpuArea([u8; FXSAVE_SIZE]);
+pub(crate) struct FpuArea([u8; FXSAVE_SIZE]);
 
 impl FpuArea {
+    pub(crate) fn bytes(self) -> [u8; FXSAVE_SIZE] {
+        self.0
+    }
+    pub(crate) fn from_user(bytes: [u8; FXSAVE_SIZE], original: Self) -> Option<Self> {
+        let mut mask = u32::from_le_bytes(original.0[28..32].try_into().ok()?);
+        if mask == 0 {
+            mask = 0xffbf;
+        }
+        let mxcsr = u32::from_le_bytes(bytes[24..28].try_into().ok()?);
+        if mxcsr & !mask != 0 {
+            return None;
+        }
+        let mut area = Self(bytes);
+        area.0[28..32].copy_from_slice(&original.0[28..32]);
+        Some(area)
+    }
     /// `FXRSTOR` 可接受的初始状态：x87 控制字 `0x037F`（扩展精度、异常屏蔽），
     /// MXCSR `0x1F80`（屏蔽全部 SSE 异常、就近舍入）。全零控制字会把 x87 精度
     /// 降为单精度，不能作为默认值。
@@ -96,7 +113,7 @@ pub fn clear_kernel_resume_frame(task_id: u32) {
 ///
 /// 自毁者正运行在自己的 CR3 上，其根帧与中间层页表帧必须等 `write_cr3` 切走之后才能归还。
 /// 上界 = 根帧 1 + 用户映射拆除回收的空表帧（≤ `MAX_VSPACE_ENTRIES`）。
-const MAX_DEFERRED_FRAMES: usize = 40;
+const MAX_DEFERRED_FRAMES: usize = 1 + 3 * bootstrap::MAX_VSPACE_ENTRIES;
 
 /// 待归还的页表帧（自毁路径入队，[`flush_deferred_frames`] 清空）。
 static DEFERRED_FRAMES: StaticCell<[u64; MAX_DEFERRED_FRAMES]> =
@@ -104,18 +121,22 @@ static DEFERRED_FRAMES: StaticCell<[u64; MAX_DEFERRED_FRAMES]> =
 static DEFERRED_COUNT: StaticCell<usize> = StaticCell::new(0);
 
 /// M17b：等待任务的 status 写回（在目标任务的地址空间里执行）。
-static PENDING_STATUS: StaticCell<[Option<(u64, i64)>; MAX_TASKS]> =
+static PENDING_STATUS: StaticCell<[Option<(u64, bootstrap::ProcessExit)>; MAX_TASKS]> =
     StaticCell::new([None; MAX_TASKS]);
 
-pub fn set_pending_status(task_id: u32, ptr: u64, status: i64) {
+pub fn set_pending_status(task_id: u32, ptr: u64, status: bootstrap::ProcessExit) {
     if (task_id as usize) < MAX_TASKS {
         PENDING_STATUS.with_mut(|slots| slots[task_id as usize] = Some((ptr, status)));
     }
 }
 
 /// Linux wait status is an int (4 bytes), never an 8-byte syscall word.
-pub const fn wait_status_bytes(status: i64) -> [u8; 4] {
-    (((status as u32) & 0xff) << 8).to_le_bytes()
+pub const fn wait_status_bytes(status: bootstrap::ProcessExit) -> [u8; 4] {
+    let word = match status {
+        bootstrap::ProcessExit::Exited(code) => (code as u32) << 8,
+        bootstrap::ProcessExit::Signaled(signal) => (signal as u32) & 0x7f,
+    };
+    word.to_le_bytes()
 }
 
 /// Resolve the output while its owner is current, before wait can block/reap.
@@ -125,12 +146,34 @@ pub fn prepare_wait_status(task: u32, ptr: u64) -> Result<(), crate::syscall::Er
     }
     let root = root(task).ok_or(crate::syscall::Errno::Fault)?;
     let (_, offset) = crate::cow::root_and_offset().ok_or(crate::syscall::Errno::Fault)?;
-    let segment = bootstrap::task_segment_id(task).ok_or(crate::syscall::Errno::Fault)?;
+    let last = ptr.checked_add(3).ok_or(crate::syscall::Errno::Fault)? & !4095;
+    let first = ptr & !4095;
+    let mut segments = [0; 2];
+    let mut count = 0;
+    for page in [first, last] {
+        if page == last && last == first && count > 0 {
+            break;
+        }
+        let leaf = crate::vspace::read_user_leaf(root, page, |phys| {
+            crate::mem::phys_to_virt(phys, offset)
+        })
+        .map_err(wait_copy_errno)?;
+        if leaf & crate::vspace::PT_WRITABLE == 0 {
+            segments[count] =
+                bootstrap::task_segment_at(task, page).ok_or(crate::syscall::Errno::Fault)?;
+            count += 1;
+        }
+    }
+    let mut allocated = 0;
     crate::vspace::prepare_user_u32_write(
         root,
         ptr,
         |phys| crate::mem::phys_to_virt(phys, offset),
-        || crate::frames::allocate_for_segment(segment).ok(),
+        || {
+            let segment = *segments.get(allocated)?;
+            allocated += 1;
+            crate::frames::allocate_for_segment(segment).ok()
+        },
         prima_ostd::arch::invlpg,
     )
     .map_err(wait_copy_errno)
@@ -143,19 +186,27 @@ fn wait_copy_errno(error: crate::vspace::VspaceError) -> crate::syscall::Errno {
     }
 }
 
-pub fn write_wait_status(task: u32, ptr: u64, status: i64) -> Result<(), crate::syscall::Errno> {
+pub fn write_wait_status(
+    task: u32,
+    ptr: u64,
+    status: bootstrap::ProcessExit,
+) -> Result<(), crate::syscall::Errno> {
+    write_user_word(task, ptr, wait_status_bytes(status))
+}
+
+pub fn write_user_word(task: u32, ptr: u64, bytes: [u8; 4]) -> Result<(), crate::syscall::Errno> {
     if ptr == 0 {
         return Ok(());
     }
+    prepare_wait_status(task, ptr)?;
     let root = root(task).ok_or(crate::syscall::Errno::Fault)?;
     let (_, offset) = crate::cow::root_and_offset().ok_or(crate::syscall::Errno::Fault)?;
-    let segment = bootstrap::task_segment_id(task).ok_or(crate::syscall::Errno::Fault)?;
     crate::vspace::write_user_u32(
         root,
         ptr,
-        wait_status_bytes(status),
+        bytes,
         |phys| crate::mem::phys_to_virt(phys, offset),
-        || crate::frames::allocate_for_segment(segment).ok(),
+        || None,
         prima_ostd::arch::invlpg,
     )
     .map_err(wait_copy_errno)
@@ -213,8 +264,21 @@ pub fn recv_out(task_id: u32) -> Option<u64> {
     RECV_OUTS.with(|outs| outs.get(task_id as usize).copied().filter(|ptr| *ptr != 0))
 }
 
+pub fn set_recv_extended(task_id: u32, extended: bool) {
+    RECV_EXTENDED.with_mut(|flags| {
+        if let Some(flag) = flags.get_mut(task_id as usize) {
+            *flag = extended;
+        }
+    });
+}
+
+pub fn recv_extended(task_id: u32) -> bool {
+    RECV_EXTENDED.with(|flags| flags.get(task_id as usize).copied().unwrap_or(false))
+}
+
 pub fn clear_recv_out(task_id: u32) {
     set_recv_out(task_id, 0);
+    set_recv_extended(task_id, false);
 }
 
 /// 切片 N：把某 Task 保存帧的 `rax` 设为 `value`。
@@ -298,6 +362,22 @@ fn save_fpu(task_id: u32) {
     });
 }
 
+pub(crate) fn snapshot_current_fpu() -> FpuArea {
+    let task = current();
+    save_fpu(task);
+    FPU_AREAS.with(|areas| areas[task as usize])
+}
+pub(crate) fn set_saved_fpu(task: u32, area: FpuArea) {
+    FPU_AREAS.with_mut(|areas| {
+        if let Some(slot) = areas.get_mut(task as usize) {
+            *slot = area;
+        }
+    });
+}
+pub fn reset_fpu(task: u32) {
+    set_saved_fpu(task, FpuArea::DEFAULT);
+}
+
 /// Snapshot the running caller before publishing a fork/clone child. A parent's
 /// saved slot may predate its last user-space floating-point instruction.
 pub fn inherit_current_fpu(child: u32) {
@@ -332,6 +412,8 @@ fn activate_fs(task_id: u32) {
 ///
 /// 清理 root、内核栈、FS base、保存帧及阻塞接收缓冲指针。
 pub fn clear_task(task_id: u32) {
+    crate::signal::clear_task(task_id);
+    crate::syscall::clear_blocked_call(task_id);
     if (task_id as usize) < MAX_TASKS {
         ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
@@ -375,6 +457,39 @@ pub fn block_to(next: u32) -> ! {
     resume(next)
 }
 
+/// The caller is already blocked and its frame saved. Keep its kernel stack
+/// while idle; IRQ callbacks only wake Tasks and return, never schedule here.
+pub fn block_current() -> ! {
+    if let Some(next) = pick_next(current()) {
+        block_to(next);
+    }
+    save_fpu(current());
+    idle_until_ready()
+}
+
+/// Retain the retiring Task's deferred root until another root is activated.
+/// Its static kernel stack and shared supervisor mappings remain valid in idle.
+pub fn exit_current() -> ! {
+    if let Some(next) = pick_next(current()) {
+        exit_to(next);
+    }
+    idle_until_ready()
+}
+
+fn idle_until_ready() -> ! {
+    loop {
+        crate::irq::retry_pending();
+        if let Some(next) = (1..MAX_TASKS as u32)
+            .find(|&id| bootstrap::task_status(id) == Some(bootstrap::TaskStatus::Ready))
+        {
+            bootstrap::schedule_task_global(next).expect("idle successor Ready");
+            set_current(next);
+            resume(next);
+        }
+        prima_ostd::arch::wait_for_interrupt();
+    }
+}
+
 /// 切片 V：把一个**已从任务表删除**的当前任务切走。
 ///
 /// 与 [`block_to`]/[`switch_to`] 的区别：不触碰 `cur` 的 TaskTable 记录——自毁者已 Dead，
@@ -383,7 +498,6 @@ pub fn exit_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "exit_to must target a different task");
     bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
-    save_fpu(cur);
     set_current(next);
     resume(next)
 }
@@ -401,6 +515,10 @@ pub fn fault_to(next: u32) -> ! {
 /// 切片 V：延迟帧队列已满。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeferredQueueFull;
+
+pub fn can_defer_frames(needed: usize) -> bool {
+    DEFERRED_COUNT.with(|count| needed <= MAX_DEFERRED_FRAMES - *count)
+}
 
 /// 切片 V：登记一个待归还页表帧（自毁路径）。队列满返回 `Err`，不静默丢弃。
 pub fn defer_table_frame(frame: u64) -> Result<(), DeferredQueueFull> {
@@ -445,12 +563,17 @@ pub fn resume(task_id: u32) -> ! {
     if let Some(root) = root(task_id) {
         crate::cpu::write_cr3(root);
         write_pending_status(task_id);
+        crate::syscall::complete_pending_recv(task_id);
     }
-    let frame = frame(task_id).expect("task frame must exist");
+    let mut frame = frame(task_id).expect("task frame must exist");
     // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
     activate_fs(task_id);
     // M3：x87/SSE 状态按 Task 恢复（保存发生在各切换函数的 set_current 之前）。
     restore_fpu(task_id);
+    if let Some(handler) = crate::syscall::prepare_signal_resume(task_id, frame) {
+        frame = handler;
+        set_frame(task_id, frame);
+    }
     // 切片 V：CR3 已不再指向任何待释放的根帧，此刻归还是安全的。
     flush_deferred_frames();
     // 跳板在 iretq 换栈前读完所有帧字段，当前栈上的 frame 在此期间仍有效。
@@ -464,9 +587,23 @@ mod tests {
 
     #[test]
     fn wait_status_has_exact_int_width_and_clear_task_discards_pending_output() {
-        assert_eq!(wait_status_bytes(7), [0, 7, 0, 0]);
-        assert_eq!(wait_status_bytes(-1), [0, 255, 0, 0]);
-        set_pending_status(15, 0x1000, 7);
+        assert_eq!(
+            wait_status_bytes(bootstrap::ProcessExit::Exited(7)),
+            [0, 7, 0, 0]
+        );
+        assert_eq!(
+            wait_status_bytes(bootstrap::ProcessExit::Exited(255)),
+            [0, 255, 0, 0]
+        );
+        assert_eq!(
+            wait_status_bytes(bootstrap::ProcessExit::Signaled(15)),
+            [15, 0, 0, 0]
+        );
+        assert_ne!(
+            wait_status_bytes(bootstrap::ProcessExit::Exited(143)),
+            wait_status_bytes(bootstrap::ProcessExit::Signaled(15))
+        );
+        set_pending_status(15, 0x1000, bootstrap::ProcessExit::Exited(7));
         clear_task(15);
         assert_eq!(PENDING_STATUS.with(|slots| slots[15]), None);
     }

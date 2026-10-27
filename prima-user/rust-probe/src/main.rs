@@ -4,13 +4,20 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+mod pal;
+
 use alloc::{boxed::Box, format, vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use prima_runtime::{
-    Capability, Runtime, TaskId,
-    protocol::{STAGE5_C_PROBE_TAG, STAGE5_TTY_WRITE_TAG},
-};
+#[cfg(not(feature = "std"))]
+use prima_runtime::protocol::STAGE5_TTY_WRITE_TAG;
+use prima_runtime::{Capability, Runtime, TaskId, protocol::STAGE5_C_PROBE_TAG};
+
+#[used]
+#[unsafe(link_section = ".note.prima.abi")]
+static PROGRAM_CONTRACT: [u32; 11] =
+    prima_abi::program_contract::note(prima_abi::program_contract::NATIVE, 0);
 
 // Probe-only allocator: the manager maps a private 96-page arena here. The
 // monotonic allocation budget lasts for this one-shot process; no general
@@ -70,9 +77,22 @@ pub extern "C" fn _start(_: u64, _: u64, _: u64, _: u64, _: u64) -> ! {
 }
 
 extern "C" fn rust_start(_: u64, send_raw: u64, _: u64, _: u64, manager: u64) -> ! {
+    core::hint::black_box(&PROGRAM_CONTRACT);
     let runtime = Runtime::x86_64();
     let peer = TaskId::from_raw(manager as u32);
     if let (Ok(send), Ok(id)) = (Capability::from_raw(send_raw), runtime.task_id()) {
+        #[cfg(feature = "std")]
+        if pal::initialize(send, peer).is_err() {
+            let _ = runtime.send(
+                peer,
+                send,
+                STAGE5_C_PROBE_TAG | (1 << 16) | u64::from(id.as_raw()),
+                &[],
+            );
+            loop {
+                let _ = runtime.receive();
+            }
+        }
         let oversized_alignment = Layout::from_size_align(1, 1usize << 45).unwrap();
         // SAFETY: the layout is valid, but no aligned address fits this arena.
         let rejected = unsafe { ARENA.alloc(oversized_alignment) }.is_null();
@@ -97,7 +117,27 @@ extern "C" fn rust_start(_: u64, send_raw: u64, _: u64, _: u64, manager: u64) ->
             // SAFETY: a valid nonzero layout; this unsupported System backend
             // must report OOM rather than invent a usable pointer.
             let system_oom = unsafe { std::alloc::System.alloc(Layout::new::<u64>()) }.is_null();
+            let before = std::time::Instant::now();
+            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let elapsed = before.elapsed();
+            // A clock can still read zero immediately after initialization.
+            // MAX is representable from zero; one further nanosecond is not.
+            let overflow = before
+                .checked_add(std::time::Duration::MAX)
+                .is_none_or(|limit| {
+                    limit
+                        .checked_add(std::time::Duration::from_nanos(1))
+                        .is_none()
+                });
+            let spawned = std::thread::Builder::new().spawn(|| ()).unwrap_err().kind();
+            let input = std::io::stdin().read(&mut bytes).unwrap_err().kind();
+            let os_ok = elapsed >= std::time::Duration::from_millis(1)
+                && overflow
+                && spawned == std::io::ErrorKind::Unsupported
+                && input == std::io::ErrorKind::Unsupported;
             system_oom
+                && os_ok
                 && map.get("value") == Some(&6)
                 && read.is_ok()
                 && &bytes == b"abc"
@@ -107,12 +147,39 @@ extern "C" fn rust_start(_: u64, send_raw: u64, _: u64, _: u64, manager: u64) ->
         let std_ok = true;
         let ok = core_ok && alloc_ok && std_ok;
         let output = format!(
-            "RUST|core={};alloc={};std={};native=1|ok={}\n",
+            "RUST|core={};alloc={};std={};native=1;pal={}|ok={}\n",
             u8::from(core_ok),
             u8::from(alloc_ok),
             u8::from(cfg!(feature = "std") && std_ok),
+            u8::from(cfg!(feature = "std") && std_ok),
             u8::from(ok)
         );
+        #[cfg(feature = "std")]
+        {
+            use std::io::Write;
+            // Split the marker across stdout/stderr to witness both PAL paths.
+            let midpoint = output.find("|ok=").unwrap();
+            if std::io::stdout()
+                .write_all(&output.as_bytes()[..midpoint])
+                .is_err()
+                || std::io::stdout().flush().is_err()
+                || std::io::stderr()
+                    .write_all(&output.as_bytes()[midpoint..])
+                    .is_err()
+                || std::io::stderr().flush().is_err()
+            {
+                let _ = runtime.send(
+                    peer,
+                    send,
+                    STAGE5_C_PROBE_TAG | (1 << 16) | u64::from(id.as_raw()),
+                    &[],
+                );
+                loop {
+                    let _ = runtime.receive();
+                }
+            }
+        }
+        #[cfg(not(feature = "std"))]
         for byte in output.bytes() {
             let payload = STAGE5_TTY_WRITE_TAG
                 | (1 << 16)

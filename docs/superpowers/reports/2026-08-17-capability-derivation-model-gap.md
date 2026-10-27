@@ -54,3 +54,10 @@ COSIR §2.1 列出 8 条第一阶段目标。当前模型的实际覆盖：
 ## 6. 证据边界
 
 本备忘不产生新证据；全部判断基于对 `cosir/src/state.rs`、`cosir/src/ops.rs`、`cosir/src/*_refine.rs` 的静态搜证（grep 确认无 `cap_derive`、无 `locations`/`HeldBy`/`CapRecord`、无 `CapMinted`/`CapDerived`/`CapMoved`）与 COSIR §2.1 / §17.2 的对照。
+
+
+## 7. 2026-10-25 后继代码（未统一验收）
+
+历史发现与当时选择保留不变。parent/CDT 已由 SPEC-099 补强；位置、消息/Bound载体、
+drop和溯源的本次代码见[后继记录](2026-10-25-stage0-5-gap-followup.md)，尚未统一测试。
+本地载体扩展不代表 Timer、Mount、远端与完整异常通知模型已经具备，也不扩充 Lean 证明。

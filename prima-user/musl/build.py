@@ -66,7 +66,10 @@ def cache_valid(prefix, stamp):
 
 
 def audit_disassembly(disassembly):
-    """Only the port's native clone/exit and signal restore may trap directly."""
+    """Only native clone and the legacy signal restore may trap directly.
+
+    Thread exit/unmap goes through the adapter's cleanup helpers before 49/66.
+    """
     calls = {}
     member, number = "", None
     for line in disassembly.splitlines():
@@ -79,7 +82,7 @@ def audit_disassembly(disassembly):
             raise ValueError(f"unexpected trap in musl {member}")
         if re.search(r"\bsyscall\s*$", line):
             calls.setdefault(member, []).append(number)
-    if calls != {"restore.lo": [58], "clone.lo": [48, 49]}:
+    if calls != {"restore.lo": [58], "clone.lo": [48]}:
         raise ValueError(f"unexpected raw syscall boundary in musl: {calls}")
 
 

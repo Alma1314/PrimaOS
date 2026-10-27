@@ -14,6 +14,23 @@ HERE = Path(__file__).resolve().parent
 
 
 class PortTests(unittest.TestCase):
+    def test_crt_requires_the_versioned_adapter_anchor(self):
+        with tempfile.TemporaryDirectory(prefix="prima-crt-contract-") as directory:
+            root = Path(directory)
+            shim = root / "shim.c"
+            stubs = "int main(void){return 0;} void prima_exec_restore(void){} int __libc_start_main(void){return 0;}\n"
+            command = ["cc", "-nostdlib", "-fPIC", "-fno-stack-protector", "-shared", "-Wl,--no-undefined",
+                       str(HERE / "../c/prima_crt.c"), str(shim), "-o", str(root / "crt.so")]
+            # Link-only fixture: this shared host object is never executed or
+            # advertised as a Prima dynamic library.
+            shim.write_text(stubs + "const unsigned prima_libc_contract_v0_0[11]={0};\n")
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("prima_libc_contract_v1_0", rejected.stderr)
+            shim.write_text(stubs + '#include "' + str(HERE / "../c/prima_contract.h") + '"\n'
+                            'const volatile uint32_t prima_libc_contract_v1_0[11]=PRIMA_CONTRACT_WORDS;\n')
+            subprocess.run(command, check=True)
+
     def test_adapter_and_cancellation_argument_boundary(self):
         with tempfile.TemporaryDirectory(prefix="prima-musl-test-") as directory:
             for name, sources in [("adapter", ["test_adapter.c"]), ("cp", ["test_cp.c", "patches/syscall_cp.s"])]:
@@ -70,9 +87,9 @@ class PortTests(unittest.TestCase):
             self.assertFalse(build.cache_valid(prefix, "current"))
 
     def test_archive_rejects_linux_or_unlisted_raw_traps(self):
-        allowed = "restore.lo:     file format elf64-x86-64\n mov $0x3a,%eax\n syscall\nclone.lo:     file format elf64-x86-64\n mov $0x30,%al\n syscall\n mov $0x31,%al\n syscall\n"
+        allowed = "restore.lo:     file format elf64-x86-64\n mov $0x3a,%eax\n syscall\nclone.lo:     file format elf64-x86-64\n mov $0x30,%al\n syscall\n"
         build.audit_disassembly(allowed)
-        for bad in [allowed.replace("0x3a", "0xf"), allowed + "unknown.lo:     file format elf64-x86-64\n syscall\n", allowed + " int $0x80\n"]:
+        for bad in [allowed.replace("0x3a", "0xf"), allowed + "unknown.lo:     file format elf64-x86-64\n syscall\n", allowed + " int $0x80\n", allowed + " mov $0x31,%al\n syscall\n"]:
             with self.assertRaises(ValueError):
                 build.audit_disassembly(bad)
 

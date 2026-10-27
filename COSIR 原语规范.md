@@ -4,7 +4,7 @@ kind: specification
 authority: abstract-semantics
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-10-25
 ---
 
 # COSIR 原语规范：平台无关抽象语义
@@ -317,6 +317,22 @@ Capability 移动不是用户可直接调用的操作，因此没有独立的成
 如果未来加入选择性撤销，必须单独定义撤销域、并发语义、在途消息处理和派生树一致性，不能把它隐含在 `cap_drop` 中。
 
 > **撤销域（2026-08）：** 探索阶段已在 Bootstrap 宿主实现中先行落地选择性撤销（子树传播，见实施证据 SPEC-022/023），其撤销域定义见 [Prima OS](Prima%20OS.md) §6.2 实现注记；本节保持第一版不提供 `cap_revoke` 的基线，不将撤销隐含进 `cap_drop` 或新增一等原语。在途（`InMessage`/`InNamespace`/`InTransit`）位置仍不纳入撤销域，留待后续阶段。
+
+### 4.8 受控 fork 继承的工作细化
+
+2026-10-25 用户明确选择[方案A](docs/superpowers/specs/2026-10-25-fork-authority-decision.md)。
+本条为阶段5 Process/COW细化的显式委托例外，不修改普通 `cap_derive` 的 Derive 门槛，
+也不把 fork 自动加入 §19 的已冻结公开操作统计。当前阶段的复核仍以阶段跟踪为准。
+
+受控单线程 fork 可以把调用者自持 token 的权限赋予新进程中的独立 token，即使源 token
+不含 Derive；必须记录 ForkInherited 来源、保持目标与权限不变、分配新 CapId 并保留父历史。
+普通移交、Namespace解析等操作不得借此绕过其既有授权前置。
+父子句柄视图分离，同进程线程共享一个视图；drop/移动/退出只影响当前进程的 token。
+父 self-cap 不能生成目标不同的 CDT 子项：新 Task 的 self-cap 经该新 Task 的完整管理根
+铸造/派生，另记 ForkRebound 来源关系。结构性 Namespace 根也使用独立 token。
+对象/视图/历史/审计/页表资源均须预检，失败不得发布子任务；未发布子任务的取消须可追溯。
+这是一项明确的非委托语义变化，不得声称与此前不含该例外的契约完全等价。
+具体边界、OFD holder与会话义务见上述工作契约；实现与验证范围见后继报告。
 
 ## 5. 内核状态
 
@@ -2264,7 +2280,7 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 
 **位置唯一：** 一个 `CapId` 不会同时被两个 Task 持有，也不会同时位于 Task、Message 或 Namespace。
 
-**无隐式复制：** 除 `cap_derive`、`ns_resolve`、`ns_mount`、`node_attach` 和对象创建/`attach_remote_task` 中的显式派生/铸造外，任何操作都不会增加 `CapRecord` 数量。
+**无隐式复制：** 除 `cap_derive`、`ns_resolve`、`ns_mount`、`node_attach`、§4.8受控fork继承和对象创建/`attach_remote_task` 中的显式派生/铸造外，任何操作都不会增加 `CapRecord` 数量。
 
 ### 17.3 Task 与内存隔离
 
@@ -2525,7 +2541,7 @@ abstract : MachineState → POSIRState
 
 本切片已定义 MachineState、抽象函数 α、Bootstrap 细化对应；**待证明**：α 对全部 POSIR 状态成立（后续切片补覆盖）、真实实现满足 α（S1 之后真实 kernel 对照）、形式化验证（BLK-001）。若实现中发现需在 POSIR 层新增机制才能完成 Bootstrap 细化，构成对可信机制层小型性（H3）/机制表达力（H1）的潜在反例，须按 §18.0 末尾规则记录。
 
-**时间与 Audit 细化边界**：`cosir` 的 POSIR 状态已建模 §4 的 `now`/`next_event`，以及 §13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}` 信封（不含伪造时钟：字段即规范既有定义）。但 `MachineState` 无时钟来源，α 取 `now = 0`，且本探针**未建模** `time_now`/`time_advance`/Timer 推进，故运行时 `at` 恒为 0（`EventId` 仍随事件严格递增，W13）。真实时间语义属 §18.0 边界清单 #5 的待证义务。**保留帧与 GPU 池的细化边界**：当前 `cosir` 的 `MachineState`/α 尚未投影 `reserved_frames`/`gpu_frame_universe`/`gpu_reserved_frames`；它们的状态语义以 §5/§14/§16 为准，细化模型待后续切片补齐，本节不宣称已覆盖。
+**时间与 Audit 细化边界**：`cosir` 的 POSIR 状态已建模 §4 的 `now`/`next_event`，以及 §13.1 每条事件的 `{id : EventId, at : Instant, actor : Actor, kind : AuditKind}` 信封（不含伪造时钟：字段即规范既有定义）。但 `MachineState` 无时钟来源，α 取 `now = 0`，该bootstrap探针没有时钟推进，故其运行时 `at` 恒为 0；2026-10-26新增的独立[authority事件组合host模型](docs/superpowers/specs/2026-10-26-event-authority-model-design.md)已有 `time_now`/`advance_time`/Timer，但尚未统一验收，也不建立时钟硬件细化（`EventId` 仍随事件严格递增，W13）。真实时间语义属 §18.0 边界清单 #5 的待证义务。**保留帧与 GPU 池的细化边界**：当前 `cosir` 的 `MachineState`/α 尚未投影 `reserved_frames`/`gpu_frame_universe`/`gpu_reserved_frames`；它们的状态语义以 §5/§14/§16 为准，细化模型待后续切片补齐，本节不宣称已覆盖。
 
 ### 20.5 MemorySegment host 四级索引树 ↔ vspace refinement design
 

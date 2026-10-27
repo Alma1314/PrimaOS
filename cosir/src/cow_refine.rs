@@ -99,12 +99,17 @@ pub(crate) fn authorize_mapping(
     if !segment_cap.active {
         return Err(CowError::InactiveOrStaleCapability);
     }
-    if segment_cap.owner != actor {
+    if !ops.held(actor, seg_cap) {
         return Err(CowError::CapabilityHolderMismatch);
     }
     let seg_id = match segment_cap.object {
         CapObject::Segment(seg_id) => seg_id,
-        CapObject::ExceptionSource(_) | CapObject::Task(_) | CapObject::Namespace(_) => {
+        CapObject::ExceptionSource(_)
+        | CapObject::Task(_)
+        | CapObject::Namespace(_)
+        | CapObject::Timer(_)
+        | CapObject::Node(_)
+        | CapObject::WaitObject(_) => {
             return Err(CowError::CapabilityObjectMismatch);
         }
     };
@@ -133,12 +138,17 @@ pub(crate) fn authorize_mapping(
     if !task_capability.active {
         return Err(CowError::InactiveOrStaleCapability);
     }
-    if task_capability.owner != actor {
+    if !ops.held(actor, task_cap) {
         return Err(CowError::CapabilityHolderMismatch);
     }
     let task_id = match task_capability.object {
         CapObject::Task(task_id) => task_id,
-        CapObject::ExceptionSource(_) | CapObject::Segment(_) | CapObject::Namespace(_) => {
+        CapObject::ExceptionSource(_)
+        | CapObject::Segment(_)
+        | CapObject::Namespace(_)
+        | CapObject::Timer(_)
+        | CapObject::Node(_)
+        | CapObject::WaitObject(_) => {
             return Err(CowError::CapabilityObjectMismatch);
         }
     };
@@ -167,7 +177,7 @@ fn authorize_task_management(
     if !cap.active {
         return Err(CowError::InactiveOrStaleCapability);
     }
-    if cap.owner != actor {
+    if !ops.held(actor, cap_id) {
         return Err(CowError::CapabilityHolderMismatch);
     }
     let CapObject::Task(task) = cap.object else {
@@ -195,7 +205,7 @@ fn authorize_segment_destroy(
     if !cap.active {
         return Err(CowError::InactiveOrStaleCapability);
     }
-    if cap.owner != actor {
+    if !ops.held(actor, cap_id) {
         return Err(CowError::CapabilityHolderMismatch);
     }
     let CapObject::Segment(seg_id) = cap.object else {
@@ -222,7 +232,7 @@ impl CowSliceState {
             .unwrap()
             .vspace
             .retain(|mapping| !mapping.contains(COW_VA));
-        ops.capabilities.insert(
+        ops.insert_capability(
             DATA_SEG_CAP,
             Capability {
                 owner: PARENT,
@@ -232,7 +242,7 @@ impl CowSliceState {
                 parent: None,
             },
         );
-        ops.capabilities.insert(
+        ops.insert_capability(
             CHILD_TASK_CAP,
             Capability {
                 owner: PARENT,
@@ -242,7 +252,7 @@ impl CowSliceState {
                 parent: None,
             },
         );
-        ops.capabilities.insert(
+        ops.insert_capability(
             CHILD_SELF_TASK_CAP,
             Capability {
                 owner: CHILD,
@@ -252,7 +262,7 @@ impl CowSliceState {
                 parent: None,
             },
         );
-        ops.capabilities.insert(
+        ops.insert_capability(
             PARENT_SELF_TASK_CAP,
             Capability {
                 owner: PARENT,
@@ -262,7 +272,7 @@ impl CowSliceState {
                 parent: None,
             },
         );
-        ops.capabilities.insert(
+        ops.insert_capability(
             PARENT_EXC_CAP,
             Capability {
                 owner: PARENT,
@@ -272,7 +282,7 @@ impl CowSliceState {
                 parent: None,
             },
         );
-        ops.capabilities.insert(
+        ops.insert_capability(
             PARENT_FRAME_CAP,
             Capability {
                 owner: PARENT,
@@ -397,19 +407,9 @@ impl CowSliceState {
             .pending_exc
             .keys()
             .any(|task_id| !self.ops.tasks.contains_key(task_id))
-            || self.ops.capabilities.values().any(|cap| {
-                cap.active
-                    && (!self.ops.tasks.contains_key(&cap.owner)
-                        || match cap.object {
-                            CapObject::Task(task) => !self.ops.tasks.contains_key(&task),
-                            // Segment/source/namespace liveness is enforced by the operation that
-                            // consumes the capability; their resource tables are separate
-                            // from Task lifetime. Task capabilities cannot outlive targets.
-                            CapObject::Segment(_)
-                            | CapObject::ExceptionSource(_)
-                            | CapObject::Namespace(_) => false,
-                        })
-            })
+            || self.ops.locations.values().any(|location| matches!(location, crate::state::CapLocation::HeldBy(t) if !self.ops.tasks.contains_key(t)))
+            // Historical records and external stale Task capabilities survive
+            // target death; operation authorization checks live targets.
             || self.ops.subscriptions.iter().any(|(task, source)| {
                 !self.ops.tasks.contains_key(task)
                     || !self
@@ -708,7 +708,7 @@ impl CowSliceState {
                 rights |= right;
             }
         }
-        pending.ops.capabilities.insert(
+        pending.ops.insert_capability(
             cap_id,
             Capability {
                 owner: actor,
@@ -820,21 +820,18 @@ impl CowSliceState {
     /// The fixture always writes at offset zero, which must hold a complete SRET frame.
     pub fn write_valid_resume_frame_for_test(&mut self, caller: TaskId) -> Result<(), CowError> {
         self.check_invariants()?;
-        let frame_cap = self
+        let (_, frame_cap) = self
             .ops
             .capabilities
-            .values()
-            .find(|cap| {
-                cap.owner == caller
+            .iter()
+            .find(|(id, cap)| {
+                self.ops.held(caller, **id)
                     && cap.object == CapObject::Segment(CODE_SEG)
                     && cap.rights & CAP_SEG_MAP_W != 0
             })
             .ok_or(CowError::NoSuchCapability)?;
         if !frame_cap.active {
             return Err(CowError::InactiveOrStaleCapability);
-        }
-        if frame_cap.owner != caller {
-            return Err(CowError::CapabilityHolderMismatch);
         }
         if frame_cap.object != CapObject::Segment(CODE_SEG) {
             return Err(CowError::CapabilityObjectMismatch);
@@ -904,8 +901,7 @@ impl CowSliceState {
 
         let mut pending = self.clone();
         destroy_task_memory(&mut pending.memory, task).map_err(CowError::MemSeg)?;
-        pending.ops.tasks.remove(&task);
-        pending.ops.pending_exc.remove(&task);
+        crate::authority::retire_task(&mut pending.ops, task, crate::state::Actor::Task(actor));
         pending
             .ops
             .subscriptions
@@ -915,7 +911,7 @@ impl CowSliceState {
             .retain(|cow| cow.parent != task && cow.child != task);
         tlb_remove_task(&mut pending.tlb, task);
         for capability in pending.ops.capabilities.values_mut() {
-            if capability.owner == task || capability.object == CapObject::Task(task) {
+            if capability.object == CapObject::Task(task) {
                 capability.active = false;
             }
         }
@@ -946,8 +942,8 @@ impl CowSliceState {
     pub fn has_active_capability_owner(&self, task: TaskId) -> bool {
         self.ops
             .capabilities
-            .values()
-            .any(|cap| cap.active && cap.owner == task)
+            .iter()
+            .any(|(&id, cap)| cap.active && self.ops.held(task, id))
     }
 
     pub fn has_subscription(&self, task: TaskId, source: ExcSourceId) -> bool {
@@ -1081,10 +1077,11 @@ pub fn base_exc() -> State {
                 page_present: true,
                 writable_fault: true,
             },
+            additional_kinds: vec![],
             active: true,
         },
     );
-    exc.capabilities.insert(
+    exc.insert_capability(
         10,
         Capability {
             owner: CHILD,
@@ -1095,7 +1092,7 @@ pub fn base_exc() -> State {
         },
     );
     // frame 载体段 = 代码段 CODE_SEG；C 有写权
-    exc.capabilities.insert(
+    exc.insert_capability(
         FRAME_CAP,
         Capability {
             owner: CHILD,

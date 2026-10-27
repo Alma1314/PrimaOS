@@ -6,6 +6,8 @@
 //! 这些调用号用于当前单机原型，**不是稳定 ABI**。应用应依赖 `prima-runtime`，不应直接
 //! 使用本 crate；编号变更必须同步调整内核分派和运行时封装。
 
+pub mod program_contract;
+
 /// EXO-1/2D：内核与 xtask 共享的通用 boot image（ramdisk）manifest 格式。
 ///
 /// 每个条目是 **opaque `kind` + ELF 字节块**；内核不解释服务名/协议，只按
@@ -182,11 +184,10 @@ pub mod syscall {
     ///
     /// 追加号；只影响调用者自己的保存帧，切换任务时由调度器恢复各自的基址。
     pub const SYS_TASK_SET_FS_BASE: u64 = 38;
-    /// Stage 5 / M6：启动 PIT 通道 0 的自由运行计数（约 10 ms 周期）。
-    ///
-    /// 不配置 PIC、不打开 IF：既有协作阶段用户帧保持不可中断。追加号。
+    /// 启用单 CPU 物理单调时钟（PIT 校准）和 IRQ0 唤醒；启用调用者用户 IF。
+    /// 不推进 COSIR 抽象 Timer 时钟。
     pub const SYS_TIME_ENABLE: u64 = 39;
-    /// Stage 5 / M6：轮询并返回自 `SYS_TIME_ENABLE` 起的 PIT tick 数（约 100 Hz）。
+    /// 单 CPU 物理单调 tick（PIT 校准，约100Hz）；不使用抽象 Timer 时钟。
     ///
     /// 与抽象 `SYS_TIME_NOW`（`advance_time` 时钟，仅用于 Timer）分离：本号直接折算
     /// 硬件倒计数，不推进 Timer 状态，故不会提前触发既有 Timer 见证。
@@ -231,6 +232,34 @@ pub mod syscall {
     pub const SYS_SIGACTION: u64 = 57;
     /// M18b：从信号 handler 返回（恢复被中断现场）。
     pub const SYS_SIGRETURN: u64 = 58;
+    /// Current Process leader (selector0) / parent leader (selector1); Task ID stays7.
+    pub const SYS_PROCESS_ID: u64 = 59;
+    /// Receive with authenticated sender/msg-id metadata (five u64 output words).
+    pub const SYS_RECV_META: u64 = 60;
+    /// Destroy a complete Process using its leader TaskDestroy authority.
+    pub const SYS_PROCESS_TERMINATE: u64 = 61;
+    /// Memory-image replacement with argv and envp counts.
+    pub const SYS_EXEC_REPLACE_ENV: u64 = 62;
+    /// Incarnation identity and current self authority for service handshakes.
+    pub const SYS_TASK_INFO: u64 = 63;
+    /// 0: prepare, 1: publish, 2: abort a fork image using its ticket.
+    pub const SYS_FORK_TRANSACTION: u64 = 64;
+    /// Bounded generic user upcall control, mask, delivery and return context.
+    pub const SYS_UPCALL_CONTROL: u64 = 65;
+    /// Atomically unmap a retiring shared thread stack and exit that Task.
+    pub const SYS_THREAD_EXIT_UNMAP: u64 = 66;
+    /// Compare a user word and register a generation wait without a scheduling gap.
+    pub const SYS_WAIT_WORD: u64 = 67;
+    /// Toggle user accessibility while retaining the mapping and its COW state.
+    pub const SYS_VSPACE_ACCESS_ENABLE: u64 = 68;
+    /// Image replacement with explicit retained ranges and entry registers.
+    pub const SYS_EXEC_HANDOFF: u64 = 69;
+    /// Create an IRQ device and a delegable subscription token into two output words.
+    pub const SYS_DEV_IRQ_CREATE: u64 = 70;
+    /// Mask(1)/unmask(0) a held IRQ device; unmask enables caller user IF.
+    pub const SYS_DEV_IRQ_MASK: u64 = 71;
+    /// Block the current Task until a physical monotonic tick deadline; 1=elapsed.
+    pub const SYS_TASK_WAIT_DEADLINE: u64 = 72;
     /// M17c：`exec_replace(image_ptr, image_len, argv_ptr, argv_count)`。
     pub const SYS_EXEC_REPLACE: u64 = 55;
 }

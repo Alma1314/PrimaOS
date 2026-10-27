@@ -187,6 +187,9 @@ pub fn prepare(root_phys: u64, offset: u64) -> Result<(), VspaceError> {
         shared,
         false,
         false,
+        |frame| {
+            let _ = crate::frames::release_table_frame(frame);
+        },
     )?;
     prima_ostd::arch::invlpg(COW_VA);
 
@@ -262,7 +265,7 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
             // M17b：general user COW——任意用户写故障上带 PT_COW 的叶。
             let va = cr2 & !0xfff;
             let user_root = crate::sched::current_root().unwrap_or(root_phys);
-            let segment = crate::bootstrap::task_segment_id(task);
+            let segment = crate::bootstrap::task_segment_at(task, va);
             if let Some(segment) = segment {
                 let map = |phys: u64| crate::mem::phys_to_virt(phys, offset);
                 let resolved = crate::vspace::resolve_cow(user_root, va, map, || {
@@ -292,6 +295,14 @@ pub extern "C" fn dispatch(frame: &SretFrame) -> u64 {
         return rip;
     }
     if frame.cs & 3 != 0 {
+        if crate::syscall::deliver_fault(
+            *frame,
+            1,
+            crate::idt::fault_addr(),
+            crate::idt::last_fault_err() & 1 != 0,
+        ) {
+            return frame.rip;
+        }
         let task = crate::sched::current();
         let record = UserFaultRecord {
             task,

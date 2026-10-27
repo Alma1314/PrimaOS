@@ -4,10 +4,16 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-25
+updated: 2026-10-27
 ---
 
 # Specs 索引
+
+2026-10-27 待最终范围评审：[静态persona与版本护栏](2026-10-26-static-program-contract-design.md)、[阶段5具体评审工件](2026-10-26-stage5-release-decisions.md)。D6用户已选择A。
+
+用户已选择受控继承A（本轮有界技术验收通过）：[fork能力继承](2026-10-25-fork-authority-decision.md)。
+
+本次后继工作契约：[Capability位置模型](2026-10-25-capability-location-model-design.md)、[Task栈/wait/差分边界](2026-10-25-process-boundary-followup-design.md)；[统一技术证据](../reports/2026-10-25-stage0-5-gap-followup.md)已取得，不代替范围冻结和阶段签署。
 
 2026-10-25 工作增量：[启动/保护/退出/Rust 设计](2026-10-25-stage5-gap-closure-design.md)、[profile v2 提案](2026-10-25-stage5-profile-v2.md)。均不代替组织级评审。
 
@@ -139,3 +145,9 @@ updated: 2026-10-25
 |---|---|---|
 | 2026-10-15 | [2026-10-15-exokernel-alignment-design.md](2026-10-15-exokernel-alignment-design.md) | Exokernel 对齐：规划与实现逻辑优化设计（提案） |
 | 2026-10-14 | [2026-10-14-dual-personality-holder-model-design.md](2026-10-14-dual-personality-holder-model-design.md) | 双人格 Holder 模型设计草案：AddressSpace / CapTable / ShareGroup / Thread |
+
+
+## 2026-10-26 未验收工作增量
+
+- [Rust D6范围裁决](2026-10-26-rust-d6-scope-decision.md)：用户已选择A；原生单线程std的R2双轮及Clippy通过，不代替阶段签署。
+- [事件/位置模型组合](2026-10-26-event-authority-model-design.md)：Timer、异常、等待、远端数据的host回归及Lean有界位置证明构建已通过；机器统一验收仍进行中。

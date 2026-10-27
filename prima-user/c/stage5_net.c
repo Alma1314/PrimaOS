@@ -14,13 +14,37 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <stdint.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures;
 static int first_error;
 static int first_field = 1;
+static volatile sig_atomic_t caught, nested_stat;
+static void handle_signal(int number) {
+    (void)number;
+    int saved = errno;
+    struct stat metadata;
+    nested_stat = stat("/", &metadata) == 0 && S_ISDIR(metadata.st_mode);
+    caught++;
+    errno = saved;
+}
+static void delay(void) {
+    struct timespec left = {0, 30000000};
+    while (nanosleep(&left, &left) < 0 && errno == EINTR) {}
+}
+static int collect(pid_t child) {
+    int status;
+    pid_t result;
+    if (child <= 0) return 0;
+    do { result = waitpid(child, &status, 0); } while (result < 0 && errno == EINTR);
+    return result == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 static unsigned long text_len(const char *text) {
     unsigned long len = 0;
@@ -168,13 +192,66 @@ int main(void) {
     int badfam = socket(12345, SOCK_DGRAM, 0) == -1 && errno == EAFNOSUPPORT;
     field("badfam", badfam, errno);
 
-    /* 7. close 后 sendto 返回 EBADF。 */
-    int closed = 0;
-    if (a >= 0) {
-        close(a);
-        a = -1;
-        closed = send_to(3, port_b, "x", 1) == -1 && errno == EBADF;
+    /* Both fork sides retain independent fd holders and share the UDP object.
+     * A dup in the child survives closing its original and the parent's copies. */
+    int alias = dup(a);
+    pid_t child = alias >= 0 ? fork() : -1;
+    if (child == 0) {
+        int ok = close(a) == 0 && close(b) == 0;
+        delay();
+        ok = send_to(alias, port_b, "fork", 4) == 4 && ok;
+        ok = close(alias) == 0 && ok;
+        _exit(ok ? 0 : 1);
     }
+    if (alias >= 0) close(alias);
+    int old_a = a;
+    if (a >= 0) { close(a); a = -1; }
+    int fork_ok = child > 0 && recv_from(b, buffer, sizeof buffer, &source) == 4 &&
+                  same_bytes(buffer, "fork", 4) && source == port_a;
+    fork_ok = collect(child) && fork_ok;
+    field("fork", fork_ok, errno);
+
+    struct sigaction action = {0};
+    action.sa_handler = handle_signal;
+    sigemptyset(&action.sa_mask);
+    int interrupt_ok = sigaction(SIGUSR1, &action, 0) == 0;
+    pid_t parent = getpid();
+    child = fork();
+    if (child == 0) {
+        delay();
+        int ok = kill(parent, SIGUSR1) == 0;
+        delay();
+        ok = send_to(b, port_b, "cancel", 6) == 6 && ok;
+        _exit(ok ? 0 : 1);
+    }
+    errno = 0;
+    long interrupted = child > 0 ? recv_from(b, buffer, sizeof buffer, &source) : -2;
+    interrupt_ok = interrupt_ok && interrupted == -1 && errno == EINTR && caught == 1 && nested_stat;
+    field("interrupt", interrupt_ok, errno);
+    int cancelled = child > 0 && recv_from(b, buffer, sizeof buffer, &source) == 6 &&
+                    same_bytes(buffer, "cancel", 6) && source == port_b;
+    cancelled = collect(child) && cancelled;
+    field("cancel", cancelled, errno);
+
+    action.sa_flags = SA_RESTART;
+    int restart_ok = sigaction(SIGUSR1, &action, 0) == 0;
+    child = fork();
+    if (child == 0) {
+        delay();
+        int ok = kill(parent, SIGUSR1) == 0;
+        delay();
+        ok = send_to(b, port_b, "restart", 7) == 7 && ok;
+        _exit(ok ? 0 : 1);
+    }
+    long restarted = child > 0 ? recv_from(b, buffer, sizeof buffer, &source) : -2;
+    restart_ok = restart_ok && restarted == 7 && same_bytes(buffer, "restart", 7) &&
+                 source == port_b && caught == 2 && nested_stat;
+    restart_ok = collect(child) && restart_ok;
+    field("restart", restart_ok, restarted);
+
+    /* close 后 sendto 返回 EBADF。 */
+    int closed = 0;
+    closed = send_to(old_a, port_b, "x", 1) == -1 && errno == EBADF;
     field("closed", closed, errno);
 
     if (b >= 0)

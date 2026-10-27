@@ -12,6 +12,18 @@
 #include <stdint.h>
 #include <termios.h>
 #include <unistd.h>
+#ifndef PRIMA_HOST
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+static volatile sig_atomic_t tty_signals;
+static void tty_handler(int signal) {
+    struct stat root;
+    /* The nested RPC may receive the outer console reply before its own reply. */
+    if (signal == SIGINT && stat("/", &root) == 0) tty_signals++;
+}
+#endif
 
 static int failures;
 static int first_error;
@@ -87,6 +99,49 @@ int main(void) {
     long line = read(0, buffer, sizeof buffer);
     int line_ok = line == 3 && same_bytes(buffer, "hi\n", 3);
     field("line", line_ok, line);
+
+#ifndef PRIMA_HOST
+    struct sigaction action = {0};
+    action.sa_handler = tty_handler;
+    sigemptyset(&action.sa_mask);
+    int interrupt_ok = sigaction(SIGINT, &action, 0) == 0;
+    struct termios quiet = term;
+    quiet.c_lflag &= (tcflag_t)~ECHO;
+    interrupt_ok = tcsetattr(0, TCSANOW, &quiet) == 0 && interrupt_ok;
+    pid_t notifier = fork();
+    if (notifier == 0) {
+        struct timespec delay = {0, 20000000};
+        (void)nanosleep(&delay, 0);
+        emit("\nTTYINTRAISE\n");
+        _exit(0);
+    }
+    errno = 0;
+    long interrupted = notifier > 0 ? read(0, buffer, sizeof buffer) : -2;
+    interrupt_ok = interrupt_ok && interrupted == -1 && errno == EINTR && tty_signals == 1;
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(notifier, &status, 0); } while (waited < 0 && errno == EINTR);
+    interrupt_ok = interrupt_ok && waited == notifier && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    field("interrupt", interrupt_ok, interrupted);
+    emit("\nTTYAFTER\n");
+    long after = read(0, buffer, sizeof buffer);
+    field("cancel", after == 3 && same_bytes(buffer, "ok\n", 3), after);
+
+    action.sa_flags = SA_RESTART;
+    int restart_ok = sigaction(SIGINT, &action, 0) == 0;
+    notifier = fork();
+    if (notifier == 0) {
+        struct timespec delay = {0, 20000000};
+        (void)nanosleep(&delay, 0);
+        emit("\nTTYRESTART\n");
+        _exit(0);
+    }
+    long restarted = notifier > 0 ? read(0, buffer, sizeof buffer) : -2;
+    do { waited = waitpid(notifier, &status, 0); } while (waited < 0 && errno == EINTR);
+    restart_ok = restart_ok && restarted == 3 && same_bytes(buffer, "go\n", 3) && tty_signals == 2;
+    restart_ok = restart_ok && waited == notifier && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    field("restart", restart_ok, restarted);
+#endif
 
     struct termios raw = term;
     raw.c_lflag &= (tcflag_t)~(ICANON | ECHO);

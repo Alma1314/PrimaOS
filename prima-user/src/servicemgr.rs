@@ -41,6 +41,17 @@
 #![deny(unsafe_code)]
 
 use core::panic::PanicInfo;
+use prima_runtime::protocol::SERVICE_NET_REQUEST_TAG;
+use prima_runtime::protocol::SERVICE_SESSION_ROUTE_TAG;
+use prima_runtime::protocol::{
+    SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_REGISTER_TAG,
+};
+use prima_runtime::protocol::{
+    SERVICE_SESSION_FORK_ACK_TAG, SERVICE_SESSION_FORK_REGISTER_TAG, SERVICE_SESSION_PREPARED_FLAG,
+};
+use prima_runtime::protocol::{
+    STAGE5_TTY_CANCEL_ACK_TAG, STAGE5_TTY_CANCEL_TAG, STAGE5_TTY_READ_ACK_TAG,
+};
 use prima_runtime::{
     Capability, Error, Rights, Runtime, SyscallTransport, TaskId,
     protocol::{
@@ -51,22 +62,15 @@ use prima_runtime::{
         NATIVE_APP_REQUEST_TAG, SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_BETA,
         SERVICE_BEHAVIOR_DRIVER, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NONE, SERVICE_BEHAVIOR_NS,
         SERVICE_BEHAVIOR_STORE, SERVICE_DEV_CAP_TAG, SERVICE_ECHO_ARGS_OFFSET,
-        SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_EBADF, SERVICE_FILE_EINVAL, SERVICE_FILE_ENOENT,
-        SERVICE_FILE_ENOSPC, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT,
-        SERVICE_FILE_REPLY_TAG, SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER,
-        SERVICE_IMAGE_ENTRY_LEN, SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS,
-        SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC,
-        SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA,
-        SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK,
-        SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NET_ARG_MASK,
-        SERVICE_NET_CHUNK, SERVICE_NET_CLIENT_SHIFT, SERVICE_NET_DATAGRAM_MAX,
-        SERVICE_NET_EADDRINUSE, SERVICE_NET_EPHEMERAL_PORT, SERVICE_NET_HANDLE_SHIFT,
-        SERVICE_NET_LEN_MASK, SERVICE_NET_LEN_SHIFT, SERVICE_NET_OP_BIND, SERVICE_NET_OP_CLOSE,
-        SERVICE_NET_OP_GETSOCKNAME, SERVICE_NET_OP_MASK, SERVICE_NET_OP_OPEN,
-        SERVICE_NET_OP_RECV_CHUNK, SERVICE_NET_OP_RECVFROM, SERVICE_NET_OP_SENDTO_BEGIN,
-        SERVICE_NET_OP_SENDTO_DATA, SERVICE_NET_OP_SENDTO_END, SERVICE_NET_OP_SHIFT,
-        SERVICE_NET_QUEUE, SERVICE_NET_REQUEST_TAG, SERVICE_NET_SOCKETS, SERVICE_NS_CAP_TAG,
-        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT,
+        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_REPLY_TAG,
+        SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
+        SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_SERVICEMGR,
+        SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
+        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
+        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
+        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
+        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICE_VFS_CHMOD_TAG, SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG,
@@ -80,7 +84,7 @@ use prima_runtime::{
         STAGE5_TTY_ACK_TAG, STAGE5_TTY_LINE_MAX, STAGE5_TTY_MODE_TAG, STAGE5_TTY_READ_CHUNK,
         STAGE5_TTY_READ_COUNT_SHIFT, STAGE5_TTY_READ_MAX_SHIFT, STAGE5_TTY_READ_REPLY_TAG,
         STAGE5_TTY_READ_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
-        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply, pack_net_reply,
+        STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply,
         pack_service_name, pack_service_request, pack_vfs_pair_reply, pack_vma_cap_reply,
     },
     task::TaskSpec,
@@ -89,6 +93,9 @@ use prima_runtime::{
         EVENT_SERVICEMGR, EVENT_STAGE5_CAPACITY, EVENT_STAGE5_CLEANUP,
     },
 };
+use prima_user::console::{CANCEL_SERVED, CANCEL_WAITING, Reads as TtyReads, SERVED};
+use prima_user::network::Network as NetState;
+use prima_user::sessions::{Client as FileClient, MAX_CLIENTS};
 
 /// 客户端把共享段映射到的 VA（与本进程自身根内的同一物理帧映射目标；与 `prima-user` 一致）。
 const USER_SEG_VA: u64 = 0x0000_0A00_0000_7000;
@@ -145,6 +152,35 @@ const SERVICE_ALPHA_MARKER_OFFSET: u64 = 176;
 const SERVICE_BETA_MARKER_OFFSET: u64 = 184;
 const SERVICE_ENDPOINT_ALPHA_OFFSET: u64 = 160;
 const SERVICE_ENDPOINT_BETA_OFFSET: u64 = 168;
+// Retire session authority at the same lifetime boundary as the Process,
+// including the final cleanup path that never returns to the receive loop.
+fn reap_file_sessions(
+    runtime: &Runtime<impl SyscallTransport>,
+    file_sessions: &mut [Option<FileClient>; MAX_CLIENTS],
+    signal_caps: &mut [Option<Capability>; MAX_CLIENTS],
+    tty_reads: &mut TtyReads,
+) {
+    for client in file_sessions {
+        if let Some(old) = *client
+            && runtime
+                .task_cookie(TaskId::from_raw(old.cookie as u32))
+                .ok()
+                != Some(old.cookie)
+        {
+            let _ = runtime.cap_drop(old.reply);
+            if let Some(control) = signal_caps[old.cookie as u32 as usize].take() {
+                let _ = runtime.cap_drop(control);
+            }
+            *client = None;
+            for read in &mut tty_reads.slots {
+                if read.is_some_and(|r| r.cookie == old.cookie) {
+                    *read = None;
+                }
+            }
+        }
+    }
+}
+
 /// EXO-3H：在 servicemgr 内读回自己映射的客户端共享段偏移；内核不再解释这些偏移。
 fn read_shared(runtime: &Runtime<impl SyscallTransport>, offset: u64) -> u64 {
     runtime.read_user_u64(USER_SEG_VA + offset).unwrap_or(0)
@@ -170,7 +206,7 @@ fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32>
 const FRAME_SIZE: u64 = 0x1000;
 /// 普通服务端点的栈页数。M8 保持既有 1 页布局，并把 VFS 解析栈帧压回该预算
 /// （名称 ≤16、分量 ≤6）；没有改用 2 页。
-const SERVICE_STACK_PAGES: u64 = 1;
+const SERVICE_STACK_PAGES: u64 = 2;
 /// C 入口栈页数：musl 的 `__libc_start_main` 与 `snprintf` 调用链合计超过 4 页；
 /// 8 页容纳启动初始化与格式化路径，同时把映射条目控制在新的 vspace 预算内。
 const C_STACK_PAGES: u64 = 8;
@@ -436,11 +472,17 @@ pub extern "C" fn _start(
     // 解析的结果、同步请求的客户端 id，以及管理器→C 任务的发送凭据（C 创建后派生，退出时回收）。
     let mut rootfs_bound = false;
     let mut file_authorized = false;
+    let mut file_sessions: [Option<FileClient>; MAX_CLIENTS] = [None; MAX_CLIENTS];
+    let mut signal_caps: [Option<Capability>; MAX_CLIENTS] = [None; MAX_CLIENTS];
+    let mut store_manager: Option<Capability> = None;
     let mut file_client: Option<u32> = None;
     // M19：loopback UDP 端点表（仅首次 socket 请求后才被使用）。
     let mut net = NetState::new();
     // M14：fd 0 的行规程状态。
     let mut tty_input = TtyInput::new();
+    let mut tty_reads = TtyReads::new();
+    let mut tty_irq: Option<(Capability, u32)> = None;
+    let mut tty_drain = false;
     let mut c_send: Option<Capability> = None;
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
@@ -478,9 +520,229 @@ pub extern "C" fn _start(
     let mut reply_count: [u64; SERVICES] = [0; SERVICES];
     let mut served = 0u64;
     loop {
+        let mut skipped = 0;
+        while let Some(reply) = net.next_delivery_excluding(skipped) {
+            if runtime
+                .send(
+                    TaskId::from_raw(reply.cookie as u32),
+                    reply.reply,
+                    reply.payload,
+                    &[],
+                )
+                .is_ok()
+            {
+                net.delivered(reply);
+            } else if runtime
+                .task_cookie(TaskId::from_raw(reply.cookie as u32))
+                .ok()
+                != Some(reply.cookie)
+            {
+                net.drop_client(reply.cookie);
+            } else {
+                skipped |= 1 << (reply.cookie as u32);
+            }
+        }
+        tty_pump(
+            &runtime,
+            mgr_serial,
+            tty_irq.map(|(dev, _)| dev),
+            &mut tty_drain,
+            &mut tty_input,
+            &mut tty_reads,
+            &signal_caps,
+            &mut echo_len,
+            &mut echo_hash,
+        );
+        if skipped != 0 {
+            // Give clients a turn, then keep a wakeup queued for our receive.
+            // Existing requests remain ahead of it, so one full client cannot
+            // strand another client's RPC. A full own mailbox already wakes us.
+            let _ = runtime.yield_task();
+            let _ = runtime.send(TaskId::from_raw(self_id as u32), self_cap, 0, &[]);
+        }
         let Ok(message) = runtime.receive() else {
             continue;
         };
+        let source_cookie = message.sender.map_or(0, |task| {
+            u64::from(task.as_raw()) | (u64::from(message.sender_generation) << 32)
+        });
+        for cookie in net.client_cookies().into_iter().filter(|c| *c != 0) {
+            if runtime.task_cookie(TaskId::from_raw(cookie as u32)).ok() != Some(cookie) {
+                net.drop_client(cookie);
+            }
+        }
+        for cookie in net.owner_cookies().into_iter().filter(|c| *c != 0) {
+            if runtime.task_cookie(TaskId::from_raw(cookie as u32)).ok() != Some(cookie) {
+                net.release_owner(cookie);
+            }
+        }
+        reap_file_sessions(
+            &runtime,
+            &mut file_sessions,
+            &mut signal_caps,
+            &mut tty_reads,
+        );
+        let client_send = file_sessions
+            .get(source_cookie as u32 as usize)
+            .copied()
+            .flatten()
+            .filter(|c| c.cookie == source_cookie)
+            .map(|c| c.reply)
+            .or_else(|| {
+                c_send.filter(|cap| runtime.send_target_cookie(*cap).ok() == Some(source_cookie))
+            });
+        if source_cookie == 0
+            && tty_irq.is_some_and(|(_, source)| message.payload == (u64::from(source) | (7 << 16)))
+        {
+            tty_drain = true;
+            continue;
+        }
+        if message.payload >> 48 == SERVICE_SESSION_REGISTER_TAG >> 48
+            || message.payload >> 48 == SERVICE_SESSION_FORK_REGISTER_TAG >> 48
+        {
+            let Some(reply) = message.capabilities[0] else {
+                continue;
+            };
+            let subject = runtime.send_target_cookie(reply).unwrap_or(0);
+            let signal = message.capabilities[1];
+            let task = TaskId::from_raw(subject as u32);
+            let process = runtime.task_process_cookie(task).unwrap_or(0);
+            let parent = runtime.task_parent_cookie(task).unwrap_or(0);
+            let preparing = message.payload >> 48 == SERVICE_SESSION_FORK_REGISTER_TAG >> 48;
+            let source_client = file_sessions
+                .get(source_cookie as u32 as usize)
+                .copied()
+                .flatten()
+                .filter(|c| c.cookie == source_cookie);
+            let valid = if preparing {
+                source_client.is_some_and(|c| c.process == parent)
+                    && runtime.task_prepared(task).ok() == Some(true)
+            } else {
+                subject == source_cookie && subject != 0
+            };
+            if !valid
+                || signal.is_some_and(|cap| runtime.send_target_cookie(cap).ok() != Some(subject))
+            {
+                let _ = runtime.cap_drop(reply);
+                if let Some(cap) = signal {
+                    let _ = runtime.cap_drop(cap);
+                }
+                continue;
+            }
+            if preparing
+                && !net.inherit(
+                    source_client.expect("authenticated parent").process,
+                    process,
+                )
+            {
+                let parent = source_client.expect("authenticated parent");
+                let _ = runtime.send(
+                    TaskId::from_raw(parent.cookie as u32),
+                    parent.reply,
+                    SERVICE_SESSION_FORK_ACK_TAG | 11,
+                    &[],
+                );
+                let _ = runtime.cap_drop(reply);
+                if let Some(cap) = signal {
+                    let _ = runtime.cap_drop(cap);
+                }
+                continue;
+            }
+            let root = capacity_probe.is_some_and(|(cap, _, _, _)| {
+                runtime.send_target_cookie(cap).ok() == Some(subject)
+            });
+            let authorized = file_authorized
+                && (root
+                    || file_sessions
+                        .iter()
+                        .flatten()
+                        .any(|c| c.process == process || c.process == parent));
+            let forwarded = if authorized
+                && let (Some(manager), Some(store)) = (store_manager, registry[STORE_SLOT])
+            {
+                let client_result = runtime.cap_derive(reply, TASK_SEND_RIGHTS);
+                let store_result = runtime.cap_derive(manager, TASK_SEND_RIGHTS);
+                if let (Ok(client_reply), Ok(store_send)) = (client_result, store_result) {
+                    let flags = if preparing {
+                        SERVICE_SESSION_PREPARED_FLAG
+                    } else {
+                        0
+                    };
+                    let store_cookie = runtime
+                        .task_cookie(TaskId::from_raw(store.id as u32))
+                        .unwrap_or(0);
+                    let route = SERVICE_SESSION_ROUTE_TAG
+                        | ((store_cookie >> 32) << 8)
+                        | (store_cookie & 0xff);
+                    if runtime.send(task, reply, route, &[]).is_ok()
+                        && runtime
+                            .send(
+                                TaskId::from_raw(store.id as u32),
+                                store.authority,
+                                SERVICE_SESSION_ADD_TAG | flags | (message.payload & 0xffff_ffff),
+                                &[client_reply, store_send],
+                            )
+                            .is_ok()
+                    {
+                        true
+                    } else {
+                        let _ = runtime.cap_drop(client_reply);
+                        let _ = runtime.cap_drop(store_send);
+                        false
+                    }
+                } else {
+                    if let Ok(cap) = client_result {
+                        let _ = runtime.cap_drop(cap);
+                    }
+                    if let Ok(cap) = store_result {
+                        let _ = runtime.cap_drop(cap);
+                    }
+                    false
+                }
+            } else {
+                false
+            };
+            if forwarded && (task.as_raw() as usize) < MAX_CLIENTS {
+                let index = task.as_raw() as usize;
+                if let Some(old) = file_sessions[index] {
+                    let _ = runtime.cap_drop(old.reply);
+                }
+                if let Some(old) = signal_caps[index].take() {
+                    let _ = runtime.cap_drop(old);
+                }
+                signal_caps[index] = signal;
+                file_sessions[index] = Some(FileClient {
+                    cookie: subject,
+                    process,
+                    reply,
+                    owner: 0,
+                });
+            } else {
+                if preparing {
+                    net.release_owner(process);
+                    if let Some(parent) = source_client {
+                        let _ = runtime.send(
+                            TaskId::from_raw(parent.cookie as u32),
+                            parent.reply,
+                            SERVICE_SESSION_FORK_ACK_TAG | SERVICE_FILE_ENOENT,
+                            &[],
+                        );
+                    }
+                } else {
+                    let _ = runtime.send(
+                        task,
+                        reply,
+                        SERVICE_SESSION_ACK_TAG | SERVICE_FILE_ENOENT,
+                        &[],
+                    );
+                }
+                let _ = runtime.cap_drop(reply);
+                if let Some(cap) = signal {
+                    let _ = runtime.cap_drop(cap);
+                }
+            }
+            continue;
+        }
         if message.payload >> 48 == NATIVE_APP_REQUEST_TAG >> 48 && pong_sent {
             // 控制消息携带操作与长度；8 KiB 数据留在客户端移交的跨页共享 Segment 中。
             let op = (message.payload >> 40) & 0xff;
@@ -627,6 +889,20 @@ pub extern "C" fn _start(
                 }
                 if let Ok(serial) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
                     mgr_serial = Some(serial);
+                    if let Ok((dev, source)) = runtime.dev_irq_create(4) {
+                        if let Ok(source_id) = runtime.dev_irq_subscribe(source) {
+                            tty_irq = Some((dev, source_id));
+                            let _ = runtime.dev_ioport_out(serial, IOPORT_BASE + 1, 1);
+                            if let Ok(mcr) = runtime.dev_ioport_in(serial, IOPORT_BASE + 4) {
+                                let _ = runtime.dev_ioport_out(serial, IOPORT_BASE + 4, mcr | 8);
+                            }
+                            tty_drain = true;
+                        } else {
+                            let _ = runtime.dev_destroy(dev);
+                            let _ = runtime.cap_drop(dev);
+                        }
+                        let _ = runtime.cap_drop(source);
+                    }
                 }
             }
         } else if message.payload >> 48 == STAGE5_TTY_WRITE_TAG >> 48 {
@@ -721,7 +997,7 @@ pub extern "C" fn _start(
                 if is_commit || is_pair_commit || is_link_read {
                     file_client = Some(client);
                 }
-            } else if let Some(send) = c_send {
+            } else if let Some(send) = client_send {
                 // 授权/转发失败也必须回送**同一族**的应答；否则 C 任务会在
                 // pair/link 通道上过滤掉 FILE_REPLY 并永久阻塞。
                 let reply = if is_pair_commit {
@@ -740,120 +1016,57 @@ pub extern "C" fn _start(
             }
         } else if message.payload >> 48 == STAGE5_TTY_MODE_TAG >> 48 {
             // M14：termios 的 ICANON/ECHO 变化（适配层单向通知）。
-            tty_input.canonical = message.payload & 1 != 0;
-            tty_input.echo = message.payload & 2 != 0;
+            if client_send.is_some() {
+                tty_input.canonical = message.payload & 1 != 0;
+                tty_input.echo = message.payload & 2 != 0;
+                tty_input.signals = message.payload & 4 != 0;
+                tty_drain = true;
+            }
         } else if message.payload >> 48 == STAGE5_TTY_READ_TAG >> 48 {
-            // M14：fd 0 读；无数据时轮询 COM1（仅在有读者时）。
-            let client = ((message.payload >> 40) & 0xff) as u32;
-            let max = ((message.payload >> STAGE5_TTY_READ_MAX_SHIFT) & 0xff) as usize;
-            let reply = if let Some(serial) = mgr_serial {
-                tty_read_request(
-                    &runtime,
-                    serial,
-                    &mut tty_input,
-                    max,
-                    &mut echo_len,
-                    &mut echo_hash,
-                )
-            } else {
-                STAGE5_TTY_READ_REPLY_TAG
-            };
-            if let Some(send) = c_send {
-                let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
+            if let Some(send) = client_send {
+                let sequence = message.payload as u16;
+                let max = ((message.payload >> STAGE5_TTY_READ_MAX_SHIFT) & 0xff) as u8;
+                if tty_irq.is_none()
+                    || !tty_reads.enqueue(
+                        source_cookie,
+                        send,
+                        sequence,
+                        max.clamp(1, STAGE5_TTY_READ_CHUNK as u8),
+                    )
+                {
+                    let reply = STAGE5_TTY_READ_REPLY_TAG
+                        | (u64::from(sequence) << 32)
+                        | (0xff << STAGE5_TTY_READ_COUNT_SHIFT)
+                        | 11;
+                    let _ = runtime.send(TaskId::from_raw(source_cookie as u32), send, reply, &[]);
+                }
+                tty_drain = true;
             }
+        } else if message.payload >> 48 == STAGE5_TTY_CANCEL_TAG >> 48
+            && let Some(client_send) = client_send
+        {
+            if !tty_reads.cancel(source_cookie, message.payload as u16) {
+                // An admission error can race with interruption before its
+                // reply is consumed. There are no bytes committed in this case.
+                let payload = STAGE5_TTY_CANCEL_ACK_TAG | ((message.payload & 0xffff) << 32) | 1;
+                let _ = runtime.send(
+                    TaskId::from_raw(source_cookie as u32),
+                    client_send,
+                    payload,
+                    &[],
+                );
+            }
+        } else if message.payload >> 48 == STAGE5_TTY_READ_ACK_TAG >> 48 && client_send.is_some() {
+            tty_reads.acknowledge(source_cookie, message.payload as u16);
+            tty_drain = true;
         } else if message.payload >> 48 == SERVICE_NET_REQUEST_TAG >> 48 {
-            // M19：loopback IPv4/UDP 子集。端点表在本（ring3 服务管理器）进程内；
-            // 数据报经 IPC 搬运，但对外是 socket/端口/数据报语义，不是 IPC 别名。
-            let op = (message.payload >> SERVICE_NET_OP_SHIFT) & SERVICE_NET_OP_MASK;
-            let handle = ((message.payload >> SERVICE_NET_HANDLE_SHIFT) & 0xf) as u8;
-            let client = ((message.payload >> SERVICE_NET_CLIENT_SHIFT) & 0xff) as u32;
-            let arg = message.payload & SERVICE_NET_ARG_MASK;
-            let mut reply = None;
-            match op {
-                SERVICE_NET_OP_OPEN => {
-                    reply = Some(match net.open() {
-                        Some(handle) => pack_net_reply(op, handle as u64, 0, handle as u64),
-                        None => pack_net_reply(op, 0, SERVICE_FILE_ENOSPC, 0),
-                    });
-                }
-                SERVICE_NET_OP_BIND => {
-                    let port = (arg & 0xffff) as u16;
-                    reply = Some(match net.bind(handle, port) {
-                        Ok(port) => pack_net_reply(op, handle as u64, 0, port as u64),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                SERVICE_NET_OP_GETSOCKNAME => {
-                    reply = Some(match net.port(handle) {
-                        Ok(port) => pack_net_reply(op, handle as u64, 0, port as u64),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                SERVICE_NET_OP_SENDTO_BEGIN => {
-                    let port = (arg & 0xffff) as u16;
-                    let total = ((arg >> SERVICE_NET_LEN_SHIFT) & SERVICE_NET_LEN_MASK) as u8;
-                    reply = Some(match net.send_begin(handle, port, total) {
-                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                SERVICE_NET_OP_SENDTO_DATA => {
-                    reply = Some(match net.send_data(arg as u32) {
-                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                SERVICE_NET_OP_SENDTO_END => {
-                    reply = Some(match net.send_end() {
-                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                    if let Some((pending_handle, pending_client)) = net.pending
-                        && let Some((source, len)) = net.take_datagram(pending_handle)
-                    {
-                        net.pending = None;
-                        let data = source as u64 | ((len as u64) << SERVICE_NET_LEN_SHIFT);
-                        if let Some(send) = c_send {
-                            let _ = runtime.send(
-                                TaskId::from_raw(pending_client),
-                                send,
-                                pack_net_reply(
-                                    SERVICE_NET_OP_RECVFROM,
-                                    pending_handle as u64,
-                                    0,
-                                    data,
-                                ),
-                                &[],
-                            );
-                        }
-                    }
-                }
-                SERVICE_NET_OP_RECVFROM => {
-                    if let Some((source, len)) = net.take_datagram(handle) {
-                        let data = source as u64 | ((len as u64) << SERVICE_NET_LEN_SHIFT);
-                        reply = Some(pack_net_reply(op, handle as u64, 0, data));
-                    } else if net.socket_open(handle) {
-                        net.pending = Some((handle, client));
-                    } else {
-                        reply = Some(pack_net_reply(op, handle as u64, SERVICE_FILE_EBADF, 0));
-                    }
-                }
-                SERVICE_NET_OP_RECV_CHUNK => {
-                    reply = Some(match net.recv_chunk(handle, arg as usize) {
-                        Ok(data) => pack_net_reply(op, handle as u64, 0, data),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                SERVICE_NET_OP_CLOSE => {
-                    reply = Some(match net.close(handle) {
-                        Ok(()) => pack_net_reply(op, handle as u64, 0, 0),
-                        Err(status) => pack_net_reply(op, handle as u64, status, 0),
-                    });
-                }
-                _ => reply = Some(pack_net_reply(op, handle as u64, SERVICE_FILE_EINVAL, 0)),
-            }
-            if let (Some(reply), Some(send)) = (reply, c_send) {
-                let _ = runtime.send(TaskId::from_raw(client), send, reply, &[]);
+            if let Some(client) = file_sessions
+                .get(source_cookie as u32 as usize)
+                .copied()
+                .flatten()
+                .filter(|c| c.cookie == source_cookie)
+            {
+                net.request(source_cookie, client.process, client.reply, message.payload);
             }
         } else if message.payload >> 48 == SERVICE_FILE_REQUEST_TAG >> 48 {
             // M4/M8：已授权的读/写/lseek/close。句柄只能由一次成功的 open 产生；管理器
@@ -876,7 +1089,7 @@ pub extern "C" fn _start(
             };
             if forwarded {
                 file_client = Some(client);
-            } else if let Some(send) = c_send {
+            } else if let Some(send) = client_send {
                 let fd = (message.payload >> SERVICE_FILE_FD_SHIFT) & 0xf;
                 let _ = runtime.send(
                     TaskId::from_raw(client),
@@ -892,7 +1105,7 @@ pub extern "C" fn _start(
                 || tag == SERVICE_VFS_LINK_REPLY_TAG >> 48
         ) {
             // M4/M13a：存储服务的同步应答回送 C 任务；无等待者时丢弃。
-            if let (Some(client), Some(send)) = (file_client.take(), c_send) {
+            if let (Some(client), Some(send)) = (file_client.take(), client_send) {
                 let _ = runtime.send(TaskId::from_raw(client), send, message.payload, &[]);
             }
         } else if message.payload >> 48 == SERVICE_VMA_CAP_REQUEST_TAG >> 48 {
@@ -902,7 +1115,7 @@ pub extern "C" fn _start(
             let client = ((message.payload >> SERVICE_VMA_CLIENT_SHIFT) & 0xff) as u32;
             let mut delivered = false;
             if let Some((manager, _, stack, _)) = capacity_probe {
-                let authority = c_send.unwrap_or(manager);
+                let authority = client_send.unwrap_or(manager);
                 if let Ok(arena) = runtime.cap_derive(stack, ARENA_MAP_RIGHTS) {
                     if runtime
                         .send(
@@ -926,22 +1139,30 @@ pub extern "C" fn _start(
                         &[],
                     );
                 }
-            } else if let Some(send) = c_send {
+            } else if let Some(send) = client_send {
                 let _ = runtime.send(TaskId::from_raw(client), send, pack_vma_cap_reply(1), &[]);
             }
         } else if message.payload >> 48 == STAGE5_C_PROBE_TAG >> 48 {
-            // Sender parks in receive after reporting exit. Destroy it before
-            // reclaiming its stack/data; sender-side self-destroy could discard
-            // a queued notification before this manager had consumed it.
+            // Sender parks after reporting exit; terminate its entire Process
+            // before reclaiming the shared stack/data segments.
             // 屏蔽状态字节与 ID 字节后必须等于固定标签（含 0x5a 见证），再记录两者。
             if message.payload & !((0xff << 16) | 0xff) == (STAGE5_C_PROBE_TAG & !0xff) {
                 capacity_id = message.payload & 0xff;
                 capacity_exit_status = (message.payload >> 16) & 0xff;
             }
             if let Some((manager, entry_offset, stack, data)) = capacity_probe {
-                if runtime.task_destroy(manager).is_err() {
+                if runtime
+                    .process_terminate(manager, capacity_exit_status as u8)
+                    .is_err()
+                {
                     continue;
                 }
+                reap_file_sessions(
+                    &runtime,
+                    &mut file_sessions,
+                    &mut signal_caps,
+                    &mut tty_reads,
+                );
                 let stack_reclaimed = runtime.memseg_destroy(stack).is_ok();
                 let data_reclaimed = match data {
                     Some(data) => runtime.memseg_destroy(data).is_ok(),
@@ -1056,7 +1277,7 @@ pub extern "C" fn _start(
             while slot < SERVICES {
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
-                    && let Some((_token, _manager, _entry, stack, _data)) = create_service(
+                    && let Some((_token, manager, _entry, stack, _data)) = create_service(
                         &runtime,
                         &self_cap,
                         parent_ns,
@@ -1067,6 +1288,9 @@ pub extern "C" fn _start(
                         None,
                     )
                 {
+                    if slot == STORE_SLOT {
+                        store_manager = Some(manager);
+                    }
                     created += 1;
                     stack_segs[slot] = stack.as_raw();
                     let _ = runtime
@@ -1166,7 +1390,8 @@ pub extern "C" fn _start(
             while slot < BASE_FIRST + BASE_COUNT {
                 if slot != NS_SLOT
                     && let Some(endpoint) = registry[slot]
-                    && let Ok(storage) = runtime.memseg_create(1, RW)
+                    && let Ok(storage) =
+                        runtime.memseg_create(if slot == STORE_SLOT { 6 } else { 1 }, RW)
                 {
                     if let Some(seg) = segment {
                         let _ = runtime.write_user_bytes(
@@ -1785,13 +2010,15 @@ fn create_service(
     // M3b：C 任务的匿名 arena 与栈同段，见 `C_HEAP_VA`。
     let stack_pages = if c_stack {
         C_STACK_PAGES
+    } else if spec.name == SERVICE_NAME_STORE {
+        4
     } else {
         SERVICE_STACK_PAGES
     };
     let segment_pages = if c_stack {
         C_STACK_PAGES + C_HEAP_PAGES
     } else {
-        SERVICE_STACK_PAGES
+        stack_pages
     };
     let Ok(stack) = runtime.memseg_create(segment_pages, RW) else {
         drop_data_segments(runtime, &mut data_segments);
@@ -1800,7 +2027,7 @@ fn create_service(
     let stack_offset = if c_stack {
         prepare_c_stack(runtime, self_cap, stack, c_args, &aux)
     } else {
-        Some(SERVICE_STACK_PAGES * FRAME_SIZE)
+        Some(stack_pages * FRAME_SIZE)
     };
     let Some(stack_offset) = stack_offset else {
         let _ = runtime.memseg_destroy(stack);
@@ -2358,10 +2585,12 @@ fn write_created_witness(
 /// 保留两条**连续**发送的 SPEC-104 协议。阶段 2 直投修复后，内核已可把带 cap 消息
 /// 直接递送给阻塞在 `recv` 的接收者；移除此唤醒需同步修改服务端协议和见证。
 /// M14：fd 0 的最小行规程。字节来自服务管理器持有的 COM1 设备 cap；
-/// 只有存在读请求时才轮询 UART，空闲时管理器阻塞在 `SYS_RECV`。
+/// UART IRQ 唤醒管理器；无可用字节时立即返回事件循环。
+#[derive(Clone, Copy)]
 struct TtyInput {
     canonical: bool,
     echo: bool,
+    signals: bool,
     line: [u8; STAGE5_TTY_LINE_MAX],
     line_len: usize,
     ready: [u8; STAGE5_TTY_LINE_MAX],
@@ -2374,6 +2603,7 @@ impl TtyInput {
         Self {
             canonical: true,
             echo: true,
+            signals: true,
             line: [0; STAGE5_TTY_LINE_MAX],
             line_len: 0,
             ready: [0; STAGE5_TTY_LINE_MAX],
@@ -2452,7 +2682,7 @@ impl TtyInput {
                 }
             }
             _ => {
-                if self.line_len < self.line.len() {
+                if self.line_len + 1 < self.line.len() {
                     self.line[self.line_len] = byte;
                     self.line_len += 1;
                 }
@@ -2466,271 +2696,147 @@ impl TtyInput {
     }
 }
 
-fn tty_read_request<T: SyscallTransport>(
+/// Flush replies before consuming more UART bytes. A full mailbox keeps both the
+/// request and input unchanged; a cancellation acknowledges whether bytes committed.
+#[allow(clippy::too_many_arguments)]
+fn tty_pump<T: SyscallTransport>(
     runtime: &Runtime<T>,
-    serial: Capability,
+    serial: Option<Capability>,
+    irq: Option<Capability>,
+    drain: &mut bool,
     input: &mut TtyInput,
-    max: usize,
+    reads: &mut TtyReads,
+    signal_caps: &[Option<Capability>; MAX_CLIENTS],
     echo_len: &mut u64,
     echo_hash: &mut u32,
-) -> u64 {
-    let max = max.clamp(1, STAGE5_TTY_READ_CHUNK);
-    loop {
-        if let Some((count, bytes)) = input.take(max) {
-            let mut value = 0u64;
-            for (index, byte) in bytes[..count].iter().enumerate() {
-                value |= (*byte as u64) << (8 * index);
-            }
-            return STAGE5_TTY_READ_REPLY_TAG
-                | ((count as u64) << STAGE5_TTY_READ_COUNT_SHIFT)
-                | value;
+) {
+    for slot in &mut reads.slots {
+        let Some(read) = *slot else {
+            continue;
+        };
+        if read.state != CANCEL_WAITING && read.state != CANCEL_SERVED {
+            continue;
         }
-        // 只有存在读请求时才轮询；空闲路径仍是阻塞 `SYS_RECV`。
-        if let Ok(status) = runtime.dev_ioport_in(serial, IOPORT_BASE + 5)
-            && status & 1 != 0
-            && let Ok(byte) = runtime.dev_ioport_in(serial, IOPORT_BASE)
+        let payload = STAGE5_TTY_CANCEL_ACK_TAG
+            | (u64::from(read.sequence) << 32)
+            | u64::from(read.state == CANCEL_WAITING);
+        if runtime
+            .send(
+                TaskId::from_raw(read.cookie as u32),
+                read.reply,
+                payload,
+                &[],
+            )
+            .is_ok()
         {
-            let mut echo = [0u8; 32];
-            let count = input.feed(byte, &mut echo);
-            for byte in echo[..count].iter().copied() {
-                let _ = runtime.dev_ioport_out(serial, IOPORT_BASE, byte);
-                // M14：回显字节也属于终端输出，计入 ECHO 见证。
-                *echo_len += 1;
-                *echo_hash = native_app_hash(*echo_hash, byte);
+            if read.state == CANCEL_WAITING {
+                *slot = None;
+            } else if let Some(read) = slot {
+                read.state = SERVED;
             }
         }
-        core::hint::spin_loop();
     }
-}
-
-/// M19：loopback UDP 端点表。队列固定大小，满时 `ENOBUFS`；不做拥塞/重传。
-#[derive(Clone, Copy)]
-struct NetDatagram {
-    len: u8,
-    source: u16,
-    bytes: [u8; SERVICE_NET_DATAGRAM_MAX],
-}
-
-impl NetDatagram {
-    const EMPTY: Self = Self {
-        len: 0,
-        source: 0,
-        bytes: [0; SERVICE_NET_DATAGRAM_MAX],
-    };
-}
-
-#[derive(Clone, Copy)]
-struct NetSocket {
-    open: bool,
-    port: u16,
-    head: u8,
-    count: u8,
-    queue: [NetDatagram; SERVICE_NET_QUEUE],
-    recv_len: u8,
-    recv_buf: [u8; SERVICE_NET_DATAGRAM_MAX],
-}
-
-impl NetSocket {
-    const EMPTY: Self = Self {
-        open: false,
-        port: 0,
-        head: 0,
-        count: 0,
-        queue: [NetDatagram::EMPTY; SERVICE_NET_QUEUE],
-        recv_len: 0,
-        recv_buf: [0; SERVICE_NET_DATAGRAM_MAX],
-    };
-}
-
-struct NetState {
-    sockets: [NetSocket; SERVICE_NET_SOCKETS],
-    pending: Option<(u8, u32)>,
-    send_handle: u8,
-    send_port: u16,
-    send_active: bool,
-    send_total: u8,
-    send_got: u8,
-    send_buf: [u8; SERVICE_NET_DATAGRAM_MAX],
-    next_port: u16,
-}
-
-impl NetState {
-    const fn new() -> Self {
-        Self {
-            sockets: [NetSocket::EMPTY; SERVICE_NET_SOCKETS],
-            pending: None,
-            send_handle: 0,
-            send_port: 0,
-            send_active: false,
-            send_total: 0,
-            send_got: 0,
-            send_buf: [0; SERVICE_NET_DATAGRAM_MAX],
-            next_port: SERVICE_NET_EPHEMERAL_PORT,
-        }
-    }
-
-    fn socket_open(&self, handle: u8) -> bool {
-        (handle as usize) < SERVICE_NET_SOCKETS && self.sockets[handle as usize].open
-    }
-
-    fn open(&mut self) -> Option<u8> {
-        let index = self.sockets.iter().position(|socket| !socket.open)?;
-        self.sockets[index] = NetSocket::EMPTY;
-        self.sockets[index].open = true;
-        Some(index as u8)
-    }
-
-    fn port(&self, handle: u8) -> Result<u16, u64> {
-        if !self.socket_open(handle) {
-            return Err(SERVICE_FILE_EBADF);
-        }
-        Ok(self.sockets[handle as usize].port)
-    }
-
-    fn bind(&mut self, handle: u8, port: u16) -> Result<u16, u64> {
-        if !self.socket_open(handle) {
-            return Err(SERVICE_FILE_EBADF);
-        }
-        let assigned = if port != 0 {
-            port
-        } else {
-            let mut candidate = self.next_port;
-            loop {
-                if !self
-                    .sockets
-                    .iter()
-                    .any(|socket| socket.open && socket.port == candidate)
-                {
-                    break candidate;
-                }
-                candidate = if candidate == u16::MAX {
-                    SERVICE_NET_EPHEMERAL_PORT
-                } else {
-                    candidate + 1
-                };
-            }
-        };
-        if self.sockets.iter().enumerate().any(|(index, socket)| {
-            index != handle as usize && socket.open && socket.port == assigned
-        }) {
-            return Err(SERVICE_NET_EADDRINUSE);
-        }
-        self.sockets[handle as usize].port = assigned;
-        if port == 0 {
-            self.next_port = if assigned == u16::MAX {
-                SERVICE_NET_EPHEMERAL_PORT
-            } else {
-                assigned + 1
-            };
-        }
-        Ok(assigned)
-    }
-
-    fn send_begin(&mut self, handle: u8, port: u16, total: u8) -> Result<(), u64> {
-        if !self.socket_open(handle) {
-            return Err(SERVICE_FILE_EBADF);
-        }
-        if total as usize > SERVICE_NET_DATAGRAM_MAX || port == 0 {
-            return Err(SERVICE_FILE_EINVAL);
-        }
-        let bound = self.sockets[handle as usize].port;
-        if bound == 0 {
-            let _ = self.bind(handle, 0)?;
-        }
-        self.send_handle = handle;
-        self.send_port = port;
-        self.send_active = true;
-        self.send_total = total;
-        self.send_got = 0;
-        self.send_buf = [0; SERVICE_NET_DATAGRAM_MAX];
-        Ok(())
-    }
-
-    fn send_data(&mut self, data: u32) -> Result<(), u64> {
-        if !self.send_active || self.send_got >= self.send_total {
-            return Err(SERVICE_FILE_EINVAL);
-        }
-        for index in 0..SERVICE_NET_CHUNK {
-            if self.send_got as usize >= self.send_total as usize {
+    loop {
+        while let Some(index) = reads.oldest() {
+            let read = reads.slots[index].expect("occupied read slot");
+            let mut next = *input;
+            let Some((count, bytes)) = next.take(read.max as usize) else {
                 break;
+            };
+            let mut data = 0;
+            for (index, byte) in bytes[..count].iter().enumerate() {
+                data |= u64::from(*byte) << (8 * index);
             }
-            self.send_buf[self.send_got as usize] = ((data >> (8 * index)) & 0xff) as u8;
-            self.send_got += 1;
+            let payload = STAGE5_TTY_READ_REPLY_TAG
+                | (u64::from(read.sequence) << 32)
+                | ((count as u64) << STAGE5_TTY_READ_COUNT_SHIFT)
+                | data;
+            if runtime
+                .send(
+                    TaskId::from_raw(read.cookie as u32),
+                    read.reply,
+                    payload,
+                    &[],
+                )
+                .is_err()
+            {
+                if runtime
+                    .task_cookie(TaskId::from_raw(read.cookie as u32))
+                    .ok()
+                    != Some(read.cookie)
+                {
+                    reads.slots[index] = None;
+                    continue;
+                }
+                return;
+            }
+            *input = next;
+            reads.slots[index]
+                .as_mut()
+                .expect("occupied read slot")
+                .state = SERVED;
+            *drain = true;
         }
-        Ok(())
-    }
-
-    fn send_end(&mut self) -> Result<(), u64> {
-        if !self.send_active || self.send_got != self.send_total {
-            return Err(SERVICE_FILE_EINVAL);
+        if !*drain || input.eof || input.ready_len + input.line_len >= STAGE5_TTY_LINE_MAX {
+            return;
         }
-        let source = self.sockets[self.send_handle as usize].port;
-        let len = self.send_total;
-        let bytes = self.send_buf;
-        let destination = self
-            .sockets
-            .iter()
-            .position(|socket| socket.open && socket.port == self.send_port && socket.port != 0);
-        self.send_active = false;
-        self.send_total = 0;
-        self.send_got = 0;
-        let Some(index) = destination else {
-            // UDP：目标未绑定则报文被丢弃，sendto 仍成功。
-            return Ok(());
+        let (Some(serial), Some(irq)) = (serial, irq) else {
+            return;
         };
-        let socket = &mut self.sockets[index];
-        if socket.count as usize == SERVICE_NET_QUEUE {
-            return Err(SERVICE_FILE_ENOSPC);
+        // This loop drains bytes already present; it never waits for a future byte.
+        let Ok(status) = runtime.dev_ioport_in(serial, IOPORT_BASE + 5) else {
+            return;
+        };
+        if status & 1 == 0 {
+            *drain = false;
+            let _ = runtime.dev_irq_unmask(irq);
+            return;
         }
-        let slot = (socket.head as usize + socket.count as usize) % SERVICE_NET_QUEUE;
-        socket.queue[slot] = NetDatagram { len, source, bytes };
-        socket.count += 1;
-        Ok(())
-    }
-
-    fn take_datagram(&mut self, handle: u8) -> Option<(u16, u8)> {
-        if !self.socket_open(handle) {
-            return None;
+        let Ok(byte) = runtime.dev_ioport_in(serial, IOPORT_BASE) else {
+            return;
+        };
+        if input.signals && matches!(byte, 3 | 28) {
+            input.line_len = 0;
+            input.ready_len = 0;
+            input.eof = false;
+            let mut notified = 0u32;
+            for read in reads
+                .slots
+                .iter()
+                .flatten()
+                .filter(|r| r.state == prima_user::console::WAITING)
+            {
+                let task = read.cookie as u32;
+                if task as usize >= MAX_CLIENTS || notified & (1 << task) != 0 {
+                    continue;
+                }
+                if signal_caps[task as usize]
+                    .is_some_and(|cap| runtime.send_target_cookie(cap).ok() == Some(read.cookie))
+                {
+                    let _ = runtime.notify_task(
+                        TaskId::from_raw(task),
+                        if byte == 3 { 2 } else { 3 },
+                        0,
+                    );
+                    notified |= 1 << task;
+                }
+            }
+            if input.echo {
+                for byte in [b'^', if byte == 3 { b'C' } else { b'\\' }, b'\n'] {
+                    let _ = runtime.dev_ioport_out(serial, IOPORT_BASE, byte);
+                    *echo_len += 1;
+                    *echo_hash = native_app_hash(*echo_hash, byte);
+                }
+            }
+            continue;
         }
-        let socket = &mut self.sockets[handle as usize];
-        if socket.count == 0 {
-            return None;
+        let mut echo = [0; 32];
+        let count = input.feed(byte, &mut echo);
+        for &byte in &echo[..count] {
+            let _ = runtime.dev_ioport_out(serial, IOPORT_BASE, byte);
+            *echo_len += 1;
+            *echo_hash = native_app_hash(*echo_hash, byte);
         }
-        let slot = socket.head as usize;
-        let datagram = socket.queue[slot];
-        socket.head = ((socket.head as usize + 1) % SERVICE_NET_QUEUE) as u8;
-        socket.count -= 1;
-        socket.recv_len = datagram.len;
-        socket.recv_buf = datagram.bytes;
-        Some((datagram.source, datagram.len))
-    }
-
-    fn recv_chunk(&self, handle: u8, offset: usize) -> Result<u64, u64> {
-        if !self.socket_open(handle) {
-            return Err(SERVICE_FILE_EBADF);
-        }
-        let socket = &self.sockets[handle as usize];
-        let len = socket.recv_len as usize;
-        if offset >= len {
-            return Ok(0);
-        }
-        let count = (len - offset).min(SERVICE_NET_CHUNK);
-        let mut data = 0u64;
-        for index in 0..count {
-            data |= (socket.recv_buf[offset + index] as u64) << (8 * index);
-        }
-        Ok(data)
-    }
-
-    fn close(&mut self, handle: u8) -> Result<(), u64> {
-        if !self.socket_open(handle) {
-            return Err(SERVICE_FILE_EBADF);
-        }
-        self.sockets[handle as usize] = NetSocket::EMPTY;
-        if self.pending.is_some_and(|(pending, _)| pending == handle) {
-            self.pending = None;
-        }
-        Ok(())
     }
 }
 

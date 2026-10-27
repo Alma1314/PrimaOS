@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type TaskId = u32;
 pub type ExcSourceId = u32;
@@ -9,6 +9,10 @@ pub type VirtAddr = u64;
 /// §4 类型：Audit 事件序号与逻辑时间（均 `Nat`）。
 pub type EventId = u64;
 pub type Instant = u64;
+pub type TimerId = u32;
+pub type NodeId = u32;
+pub type NodeIdentity = u64;
+pub type WaitObjectId = u32;
 
 // access 位域：bit0=R, bit1=W, bit2=X
 pub const ACCESS_R: u8 = 0b001;
@@ -16,24 +20,32 @@ pub const ACCESS_W: u8 = 0b010;
 pub const ACCESS_X: u8 = 0b100;
 
 // Capability 权限位域（§4.1 `Right`）。位序与既有探针兼容（bit0..bit5 不变），
-// 为 §14 初始 Authority 扩到 bit14。`Right` 全集中 Timer*/Node*/ExcSourceDestroy
-// 等本探针无消费者的权限**未列**（待有消费者再加）。
-pub const CAP_EXC_SUBSCRIBE: u16 = 0b0000_0000_0000_0001;
-pub const CAP_SEG_MAP_R: u16 = 0b0000_0000_0000_0010;
-pub const CAP_SEG_MAP_W: u16 = 0b0000_0000_0000_0100;
-pub const CAP_SEG_MAP_X: u16 = 0b0000_0000_0000_1000;
+// 保持既有 bit0..14，新增 Timer/Node/ExceptionSource/WaitObject 使用 bit15..22。
+// 与 Lean UInt32 对齐；这不是内核机器 ABI 的权限编码。
+pub const CAP_EXC_SUBSCRIBE: u32 = 0b0000_0000_0000_0001;
+pub const CAP_SEG_MAP_R: u32 = 0b0000_0000_0000_0010;
+pub const CAP_SEG_MAP_W: u32 = 0b0000_0000_0000_0100;
+pub const CAP_SEG_MAP_X: u32 = 0b0000_0000_0000_1000;
 #[allow(dead_code)] // Task 6 consumes segment-destroy authority; Task 2 tests its disjoint bit.
-pub const CAP_SEG_DESTROY: u16 = 0b0000_0000_0001_0000;
-pub const CAP_TASK_MANAGE_VSPACE: u16 = 0b0000_0000_0010_0000;
-pub const CAP_DERIVE: u16 = 0b0000_0000_0100_0000;
-pub const CAP_TASK_SEND: u16 = 0b0000_0000_1000_0000;
-pub const CAP_TASK_DESTROY: u16 = 0b0000_0001_0000_0000;
-pub const CAP_NS_RESOLVE: u16 = 0b0000_0010_0000_0000;
-pub const CAP_NS_BIND: u16 = 0b0000_0100_0000_0000;
-pub const CAP_NS_UNBIND: u16 = 0b0000_1000_0000_0000;
-pub const CAP_NS_MOUNT: u16 = 0b0001_0000_0000_0000;
-pub const CAP_NS_UNMOUNT: u16 = 0b0010_0000_0000_0000;
-pub const CAP_NS_DESTROY: u16 = 0b0100_0000_0000_0000;
+pub const CAP_SEG_DESTROY: u32 = 0b0000_0000_0001_0000;
+pub const CAP_TASK_MANAGE_VSPACE: u32 = 0b0000_0000_0010_0000;
+pub const CAP_DERIVE: u32 = 0b0000_0000_0100_0000;
+pub const CAP_TASK_SEND: u32 = 0b0000_0000_1000_0000;
+pub const CAP_TASK_DESTROY: u32 = 0b0000_0001_0000_0000;
+pub const CAP_NS_RESOLVE: u32 = 0b0000_0010_0000_0000;
+pub const CAP_NS_BIND: u32 = 0b0000_0100_0000_0000;
+pub const CAP_NS_UNBIND: u32 = 0b0000_1000_0000_0000;
+pub const CAP_NS_MOUNT: u32 = 0b0001_0000_0000_0000;
+pub const CAP_NS_UNMOUNT: u32 = 0b0010_0000_0000_0000;
+pub const CAP_NS_DESTROY: u32 = 0b0100_0000_0000_0000;
+pub const CAP_TIMER_CANCEL: u32 = 1 << 15;
+pub const CAP_TIMER_DESTROY: u32 = 1 << 16;
+pub const CAP_NODE_CONNECT: u32 = 1 << 17;
+pub const CAP_NODE_DESTROY: u32 = 1 << 18;
+pub const CAP_EXC_SOURCE_DESTROY: u32 = 1 << 19;
+pub const CAP_WAIT_WAIT: u32 = 1 << 20;
+pub const CAP_WAIT_SIGNAL: u32 = 1 << 21;
+pub const CAP_WAIT_DESTROY: u32 = 1 << 22;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PageMappingBacking {
@@ -68,13 +80,17 @@ pub enum CapObject {
     Segment(SegId),
     Task(TaskId),
     Namespace(NsId),
+    Timer(TimerId),
+    Node(NodeId),
+    WaitObject(WaitObjectId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capability {
+    /// 创建时拥有者（CDT 投影）；授权只读 State.locations，移动不改此记录。
     pub owner: TaskId,
     pub object: CapObject,
-    pub rights: u16,
+    pub rights: u32,
     pub active: bool,
     /// §4.2 派生树父指针：`None` = 铸造根（§14 三条根 Capability、`create_segment` 的随对象
     /// 铸造）；`Some(p)` = 由 CapId `p` 派生（§4.4）。镜像内核 `CapRecord.parent` 与 Lean
@@ -186,6 +202,7 @@ pub enum TaskStatus {
     Ready,
     Running,
     BlockedRecv,
+    BlockedWait,
     Faulted, // 细化层可见状态
 }
 
@@ -195,9 +212,8 @@ pub struct Segment {
     pub kernel_readable: bool,
 }
 
-/// §5.4 Namespace。本切片只物化 bootstrap 的**空** init Namespace 对象，
-/// 使 §14 步骤 3/5 的 Namespace 根 Capability 有目标；`entries : Path ⇀ NsEntry`
-/// 与 §11 的 `ns_*` 操作未建模（本探针无消费者）。
+/// §5.4 Namespace。条目存放在 State.bindings；authority 模块实现本地 Bound/Mount。
+/// 保留空标记对象，bootstrap 的 init Namespace 初始无条目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Namespace;
 
@@ -212,10 +228,22 @@ pub enum ExceptionKind {
     DivideError,
     InvalidOpcode,
     DoubleFault,
-    // SyscallTrap / ExternalInterrupt / TaskExit 未建模：本探针只覆盖可恢复的硬件执行异常
+    SyscallTrap {
+        task: TaskId,
+        number: u64,
+    },
+    ExternalInterrupt {
+        irq: u32,
+    },
+    TaskExit {
+        task: TaskId,
+    },
 }
 
 impl ExceptionKind {
+    pub fn is_hardware_fault(&self) -> bool {
+        self.is_recoverable() || matches!(self, Self::DoubleFault)
+    }
     pub fn is_recoverable(&self) -> bool {
         matches!(
             self,
@@ -227,10 +255,19 @@ impl ExceptionKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExceptionSource {
-    pub supported_kind: ExceptionKind, // 简化：§12.3「类型签名」以单一 ExceptionKind 值作锚
+    pub supported_kind: ExceptionKind,
+    pub additional_kinds: Vec<ExceptionKind>,
     pub active: bool,
+}
+
+impl ExceptionSource {
+    pub fn supports_kind(&self, kind: ExceptionKind) -> bool {
+        core::iter::once(&self.supported_kind)
+            .chain(&self.additional_kinds)
+            .any(|supported| core::mem::discriminant(supported) == core::mem::discriminant(&kind))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,6 +303,77 @@ pub struct AuditEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum AuditKind {
+    WaitObjectCreated {
+        object: WaitObjectId,
+    },
+    WaitObjectDestroyed {
+        object: WaitObjectId,
+    },
+    WaitObjectSignaled {
+        object: WaitObjectId,
+        generation: u64,
+        woken: usize,
+    },
+    WaitBlocked {
+        task: TaskId,
+        request: WaitRequest,
+    },
+    WaitCompleted {
+        task: TaskId,
+        result: WaitResult,
+    },
+    UpcallQueued {
+        source: TaskId,
+        target: TaskId,
+        data: Vec<u8>,
+    },
+    UpcallReceived {
+        task: TaskId,
+        count: usize,
+    },
+    TimerSet {
+        timer: TimerId,
+        recipient: TaskId,
+        deadline: Instant,
+    },
+    TimerFired {
+        timer: TimerId,
+        deadline: Instant,
+        fired_at: Instant,
+    },
+    TimerCancelled {
+        timer: TimerId,
+        reason: CancelReason,
+    },
+    TimerDestroyed {
+        timer: TimerId,
+    },
+    ExceptionSourceCreated {
+        source: ExcSourceId,
+    },
+    ExceptionSourceDestroyed {
+        source: ExcSourceId,
+    },
+    ExceptionSubscribed {
+        task: TaskId,
+        source: ExcSourceId,
+    },
+    NodeCreated {
+        node: NodeId,
+        peer: NodeIdentity,
+    },
+    NodeDestroyed {
+        node: NodeId,
+    },
+    RemoteAttached {
+        task: TaskId,
+        peer: NodeIdentity,
+        remote_id: TaskId,
+    },
+    MessageDropped {
+        transport_message: u64,
+        receiver: TaskId,
+    },
     /// §12.5 成功动作 1：异常发生时由 `KernelActor` 追加，早于状态迁移。
     /// `fault_va` 为页故障的 `faulting_vaddr`，非寻址异常记 `None`（§12.2/§13.1）。
     ExceptionRaised {
@@ -295,14 +403,98 @@ pub enum AuditKind {
     /// §14 步骤 2/3 + §13.1：对象创建（W13「每个活动对象都有创建事件」）。`segment` 标志区分
     /// `ObjectRef` 的 id 空间（image `Segment(1)` 与 init `Namespace(1)` 同 id），形态镜像真实
     /// 内核 `AuditEvent::ObjectCreated`（`kernel/src/bootstrap.rs`）。
-    ObjectCreated { object_id: u32, segment: bool },
+    ObjectCreated {
+        object_id: u32,
+        segment: bool,
+    },
     /// §14 步骤 4/8 + §13.1：init Task 创建（初始状态 `Ready`）。§13.1 的**创建**事件是
     /// `TaskCreated`——`TaskStateChanged` 仅用于状态**迁移**（创建非迁移），故 bootstrap 的
     /// init Task 用本变体而非 `TaskStateChanged`。
-    TaskCreated { task: TaskId, status: TaskStatus },
+    TaskCreated {
+        task: TaskId,
+        status: TaskStatus,
+    },
     /// §14 步骤 5/6 + 步骤 9 / §13.1 `CapMinted`：bootstrap 铸造的三条初始根 Capability。
     /// 与真实内核一致写入审计，作为 W13 的创建记录。
-    CapabilityMinted { cap: CapId, holder: TaskId },
+    CapabilityMinted {
+        cap: CapId,
+        holder: TaskId,
+    },
+    CapabilityDerived {
+        cap: CapId,
+        parent: CapId,
+        location: CapLocation,
+    },
+    CapabilityForkInherited {
+        cap: CapId,
+        source: CapId,
+        child: TaskId,
+    },
+    CapabilityForkRebound {
+        cap: CapId,
+        source: CapId,
+        child: TaskId,
+    },
+    CapabilityMoved {
+        cap: CapId,
+        from: CapLocation,
+        to: CapLocation,
+        message: Option<u64>,
+    },
+    CapabilityDropped {
+        cap: CapId,
+        from: CapLocation,
+    },
+    ExceptionUnsubscribed {
+        task: TaskId,
+        source: ExcSourceId,
+    },
+    MessageSent {
+        message: u64,
+        origin: MessageOrigin,
+        receiver: TaskId,
+        data: Vec<u8>,
+        caps: Vec<CapId>,
+        transport_message: Option<u64>,
+    },
+    MessageReceived {
+        message: u64,
+        receiver: TaskId,
+    },
+    NamespaceBound {
+        namespace: NsId,
+        path: String,
+        cap: CapId,
+    },
+    NamespaceUnbound {
+        namespace: NsId,
+        path: String,
+        cap: CapId,
+    },
+    NamespaceMounted {
+        namespace: NsId,
+        path: String,
+        cap: CapId,
+    },
+    NamespaceUnmounted {
+        namespace: NsId,
+        path: String,
+        cap: CapId,
+    },
+    NamespaceDestroyed {
+        namespace: NsId,
+    },
+    NamespaceResolved {
+        namespace: NsId,
+        namespace_cap: CapId,
+        mounts: Vec<CapId>,
+        path: String,
+        parent: CapId,
+        cap: CapId,
+    },
+    TaskDestroyed {
+        task: TaskId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,18 +510,164 @@ pub struct Task {
     pub kernel_resume_frame: Option<SretFrame>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NsEntry {
+    Bound(CapId),
+    Mount(CapId),
+}
+
+impl NsEntry {
+    pub fn cap(self) -> CapId {
+        match self {
+            Self::Bound(cap) | Self::Mount(cap) => cap,
+        }
+    }
+}
+
+/// §4.3：单一 token 位置。POSIR v1 不产生 InTransit。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapLocation {
+    HeldBy(TaskId),
+    InMessage(u64),
+    InNamespace(NsId, String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    pub id: u64,
+    pub origin: MessageOrigin,
+    pub receiver: TaskId,
+    pub data: Vec<u8>,
+    pub caps: Vec<CapId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageOrigin {
+    Task(TaskId),
+    Kernel(KernelEvent),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KernelEvent {
+    TimerFired(TimerId),
+    ExceptionRaised {
+        source: ExcSourceId,
+        kind: ExceptionKind,
+        fault_va: Option<VirtAddr>,
+    },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelReason {
+    ByTask(TaskId),
+    RecipientDestroyed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimerState {
+    Pending,
+    Fired {
+        fired_at: Instant,
+        notification: u64,
+    },
+    Cancelled(CancelReason),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timer {
+    pub creator: TaskId,
+    pub recipient: TaskId,
+    pub deadline: Instant,
+    pub state: TimerState,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodeTransport {
+    Direct(NodeIdentity),
+    Mesh(Vec<NodeIdentity>),
+    Forwarded(NodeIdentity),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Node {
+    pub creator: TaskId,
+    pub peer: NodeIdentity,
+    pub transport: NodeTransport,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteTask {
+    pub peer: NodeIdentity,
+    pub remote_id: TaskId,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransportMessage {
+    pub source_node: NodeIdentity,
+    pub sender: TaskId,
+    pub receiver: TaskId,
+    pub transport_message: u64,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitMode {
+    Any,
+    All,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitRequest {
+    pub entries: Vec<(WaitObjectId, u64)>,
+    pub mode: WaitMode,
+    pub alertable: bool,
+    pub deadline: Option<Instant>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaitResult {
+    Satisfied(Vec<WaitObjectId>),
+    TimedOut,
+    Alerted,
+    TargetDead(WaitObjectId),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitObject {
+    pub creator: TaskId,
+    pub generation: u64,
+    pub waiters: HashSet<TaskId>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Upcall {
+    pub source: TaskId,
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct State {
+    pub wait_objects: HashMap<WaitObjectId, WaitObject>,
+    pub next_wait_object: u64,
+    pub wait_requests: HashMap<TaskId, WaitRequest>,
+    pub pending_wait_results: HashMap<TaskId, WaitResult>,
+    pub pending_upcalls: HashMap<TaskId, VecDeque<Upcall>>,
+    pub local_node: NodeIdentity,
+    pub known_nodes: HashSet<NodeIdentity>,
+    pub nodes: HashMap<NodeId, Node>,
+    pub remote_tasks: HashMap<TaskId, RemoteTask>,
+    pub next_node: u64,
+    pub next_task: u64,
+    pub outgoing: Vec<(NodeId, TransportMessage)>,
+    pub timers: HashMap<TimerId, Timer>,
+    pub next_timer: u64,
+    pub next_exc_source: u64,
     pub tasks: HashMap<TaskId, Task>,
     pub exc_sources: HashMap<ExcSourceId, ExceptionSource>,
     pub pending_exc: HashMap<TaskId, PendingException>,
     pub segments: HashMap<SegId, Segment>,
     pub namespaces: HashMap<NsId, Namespace>,
     pub capabilities: HashMap<CapId, Capability>,
+    pub locations: HashMap<CapId, CapLocation>,
+    /// u64 counter reserves u32::MAX + 1 as the exhausted CapId boundary.
+    pub next_cap: u64,
+    pub next_message: u64,
+    pub messages: HashMap<u64, Message>,
+    pub mailboxes: HashMap<TaskId, VecDeque<u64>>,
+    pub pending_returns: HashMap<TaskId, Message>,
+    pub bindings: HashMap<(NsId, String), NsEntry>,
     pub subscriptions: HashSet<(TaskId, ExcSourceId)>,
     pub audit: Vec<AuditEvent>,
-    /// §4 `State.now`：逻辑当前时间。由 `time_advance`（KernelActor）推进；本探针
-    /// 未建模 Timer/`time_advance`，故恒为初始 `0`（事件 `at` 因此恒为 0，见 §20.4）。
+    /// §4 `State.now`：由 authority::advance_time 推进的逻辑单调时间。
+    /// 机器启动投影初值仍为0；不代表 PIT/TSC 与抽象时钟的细化证明。
     pub now: Instant,
     /// §4 `State.next_event`：下一个 Audit `EventId`（W13：严格递增）。
     pub next_event: EventId,
@@ -338,6 +676,21 @@ pub struct State {
 }
 
 impl State {
+    /// 内部构造入口；显式 ID 用于 fixture/CDT 对拍，不复用历史记录。
+    pub fn insert_capability(&mut self, id: CapId, cap: Capability) -> Option<Capability> {
+        assert!(
+            id != 0 && !self.capabilities.contains_key(&id),
+            "fresh capability ID required"
+        );
+        self.next_cap = self.next_cap.max(u64::from(id) + 1);
+        self.locations.insert(id, CapLocation::HeldBy(cap.owner));
+        self.capabilities.insert(id, cap)
+    }
+
+    pub fn held(&self, task: TaskId, cap: CapId) -> bool {
+        self.locations.get(&cap) == Some(&CapLocation::HeldBy(task))
+    }
+
     /// §13.1：追加一条事件并填入信封（`id = next_event` 且自增，`at = now`）。
     /// W13：`EventId` 严格递增、日志只追加不改写。
     pub fn push_audit(&mut self, actor: Actor, kind: AuditKind) {

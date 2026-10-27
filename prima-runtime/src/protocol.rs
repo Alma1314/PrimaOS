@@ -428,17 +428,18 @@ pub fn pack_vfs_chmod(start: u64, path_len: usize, first: &[u8]) -> u64 {
 
 /// M19：用户态 loopback IPv4/UDP 子集（服务管理器内的端点表）。
 ///
-/// 请求：`tag | op(44..47) | handle(40..43) | client(32..39) | arg(0..31)`；
-/// 应答：`tag | op(44..47) | handle(40..43) | status(32..39) | data(0..31)`。
+/// 请求：`tag | op(44..47) | handle(42..43) | sequence(34..41) | arg(0..25)`；
+/// 应答：`tag | op(44..47) | handle(42..43) | sequence(34..41) | status(26..33) | data(0..25)`。
 /// 只支持 `AF_INET`/`SOCK_DGRAM`、地址 127.0.0.1 或 0.0.0.0；不做 TCP/NIC/DNS。
 pub const SERVICE_NET_REQUEST_TAG: u64 = 0x5EE6_0000_0000_0000;
 pub const SERVICE_NET_REPLY_TAG: u64 = 0x5EE7_0000_0000_0000;
 pub const SERVICE_NET_OP_SHIFT: u64 = 44;
 pub const SERVICE_NET_OP_MASK: u64 = 0xf;
-pub const SERVICE_NET_HANDLE_SHIFT: u64 = 40;
-pub const SERVICE_NET_CLIENT_SHIFT: u64 = 32;
-pub const SERVICE_NET_STATUS_SHIFT: u64 = 32;
-pub const SERVICE_NET_ARG_MASK: u64 = 0xffff_ffff;
+pub const SERVICE_NET_HANDLE_SHIFT: u64 = 42;
+/// Authenticated sender metadata replaces the former payload client ID.
+pub const SERVICE_NET_SEQUENCE_SHIFT: u64 = 34;
+pub const SERVICE_NET_STATUS_SHIFT: u64 = 26;
+pub const SERVICE_NET_ARG_MASK: u64 = 0x03ff_ffff;
 pub const SERVICE_NET_OP_OPEN: u64 = 0;
 pub const SERVICE_NET_OP_BIND: u64 = 1;
 pub const SERVICE_NET_OP_SENDTO_BEGIN: u64 = 2;
@@ -448,6 +449,8 @@ pub const SERVICE_NET_OP_RECVFROM: u64 = 5;
 pub const SERVICE_NET_OP_RECV_CHUNK: u64 = 6;
 pub const SERVICE_NET_OP_GETSOCKNAME: u64 = 7;
 pub const SERVICE_NET_OP_CLOSE: u64 = 8;
+pub const SERVICE_NET_OP_CANCEL: u64 = 9;
+pub const SERVICE_NET_OP_FINISH: u64 = 10;
 pub const SERVICE_NET_PORT_SHIFT: u64 = 16;
 pub const SERVICE_NET_PORT_MASK: u64 = 0xffff;
 pub const SERVICE_NET_LEN_SHIFT: u64 = 16;
@@ -466,6 +469,9 @@ pub const SERVICE_NET_EPHEMERAL_PORT: u16 = 49152;
 pub const STAGE5_TTY_READ_TAG: u64 = 0x5EE8_0000_0000_0000;
 pub const STAGE5_TTY_READ_REPLY_TAG: u64 = 0x5EE9_0000_0000_0000;
 pub const STAGE5_TTY_MODE_TAG: u64 = 0x5EEA_0000_0000_0000;
+pub const STAGE5_TTY_CANCEL_TAG: u64 = 0x5EEB_0000_0000_0000;
+pub const STAGE5_TTY_CANCEL_ACK_TAG: u64 = 0x5EEC_0000_0000_0000;
+pub const STAGE5_TTY_READ_ACK_TAG: u64 = 0x5EED_0000_0000_0000;
 pub const STAGE5_TTY_READ_MAX_SHIFT: u64 = 32;
 pub const STAGE5_TTY_READ_COUNT_SHIFT: u64 = 24;
 pub const STAGE5_TTY_READ_CHUNK: usize = 3;
@@ -474,11 +480,11 @@ pub const STAGE5_TTY_LINE_MAX: usize = 64;
 pub const SERVICE_NET_EADDRINUSE: u64 = 98;
 
 /// 打包一次网络请求（`arg` 的语义由 `op` 决定）。
-pub const fn pack_net_request(op: u64, handle: u64, client: u64, arg: u64) -> u64 {
+pub const fn pack_net_request(op: u64, handle: u64, sequence: u64, arg: u64) -> u64 {
     SERVICE_NET_REQUEST_TAG
         | ((op & SERVICE_NET_OP_MASK) << SERVICE_NET_OP_SHIFT)
-        | ((handle & 0xf) << SERVICE_NET_HANDLE_SHIFT)
-        | ((client & 0xff) << SERVICE_NET_CLIENT_SHIFT)
+        | ((handle & 3) << SERVICE_NET_HANDLE_SHIFT)
+        | ((sequence & 0xff) << SERVICE_NET_SEQUENCE_SHIFT)
         | (arg & SERVICE_NET_ARG_MASK)
 }
 
@@ -486,7 +492,7 @@ pub const fn pack_net_request(op: u64, handle: u64, client: u64, arg: u64) -> u6
 pub const fn pack_net_reply(op: u64, handle: u64, status: u64, data: u64) -> u64 {
     SERVICE_NET_REPLY_TAG
         | ((op & SERVICE_NET_OP_MASK) << SERVICE_NET_OP_SHIFT)
-        | ((handle & 0xf) << SERVICE_NET_HANDLE_SHIFT)
+        | ((handle & 3) << SERVICE_NET_HANDLE_SHIFT)
         | ((status & 0xff) << SERVICE_NET_STATUS_SHIFT)
         | (data & SERVICE_NET_ARG_MASK)
 }
@@ -998,6 +1004,23 @@ pub const fn negotiate(
         },
     })
 }
+
+// Authenticated direct VFS sessions; low 32 bits carry a fork reservation key.
+pub const SERVICE_SESSION_REGISTER_TAG: u64 = 0x5F10_0000_0000_0000;
+pub const SERVICE_SESSION_ADD_TAG: u64 = 0x5F11_0000_0000_0000;
+pub const SERVICE_SESSION_ACK_TAG: u64 = 0x5F12_0000_0000_0000;
+pub const SERVICE_SESSION_RESERVE_TAG: u64 = 0x5F13_0000_0000_0000;
+pub const SERVICE_SESSION_PUBLISH_TAG: u64 = 0x5F14_0000_0000_0000;
+pub const SERVICE_SESSION_RELEASE_TAG: u64 = 0x5F15_0000_0000_0000;
+pub const SERVICE_SESSION_CLOSE_TAG: u64 = 0x5F16_0000_0000_0000;
+pub const SERVICE_SESSION_FORK_ACK_TAG: u64 = 0x5F17_0000_0000_0000;
+
+/// Parent registers the prepared child's reply authority before kernel publication.
+pub const SERVICE_SESSION_FORK_REGISTER_TAG: u64 = 0x5F18_0000_0000_0000;
+pub const SERVICE_SESSION_PREPARED_FLAG: u64 = 1 << 47;
+
+/// Trusted manager announcement: generation(8..39), Task id(0..7).
+pub const SERVICE_SESSION_ROUTE_TAG: u64 = 0x5F19_0000_0000_0000;
 
 #[cfg(test)]
 mod tests {

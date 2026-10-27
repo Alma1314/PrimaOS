@@ -263,6 +263,16 @@ impl SaveBlock {
     /// `rsp=0x90`、`ss=0x98`（`SretFrame` 的 `rsp` 在 `0x38`、`rflags/rip/cs/ss`
     /// 在 `0x80..0x98`）。
     pub fn to_sret_frame(self) -> SretFrame {
+        self.decode_shift(0)
+    }
+
+    pub fn cs_with_error(self) -> u64 {
+        mm::read_u64_at(self.0 as u64, 17)
+    }
+    pub fn to_sret_frame_with_error(self) -> SretFrame {
+        self.decode_shift(8)
+    }
+    fn decode_shift(self, shift: usize) -> SretFrame {
         let read = |offset: usize| mm::read_u64_at(self.0 as u64, (offset / 8) as u64);
         SretFrame {
             rax: read(0x00),
@@ -280,11 +290,11 @@ impl SaveBlock {
             r13: read(0x60),
             r14: read(0x68),
             r15: read(0x70),
-            rsp: read(0x90),
-            rflags: read(0x88),
-            rip: read(0x78),
-            cs: read(0x80),
-            ss: read(0x98),
+            rsp: read(0x90 + shift),
+            rflags: read(0x88 + shift),
+            rip: read(0x78 + shift),
+            cs: read(0x80 + shift),
+            ss: read(0x98 + shift),
         }
     }
 }
@@ -362,6 +372,12 @@ pub type TimerHandler = extern "C" fn(SaveBlock, u64);
 
 /// 不返回的收尾回调（用户 `int3` 收尾 / 恢复落点）。
 pub type ExitHandler = extern "C" fn() -> !;
+
+pub type CpuExceptionHandler = extern "C" fn(u64, SaveBlock, u64) -> !;
+static CPU_EXCEPTION_HANDLER: AtomicU64 = AtomicU64::new(0);
+pub fn set_cpu_exception_handler(handler: CpuExceptionHandler) {
+    CPU_EXCEPTION_HANDLER.store(handler as usize as u64, Ordering::Relaxed);
+}
 
 static PAGE_FAULT_HANDLER: AtomicU64 = AtomicU64::new(0);
 static SYSCALL_HANDLER: AtomicU64 = AtomicU64::new(0);
@@ -546,6 +562,61 @@ pub fn seen_rflags() -> u64 {
 // 入口地址 getter（供 IDT/GDT/MSR 装载方把裸入口装进硬件）
 // ---------------------------------------------------------------------------
 
+pub type ExternalIrqHandler = extern "C" fn(u64);
+static EXTERNAL_IRQ_HANDLER: AtomicU64 = AtomicU64::new(0);
+pub fn set_external_irq_handler(handler: ExternalIrqHandler) {
+    EXTERNAL_IRQ_HANDLER.store(handler as usize as u64, Ordering::Relaxed);
+}
+macro_rules! external_irq_entry {
+    ($name:ident, $line:expr) => {
+        #[unsafe(naked)]
+        unsafe extern "C" fn $name() -> ! {
+            core::arch::naked_asm!(
+                "push r15", "push r14", "push r13", "push r12", "push r11", "push r10",
+                "push r9", "push r8", "push rbp", "push rdi", "push rsi", "push rdx",
+                "push rcx", "push rbx", "push rax", "cld", "mov rbp, rsp", "and rsp, -16",
+                "mov rdi, {line}", "call qword ptr [rip + {handler}]", "mov rsp, rbp",
+                "pop rax", "pop rbx", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
+                "pop r8", "pop r9", "pop r10", "pop r11", "pop r12", "pop r13", "pop r14", "pop r15", "iretq",
+                line = const $line, handler = sym EXTERNAL_IRQ_HANDLER,
+            )
+        }
+    }
+}
+external_irq_entry!(irq1_entry, 1);
+external_irq_entry!(irq3_entry, 3);
+external_irq_entry!(irq4_entry, 4);
+external_irq_entry!(irq5_entry, 5);
+external_irq_entry!(irq6_entry, 6);
+external_irq_entry!(irq7_entry, 7);
+external_irq_entry!(irq8_entry, 8);
+external_irq_entry!(irq9_entry, 9);
+external_irq_entry!(irq10_entry, 10);
+external_irq_entry!(irq11_entry, 11);
+external_irq_entry!(irq12_entry, 12);
+external_irq_entry!(irq13_entry, 13);
+external_irq_entry!(irq14_entry, 14);
+external_irq_entry!(irq15_entry, 15);
+pub fn external_irq_entry_addr(line: u8) -> Option<u64> {
+    Some(match line {
+        1 => irq1_entry as *const () as u64,
+        3 => irq3_entry as *const () as u64,
+        4 => irq4_entry as *const () as u64,
+        5 => irq5_entry as *const () as u64,
+        6 => irq6_entry as *const () as u64,
+        7 => irq7_entry as *const () as u64,
+        8 => irq8_entry as *const () as u64,
+        9 => irq9_entry as *const () as u64,
+        10 => irq10_entry as *const () as u64,
+        11 => irq11_entry as *const () as u64,
+        12 => irq12_entry as *const () as u64,
+        13 => irq13_entry as *const () as u64,
+        14 => irq14_entry as *const () as u64,
+        15 => irq15_entry as *const () as u64,
+        _ => return None,
+    })
+}
+
 /// #PF 裸入口地址（IDT vector 14）。
 pub fn page_fault_entry_addr() -> u64 {
     page_fault_entry as *const () as u64
@@ -620,6 +691,7 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         "push rcx",
         "push rbx",
         "push rax",
+        "cld",
         // 把压出的 GPR 块逐字段搬入 FAULT_FRAME。r11 作帧基址、r10 作暂存：
         // 两者的原值都已在栈上（故可安全改写），且 rsp 从不作暂存。
         "lea r11, [rip + {frame}]",
@@ -686,8 +758,13 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         "mov qword ptr [r11 + 0x10], r10", // rflags
         "mov r10, qword ptr [rsp + 0x98]",
         "mov qword ptr [r11 + 0x18], r10", // rsp
+        // The dispatcher may resume through an upcall instead of returning
+        // here. Its full frame must contain the user stack and selector too.
+        "lea rax, [rip + {frame}]",
+        "mov qword ptr [rax + 0x38], r10",
         "mov r10, qword ptr [rsp + 0xA0]",
         "mov qword ptr [r11 + 0x20], r10", // ss
+        "mov qword ptr [rax + 0x98], r10",
         // 询问分派器返回的 RIP（默认跳过、COW 命中则重试）。
         "lea rdi, [rip + {frame}]",
         "mov rbp, rsp",
@@ -713,12 +790,13 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         "pop r14",
         "pop r15",
         "add rsp, 48",
-        "lea r11, [rip + {uframe}]",
-        "push qword ptr [r11 + 0x20]", // ss
-        "push qword ptr [r11 + 0x18]", // rsp
-        "push qword ptr [r11 + 0x10]", // rflags
-        "push qword ptr [r11 + 0x08]", // cs
-        "push qword ptr [r11 + 0x00]", // rip
+        // Every GPR is already restored: RIP-relative operands preserve r11
+        // across a transparent COW retry as well as all other user registers.
+        "push qword ptr [rip + {uframe} + 0x20]", // ss
+        "push qword ptr [rip + {uframe} + 0x18]", // rsp
+        "push qword ptr [rip + {uframe} + 0x10]", // rflags
+        "push qword ptr [rip + {uframe} + 0x08]", // cs
+        "push qword ptr [rip + {uframe} + 0x00]", // rip
         "iretq",
         "2:",
         // ---- CPL0 路径（原逻辑）----
@@ -753,6 +831,66 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         uframe = sym USER_FRAME,
         handler = sym PAGE_FAULT_HANDLER,
     )
+}
+
+// Safety: these entries are installed only for the matching CPU vectors. All
+// user GPRs are saved before scratch registers are touched. Error-code entries
+// retain that extra word and tag the callback so it decodes the shifted frame.
+// The callback checks CS before reading user-only RSP/SS, and never returns.
+macro_rules! cpu_exception_entry {
+    ($name:ident, $vector:expr, $tag:expr, $error:literal) => {
+        #[unsafe(naked)]
+        unsafe extern "C" fn $name() -> ! {
+            core::arch::naked_asm!(
+                "push r15", "push r14", "push r13", "push r12", "push r11",
+                "push r10", "push r9", "push r8", "push rbp", "push rdi",
+                "push rsi", "push rdx", "push rcx", "push rbx", "push rax",
+                "cld",
+                "mov rsi, rsp",
+                "mov rdi, {vector}",
+                $error,
+                "and rsp, -16",
+                "call qword ptr [rip + {handler}]",
+                "ud2",
+                vector = const ($vector | $tag), handler = sym CPU_EXCEPTION_HANDLER,
+            )
+        }
+    }
+}
+cpu_exception_entry!(divide_entry, 0, 0, "xor edx, edx");
+cpu_exception_entry!(invalid_opcode_entry, 6, 0, "xor edx, edx");
+cpu_exception_entry!(x87_entry, 16, 0, "xor edx, edx");
+cpu_exception_entry!(simd_entry, 19, 0, "xor edx, edx");
+cpu_exception_entry!(
+    stack_fault_entry,
+    12,
+    0x100,
+    "mov rdx, qword ptr [rsi + 0x78]"
+);
+cpu_exception_entry!(
+    protection_entry,
+    13,
+    0x100,
+    "mov rdx, qword ptr [rsi + 0x78]"
+);
+cpu_exception_entry!(
+    alignment_entry,
+    17,
+    0x100,
+    "mov rdx, qword ptr [rsi + 0x78]"
+);
+
+pub fn cpu_exception_entry_addr(vector: u8) -> Option<u64> {
+    Some(match vector {
+        0 => divide_entry as *const () as u64,
+        6 => invalid_opcode_entry as *const () as u64,
+        12 => stack_fault_entry as *const () as u64,
+        13 => protection_entry as *const () as u64,
+        16 => x87_entry as *const () as u64,
+        17 => alignment_entry as *const () as u64,
+        19 => simd_entry as *const () as u64,
+        _ => return None,
+    })
 }
 
 /// vector 0x80（syscall）裸入口。
@@ -791,6 +929,7 @@ unsafe extern "C" fn syscall_entry() -> ! {
         "push rcx",
         "push rbx",
         "push rax",
+        "cld",
         // 以 rbp 为保存块基址；rsp 对齐后留 64 字节 ABI 现场帧（r10 作暂存，其原值已入栈）。
         "mov rbp, rsp",
         // 切片 M：把保存块基址存入静态，供 SYS_YIELD 读出当前任务完整用户上下文。
@@ -967,7 +1106,7 @@ pub fn set_fast_syscall_ss(ss: u64) {
 ///
 /// 布局与 `syscall_entry` 相同：入口先 `mov rsi, rsp` 记录进入时的内核栈 rsp，再压
 /// 15 个 GPR（rax 最低地址），`rbp` 作保存块基址，把 [`SaveBlock`] 与进入 `rsp` 传给注册的
-/// [`TimerHandler`]。handler 返回则弹栈 + 丢弃 5-qword 硬件帧 + `iretq`；若发生抢占切换
+/// [`TimerHandler`]。handler 返回则弹 GPR，再由 `iretq` 消费硬件帧；若发生抢占切换
 /// 则永不返回。
 ///
 /// # Safety
@@ -977,7 +1116,6 @@ pub fn set_fast_syscall_ss(ss: u64) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn timer_entry() -> ! {
     core::arch::naked_asm!(
-        "mov rsi, rsp",
         "push r15",
         "push r14",
         "push r13",
@@ -993,7 +1131,9 @@ unsafe extern "C" fn timer_entry() -> ! {
         "push rcx",
         "push rbx",
         "push rax",
+        "cld",
         "mov rbp, rsp",
+        "lea rsi, [rbp + 120]",
         "mov rdi, rbp",
         "and rsp, -16",
         "call qword ptr [rip + {tick}]",
@@ -1013,7 +1153,6 @@ unsafe extern "C" fn timer_entry() -> ! {
         "pop r13",
         "pop r14",
         "pop r15",
-        "add rsp, 40",
         "iretq",
         tick = sym TIMER_HANDLER,
     )
@@ -1277,6 +1416,23 @@ mod tests {
         assert_eq!(frame.rflags, 0x1011);
         assert_eq!(frame.rsp, 0x1012);
         assert_eq!(frame.ss, 0x1013);
+    }
+
+    #[test]
+    fn error_code_exception_shifts_only_hardware_return_words() {
+        let mut block = [0u64; 21];
+        for (index, slot) in block.iter_mut().enumerate() {
+            *slot = index as u64 + 100;
+        }
+        let frame = SaveBlock::new(block.as_ptr()).to_sret_frame_with_error();
+        assert_eq!(frame.rax, 100);
+        assert_eq!(frame.r15, 114);
+        assert_eq!(frame.rip, 116);
+        assert_eq!(frame.cs, 117);
+        assert_eq!(frame.rflags, 118);
+        assert_eq!(frame.rsp, 119);
+        assert_eq!(frame.ss, 120);
+        assert_eq!(SaveBlock::new(block.as_ptr()).cs_with_error(), 117);
     }
 
     #[test]

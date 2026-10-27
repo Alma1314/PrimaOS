@@ -1,14 +1,10 @@
-/* Detached-thread stack reclamation has no safe Prima contract yet.
- * Keep the mapping until process teardown and use the normal thread-exit
- * adapter (including clear_child_tid). Never issue Linux munmap/exit numbers.
- * This guard does not establish pthread_detach support. */
+/* The C adapter cleans sessions/clear_tid, then native 66 unmaps and exits
+ * atomically on the kernel stack. No user-stack access follows the unmap. */
 .text
 .global __unmapself
 .hidden __unmapself
 .type __unmapself,@function
 __unmapself:
-	mov $60,%edi
-	xor %esi,%esi
-	jmp __syscall1
+    jmp __prima_unmapself
 .size __unmapself,.-__unmapself
 .section .note.GNU-stack,"",@progbits

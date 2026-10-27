@@ -7,9 +7,8 @@
 //! 下一任务。切换时 `sched::resume` 写目标任务 CR3 与 `TSS.rsp0`，故两任务各有独立地址
 //! 空间与内核栈。
 //!
-//! **只在 CPL3 抢占：** 不在内核 `sti`，只有抢占阶段的用户帧把 RFLAGS.IF 置 1，故时钟只
-//! 可能在被中断的用户态到达；入口 CS.RPL 必为 3。既有协作阶段用户帧 IF=0 且 PIT 未启动，
-//! 完全不受扰动。
+//! **只在 CPL3 抢占：** 内核 idle 允许 IRQ0 唤醒物理期限等待者，然后返回原 idle 帧。
+//! 后台计时不执行抢占见证的任务轮转，也不推进 COSIR 抽象 Timer 时钟。
 //!
 //! **范围边界：** 单核、无 APIC timer、无 PCID/TLB shootdown、不宣称真实硬件或 `KERNEL-TRACE`。
 
@@ -40,14 +39,13 @@ const PREEMPT_THRESHOLD: u64 = 2;
 
 static PREEMPT_ENABLE: AtomicBool = AtomicBool::new(false);
 static TICKS: AtomicU64 = AtomicU64::new(0);
-/// M6：自由运行的 PIT 计数（不依赖 IRQ0）。
+/// 单 CPU 校准时间戳：IRQ0 只负责期限唤醒。
 static TIME_COUNTER: StaticCell<Option<TimeCounter>> = StaticCell::new(None);
 
 struct TimeCounter {
-    /// 上次读到的硬件倒计数（0..=PIT_DIVISOR）。
-    last: u16,
-    /// 累计经过的 PIT 时钟数。
-    clocks: u64,
+    base: u64,
+    cycles_per_tick: u64,
+    last_tick: u64,
 }
 /// 各任务被时钟抢占的次数（索引即 Task id）。
 static PREEMPTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -68,25 +66,51 @@ fn eoi() {
     prima_ostd::arch::outb(PIC1_CMD, 0x20);
 }
 
-/// M6：启动 PIT 通道 0 的自由运行计数（约 10 ms 周期），**不**放行 IRQ0。
-///
-/// 只编程 8254；PIC 保持屏蔽，用户帧保持 IF=0。时间由 [`time_ticks`] 轮询硬件
-/// 计数得到，因此既有协作阶段的执行模型与中断见证完全不变。
-pub fn start_time_counter() {
-    TIME_COUNTER.with_mut(|slot| {
+/// Calibrate the single-CPU timestamp counter over two PIT periods. Deadlines
+/// use this monotonic source even while user code has interrupts disabled. IRQ0
+/// only wakes sleepers; it never advances the abstract COSIR timer clock.
+pub fn start_time_counter() -> bool {
+    let ready = TIME_COUNTER.with_mut(|slot| {
         if slot.is_some() {
-            return;
+            return true;
         }
-        // 通道 0、先低后高、模式 2（rate generator）。
         prima_ostd::arch::outb(PIT_CMD, 0x34);
         prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR & 0xff) as u8);
         prima_ostd::arch::outb(PIT_CH0, (PIT_DIVISOR >> 8) as u8);
-        let now = read_pit_count();
+        let mut last = read_pit_count().min(PIT_DIVISOR);
+        let base = prima_ostd::arch::timestamp_counter();
+        let mut clocks = 0u64;
+        for _ in 0..2_000_000 {
+            let now = read_pit_count().min(PIT_DIVISOR);
+            clocks += u64::from(counter_delta(last, now));
+            last = now;
+            if clocks >= u64::from(PIT_DIVISOR) * 2 {
+                break;
+            }
+        }
+        let end = prima_ostd::arch::timestamp_counter();
+        if clocks < u64::from(PIT_DIVISOR) * 2 || end <= base {
+            return false;
+        }
+        let Some(cycles) = (end - base).checked_mul(u64::from(PIT_DIVISOR)) else {
+            return false;
+        };
+        let cycles_per_tick = cycles / clocks;
+        if cycles_per_tick == 0 {
+            return false;
+        }
         *slot = Some(TimeCounter {
-            last: now,
-            clocks: 0,
+            base: end,
+            cycles_per_tick,
+            last_tick: 0,
         });
+        true
     });
+    if ready {
+        prima_ostd::entry::set_timer_handler(preempt_tick);
+        crate::irq::set_mask(0, false);
+    }
+    ready
 }
 
 /// 锁存并读取通道 0 的当前倒计数（先低字节后高字节）。
@@ -97,17 +121,14 @@ fn read_pit_count() -> u16 {
     (high << 8) | low
 }
 
-/// M6：返回自启动以来经过的 PIT tick（约 100 Hz，向下取整）。
-///
-/// 每次调用把硬件倒计数折算为经过的 PIT 时钟并累计；调用间隔需短于一个计数周期
-/// （约 55 ms）才能无歧义地跨过重装，睡眠轮询路径满足这一条件。
+/// Calibrated monotonic 10 ms ticks, clamped if the timestamp counter regresses.
+/// Frequency scaling/migration is outside this single-CPU QEMU contract.
 pub fn time_ticks() -> u64 {
     TIME_COUNTER.with_mut(|slot| match slot {
         Some(counter) => {
-            let now = read_pit_count();
-            counter.clocks += counter_delta(counter.last, now) as u64;
-            counter.last = now;
-            counter.clocks / PIT_DIVISOR as u64
+            let cycles = prima_ostd::arch::timestamp_counter().saturating_sub(counter.base);
+            counter.last_tick = counter.last_tick.max(cycles / counter.cycles_per_tick);
+            counter.last_tick
         }
         None => 0,
     })
@@ -153,7 +174,10 @@ pub fn init_timer() {
 /// 且抢占已启用时动作：发 EOI、计数、记录当前任务 CR3/rsp，把当前完整 `SretFrame` 存入
 /// 调度器，若阈值达到则收尾，否则切到下一 Ready 任务（不返回）。
 extern "C" fn preempt_tick(frame: SaveBlock, entry_rsp: u64) {
-    // 保存块中 CS 位于第 16 个 qword（15 GPR + rip）。
+    // The kernel idle loop also receives IRQ0. Always acknowledge it before
+    // inspecting CS, and never decode the absent ring0 RSP/SS slots.
+    eoi();
+    crate::syscall::inject_wait_wakes(&crate::bootstrap::expire_physical_waits(time_ticks()));
     let cs = frame.cs();
     if cs & 3 != 3 {
         return;
@@ -161,7 +185,6 @@ extern "C" fn preempt_tick(frame: SaveBlock, entry_rsp: u64) {
     if !PREEMPT_ENABLE.load(Ordering::Relaxed) {
         return;
     }
-    eoi();
     TICKS.fetch_add(1, Ordering::Relaxed);
 
     let cur = sched::current();

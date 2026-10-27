@@ -63,6 +63,44 @@ impl<T: SyscallTransport> Runtime<T> {
         Ok(TaskId::from_raw(id))
     }
 
+    /// Process leader identity; threads in one Process return the same ID.
+    pub fn process_id(&self) -> Result<TaskId> {
+        let raw = self.call(syscall::PROCESS_ID, [0; 6])?;
+        Ok(TaskId::from_raw(
+            u32::try_from(raw).map_err(|_| crate::Error::InvalidResponse)?,
+        ))
+    }
+
+    pub fn parent_process_id(&self) -> Result<Option<TaskId>> {
+        let raw = self.call(syscall::PROCESS_ID, [1, 0, 0, 0, 0, 0])?;
+        let id = u32::try_from(raw).map_err(|_| crate::Error::InvalidResponse)?;
+        Ok((id != 0).then_some(TaskId::from_raw(id)))
+    }
+
+    /// Read a live Task incarnation cookie (generation in the high 32 bits).
+    pub fn task_cookie(&self, task: TaskId) -> Result<u64> {
+        self.call(syscall::TASK_INFO, [1, task.as_raw() as u64, 0, 0, 0, 0])
+    }
+    pub fn task_process_cookie(&self, task: TaskId) -> Result<u64> {
+        self.call(syscall::TASK_INFO, [2, task.as_raw() as u64, 0, 0, 0, 0])
+    }
+    pub fn task_parent_cookie(&self, task: TaskId) -> Result<u64> {
+        self.call(syscall::TASK_INFO, [3, task.as_raw() as u64, 0, 0, 0, 0])
+    }
+    pub fn task_prepared(&self, task: TaskId) -> Result<bool> {
+        match self.call(syscall::TASK_INFO, [6, task.as_raw() as u64, 0, 0, 0, 0])? {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(crate::Error::InvalidResponse),
+        }
+    }
+    pub fn send_target_cookie(&self, cap: Capability) -> Result<u64> {
+        self.call(syscall::TASK_INFO, [4, cap.as_raw(), 0, 0, 0, 0])
+    }
+    pub fn self_capability(&self) -> Result<Capability> {
+        Capability::from_raw(self.call(syscall::TASK_INFO, [5, 0, 0, 0, 0, 0])?)
+    }
+
     /// 创建 Task，返回管理该 Task 的 Capability。
     ///
     /// 成功时 `initial_capabilities` 中的 token 转移给新 Task；调用失败时不发生部分转移。
@@ -73,6 +111,14 @@ impl<T: SyscallTransport> Runtime<T> {
             [words.as_ptr() as usize as u64, 0, 0, 0, 0, 0],
         )?;
         Capability::from_raw(raw)
+    }
+
+    /// Terminate all threads in the Process named by its leader capability.
+    pub fn process_terminate(&self, leader: Capability, status: u8) -> Result<()> {
+        self.call_unit(
+            syscall::PROCESS_TERMINATE,
+            [leader.as_raw(), status as u64, 0, 0, 0, 0],
+        )
     }
 
     /// 销毁持有 Capability 所指向的 Task。

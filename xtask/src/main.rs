@@ -35,13 +35,31 @@ fn run() -> Result<(), String> {
             test_boot_slice()
         }
         "test-rust" => {
+            let case = match rest.as_slice() {
+                [] => None,
+                [name] if matches!(name.as_str(), "R1" | "R2") => Some(name.as_str()),
+                _ => return Err(usage()),
+            };
+            test_rust_slice(case)
+        }
+        "test-tty" => {
             require_no_args(&rest)?;
-            test_rust_slice()
+            image::check_stage5_linux_ttyin()?;
+            test_tty_twice(image::build_images_for_ttyin()?)
+        }
+        "test-net" => {
+            require_no_args(&rest)?;
+            image::check_stage5_linux_net()?;
+            test_program_twice(
+                image::build_images_for_net()?,
+                "N1",
+                image::NET_EXPECTED_STDOUT,
+            )
         }
         "test-process" => {
             let case = match rest.as_slice() {
                 [] => None,
-                [name] if matches!(name.as_str(), "W6" | "W7" | "W7b" | "W8") => {
+                [name] if matches!(name.as_str(), "W4" | "W6" | "W7" | "W7b" | "W8" | "W9") => {
                     Some(name.as_str())
                 }
                 _ => return Err(usage()),
@@ -106,6 +124,14 @@ fn test_vfs_slice(program: Option<&str>) -> Result<(), String> {
 
 /// Focused process acceptance, with the same validators and two-run IPC baseline as test.
 fn test_process_slice(case: Option<&str>) -> Result<(), String> {
+    if case.is_none() || case == Some("W4") {
+        image::check_stage5_linux_pthread()?;
+        test_program_twice(
+            image::build_images_for_pthread()?,
+            "W4",
+            image::PTHREAD_EXPECTED_STDOUT,
+        )?;
+    }
     if case.is_none() || case == Some("W6") {
         image::check_stage5_linux_proc()?;
         test_program_twice(
@@ -115,6 +141,7 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
         )?;
     }
     if case.is_none() || case == Some("W7") {
+        image::check_stage5_linux_exec()?;
         test_program_twice(
             image::build_images_for_exec()?,
             "W7",
@@ -122,6 +149,7 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
         )?;
     }
     if case.is_none() || case == Some("W7b") {
+        image::check_stage5_linux_execve()?;
         test_program_twice(
             image::build_images_for_execve()?,
             "W7b",
@@ -134,6 +162,14 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
             image::build_images_for_sig()?,
             "W8",
             image::SIG_EXPECTED_STDOUT,
+        )?;
+    }
+    if case.is_none() || case == Some("W9") {
+        image::check_stage5_linux_sigact()?;
+        test_program_twice(
+            image::build_images_for_sigact()?,
+            "W9",
+            image::SIGACT_EXPECTED_STDOUT,
         )?;
     }
     Ok(())
@@ -191,17 +227,16 @@ fn test_musl_slice(host_only: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn test_rust_slice() -> Result<(), String> {
-    test_program_twice(
-        image::build_images_for_rust(false)?,
-        "R1",
-        image::RUST_CORE_STDOUT,
-    )?;
-    test_program_twice(
-        image::build_images_for_rust(true)?,
-        "R2",
-        image::RUST_STD_STDOUT,
-    )
+fn test_rust_slice(case: Option<&str>) -> Result<(), String> {
+    for (standard, name, stdout) in [
+        (false, "R1", image::RUST_CORE_STDOUT),
+        (true, "R2", image::RUST_STD_STDOUT),
+    ] {
+        if case.is_none() || case == Some(name) {
+            test_program_twice(image::build_images_for_rust(standard)?, name, stdout)?;
+        }
+    }
+    Ok(())
 }
 
 type ImageBuilder = fn() -> Result<image::Images, String>;
@@ -232,6 +267,8 @@ fn test_boot_slice() -> Result<(), String> {
         ("V3", image::check_stage5_linux_vfs3),
         ("N1", image::check_stage5_linux_net),
         ("W6", image::check_stage5_linux_proc),
+        ("W7", image::check_stage5_linux_exec),
+        ("W7b", image::check_stage5_linux_execve),
         ("W8", image::check_stage5_linux_sig),
         ("W9", image::check_stage5_linux_sigact),
         ("W4", image::check_stage5_linux_pthread),
@@ -421,7 +458,14 @@ fn test_tty_twice(images: image::Images) -> Result<(), String> {
             "I1",
             image::TTYIN_EXPECTED_STDOUT,
             baseline,
-            &[("TTYREADY", b"hi\n"), ("TTYRAW", b"xy"), ("TTYEOF", &[4u8])],
+            &[
+                ("TTYREADY\n", b"hi\n"),
+                ("TTYINTRAISE\n", &[3u8]),
+                ("TTYAFTER\n", b"ok\n"),
+                ("TTYRESTART\n", b"\x03go\n"),
+                ("TTYRAW\n", b"xy"),
+                ("TTYEOF\n", &[4u8]),
+            ],
         );
         match result {
             Ok(ipc) => {
@@ -519,9 +563,10 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-rust|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
-     \x20      cargo xtask test-process [W6|W7|W7b|W8]\n\
+     \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
+     \x20      cargo xtask test-rust [R1|R2]\n\
      \x20      cargo xtask test-musl [--host-only]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\
      \x20      cargo xtask linux-trace [--regenerate [--tcg]]"

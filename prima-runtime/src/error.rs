@@ -9,6 +9,8 @@ pub enum Error {
     NotFound,
     /// 内核返回 `EAGAIN`。
     Again,
+    /// A caught user upcall interrupted a blocking operation (EINTR).
+    Interrupted,
     /// 内核返回 `EACCES`。
     Denied,
     /// 内核返回 `EFAULT`。

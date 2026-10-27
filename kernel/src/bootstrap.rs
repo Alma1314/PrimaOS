@@ -93,7 +93,10 @@ pub const TASK_RIGHTS: Rights = Rights::from_rights(&[
 ///
 /// 守卫（`BootstrapState` ≤ 13 KiB）**未放宽**，见
 /// `bootstrap_state_stays_within_the_stack_budget`（SPEC-104 照实重测；SPEC-106 再次照实重测）。
-pub const MAX_CAPABILITY_SLOTS: usize = 160;
+// Fork's inherited tokens and authenticated two-cap service handoff coexist.
+// The 160-slot build peaks at 153 while reserved internal slots make both
+// handoff derivations fail. Keep the 13 KiB BootstrapState guard unchanged.
+pub const MAX_CAPABILITY_SLOTS: usize = 192;
 /// 兼容别名：历史上该常量用于 positions 表容量，现等于槽位数。
 const MAX_CAPABILITY_POSITIONS: usize = MAX_CAPABILITY_SLOTS;
 
@@ -143,7 +146,9 @@ pub(crate) const MAX_TASKS: usize = 18;
 /// 目录枚举又把一段 listing 按 3 字节分片；探针的同步文件 IPC 与迁移事件显著多于 M7。
 /// 2048 在 M7 已用到 1969，本片必然触顶。按既有先例扩容并照实重测，未放宽任何检查。
 /// 该容量不占 `BootstrapState`（存储已在 [`AUDIT_ARENA`] 静态），故不受 16 KiB 守卫约束。
-const MAX_AUDIT_EVENTS: usize = 8192;
+// The complete execve/crt/reexec witness exceeds the old 8192-record budget
+// through the bounded 3-byte VFS protocol. Storage remains outside the state.
+const MAX_AUDIT_EVENTS: usize = 16384;
 
 /// SPEC-074：审计 arena 按**实例**划分的区段数。
 ///
@@ -206,6 +211,7 @@ pub enum AuditEvent {
     },
     TaskDestroyed {
         task_id: u32,
+        generation: u32,
     },
     CapabilityDerived {
         cap: Handle,
@@ -219,6 +225,28 @@ pub enum AuditEvent {
     },
     CapabilityRevoked {
         cap: Handle,
+    },
+    /// Controlled fork inheritance; distinct from user cap_derive's Derive gate.
+    CapabilityForkInherited {
+        cap: Handle,
+        source: Handle,
+        child: u32,
+    },
+    CapabilityForkRebound {
+        cap: Handle,
+        source: Handle,
+        child: u32,
+    },
+    ForkPrepared {
+        parent: u32,
+        child: u32,
+        ticket: Handle,
+    },
+    ForkPublished {
+        child: u32,
+    },
+    ForkAborted {
+        child: u32,
     },
     /// S2-D2：显式 `cap_drop`（§4.5）。撤销走 [`AuditEvent::CapabilityRevoked`]。
     CapabilityDropped {
@@ -276,6 +304,7 @@ pub enum AuditEvent {
     /// S2-D4：`task_create` 成功（§8.1 步骤 8）。
     TaskCreated {
         task_id: u32,
+        generation: u32,
     },
     /// SPEC-081 / §13.1 `CapMinted`：铸造根 Capability（`parent = None`）。
     ///
@@ -351,6 +380,13 @@ pub enum AuditEvent {
         access: Rights,
         task_cap: Handle,
     },
+    VspaceAccessEnabled {
+        task_id: u32,
+        base: u64,
+        page_count: u32,
+        enabled: bool,
+        task_cap: Handle,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +395,7 @@ pub struct AuditLog {
     base: usize,
     /// 已追加条数（区段内的偏移由 `base + count` 给出）。
     count: usize,
+    reserved: usize,
 }
 
 impl core::fmt::Debug for AuditLog {
@@ -366,13 +403,14 @@ impl core::fmt::Debug for AuditLog {
         f.debug_struct("AuditLog")
             .field("base", &self.base)
             .field("count", &self.count)
+            .field("reserved", &self.reserved)
             .finish()
     }
 }
 
 impl PartialEq for AuditLog {
     fn eq(&self, other: &Self) -> bool {
-        self.count == other.count
+        self.count == other.count && self.reserved == other.reserved
     }
 }
 
@@ -385,8 +423,16 @@ impl Eq for AuditLog {}
 /// 且容量/段数都不再占结构体空间——后续切片可自由扩容。
 ///
 /// 段由 `AUDIT_CURSOR` 原子分配，故 host 单测并行构造的多个 state **各有独立区段**，互不干扰。
-static AUDIT_ARENA: StaticCell<[Option<AuditEvent>; MAX_AUDIT_EVENTS * AUDIT_REGIONS]> =
-    StaticCell::new([None; MAX_AUDIT_EVENTS * AUDIT_REGIONS]);
+// `count` is the sole initialization boundary, so unused slots need no Option.
+// This all-zero valid variant also lets the linker place storage in BSS rather
+// than embedding megabytes of nonzero None discriminants in the boot image.
+static AUDIT_ARENA: StaticCell<[AuditEvent; MAX_AUDIT_EVENTS * AUDIT_REGIONS]> = StaticCell::new(
+    [AuditEvent::MessageSent {
+        message_id: 0,
+        sender: 0,
+        receiver: 0,
+    }; MAX_AUDIT_EVENTS * AUDIT_REGIONS],
+);
 static AUDIT_CURSOR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 impl AuditLog {
@@ -400,11 +446,32 @@ impl AuditLog {
             base + MAX_AUDIT_EVENTS <= MAX_AUDIT_EVENTS * AUDIT_REGIONS,
             "audit arena exhausted: 提高 AUDIT_REGIONS（它不占 BootstrapState 空间）"
         );
-        Self { base, count: 0 }
+        Self {
+            base,
+            count: 0,
+            reserved: 0,
+        }
     }
 
     fn can_append(&self, count: usize) -> bool {
-        self.count.saturating_add(count) <= MAX_AUDIT_EVENTS
+        self.count
+            .saturating_add(count)
+            .saturating_add(self.reserved)
+            <= MAX_AUDIT_EVENTS
+    }
+
+    fn reserve(&mut self, count: usize) -> bool {
+        if !self.can_append(count) {
+            return false;
+        }
+        self.reserved += count;
+        true
+    }
+    fn release_reservation(&mut self, count: usize) {
+        self.reserved = self
+            .reserved
+            .checked_sub(count)
+            .expect("audit reservation belongs to this transaction");
     }
 
     fn append(&mut self, event: AuditEvent) {
@@ -416,7 +483,7 @@ impl AuditLog {
             self.count
         );
         let index = self.base + self.count;
-        AUDIT_ARENA.with_mut(|arena| arena[index] = Some(event));
+        AUDIT_ARENA.with_mut(|arena| arena[index] = event);
         self.count += 1;
     }
 
@@ -425,7 +492,7 @@ impl AuditLog {
         if index >= self.count {
             return None;
         }
-        AUDIT_ARENA.with(|arena| arena[self.base + index])
+        AUDIT_ARENA.with(|arena| Some(arena[self.base + index]))
     }
 
     #[cfg(test)]
@@ -482,6 +549,8 @@ pub enum AuditError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
     Ready,
+    /// A fork image exists but service handoff has not committed.
+    Prepared,
     Running,
     BlockedRecv,
     /// COSIR §5.2/§21.2：阻塞在 `wait_objects`（等待一个或多个 WaitObject）。
@@ -521,6 +590,8 @@ pub struct WaitRequest {
     pub count: usize,
     pub mode: u64,
     pub deadline: Option<Instant>,
+    /// Physical monotonic ticks for native waits; abstract time remains separate.
+    pub physical: bool,
 }
 
 /// COSIR §5.6：等待结果编码（0=满足、1=超时、2=目标死亡）。
@@ -544,6 +615,7 @@ impl WaitResultCode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskRecord {
     pub id: u32,
+    pub generation: u32,
     pub status: TaskStatus,
     /// §5.2/§14 步骤 4：创建者（`KERNEL_ACTOR` = 0）。
     pub creator: u32,
@@ -553,6 +625,9 @@ pub struct TaskRecord {
     pub node: u32,
     /// §5.2/§14 步骤 7：Task 的结构性根 Namespace Capability（[`Handle::ZERO`] 表示无）。
     pub root_ns_cap: Handle,
+    /// The self capability installed in this Task's creation context. Only this
+    /// token is rebound on fork; other explicit Task capabilities keep targets.
+    pub self_cap: Handle,
     /// §5.2：Task 入口虚拟地址（`memseg_unmap` 的 `entry` 页保护）。
     pub entry: u64,
     /// §5.2/W9：仅 `status == Faulted` 时非空（双向不变量由 `check_faulted_invariant` 钉住）。
@@ -582,6 +657,7 @@ pub enum TaskError {
     NotReady,
     CannotDestroyInit,
     CannotDestroyRunning,
+    HasLiveThreads,
     AuditFull,
     /// SPEC-072：§8.2 内核回收路径的前置不成立——目标不是「不可恢复的 Faulted」。
     NotUnrecoverable,
@@ -616,6 +692,28 @@ pub enum TaskCreateError {
     NoMemory,
     AuditFull,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreparedFork {
+    parent: u32,
+    ticket: Handle,
+    audit_budget: usize,
+    root: u64,
+}
+#[cfg(not(test))]
+const PREPARED_FORK_REGIONS: usize = 1;
+#[cfg(test)]
+const PREPARED_FORK_REGIONS: usize = 512;
+static PREPARED_FORKS: crate::arena::Arena<PreparedFork, MAX_TASKS, PREPARED_FORK_REGIONS> =
+    crate::arena::Arena::new();
+
+// Even hostile queued messages cannot consume the cancellation budget.
+const FORK_ABORT_AUDIT_BUDGET: usize = MAX_CAPABILITY_SLOTS
+    + 3 * MAX_MESSAGES
+    + 2 * MAX_TIMERS
+    + MAX_EXC_SOURCES
+    + 2 * MAX_SEGMENT_OBJECTS
+    + 4;
 
 /// S2-D4：`task_create` 的请求块（用户内存布局见 `syscall.rs`；细化层字段 `stack_top` 在内）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -659,6 +757,7 @@ pub struct TaskCreateOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskTable {
+    next_generation: u64,
     pub entries: [Option<TaskRecord>; MAX_TASKS],
     pub count: usize,
     /// M15b-2b：已销毁 Task 的墓碑（记录已回收，`task_status` 仍报 Dead）。
@@ -670,6 +769,7 @@ impl TaskTable {
         let mut entries = [None; MAX_TASKS];
         entries[0] = Some(TaskRecord {
             id: INIT_TASK_ID,
+            generation: 1,
             // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
             status: TaskStatus::Ready,
             // §14 步骤 4：init 由 KernelActor 创建，CPU Task，本节点。
@@ -677,6 +777,7 @@ impl TaskTable {
             kind: TaskKind::Cpu,
             node: LOCAL_NODE,
             root_ns_cap: NAMESPACE_CAP_HANDLE,
+            self_cap: TASK_CAP_HANDLE,
             entry: 0,
             pending_exc: None,
             process: None,
@@ -689,6 +790,7 @@ impl TaskTable {
         });
         Self {
             entries,
+            next_generation: 2,
             count: 1,
             dead: 0,
         }
@@ -738,14 +840,18 @@ impl TaskTable {
         if self.find(task_id).is_some() {
             return Err(TaskError::DuplicateTask);
         }
-        if task_id < 32 {
-            self.dead &= !(1u32 << task_id);
-        }
         if self.count == MAX_TASKS {
             return Err(TaskError::CapacityExceeded);
         }
+        let generation =
+            u32::try_from(self.next_generation).map_err(|_| TaskError::CapacityExceeded)?;
+        if task_id < 32 {
+            self.dead &= !(1u32 << task_id);
+        }
+        self.next_generation += 1;
         self.entries[self.count] = Some(TaskRecord {
             id: task_id,
+            generation,
             status: TaskStatus::Ready,
             // 平台/KernelActor 内部创建的 Task；`task_create` 会随后覆写为调用者。
             creator: KERNEL_ACTOR,
@@ -753,6 +859,7 @@ impl TaskTable {
             node: LOCAL_NODE,
             // 非 init 任务由创建者显式设置结构根；本切片不创建此类任务的结构根。
             root_ns_cap: Handle::ZERO,
+            self_cap: Handle::ZERO,
             entry,
             pending_exc: None,
             process: None,
@@ -939,6 +1046,7 @@ pub const MAX_MESSAGE_CAPABILITIES: usize = 2;
 pub struct IpcMessage {
     pub id: u32,
     pub sender: u32,
+    pub sender_generation: u32,
     pub receiver: u32,
     pub payload: u64,
     pub capabilities: [Handle; MAX_MESSAGE_CAPABILITIES],
@@ -964,7 +1072,7 @@ pub struct IpcQueue {
     pub entries: [Option<IpcMessage>; MAX_MESSAGES],
     pub count: usize,
     peak_count: usize,
-    next_id: u32,
+    next_id: u64,
 }
 
 impl IpcQueue {
@@ -978,9 +1086,15 @@ impl IpcQueue {
     }
 
     fn allocate_id(&mut self) -> u32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let id = u32::try_from(self.next_id).expect("preflighted message ID");
+        self.next_id += 1;
         id
+    }
+
+    fn can_allocate_ids(&self, count: usize) -> bool {
+        self.next_id
+            .checked_add(count as u64)
+            .is_some_and(|next| next <= u64::from(u32::MAX) + 1)
     }
 
     fn send(&mut self, message: IpcMessage) -> Result<(), IpcError> {
@@ -1010,8 +1124,7 @@ impl IpcQueue {
     fn remove_task(&mut self, task_id: u32) {
         let mut position = 0;
         while position < self.count {
-            let remove = self.entries[position]
-                .is_some_and(|message| message.sender == task_id || message.receiver == task_id);
+            let remove = self.entries[position].is_some_and(|message| message.receiver == task_id);
             if remove {
                 for shift in position..self.count - 1 {
                     self.entries[shift] = self.entries[shift + 1];
@@ -1244,6 +1357,17 @@ impl CapabilitySlotTable {
     }
 
     /// 分配最小空闲槽；槽位复用时不改变 generation（generation 只在释放时递增）。
+    fn normal_free_count(&self) -> usize {
+        (1..MAX_CAPABILITY_SLOTS as u32)
+            .filter(|slot| {
+                !(INTERNAL_TASK_ROOT_SLOT_BASE
+                    ..INTERNAL_TASK_ROOT_SLOT_BASE + INTERNAL_TASK_ROOT_SLOT_COUNT)
+                    .contains(slot)
+                    && self.slot_free(*slot)
+            })
+            .count()
+    }
+
     pub fn alloc(&mut self) -> Option<Handle> {
         let mut index = 1;
         while index < MAX_CAPABILITY_SLOTS {
@@ -1315,6 +1439,7 @@ pub struct CapabilityRecord {
     pub rights: Rights,
     /// 目标对象（派生时必须与父相同）。
     pub target: ObjectRef,
+    pub target_generation: u32,
     /// §4.2/§13.1：对应铸造/派生事件的审计序号。
     pub created_at: u32,
 }
@@ -1331,6 +1456,7 @@ pub struct CapabilityHistoryRecord {
     pub holder: u32,
     pub rights: Rights,
     pub target: ObjectRef,
+    pub target_generation: u32,
     pub created_at: u32,
 }
 
@@ -1497,12 +1623,14 @@ pub enum ExcKind {
     DoubleFault,
     /// syscall trap（对应 `syscall_trap_source`；**非**硬件执行异常）。
     SyscallTrap,
+    /// Asynchronous device notification; never faults the interrupted Task.
+    ExternalInterrupt,
 }
 
 impl ExcKind {
     /// §12.5 前置 4：是否为**硬件执行异常**（只有它会把 `faulting_task` 置 Faulted）。
     pub const fn is_hardware(self) -> bool {
-        !matches!(self, ExcKind::SyscallTrap)
+        !matches!(self, ExcKind::SyscallTrap | ExcKind::ExternalInterrupt)
     }
 
     /// §12.10 前置 6：`exc_resume` 是否可恢复该种类（`DoubleFault` 等为不可恢复）。
@@ -1526,6 +1654,7 @@ pub const fn kind_code(kind: ExcKind) -> u32 {
         ExcKind::DivideError => 4,
         ExcKind::InvalidOpcode => 5,
         ExcKind::DoubleFault => 6,
+        ExcKind::ExternalInterrupt => 7,
     }
 }
 
@@ -1538,6 +1667,7 @@ pub const fn kind_name(kind: ExcKind) -> &'static str {
         ExcKind::DivideError => "divide_error",
         ExcKind::InvalidOpcode => "invalid_opcode",
         ExcKind::DoubleFault => "double_fault",
+        ExcKind::ExternalInterrupt => "external_interrupt",
     }
 }
 
@@ -1619,8 +1749,7 @@ impl ExcSourceTable {
 
     /// S2-D4 / §8.2 步骤 7：从所有源的订阅集合移除 `task`。
     ///
-    /// 返回被移除的订阅条数。销毁是被授权动作的原子清理，故**不追加** `ExcUnsubscribed`
-    /// （§8.2 步骤 9 只要求追加 Task 销毁、消息丢弃、Capability 丢弃与 Timer 事件）。
+    /// 返回被移除的订阅条数；本表不持 Audit，调用者须逐源追加 ExcUnsubscribed。
     pub fn remove_subscriber(&mut self, task: u32) -> usize {
         let mut removed = 0usize;
         for source in self.entries[..self.count].iter_mut().flatten() {
@@ -1827,6 +1956,7 @@ pub struct RaiseOutcome {
     pub payload: u64,
     /// 切片 N：被写入 pending 并唤醒的 BlockedRecv 订阅者（首个；无则 `None`）。
     pub woken: Option<u32>,
+    pub woken_tasks: u32,
 }
 
 /// 切片 L：平台初始化期间那次 pending 递送的留证。
@@ -2323,6 +2453,9 @@ pub struct PlatformSegmentsRecord {
 /// 149 页（目录页 1 + 服务/C 探针/参数载体 148）。144/146 都会让
 /// `install_boot_image` 在启动早期确定拒绝。只按实测扩到 149，不放开逐页检查。
 pub const MAX_SEGMENT_FRAMES: usize = 149;
+/// The aggregate boot service image uses external vector storage. This budget
+/// is independent of per-user Segment size and does not enlarge stack values.
+pub const MAX_BOOT_SERVICE_FRAMES: usize = 192;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -2351,6 +2484,10 @@ pub enum SegmentFrames {
     Image {
         count: usize,
     },
+    BootServices {
+        slice: crate::arena::ArenaSlice,
+        count: usize,
+    },
 }
 
 impl SegmentFrames {
@@ -2358,6 +2495,7 @@ impl SegmentFrames {
         match self {
             SegmentFrames::Vector { count, .. } => *count,
             SegmentFrames::Image { count } => *count,
+            SegmentFrames::BootServices { count, .. } => *count,
         }
     }
 
@@ -2377,6 +2515,9 @@ impl SegmentFrames {
                     None
                 }
             }
+            SegmentFrames::BootServices { slice, count } => (index < *count)
+                .then(|| BOOT_FRAME_ARENA.get(*slice, index))
+                .flatten(),
         }
     }
 }
@@ -2466,7 +2607,9 @@ pub struct VspaceEntry {
 /// **M9 扩容 320 → 384**：C 任务堆从 64 页扩到 96 页（sbase `ls` 的 64 KiB visited 表），
 /// 同一 Segment 的映射条目增加 32；VFS 探针的 130 页映像段 + 104 页栈/堆仍可容纳。
 /// 这是真实增长而非放宽检查；`memseg_map` 的容量判定保持 `>` 语义。
-pub const MAX_VSPACE_ENTRIES: usize = 384;
+// Fork duplicates logical mappings while physical read-only/COW pages remain
+// shared. Include the base services, parent, child and replacement exec image.
+pub const MAX_VSPACE_ENTRIES: usize = 1024;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
@@ -2925,18 +3068,37 @@ pub struct NsRejects {
 pub const MAX_PROCESSES: usize = MAX_TASKS;
 
 /// M15b：Process 是线程组（共享地址空间/fd/cwd 的用户态概念），调度单元仍是 Task。
+/// wait status distinguishes ordinary exit from signal termination.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessExit {
+    Exited(u8),
+    Signaled(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessTermination {
+    pub leader: u32,
+    pub members: u32,
+    pub wakes: WaitWake,
+    pub parent: Option<u32>,
+    pub cookie: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Process {
     pub id: u32,
     pub creator: u32,
     /// 线程组的能力空间代表（leader Task id）；同组线程共享 holder。
     pub leader: u32,
-    /// M17：能力空间代表（fork 子沿用父的 cap_space；线程组默认 = leader）。
+    /// Process 的能力空间代表；fork 子有独立空间，同 Process 的线程共享它。
     pub cap_space: u32,
+    /// Immutable group for Process-family upcalls; independent services get distinct groups.
+    pub upcall_group: u64,
     /// M17：父进程（fork 建立；init 为 None）。
     pub parent: Option<u32>,
+    pub forked: bool,
     /// M17：退出状态（wait4 读取；None = 未退出）。
-    pub exit_status: Option<i64>,
+    pub exit_status: Option<ProcessExit>,
     /// M17b：等待本进程退出的父 Task（位图，task id ≤ 31）。
     pub waiters: u32,
     pub waiter_count: usize,
@@ -3005,8 +3167,8 @@ impl ProcessTable {
     }
 }
 
-/// M15 / COSIR §21：活动 WaitObject 上限（8 个对象，内联表）。
-pub const MAX_WAIT_OBJECTS: usize = 8;
+/// M15 / COSIR §21：活动 WaitObject 上限（32 个对象，内联表）。
+pub const MAX_WAIT_OBJECTS: usize = 32;
 /// COSIR §21.1.1：根 WaitObject Capability 的权限集。
 pub const WAIT_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -3026,61 +3188,64 @@ pub struct WaitObject {
 }
 
 /// 每个 WaitObject 的等待者上限（与 MAX_TASKS 对齐的保守值）。
-pub const MAX_WAITERS: usize = 8;
+pub const MAX_WAITERS: usize = MAX_TASKS;
 
+static WAIT_ARENA: crate::arena::Arena<WaitObject, MAX_WAIT_OBJECTS, VSPACE_REGIONS> =
+    crate::arena::Arena::new();
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WaitObjectTable {
-    pub entries: [Option<WaitObject>; MAX_WAIT_OBJECTS],
+    slice: crate::arena::ArenaSlice,
     pub count: usize,
+    next_id: u64,
 }
-
 impl WaitObjectTable {
-    const fn empty() -> Self {
+    fn empty() -> Self {
         Self {
-            entries: [None; MAX_WAIT_OBJECTS],
+            slice: WAIT_ARENA.claim(),
             count: 0,
+            next_id: 0,
         }
     }
-
-    pub fn find(&self, id: u32) -> Option<&WaitObject> {
-        self.entries.iter().flatten().find(|object| object.id == id)
+    fn iter(&self) -> impl Iterator<Item = WaitObject> + '_ {
+        (0..MAX_WAIT_OBJECTS).filter_map(|index| WAIT_ARENA.get(self.slice, index))
     }
-
-    fn find_mut(&mut self, id: u32) -> Option<&mut WaitObject> {
-        self.entries
-            .iter_mut()
-            .flatten()
-            .find(|object| object.id == id)
+    pub fn find(&self, id: u32) -> Option<WaitObject> {
+        self.iter().find(|object| object.id == id)
     }
-
-    fn next_id(&self) -> u32 {
-        self.entries
-            .iter()
-            .flatten()
-            .map(|object| object.id + 1)
-            .max()
-            .unwrap_or(0)
+    fn write(&self, object: WaitObject) {
+        let index = (0..MAX_WAIT_OBJECTS)
+            .find(|&index| {
+                WAIT_ARENA
+                    .get(self.slice, index)
+                    .is_some_and(|o| o.id == object.id)
+            })
+            .expect("live wait object");
+        WAIT_ARENA.set(self.slice, index, Some(object));
     }
-
+    fn next_id(&self) -> Option<u32> {
+        u32::try_from(self.next_id).ok()
+    }
     fn insert(&mut self, object: WaitObject) -> bool {
-        if let Some(slot) = self.entries.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(object);
-            self.count += 1;
-            true
-        } else {
-            false
-        }
+        let Some(index) =
+            (0..MAX_WAIT_OBJECTS).find(|&index| WAIT_ARENA.get(self.slice, index).is_none())
+        else {
+            return false;
+        };
+        WAIT_ARENA.set(self.slice, index, Some(object));
+        self.count += 1;
+        self.next_id += 1;
+        true
     }
-
     fn remove(&mut self, id: u32) -> Option<WaitObject> {
-        for slot in self.entries.iter_mut() {
-            if slot.is_some_and(|object| object.id == id) {
-                let object = slot.take();
-                self.count -= 1;
-                return object;
-            }
-        }
-        None
+        let index = (0..MAX_WAIT_OBJECTS).find(|&index| {
+            WAIT_ARENA
+                .get(self.slice, index)
+                .is_some_and(|o| o.id == id)
+        })?;
+        let old = WAIT_ARENA.get(self.slice, index);
+        WAIT_ARENA.set(self.slice, index, None);
+        self.count -= 1;
+        old
     }
 }
 
@@ -3117,7 +3282,7 @@ pub struct SignalOutcome {
 /// M17b：wait4 的结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wait4Outcome {
-    Exited(i64, i64),
+    Exited(i64, ProcessExit),
     None,
     Blocked,
 }
@@ -3231,6 +3396,7 @@ pub struct DeviceObject {
     pub creator: u32,
     pub base_port: u16,
     pub port_count: u16,
+    pub irq: Option<(u8, u32)>,
 }
 
 impl DeviceObject {
@@ -3239,7 +3405,7 @@ impl DeviceObject {
     pub fn covers(self, port: u16) -> bool {
         let port = port as u32;
         let base = self.base_port as u32;
-        port >= base && port < base + self.port_count as u32
+        self.irq.is_none() && port >= base && port < base + self.port_count as u32
     }
 }
 
@@ -3248,6 +3414,7 @@ impl DeviceObject {
 pub struct DeviceTable {
     pub entries: [Option<DeviceObject>; MAX_DEVICES],
     pub count: usize,
+    next_id: u64,
 }
 
 impl DeviceTable {
@@ -3255,6 +3422,7 @@ impl DeviceTable {
         Self {
             entries: [None; MAX_DEVICES],
             count: 0,
+            next_id: 1,
         }
     }
 
@@ -3262,15 +3430,8 @@ impl DeviceTable {
         self.entries.iter().flatten().find(|device| device.id == id)
     }
 
-    /// 最小的空闲 id（与 Timer/Namespace 同款复用语义）。
-    fn next_id(&self) -> u32 {
-        let mut candidate = 1;
-        loop {
-            if self.find(candidate).is_none() {
-                return candidate;
-            }
-            candidate += 1;
-        }
+    fn next_id(&self) -> Option<u32> {
+        u32::try_from(self.next_id).ok()
     }
 
     fn insert(&mut self, device: DeviceObject) -> bool {
@@ -3279,6 +3440,7 @@ impl DeviceTable {
         };
         *slot = Some(device);
         self.count += 1;
+        self.next_id += 1;
         true
     }
 
@@ -3310,6 +3472,7 @@ pub struct TimerObject {
 pub struct TimerTable {
     pub entries: [Option<TimerObject>; MAX_TIMERS],
     pub count: usize,
+    next_id: u64,
 }
 
 impl TimerTable {
@@ -3317,6 +3480,7 @@ impl TimerTable {
         Self {
             entries: [None; MAX_TIMERS],
             count: 0,
+            next_id: 1,
         }
     }
 
@@ -3331,15 +3495,9 @@ impl TimerTable {
             .find(|timer| timer.id == id)
     }
 
-    /// 最小的空闲 id（`ns_destroy` 式的复用语义：删除后 id 可被再次使用）。
-    fn next_id(&self) -> u32 {
-        let mut candidate = 1;
-        loop {
-            if self.find(candidate).is_none() {
-                return candidate;
-            }
-            candidate += 1;
-        }
+    /// Opaque IDs never name a later object after destruction.
+    fn next_id(&self) -> Option<u32> {
+        u32::try_from(self.next_id).ok()
     }
 
     fn insert(&mut self, timer: TimerObject) -> bool {
@@ -3348,6 +3506,7 @@ impl TimerTable {
         };
         *slot = Some(timer);
         self.count += 1;
+        self.next_id += 1;
         true
     }
 
@@ -3446,6 +3605,7 @@ pub enum DeviceError {
     PortOutOfRange,
     /// §15.5 构造约束：`port_count == 0`。
     EmptyRange,
+    Overlap,
     /// 实现层：设备表或槽位容量耗尽（§6.2 排除项）。
     CapacityExceeded,
     /// 实现层：审计容量耗尽（§6.2 排除项）。
@@ -3519,8 +3679,8 @@ pub struct BootstrapRecord {
 
 /// §5.1/§5.4 对象表容量：image(1) + 平台 bring-up 13 个(2..14) + 用户创建 Segment(15..)。
 ///
-/// `memseg_destroy` **不回收槽位**（只置 `active = false`），故每次 `memseg_create` 都消耗一个
-/// 新槽。SPEC-106 起该表移入静态 arena（[`SEGMENT_ARENA`]），**不再占用 `BootstrapState` 空间**，
+/// `memseg_destroy` 保留死亡记录直到槽复用；新对象使用严格递增ID，旧cap不复活。
+/// SPEC-106 起该表移入静态 arena（[`SEGMENT_ARENA`]），**不再占用 `BootstrapState` 空间**，
 /// 故可自由扩容——从 32 提到 **48**，为 S4-D3 的三个基础服务端点（各代码段 + 栈段）腾槽。
 pub const MAX_SEGMENT_OBJECTS: usize = 48;
 /// SPEC-106：Segment arena 的区段数（内核只构造一个 state ⇒ 1 段；host 单测并行构造多个 state，
@@ -3531,6 +3691,8 @@ const SEGMENT_REGIONS: usize = 1;
 const SEGMENT_REGIONS: usize = 512;
 /// SPEC-106：Segment 对象表的静态 arena（内容在此，`BootstrapState` 只留 8 B 句柄）。
 static SEGMENT_ARENA: crate::arena::Arena<SegmentObject, MAX_SEGMENT_OBJECTS, SEGMENT_REGIONS> =
+    crate::arena::Arena::new();
+static BOOT_FRAME_ARENA: crate::arena::Arena<u64, MAX_BOOT_SERVICE_FRAMES, SEGMENT_REGIONS> =
     crate::arena::Arena::new();
 /// SPEC-081：Namespace 对象上限（init + `ns_create` 创建的）。
 ///
@@ -3620,7 +3782,10 @@ pub struct BootstrapState {
     /// [`SEGMENT_ARENA`]，本字段只是一个区段句柄（SPEC-106：`BootstrapState` 贴 13 KiB 守卫，
     /// 内联的 `[Option<SegmentObject>; N]` 是最大一块，且 S4-D3 的服务端点需要更多段槽）。
     pub segments: crate::arena::ArenaSlice,
+    boot_frames: crate::arena::ArenaSlice,
     pub segment_count: usize,
+    /// Kernel-private exec Segments are reclaimed after their final mapping.
+    private_exec_segments: u64,
     /// 切片 P：§14 步骤 3 物化的 init Namespace。
     pub namespaces: [Option<NamespaceObject>; MAX_NAMESPACE_OBJECTS],
     pub namespace_count: usize,
@@ -3640,6 +3805,8 @@ pub struct BootstrapState {
     pub wait_objects: WaitObjectTable,
     /// M15b：Process/线程组表。
     pub processes: ProcessTable,
+    prepared_forks: crate::arena::ArenaSlice,
+    pub fork_views: crate::cap_view::ForkViews,
     /// S2-D3：每 Task 的逻辑 vspace 视图（`memseg_map`/`unmap` 维护）。
     pub vspace: TaskVspaceTable,
     /// 切片 P：W14——`bootstrap` 成功后置位；重复调用返回 `AlreadyBooted`。
@@ -3647,6 +3814,10 @@ pub struct BootstrapState {
     /// 切片 P：初始 Authority 的阶段末见证记录。
     pub boot_record: Option<BootstrapRecord>,
 }
+
+// The same layout guard applies to production builds, before a large state can
+// enter the 32 KiB syscall stack. Keep the descriptive host regression as well.
+const _: () = assert!(core::mem::size_of::<BootstrapState>() <= 13 * 1024);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootstrapError {
@@ -3756,7 +3927,9 @@ impl BootstrapState {
                 if !record.rights.subset_of(parent_record.rights) {
                     return Err(AuthorityError::RightsEscalation);
                 }
-                if parent_record.target != record.target {
+                if parent_record.target != record.target
+                    || parent_record.target_generation != record.target_generation
+                {
                     return Err(AuthorityError::InvalidParent);
                 }
             }
@@ -3772,6 +3945,7 @@ impl BootstrapState {
                 || historical.holder != record.holder
                 || historical.rights != record.rights
                 || historical.target != record.target
+                || historical.target_generation != record.target_generation
                 || historical.created_at != record.created_at
             {
                 return Err(AuthorityError::InvalidParent);
@@ -3822,7 +3996,7 @@ impl BootstrapState {
         }
 
         // §14 步骤 2/3：image Segment 与 init Namespace 必须物化。
-        if self.segment(IMAGE_SEGMENT_ID).is_none()
+        if self.segment_index(IMAGE_SEGMENT_ID).is_none()
             || self.namespaces[..self.namespace_count]
                 .iter()
                 .flatten()
@@ -3845,7 +4019,7 @@ impl BootstrapState {
                 .positions
                 .find(root_ns_cap)
                 .ok_or(AuthorityError::InvalidHolder)?;
-            if root_position.location != CapabilityLocation::HeldByTask(task.id) {
+            if root_position.location != CapabilityLocation::HeldByTask(self.space_of(task.id)) {
                 return Err(AuthorityError::InvalidHolder);
             }
             let root_rights = self
@@ -3872,13 +4046,9 @@ impl BootstrapState {
             .flatten()
         {
             let record = self
-                .records
-                .find(source.cap)
+                .immutable_record(source.cap)
                 .ok_or(AuthorityError::MissingPosition)?;
             if record.target != ObjectRef::ExcSource(source.id) || record.rights.is_empty() {
-                return Err(AuthorityError::InvalidHolder);
-            }
-            if !self.tasks.is_live(record.holder) {
                 return Err(AuthorityError::InvalidHolder);
             }
             let duplicate = self.exc_sources.entries[..self.exc_sources.count]
@@ -3928,6 +4098,7 @@ impl BootstrapState {
                 holder: record.holder,
                 rights: record.rights,
                 target: record.target,
+                target_generation: record.target_generation,
                 created_at: record.created_at,
             }),
         );
@@ -3969,6 +4140,7 @@ impl BootstrapState {
                 holder: capability.holder,
                 rights: capability.rights,
                 target: capability.object.target(),
+                target_generation: self.target_generation(capability.object.target()),
                 created_at: capability.created_at,
             });
         }
@@ -3981,6 +4153,7 @@ impl BootstrapState {
                 holder: record.holder,
                 rights: record.rights,
                 target: record.target,
+                target_generation: record.target_generation,
                 created_at: record.created_at,
             })
             .or_else(|| self.capability_history_record(handle))
@@ -4002,6 +4175,26 @@ impl BootstrapState {
             .find(|capability| capability.handle == handle)
             .map(|capability| capability.object.target())
             .or_else(|| self.records.find(handle).map(|record| record.target))
+    }
+
+    fn target_generation(&self, target: ObjectRef) -> u32 {
+        match target {
+            ObjectRef::Task(task) => self.tasks.find(task).map_or(0, |task| task.generation),
+            _ => 0,
+        }
+    }
+
+    fn cap_target_generation(&self, handle: Handle) -> Option<u32> {
+        self.immutable_record(handle)
+            .map(|record| record.target_generation)
+    }
+
+    pub fn cap_target_live(&self, handle: Handle) -> bool {
+        self.target_of(handle).is_some_and(|target| {
+            self.target_live(target)
+                && (!matches!(target, ObjectRef::Task(_))
+                    || self.cap_target_generation(handle) == Some(self.target_generation(target)))
+        })
     }
 
     /// `caller` 是否持有句柄（位置为 `HeldBy(caller)`）。
@@ -4035,7 +4228,7 @@ impl BootstrapState {
             moves: 0,
             created: 0,
             destroyed: 0,
-            target_live: self.target_live(target),
+            target_live: self.cap_target_live(cap),
             origin_none: true,
         };
         let mut current = cap;
@@ -4078,6 +4271,7 @@ impl BootstrapState {
                 trace.minted += 1
             }
             AuditEvent::CapabilityDerived { cap: event_cap, .. }
+            | AuditEvent::CapabilityForkInherited { cap: event_cap, .. }
                 if trace.chain[..trace.chain_len].contains(&event_cap) =>
             {
                 trace.derived += 1
@@ -4096,10 +4290,20 @@ impl BootstrapState {
                 object_id,
                 kind: event_kind,
             } if object_id == target.id() && event_kind == kind => trace.destroyed += 1,
-            AuditEvent::TaskCreated { task_id } if target == ObjectRef::Task(task_id) => {
+            AuditEvent::TaskCreated {
+                task_id,
+                generation,
+            } if target == ObjectRef::Task(task_id)
+                && self.cap_target_generation(cap) == Some(generation) =>
+            {
                 trace.created += 1
             }
-            AuditEvent::TaskDestroyed { task_id } if target == ObjectRef::Task(task_id) => {
+            AuditEvent::TaskDestroyed {
+                task_id,
+                generation,
+            } if target == ObjectRef::Task(task_id)
+                && self.cap_target_generation(cap) == Some(generation) =>
+            {
                 trace.destroyed += 1
             }
             AuditEvent::ExcSourceCreated { source_id, .. }
@@ -4122,7 +4326,7 @@ impl BootstrapState {
     /// 目标对象是否存活（§4.3 `usable` 的 `live(target)` 分量）。
     pub fn target_live(&self, target: ObjectRef) -> bool {
         match target {
-            ObjectRef::Segment(id) => self.segment(id).is_some(),
+            ObjectRef::Segment(id) => self.segment_index(id).is_some(),
             ObjectRef::Task(id) => self.tasks.is_live(id),
             ObjectRef::Namespace(id) => self.namespaces[..self.namespace_count]
                 .iter()
@@ -4154,7 +4358,7 @@ impl BootstrapState {
                     TaskStatus::BlockedRecv | TaskStatus::BlockedWait => audit.to_blocked += 1,
                     TaskStatus::Faulted => audit.to_faulted += 1,
                     // `Dead` 是细化态、非 POSIR 状态，§13.1 不对它要求事件（登记在案）。
-                    TaskStatus::Dead => {}
+                    TaskStatus::Dead | TaskStatus::Prepared => {}
                 }
             }
         });
@@ -4360,8 +4564,8 @@ impl BootstrapState {
             SlotState::Stale => return Err(AuthError::StaleHandle),
             SlotState::Live => {}
         }
-        let target = self.target_of(cap).ok_or(AuthError::NoSuchCapability)?;
-        if !self.target_live(target) {
+        self.target_of(cap).ok_or(AuthError::NoSuchCapability)?;
+        if !self.cap_target_live(cap) {
             return Err(AuthError::TargetDead);
         }
         if self.holder_of(cap) != Some(self.space_of(caller)) {
@@ -4396,27 +4600,37 @@ impl BootstrapState {
         if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(DropError::NotHolder);
         }
-        let structural = self
-            .tasks
-            .find(caller)
-            .is_some_and(|task| task.status != TaskStatus::Dead && task.root_ns_cap == cap);
-        if structural {
+        if self.is_structural_root_ns_cap(cap) {
             return Err(DropError::StructuralCap);
         }
-        if !self.audit.can_append(1) {
+        let prepared_ticket = (1..MAX_TASKS).any(|id| {
+            PREPARED_FORKS
+                .get(self.prepared_forks, id)
+                .is_some_and(|tx| tx.ticket == cap)
+        });
+        if !prepared_ticket && !self.audit.can_append(1) {
             return Err(DropError::AuditFull);
         }
-        self.positions.remove(cap);
-        self.records.remove(cap);
-        self.slots.free(cap);
-        self.audit.append(AuditEvent::CapabilityDropped { cap });
+        if self.retire_capability(cap) {
+            self.audit.append(AuditEvent::CapabilityDropped { cap });
+        }
         Ok(())
     }
 
     /// 释放一个 Capability 的槽位（内部用：派生撤销/任务销毁）。返回是否成功。
     fn retire_capability(&mut self, cap: Handle) -> bool {
+        if let Some(child) = (1..MAX_TASKS).find(|id| {
+            PREPARED_FORKS
+                .get(self.prepared_forks, *id)
+                .is_some_and(|tx| tx.ticket == cap)
+        }) {
+            let offset = crate::cow::root_and_offset().map_or(0, |(_, offset)| offset);
+            self.cancel_prepared(child as u32, offset)
+                .expect("reserved fork cancellation");
+        }
         self.positions.remove(cap);
         self.records.remove(cap);
+        self.fork_views.retire(cap);
         self.slots.free(cap)
     }
 
@@ -4448,6 +4662,7 @@ impl BootstrapState {
             holder,
             rights,
             target,
+            target_generation: self.target_generation(target),
             created_at,
         })?;
         self.positions
@@ -4492,6 +4707,7 @@ impl BootstrapState {
             holder: record_holder,
             rights,
             target,
+            target_generation: self.target_generation(target),
             created_at,
         })?;
         self.positions
@@ -4552,13 +4768,9 @@ impl BootstrapState {
         if self.slots.check(cap) != SlotState::Live {
             return Err(ExcError::NoSuchSource);
         }
-        let source_id = self
-            .exc_sources
-            .find_by_cap(cap)
-            .ok_or(ExcError::NoSuchSource)?
-            .id;
+        let source_id = self.source_for_cap(cap).ok_or(ExcError::NoSuchSource)?.id;
         let record = self.records.find(cap).ok_or(ExcError::NoSuchSource)?;
-        if record.holder != caller {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(ExcError::NotHolder);
         }
         if !record.rights.contains(Right::ExcSourceDestroy) {
@@ -4583,6 +4795,13 @@ impl BootstrapState {
         Ok(())
     }
 
+    fn source_for_cap(&self, cap: Handle) -> Option<&ExcSource> {
+        let ObjectRef::ExcSource(id) = self.target_of(cap)? else {
+            return None;
+        };
+        self.exc_sources.find(id)
+    }
+
     /// 切片 L：`caller` 用持有的 `cap_id` 订阅 `kind`（§12.4）。
     ///
     /// 成功返回 source_id；失败不修改任何状态、不追加 Audit。
@@ -4601,13 +4820,10 @@ impl BootstrapState {
         if self.slots.check(cap) != SlotState::Live {
             return Err(ExcError::NoSuchSource);
         }
-        let source = self
-            .exc_sources
-            .find_by_cap(cap)
-            .ok_or(ExcError::NoSuchSource)?;
+        let source = self.source_for_cap(cap).ok_or(ExcError::NoSuchSource)?;
         let source_id = source.id;
         let record = self.records.find(cap).ok_or(ExcError::NoSuchSource)?;
-        if record.holder != caller {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(ExcError::NotHolder);
         }
         if !record.rights.contains(Right::ExcSubscribe) {
@@ -4651,13 +4867,10 @@ impl BootstrapState {
         if self.slots.check(cap) != SlotState::Live {
             return Err(ExcError::NoSuchSource);
         }
-        let source = self
-            .exc_sources
-            .find_by_cap(cap)
-            .ok_or(ExcError::NoSuchSource)?;
+        let source = self.source_for_cap(cap).ok_or(ExcError::NoSuchSource)?;
         let source_id = source.id;
         let record = self.records.find(cap).ok_or(ExcError::NoSuchSource)?;
-        if record.holder != caller {
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(ExcError::NotHolder);
         }
         if !record.rights.contains(Right::ExcSubscribe) {
@@ -4695,10 +4908,16 @@ impl BootstrapState {
         if self.slots.check(cap) != SlotState::Live {
             return Err(ExcError::NoSuchSource);
         }
-        let source = self
-            .exc_sources
-            .find_by_cap(cap)
-            .ok_or(ExcError::NoSuchSource)?;
+        if self.holder_of(cap) != Some(self.space_of(caller)) {
+            return Err(ExcError::NotHolder);
+        }
+        if self
+            .rights_of(cap)
+            .is_none_or(|r| !r.contains(Right::ExcSubscribe))
+        {
+            return Err(ExcError::MissingRight);
+        }
+        let source = self.source_for_cap(cap).ok_or(ExcError::NoSuchSource)?;
         if source.kind != kind {
             return Err(ExcError::KindMismatch);
         }
@@ -4761,6 +4980,34 @@ impl BootstrapState {
     /// `TaskStateChanged(→ Faulted)`。随后仍按订阅表递送通知——§12.9 规定**未订阅**也照样
     /// 进入 `Faulted`（只是不产生通知），故状态迁移与递送是两件事。
     /// 非硬件异常（`SyscallTrap`）不触碰 Task 状态，与 [`Self::exc_raise`] 等价。
+    fn check_exc_raise(
+        &self,
+        source_id: u32,
+        kind: ExcKind,
+        extra_audit: usize,
+    ) -> Result<(), ExcError> {
+        let source = self
+            .exc_sources
+            .find(source_id)
+            .ok_or(ExcError::NoSuchSource)?;
+        if source.kind != kind {
+            return Err(ExcError::KindMismatch);
+        }
+        let direct = source.subscribers[..source.count]
+            .iter()
+            .flatten()
+            .filter(|&&task| self.tasks.is_blocked_recv(task))
+            .count();
+        let queued = source.count - direct;
+        if !self.audit.can_append(extra_audit + 1 + 3 * direct + queued) {
+            return Err(ExcError::AuditFull);
+        }
+        if self.ipc.count + queued > MAX_MESSAGES || !self.ipc.can_allocate_ids(source.count) {
+            return Err(ExcError::Full);
+        }
+        Ok(())
+    }
+
     pub fn exc_raise_on(
         &mut self,
         source_id: u32,
@@ -4777,9 +5024,7 @@ impl BootstrapState {
         if source.kind != kind {
             return Err(ExcError::KindMismatch);
         }
-        if !self.audit.can_append(1) {
-            return Err(ExcError::AuditFull);
-        }
+        self.check_exc_raise(source_id, kind, 1)?;
         // 前置 4 由 `fault` 内部校验；失败时此处无任何写入（原子）。
         self.tasks
             .fault(faulting_task, source_id, kind)
@@ -4792,6 +5037,7 @@ impl BootstrapState {
     }
 
     pub fn exc_raise(&mut self, source_id: u32, kind: ExcKind) -> Result<RaiseOutcome, ExcError> {
+        self.check_exc_raise(source_id, kind, 0)?;
         let source = self
             .exc_sources
             .find(source_id)
@@ -4818,6 +5064,9 @@ impl BootstrapState {
         if queued > 0 && self.ipc.count + queued > MAX_MESSAGES {
             return Err(ExcError::Full);
         }
+        if !self.ipc.can_allocate_ids(count) {
+            return Err(ExcError::Full);
+        }
         let payload = exc_notification_payload(source_id, kind);
         self.audit
             .append(AuditEvent::ExceptionRaised { source_id, kind });
@@ -4825,6 +5074,7 @@ impl BootstrapState {
         let mut pending = 0;
         let mut first_message_id = 0;
         let mut woken = None;
+        let mut woken_tasks = 0;
         for task in subscribers[..count].iter().flatten().copied() {
             let message_id = self.ipc.allocate_id();
             if first_message_id == 0 {
@@ -4833,6 +5083,7 @@ impl BootstrapState {
             let message = IpcMessage {
                 id: message_id,
                 sender: KERNEL_ACTOR,
+                sender_generation: 0,
                 receiver: task,
                 payload,
                 capabilities: [Handle::ZERO; MAX_MESSAGE_CAPABILITIES],
@@ -4851,6 +5102,7 @@ impl BootstrapState {
                     receiver: task,
                 });
                 pending += 1;
+                woken_tasks |= 1 << task;
                 if woken.is_none() {
                     woken = Some(task);
                 }
@@ -4870,6 +5122,7 @@ impl BootstrapState {
             message_id: first_message_id,
             payload,
             woken,
+            woken_tasks,
         })
     }
 
@@ -4938,7 +5191,7 @@ impl BootstrapState {
             return Err(DeriveError::ParentNotHeld);
         }
         let target = self.target_of(parent).ok_or(DeriveError::NoSuchParent)?;
-        if !self.target_live(target) {
+        if !self.cap_target_live(parent) {
             return Err(DeriveError::TargetDead);
         }
         let parent_rights = self.rights_of(parent).ok_or(DeriveError::NoSuchParent)?;
@@ -4968,6 +5221,7 @@ impl BootstrapState {
             holder: caller,
             rights,
             target,
+            target_generation: self.target_generation(target),
             created_at,
         })?;
         self.positions
@@ -5028,7 +5282,7 @@ impl BootstrapState {
             return Err(DeriveError::ParentNotHeld);
         }
         let target = self.target_of(parent).ok_or(DeriveError::NoSuchParent)?;
-        if !self.target_live(target) {
+        if !self.cap_target_live(parent) {
             return Err(DeriveError::TargetDead);
         }
         let parent_rights = self.rights_of(parent).ok_or(DeriveError::NoSuchParent)?;
@@ -5063,6 +5317,7 @@ impl BootstrapState {
             holder,
             rights,
             target,
+            target_generation: self.target_generation(target),
             created_at,
         })?;
         self.positions
@@ -5197,7 +5452,7 @@ impl BootstrapState {
             SlotState::Live => {}
         }
         let target = self.target_of(parent).ok_or(NsError::InvalidCap)?;
-        if !self.target_live(target) {
+        if !self.cap_target_live(parent) {
             return Err(NsError::MountTargetDead);
         }
         let parent_rights = self.rights_of(parent).ok_or(NsError::InvalidCap)?;
@@ -5229,6 +5484,7 @@ impl BootstrapState {
                 holder: caller,
                 rights,
                 target,
+                target_generation: self.target_generation(target),
                 created_at,
             })
             .map_err(|_| NsError::CapacityExceeded)?;
@@ -5306,8 +5562,8 @@ impl BootstrapState {
             SlotState::Free | SlotState::Stale => return Err(NsError::InvalidCap),
             SlotState::Live => {}
         }
-        let target = self.target_of(cap).ok_or(NsError::InvalidCap)?;
-        if !self.target_live(target) {
+        self.target_of(cap).ok_or(NsError::InvalidCap)?;
+        if !self.cap_target_live(cap) {
             return Err(NsError::TargetDead);
         }
         if self.holder_of(cap) != Some(self.space_of(caller)) {
@@ -5563,8 +5819,8 @@ impl BootstrapState {
         }
 
         // 算法 5/6：最终父项可用、含 `Derive`，且 `requested_rights` 是它的合法子集。
-        let parent_target = self.target_of(parent).ok_or(NsError::TargetDead)?;
-        if !self.target_live(parent_target) {
+        self.target_of(parent).ok_or(NsError::TargetDead)?;
+        if !self.cap_target_live(parent) {
             return Err(NsError::TargetDead);
         }
         let parent_rights = self.rights_of(parent).ok_or(NsError::TargetDead)?;
@@ -5768,7 +6024,10 @@ impl BootstrapState {
         if !self.audit.can_append(2) {
             return Err(DeviceError::AuditFull);
         }
-        let id = self.devices.next_id();
+        let id = self
+            .devices
+            .next_id()
+            .ok_or(DeviceError::CapacityExceeded)?;
         let handle = self
             .mint_root_capability(
                 caller,
@@ -5781,6 +6040,7 @@ impl BootstrapState {
             creator: caller,
             base_port,
             port_count,
+            irq: None,
         }) {
             return Err(DeviceError::CapacityExceeded);
         }
@@ -5793,6 +6053,108 @@ impl BootstrapState {
             holder: caller,
         });
         Ok(handle)
+    }
+
+    pub fn dev_irq_create(
+        &mut self,
+        caller: u32,
+        line: u8,
+    ) -> Result<(Handle, Handle), DeviceError> {
+        if !self.tasks.is_live(caller) {
+            return Err(DeviceError::InvalidCaller);
+        }
+        if self
+            .devices
+            .entries
+            .iter()
+            .flatten()
+            .any(|d| d.irq.is_some_and(|(irq, _)| irq == line))
+        {
+            return Err(DeviceError::Overlap);
+        }
+        let device = self
+            .devices
+            .next_id()
+            .ok_or(DeviceError::CapacityExceeded)?;
+        if self.devices.count == MAX_DEVICES
+            || self.exc_sources.count == MAX_EXC_SOURCES
+            || self.cap_history_count + 2 > MAX_CAPABILITY_HISTORY
+            || self.next_cap_id.checked_add(2).is_none()
+        {
+            return Err(DeviceError::CapacityExceeded);
+        }
+        let slots = (1..MAX_CAPABILITY_SLOTS as u32)
+            .filter(|&slot| {
+                self.slots.slot_free(slot)
+                    && !(INTERNAL_TASK_ROOT_SLOT_BASE
+                        ..INTERNAL_TASK_ROOT_SLOT_BASE + INTERNAL_TASK_ROOT_SLOT_COUNT)
+                        .contains(&slot)
+            })
+            .count();
+        if slots < 2 {
+            return Err(DeviceError::CapacityExceeded);
+        }
+        if !self.audit.can_append(4) {
+            return Err(DeviceError::AuditFull);
+        }
+        let source = self.exc_sources.count as u32 + 1;
+        let dev = self
+            .mint_root_capability(
+                caller,
+                Rights::from_rights(&[
+                    Right::Derive,
+                    Right::DevInterruptSubscribe,
+                    Right::DevDestroy,
+                ]),
+                ObjectRef::Device(device, DeviceKind::InterruptLine),
+            )
+            .expect("IRQ device mint preflight");
+        let notification = self
+            .mint_root_capability(
+                caller,
+                Rights::from_rights(&[Right::Derive, Right::ExcSubscribe]),
+                ObjectRef::ExcSource(source),
+            )
+            .expect("IRQ source mint preflight");
+        self.exc_sources.entries[self.exc_sources.count] = Some(ExcSource {
+            id: source,
+            kind: ExcKind::ExternalInterrupt,
+            cap: notification,
+            subscribers: [None; MAX_SUBSCRIBERS],
+            count: 0,
+        });
+        self.exc_sources.count += 1;
+        assert!(self.devices.insert(DeviceObject {
+            id: device,
+            creator: caller,
+            base_port: 0,
+            port_count: 0,
+            irq: Some((line, source))
+        }));
+        self.audit.append(AuditEvent::ExcSourceCreated {
+            source_id: source,
+            cap: notification,
+            kind: ExcKind::ExternalInterrupt,
+        });
+        self.audit.append(AuditEvent::ObjectCreated {
+            object_id: device,
+            kind: ObjectKind::Device(DeviceKind::InterruptLine),
+        });
+        for cap in [dev, notification] {
+            self.audit.append(AuditEvent::CapabilityMinted {
+                cap,
+                holder: self.space_of(caller),
+            });
+        }
+        Ok((dev, notification))
+    }
+    pub fn irq_line(&self, caller: u32, cap: Handle) -> Result<u8, DeviceError> {
+        let id = self.authorize_device(caller, cap, Right::DevInterruptSubscribe)?;
+        self.devices
+            .find(id)
+            .and_then(|d| d.irq)
+            .map(|(line, _)| line)
+            .ok_or(DeviceError::NotADevice)
     }
 
     /// EXO-4A / §15：通用 Device 授权——`cap` 须由活动 `caller` 持有、可用、指向活动
@@ -5874,15 +6236,32 @@ impl BootstrapState {
         if self.devices.find(id).is_none() {
             return Err(DeviceError::DeadDevice);
         }
-        if !self.audit.can_append(1) {
+        let irq = self.devices.find(id).and_then(|d| d.irq);
+        if !self.audit.can_append(1 + usize::from(irq.is_some())) {
             return Err(DeviceError::AuditFull);
         }
         if !self.devices.remove(id) {
             return Err(DeviceError::DeadDevice);
         }
+        if let Some((_, source)) = irq {
+            if let Some(index) = self.exc_sources.entries[..self.exc_sources.count]
+                .iter()
+                .position(|s| s.is_some_and(|s| s.id == source))
+            {
+                self.exc_sources.entries[index] = None;
+            }
+            self.audit.append(AuditEvent::ObjectDestroyed {
+                object_id: source,
+                kind: ObjectKind::ExcSource,
+            });
+        }
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: id,
-            kind: ObjectKind::Device(DeviceKind::IoPortRange),
+            kind: ObjectKind::Device(if irq.is_some() {
+                DeviceKind::InterruptLine
+            } else {
+                DeviceKind::IoPortRange
+            }),
         });
         Ok(())
     }
@@ -5931,6 +6310,7 @@ impl BootstrapState {
         let message = IpcMessage {
             id: self.ipc.allocate_id(),
             sender: KERNEL_ACTOR,
+            sender_generation: 0,
             receiver,
             payload: timer_fired_payload(timer_id),
             capabilities: [Handle::ZERO; MAX_MESSAGE_CAPABILITIES],
@@ -5980,7 +6360,10 @@ impl BootstrapState {
         if immediate && !self.tasks.is_blocked_recv(caller) && self.ipc.count == MAX_MESSAGES {
             return Err(TimerError::CapacityExceeded);
         }
-        let id = self.timers.next_id();
+        if immediate && !self.ipc.can_allocate_ids(1) {
+            return Err(TimerError::CapacityExceeded);
+        }
+        let id = self.timers.next_id().ok_or(TimerError::CapacityExceeded)?;
         let handle = self
             .mint_root_capability(caller, TIMER_RIGHTS, ObjectRef::Timer(id))
             .map_err(|_| TimerError::CapacityExceeded)?;
@@ -6123,12 +6506,23 @@ impl BootstrapState {
             self.now = new_now;
             return Ok(());
         }
-        // 保守预算：每个到期 Timer 最多 TimerFired + MessageSent + MessageReceived/TaskStateChanged。
-        if !self.audit.can_append(due_count * 3) {
+        // Only the first notification to each BlockedRecv Task is delivered
+        // directly; later notifications to that same Task enter its FIFO.
+        let mut direct_recipients = [false; MAX_TASKS];
+        let mut direct = 0;
+        for id in due.iter().flatten() {
+            let recipient = self.timers.find(*id).expect("due timer").state.recipient();
+            if self.tasks.is_blocked_recv(recipient) && !direct_recipients[recipient as usize] {
+                direct_recipients[recipient as usize] = true;
+                direct += 1;
+            }
+        }
+        let queued = due_count - direct;
+        // Direct: TimerFired + MessageSent + state transition + MessageReceived.
+        if !self.audit.can_append(direct * 4 + queued * 2) {
             return Err(TimerError::AuditFull);
         }
-        // 排队路径需要队列余量（保守地按全部到期 Timer 都要排队计）。
-        if self.ipc.count + due_count > MAX_MESSAGES {
+        if self.ipc.count + queued > MAX_MESSAGES || !self.ipc.can_allocate_ids(due_count) {
             return Err(TimerError::CapacityExceeded);
         }
         self.now = new_now;
@@ -6320,8 +6714,9 @@ impl BootstrapState {
         Ok(())
     }
 
-    /// §8.2 步骤 7：`task_destroy` 撤销该 Task 持有的全部 Capability（释放槽位、gen 递增）。
-    pub fn revoke_task_capabilities(
+    /// §8.2：只丢弃该 Task 自持的 token，保留其它持有者/容器中的后代。
+    /// ID 退役及历史保留与 cap_drop 相同；这不是递归撤销。
+    pub fn drop_task_capabilities(
         &mut self,
         task_id: u32,
     ) -> Result<usize, CapabilityPositionError> {
@@ -6338,14 +6733,20 @@ impl BootstrapState {
                 count += 1;
             }
         }
-        let mut revoked_roots = 0;
-        for cap in handles[..count].iter().copied() {
-            if self.positions.find(cap).is_some() {
-                self.revoke_capability(cap, task_id)?;
-                revoked_roots += 1;
-            }
+        if handles[..count]
+            .iter()
+            .any(|cap| self.is_structural_root_ns_cap(*cap))
+        {
+            return Err(CapabilityPositionError::StructuralCap);
         }
-        Ok(revoked_roots)
+        if !self.audit.can_append(count) {
+            return Err(CapabilityPositionError::AuditFull);
+        }
+        for cap in handles[..count].iter().copied() {
+            self.retire_capability(cap);
+            self.audit.append(AuditEvent::CapabilityDropped { cap });
+        }
+        Ok(count)
     }
 
     /// ISSUE-AUTH-003：内部/平台路径创建 Task 时同时建立 W5 的结构性根。
@@ -6489,8 +6890,7 @@ impl BootstrapState {
         }
         // ---- 前置 2：代码范围 ----
         let frame_count = self
-            .segment(code_seg_id)
-            .map(|segment| segment.frame_count() as u64)
+            .segment_property(code_seg_id, |segment| segment.frame_count() as u64)
             .unwrap_or(0);
         let code_end_offset = req
             .code_offset
@@ -6565,7 +6965,7 @@ impl BootstrapState {
             }
             if self
                 .target_of(cap)
-                .is_none_or(|target| !self.target_live(target))
+                .is_none_or(|_| !self.cap_target_live(cap))
                 || self.rights_of(cap).is_none()
             {
                 return Err(TaskCreateError::InvalidInitialCap);
@@ -6631,6 +7031,9 @@ impl BootstrapState {
                 frame,
                 false,
                 true,
+                |frame| {
+                    let _ = crate::frames::release_table_frame(frame);
+                },
             );
             fresh_count = alloc_count;
             if mapped.is_err() {
@@ -6693,6 +7096,7 @@ impl BootstrapState {
             rollback(&fresh_tables, fresh_count);
             return Err(TaskCreateError::CapacityExceeded);
         };
+        self.tasks.find_mut(new_id).expect("new task").self_cap = self_cap;
         // ---- 成功动作 6：从 parent_ns_cap 派生新 Task 的结构性根 ----
         let Ok(root_ns_cap) =
             self.derive_capability_to_holder(caller, req.parent_ns_cap, req.root_rights, new_id)
@@ -6730,8 +7134,10 @@ impl BootstrapState {
         if let Some(process) = self.create_process(new_id) {
             self.attach_thread(process, new_id);
         }
-        self.audit
-            .append(AuditEvent::TaskCreated { task_id: new_id });
+        self.audit.append(AuditEvent::TaskCreated {
+            task_id: new_id,
+            generation: self.tasks.find(new_id).expect("created task").generation,
+        });
         Ok(TaskCreateOutcome {
             manager_cap,
             self_cap,
@@ -6754,6 +7160,16 @@ impl BootstrapState {
         root_phys: Option<u64>,
         phys_offset: u64,
     ) -> Result<(), TaskError> {
+        if self.tasks.status_of(task_id) == Some(TaskStatus::Prepared) {
+            return Err(TaskError::NotReady);
+        }
+        if self
+            .process_of(task_id)
+            .and_then(|id| self.processes.find(id))
+            .is_some_and(|p| p.leader == task_id && p.thread_count > 1)
+        {
+            return Err(TaskError::HasLiveThreads);
+        }
         if task_id == caller {
             return self.task_destroy_self(caller, root_phys, phys_offset);
         }
@@ -6761,9 +7177,8 @@ impl BootstrapState {
         if !self.audit.can_append(self.destroy_audit_events(task_id)) {
             return Err(TaskError::AuditFull);
         }
+        self.cancel_prepared_children(task_id)?;
         self.teardown_vspace(task_id, root_phys, phys_offset)?;
-        // §8.2 步骤 7：从所有异常源的订阅集合移除目标。
-        self.exc_sources.remove_subscriber(task_id);
         self.destroy_task_model(task_id)
     }
 
@@ -6787,7 +7202,14 @@ impl BootstrapState {
         if !self.audit.can_append(self.destroy_audit_events(caller)) {
             return Err(TaskError::AuditFull);
         }
+        self.cancel_prepared_children(caller)?;
         if let Some(root) = root_phys {
+            let mut mappings = 0;
+            self.vspace
+                .for_each_entry(|entry| mappings += usize::from(entry.task_id.get() == caller));
+            if !crate::sched::can_defer_frames(1 + 3 * mappings) {
+                return Err(TaskError::CapacityExceeded);
+            }
             let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
             // SPEC-107：逐个挑出该任务的映射并拆除——不复制 VA 到栈上快照，去掉「容量常量放大
             // 即挤压内核栈」的隐式耦合（SPEC-106 §5.4 的 `SYS_TASK_DESTROY` 栈溢出）。
@@ -6806,8 +7228,93 @@ impl BootstrapState {
             }
             crate::sched::defer_table_frame(root).map_err(|_| TaskError::NoSuchTask)?;
         }
-        self.exc_sources.remove_subscriber(caller);
         self.destroy_task_body(caller)
+    }
+
+    /// Whole-Process exit: preflight the complete group, remove workers before
+    /// their shared authority-space leader, and report one wait status.
+    pub fn terminate_process(
+        &mut self,
+        leader: u32,
+        status: ProcessExit,
+        root: Option<u64>,
+        offset: u64,
+        active_root: bool,
+    ) -> Result<ProcessTermination, TaskError> {
+        if leader == INIT_TASK_ID {
+            return Err(TaskError::CannotDestroyInit);
+        }
+        if !self.tasks.is_live(leader) {
+            return Err(TaskError::NoSuchTask);
+        }
+        if self.tasks.status_of(leader) == Some(TaskStatus::Prepared) {
+            return Err(TaskError::NotReady);
+        }
+        let process_id = self.process_of(leader);
+        let process = process_id.and_then(|id| self.processes.find(id).copied());
+        if process.is_some_and(|p| p.leader != leader) {
+            return Err(TaskError::HasLiveThreads);
+        }
+        let parent = process
+            .and_then(|p| p.parent)
+            .and_then(|id| self.processes.find(id))
+            .map(|p| p.leader);
+        let cookie = self.task_cookie(leader).expect("live leader");
+        let callback_wake = parent.is_some_and(|id| {
+            let slot = crate::signal::route(id, 0);
+            slot != 0
+                && crate::signal::action(id, slot).is_some_and(|a| a.handler > 1)
+                && crate::signal::mask(id) & (1 << (slot - 1)) == 0
+                && matches!(
+                    self.tasks.status_of(id),
+                    Some(TaskStatus::BlockedWait | TaskStatus::BlockedRecv)
+                )
+        });
+        let members = process.map_or(1u32 << leader, |p| p.threads);
+        let cost = (1..MAX_TASKS as u32)
+            .filter(|id| members & (1 << id) != 0)
+            .map(|id| self.destroy_audit_events(id))
+            .sum::<usize>()
+            + MAX_TASKS
+            + usize::from(callback_wake);
+        if !self.audit.can_append(cost) {
+            return Err(TaskError::AuditFull);
+        }
+        if active_root
+            && root.is_some()
+            && !crate::sched::can_defer_frames(1 + 3 * self.vspace.count)
+        {
+            return Err(TaskError::CapacityExceeded);
+        }
+        for id in 1..MAX_TASKS as u32 {
+            if members & (1 << id) != 0 {
+                self.cancel_prepared_children(id)?;
+            }
+        }
+        for id in 1..MAX_TASKS as u32 {
+            if id != leader && members & (1 << id) != 0 {
+                self.destroy_task_body(id)?;
+            }
+        }
+        if active_root {
+            self.task_destroy_self(leader, root, offset)?;
+        } else {
+            self.teardown_vspace(leader, root, offset)?;
+            self.destroy_task_body(leader)?;
+        }
+        let wakes = match process_id {
+            Some(id) if self.processes.find(id).is_some() => {
+                self.process_exit_reason(id, status)?
+            }
+            _ => WaitWake::empty(),
+        };
+        Ok(ProcessTermination {
+            leader,
+            members,
+            wakes,
+            parent,
+            cookie,
+        })
     }
 
     /// §8.2 步骤 2/3/4/8/9 所需的审计条数（丢弃消息 + pending + `TaskDestroyed`）。
@@ -6819,16 +7326,37 @@ impl BootstrapState {
         let mut dropped = 0usize;
         let mut dropped_caps = 0usize;
         for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
-            if message.sender == task_id || message.receiver == task_id {
+            if message.receiver == task_id {
                 dropped += 1;
                 dropped_caps += message.capability_count;
             }
         }
+        let held = self
+            .positions
+            .entries
+            .iter()
+            .flatten()
+            .filter(|position| position.location == CapabilityLocation::HeldByTask(task_id))
+            .count();
+        let subscriptions = self.exc_sources.entries[..self.exc_sources.count]
+            .iter()
+            .flatten()
+            .filter(|source| source.subscribers[..source.count].contains(&Some(task_id)))
+            .count();
+        let thread_root = self.tasks.find(task_id).is_some_and(|task| {
+            self.space_of(task_id) != task_id
+                && !task.self_cap.is_zero()
+                && self.holder_of(task.self_cap) == Some(self.space_of(task_id))
+        });
         dropped
+            + usize::from(thread_root)
             + dropped_caps
+            + held
+            + subscriptions
             + usize::from(pending)
             + 1
             + self.timers_of_recipient_audit_cost(task_id)
+            + 2 * self.private_exec_segments.count_ones() as usize
     }
 
     /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
@@ -6921,6 +7449,7 @@ impl BootstrapState {
         if !self.audit.can_append(self.destroy_audit_events(task_id)) {
             return Err(TaskError::AuditFull);
         }
+        self.cancel_prepared_children(task_id)?;
         self.teardown_vspace(task_id, root_phys, phys_offset)?;
         // §8.2 步骤 7：从所有异常源的订阅集合移除目标。
         self.exc_sources.remove_subscriber(task_id);
@@ -6961,8 +7490,6 @@ impl BootstrapState {
     /// 自毁路径（[`Self::task_destroy_self`]）复用它——调用者此刻是 `Running`，不能过
     /// `prepare_destroy` 的 Running 检查。
     fn destroy_task_body(&mut self, task_id: u32) -> Result<(), TaskError> {
-        // M15b：从所属 Process 摘除；最后一个线程离开时删除 Process。
-        self.detach_thread(task_id);
         let pending_message = self.tasks.find(task_id).and_then(|task| task.pending);
         let mut dropped_message_ids = [0u32; MAX_MESSAGES];
         let mut dropped_count = 0;
@@ -6970,7 +7497,7 @@ impl BootstrapState {
         let mut dropped_caps = [Handle::ZERO; MAX_MESSAGES * MAX_MESSAGE_CAPABILITIES];
         let mut dropped_cap_count = 0;
         for message in self.ipc.entries[..self.ipc.count].iter().flatten() {
-            if message.sender != task_id && message.receiver != task_id {
+            if message.receiver != task_id {
                 continue;
             }
             if dropped_count < MAX_MESSAGES {
@@ -6987,19 +7514,43 @@ impl BootstrapState {
                 }
             }
         }
-        let audit_events = dropped_count
-            + dropped_cap_count
-            + if pending_message.is_some() { 1 } else { 0 }
-            + 1
-            + self.timers_of_recipient_audit_cost(task_id);
-        if !self.audit.can_append(audit_events) {
+        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
             return Err(TaskError::AuditFull);
         }
-        // 先清结构性根，否则它还挂在 positions 上会被 `revoke_capability` 漏掉。
+        // Retire only the official kernel-minted thread root, preserving all
+        // delegated descendants and other shared-Process capabilities.
+        if self.space_of(task_id) != task_id {
+            let cap = self.tasks.find(task_id).expect("task exists").self_cap;
+            if !cap.is_zero() && self.holder_of(cap) == Some(self.space_of(task_id)) {
+                self.drop_capability(task_id, cap)
+                    .map_err(|_| TaskError::NoSuchTask)?;
+            }
+        }
+        // 审计容量检查先于 Process/结构根/能力位置的任何修改。
+        self.detach_thread(task_id);
+        let mut sources = [0u32; MAX_EXC_SOURCES];
+        let mut source_count = 0;
+        for source in self.exc_sources.entries[..self.exc_sources.count]
+            .iter()
+            .flatten()
+        {
+            if source.subscribers[..source.count].contains(&Some(task_id)) {
+                sources[source_count] = source.id;
+                source_count += 1;
+            }
+        }
+        self.exc_sources.remove_subscriber(task_id);
+        for source_id in sources[..source_count].iter().copied() {
+            self.audit.append(AuditEvent::ExcUnsubscribed {
+                source_id,
+                task: task_id,
+            });
+        }
+        // 先清目标结构根，再丢弃其 held token；不递归撤销外部后代。
         if let Some(task) = self.tasks.find_mut(task_id) {
             task.root_ns_cap = Handle::ZERO;
         }
-        self.revoke_task_capabilities(task_id)
+        self.drop_task_capabilities(task_id)
             .map_err(|_| TaskError::NoSuchTask)?;
         for cap in dropped_caps[..dropped_cap_count].iter().copied() {
             if !cap.is_zero() {
@@ -7014,6 +7565,9 @@ impl BootstrapState {
         let _ = self.tasks.take_pending(task_id);
         self.ipc.remove_task(task_id);
         self.tasks.finish_destroy(task_id)?;
+        self.fork_views.clear(task_id);
+        self.reclaim_exec_segments()
+            .map_err(|_| TaskError::NoSuchTask)?;
         // M15a-2：把该 Task 从所有 WaitObject 的等待队列移除。
         self.detach_waiter(task_id);
         for message_id in dropped_message_ids[..dropped_count].iter().copied() {
@@ -7024,7 +7578,14 @@ impl BootstrapState {
                 message_id: message.id,
             });
         }
-        self.audit.append(AuditEvent::TaskDestroyed { task_id });
+        self.audit.append(AuditEvent::TaskDestroyed {
+            task_id,
+            generation: self
+                .tasks
+                .find(task_id)
+                .expect("dead task record")
+                .generation,
+        });
         Ok(())
     }
 
@@ -7075,8 +7636,8 @@ impl BootstrapState {
                 return Err(IpcError::CapabilityHolderMismatch);
             }
             // §9.1 前置 5：待传 Capability 必须 `usable`（目标对象仍存活）。
-            let target = self.target_of(cap).ok_or(IpcError::InvalidCapability)?;
-            if !self.target_live(target) {
+            self.target_of(cap).ok_or(IpcError::InvalidCapability)?;
+            if !self.cap_target_live(cap) {
                 return Err(IpcError::InvalidCapability);
             }
             // §9.1 前置 6：任何活动 Task 的结构性根 Namespace Capability 都不得随消息转移。
@@ -7096,9 +7657,13 @@ impl BootstrapState {
         if !self.audit.can_append(audit_events) {
             return Err(IpcError::AuditFull);
         }
+        if !self.ipc.can_allocate_ids(1) {
+            return Err(IpcError::QueueFull);
+        }
         let message = IpcMessage {
             id: self.ipc.allocate_id(),
             sender,
+            sender_generation: self.tasks.find(sender).expect("live sender").generation,
             receiver,
             payload,
             capabilities,
@@ -7210,7 +7775,7 @@ impl BootstrapState {
     /// SPEC-112：一句柄是否指向一个**活的** `Segment` 对象（内核侧核验服务持有的持久化段）。
     pub fn segment_of_cap(&self, cap: Handle) -> Option<u32> {
         match self.target_of(cap) {
-            Some(ObjectRef::Segment(id)) if self.segment(id).is_some() => Some(id),
+            Some(ObjectRef::Segment(id)) if self.segment_index(id).is_some() => Some(id),
             _ => None,
         }
     }
@@ -7233,8 +7798,10 @@ fn needs_local_tlb_flush(target_root: u64, current_root: Option<u64>) -> bool {
 impl BootstrapState {
     /// S2-D4：Segment 的第 `index` 帧（`task_create` 装代码页时用）。
     fn segment_frame(&self, id: u32, index: usize) -> Option<u64> {
-        self.segment(id)
-            .and_then(|segment| segment.frames.frame_at(index))
+        let slot = self.segment_index(id)?;
+        SEGMENT_ARENA
+            .project(self.segments, slot, |s| s.frames.frame_at(index))
+            .flatten()
     }
 
     /// SPEC-106：Segment 表的第 `index` 槽副本（内容在 [`SEGMENT_ARENA`]）。
@@ -7248,42 +7815,40 @@ impl BootstrapState {
     }
 
     fn segment(&self, id: u32) -> Option<SegmentObject> {
-        let mut index = 0;
-        while index < MAX_SEGMENT_OBJECTS {
-            if let Some(segment) = self.segment_at(index)
-                && segment.id == id
-                && segment.active
-            {
-                return Some(segment);
-            }
-            index += 1;
-        }
-        None
+        self.segment_at(self.segment_index(id)?)
+    }
+
+    fn segment_property<R>(&self, id: u32, project: impl FnOnce(&SegmentObject) -> R) -> Option<R> {
+        SEGMENT_ARENA.project(self.segments, self.segment_index(id)?, project)
+    }
+
+    fn segment_index(&self, id: u32) -> Option<usize> {
+        (0..MAX_SEGMENT_OBJECTS).find(|&index| {
+            SEGMENT_ARENA.project(self.segments, index, |s| s.id == id && s.active) == Some(true)
+        })
     }
 
     fn segment_slot_free(&self, id: u32) -> bool {
-        let mut index = 0;
-        while index < MAX_SEGMENT_OBJECTS {
-            if let Some(segment) = self.segment_at(index)
-                && segment.id == id
-            {
-                return false;
-            }
-            index += 1;
-        }
-        true
+        !(0..MAX_SEGMENT_OBJECTS)
+            .any(|index| SEGMENT_ARENA.project(self.segments, index, |s| s.id == id) == Some(true))
     }
 
-    /// 选一个空闲 Segment 槽（id 1 = image，2..14 = 平台 bring-up 区域，用户从 15 起）。
+    fn reusable_segment_index(&self) -> Option<usize> {
+        (0..self.segment_count)
+            .find(|&i| SEGMENT_ARENA.project(self.segments, i, |s| !s.active) == Some(true))
+            .or_else(|| (self.segment_count < MAX_SEGMENT_OBJECTS).then_some(self.segment_count))
+    }
+
+    /// Reuse storage slots, never object identities. The greatest allocated ID
+    /// remains in the table until replaced by a larger one; exhaustion fails.
     fn alloc_segment_slot(&self) -> Option<u32> {
-        let mut id = USER_SEGMENT_ID_FIRST;
-        while id < MAX_SEGMENT_OBJECTS as u32 {
-            if self.segment_slot_free(id) {
-                return Some(id);
-            }
-            id += 1;
-        }
-        None
+        self.reusable_segment_index()?;
+        (0..self.segment_count)
+            .filter_map(|i| SEGMENT_ARENA.project(self.segments, i, |s| s.id))
+            .max()
+            .unwrap_or(USER_SEGMENT_ID_FIRST - 1)
+            .max(USER_SEGMENT_ID_FIRST - 1)
+            .checked_add(1)
     }
 
     /// 取帧 → 逐帧清零 → 建 `SegmentObject` → 铸根 Capability。
@@ -7301,16 +7866,42 @@ impl BootstrapState {
         phys_offset: u64,
         cap_at: Option<(CapabilityLocation, u32)>,
     ) -> Result<(Handle, SegmentFrames), MemsegError> {
-        if !self.segment_slot_free(id) || self.segment_count == MAX_SEGMENT_OBJECTS {
+        let external = page_count > MAX_SEGMENT_FRAMES;
+        if external
+            && (page_count > MAX_BOOT_SERVICE_FRAMES
+                || id != USER_SEGMENT_ID_FIRST
+                || creator != KERNEL_ACTOR
+                || cap_at
+                    != Some((
+                        CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                        SERVICE_IMAGE_CAP_SLOT,
+                    )))
+        {
             return Err(MemsegError::CapacityExceeded);
         }
+        if !self.segment_slot_free(id) {
+            return Err(MemsegError::CapacityExceeded);
+        }
+        let index = self
+            .reusable_segment_index()
+            .ok_or(MemsegError::CapacityExceeded)?;
         if !self.audit.can_append(1) {
             return Err(MemsegError::AuditFull);
         }
         if crate::frames::open_segment(id, crate::frames::Pool::Cpu).is_err() {
             return Err(MemsegError::NoMemory);
         }
-        let mut frames = [0u64; MAX_SEGMENT_FRAMES];
+        let mut segment_frames = if external {
+            SegmentFrames::BootServices {
+                slice: self.boot_frames,
+                count: 0,
+            }
+        } else {
+            SegmentFrames::Vector {
+                frames: [0; MAX_SEGMENT_FRAMES],
+                count: 0,
+            }
+        };
         let mut count = 0;
         while count < page_count {
             let frame = match crate::frames::allocate_for_segment(id) {
@@ -7319,7 +7910,10 @@ impl BootstrapState {
                     // 回滚已取帧，保持失败原子。
                     let mut rollback = 0;
                     while rollback < count {
-                        let _ = crate::frames::release_frame(id, frames[rollback]);
+                        let _ = crate::frames::release_frame(
+                            id,
+                            segment_frames.frame_at(rollback).expect("allocated frame"),
+                        );
                         rollback += 1;
                     }
                     let _ = crate::frames::close_segment(id);
@@ -7328,7 +7922,23 @@ impl BootstrapState {
             };
             // S2-X3：帧在首次可见前清零（归还帧残留的旧字节不得泄漏）。
             crate::mem::zero_frame(frame, phys_offset);
-            frames[count] = frame;
+            match &mut segment_frames {
+                SegmentFrames::Vector {
+                    frames,
+                    count: length,
+                } => {
+                    frames[count] = frame;
+                    *length += 1;
+                }
+                SegmentFrames::BootServices {
+                    slice,
+                    count: length,
+                } => {
+                    BOOT_FRAME_ARENA.set(*slice, count, Some(frame));
+                    *length += 1;
+                }
+                SegmentFrames::Image { .. } => unreachable!(),
+            }
             count += 1;
         }
         let root_rights = SEGMENT_ROOT_RIGHTS
@@ -7345,16 +7955,18 @@ impl BootstrapState {
             Err(_) => {
                 let mut rollback = 0;
                 while rollback < count {
-                    let _ = crate::frames::release_frame(id, frames[rollback]);
+                    let _ = crate::frames::release_frame(
+                        id,
+                        segment_frames.frame_at(rollback).expect("allocated frame"),
+                    );
                     rollback += 1;
                 }
                 let _ = crate::frames::close_segment(id);
                 return Err(MemsegError::CapacityExceeded);
             }
         };
-        let segment_frames = SegmentFrames::Vector { frames, count };
         self.set_segment_at(
-            self.segment_count,
+            index,
             Some(SegmentObject {
                 id,
                 generation: INITIAL_CAP_GENERATION,
@@ -7365,7 +7977,8 @@ impl BootstrapState {
                 active: true,
             }),
         );
-        self.segment_count += 1;
+        self.segment_count = self.segment_count.max(index + 1);
+        self.private_exec_segments &= !(1 << index);
         self.audit.append(AuditEvent::ObjectCreated {
             object_id: id,
             kind: ObjectKind::Segment,
@@ -7453,9 +8066,7 @@ impl BootstrapState {
 
     /// 平台 Segment 的第 `index` 帧（用于内核直映射与内容初始化）。
     pub fn platform_segment_frame(&self, id: u32, index: usize) -> Result<u64, MemsegError> {
-        self.segment(id)
-            .and_then(|segment| segment.frames.frame_at(index))
-            .ok_or(MemsegError::TargetDead)
+        self.segment_frame(id, index).ok_or(MemsegError::TargetDead)
     }
 
     /// 为一个**内核私有**平台 Segment 追加一帧（COW 段的 fault-time 私有页）。
@@ -7492,7 +8103,7 @@ impl BootstrapState {
                 frames[*count] = frame;
                 *count += 1;
             }
-            SegmentFrames::Image { .. } => {
+            SegmentFrames::Image { .. } | SegmentFrames::BootServices { .. } => {
                 let _ = crate::frames::release_frame(id, frame);
                 return Err(MemsegError::CapacityExceeded);
             }
@@ -7582,7 +8193,7 @@ impl BootstrapState {
         image_pages: usize,
         phys_offset: u64,
     ) -> Result<TaskCreateImages, MemsegError> {
-        if image_pages == 0 || image_pages > MAX_SEGMENT_FRAMES {
+        if image_pages == 0 || image_pages > MAX_BOOT_SERVICE_FRAMES {
             return Err(MemsegError::OutOfBounds);
         }
         // SPEC-109：**单一服务映像段**——6 个独立 ELF 页对齐打包 + 段尾目录页。
@@ -7605,8 +8216,8 @@ impl BootstrapState {
             ObjectRef::Segment(USER_SEGMENT_ID_FIRST),
         )
         .map_err(|_| MemsegError::CapacityExceeded)?;
-        // 服务管理器独立栈段。阶段 5 PT_LOAD 装载把 `create_service` 的栈帧推过
-        // 8 KiB（实测在 2 页栈底下方 0x40 处缺页），故扩到 4 页（16 KiB）。
+        // 服务管理器独立栈段：TTY/网络事务表使入口帧达到 14584 B，
+        // 另需 create_service 等调用栈，扩为 8 页（32 KiB）。
         let stack3_id = self
             .alloc_segment_slot()
             .ok_or(MemsegError::CapacityExceeded)?;
@@ -7614,7 +8225,7 @@ impl BootstrapState {
         self.create_segment_object(
             stack3_id,
             KERNEL_ACTOR,
-            4,
+            8,
             stack3_access,
             phys_offset,
             Some((
@@ -7760,7 +8371,7 @@ impl BootstrapState {
         record.vspace = vspace_hits;
         for id in platform_range {
             // 只统计真实存在的对象，与 `segments` 的口径一致。
-            if self.segment(id).is_none() {
+            if self.segment_index(id).is_none() {
                 continue;
             }
             if platform_segment_is_direct(id) {
@@ -7778,6 +8389,30 @@ impl BootstrapState {
             }
         }
         record
+    }
+
+    fn vspace_owner(&self, task: u32) -> u32 {
+        self.process_of(task)
+            .and_then(|p| self.process_leader(p))
+            .unwrap_or(task)
+    }
+    fn is_space_entry_page(&self, owner: u32, va: u64) -> bool {
+        self.tasks.entries.iter().flatten().any(|task| {
+            self.tasks.is_live(task.id)
+                && self.vspace_owner(task.id) == owner
+                && task.entry != 0
+                && va == task.entry & !4095
+        })
+    }
+    fn user_vspace_end(base: u64, pages: usize) -> Result<u64, MemsegError> {
+        let span = (pages as u64)
+            .checked_mul(4096)
+            .ok_or(MemsegError::OutOfBounds)?;
+        let end = base.checked_add(span).ok_or(MemsegError::OutOfBounds)?;
+        if base & 4095 != 0 || end > (1 << 47) {
+            return Err(MemsegError::OutOfBounds);
+        }
+        Ok(end)
     }
 
     /// §7.2 `memseg_map`：把 Segment 的页真实映射进目标 Task 的 vspace。
@@ -7807,14 +8442,11 @@ impl BootstrapState {
             },
             Err(error) => return Err(map_auth_error(error)),
         };
-        let segment_frames = match self.segment(seg_id) {
-            Some(segment) => segment.frames,
-            None => return Err(MemsegError::TargetDead),
-        };
-        let segment_allowed = match self.segment(seg_id) {
-            Some(segment) => segment.allowed_access,
-            None => return Err(MemsegError::TargetDead),
-        };
+        let (frame_count, segment_allowed) = self
+            .segment_property(seg_id, |segment| {
+                (segment.frame_count(), segment.allowed_access)
+            })
+            .ok_or(MemsegError::TargetDead)?;
         if !access.subset_of(segment_allowed) {
             return Err(MemsegError::RightsExceeded);
         }
@@ -7832,7 +8464,13 @@ impl BootstrapState {
             },
             Err(error) => return Err(map_auth_error(error)),
         };
-        let frame_count = segment_frames.frame_count();
+        let task_id = self.vspace_owner(task_id);
+        if self.has_prepared_child(task_id)
+            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+        {
+            return Err(MemsegError::StillMapped);
+        }
+        let _ = Self::user_vspace_end(target_base, page_count)?;
         let end = seg_offset
             .checked_add(page_count as u64)
             .ok_or(MemsegError::OutOfBounds)?;
@@ -7846,6 +8484,11 @@ impl BootstrapState {
         let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
         for index in 0..page_count {
             let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
+            let pml4 =
+                prima_ostd::mm::read_u64_at(map(root_phys), crate::vspace::indices(va)[0] as u64);
+            if pml4 & crate::vspace::PT_PRESENT != 0 && pml4 & crate::vspace::PT_USER == 0 {
+                return Err(MemsegError::Overlap);
+            }
             if self.vspace.find(task_id, va).is_some() {
                 return Err(MemsegError::Overlap);
             }
@@ -7856,26 +8499,46 @@ impl BootstrapState {
         if self.vspace.count() + page_count > MAX_VSPACE_ENTRIES {
             return Err(MemsegError::CapacityExceeded);
         }
+        let needed = crate::vspace::missing_range_tables(root_phys, target_base, page_count, map)
+            .map_err(|_| MemsegError::OutOfBounds)?;
+        if needed > crate::frames::MAX_TABLE_FRAMES {
+            return Err(MemsegError::NoMemory);
+        }
+        let mut tables = [0u64; crate::frames::MAX_TABLE_FRAMES];
+        for index in 0..needed {
+            match crate::frames::allocate_table_frame() {
+                Ok(frame) => tables[index] = frame,
+                Err(_) => {
+                    for frame in &tables[..index] {
+                        let _ = crate::frames::release_table_frame(*frame);
+                    }
+                    return Err(MemsegError::NoMemory);
+                }
+            }
+        }
+        let mut used = 0;
         let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
         let writable = access.contains(Right::SegMapW);
         for index in 0..page_count {
             let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
-            let frame = segment_frames
-                .frame_at(seg_offset as usize + index)
+            let frame = self
+                .segment_frame(seg_id, seg_offset as usize + index)
                 .ok_or(MemsegError::OutOfBounds)?;
-            if crate::vspace::map_4k(
+            crate::vspace::map_4k(
                 root_phys,
                 va,
                 map,
-                || crate::frames::allocate_table_frame().ok(),
+                || {
+                    let frame = tables.get(used).copied().filter(|frame| *frame != 0)?;
+                    used += 1;
+                    Some(frame)
+                },
                 frame,
                 writable,
                 true,
+                |_| {},
             )
-            .is_err()
-            {
-                return Err(MemsegError::NoMemory);
-            }
+            .expect("complete map table reservation");
             if flush_local {
                 prima_ostd::arch::invlpg(va);
             }
@@ -7900,29 +8563,8 @@ impl BootstrapState {
         root_phys: u64,
         phys_offset: u64,
     ) -> Result<(), MemsegError> {
-        if page_count == 0 {
-            return Err(MemsegError::ZeroSize);
-        }
-        let task_id = match self.authorize(caller, task_cap, Right::TaskManageVSpace) {
-            Ok(_) => match self.target_of(task_cap) {
-                Some(ObjectRef::Task(id)) => id,
-                _ => return Err(MemsegError::NoSuchCapability),
-            },
-            Err(error) => return Err(map_auth_error(error)),
-        };
+        let task_id = self.check_unmap(caller, task_cap, target_base, page_count)?;
         let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
-        for index in 0..page_count {
-            let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
-            if self.vspace.find(task_id, va).is_none() {
-                return Err(MemsegError::NotMapped);
-            }
-            // 入口页不可卸载：任务入口在整个生命周期内必须可执行（§7.3）。
-            if self.tasks.find(task_id).is_some_and(|task| {
-                task.entry != 0 && va == task.entry & !(crate::mem::FRAME_SIZE - 1)
-            }) {
-                return Err(MemsegError::EntryMapping);
-            }
-        }
         let flush_local = needs_local_tlb_flush(root_phys, crate::sched::current_root());
         for index in 0..page_count {
             let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
@@ -7937,6 +8579,92 @@ impl BootstrapState {
             let _ = self.vspace.remove(task_id, va);
         }
         Ok(())
+    }
+
+    fn check_unmap(
+        &self,
+        caller: u32,
+        task_cap: Handle,
+        target_base: u64,
+        page_count: usize,
+    ) -> Result<u32, MemsegError> {
+        if page_count == 0 {
+            return Err(MemsegError::ZeroSize);
+        }
+        let task_id = match self.authorize(caller, task_cap, Right::TaskManageVSpace) {
+            Ok(_) => match self.target_of(task_cap) {
+                Some(ObjectRef::Task(id)) => id,
+                _ => return Err(MemsegError::NoSuchCapability),
+            },
+            Err(error) => return Err(map_auth_error(error)),
+        };
+        let task_id = self.vspace_owner(task_id);
+        if self.has_prepared_child(task_id)
+            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+        {
+            return Err(MemsegError::StillMapped);
+        }
+        let _ = Self::user_vspace_end(target_base, page_count)?;
+        for index in 0..page_count {
+            let va = target_base + (index as u64) * crate::mem::FRAME_SIZE;
+            if self.vspace.find(task_id, va).is_none() {
+                return Err(MemsegError::NotMapped);
+            }
+            // 入口页不可卸载：任务入口在整个生命周期内必须可执行（§7.3）。
+            if self.is_space_entry_page(task_id, va) {
+                return Err(MemsegError::EntryMapping);
+            }
+        }
+        Ok(task_id)
+    }
+
+    /// Validate the entire teardown before removing a detached thread's stack.
+    /// No user instruction runs between unmap and Task retirement.
+    pub fn thread_exit_unmap(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+        base: u64,
+        pages: usize,
+        root: u64,
+        offset: u64,
+    ) -> Result<(), TaskError> {
+        let task = self.tasks.find(caller).ok_or(TaskError::NoSuchTask)?;
+        if !self.task_is_thread(caller) || task.status != TaskStatus::Running {
+            return Err(TaskError::NotRunning);
+        }
+        if !matches!(self.target_of(cap), Some(ObjectRef::Task(target)) if self.vspace_owner(target) == self.vspace_owner(caller))
+        {
+            return Err(TaskError::NoSuchTask);
+        }
+        if !self.audit.can_append(self.destroy_audit_events(caller)) {
+            return Err(TaskError::AuditFull);
+        }
+        if pages == 0
+            || pages > MAX_VSPACE_ENTRIES
+            || Self::user_vspace_end(base, pages).is_err()
+            || self
+                .authorize(caller, cap, Right::TaskManageVSpace)
+                .is_err()
+        {
+            return Err(TaskError::NoSuchTask);
+        }
+        let owner = self.vspace_owner(caller);
+        for index in 0..pages {
+            let va = base + index as u64 * crate::mem::FRAME_SIZE;
+            if self.vspace.find(owner, va).is_some() {
+                self.check_unmap(caller, cap, va, 1)
+                    .map_err(|_| TaskError::NoSuchTask)?;
+            }
+        }
+        for index in 0..pages {
+            let va = base + index as u64 * crate::mem::FRAME_SIZE;
+            if self.vspace.find(owner, va).is_some() {
+                self.memseg_unmap(caller, cap, va, 1, root, offset)
+                    .expect("complete exit-unmap preflight");
+            }
+        }
+        self.task_destroy(caller, caller, None, offset)
     }
 
     /// COSIR §7.4 / M10：`memseg_protect(task_cap, target_base, page_count, new_access)`。
@@ -7972,6 +8700,13 @@ impl BootstrapState {
             },
             Err(error) => return Err(map_auth_error(error)),
         };
+        let task_id = self.vspace_owner(task_id);
+        if self.has_prepared_child(task_id)
+            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+        {
+            return Err(MemsegError::StillMapped);
+        }
+        let _ = Self::user_vspace_end(target_base, page_count)?;
         // §7.4 前置 1：目标必须是 CPU Task（非 CPU Task 的 `entry` 是介质句柄）。
         if self
             .tasks
@@ -7989,11 +8724,6 @@ impl BootstrapState {
         let end = target_base
             .checked_add(span)
             .ok_or(MemsegError::OutOfBounds)?;
-        let entry_page = self
-            .tasks
-            .find(task_id)
-            .filter(|task| task.entry != 0)
-            .map(|task| task.entry & !(crate::mem::FRAME_SIZE - 1));
         // 第一遍：只验证，不写状态。
         let mut va = target_base;
         while va < end {
@@ -8001,8 +8731,10 @@ impl BootstrapState {
                 .vspace
                 .find(task_id, va)
                 .ok_or(MemsegError::NotMapped)?;
-            let segment = self.segment(entry.seg_id).ok_or(MemsegError::TargetDead)?;
-            if !new_access.subset_of(segment.allowed_access) {
+            let allowed = self
+                .segment_property(entry.seg_id, |segment| segment.allowed_access)
+                .ok_or(MemsegError::TargetDead)?;
+            if !new_access.subset_of(allowed) {
                 return Err(MemsegError::InvalidAccess);
             }
             let added = new_access.difference(entry.access);
@@ -8018,7 +8750,7 @@ impl BootstrapState {
                 }
             }
             // §7.4 前置 7 / W8：入口页不得失去执行权限。
-            if entry_page == Some(va) && !new_access.contains(Right::SegMapX) {
+            if self.is_space_entry_page(task_id, va) && !new_access.contains(Right::SegMapX) {
                 return Err(MemsegError::EntryMapping);
             }
             va += crate::mem::FRAME_SIZE;
@@ -8037,8 +8769,16 @@ impl BootstrapState {
             if pte & crate::vspace::PT_PRESENT == 0 {
                 return Err(MemsegError::NotMapped);
             }
-            let frame = pte & crate::vspace::PT_ADDR_MASK;
-            crate::vspace::set_leaf(root_phys, va, map, frame, writable, true)
+            let shared = pte & (crate::vspace::PT_SHARED | crate::vspace::PT_COW) != 0;
+            let mut next = pte & !(crate::vspace::PT_WRITABLE | crate::vspace::PT_COW);
+            if writable {
+                next |= if shared {
+                    crate::vspace::PT_COW
+                } else {
+                    crate::vspace::PT_WRITABLE
+                };
+            }
+            crate::vspace::write_leaf_raw(root_phys, va, next, map)
                 .map_err(|_| MemsegError::NotMapped)?;
             if flush_local {
                 prima_ostd::arch::invlpg(va);
@@ -8058,10 +8798,62 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// Suppress access without discarding frames, logical permissions or COW.
+    /// Restoring access therefore cannot turn a fork-shared page writable.
+    #[allow(clippy::too_many_arguments)] // Native mapping context and access range.
+    pub fn vspace_access_enable(
+        &mut self,
+        caller: u32,
+        cap: Handle,
+        base: u64,
+        pages: usize,
+        enabled: bool,
+        root: u64,
+        offset: u64,
+    ) -> Result<(), MemsegError> {
+        let task = self.check_unmap(caller, cap, base, pages)?;
+        if !self.audit.can_append(1) {
+            return Err(MemsegError::AuditFull);
+        }
+        let map = |phys| crate::mem::phys_to_virt(phys, offset);
+        for index in 0..pages {
+            let va = base + index as u64 * crate::mem::FRAME_SIZE;
+            let leaf =
+                crate::vspace::read_leaf(root, va, map).map_err(|_| MemsegError::NotMapped)?;
+            if leaf & crate::vspace::PT_PRESENT == 0
+                || leaf & (crate::vspace::PT_USER | crate::vspace::PT_HIDDEN) == 0
+            {
+                return Err(MemsegError::NotMapped);
+            }
+        }
+        for index in 0..pages {
+            let va = base + index as u64 * crate::mem::FRAME_SIZE;
+            let leaf = crate::vspace::read_leaf(root, va, map).expect("preflight leaf");
+            let leaf = if enabled {
+                (leaf | crate::vspace::PT_USER) & !crate::vspace::PT_HIDDEN
+            } else {
+                (leaf | crate::vspace::PT_HIDDEN) & !crate::vspace::PT_USER
+            };
+            crate::vspace::write_leaf_raw(root, va, leaf, map).expect("preflight path");
+            if needs_local_tlb_flush(root, crate::sched::current_root()) {
+                prima_ostd::arch::invlpg(va);
+            }
+        }
+        self.audit.append(AuditEvent::VspaceAccessEnabled {
+            task_id: task,
+            base,
+            page_count: pages as u32,
+            enabled,
+            task_cap: cap,
+        });
+        Ok(())
+    }
+
     /// 调用者是否持有**某条**指向 `seg_id`、含 `right` 的活动 Capability。
     ///
     /// §7.4 前置 6 只要求“至少一个”对应 Segment 的映射授权；缩小权限不需要它。
     fn caller_holds_segment_right(&self, caller: u32, seg_id: u32, right: Right) -> bool {
+        let caller = self.space_of(caller);
         for capability in self.capabilities.iter() {
             if capability.rights.contains(right)
                 && capability.object.target() == ObjectRef::Segment(seg_id)
@@ -8079,7 +8871,7 @@ impl BootstrapState {
                 && self.slots.check(record.handle) == SlotState::Live
                 // `record.holder` 是**派生时的**属主，cap 随消息移动后由位置表决定当前持有者。
                 && self.holder_of(record.handle) == Some(caller)
-                && self.target_live(record.target)
+                && self.cap_target_live(record.handle)
             {
                 return true;
             }
@@ -8119,13 +8911,7 @@ impl BootstrapState {
             return Err(MemsegError::TargetDead);
         };
         let segment = self.segment_at(index).ok_or(MemsegError::TargetDead)?;
-        let count = segment.frame_count();
-        for page in 0..count {
-            if let Some(frame) = segment.frames.frame_at(page) {
-                let _ = crate::frames::release_frame(seg_id, frame);
-            }
-        }
-        let _ = crate::frames::close_segment(seg_id);
+        crate::frames::release_segment_frames(seg_id).map_err(|_| MemsegError::NoMemory)?;
         self.set_segment_at(
             index,
             Some(SegmentObject {
@@ -8134,6 +8920,7 @@ impl BootstrapState {
                 ..segment
             }),
         );
+        self.private_exec_segments &= !(1 << index);
         self.audit.append(AuditEvent::ObjectDestroyed {
             object_id: seg_id,
             kind: ObjectKind::Segment,
@@ -8302,6 +9089,8 @@ pub fn create_state(
         positions,
         records: CapabilityRecordTable::claim(),
         cap_history: CAPABILITY_HISTORY_ARENA.claim(),
+        prepared_forks: PREPARED_FORKS.claim(),
+        private_exec_segments: 0,
         cap_history_count: 0,
         next_cap_id: 4,
         tasks: TaskTable::with_init(),
@@ -8316,6 +9105,7 @@ pub fn create_state(
         exc_sources: ExcSourceTable::empty(),
         exc_boot: None,
         segments,
+        boot_frames: BOOT_FRAME_ARENA.claim(),
         segment_count: 1,
         namespaces,
         namespace_count: 1,
@@ -8325,6 +9115,7 @@ pub fn create_state(
         timers: TimerTable::empty(),
         wait_objects: WaitObjectTable::empty(),
         processes: ProcessTable::empty(),
+        fork_views: crate::cap_view::ForkViews::claim(),
         timer_stats: TimerStats::default(),
         devices: DeviceTable::empty(),
         vspace: TaskVspaceTable::empty(),
@@ -8358,6 +9149,7 @@ pub fn create_state(
     // 故与 `task_create`（成功动作 8）一致用 `TaskCreated`，不误用 `TaskStateChanged`。
     state.audit.append(AuditEvent::TaskCreated {
         task_id: INIT_TASK_ID,
+        generation: 1,
     });
     // §14 步骤 5/6 + 步骤 9：三条初始根 Capability 的铸造事件（W13 创建记录）。
     for capability in &capabilities {
@@ -8505,6 +9297,7 @@ pub fn record_resume_witness(
     let resumed = kernel_exc_resume(task_id, 0, landing, stack_bottom, stack_top).is_ok();
     let status_after = match task_status(task_id) {
         Some(TaskStatus::Ready) => 0u32,
+        Some(TaskStatus::Prepared) => 6u32,
         Some(TaskStatus::Running) => 1,
         Some(TaskStatus::BlockedRecv) => 2,
         Some(TaskStatus::Faulted) => 3,
@@ -8653,6 +9446,44 @@ pub fn prepare_task_create_caps(
 /// SPEC-093：查询 `task_id` 在虚拟地址 `va` 处映射所属的 Segment id（无映射返回 `None`）。
 ///
 /// 用于见证两个端点的**栈段相异**（独立物理栈帧），而非仅凭「共享同一段的句柄」推断。
+pub fn vspace_access_enable(
+    caller: u32,
+    cap: Handle,
+    base: u64,
+    pages: usize,
+    enabled: bool,
+    root: u64,
+    offset: u64,
+) -> Result<(), MemsegError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(MemsegError::InvalidTask)?
+            .vspace_access_enable(caller, cap, base, pages, enabled, root, offset)
+    })
+}
+
+pub(crate) fn check_exec_adopt(caller: u32, cap: Handle) -> Result<(), MemsegError> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .ok_or(MemsegError::InvalidTask)?
+            .check_exec_adopt(caller, cap)
+    })
+}
+pub(crate) fn adopt_exec_segment(caller: u32, cap: Handle) {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .expect("bootstrap")
+            .adopt_exec_segment(caller, cap)
+    })
+}
+
+pub(crate) fn task_mapping(task: u32, va: u64) -> Option<VspaceEntry> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|s| s.vspace.find(s.vspace_owner(task), va))
+    })
+}
+
 pub fn mapped_segment_at(task_id: u32, va: u64) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
@@ -8686,6 +9517,35 @@ pub fn task_destroy(
     })
 }
 
+pub fn thread_exit_unmap(
+    caller: u32,
+    cap: Handle,
+    base: u64,
+    pages: usize,
+    root: u64,
+    offset: u64,
+) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .thread_exit_unmap(caller, cap, base, pages, root, offset)
+    })
+}
+
+pub fn terminate_process(
+    leader: u32,
+    status: ProcessExit,
+    root: Option<u64>,
+    offset: u64,
+    active_root: bool,
+) -> Result<ProcessTermination, TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .terminate_process(leader, status, root, offset, active_root)
+    })
+}
+
 /// S2-D4：见证用——活动（非 `Dead`）Task 数。
 pub fn live_task_count() -> usize {
     BOOTSTRAP_STATE.with(|slot| {
@@ -8712,7 +9572,7 @@ pub fn live_cap_count() -> usize {
     })
 }
 
-/// 阶段 5 容量水位。Segment 表不回收槽位，故 `segment_slots` 是该池的全程高水位；
+/// 阶段 5 容量水位。Segment 表复用已死亡槽位，`segment_slots` 仍记录分配过的表槽高水位；
 /// Audit 只追加，`audit_used` 同样是高水位。Capability 与消息队列可回收，单独记录峰值。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapacityUsage {
@@ -8850,15 +9710,187 @@ impl BootstrapState {
             .unwrap_or(task_id)
     }
 
-    /// M17：fork 子进程的能力空间继承父进程（同一 cap_space）。
-    pub fn inherit_cap_space(&mut self, child_process: u32, parent_process: u32) -> bool {
-        let Some(parent_space) = self.processes.find(parent_process).map(|p| p.cap_space) else {
+    pub fn resolve_user_handle(&self, task: u32, local: Handle) -> Handle {
+        self.fork_views.resolve(self.space_of(task), local)
+    }
+
+    pub fn expose_user_handle(&mut self, task: u32, token: Handle) -> Handle {
+        let space = self.space_of(task);
+        let slots = &self.slots;
+        self.fork_views.expose(space, token, |handle| {
+            slots.check(handle) == SlotState::Live
+        })
+    }
+
+    pub fn process_identity(&self, caller: u32, selector: u64) -> Option<u32> {
+        if selector > 1 || !self.tasks.is_live(caller) {
+            return None;
+        }
+        let process = self
+            .process_of(caller)
+            .and_then(|id| self.processes.find(id));
+        let leader = process.map_or(caller, |p| p.leader);
+        if selector == 0 {
+            return Some(leader);
+        }
+        if let Some(process) = process {
+            if let Some(parent) = process.parent.and_then(|id| self.processes.find(id)) {
+                return Some(parent.leader);
+            }
+            if process.forked {
+                return Some(INIT_TASK_ID);
+            }
+        }
+        let creator = self
+            .tasks
+            .find(leader)
+            .map(|t| t.creator)
+            .unwrap_or(KERNEL_ACTOR);
+        Some(if creator == KERNEL_ACTOR || creator == leader {
+            0
+        } else {
+            self.process_of(creator)
+                .and_then(|id| self.processes.find(id))
+                .map_or(creator, |p| p.leader)
+        })
+    }
+
+    pub fn can_notify(&self, caller: u32, target: u32) -> bool {
+        if self.task_cookie(caller).is_none() || self.task_cookie(target).is_none() {
+            return false;
+        }
+        if caller == target {
+            return true;
+        }
+        let group = |task| {
+            self.process_of(task)
+                .and_then(|id| self.processes.find(id))
+                .map(|p| p.upcall_group)
+        };
+        if group(caller).is_some() && group(caller) == group(target) {
+            return true;
+        }
+        for slot in 0..MAX_CAPABILITY_SLOTS {
+            if let Some(record) = self.records.get_index(slot)
+                && record.target == ObjectRef::Task(target)
+                && self
+                    .authorize(caller, record.handle, Right::TaskDestroy)
+                    .is_ok()
+            {
+                return true;
+            }
+        }
+        self.capabilities.iter().any(|cap| {
+            cap.object.target() == ObjectRef::Task(target)
+                && self
+                    .authorize(caller, cap.handle, Right::TaskDestroy)
+                    .is_ok()
+        })
+    }
+
+    pub fn task_cookie(&self, task: u32) -> Option<u64> {
+        self.tasks
+            .find(task)
+            .filter(|_| self.tasks.is_live(task))
+            .map(|t| (u64::from(t.generation) << 32) | u64::from(t.id))
+    }
+
+    pub fn task_self_capability(&mut self, task: u32) -> Result<Handle, AuthError> {
+        let cap = self
+            .tasks
+            .find(task)
+            .filter(|_| self.tasks.is_live(task))
+            .ok_or(AuthError::TargetDead)?
+            .self_cap;
+        if !cap.is_zero() {
+            return self.authorize(task, cap, Right::TaskSend);
+        }
+        self.mint_thread_self_cap(task)
+            .map_err(|_| AuthError::NoSuchCapability)
+    }
+
+    fn orphan_children(&mut self, parent: u32) {
+        let mut reap = [0u32; MAX_PROCESSES];
+        let mut count = 0;
+        for child in self.processes.entries.iter_mut().flatten() {
+            if child.parent != Some(parent) {
+                continue;
+            }
+            child.parent = None;
+            child.waiters = 0;
+            child.waiter_count = 0;
+            if child.thread_count == 0 {
+                reap[count] = child.id;
+                count += 1;
+            }
+        }
+        for id in reap[..count].iter().copied() {
+            self.processes.remove(id);
+        }
+    }
+
+    fn fork_cap_count(&self, caller: u32) -> (usize, usize) {
+        let space = self.space_of(caller);
+        let mut count = 0;
+        let mut self_caps = 0;
+        for position in self.positions.entries.iter().flatten() {
+            if position.location == CapabilityLocation::HeldByTask(space) {
+                count += 1;
+                self_caps += usize::from(
+                    self.tasks
+                        .find(caller)
+                        .is_some_and(|task| task.self_cap == position.handle),
+                );
+            }
+        }
+        (count, self_caps)
+    }
+
+    /// Kernel-only controlled clone. Ordinary user derive retains its Derive check.
+    fn inherit_fork_token(&mut self, source: Handle, child: u32) -> Result<Handle, ThreadError> {
+        let rights = self
+            .rights_of(source)
+            .ok_or(ThreadError::CapacityExceeded)?;
+        let target = self
+            .target_of(source)
+            .ok_or(ThreadError::CapacityExceeded)?;
+        let (cap_id, handle) = self
+            .allocate_capability_slot(None)
+            .ok_or(ThreadError::CapacityExceeded)?;
+        let record = self
+            .records
+            .insert(CapabilityRecord {
+                handle,
+                cap_id,
+                parent: Some(source),
+                holder: child,
+                rights,
+                target,
+                target_generation: self.cap_target_generation(source).unwrap_or(0),
+                created_at: self.audit.count as u32,
+            })
+            .map_err(|_| ThreadError::CapacityExceeded)?;
+        self.positions
+            .register(handle, child)
+            .map_err(|_| ThreadError::CapacityExceeded)?;
+        self.append_capability_history(record);
+        self.audit.append(AuditEvent::CapabilityForkInherited {
+            cap: handle,
+            source,
+            child,
+        });
+        Ok(handle)
+    }
+
+    /// Wait-only fixture setup; production fork establishes this relation itself.
+    #[cfg(test)]
+    fn set_fixture_parent(&mut self, child_process: u32, parent_process: u32) -> bool {
+        let Some(_) = self.processes.find(parent_process) else {
             return false;
         };
         let Some(child) = self.processes.find_mut(child_process) else {
             return false;
         };
-        child.cap_space = parent_space;
         child.parent = Some(parent_process);
         true
     }
@@ -8867,42 +9899,31 @@ impl BootstrapState {
         self.processes.find(process_id).and_then(|p| p.parent)
     }
 
-    pub fn process_exit_status(&self, process_id: u32) -> Option<i64> {
+    pub fn process_exit_status(&self, process_id: u32) -> Option<ProcessExit> {
         self.processes.find(process_id).and_then(|p| p.exit_status)
     }
 
-    /// M15b-2b：复用墓碑 id 前撤销所有 target 为该 Task 的 Capability（防句柄复活）。
-    fn revoke_task_caps(&mut self, task_id: u32) {
-        let mut handles = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
-        let mut count = 0usize;
-        for index in 0..MAX_CAPABILITY_SLOTS {
-            if let Some(record) = self.records.get_index(index)
-                && record.target == ObjectRef::Task(task_id)
-                && count < handles.len()
-            {
-                handles[count] = record.handle;
-                count += 1;
-            }
-        }
-        for handle in handles[..count].iter().copied() {
-            let _ = self.retire_capability(handle);
-        }
-    }
-
-    /// M15b-2b：线程专用的槽位分配——表满时惰性回收一个 Dead 记录并撤销其 cap。
+    /// 线程/fork专用槽位分配；Dead且不再支撑waitable zombie时才可复用。
     ///
     /// 只用于 `thread_create`：`task_create` 必须保留“表满 → ENOSPC”的负例语义。
     fn ensure_thread_slot(&mut self) -> Option<u32> {
         if let Some(id) = self.tasks.next_free_id() {
             return Some(id);
         }
-        // 优先复用没有存活 cap 指向的 Dead 记录：不动 cap 计数。
+        // 优先复用没有 cap 引用的 Dead 记录；其它旧 token 依 incarnation 保持 stale。
         let mut fallback = None;
         for index in 0..self.tasks.count {
             let Some(task) = self.tasks.entries[index] else {
                 continue;
             };
-            if task.status != TaskStatus::Dead {
+            if task.status != TaskStatus::Dead
+                || self
+                    .processes
+                    .entries
+                    .iter()
+                    .flatten()
+                    .any(|p| p.leader == task.id && p.thread_count == 0)
+            {
                 continue;
             }
             if !self.cap_targets_task(task.id) {
@@ -8912,7 +9933,6 @@ impl BootstrapState {
             fallback.get_or_insert(task.id);
         }
         let dead = fallback?;
-        self.revoke_task_caps(dead);
         self.tasks.remove(dead);
         Some(dead)
     }
@@ -8925,11 +9945,8 @@ impl BootstrapState {
         })
     }
 
-    /// M15b-2b：创建 Task 记录（复用墓碑 id 时先撤销旧目标 cap）。
+    /// M15b-2b：创建新 incarnation；物理编号复用不删除旧 token 或其所在容器。
     fn create_task_record(&mut self, task_id: u32, entry: u64) -> Result<(), TaskError> {
-        if self.tasks.is_dead(task_id) {
-            self.revoke_task_caps(task_id);
-        }
         self.tasks.create_with_entry(task_id, entry)
     }
 
@@ -8943,6 +9960,9 @@ impl BootstrapState {
         if !self.tasks.is_live(caller) {
             return Err(ThreadError::InvalidCaller);
         }
+        if self.has_prepared_child(self.vspace_owner(caller)) {
+            return Err(ThreadError::Busy);
+        }
         if entry == 0 {
             return Err(ThreadError::InvalidEntry);
         }
@@ -8950,7 +9970,7 @@ impl BootstrapState {
         if stack_top < 0x1000 || stack_top & 0x7 != 0 || stack_top >> 47 != 0 {
             return Err(ThreadError::InvalidStack);
         }
-        if !self.audit.can_append(1) {
+        if !self.audit.can_append(4) {
             return Err(ThreadError::AuditFull);
         }
         let new_id = self
@@ -8969,28 +9989,59 @@ impl BootstrapState {
         if self.create_task_record(new_id, entry).is_err() {
             return Err(ThreadError::CapacityExceeded);
         }
+        let root_ns = self
+            .tasks
+            .find(caller)
+            .map(|t| t.root_ns_cap)
+            .unwrap_or(Handle::ZERO);
         if let Some(task) = self.tasks.find_mut(new_id) {
             task.creator = caller;
+            task.root_ns_cap = root_ns;
         }
         if !self.attach_thread(process, new_id) {
             let _ = self.tasks.remove(new_id);
             return Err(ThreadError::CapacityExceeded);
         }
-        self.audit
-            .append(AuditEvent::TaskCreated { task_id: new_id });
+        self.audit.append(AuditEvent::TaskCreated {
+            task_id: new_id,
+            generation: self.tasks.find(new_id).expect("created task").generation,
+        });
         Ok(new_id)
     }
 
     /// M15b-2：为新线程铸造自毁用的 Task cap（落在 Process 能力空间）。
     pub fn mint_thread_self_cap(&mut self, thread: u32) -> Result<Handle, ThreadError> {
-        self.mint_root_capability(thread, MANAGER_TASK_RIGHTS, ObjectRef::Task(thread))
-            .map_err(|_| ThreadError::CapacityExceeded)
+        let cap = self
+            .mint_root_capability(thread, MANAGER_TASK_RIGHTS, ObjectRef::Task(thread))
+            .map_err(|_| ThreadError::CapacityExceeded)?;
+        self.tasks
+            .find_mut(thread)
+            .ok_or(ThreadError::InvalidCaller)?
+            .self_cap = cap;
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap,
+            holder: self.space_of(thread),
+        });
+        Ok(cap)
     }
 
-    /// M15b-2：线程创建失败回滚（移除 Task 与 Process 归属）。
+    /// Unpublished thread rollback must detach membership before removing the
+    /// Task record, and retire only the freshly minted self root.
     pub fn thread_abort(&mut self, thread: u32) {
-        let _ = self.tasks.remove(thread);
+        let Some(task) = self.tasks.find(thread).copied() else {
+            return;
+        };
+        if !task.self_cap.is_zero() && self.holder_of(task.self_cap) == Some(self.space_of(thread))
+        {
+            self.drop_capability(thread, task.self_cap)
+                .expect("thread rollback audit preflight");
+        }
         self.detach_thread(thread);
+        self.audit.append(AuditEvent::TaskDestroyed {
+            task_id: thread,
+            generation: task.generation,
+        });
+        self.tasks.remove(thread);
     }
 
     /// M15b：建立一个 Process（内部 API；用户态线程创建在后续切片接线）。
@@ -9002,7 +10053,16 @@ impl BootstrapState {
                 creator,
                 leader: creator,
                 cap_space: creator,
+                upcall_group: (self
+                    .tasks
+                    .find(creator)
+                    .map_or(self.tasks.next_generation, |task| {
+                        u64::from(task.generation)
+                    })
+                    << 32)
+                    | u64::from(creator),
                 parent: None,
+                forked: false,
                 exit_status: None,
                 waiters: 0,
                 waiter_count: 0,
@@ -9057,11 +10117,10 @@ impl BootstrapState {
             }
             // M17b：fork 子进程保留僵尸 Process（parent 存在），直到 wait4 回收；
             // 无父进程的普通 Task 最后一个线程离开即删除。
-            remove_process = process.thread_count == 0
-                && process.parent.is_none()
-                && process.exit_status.is_none();
+            remove_process = process.thread_count == 0 && process.parent.is_none();
         }
         if remove_process {
+            self.orphan_children(process_id);
             let _ = self.processes.remove(process_id);
         }
     }
@@ -9118,7 +10177,206 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// Stage an exec image in a private Segment; no user receives its root cap.
+    pub fn allocate_exec_segment(
+        &mut self,
+        pages: usize,
+        offset: u64,
+    ) -> Result<(u32, SegmentFrames), MemsegError> {
+        if pages == 0 || pages > MAX_SEGMENT_FRAMES {
+            return Err(MemsegError::CapacityExceeded);
+        }
+        if !self
+            .audit
+            .can_append(4 + 2 * self.private_exec_segments.count_ones() as usize)
+        {
+            return Err(MemsegError::AuditFull);
+        }
+        let id = self
+            .alloc_segment_slot()
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let slot = (1..MAX_CAPABILITY_SLOTS as u32)
+            .find(|slot| {
+                !(INTERNAL_TASK_ROOT_SLOT_BASE
+                    ..INTERNAL_TASK_ROOT_SLOT_BASE + INTERNAL_TASK_ROOT_SLOT_COUNT)
+                    .contains(slot)
+                    && self.slots.slot_free(*slot)
+            })
+            .ok_or(MemsegError::CapacityExceeded)?;
+        let (_, frames) = self.create_segment_object(
+            id,
+            KERNEL_ACTOR,
+            pages,
+            SEGMENT_ACCESS_RIGHTS,
+            offset,
+            Some((CapabilityLocation::HeldByKernel, slot)),
+        )?;
+        let index = (0..self.segment_count)
+            .find(|&i| self.segment_at(i).is_some_and(|s| s.id == id))
+            .expect("new exec segment");
+        self.private_exec_segments |= 1 << index;
+        Ok((id, frames))
+    }
+
+    pub fn reclaim_exec_segments(&mut self) -> Result<(), MemsegError> {
+        for index in 0..self.segment_count {
+            if self.private_exec_segments & (1 << index) == 0 {
+                continue;
+            }
+            let segment = self.segment_at(index).ok_or(MemsegError::TargetDead)?;
+            if self.vspace.references_segment(segment.id) {
+                continue;
+            }
+            let cap = (0..MAX_CAPABILITY_SLOTS)
+                .find_map(|slot| {
+                    self.records
+                        .get_index(slot)
+                        .filter(|record| {
+                            record.target == ObjectRef::Segment(segment.id)
+                                && self.holder_of(record.handle) == Some(KERNEL_ACTOR)
+                        })
+                        .map(|record| record.handle)
+                })
+                .ok_or(MemsegError::NoSuchCapability)?;
+            self.memseg_destroy(KERNEL_ACTOR, cap)?;
+            self.drop_capability(KERNEL_ACTOR, cap)
+                .map_err(|_| MemsegError::AuditFull)?;
+            self.private_exec_segments &= !(1 << index);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_exec_adopt(&self, caller: u32, cap: Handle) -> Result<(), MemsegError> {
+        self.authorize(caller, cap, Right::SegDestroy)
+            .map_err(map_auth_error)?;
+        let Some(ObjectRef::Segment(id)) = self.target_of(cap) else {
+            return Err(MemsegError::NoSuchCapability);
+        };
+        if self.segment_property(id, |s| s.creator) != Some(caller) {
+            return Err(MemsegError::InvalidTask);
+        }
+        if !self
+            .audit
+            .can_append(4 + 2 * self.private_exec_segments.count_ones() as usize)
+        {
+            return Err(MemsegError::AuditFull);
+        }
+        Ok(())
+    }
+    pub(crate) fn adopt_exec_segment(&mut self, caller: u32, cap: Handle) {
+        self.check_exec_adopt(caller, cap)
+            .expect("exec adoption preflight");
+        let Some(ObjectRef::Segment(id)) = self.target_of(cap) else {
+            unreachable!()
+        };
+        let index = (0..self.segment_count)
+            .find(|&i| self.segment_at(i).is_some_and(|s| s.id == id))
+            .expect("segment");
+        let position = self.positions.find_mut(cap).expect("held token");
+        let from = position.location;
+        position.location = CapabilityLocation::HeldByKernel;
+        self.private_exec_segments |= 1 << index;
+        self.audit.append(AuditEvent::CapabilityMoved {
+            cap,
+            from,
+            to: CapabilityLocation::HeldByKernel,
+        });
+    }
+
+    pub fn check_exec(&self, caller: u32, pages: usize) -> Result<(), TaskError> {
+        if !self.tasks.is_live(caller) {
+            return Err(TaskError::NoSuchTask);
+        }
+        if self
+            .process_of(caller)
+            .is_some_and(|p| self.process_threads(p) > 1)
+        {
+            return Err(TaskError::HasLiveThreads);
+        }
+        if self.has_prepared_child(caller) {
+            return Err(TaskError::HasLiveThreads);
+        }
+        let mut old = 0;
+        self.vspace
+            .for_each_entry(|e| old += usize::from(e.task_id.get() == caller));
+        if pages > MAX_VSPACE_ENTRIES - (self.vspace.count - old)
+            || !crate::sched::can_defer_frames(1 + 3 * old)
+        {
+            return Err(TaskError::CapacityExceeded);
+        }
+        Ok(())
+    }
+
+    /// Called after all copy-in, validation and allocation have succeeded.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn commit_exec(
+        &mut self,
+        caller: u32,
+        old_root: u64,
+        offset: u64,
+        segment: u32,
+        plan: &crate::exec::ExecPlan,
+        stack: u64,
+        stack_pages: usize,
+        retained: &[Option<crate::exec::RetainedPage>],
+    ) -> Result<(), TaskError> {
+        self.exec_teardown(caller, old_root, offset)?;
+        let task = self.tasks.find_mut(caller).expect("exec caller");
+        task.entry = plan.entry;
+        task.clear_child_tid = 0;
+        crate::sched::defer_table_frame(old_root).map_err(|_| TaskError::CapacityExceeded)?;
+        let mut page_index = 0;
+        for part in plan.segments.iter().flatten() {
+            for page in 0..part.memsz.div_ceil(4096) {
+                let access = Rights::from_rights(&[Right::SegMapR])
+                    .union(if part.writable {
+                        Rights::from_rights(&[Right::SegMapW])
+                    } else {
+                        Rights::from_rights(&[])
+                    })
+                    .union(if part.executable {
+                        Rights::from_rights(&[Right::SegMapX])
+                    } else {
+                        Rights::from_rights(&[])
+                    });
+                self.vspace
+                    .insert(VspaceEntry {
+                        task_id: NonZeroU32::new(caller).expect("live Task"),
+                        va: part.vaddr + 4096 * page,
+                        seg_id: segment,
+                        seg_offset: page_index,
+                        access,
+                    })
+                    .expect("exec capacity preflight");
+                page_index += 1;
+            }
+        }
+        for page in 0..stack_pages {
+            self.vspace
+                .insert(VspaceEntry {
+                    task_id: NonZeroU32::new(caller).expect("live Task"),
+                    va: stack + page as u64 * 4096,
+                    seg_id: segment,
+                    seg_offset: page_index + page as u64,
+                    access: Rights::from_rights(&[Right::SegMapR, Right::SegMapW]),
+                })
+                .expect("exec stack capacity");
+        }
+        for page in retained.iter().flatten() {
+            self.vspace
+                .insert(page.entry)
+                .expect("retained capacity preflight");
+        }
+        self.reclaim_exec_segments()
+            .map_err(|_| TaskError::NoSuchTask)?;
+        Ok(())
+    }
+
     pub fn task_segment_id(&self, task_id: u32) -> Option<u32> {
+        let task_id = self
+            .process_of(task_id)
+            .and_then(|p| self.process_leader(p))
+            .unwrap_or(task_id);
         let mut found = None;
         self.vspace.for_each_entry(|entry| {
             if found.is_none() && entry.task_id.get() == task_id {
@@ -9128,17 +10386,47 @@ impl BootstrapState {
         found
     }
 
+    pub fn task_segment_at(&self, task: u32, address: u64) -> Option<u32> {
+        let task = self
+            .process_of(task)
+            .and_then(|p| self.process_leader(p))
+            .unwrap_or(task);
+        self.vspace
+            .find(task, address & !0xfff)
+            .map(|entry| entry.seg_id)
+    }
+
     /// Read-only admission check before any hardware page-table allocation/change.
     pub fn check_fork(&self, caller: u32) -> Result<(), ThreadError> {
         if !self.tasks.is_live(caller) {
             return Err(ThreadError::InvalidCaller);
         }
+        if self.tasks.next_generation > u64::from(u32::MAX) {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        if self.has_prepared_child(caller) {
+            return Err(ThreadError::Busy);
+        }
         let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;
         if self.process_threads(parent_process) != 1 {
             return Err(ThreadError::Busy);
         }
-        if !self.audit.can_append(1) {
+        let (caps, self_caps) = self.fork_cap_count(caller);
+        if !self.audit.can_append(2 * caps + self_caps + 4) {
             return Err(ThreadError::AuditFull);
+        }
+        if caps + 1 > self.slots.normal_free_count()
+            || caps + 1 > MAX_CAPABILITY_HISTORY - self.cap_history_count
+            || self.next_cap_id.checked_add((caps + 1) as u32).is_none()
+            || self
+                .positions
+                .entries
+                .iter()
+                .filter(|entry| entry.is_none())
+                .count()
+                < caps + 1
+        {
+            return Err(ThreadError::CapacityExceeded);
         }
         let mut mappings = 0;
         self.vspace
@@ -9146,15 +10434,167 @@ impl BootstrapState {
         if self.processes.count == MAX_PROCESSES
             || mappings > MAX_VSPACE_ENTRIES - self.vspace.count
             || (self.tasks.next_free_id().is_none()
-                && !self
-                    .tasks
-                    .entries
-                    .iter()
-                    .flatten()
-                    .any(|task| task.status == TaskStatus::Dead))
+                && !self.tasks.entries.iter().flatten().any(|task| {
+                    task.status == TaskStatus::Dead
+                        && !self
+                            .processes
+                            .entries
+                            .iter()
+                            .flatten()
+                            .any(|p| p.leader == task.id && p.thread_count == 0)
+                }))
         {
             return Err(ThreadError::CapacityExceeded);
         }
+        Ok(())
+    }
+
+    pub fn has_prepared_child(&self, parent: u32) -> bool {
+        (1..MAX_TASKS).any(|id| {
+            PREPARED_FORKS
+                .get(self.prepared_forks, id)
+                .is_some_and(|tx| tx.parent == parent)
+        })
+    }
+    pub fn check_prepared_fork(&self, parent: u32) -> Result<(), ThreadError> {
+        self.check_fork(parent)?;
+        let (caps, self_caps) = self.fork_cap_count(parent);
+        if !self
+            .audit
+            .can_append(2 * caps + self_caps + 6 + FORK_ABORT_AUDIT_BUDGET)
+            || caps + 2 > self.slots.normal_free_count()
+            || self.cap_history_count + caps + 2 > MAX_CAPABILITY_HISTORY
+            || self.next_cap_id.checked_add((caps + 2) as u32).is_none()
+        {
+            return Err(ThreadError::CapacityExceeded);
+        }
+        Ok(())
+    }
+    pub fn prepare_fork(&mut self, parent: u32, entry: u64) -> Result<(u32, Handle), ThreadError> {
+        self.check_prepared_fork(parent)?;
+        let child = self.fork_create(parent, entry)?;
+        let ticket = self
+            .mint_root_capability(parent, MANAGER_TASK_RIGHTS, ObjectRef::Task(child))
+            .expect("prepared fork authority preflight");
+        self.tasks.find_mut(child).expect("created child").status = TaskStatus::Prepared;
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: ticket,
+            holder: parent,
+        });
+        self.audit.append(AuditEvent::ForkPrepared {
+            parent,
+            child,
+            ticket,
+        });
+        assert!(self.audit.reserve(FORK_ABORT_AUDIT_BUDGET));
+        PREPARED_FORKS.set(
+            self.prepared_forks,
+            child as usize,
+            Some(PreparedFork {
+                parent,
+                ticket,
+                audit_budget: FORK_ABORT_AUDIT_BUDGET,
+                root: 0,
+            }),
+        );
+        Ok((child, ticket))
+    }
+    pub fn prepared_fork_child(&self, parent: u32, ticket: Handle) -> Result<u32, TaskError> {
+        self.authorize(parent, ticket, Right::TaskDestroy)
+            .map_err(|_| TaskError::NoSuchTask)?;
+        let Some(ObjectRef::Task(child)) = self.target_of(ticket) else {
+            return Err(TaskError::NoSuchTask);
+        };
+        let tx = PREPARED_FORKS
+            .get(self.prepared_forks, child as usize)
+            .ok_or(TaskError::NotReady)?;
+        if tx.parent != parent || tx.ticket != ticket {
+            return Err(TaskError::NotReady);
+        }
+        Ok(child)
+    }
+    pub fn set_prepared_fork_root(
+        &mut self,
+        parent: u32,
+        ticket: Handle,
+        root: u64,
+    ) -> Result<(), TaskError> {
+        let child = self.prepared_fork_child(parent, ticket)?;
+        let mut tx = PREPARED_FORKS
+            .get(self.prepared_forks, child as usize)
+            .expect("checked transaction");
+        tx.root = root;
+        PREPARED_FORKS.set(self.prepared_forks, child as usize, Some(tx));
+        Ok(())
+    }
+    pub fn publish_fork(&mut self, parent: u32, ticket: Handle) -> Result<u32, TaskError> {
+        let child = self.prepared_fork_child(parent, ticket)?;
+        let tx = PREPARED_FORKS
+            .get(self.prepared_forks, child as usize)
+            .expect("checked transaction");
+        self.audit.release_reservation(tx.audit_budget);
+        PREPARED_FORKS.set(self.prepared_forks, child as usize, None);
+        self.tasks.find_mut(child).expect("prepared child").status = TaskStatus::Ready;
+        self.audit.append(AuditEvent::ForkPublished { child });
+        crate::fork_tx::forget(parent);
+        Ok(child)
+    }
+    pub fn abort_prepared_fork(
+        &mut self,
+        parent: u32,
+        ticket: Handle,
+        offset: u64,
+    ) -> Result<(), TaskError> {
+        let child = self.prepared_fork_child(parent, ticket)?;
+        self.cancel_prepared(child, offset)
+    }
+    fn cancel_prepared_children(&mut self, parent: u32) -> Result<(), TaskError> {
+        let offset = crate::cow::root_and_offset().map_or(0, |(_, offset)| offset);
+        for child in 1..MAX_TASKS {
+            if PREPARED_FORKS
+                .get(self.prepared_forks, child)
+                .is_some_and(|tx| tx.parent == parent)
+            {
+                self.cancel_prepared(child as u32, offset)?;
+            }
+        }
+        Ok(())
+    }
+    fn cancel_prepared(&mut self, child: u32, offset: u64) -> Result<(), TaskError> {
+        let tx = PREPARED_FORKS
+            .get(self.prepared_forks, child as usize)
+            .ok_or(TaskError::NotReady)?;
+        self.audit.release_reservation(tx.audit_budget);
+        PREPARED_FORKS.set(self.prepared_forks, child as usize, None);
+        if tx.root != 0 {
+            let root = tx.root;
+            crate::vspace::discard_cow_root(
+                root,
+                |phys| crate::mem::phys_to_virt(phys, offset),
+                |frame| {
+                    let _ = crate::frames::release_table_frame(frame);
+                },
+            );
+            let _ = crate::frames::release_table_frame(root);
+        }
+        while let Some(va) = self.vspace.first_mapping(child) {
+            self.vspace.remove(child, va);
+        }
+        let process = self.process_of(child);
+        self.destroy_task_body(child)?;
+        if let Some(process) = process {
+            self.processes.remove(process);
+        }
+        self.tasks.remove(child);
+        if self.holder_of(tx.ticket) == Some(self.space_of(tx.parent)) {
+            self.drop_capability(tx.parent, tx.ticket)
+                .map_err(|_| TaskError::NoSuchTask)?;
+        }
+        if tx.root != 0 {
+            crate::sched::clear_task(child);
+        }
+        crate::fork_tx::restore(tx.parent, offset);
+        self.audit.append(AuditEvent::ForkAborted { child });
         Ok(())
     }
 
@@ -9168,10 +10608,15 @@ impl BootstrapState {
         let process = self
             .create_process(new_id)
             .ok_or(ThreadError::CapacityExceeded)?;
-        if !self.inherit_cap_space(process, parent_process) {
-            let _ = self.processes.remove(process);
-            return Err(ThreadError::CapacityExceeded);
-        }
+        let group = self
+            .processes
+            .find(parent_process)
+            .expect("parent process")
+            .upcall_group;
+        let child_process = self.processes.find_mut(process).expect("new process");
+        child_process.upcall_group = group;
+        child_process.parent = Some(parent_process);
+        child_process.forked = true;
         if self.create_task_record(new_id, entry).is_err() {
             let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
@@ -9187,14 +10632,110 @@ impl BootstrapState {
             let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
         }
+        let parent_space = self.space_of(caller);
+        let mut sources = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
+        let mut source_count = 0;
+        for position in self.positions.entries.iter().flatten() {
+            if position.location == CapabilityLocation::HeldByTask(parent_space) {
+                sources[source_count] = position.handle;
+                source_count += 1;
+            }
+        }
+        let slots = &self.slots;
+        assert!(self.fork_views.initialize(new_id, parent_space, |index| {
+            let slot = slots.entries[index];
+            (
+                slot.generation,
+                if slot.in_use {
+                    Handle::new(index as u32, slot.generation).expect("live global handle")
+                } else {
+                    Handle::ZERO
+                },
+            )
+        }));
+        let self_root = self
+            .mint_root_capability(new_id, MANAGER_TASK_RIGHTS, ObjectRef::Task(new_id))
+            .expect("fork admission reserved root token");
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: self_root,
+            holder: new_id,
+        });
+        let parent_root = self
+            .tasks
+            .find(caller)
+            .map(|t| t.root_ns_cap)
+            .unwrap_or(Handle::ZERO);
+        let parent_self = self
+            .tasks
+            .find(caller)
+            .map(|t| t.self_cap)
+            .unwrap_or(Handle::ZERO);
+        for source in sources[..source_count].iter().copied() {
+            let cloned = if source == parent_self {
+                let rights = self.rights_of(source).expect("held source rights");
+                let token = self
+                    .derive_capability_to_holder(new_id, self_root, rights, new_id)
+                    .expect("fork admission reserved self token");
+                self.audit.append(AuditEvent::CapabilityForkRebound {
+                    cap: token,
+                    source,
+                    child: new_id,
+                });
+                token
+            } else {
+                self.inherit_fork_token(source, new_id)
+                    .expect("fork admission reserved token")
+            };
+            if !self.fork_views.rebind(new_id, source, cloned) {
+                // Internal model callers may own an as-yet unexported source.
+                assert!(!self.expose_user_handle(new_id, cloned).is_zero());
+            }
+            if source == parent_self {
+                self.tasks.find_mut(new_id).expect("child task").self_cap = cloned;
+            }
+            if source == parent_root {
+                self.tasks
+                    .set_root_ns_cap(new_id, cloned)
+                    .expect("new child root");
+            }
+        }
+        self.retire_capability(self_root);
         self.audit
-            .append(AuditEvent::TaskCreated { task_id: new_id });
+            .append(AuditEvent::CapabilityDropped { cap: self_root });
+        self.audit.append(AuditEvent::TaskCreated {
+            task_id: new_id,
+            generation: self.tasks.find(new_id).expect("created task").generation,
+        });
         Ok(new_id)
     }
 
     /// Cancel an unpublished fork child, not a running process/zombie.
     pub fn fork_abort(&mut self, child: u32) {
         let process = self.process_of(child);
+        if let Some(task) = self.tasks.find_mut(child) {
+            task.root_ns_cap = Handle::ZERO;
+        }
+        let mut held = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
+        let mut count = 0;
+        for position in self.positions.entries.iter().flatten() {
+            if position.location == CapabilityLocation::HeldByTask(child) {
+                held[count] = position.handle;
+                count += 1;
+            }
+        }
+        for cap in held[..count].iter().copied() {
+            self.retire_capability(cap);
+            self.audit.append(AuditEvent::CapabilityDropped { cap });
+        }
+        self.audit.append(AuditEvent::TaskDestroyed {
+            task_id: child,
+            generation: self
+                .tasks
+                .find(child)
+                .expect("unpublished child")
+                .generation,
+        });
+        self.fork_views.clear(child);
         while let Some(va) = self.vspace.first_mapping(child) {
             self.vspace.remove(child, va);
         }
@@ -9212,7 +10753,29 @@ impl BootstrapState {
             .unwrap_or(0)
     }
 
-    pub fn process_exit(&mut self, process_id: u32, status: i64) -> WaitWake {
+    pub fn process_exit(&mut self, process_id: u32, status: i64) -> Result<WaitWake, TaskError> {
+        self.process_exit_reason(process_id, ProcessExit::Exited(status as u8))
+    }
+
+    pub fn process_exit_reason(
+        &mut self,
+        process_id: u32,
+        status: ProcessExit,
+    ) -> Result<WaitWake, TaskError> {
+        let process = self
+            .processes
+            .find(process_id)
+            .ok_or(TaskError::NoSuchTask)?;
+        let count = self
+            .tasks
+            .entries
+            .iter()
+            .flatten()
+            .filter(|t| process.waiters & (1 << t.id) != 0 && t.status == TaskStatus::BlockedWait)
+            .count();
+        if !self.audit.can_append(count) {
+            return Err(TaskError::AuditFull);
+        }
         let mut wakes = WaitWake::empty();
         let mut reap = false;
         if let Some(process) = self.processes.find_mut(process_id) {
@@ -9230,15 +10793,20 @@ impl BootstrapState {
                     task.status = TaskStatus::Ready;
                     task.waiting_process = None;
                     wakes.push(task_id, WaitResultCode::Satisfied);
+                    self.audit.append(AuditEvent::TaskStateChanged {
+                        task_id,
+                        status: TaskStatus::Ready,
+                    });
                 }
             }
             // 有等待者时状态已随唤醒交付，直接回收僵尸 Process。
             reap = wakes.count > 0;
         }
+        self.orphan_children(process_id);
         if reap {
             let _ = self.processes.remove(process_id);
         }
-        wakes
+        Ok(wakes)
     }
 
     /// M17b：wait4 的立即/阻塞判定。
@@ -9257,6 +10825,7 @@ impl BootstrapState {
             .flatten()
             .find(|process| {
                 process.parent == Some(caller_process)
+                    && self.tasks.status_of(process.leader) != Some(TaskStatus::Prepared)
                     && (pid < 0 || process.leader as i64 == pid)
                     && self.tasks.find(process.leader).is_some()
             })
@@ -9340,7 +10909,10 @@ impl BootstrapState {
         if !self.audit.can_append(3) {
             return Err(WaitError::AuditFull);
         }
-        let id = self.wait_objects.next_id();
+        let id = self
+            .wait_objects
+            .next_id()
+            .ok_or(WaitError::CapacityExceeded)?;
         let handle = self
             .mint_root_capability(caller, WAIT_RIGHTS, ObjectRef::WaitObject(id))
             .map_err(|_| WaitError::CapacityExceeded)?;
@@ -9380,15 +10952,19 @@ impl BootstrapState {
         cap: Handle,
     ) -> Result<SignalOutcome, WaitError> {
         let id = self.wait_cap(caller, cap, Right::WaitSignal)?;
-        if !self.audit.can_append(1) {
+        if !self
+            .audit
+            .can_append(1 + self.wait_objects.find(id).map_or(0, |o| o.waiter_count))
+        {
             return Err(WaitError::AuditFull);
         }
-        let object = self
-            .wait_objects
-            .find_mut(id)
-            .ok_or(WaitError::TargetDead)?;
-        object.generation += 1;
+        let mut object = self.wait_objects.find(id).ok_or(WaitError::TargetDead)?;
+        object.generation = object
+            .generation
+            .checked_add(1)
+            .ok_or(WaitError::InvalidGeneration)?;
         let generation = object.generation;
+        self.wait_objects.write(object);
         self.audit.append(AuditEvent::WaitSignaled {
             object_id: id,
             generation,
@@ -9453,13 +11029,14 @@ impl BootstrapState {
         task.pending_wait_result = Some(result);
         task.status = TaskStatus::Ready;
         for entry in request.entries[..request.count].iter() {
-            if let Some(object) = self.wait_objects.find_mut(entry.object) {
+            if let Some(mut object) = self.wait_objects.find(entry.object) {
                 for slot in object.waiters.iter_mut() {
                     if *slot == Some(task_id) {
                         *slot = None;
                         object.waiter_count = object.waiter_count.saturating_sub(1);
                     }
                 }
+                self.wait_objects.write(object);
             }
         }
         self.audit_transition(task_id, TaskStatus::Ready);
@@ -9471,18 +11048,64 @@ impl BootstrapState {
         if let Some(task) = self.tasks.find_mut(task_id) {
             task.wait_request = None;
         }
-        for object in self.wait_objects.entries.iter_mut().flatten() {
+        for mut object in self.wait_objects.iter() {
             for slot in object.waiters.iter_mut() {
                 if *slot == Some(task_id) {
                     *slot = None;
                     object.waiter_count = object.waiter_count.saturating_sub(1);
                 }
             }
+            self.wait_objects.write(object);
         }
+    }
+
+    pub fn block_upcall(&mut self, task_id: u32) -> Result<(), TaskError> {
+        if self.tasks.status_of(task_id) != Some(TaskStatus::Running) {
+            return Err(TaskError::NotRunning);
+        }
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        self.tasks.find_mut(task_id).expect("running task").status = TaskStatus::BlockedWait;
+        self.audit_transition(task_id, TaskStatus::BlockedWait);
+        Ok(())
+    }
+
+    pub fn interrupt_for_upcall(&mut self, task_id: u32) -> Result<bool, TaskError> {
+        let task = self.tasks.find(task_id).ok_or(TaskError::NoSuchTask)?;
+        if !matches!(
+            task.status,
+            TaskStatus::BlockedRecv | TaskStatus::BlockedWait
+        ) {
+            return Ok(false);
+        }
+        if !self.audit.can_append(1) {
+            return Err(TaskError::AuditFull);
+        }
+        let waiting = task.waiting_process;
+        if let Some(process) = waiting.and_then(|id| self.processes.find_mut(id)) {
+            let bit = 1u32 << task_id;
+            if process.waiters & bit != 0 {
+                process.waiters &= !bit;
+                process.waiter_count = process.waiter_count.saturating_sub(1);
+            }
+        }
+        self.detach_waiter(task_id);
+        let task = self.tasks.find_mut(task_id).expect("blocked task");
+        task.waiting_process = None;
+        task.wait_status_ptr = 0;
+        task.pending_wait_result = None;
+        task.status = TaskStatus::Ready;
+        self.audit_transition(task_id, TaskStatus::Ready);
+        Ok(true)
     }
 
     /// 到期的等待者全部唤醒为 `WaitTimedOut`。
     pub fn expire_waits(&mut self, now: Instant) -> WaitWake {
+        self.expire_waits_on(now, false)
+    }
+
+    fn expire_waits_on(&mut self, now: Instant, physical: bool) -> WaitWake {
         let mut wakes = WaitWake::empty();
         let expired: [Option<u32>; MAX_TASKS] = {
             let mut list = [None; MAX_TASKS];
@@ -9491,6 +11114,7 @@ impl BootstrapState {
                 if task.status == TaskStatus::BlockedWait
                     && task
                         .wait_request
+                        .filter(|request| request.physical == physical)
                         .and_then(|request| request.deadline)
                         .is_some_and(|deadline| deadline <= now)
                     && count < MAX_TASKS
@@ -9507,6 +11131,40 @@ impl BootstrapState {
             }
         }
         wakes
+    }
+
+    pub fn wait_physical_deadline(
+        &mut self,
+        caller: u32,
+        deadline: u64,
+        now: u64,
+    ) -> Result<WaitOutcome, WaitError> {
+        if self.tasks.status_of(caller) != Some(TaskStatus::Running) {
+            return Err(WaitError::InvalidCaller);
+        }
+        if deadline <= now {
+            return Ok(WaitOutcome::TimedOut);
+        }
+        if !self.audit.can_append(1) {
+            return Err(WaitError::AuditFull);
+        }
+        let task = self
+            .tasks
+            .find_mut(caller)
+            .ok_or(WaitError::InvalidCaller)?;
+        task.wait_request = Some(WaitRequest {
+            entries: [WaitEntry {
+                object: 0,
+                observed: 0,
+            }; 2],
+            count: 0,
+            mode: 0,
+            deadline: Some(deadline),
+            physical: true,
+        });
+        task.status = TaskStatus::BlockedWait;
+        self.audit_transition(caller, TaskStatus::BlockedWait);
+        Ok(WaitOutcome::Blocked)
     }
 
     /// COSIR §21.2.1 的立即路径：满足/立即超时；否则 `WouldBlock`。
@@ -9602,6 +11260,7 @@ impl BootstrapState {
             entries,
             count,
             mode,
+            physical: false,
             deadline: if timeout == u64::MAX {
                 None
             } else {
@@ -9614,11 +11273,12 @@ impl BootstrapState {
         task.wait_request = Some(request);
         task.status = TaskStatus::BlockedWait;
         for entry in request.entries[..request.count].iter() {
-            if let Some(object) = self.wait_objects.find_mut(entry.object)
-                && let Some(slot) = object.waiters.iter_mut().find(|slot| slot.is_none())
-            {
-                *slot = Some(caller);
-                object.waiter_count += 1;
+            if let Some(mut object) = self.wait_objects.find(entry.object) {
+                if let Some(slot) = object.waiters.iter_mut().find(|slot| slot.is_none()) {
+                    *slot = Some(caller);
+                    object.waiter_count += 1;
+                }
+                self.wait_objects.write(object);
             }
         }
         self.audit_transition(caller, TaskStatus::BlockedWait);
@@ -9628,7 +11288,10 @@ impl BootstrapState {
     /// COSIR §21.1.3：销毁对象；等待者以 `WaitTargetDead` 唤醒。
     pub fn wait_object_destroy(&mut self, caller: u32, cap: Handle) -> Result<WaitWake, WaitError> {
         let id = self.wait_cap(caller, cap, Right::WaitDestroy)?;
-        if !self.audit.can_append(1) {
+        if !self
+            .audit
+            .can_append(1 + self.wait_objects.find(id).map_or(0, |o| o.waiter_count))
+        {
             return Err(WaitError::AuditFull);
         }
         let waiters: [Option<u32>; MAX_WAITERS] = self
@@ -9653,6 +11316,55 @@ impl BootstrapState {
 
 /// SPEC-082：全局 `timer_set`（§10.2）。
 /// M15b-2：全局线程创建。
+pub fn allocate_exec_segment(
+    pages: usize,
+    offset: u64,
+) -> Result<(u32, SegmentFrames), MemsegError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(MemsegError::TargetDead)?
+            .allocate_exec_segment(pages, offset)
+    })
+}
+pub fn reclaim_exec_segments() -> Result<(), MemsegError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(MemsegError::TargetDead)?
+            .reclaim_exec_segments()
+    })
+}
+pub fn check_exec(caller: u32, pages: usize) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .ok_or(TaskError::NoSuchTask)?
+            .check_exec(caller, pages)
+    })
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_exec(
+    caller: u32,
+    old_root: u64,
+    offset: u64,
+    segment: u32,
+    plan: &crate::exec::ExecPlan,
+    stack: u64,
+    stack_pages: usize,
+    retained: &[Option<crate::exec::RetainedPage>],
+) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut().ok_or(TaskError::NoSuchTask)?.commit_exec(
+            caller,
+            old_root,
+            offset,
+            segment,
+            plan,
+            stack,
+            stack_pages,
+            retained,
+        )
+    })
+}
+
 pub fn exec_teardown(caller: u32, root: u64, phys_offset: u64) -> Result<(), TaskError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.exec_teardown(caller, root, phys_offset),
@@ -9671,10 +11383,108 @@ pub fn process_of(task_id: u32) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| slot.as_ref().and_then(|state| state.process_of(task_id)))
 }
 
+pub fn process_threads(process: u32) -> usize {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().map_or(0, |s| s.process_threads(process)))
+}
+
 pub fn process_leader(process_id: u32) -> Option<u32> {
     BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
             .and_then(|state| state.process_leader(process_id))
+    })
+}
+
+pub fn task_segment_at(task: u32, address: u64) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|state| state.task_segment_at(task, address))
+    })
+}
+
+pub fn check_prepared_fork(parent: u32) -> Result<(), ThreadError> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .ok_or(ThreadError::InvalidCaller)?
+            .check_prepared_fork(parent)
+    })
+}
+pub fn prepare_fork(parent: u32, entry: u64) -> Result<(u32, Handle), ThreadError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(ThreadError::InvalidCaller)?
+            .prepare_fork(parent, entry)
+    })
+}
+pub fn set_prepared_fork_root(parent: u32, ticket: Handle, root: u64) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .set_prepared_fork_root(parent, ticket, root)
+    })
+}
+pub fn publish_fork(parent: u32, ticket: Handle) -> Result<u32, TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .publish_fork(parent, ticket)
+    })
+}
+pub fn abort_prepared_fork(parent: u32, ticket: Handle, offset: u64) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .abort_prepared_fork(parent, ticket, offset)
+    })
+}
+
+pub fn block_upcall(task: u32) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .block_upcall(task)
+    })
+}
+
+pub fn interrupt_for_upcall(task: u32) -> Result<bool, TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(TaskError::NoSuchTask)?
+            .interrupt_for_upcall(task)
+    })
+}
+pub fn task_cookie(task: u32) -> Option<u64> {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref()?.task_cookie(task))
+}
+pub fn can_notify(caller: u32, target: u32) -> bool {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().is_some_and(|s| s.can_notify(caller, target)))
+}
+
+pub fn task_self_capability(task: u32) -> Result<Handle, AuthError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(AuthError::NotInstalled)?
+            .task_self_capability(task)
+    })
+}
+
+pub fn process_identity(caller: u32, selector: u64) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .and_then(|state| state.process_identity(caller, selector))
+    })
+}
+
+pub fn resolve_user_handle(task: u32, local: Handle) -> Handle {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .map_or(local, |state| state.resolve_user_handle(task, local))
+    })
+}
+
+pub fn expose_user_handle(task: u32, token: Handle) -> Handle {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .map_or(token, |state| state.expose_user_handle(task, token))
     })
 }
 
@@ -9708,10 +11518,17 @@ pub fn wait_status_ptr(task_id: u32) -> u64 {
     })
 }
 
-pub fn process_exit(process_id: u32, status: i64) -> WaitWake {
+pub fn process_exit(process_id: u32, status: i64) -> Result<WaitWake, TaskError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.process_exit(process_id, status),
-        None => WaitWake::empty(),
+        None => Err(TaskError::NoSuchTask),
+    })
+}
+
+pub fn process_exit_reason(process_id: u32, status: ProcessExit) -> Result<WaitWake, TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.process_exit_reason(process_id, status),
+        None => Err(TaskError::NoSuchTask),
     })
 }
 
@@ -9824,6 +11641,38 @@ pub fn expire_waits_global() -> WaitWake {
     })
 }
 
+pub fn expire_physical_waits(now: u64) -> WaitWake {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.expire_waits_on(now, true),
+        None => WaitWake::empty(),
+    })
+}
+
+pub fn wait_physical_deadline(
+    caller: u32,
+    deadline: u64,
+    now: u64,
+) -> Result<WaitOutcome, WaitError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.wait_physical_deadline(caller, deadline, now),
+        None => Err(WaitError::InvalidCaller),
+    })
+}
+
+/// Change only the clock of a wait just registered by the current syscall.
+pub fn set_wait_physical_deadline(caller: u32, deadline: u64) {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        if let Some(request) = slot
+            .as_mut()
+            .and_then(|s| s.tasks.find_mut(caller))
+            .and_then(|t| t.wait_request.as_mut())
+        {
+            request.physical = true;
+            request.deadline = Some(deadline);
+        }
+    });
+}
+
 /// 消费当前 Task 的 pending 等待结果（结果已在唤醒时注入 rax）。
 pub fn take_wait_result(task: u32) -> Option<WaitResultCode> {
     BOOTSTRAP_STATE.with_mut(|slot| {
@@ -9853,6 +11702,45 @@ pub fn timer_destroy(caller: u32, cap: Handle) -> Result<(), TimerError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.timer_destroy(caller, cap),
         None => Err(TimerError::InvalidCaller),
+    })
+}
+
+pub fn dev_irq_create(caller: u32, line: u8) -> Result<(Handle, Handle), DeviceError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        slot.as_mut()
+            .ok_or(DeviceError::InvalidCaller)?
+            .dev_irq_create(caller, line)
+    })
+}
+pub fn irq_line(caller: u32, cap: Handle) -> Result<u8, DeviceError> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .ok_or(DeviceError::InvalidCaller)?
+            .irq_line(caller, cap)
+    })
+}
+pub fn irq_for_cap(cap: Handle) -> Option<u8> {
+    BOOTSTRAP_STATE.with(|slot| {
+        let s = slot.as_ref()?;
+        let ObjectRef::Device(id, DeviceKind::InterruptLine) = s.target_of(cap)? else {
+            return None;
+        };
+        s.devices.find(id)?.irq.map(|(line, _)| line)
+    })
+}
+
+pub fn irq_source(line: u8) -> Option<u32> {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()?
+            .devices
+            .entries
+            .iter()
+            .flatten()
+            .find_map(|d| {
+                d.irq
+                    .filter(|(irq, _)| *irq == line)
+                    .map(|(_, source)| source)
+            })
     })
 }
 
@@ -10208,6 +12096,43 @@ pub fn task_status(task_id: u32) -> Option<TaskStatus> {
     })
 }
 
+/// Other unconfigured hardware traps retain the abstract Faulted contract.
+/// Lazily create a matching single-kind source rather than mislabeling #UD/#DE
+/// as a page-fault notification. C personalities normally consume their routes.
+pub fn fault_hardware_global(task_id: u32, kind: ExcKind) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        let state = slot.as_mut().ok_or(TaskError::NoSuchTask)?;
+        if state.tasks.status_of(task_id) != Some(TaskStatus::Running) {
+            return Err(TaskError::NotRunning);
+        }
+        if !state.audit.can_append(2) {
+            return Err(TaskError::AuditFull);
+        }
+        let source = state
+            .exc_sources
+            .entries
+            .iter()
+            .flatten()
+            .find(|s| s.kind == kind)
+            .map(|s| s.id);
+        let source = match source {
+            Some(source) => source,
+            None => {
+                state
+                    .exc_source_create(kind)
+                    .map_err(|_| TaskError::CapacityExceeded)?
+                    .0
+            }
+        };
+        state.tasks.fault(task_id, source, kind)?;
+        state.audit.append(AuditEvent::TaskStateChanged {
+            task_id,
+            status: TaskStatus::Faulted,
+        });
+        Ok(())
+    })
+}
+
 /// 硬件 #PF：当前 Running 任务进入 Faulted，保留唯一 pending_exc 与审计记录。
 pub fn fault_running_global(task_id: u32) -> Result<(), TaskError> {
     BOOTSTRAP_STATE.with_mut(|slot| {
@@ -10258,12 +12183,12 @@ mod tests {
         EXC_PAGE_FAULT_HANDLE, EXC_SOURCE_RIGHTS, EXC_SYSCALL_TRAP_HANDLE, ExcError, ExcKind,
         ExcResumeError, Handle, IMAGE_CAP_HANDLE, IMAGE_CAP_SLOT, IMAGE_RIGHTS, IMAGE_SEGMENT_ID,
         INIT_NAMESPACE_ID, INIT_TASK_ID, INITIAL_CAP_GENERATION, INITIAL_CAPABILITY_COUNT,
-        INTERNAL_TASK_ROOT_SLOT_COUNT, InitialObject, IpcError, KERNEL_ACTOR, LOCAL_NODE,
+        INTERNAL_TASK_ROOT_SLOT_COUNT, InitialObject, IpcError, IpcQueue, KERNEL_ACTOR, LOCAL_NODE,
         MAX_CAPABILITY_SLOTS, MAX_DEVICES, MAX_NAMESPACE_OBJECTS, MAX_SEGMENT_FRAMES, MemsegError,
         NAMESPACE_CAP_HANDLE, NAMESPACE_RIGHTS, NS_ROOT_CAP_SLOT_BASE, NsError, ObjectRef,
         PAGE_FAULT_SOURCE_ID, PLATFORM_SEGMENT_CAP_SLOT_BASE, PLATFORM_SEGMENT_COUNT,
         PLATFORM_SEGMENT_ID_FIRST, PLATFORM_SEGMENT_ID_LAST, PLATFORM_TASK_RIGHTS,
-        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc,
+        PLATFORM_TASK1_CAP_HANDLE, PLATFORM_TASK2_CAP_HANDLE, Path, PendingExc, ProcessExit,
         RECLAIM_NEGATIVE_TASK_ID, RECLAIM_WITNESS_TASK_ID, SEGMENT_ROOT_RIGHTS,
         SERVICE_STACK_CAP_SLOT, SYSCALL_TRAP_SOURCE_ID, SegmentFrames, SegmentObject,
         TASK_CAP_HANDLE, TASK_RIGHTS, TASK2_SELF_CAP_HANDLE, TASK2_SEND_CAP_HANDLE, TIMER_RIGHTS,
@@ -10808,6 +12733,52 @@ mod tests {
     }
 
     #[test]
+    fn physical_deadlines_ignore_abstract_time_and_cancel_on_upcall() {
+        let mut state = fresh_state();
+        state.schedule_task(INIT_TASK_ID).unwrap();
+        assert_eq!(
+            state.wait_physical_deadline(INIT_TASK_ID, 12, 10),
+            Ok(WaitOutcome::Blocked)
+        );
+        assert_eq!(state.expire_waits(1000).count, 0);
+        assert_eq!(state.expire_waits_on(11, true).count, 0);
+        assert!(state.interrupt_for_upcall(INIT_TASK_ID).unwrap());
+        assert_eq!(state.expire_waits_on(12, true).count, 0);
+        state.schedule_task(INIT_TASK_ID).unwrap();
+        assert_eq!(
+            state.wait_physical_deadline(INIT_TASK_ID, 12, 12),
+            Ok(WaitOutcome::TimedOut)
+        );
+        assert_eq!(
+            state.wait_physical_deadline(INIT_TASK_ID, 15, 12),
+            Ok(WaitOutcome::Blocked)
+        );
+        let wake = state.expire_waits_on(15, true);
+        assert_eq!(
+            wake.tasks[0],
+            Some((INIT_TASK_ID, WaitResultCode::TimedOut))
+        );
+    }
+
+    #[test]
+    fn destroyed_wait_object_tokens_do_not_revive_when_another_object_is_created() {
+        let mut state = fresh_state();
+        let cap = state.wait_object_create(INIT_TASK_ID).unwrap();
+        let delegated = state
+            .derive_capability(INIT_TASK_ID, cap, super::WAIT_RIGHTS)
+            .unwrap();
+        let old = state.target_of(cap).unwrap();
+        state.wait_object_destroy(INIT_TASK_ID, cap).unwrap();
+        let fresh = state.wait_object_create(INIT_TASK_ID).unwrap();
+        assert_ne!(state.target_of(fresh), Some(old));
+        assert_eq!(
+            state.wait_object_observe(INIT_TASK_ID, delegated),
+            Err(WaitError::TargetDead)
+        );
+        assert_eq!(state.wait_object_observe(INIT_TASK_ID, fresh), Ok(0));
+    }
+
+    #[test]
     fn wait_objects_any_all_and_duplicates() {
         let mut state = fresh_state();
         let a = state.wait_object_create(INIT_TASK_ID).expect("create a");
@@ -10938,6 +12909,34 @@ mod tests {
     }
 
     #[test]
+    fn process_family_notification_cannot_target_independent_services_or_reused_tasks() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).unwrap();
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x400000).unwrap();
+        assert!(state.can_notify(INIT_TASK_ID, child));
+        assert!(state.can_notify(child, INIT_TASK_ID));
+        let outsider = state
+            .tasks
+            .entries
+            .iter()
+            .flatten()
+            .map(|t| t.id)
+            .max()
+            .unwrap()
+            + 1;
+        state.tasks.create(outsider).unwrap();
+        let service = state.create_process(outsider).unwrap();
+        assert!(state.attach_thread(service, outsider));
+        assert!(!state.can_notify(child, outsider));
+        state.orphan_children(parent);
+        assert!(state.can_notify(child, INIT_TASK_ID));
+        let _ = state.tasks.remove(outsider);
+        state.tasks.create(outsider).unwrap();
+        assert!(!state.can_notify(child, outsider));
+    }
+
+    #[test]
     fn process_groups_tasks_and_last_thread_removes_it() {
         let mut state = fresh_state();
         let process = state.create_process(INIT_TASK_ID).expect("process");
@@ -10994,19 +12993,248 @@ mod tests {
     }
 
     #[test]
-    fn fork_cap_space_inheritance_shares_caps() {
+    fn fork_inherits_authority_into_distinct_tokens_without_parent_close_effects() {
         let mut state = fresh_state();
-        let parent = state.create_process(INIT_TASK_ID).expect("parent");
+        let parent = state.create_process(INIT_TASK_ID).unwrap();
         assert!(state.attach_thread(parent, INIT_TASK_ID));
-        let cap = state.wait_object_create(INIT_TASK_ID).expect("wait object");
-        state.tasks.create(2).expect("task 2");
-        let child = state.create_process(2).expect("child");
-        assert!(state.attach_thread(child, 2));
-        assert!(state.inherit_cap_space(child, parent));
-        assert_eq!(state.process_parent(child), Some(parent));
-        assert_eq!(state.space_of(2), state.space_of(INIT_TASK_ID));
-        // M17 工作决定：fork 子沿用父能力空间，父铸造的 cap 可被子授权。
-        assert_eq!(state.authorize(2, cap, Right::WaitSignal), Ok(cap));
+        let cap = state.wait_object_create(INIT_TASK_ID).unwrap();
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        let child_cap = state.resolve_user_handle(child, cap);
+        assert_ne!(child_cap, cap);
+        assert_ne!(state.space_of(child), state.space_of(INIT_TASK_ID));
+        assert_eq!(
+            state.authorize(child, child_cap, Right::WaitSignal),
+            Ok(child_cap)
+        );
+        state.drop_capability(child, child_cap).unwrap();
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, cap, Right::WaitSignal),
+            Ok(cap)
+        );
+        assert!(
+            state
+                .authorize(child, child_cap, Right::WaitSignal)
+                .is_err()
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn fork_rebinds_self_authority_and_inherits_non_derivable_send_tokens() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        assert!(state.attach_thread(process, INIT_TASK_ID));
+        let reduced = state
+            .derive_capability(INIT_TASK_ID, TASK_CAP_HANDLE, rights("TaskSend"))
+            .unwrap();
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        let self_cap = state.resolve_user_handle(child, TASK_CAP_HANDLE);
+        assert_eq!(state.target_of(self_cap), Some(ObjectRef::Task(child)));
+        assert_eq!(
+            state.target_of(TASK_CAP_HANDLE),
+            Some(ObjectRef::Task(INIT_TASK_ID))
+        );
+        let send = state.resolve_user_handle(child, reduced);
+        assert_eq!(state.rights_of(send), Some(rights("TaskSend")));
+        assert_eq!(state.target_of(send), Some(ObjectRef::Task(INIT_TASK_ID)));
+        assert_eq!(
+            state.derive_capability(child, send, rights("TaskSend")),
+            Err(DeriveError::MissingDerive)
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn thread_registration_rollback_removes_membership_and_fresh_self_root() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        state.attach_thread(process, INIT_TASK_ID);
+        let thread = state.thread_create(INIT_TASK_ID, 0x2000, 0x8000).unwrap();
+        let root = state.mint_thread_self_cap(thread).unwrap();
+        state.thread_abort(thread);
+        assert_eq!(state.process_threads(process), 1);
+        assert_eq!(state.process_of(thread), None);
+        assert_eq!(state.holder_of(root), None);
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn prepared_fork_is_invisible_to_wait_and_scheduler_until_publication() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        state.attach_thread(process, INIT_TASK_ID);
+        let (child, ticket) = state.prepare_fork(INIT_TASK_ID, 0x1000).unwrap();
+        assert_eq!(state.tasks.status_of(child), Some(TaskStatus::Prepared));
+        assert_eq!(state.tasks.schedule(child), Err(TaskError::NotReady));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, true),
+            Err(Wait4Error::EChild)
+        );
+        assert_eq!(state.check_fork(INIT_TASK_ID), Err(ThreadError::Busy));
+        assert_eq!(state.publish_fork(INIT_TASK_ID, ticket), Ok(child));
+        assert_eq!(state.tasks.status_of(child), Some(TaskStatus::Ready));
+        assert_eq!(state.audit.reserved, 0);
+        state.drop_capability(INIT_TASK_ID, ticket).unwrap();
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn dropping_prepared_ticket_cancels_even_when_ordinary_audit_space_is_full() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        state.attach_thread(process, INIT_TASK_ID);
+        let (child, ticket) = state.prepare_fork(INIT_TASK_ID, 0x1000).unwrap();
+        while state.audit.can_append(1) {
+            state.audit.append(AuditEvent::TaskCreated {
+                task_id: 99,
+                generation: 1,
+            });
+        }
+        state.drop_capability(INIT_TASK_ID, ticket).unwrap();
+        assert!(!state.tasks.is_live(child));
+        assert!(!state.has_prepared_child(INIT_TASK_ID));
+        assert_eq!(state.audit.reserved, 0);
+        assert!(
+            state.audit.any(
+                |event| matches!(event, AuditEvent::ForkAborted { child: id } if *id == child)
+            )
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn retiring_a_delegated_ticket_cancels_without_panicking_or_leaving_the_token() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        state.attach_thread(process, INIT_TASK_ID);
+        let (child, ticket) = state.prepare_fork(INIT_TASK_ID, 0x1000).unwrap();
+        state.move_capability(ticket, INIT_TASK_ID, 2).unwrap();
+        state.drop_capability(2, ticket).unwrap();
+        assert!(!state.tasks.is_live(child));
+        assert_eq!(state.holder_of(ticket), None);
+        assert_eq!(state.audit.reserved, 0);
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn prepared_cancellation_retires_incoming_caps_and_preserves_external_descendants() {
+        let mut state = fresh_state();
+        let process = state.create_process(INIT_TASK_ID).unwrap();
+        state.attach_thread(process, INIT_TASK_ID);
+        let (child, ticket) = state.prepare_fork(INIT_TASK_ID, 0x1000).unwrap();
+        let send = state
+            .derive_capability(INIT_TASK_ID, ticket, rights("TaskSend"))
+            .unwrap();
+        let wait = state.wait_object_create(INIT_TASK_ID).unwrap();
+        state
+            .send_message_with_capabilities(INIT_TASK_ID, child, send, 7, &[wait])
+            .unwrap();
+        while state.audit.can_append(1) {
+            state.audit.append(AuditEvent::TaskCreated {
+                task_id: 99,
+                generation: 1,
+            });
+        }
+        state.drop_capability(INIT_TASK_ID, ticket).unwrap();
+        assert_eq!(state.ipc.count, 0);
+        assert_eq!(state.holder_of(wait), None);
+        assert_eq!(state.holder_of(send), Some(INIT_TASK_ID));
+        assert!(!state.cap_target_live(send));
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn parent_destruction_cancels_unpublished_child_without_creating_a_zombie() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let parent = state.create_process(2).unwrap();
+        state.attach_thread(parent, 2);
+        let (child, _) = state.prepare_fork(2, 0x1000).unwrap();
+        state.destroy_task(2).unwrap();
+        assert!(!state.tasks.is_live(child));
+        assert!(
+            !state
+                .processes
+                .entries
+                .iter()
+                .flatten()
+                .any(|p| p.leader == child)
+        );
+        assert_eq!(state.audit.reserved, 0);
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn process_termination_removes_shared_workers_and_delivers_one_signal_status() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).unwrap();
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        let worker = state.thread_create(child, 0x2000, 0x8000).unwrap();
+        assert_eq!(state.destroy_task(child), Err(TaskError::HasLiveThreads));
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, child as i64, 0, false),
+            Ok(Wait4Outcome::Blocked)
+        );
+        let out = state
+            .terminate_process(child, ProcessExit::Signaled(15), None, 0, true)
+            .unwrap();
+        assert_eq!(out.members, (1 << child) | (1 << worker));
+        assert_eq!(out.wakes.count, 1);
+        assert_eq!(state.tasks.status_of(child), Some(TaskStatus::Dead));
+        assert_eq!(state.tasks.status_of(worker), Some(TaskStatus::Dead));
+        assert_eq!(state.process_of(worker), None);
+        assert_eq!(
+            state.wait4(INIT_TASK_ID, -1, 0, true),
+            Err(Wait4Error::EChild)
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn process_termination_audit_failure_preserves_entire_group() {
+        let mut state = fresh_state();
+        let parent = state.create_process(INIT_TASK_ID).unwrap();
+        assert!(state.attach_thread(parent, INIT_TASK_ID));
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        let worker = state.thread_create(child, 0x2000, 0x8000).unwrap();
+        let root = state.tasks.find(child).unwrap().root_ns_cap;
+        while state.audit.can_append(1) {
+            state.audit.append(AuditEvent::TaskCreated {
+                task_id: 99,
+                generation: 1,
+            });
+        }
+        assert_eq!(
+            state.terminate_process(child, ProcessExit::Exited(0), None, 0, false),
+            Err(TaskError::AuditFull)
+        );
+        assert!(state.tasks.is_live(child) && state.tasks.is_live(worker));
+        assert_eq!(state.tasks.find(child).unwrap().root_ns_cap, root);
+        assert_eq!(state.holder_of(root), Some(child));
+    }
+
+    #[test]
+    fn reused_task_id_keeps_queued_and_held_old_target_tokens_stale() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let cap = state
+            .mint_root_capability(INIT_TASK_ID, rights("TaskSend,Derive"), ObjectRef::Task(2))
+            .unwrap();
+        let epoch = state.tasks.find(2).unwrap().generation;
+        state.destroy_task(2).unwrap();
+        state.tasks.remove(2);
+        state.create_task_record(2, 0x1000).unwrap();
+        assert_ne!(state.tasks.find(2).unwrap().generation, epoch);
+        assert!(state.authorize(INIT_TASK_ID, cap, Right::TaskSend).is_err());
+        assert!(
+            state
+                .derive_capability(INIT_TASK_ID, cap, rights("TaskSend"))
+                .is_err()
+        );
+        assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
+        state.drop_capability(INIT_TASK_ID, cap).unwrap();
     }
 
     #[test]
@@ -11017,7 +13245,7 @@ mod tests {
         state.tasks.create(2).expect("task 2");
         let child = state.create_process(2).expect("child");
         assert!(state.attach_thread(child, 2));
-        assert!(state.inherit_cap_space(child, parent));
+        assert!(state.set_fixture_parent(child, parent));
         assert_eq!(
             state.wait4(INIT_TASK_ID, 2, 0, false),
             Ok(Wait4Outcome::Blocked)
@@ -11026,7 +13254,7 @@ mod tests {
             state.tasks.status_of(INIT_TASK_ID),
             Some(TaskStatus::BlockedWait)
         );
-        let wakes = state.process_exit(child, 7);
+        let wakes = state.process_exit(child, 7).unwrap();
         assert_eq!(wakes.count, 1);
         assert_eq!(state.tasks.status_of(INIT_TASK_ID), Some(TaskStatus::Ready));
         // 有等待者时状态随唤醒交付并回收：再次 wait 得 ECHILD。
@@ -11044,7 +13272,7 @@ mod tests {
         state.tasks.create(2).expect("task 2");
         let child = state.create_process(2).expect("child");
         assert!(state.attach_thread(child, 2));
-        assert!(state.inherit_cap_space(child, parent));
+        assert!(state.set_fixture_parent(child, parent));
         assert_eq!(
             state.wait4(INIT_TASK_ID, -1, 0, true),
             Ok(Wait4Outcome::None)
@@ -11123,11 +13351,14 @@ mod tests {
             Ok(Wait4Outcome::None)
         );
         // 子进程退出后按 pid 回收。
-        let wakes = state.process_exit(child_process, 7);
+        let wakes = state.process_exit(child_process, 7).unwrap();
         assert_eq!(wakes.count, 0);
         assert_eq!(
             state.wait4(INIT_TASK_ID, child as i64, 0, true),
-            Ok(Wait4Outcome::Exited(child as i64, 7))
+            Ok(Wait4Outcome::Exited(
+                child as i64,
+                super::ProcessExit::Exited(7)
+            ))
         );
     }
 
@@ -11138,7 +13369,7 @@ mod tests {
         assert!(state.attach_thread(parent, INIT_TASK_ID));
         let child = state.fork_create(INIT_TASK_ID, 0x1000).expect("fork");
         let child_process = state.process_of(child).expect("child process");
-        let wakes = state.process_exit(child_process, 9);
+        let wakes = state.process_exit(child_process, 9).unwrap();
         assert_eq!(wakes.count, 0);
         // 子 Task 退出（root 由 syscall 层传入；模型层用 None）。
         let _ = state.task_destroy(child, child, None, 0);
@@ -11146,7 +13377,10 @@ mod tests {
         assert_eq!(state.process_parent(child_process), Some(parent));
         assert_eq!(
             state.wait4(INIT_TASK_ID, child as i64, 0, true),
-            Ok(Wait4Outcome::Exited(child as i64, 9))
+            Ok(Wait4Outcome::Exited(
+                child as i64,
+                super::ProcessExit::Exited(9)
+            ))
         );
         assert_eq!(
             state.wait4(INIT_TASK_ID, -1, 0, true),
@@ -11165,13 +13399,54 @@ mod tests {
             state.wait4(INIT_TASK_ID, child as i64, 0, false),
             Ok(Wait4Outcome::Blocked)
         );
-        let wakes = state.process_exit(child_process, 3);
+        let wakes = state.process_exit(child_process, 3).unwrap();
         assert_eq!(wakes.count, 1);
         // 唤醒即回收：再次 wait 得 ECHILD。
         assert_eq!(
             state.wait4(INIT_TASK_ID, -1, 0, true),
             Err(Wait4Error::EChild)
         );
+    }
+
+    #[test]
+    fn process_identity_is_shared_by_threads_and_fork_parent_is_the_process_leader() {
+        let mut state = fresh_state();
+        let thread = state.thread_create(INIT_TASK_ID, 0x1000, 0x2000).unwrap();
+        assert_eq!(state.process_identity(thread, 0), Some(INIT_TASK_ID));
+        assert_eq!(state.process_identity(INIT_TASK_ID, 2), None);
+        state.thread_abort(thread);
+        let child = state.fork_create(INIT_TASK_ID, 0x1000).unwrap();
+        assert_eq!(state.process_identity(child, 0), Some(child));
+        assert_eq!(state.process_identity(child, 1), Some(INIT_TASK_ID));
+        state.fork_abort(child);
+    }
+
+    #[test]
+    fn parent_removal_orphans_live_children_and_reaps_dead_children_before_id_reuse() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let parent = state.create_process(2).unwrap();
+        assert!(state.attach_thread(parent, 2));
+        state.create_task(3).unwrap();
+        let live = state.create_process(3).unwrap();
+        assert!(state.attach_thread(live, 3));
+        assert!(state.set_fixture_parent(live, parent));
+        state.processes.find_mut(live).unwrap().forked = true;
+        state.create_task(4).unwrap();
+        let dead = state.create_process(4).unwrap();
+        assert!(state.attach_thread(dead, 4));
+        assert!(state.set_fixture_parent(dead, parent));
+        state.process_exit(dead, 7).unwrap();
+        state.destroy_task(4).unwrap();
+        assert!(state.processes.find(dead).is_some());
+        state.destroy_task(2).unwrap();
+        assert!(state.processes.find(parent).is_none());
+        assert!(state.processes.find(dead).is_none());
+        assert_eq!(state.process_parent(live), None);
+        assert_eq!(state.process_identity(3, 1), Some(INIT_TASK_ID));
+        state.process_exit(live, 9).unwrap();
+        state.destroy_task(3).unwrap();
+        assert!(state.processes.find(live).is_none());
     }
 
     #[test]
@@ -11492,6 +13767,40 @@ mod tests {
             )),
             1
         );
+    }
+
+    #[test]
+    fn timer_destroy_does_not_reuse_ids_or_revive_an_old_capability() {
+        let mut state = fresh_state();
+        let old = state.timer_set(INIT_TASK_ID, 50).unwrap();
+        state.timer_destroy(INIT_TASK_ID, old).unwrap();
+        let fresh = state.timer_set(INIT_TASK_ID, 60).unwrap();
+        assert_eq!(state.target_of(old), Some(ObjectRef::Timer(1)));
+        assert_eq!(state.target_of(fresh), Some(ObjectRef::Timer(2)));
+        let before = state;
+        assert_eq!(
+            state.timer_cancel(INIT_TASK_ID, old),
+            Err(TimerError::InvalidTimer)
+        );
+        assert_eq!(state, before);
+        state.timers.next_id = u64::from(u32::MAX) + 1;
+        let before = state;
+        assert_eq!(
+            state.timer_set(INIT_TASK_ID, 70),
+            Err(TimerError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn message_id_allocator_stops_after_last_id() {
+        let mut queue = IpcQueue::empty();
+        queue.next_id = u64::from(u32::MAX);
+        assert!(!queue.can_allocate_ids(2));
+        assert!(queue.can_allocate_ids(1));
+        assert_eq!(queue.allocate_id(), u32::MAX);
+        assert!(!queue.can_allocate_ids(1));
+        assert!(queue.can_allocate_ids(0));
     }
 
     #[test]
@@ -12210,7 +14519,7 @@ mod tests {
     }
 
     #[test]
-    fn task_capability_cleanup_revokes_holder_subtrees_but_protects_init() {
+    fn task_capability_cleanup_is_atomic_and_drops_only_held_tokens() {
         let mut state = fresh_state();
         state.create_task(2).unwrap();
         let parent = state
@@ -12220,18 +14529,24 @@ mod tests {
         let child = state
             .derive_capability(2, parent, rights("Derive"))
             .unwrap();
-        // 活动 Task 的结构根受 W5 保护；销毁路径会先清根再撤销（见 `destroy_task_model`）。
+        // Structural failure must leave every held token and all audit unchanged.
+        let positions = state.positions;
+        let audit_used = state.audit.count;
         assert_eq!(
-            state.revoke_task_capabilities(2),
+            state.drop_task_capabilities(2),
             Err(CapabilityPositionError::StructuralCap)
         );
+        assert_eq!(state.positions, positions);
+        assert_eq!(state.audit.count, audit_used);
+        assert!(state.records.find(parent).is_some());
+        assert!(state.records.find(child).is_some());
         state.tasks.find_mut(2).expect("task").root_ns_cap = Handle::ZERO;
-        assert_eq!(state.revoke_task_capabilities(2), Ok(1));
+        assert_eq!(state.drop_task_capabilities(2), Ok(3));
         assert!(state.records.find(parent).is_none());
         assert!(state.records.find(child).is_none());
-        assert_eq!(state.revoke_task_capabilities(2), Ok(0));
+        assert_eq!(state.drop_task_capabilities(2), Ok(0));
         assert_eq!(
-            state.revoke_task_capabilities(INIT_TASK_ID),
+            state.drop_task_capabilities(INIT_TASK_ID),
             Err(CapabilityPositionError::ProtectedTask)
         );
         assert!(state.positions.has_unique_active_locations());
@@ -12599,7 +14914,7 @@ mod tests {
         assert!(
             state
                 .audit
-                .any(|event| matches!(event, AuditEvent::TaskDestroyed { task_id: 2 }))
+                .any(|event| matches!(event, AuditEvent::TaskDestroyed { task_id: 2, .. }))
         );
     }
 
@@ -12629,7 +14944,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_exit_must_consume_queued_status_before_destroying_sender() {
+    fn queued_status_survives_sender_destruction_before_or_after_receive() {
         // Each scenario owns its own arena-backed state; Copy is not a deep
         // snapshot of capability/audit storage.
         for consume_first in [false, true] {
@@ -12647,14 +14962,66 @@ mod tests {
             }
             state.destroy_task(2).unwrap();
             assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Dead));
-            assert_eq!(state.ipc.count, 0);
+            assert_eq!(state.ipc.count, usize::from(!consume_first));
             if !consume_first {
-                assert_eq!(
-                    state.receive_message(INIT_TASK_ID),
-                    Err(IpcError::QueueEmpty)
-                );
+                assert_eq!(state.receive_message(INIT_TASK_ID).unwrap().payload, 37);
             }
+            assert_eq!(state.ipc.count, 0);
         }
+    }
+
+    #[test]
+    fn task_exit_preserves_external_derived_tokens_and_queued_transfers() {
+        let mut state = fresh_state();
+        state.activate_init().unwrap();
+        state.create_task(2).unwrap();
+        let parent = state
+            .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("Derive,SegMapR"))
+            .unwrap();
+        state.move_capability(parent, INIT_TASK_ID, 2).unwrap();
+        let held = state
+            .derive_capability(2, parent, rights("SegMapR"))
+            .unwrap();
+        state.move_capability(held, 2, INIT_TASK_ID).unwrap();
+        let queued = state
+            .derive_capability(2, parent, rights("SegMapR"))
+            .unwrap();
+        let send = state
+            .derive_capability(INIT_TASK_ID, TASK_CAP_HANDLE, rights("TaskSend"))
+            .unwrap();
+        state.move_capability(send, INIT_TASK_ID, 2).unwrap();
+        state
+            .send_message_with_capabilities(2, INIT_TASK_ID, send, 37, &[queued])
+            .unwrap();
+        state.destroy_task(2).unwrap();
+        assert!(state.records.find(parent).is_none());
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, held, Right::SegMapR),
+            Ok(held)
+        );
+        let message = state.receive_message(INIT_TASK_ID).unwrap();
+        assert_eq!(message.sender, 2);
+        assert_eq!(message.capabilities[0], queued);
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, queued, Right::SegMapR),
+            Ok(queued)
+        );
+        assert_eq!(state.validate_authority(), Ok(()));
+    }
+
+    #[test]
+    fn task_destroy_audit_exhaustion_preserves_process_root_and_held_capabilities() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let process = state.create_process(2).unwrap();
+        assert!(state.attach_thread(process, 2));
+        state.audit.count = super::MAX_AUDIT_EVENTS - 1;
+        let before = state;
+        assert_eq!(state.destroy_task(2), Err(TaskError::AuditFull));
+        assert_eq!(state, before);
+        assert!(state.tasks.is_live(2));
+        assert_eq!(state.process_of(2), Some(process));
+        assert_ne!(state.tasks.find(2).unwrap().root_ns_cap, Handle::ZERO);
     }
 
     #[test]
@@ -12854,10 +15221,11 @@ mod tests {
         );
         let mut restored = state.records.find(page_cap).expect("source cap");
         restored.rights = EXC_SOURCE_RIGHTS;
-        restored.holder = 2;
         state
             .records
             .set_index(page_cap.index() as usize, Some(restored));
+        state.create_task(2).unwrap();
+        state.move_capability(page_cap, INIT_TASK_ID, 2).unwrap();
         assert_eq!(
             state.exc_subscribe(INIT_TASK_ID, page_cap, ExcKind::PageFault),
             Err(ExcError::NotHolder)
@@ -13333,11 +15701,79 @@ mod tests {
     }
 
     #[test]
+    fn reused_segment_storage_never_revives_an_old_capability_or_wraps_identity() {
+        let mut state = fresh_state();
+        let mut object = SegmentObject {
+            id: USER_SEGMENT_ID_FIRST,
+            generation: INITIAL_CAP_GENERATION,
+            creator: INIT_TASK_ID,
+            pool: crate::frames::Pool::Cpu,
+            frames: SegmentFrames::Vector {
+                frames: [0; MAX_SEGMENT_FRAMES],
+                count: 0,
+            },
+            allowed_access: rights("SegMapR"),
+            active: true,
+        };
+        state.set_segment_at(1, Some(object));
+        state.segment_count = 2;
+        let old = state
+            .mint_root_capability(
+                INIT_TASK_ID,
+                rights("SegMapR"),
+                ObjectRef::Segment(object.id),
+            )
+            .unwrap();
+        assert!(state.authorize(INIT_TASK_ID, old, Right::SegMapR).is_ok());
+        for next in USER_SEGMENT_ID_FIRST + 1..USER_SEGMENT_ID_FIRST + 64 {
+            object.active = false;
+            state.set_segment_at(1, Some(object));
+            assert_eq!(state.alloc_segment_slot(), Some(next));
+            assert_eq!(state.reusable_segment_index(), Some(1));
+            object.id = next;
+            object.active = true;
+            state.set_segment_at(1, Some(object));
+            assert_eq!(
+                state.authorize(INIT_TASK_ID, old, Right::SegMapR),
+                Err(AuthError::TargetDead)
+            );
+        }
+        assert_eq!(state.segment_count, 2);
+        object.id = u32::MAX;
+        object.active = false;
+        state.set_segment_at(1, Some(object));
+        assert_eq!(state.alloc_segment_slot(), None);
+    }
+
+    #[test]
+    fn boot_service_frame_vector_preserves_noncontiguous_order_outside_stack_values() {
+        let state = fresh_state();
+        super::BOOT_FRAME_ARENA.set(state.boot_frames, 0, Some(0x9000));
+        super::BOOT_FRAME_ARENA.set(
+            state.boot_frames,
+            super::MAX_BOOT_SERVICE_FRAMES - 1,
+            Some(0x3000),
+        );
+        let frames = SegmentFrames::BootServices {
+            slice: state.boot_frames,
+            count: super::MAX_BOOT_SERVICE_FRAMES,
+        };
+        assert_eq!(frames.frame_at(0), Some(0x9000));
+        assert_eq!(
+            frames.frame_at(super::MAX_BOOT_SERVICE_FRAMES - 1),
+            Some(0x3000)
+        );
+        assert_eq!(frames.frame_at(super::MAX_BOOT_SERVICE_FRAMES), None);
+        assert!(core::mem::size_of::<SegmentFrames>() <= (MAX_SEGMENT_FRAMES + 4) * 8);
+    }
+
+    #[test]
     fn stage5_message_queue_high_water_survives_full_rejection_and_receive() {
         let mut queue = super::IpcQueue::empty();
         let message = super::IpcMessage {
             id: 1,
             sender: INIT_TASK_ID,
+            sender_generation: 1,
             receiver: 2,
             payload: 0,
             capabilities: [Handle::ZERO; super::MAX_MESSAGE_CAPABILITIES],
@@ -13622,6 +16058,21 @@ mod tests {
         // 无迁移的重复唤醒不得再追加事件（避免把"通知"误记成"迁移"）。
         state.wake_recv_task(2).unwrap();
         assert_eq!(state.audit.count, base + 4);
+    }
+
+    #[test]
+    fn audit_entries_expose_only_appended_records_and_keep_instances_isolated() {
+        let mut first = super::AuditLog::claim();
+        let second = super::AuditLog::claim();
+        assert_eq!(first.entry(0), None);
+        let event = AuditEvent::MessageReceived {
+            message_id: 7,
+            receiver: 2,
+        };
+        first.append(event);
+        assert_eq!(first.entry(0), Some(event));
+        assert_eq!(first.entry(1), None);
+        assert_eq!(second.entry(0), None);
     }
 
     /// SPEC-071：审计容量不足时迁移必须**整体失败**且状态不变（§6.5 先验证后原子提交）。
@@ -14044,14 +16495,17 @@ mod tests {
     fn task_created_event_exists_and_destroy_audit_is_counted() {
         let mut state = fresh_state();
         state.create_task(2).unwrap();
-        state.audit.append(AuditEvent::TaskCreated { task_id: 2 });
+        state.audit.append(AuditEvent::TaskCreated {
+            task_id: 2,
+            generation: state.tasks.find(2).unwrap().generation,
+        });
         assert!(
             state
                 .audit
-                .any(|event| matches!(event, AuditEvent::TaskCreated { task_id: 2 }))
+                .any(|event| matches!(event, AuditEvent::TaskCreated { task_id: 2, .. }))
         );
-        // 无消息、无 pending：恰好 1 条 TaskDestroyed。
-        assert_eq!(state.destroy_audit_events(2), 1);
+        // 无消息、无 pending：结构根 token 的 CapDropped + TaskDestroyed。
+        assert_eq!(state.destroy_audit_events(2), 2);
     }
 
     /// S2-D4：`next_free_id` 跳过已占用 id；`remove` 供回滚且不复活已用 id。
@@ -14096,6 +16550,55 @@ mod tests {
     // -----------------------------------------------------------------------
     // SPEC-113：§15 设备（IOPortRange）与受控 I/O 端口授权
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn irq_subscription_delegation_and_destroy_use_current_locations_and_fresh_ids() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        state.tasks.find_mut(INIT_TASK_ID).unwrap().status = TaskStatus::Running;
+        let (dev, source) = state.dev_irq_create(INIT_TASK_ID, 4).unwrap();
+        assert_eq!(
+            state.dev_irq_create(INIT_TASK_ID, 4),
+            Err(DeviceError::Overlap)
+        );
+        assert_eq!(
+            state.exc_source_destroy(INIT_TASK_ID, source),
+            Err(ExcError::MissingRight)
+        );
+        let delegated = state
+            .derive_capability(
+                INIT_TASK_ID,
+                source,
+                Rights::from_rights(&[Right::ExcSubscribe]),
+            )
+            .unwrap();
+        state.move_capability(delegated, INIT_TASK_ID, 2).unwrap();
+        state.drop_capability(INIT_TASK_ID, source).unwrap();
+        let old_source = state
+            .exc_subscribe(2, delegated, ExcKind::ExternalInterrupt)
+            .unwrap();
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Ready));
+        state.block_recv_task(2).unwrap();
+        let event = state
+            .exc_raise(old_source, ExcKind::ExternalInterrupt)
+            .unwrap();
+        assert_eq!(event.woken_tasks, 1 << 2);
+        assert_eq!(
+            state.tasks.status_of(INIT_TASK_ID),
+            Some(TaskStatus::Running)
+        );
+        state.dev_destroy(INIT_TASK_ID, dev).unwrap();
+        assert_eq!(
+            state.exc_subscribed(2, delegated, ExcKind::ExternalInterrupt),
+            Err(ExcError::NoSuchSource)
+        );
+        let (new_dev, new_source) = state.dev_irq_create(INIT_TASK_ID, 4).unwrap();
+        assert_ne!(state.target_of(new_dev), state.target_of(dev));
+        assert_ne!(
+            state.target_of(new_source),
+            Some(ObjectRef::ExcSource(old_source))
+        );
+    }
 
     #[test]
     fn dev_ioport_create_mints_a_typed_device_capability() {
@@ -14252,7 +16755,7 @@ mod tests {
     fn validate_authority_rejects_source_cap_without_record() {
         let mut state = exc_state();
         // 源 cap 指向没有 CapRecord 的初始槽 → 违反「每个 live cap 有记录」。
-        state.exc_sources.entries[0].as_mut().unwrap().cap = IMAGE_CAP_HANDLE;
+        state.exc_sources.entries[0].as_mut().unwrap().cap = Handle::new(159, 1).unwrap();
         assert_eq!(
             state.validate_authority(),
             Err(AuthorityError::MissingPosition)
@@ -14268,7 +16771,7 @@ mod tests {
         let frame = pool.alloc().unwrap();
         let va = 0x0000_0D00_0000_0000;
         let map = |phys: u64| phys;
-        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true).unwrap();
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true, |_| {}).unwrap();
 
         let mut state = fresh_state();
         state.set_segment_at(
@@ -14391,7 +16894,7 @@ mod tests {
         let frame = pool.alloc().unwrap();
         let va = 0x0000_0D00_0000_0000;
         let map = |phys: u64| phys;
-        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, false, true).unwrap();
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, false, true, |_| {}).unwrap();
 
         let mut state = fresh_state();
         state.tasks.create_with_entry(2, 0).unwrap();
@@ -14455,7 +16958,7 @@ mod tests {
         let frame = pool.alloc().unwrap();
         let va = 0x0000_0D00_0000_0000;
         let map = |phys: u64| phys;
-        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true).unwrap();
+        crate::vspace::map_4k(root, va, map, || pool.alloc(), frame, true, true, |_| {}).unwrap();
 
         let mut state = fresh_state();
         state.set_segment_at(

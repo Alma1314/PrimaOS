@@ -86,6 +86,37 @@ impl Default for Idt {
     }
 }
 
+extern "C" fn cpu_exception(tag: u64, block: prima_ostd::entry::SaveBlock, error: u64) -> ! {
+    let with_error = tag & 0x100 != 0;
+    let cs = if with_error {
+        block.cs_with_error()
+    } else {
+        block.cs()
+    };
+    let vector = tag & 0xff;
+    assert_eq!(
+        cs & 3,
+        3,
+        "kernel CPU exception vector={vector} error={error:#x}"
+    );
+    let frame = if with_error {
+        block.to_sret_frame_with_error()
+    } else {
+        block.to_sret_frame()
+    };
+    crate::syscall::deliver_cpu_fault(frame, vector, error);
+    let task = crate::sched::current();
+    let kind = match vector {
+        0 => crate::bootstrap::ExcKind::DivideError,
+        6 => crate::bootstrap::ExcKind::InvalidOpcode,
+        _ => crate::bootstrap::ExcKind::GeneralProtectionFault,
+    };
+    crate::bootstrap::fault_hardware_global(task, kind)
+        .expect("hardware fault source/audit capacity");
+    let next = crate::sched::pick_next(task).expect("unhandled fault requires a Ready successor");
+    crate::sched::fault_to(next)
+}
+
 /// 装载 IDT（委派 [`prima_ostd::entry::load_idt`] 执行 `lidt`）。
 #[allow(clippy::result_unit_err)]
 pub fn load_idt(idt: &Idt) -> Result<(), ()> {
@@ -162,12 +193,25 @@ static IDT_ITEM: StaticCell<Idt> = StaticCell::new(Idt::new());
 #[allow(clippy::result_unit_err)]
 pub fn init_idt() -> Result<(), ()> {
     prima_ostd::entry::set_page_fault_handler(crate::cow::dispatch);
+    prima_ostd::entry::set_cpu_exception_handler(cpu_exception);
+    prima_ostd::entry::set_external_irq_handler(crate::irq::dispatch);
     prima_ostd::entry::set_syscall_handler(crate::syscall::handle);
     prima_ostd::entry::set_fast_syscall_handler(crate::syscall::handle_fast);
     IDT_ITEM.with_mut(|idt| {
         *idt = Idt::new();
         // vector 3 用 DPL3 门：切片 G 的用户任务在 CPL3 执行 `int3` 陷入内核。
         idt.set_handler_addr_dpl3(3, prima_ostd::entry::breakpoint_handler_addr());
+        for vector in [0, 6, 12, 13, 16, 17, 19] {
+            idt.set_handler_addr(
+                vector,
+                prima_ostd::entry::cpu_exception_entry_addr(vector).expect("registered CPU vector"),
+            );
+        }
+        for line in 1..16u8 {
+            if let Some(address) = prima_ostd::entry::external_irq_entry_addr(line) {
+                idt.set_handler_addr(0x20 + line, address);
+            }
+        }
         // #PF 用裸入口（自带现场处理与 iretq）。
         idt.set_handler_addr(14, prima_ostd::entry::page_fault_entry_addr());
         // syscall 用 DPL3 门 + 裸入口：允许 CPL3 执行 `int 0x80`。

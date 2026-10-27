@@ -14,10 +14,13 @@ inductive Object where
   | task (id : Nat)
   | excSource (id : Nat)
   | namespace (id : Nat)
+  | timer (id : Nat)
+  | node (id : Nat)
+  | waitObject (id : Nat)
 deriving DecidableEq, Repr
 
 /-- §4.2/§4.4 派生树（seL4 CDT 对应物）：父 CapId 恒小于子 CapId，故本节点内派生天然无环。 -/
-def capDerive : UInt16 := 0b0000_0000_0100_0000
+def capDerive : UInt32 := 0b0000_0000_0100_0000
 
 /-- 能力（对齐 cosir `Capability` 的 owner/object/rights/active）。
     `parent`：§4.2 派生树的父 CapId，`none` = 随对象创建铸造的**根**。
@@ -26,9 +29,16 @@ def capDerive : UInt16 := 0b0000_0000_0100_0000
 structure Capability where
   owner : Nat
   obj : Object
-  rights : UInt16
+  rights : UInt32
   active : Bool
   parent : Option Nat
+deriving DecidableEq, Repr
+
+/-- Token position; owner remains immutable creation provenance. -/
+inductive Location where
+  | heldBy (task : Nat)
+  | inMessage (message : Nat)
+  | inNamespace (namespaceId : Nat) (path : String)
 deriving DecidableEq, Repr
 
 /-- 状态（对齐 cosir `State` 的最小子集：capabilities + booted）。 -/
@@ -37,6 +47,7 @@ structure State where
   caps : Nat → Option Capability
   /-- POSIR bootstrap 标志（对齐 cosir `State.booted`）。 -/
   booted : Bool
+  locations : Nat → Option Location := fun _ => none
 
 /-- 自定义 `Repr`：`caps` 是函数域，无内置 `Repr`，故以标记打印；
     保留可评估结构展示（`#eval (State.mk (fun _ => none) false)`）。
