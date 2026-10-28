@@ -18,7 +18,11 @@ CC = "clang --target=x86_64-unknown-none"
 
 
 def output(*args):
-    return subprocess.check_output(args, text=True).strip()
+    # Binutils/Git 的可解析输出必须与宿主 locale 无关：`objdump -d` 的归档成员头在
+    # 非英文 locale 下会被本地化，直接让审计（以及镜像构建）失败。见
+    # docs/superpowers/reports/2026-10-27-implementation-quality-review.md 的 P0 条目。
+    env = dict(os.environ, LC_ALL="C", LANG="C")
+    return subprocess.check_output(args, text=True, env=env).strip()
 
 
 def verify_snapshot(snapshot, lock):
