@@ -1,30 +1,33 @@
 ---
 id: spec-stage5-profile-v2
 kind: specification
-authority: proposed-compatibility-contract
-status: proposed
+authority: frozen-compatibility-contract
+status: frozen
 lifecycle: current
 updated: 2026-10-27
 ---
 
-# POSIX profile v2 提案
+# POSIX profile v2（冻结）
 
 ## 状态、版本和继承
 
-承接[冻结 v0](2026-10-18-stage5-profile-v0.md)、[v1 delta](2026-10-20-stage5-profile-v1.md)、
-[M20 汇总](../reports/2026-10-23-stage5-m20-compat-final.md)和
-[兼容台账](../compat/compat-state.md)。本文件补齐 v2 提案，不修改 v0 冻结文本，
-不构成发布、组织级批准、BLK-003 关闭或 S5-D1/X3 签署。
+**冻结记录（2026-10-27，SPEC-152）**：本文件自 2026-10-27 起是阶段 5 的冻结
+POSIX profile，承接[冻结 v0](2026-10-18-stage5-profile-v0.md)与
+[v1 delta](2026-10-20-stage5-profile-v1.md)。冻结判据、验收命令与未覆盖范围见
+[阶段 5 出口签署报告](../reports/2026-10-27-stage5-exit-signoff.md)。v0/v1 保留为历史契约，
+不删除、不重编号；v1 的变更行并入本文件解释。
 
-v2 的部分实现证据来自历史报告，当前源版本的整套重跑结果单独见
-[本轮报告](../reports/2026-10-25-stage0-5-gap-followup.md)。本次矩阵按2026-10-27源码与统一技术证据修订，68轮及20项Linux参考通过；不继承旧版本PASS，也不构成发布/冻结。下表列 API 家族；
-同一行多个符号共享列出的有界后端，不表示所有 POSIX 参数组合受支持。
+**变更控制**：本文件的行、状态字、参数边界与错误语义一经冻结，修改必须发布 v3 并重新评审；
+实现证据可以追加，但不得在冻结边界内把 `partial` 改写成 `supported` 而不提交新的差分证据。
+
+v2 的实现证据来自历史报告与本轮统一验收；本冻结不继承旧版本 PASS，只登记本轮基线与范围。
+下表列 API 家族；同一行多个符号共享列出的有界后端，不表示所有 POSIX 参数组合受支持。
 没有证据的子项不从其它同名 API 推导为 supported。
 
 ## API 映射和边界
 
 状态沿用 v0：supported 仅限冻结测试和参数边界，partial 必须读限制，unsupported 不承诺。
-本提案保守使用 partial；原台账范围较窄的 supported 见证仍按原报告解释。
+本 profile 保守使用 partial；原台账范围较窄的 supported 见证仍按原报告解释。
 
 | ID | API / 后端 | v2 状态 | 测试与限制 |
 |---|---|---|---|
@@ -78,7 +81,8 @@ std::random的数据生成函数明确panic；HashMap地址种子fallback不是�
 crt强链接版本锚点与PRIMA_LIBC_1_0符号可见性脚本；C exec提交前拒绝不兼容声明。
 这不建立内核persona、运行时人格选择或动态GNU符号版本解析；动态装载仍unsupported。
 Rust vendor标识本身不作为persona；其原生程序声明与C静态POSIX声明分别验证。
-发布/冻结v2、D3/D6及S5-D1/D7/X3仍待评审，不因矩阵或护栏代码存在而勾选阶段出口。
+v2 的冻结与阶段签署记录见[阶段 5 出口签署报告](../reports/2026-10-27-stage5-exit-signoff.md)；
+本节只描述契约内容，签署状态以该报告为准。
 
 ## 2026-10-26 未验收工作增量（不升级上述支持状态）
 
@@ -93,12 +97,12 @@ System保持NULL。具体边界和D6待选项见[Rust裁决工件](2026-10-26-ru
 原表R2属于前批证据范围，不覆盖本次PAL；本增量尚未统一测试。
 
 
-## 2026-10-27 统一技术证据（不发布profile）
+## 2026-10-27 统一技术证据（v2 冻结依据）
 
 前两节2026-10-26“未验收”保留为当时实现记录；本轮新增路径的实际结果以
 [统一报告第19节](../reports/2026-10-25-stage0-5-gap-followup.md#19-最终统一验收与评审边界2026-10-27)为准。
 workspace1016、lint、Rust两种Clippy、Lean构建、musl锁定归档/host、compat、
 全部20项Linux参考及完整单次BIOS68轮通过。D6 A已由用户选定并完成R1/R2双轮。
 I1/N1跨轮验收按明确时序不变量，失败记录不删除；Miri只覆盖authority模型21项；没有取得全包Miri或#AC机器证据。
-本矩阵保留partial，静态persona/符号护栏的S5-D7适用性和profile冻结仍待
-[最终范围评审](2026-10-26-stage5-release-decisions.md)。
+本矩阵保留partial；冻结时的最终复跑、计数与环境限制见
+[阶段 5 出口签署报告](../reports/2026-10-27-stage5-exit-signoff.md)。

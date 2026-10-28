@@ -2,7 +2,7 @@
 id: decision-stage5-release-review
 kind: specification
 authority: proposed-stage-scope
-status: technically-validated-awaiting-scope-review
+status: scoped-accepted-in-spec152
 lifecycle: current
 updated: 2026-10-27
 ---
@@ -50,7 +50,7 @@ S5-X3仍仅指冻结的sbase echo/cat/ls功能集，不延伸到任意重新编�
 
 ## 当前状态与回退
 
-本轮统一技术验收已完成，结果和未覆盖范围见下表；本工件等待最终范围确认，不自动关闭BLK-003或勾选阶段复选框。
+本轮统一技术验收已完成，结果和未覆盖范围见下表。**2026-10-27：本工件的范围已被 [SPEC-152](../reports/2026-10-27-stage5-exit-signoff.md) 接受**，BLK-003 按阶段 5 范围关闭，阶段 5 勾选见阶段跟踪；下表数字保留为签署前批次记录，签署复跑见 SPEC-152。
 新出现的证据失败、声明格式破坏性变更、第二persona或动态装载需求都触发重新评审。
 仅在用户/组织明确确认后，将选择和依据登记到唯一的阶段决策日志；不另建隐式批准台账。
 

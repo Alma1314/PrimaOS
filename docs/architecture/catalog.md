@@ -45,7 +45,7 @@
 | [Specs 索引](../superpowers/specs/README.md) | current | `docs/superpowers/specs/README.md` |
 | [PrimaOS](../../llms.md) | current | `llms.md` |
 
-## plan（19）
+## plan（20）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -68,6 +68,7 @@
 | [阶段 5 修订计划：从原生机制到 POSIX 源码兼容](../superpowers/plans/2026-10-18-stage5-revised-plan.md) | historical | `docs/superpowers/plans/2026-10-18-stage5-revised-plan.md` |
 | [阶段 5 收尾与阶段 6 入口实施路线图](../superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | current | `docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md` |
 | [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
+| [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
 
 ## reference（8）
 
@@ -82,7 +83,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（175）
+## report（177）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -259,8 +260,10 @@
 | [原生运行时与服务重构验证](../superpowers/reports/2026-10-24-native-runtime-service-report.md) | historical | `docs/superpowers/reports/2026-10-24-native-runtime-service-report.md` |
 | [阶段 0–5 缺口后继工作记录与统一验收](../superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | historical | `docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md` |
 | [阶段 5 缺口补强验证记录](../superpowers/reports/2026-10-25-stage5-gap-closure-report.md) | historical | `docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md` |
+| [实现质量独立审查（2026-10-27）](../superpowers/reports/2026-10-27-implementation-quality-review.md) | historical | `docs/superpowers/reports/2026-10-27-implementation-quality-review.md` |
 | [POSIX std 后端实现与验证](../superpowers/reports/2026-10-27-posix-std-backend-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-backend-report.md` |
 | [POSIX std 后继：文件I/O与IPC接收归账](../superpowers/reports/2026-10-27-posix-std-file-io-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md` |
+| [阶段 5 出口签署（SPEC-152）](../superpowers/reports/2026-10-27-stage5-exit-signoff.md) | current | `docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md` |
 
 ## spec（4）
 
@@ -350,7 +353,7 @@
 | [fork 隔离所需的能力继承裁决](../superpowers/specs/2026-10-25-fork-authority-decision.md) | current | `docs/superpowers/specs/2026-10-25-fork-authority-decision.md` |
 | [阶段 5 进程与栈边界后继](../superpowers/specs/2026-10-25-process-boundary-followup-design.md) | current | `docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md` |
 | [阶段 5 缺口补强：启动、栈保护、退出及 Rust 最小目标](../superpowers/specs/2026-10-25-stage5-gap-closure-design.md) | current | `docs/superpowers/specs/2026-10-25-stage5-gap-closure-design.md` |
-| [POSIX profile v2 提案](../superpowers/specs/2026-10-25-stage5-profile-v2.md) | current | `docs/superpowers/specs/2026-10-25-stage5-profile-v2.md` |
+| [POSIX profile v2（冻结）](../superpowers/specs/2026-10-25-stage5-profile-v2.md) | current | `docs/superpowers/specs/2026-10-25-stage5-profile-v2.md` |
 | [位置模型与 Timer、异常、等待和远端数据通路的组合](../superpowers/specs/2026-10-26-event-authority-model-design.md) | current | `docs/superpowers/specs/2026-10-26-event-authority-model-design.md` |
 | [S5-D6：Rust 目标与 std 范围裁决](../superpowers/specs/2026-10-26-rust-d6-scope-decision.md) | current | `docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md` |
 | [阶段 5 出口的具体评审工件](../superpowers/specs/2026-10-26-stage5-release-decisions.md) | current | `docs/superpowers/specs/2026-10-26-stage5-release-decisions.md` |

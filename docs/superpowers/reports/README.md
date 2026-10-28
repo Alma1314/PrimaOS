@@ -25,12 +25,17 @@ updated: 2026-10-27
 
 ## 跨阶段 / 文档体系
 
+独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
+
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-27 | [2026-10-27-implementation-quality-review.md](2026-10-27-implementation-quality-review.md) | 实现质量独立审查：门禁可复现性与结构负债（公开缺陷：musl 审计 locale 依赖） |
 | 2026-10-24 | [2026-10-24-documentation-lifecycle-report.md](2026-10-24-documentation-lifecycle-report.md) | 文档生命周期治理与过时材料清理 |
 | 2026-10-23 | [2026-10-23-documentation-restructure-report.md](2026-10-23-documentation-restructure-report.md) | 文档体系重构与验收报告 |
 
 ## 阶段 5
+
+**出口签署（2026-10-27）**：[阶段 5 出口签署 SPEC-152](2026-10-27-stage5-exit-signoff.md)，冻结有界 profile v2、确认 D1–D10 处置、按阶段 5 范围关闭 BLK-003；签署复跑与两处夹具修复记录在该报告，历史失败保留。
 
 POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-report.md)，单次36组72/72轮、workspace1020、lint与三模式Clippy通过；初始69/70失败保留，底层支持仍有界。
 

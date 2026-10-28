@@ -11,6 +11,9 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <termios.h>
+#ifndef MFD_EXEC
+#define MFD_EXEC 0x0010U
+#endif
 #include "prima_contract.h"
 #ifndef PRIMA_HOST
 #define PRIMA_ABI_NO_IOVEC
@@ -109,12 +112,32 @@ static void caught_before_exec(int number) { (void)number; }
 static long exec_c_image(char *const *args, char *const *env) {
     size_t length = (size_t)((uintptr_t)prima_exec_child_end - (uintptr_t)prima_exec_child_start);
 #ifdef PRIMA_HOST
-    int fd = memfd_create("prima-exec-crt", MFD_CLOEXEC);
-    if (fd < 0) return -errno;
-    int result = write(fd, prima_exec_child_start, length) == (ssize_t)length ? fexecve(fd, args, env) : -1;
-    int saved = errno;
-    close(fd);
-    return result < 0 ? -saved : result;
+    int fd = memfd_create("prima-exec-crt", MFD_CLOEXEC | MFD_EXEC);
+    if (fd >= 0) {
+        int result = write(fd, prima_exec_child_start, length) == (ssize_t)length ? fexecve(fd, args, env) : -1;
+        int saved = errno;
+        close(fd);
+        /* Some kernels or sandboxes deny exec of memfd; use an unlinked
+         * temporary file so the witness stays descriptor-based. */
+        if (saved != EACCES && saved != EPERM) return result < 0 ? -saved : result;
+    }
+    char path[] = "/tmp/prima-exec-crt-XXXXXX";
+    int temp = mkstemp(path);
+    if (temp < 0) return -errno;
+    if (write(temp, prima_exec_child_start, length) != (ssize_t)length || fchmod(temp, 0755) != 0) {
+        int error = errno ? errno : EIO;
+        close(temp);
+        unlink(path);
+        return -error;
+    }
+    close(temp);
+    int readable = open(path, O_RDONLY);
+    unlink(path);
+    if (readable < 0) return -errno;
+    fexecve(readable, args, env);
+    int error = errno;
+    close(readable);
+    return -error;
 #else
     return prima_exec_image(prima_exec_child_start, length, args, env);
 #endif

@@ -2,7 +2,13 @@
 #ifndef PRIMA_STAGE5_EXEC_FIXTURE_H
 #define PRIMA_STAGE5_EXEC_FIXTURE_H
 #ifdef PRIMA_HOST
+#include <fcntl.h>
+#include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#ifndef MFD_EXEC
+#define MFD_EXEC 0x0010U
+#endif
 #define TINY_EXIT_SYSCALL 60
 #else
 #define TINY_EXIT_SYSCALL 54
@@ -21,19 +27,34 @@ static long exec_fixture(const unsigned char *image, unsigned long length,
                          char **args, unsigned long argc) {
 #ifdef PRIMA_HOST
     if (argc > 4) return -E2BIG;
-    int fd = memfd_create("prima-exec-reference", MFD_CLOEXEC);
-    if (fd < 0) return -errno;
-    if (write(fd, image, length) != (ssize_t)length) {
-        int error = errno ? errno : EIO;
-        close(fd);
-        return -error;
-    }
     char *argv[5] = {0};
     char *envp[1] = {0};
     for (unsigned long i=0; i<argc; i++) argv[i]=args[i];
-    fexecve(fd, argv, envp);
+    int fd = memfd_create("prima-exec-reference", MFD_CLOEXEC | MFD_EXEC);
+    if (fd >= 0) {
+        if (write(fd, image, length) == (ssize_t)length) fexecve(fd, argv, envp);
+        int error = errno;
+        close(fd);
+        /* Some kernels or sandboxes deny exec of memfd; fall back to an
+         * unlinked temporary file so the witness stays descriptor-based. */
+        if (error != EACCES && error != EPERM) return -error;
+    }
+    char path[] = "/tmp/prima-exec-fixture-XXXXXX";
+    int temp = mkstemp(path);
+    if (temp < 0) return -errno;
+    if (write(temp, image, length) != (ssize_t)length || fchmod(temp, 0755) != 0) {
+        int error = errno ? errno : EIO;
+        close(temp);
+        unlink(path);
+        return -error;
+    }
+    close(temp);
+    int readable = open(path, O_RDONLY);
+    unlink(path);
+    if (readable < 0) return -errno;
+    fexecve(readable, argv, envp);
     int error = errno;
-    close(fd);
+    close(readable);
     return -error;
 #else
     return prima_native(55, (long)image, length, (long)args, argc, 0, 0);
