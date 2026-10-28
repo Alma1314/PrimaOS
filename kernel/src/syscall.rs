@@ -1438,21 +1438,11 @@ fn prepare_exec_stack(
     for i in 0..envc {
         env_slices[i] = &envs[i][..env_lens[i]];
     }
-    crate::exec::build_stack(
+    crate::exec::build_initial_stack(
         EXEC_STACK_VA + EXEC_STACK_PAGES as u64 * 4096,
+        plan,
         &arg_slices[..argc],
         &env_slices[..envc],
-        &[
-            (6, 4096),
-            (9, plan.entry),
-            (3, plan.phdr),
-            (4, 56),
-            (5, plan.phnum),
-            (7, 0),
-            (11, 0),
-            (12, 0),
-            (23, 0),
-        ],
         stack,
     )
     .map_err(|_| Errno::NoSpace)
@@ -1497,16 +1487,11 @@ fn prepare_exec_image(
     let result = (|| -> Result<(), Errno> {
         let mut page_index = 0;
         for part in plan.segments.iter().flatten() {
-            if part.vaddr < 4096
-                || part
-                    .vaddr
-                    .checked_add(part.memsz)
-                    .is_none_or(|end| end > EXEC_STACK_VA)
-            {
+            if part.map_start < 4096 || part.map_end() > EXEC_STACK_VA {
                 return Err(Errno::Exec);
             }
-            for page in 0..part.memsz.div_ceil(4096) {
-                let va = part.vaddr + 4096 * page;
+            for page in 0..part.pages() {
+                let va = part.map_start + 4096 * page;
                 // Never extend a shared supervisor subtree with user access.
                 let pml4 =
                     prima_ostd::mm::read_u64_at(map(new_root), vspace::indices(va)[0] as u64);
@@ -1535,12 +1520,14 @@ fn prepare_exec_image(
                     |_| {},
                 )
                 .map_err(|_| Errno::NoSpace)?;
+                // 文件数据从 `file_base` 起覆盖 `file_bytes()` 字节：首页可能包含段首
+                // 之前的同页字节（Linux 也映射整页），其余页按 4096 切分。
                 let begin = 4096 * page;
-                let count = core::cmp::min(4096, part.filesz.saturating_sub(begin)) as usize;
+                let count = core::cmp::min(4096, part.file_bytes().saturating_sub(begin)) as usize;
                 if count > 0 {
                     copy_exec_page(
                         image
-                            .checked_add(part.offset)
+                            .checked_add(part.file_base)
                             .and_then(|v| v.checked_add(begin))
                             .ok_or(Errno::Fault)?,
                         map(frame),
@@ -1652,7 +1639,7 @@ fn exec_call(
             .segments
             .iter()
             .flatten()
-            .map(|s| s.memsz.div_ceil(4096) as usize)
+            .map(|s| s.pages() as usize)
             .sum::<usize>();
     let mut retained_count = 0;
     let mut retained_requested = 0;
@@ -1677,7 +1664,7 @@ fn exec_call(
                         .segments
                         .iter()
                         .flatten()
-                        .any(|s| base < (s.vaddr + s.memsz + 4095) & !4095 && s.vaddr < end)
+                        .any(|s| base < s.map_end() && s.map_start < end)
                 {
                     return Err(Errno::Invalid);
                 }

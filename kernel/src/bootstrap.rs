@@ -10327,7 +10327,7 @@ impl BootstrapState {
         crate::sched::defer_table_frame(old_root).map_err(|_| TaskError::CapacityExceeded)?;
         let mut page_index = 0;
         for part in plan.segments.iter().flatten() {
-            for page in 0..part.memsz.div_ceil(4096) {
+            for page in 0..part.pages() {
                 let access = Rights::from_rights(&[Right::SegMapR])
                     .union(if part.writable {
                         Rights::from_rights(&[Right::SegMapW])
@@ -10342,7 +10342,7 @@ impl BootstrapState {
                 self.vspace
                     .insert(VspaceEntry {
                         task_id: NonZeroU32::new(caller).expect("live Task"),
-                        va: part.vaddr + 4096 * page,
+                        va: part.map_start + 4096 * page,
                         seg_id: segment,
                         seg_offset: page_index,
                         access,

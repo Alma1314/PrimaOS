@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-10-27
+updated: 2026-10-28
 ---
 
 # Prima OS 实现阶段
@@ -27,8 +27,8 @@ updated: 2026-10-27
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 签署复跑：workspace1018、lint、TCB 6.42%、文档校验 PASS；修复 W7/W7b 夹具 memfd 依赖后完整 BIOS 套件与 Linux 参考 PASS | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)；[质量审查](docs/superpowers/reports/2026-10-27-implementation-quality-review.md)记录两处环境缺陷；历史失败保留 |
-| 阶段 6 | 未开始；阶段 5 已签署，入口已具备但按 D10 未启动 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)；exec_replace 不等于未修改 Linux ELF 完成 |
+| 最近验证记录 | 签署复跑：workspace1018、lint、TCB 6.42%、文档校验 PASS；修复 W7/W7b 夹具 memfd 依赖后完整 BIOS 套件与 Linux 参考 PASS | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)；[质量审查](docs/superpowers/reports/2026-10-27-implementation-quality-review.md)记录两处环境缺陷（其中 musl 审计的 locale 依赖已于 2026-10-28 修复，见[装载切片报告](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#4-验证环境musl-归档审计的-locale-依赖构建工具不碰-os-语义)）；历史失败保留 |
+| 阶段 6 | 未开始；阶段 5 已签署，入口已具备但按 D10 未启动。装载器/初始栈的机械项已有准备性硬化，不构成阶段启动 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；exec_replace 不等于未修改 Linux ELF 完成；无 LibOS 递送就无法运行未修改二进制 |
 | 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
@@ -44,6 +44,7 @@ updated: 2026-10-27
 | 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
+| 阶段6准备性证据 | [装载一致性切片](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md) | host 单测 + 本地静态 busybox 装载演练 + lint/全套件；只证明装载计划与初始栈，不证明任何 Linux 二进制可运行，阶段状态不变 |
 | 历史切片与反例 | [全量目录](docs/architecture/catalog.md)、[主题阅读链](docs/architecture/topics/README.md) | 文件不因未进入精选表而失效；必须保留失败与后继 |
 
 2026-10-18 压缩前记录保存在[历史版本](https://github.com/Alma1314/PrimaOS/blob/a434a2f0c515ac3421e999be3c436b7d7c6c5313/Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md)。本次重构前版本可用 `git show d48d5ef:Prima\ OS\ 实现阶段.md` 查看；[整理报告](docs/superpowers/reports/2026-10-23-documentation-restructure-report.md)记录陈旧摘要的修正依据。
@@ -291,6 +292,8 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 ## 阶段 6 — Linux x86_64 静态 ELF
 
 **状态：未开始；阶段 5 已签署（SPEC-152），入口已具备但按 D10 不启动。** 拆分与前置裁决见[阶段 6–7 细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)。
+
+准备性硬化（2026-10-28，不改变阶段状态、不勾选下方任何条件）：内核静态 ELF 装载器按 ELF 规范接受同余而非页对齐的 `PT_LOAD`（真实静态 busybox 此前会被判 `Misaligned`）、`PT_LOAD` 上限 4→8、W+X 段与可执行栈确定性拒绝、exec 初始栈统一由 `static_auxv`/`build_initial_stack` 构造并补齐 `AT_EXECFN` 等条目。仍缺流式装载、`image_len ≤ 1 MiB` 与 `MAX_SEGMENT_FRAMES=149`（真实静态 busybox 需 2.03 MiB/525 页）、8 页初始栈、`AT_RANDOM`（D13）与 LibOS 递送。逐项剩余见[准备性切片报告的未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#未完成清单阶段-6-剩余工作)。
 
 ### 交付检查
 
