@@ -55,7 +55,7 @@ updated: 2026-10-28
 
 | ID | 工作项 | 依赖 | 验收输入与预期观察 | 估算（人周） |
 |---|---|---|---|---|
-| S6-M1 | 中立递送（同步 call/reply） | 无 | ring3 服务截获另一 ring3 进程的系统调用并改写 `rax`；重复投递/IPC 中断/服务崩溃负例；TCG 口径往返延迟 ≤ 5 µs | 3–5 |
+| S6-M1 | 中立递送（同步 call/reply）。[设计提案](../specs/2026-10-29-stage6-m1-delivery-design.md)已出，估算修订为 5–6；未实现 | 无 | ring3 服务截获另一 ring3 进程的系统调用并改写 `rax`；重复投递/IPC 中断/服务崩溃负例；TCG 口径往返延迟 ≤ 5 µs（PROVISIONAL，不作出口门槛） | 5–6 |
 | S6-M2 | 未修改静态 ELF 加载 | S6-M1 | sha256 固定的未修改静态 busybox 子集启动，`write` 经 LibOS 生效；动态 ELF/坏 ELF/W+X 段负例确定性失败 | 2–3 |
 | S6-M3 | Linux LibOS profile v1 | S6-M1、S6-M2 | 逐 syscall 在参考 guest 与 Prima 上同源运行，结果与 errno 一致；未支持 syscall 返回 `ENOSYS` 且有审计记录 | 6–10 |
 | S6-M4 | Linux 进程/线程/信号语义 | S6-M1、S6-M3 | 未修改静态 pthread 程序 create/join；fork+exec 子进程；信号打断阻塞调用并 `EINTR` | 4–6 |

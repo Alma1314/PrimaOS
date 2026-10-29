@@ -304,7 +304,7 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 ### 交付检查
 
 - [ ] S6-D1：静态 ELF 加载器与 Linux 初始栈。
-- [ ] S6-D2：OS 中立的 syscall / exception 递送机制。
+- [ ] S6-D2：OS 中立的 syscall / exception 递送机制（[S6-M1 递送设计](docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md)：提案，未实现）
 - [ ] S6-D3：版本化的 Linux LibOS syscall profile。
 - [ ] S6-D4：所选 profile 必需的 futex、TLS 和进程环境。
 - [ ] S6-D5：未修改静态 ELF 白名单与测试镜像。
