@@ -13,6 +13,7 @@ updated: 2026-10-27
 
 | 文档 | 标题 |
 |---|---|
+| [stage6-static-whitelist.md](stage6-static-whitelist.md) | 阶段 6 静态 ELF 白名单（D12 冻结；契约非实现状态） |
 | [compat-state.md](compat-state.md) | 阶段5当前子集状态与历史基线（按章节区分） |
 | [stage5-working-api.md](stage5-working-api.md) | 当前工作逐入口表；运行范围见本轮报告，不升级为完整POSIX支持 |
 | [symbol-trace.md](symbol-trace.md) | 符号追溯：最初echo闭包 + M20子系统调用链 |
@@ -24,6 +25,7 @@ updated: 2026-10-27
 
 - `compat-state.md`：API/符号兼容状态；每项须有状态、已知偏差和测试入口。
 - `symbol-trace.md`：公开符号 → 调用路径/服务的追溯表。
+- `stage6-static-whitelist.md`：阶段 6 白名单的制品、成员与通过判据；成员/版本/哈希变更即新裁决。
 - 新增或改变兼容状态时，先更新冻结 profile 或发布新版本，再更新本目录与测试报告。
 
 ## 按范围读取

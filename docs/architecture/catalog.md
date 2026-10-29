@@ -45,6 +45,12 @@
 | [Specs 索引](../superpowers/specs/README.md) | current | `docs/superpowers/specs/README.md` |
 | [PrimaOS](../../llms.md) | current | `llms.md` |
 
+## ledger（1）
+
+| 文档 | 生命周期 | 路径 |
+|---|---|---|
+| [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
+
 ## plan（20）
 
 | 文档 | 生命周期 | 路径 |
@@ -83,7 +89,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（178）
+## report（179）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -265,6 +271,7 @@
 | [POSIX std 后继：文件I/O与IPC接收归账](../superpowers/reports/2026-10-27-posix-std-file-io-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md` |
 | [阶段 5 出口签署（SPEC-152）](../superpowers/reports/2026-10-27-stage5-exit-signoff.md) | current | `docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md` |
 | [阶段 6 准备性切片：静态 ELF 装载一致性与初始 auxv](../superpowers/reports/2026-10-28-stage6-loader-slice.md) | current | `docs/superpowers/reports/2026-10-28-stage6-loader-slice.md` |
+| [阶段 6 启动与首个 S6-M2 增量：确定性 `AT_RANDOM`](../superpowers/reports/2026-10-29-stage6-start.md) | current | `docs/superpowers/reports/2026-10-29-stage6-start.md` |
 
 ## spec（4）
 
