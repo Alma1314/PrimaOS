@@ -110,7 +110,8 @@ exec 路径与阶段 5 M12 冻结的 C 探针路径（[8 对](../reports/2026-10
   `AT_EXECFN`（**指向栈上的 `argv[0]`**，在字符串地址确定后追加）；
 - `build_stack` 保持为底层布局原语，行为不变（仅多一个内部 `execfn` 开关）。
 
-明确不提供，理由是硬约束而非省事：`AT_RANDOM`（项目无安全熵，D13 未裁决）、
+明确不提供，理由是当时的硬约束而非省事：`AT_RANDOM`（项目无安全熵，当时 D13 未裁决；
+次日裁决改为提供公开常量兼容字段，见文末限制）、
 `AT_PLATFORM`（需额外栈上字符串）、`AT_SYSINFO_EHDR`（无 vDSO）。`AT_HWCAP=0` 表示
 "不宣告任何可选 CPU 特性"，libc 仍须用 `cpuid` 判定。
 
@@ -166,7 +167,7 @@ exec 路径与阶段 5 M12 冻结的 C 探针路径（[8 对](../reports/2026-10
 - **映像上限（三道，全部未解决）**：① `exec_call` 要求 `image_len ≤ 1 MiB`，样本为
   2.03 MiB；② 装载是"从请求者地址空间整块 copy-in"，未修改二进制需要流式/按页装载；
   ③ 单次 exec 的映像帧上限是 `MAX_SEGMENT_FRAMES = 149`（约 596 KiB），样本按
-  `PT_LOAD` 计算需 `1 + 424 + 82 + 18 = 525` 页，因此即使前两条放宽，样本仍会在
+  `PT_LOAD` 计算需 `1 + 424 + 83 + 18 = 526` 页，因此即使前两条放宽，样本仍会在
   `allocate_exec_segment` 得到 `ENOSPC`。这三条是 S6-M2 的实质剩余，不是参数微调。
 - **初始栈只有 8 页（32 KiB）**：对探针够用，对真实 libc 启动与 `busybox` 的多层
   调用偏紧，属 S6-M2 的剩余参数。
@@ -175,8 +176,10 @@ exec 路径与阶段 5 M12 冻结的 C 探针路径（[8 对](../reports/2026-10
 - **RELRO 仍可写**：只读化需要装载后的 `mprotect` 语义与 LibOS 协作，未做。
 - **两个 auxv 构造器仍在**：内核 exec 路径与 `prima-servicemgr` 的 C 装载路径各有一套。
   本切片通过收敛到 `static_auxv` 消除了内核侧的漂移，但两路径合并属 S6-M2/S6-M6。
-- **不提供熵**：`AT_RANDOM` 缺省，SSP/canary 在 Prima 构建中关闭；这是既有的书面
-  弱化，D13 仍待裁决。
+- **不提供熵**：本切片未提供 `AT_RANDOM`，SSP/canary 在 Prima 构建中关闭。**后续进展**：
+  D13 已于同日裁决（[D11–D16 前置裁决](../specs/2026-10-28-stage6-7-release-decisions.md)）——
+  改为提供 16 字节公开常量作为兼容字段、并书面声明其非机密；实现仍属 S6-M2，本报告的
+  观察不因此改变（写本文时该字段确实缺省）。
 
 ## 未完成清单（阶段 6 剩余工作）
 
@@ -208,7 +211,7 @@ exec 路径与阶段 5 M12 冻结的 C 探针路径（[8 对](../reports/2026-10
 | ID | 剩余工作 | 估算（人周） | 依赖 | 说明 |
 |---|---|---|---|---|
 | S6-M1 | 中立递送：同步 call/reply、`syscall_event` 能力、回复一次性、中断/取消、延迟口径 | 3–5 | — | 全阶段最易低估；单核 QEMU 见证是阶段 6 的停止条件 |
-| S6-M2 | 未修改静态 ELF 加载（本次已推进，未完成） | 1–2 剩余 | S6-M1 | ①`image_len ≤ 1 MiB` ②整块 copy-in ③`MAX_SEGMENT_FRAMES=149`（样本需 525 页）④8 页初始栈 ⑤两路径合并 ⑥`AT_RANDOM`（D13） |
+| S6-M2 | 未修改静态 ELF 加载（本次已推进，未完成） | 1–2 剩余 | S6-M1 | ①`image_len ≤ 1 MiB` ②整块 copy-in ③`MAX_SEGMENT_FRAMES=149`（样本需 526 页）④8 页初始栈 ⑤两路径合并 ⑥`AT_RANDOM`（D13） |
 | S6-M3 | Linux LibOS profile v1（逐 syscall 行为与 errno） | 6–10 | S6-M1、S6-M2（D12） | 长尾项 |
 | S6-M4 | Linux 进程/线程/信号语义 | 4–6 | S6-M1、S6-M3 | pthread、fork+exec、`EINTR` |
 | S6-M5 | 差分与验收工程（需与 M3/M4 并行） | 2–3 | S6-M2–M4 | 逐 syscall 差分矩阵、分组并行、确定性 trace |

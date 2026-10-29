@@ -28,8 +28,8 @@ updated: 2026-10-28
 | 当前阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
 | 最近验证记录 | 签署复跑：workspace1018、lint、TCB 6.42%、文档校验 PASS；修复 W7/W7b 夹具 memfd 依赖后完整 BIOS 套件与 Linux 参考 PASS | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)；[质量审查](docs/superpowers/reports/2026-10-27-implementation-quality-review.md)记录两处环境缺陷（其中 musl 审计的 locale 依赖已于 2026-10-28 修复，见[装载切片报告](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#4-验证环境musl-归档审计的-locale-依赖构建工具不碰-os-语义)）；历史失败保留 |
-| 阶段 6 | 未开始；阶段 5 已签署，入口已具备但按 D10 未启动。装载器/初始栈的机械项已有准备性硬化，不构成阶段启动 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；exec_replace 不等于未修改 Linux ELF 完成；无 LibOS 递送就无法运行未修改二进制 |
-| 阶段 7 | 未开始；范围未冻结 | SMP、动态链接、第二架构等仍为候选 |
+| 阶段 6 | 未开始；阶段 5 已签署，入口已具备但按 D10 未启动。前置裁决 D11–D16 已关闭，装载器/初始栈的机械项已有准备性硬化，仍不构成阶段启动 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[D11–D16裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；白名单与 `AT_RANDOM` 已定，S6-M1 递送仍需架构评审；exec_replace 不等于未修改 Linux ELF 完成 |
+| 阶段 7 | 未开始；范围未冻结，但结构已裁决为 7-0/7-A…7-H 九条子轨 | [D16 裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；7-A（多 LibOS）为研究核心 P0，需在阶段 6 动工前做有界探索原型（D14）；SMP 前先做状态分区（D15） |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
@@ -44,6 +44,7 @@ updated: 2026-10-28
 | 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
+| 阶段6–7前置裁决 | [D11–D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md) | 范围裁决：白名单/`AT_RANDOM`/多 LibOS 顺序/SMP 前置/阶段 7 子轨；不是实现证据，不签署阶段，不启动阶段 6 |
 | 阶段6准备性证据 | [装载一致性切片](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md) | host 单测 + 本地静态 busybox 装载演练 + lint/全套件；只证明装载计划与初始栈，不证明任何 Linux 二进制可运行，阶段状态不变 |
 | 历史切片与反例 | [全量目录](docs/architecture/catalog.md)、[主题阅读链](docs/architecture/topics/README.md) | 文件不因未进入精选表而失效；必须保留失败与后继 |
 
@@ -118,6 +119,8 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 |---|---|---|
 | 2026-10-23 | M21 技术出口评审未签署；阶段6 D10 不启动 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) |
 | 2026-10-27（签署） | **阶段5签署（SPEC-152）**：冻结 profile v2；确认 D1–D10 处置；BLK-003 按阶段5范围关闭；阶段6具备入口但按 D10 不启动。范围限有界 partial profile，不代表完整 POSIX/Linux 兼容 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md) |
+| 2026-10-28（裁决） | **D11–D16 关闭**：D11 动态链接维持阶段 7（7-E）；D12 白名单冻结为 `busybox-static 1.36.1` 六 applet + 2 探针（sha256 固定）；D13 提供公开确定的 `AT_RANDOM`（非机密、无 ASLR/canary 安全主张）；D14 多 LibOS 升 7-A P0 且阶段 6 前先做有界探索原型；D15 SMP 前先做状态按 CPU 分区；D16 阶段 7 拆为 9 条子轨。**不启动阶段 6**，S6-M1 递送仍需架构评审 | [前置裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md) |
+| 2026-10-28（实现） | 阶段 6 准备性硬化：ELF 段同余对齐、`PT_LOAD` 上限 4→8、W+X/可执行栈拒绝、初始栈 auxv 收敛并补齐 `AT_EXECFN`；阶段状态不变、未勾选任何条件 | [装载切片报告](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md) |
 | 2026-10-27 | 本轮统一技术验收完成：host1016、BIOS单次68/68、Linux参考20项及分层检查通过；profile范围/组织级签署待确认（当日晚由 SPEC-152 签署） | [统一报告](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)、[具体评审工件](docs/superpowers/specs/2026-10-26-stage5-release-decisions.md) |
 | 2026-10-26 | 用户选择D6 A：有原生OS接口的单线程std子集；开始统一验收（当时阶段5未签署，次日由 SPEC-152 签署） | [D6裁决](docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md) |
 | 2026-10-22/23 | M12–M21 与 S6-A–E 按路线图推进；D2/D3/D5/D8 等工作决定不等于组织级关闭；号段从既有接口追加、Prima 命名 | [路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)、M15/M17/M19设计 |
@@ -293,7 +296,9 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 
 **状态：未开始；阶段 5 已签署（SPEC-152），入口已具备但按 D10 不启动。** 拆分与前置裁决见[阶段 6–7 细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)。
 
-准备性硬化（2026-10-28，不改变阶段状态、不勾选下方任何条件）：内核静态 ELF 装载器按 ELF 规范接受同余而非页对齐的 `PT_LOAD`（真实静态 busybox 此前会被判 `Misaligned`）、`PT_LOAD` 上限 4→8、W+X 段与可执行栈确定性拒绝、exec 初始栈统一由 `static_auxv`/`build_initial_stack` 构造并补齐 `AT_EXECFN` 等条目。仍缺流式装载、`image_len ≤ 1 MiB` 与 `MAX_SEGMENT_FRAMES=149`（真实静态 busybox 需 2.03 MiB/525 页）、8 页初始栈、`AT_RANDOM`（D13）与 LibOS 递送。逐项剩余见[准备性切片报告的未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#未完成清单阶段-6-剩余工作)。
+前置裁决已于 2026-10-28 关闭（[D11–D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)）：D11 动态链接维持阶段 7；D12 白名单冻结为 Ubuntu `busybox-static 1.36.1` 的 6 个 applet + 2 个自写探针（`sha256=dbac288c…`，附 ELF 属性）；D13 初始栈**提供** `AT_RANDOM` 作为公开确定常量（非机密、无 ASLR/canary 安全主张），因此 S6-M2/S6-M3 不再是"缺裁决"，只有 S6-M1 的递送语义仍需架构评审。**裁决不启动本阶段**：启动仍是作者决定。
+
+准备性硬化（2026-10-28，不改变阶段状态、不勾选下方任何条件）：内核静态 ELF 装载器按 ELF 规范接受同余而非页对齐的 `PT_LOAD`（真实静态 busybox 此前会被判 `Misaligned`）、`PT_LOAD` 上限 4→8、W+X 段与可执行栈确定性拒绝、exec 初始栈统一由 `static_auxv`/`build_initial_stack` 构造并补齐 `AT_EXECFN` 等条目。仍缺流式装载、`image_len ≤ 1 MiB` 与 `MAX_SEGMENT_FRAMES=149`（真实静态 busybox 需 2.03 MiB/526 页）、8 页初始栈、`AT_RANDOM` 的实现（D13 已裁决为公开常量兼容字段）与 LibOS 递送。逐项剩余见[准备性切片报告的未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#未完成清单阶段-6-剩余工作)。
 
 ### 交付检查
 
@@ -310,23 +315,25 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 - [ ] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。
 - [ ] S6-X4：未支持 syscall 得到确定且可审计的失败。
 
-> 注：候选规格（DOC-002）把 `ld.so` 最小动态链接闭环列为 P0、随阶段 5 交付，而白皮书把“动态链接”列为阶段 7 候选。两者的阶段归属须一并裁决，不得两处各写一套。
+> 注：候选规格（DOC-002）把 `ld.so` 最小动态链接闭环列为 P0、随阶段 5 交付，而白皮书把“动态链接”列为阶段 7 候选。**已裁决（D11/D4，SPEC-152）**：动态链接留阶段 7 的 7-E，阶段 6 的输入必须无 `PT_INTERP`；不得两处各写一套。
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：未开始；范围未冻结**
+**状态：未开始；范围未冻结。** 结构已由 D16 裁决为 9 条子轨（[前置裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)）：子轨是排序假设而非交付承诺，每轨需自身退出签署，顺序可被前序实证推翻。
 
-候选工作不预先视为承诺：
+| ID | 子轨 | 优先级 | 退出条件（摘要） | 勾选 |
+|---|---|---|---|---|
+| 7-0 | 工程底座（CI、验收并行化、基准、发布工件） | P0 | `test/lint/tcb/docs check` 在 CI 上绿；5 项基准入库 | [ ] |
+| 7-A | 多 personality 并存（研究核心） | P0 | 两 personality 各自运行、共享日志、跨域请求 `EACCES`、单侧崩溃不影响另一侧 | [ ] |
+| 7-B | SMP（先做状态按 CPU 分区） | P0 | 2/4 vCPU 启动；并行 fork/exec 无丢唤醒；TLB shootdown 正确；扩展性曲线 | [ ] |
+| 7-C | 资源计量与配额 | P1 | 单 LibOS 耗尽自身配额不影响他人 | [ ] |
+| 7-D | 选择性撤销 | P1 | 服务重启后旧句柄全部 `Stale`，无关域不受影响 | [ ] |
+| 7-E | 动态链接（D11 归此） | P2 | 未修改动态 ELF 白名单运行 | [ ] |
+| 7-F | IOMMU 与用户态驱动/持久化 | P2 | 从盘启动；文件跨重启持久化；网卡收发 | [ ] |
+| 7-G | 故障恢复与监督 | P2 | 注入崩溃后服务自愈，配额与审计一致 | [ ] |
+| 7-H | 第二硬件架构 | P2（最后） | 同一 POSIR 规范在第二架构通过 `COMPAT-TEST` | [ ] |
 
-- [ ] SMP；
-- [ ] IOMMU 与更完整的用户态驱动；
-- [ ] 动态链接；
-- [ ] 资源计量与配额；
-- [ ] 选择性撤销；
-- [ ] 更强的故障恢复；
-- [ ] 第二硬件架构。
-
-只有在阶段 0–6 的证据揭示实际优先级后，才把候选项拆成带退出条件的独立里程碑。
+顺序：`7-0 → 7-A → 7-B → 7-C/D → 7-G → 7-E/F → 7-H`。D14 另要求在阶段 6 动工前完成一次 7-A 的**有界探索原型**（单核、≤2 人周、不勾选任何条件）；若原型否定，暂停阶段 6 并回到架构假设评审。SMP 不在白皮书成功标准内，但它是可信度门槛（D15）。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 

@@ -275,7 +275,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（81）
+## specification（82）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -360,6 +360,7 @@
 | [阶段 5 出口的具体评审工件](../superpowers/specs/2026-10-26-stage5-release-decisions.md) | current | `docs/superpowers/specs/2026-10-26-stage5-release-decisions.md` |
 | [静态程序的 persona 与适配层版本护栏](../superpowers/specs/2026-10-26-static-program-contract-design.md) | current | `docs/superpowers/specs/2026-10-26-static-program-contract-design.md` |
 | [Prima POSIX std 后端](../superpowers/specs/2026-10-27-posix-std-backend-design.md) | current | `docs/superpowers/specs/2026-10-27-posix-std-backend-design.md` |
+| [阶段 6–7 前置裁决（D11–D16）](../superpowers/specs/2026-10-28-stage6-7-release-decisions.md) | current | `docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md` |
 
 ## template（4）
 
