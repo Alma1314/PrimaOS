@@ -37,7 +37,15 @@ pub const AT_EGID: u64 = 14;
 pub const AT_HWCAP: u64 = 16;
 pub const AT_CLKTCK: u64 = 17;
 pub const AT_SECURE: u64 = 23;
+pub const AT_RANDOM: u64 = 25;
 pub const AT_EXECFN: u64 = 31;
+
+/// 初始栈上 `AT_RANDOM` 指向的 16 字节块。
+///
+/// **公开、确定、非机密**：本项目没有可信熵源，这里提供该字段只为让 SSP 构建的
+/// 未修改二进制能完成 libc 启动（其 canary 初值可能来自这里），不是安全机制。
+/// 任何"抗利用"论证都不得引用它（D13 裁决）。改内容＝重新裁决。
+pub const AT_RANDOM_BYTES: [u8; 16] = *b"PRIMA-RND-16BYTE";
 
 const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
@@ -282,9 +290,10 @@ pub struct StackLayout {
 /// `AT_BASE`/`AT_EXECFN`，另加取值恒定的身份与时钟项，使未修改的 libc 启动路径
 /// （`__init_libc` 一类的读取）不需要特例分支。
 ///
-/// 明确不提供：`AT_RANDOM`（项目无安全熵，D13 未裁决）、`AT_PLATFORM`（需要额外
-/// 栈上字符串）、`AT_SYSINFO_EHDR`（无 vDSO）。`AT_HWCAP` 取 0，即"不宣告任何
-/// 可选 CPU 特性"；libc 仍须用 `cpuid` 判定，不得把 0 读成"特性缺失"的证明。
+/// 明确不提供：`AT_PLATFORM`（需要额外栈上字符串）、`AT_SYSINFO_EHDR`（无 vDSO）。
+/// `AT_HWCAP` 取 0，即"不宣告任何可选 CPU 特性"；libc 仍须用 `cpuid` 判定，不得把 0
+/// 读成"特性缺失"的证明。`AT_RANDOM` 由 [`build_initial_stack`] 单独追加：它指向栈上的
+/// [`AT_RANDOM_BYTES`]，是公开常量而非熵（D13 裁决：兼容字段，不构成机密性主张）。
 pub fn static_auxv(plan: &ExecPlan) -> [(u64, u64); 13] {
     [
         (AT_PAGESZ, 4096),
@@ -317,7 +326,7 @@ pub fn build_initial_stack(
         *slot = (key, value);
     }
     pairs[13] = (AT_HWCAP, 0);
-    build_stack_inner(top, argv, envp, &pairs, true, buffer)
+    build_stack_inner(top, argv, envp, &pairs, true, true, buffer)
 }
 
 /// 在 `buffer`（地址区间 `[top - len, top)`）上自顶向下构造初始栈。
@@ -332,7 +341,7 @@ pub fn build_stack(
     auxv: &[(u64, u64)],
     buffer: &mut [u8],
 ) -> Result<StackLayout, ExecError> {
-    build_stack_inner(top, argv, envp, auxv, false, buffer)
+    build_stack_inner(top, argv, envp, auxv, false, false, buffer)
 }
 
 fn build_stack_inner(
@@ -341,6 +350,7 @@ fn build_stack_inner(
     envp: &[&[u8]],
     auxv: &[(u64, u64)],
     execfn: bool,
+    random: bool,
     buffer: &mut [u8],
 ) -> Result<StackLayout, ExecError> {
     if buffer.len() < 64 || top & 7 != 0 {
@@ -352,12 +362,24 @@ fn build_stack_inner(
     if argv.iter().chain(envp).any(|s| s.contains(&0)) {
         return Err(ExecError::InvalidString);
     }
-    let tail = if execfn { 2 } else { 0 };
+    let tail = (if execfn { 2 } else { 0 }) + (if random { 2 } else { 0 });
     let word_count_needed = 1 + argv.len() + 1 + envp.len() + 1 + 2 * auxv.len() + 2 + tail;
     if word_count_needed > 64 {
         return Err(ExecError::StackTooSmall);
     }
     let mut pos = 0usize; // 距栈顶的字节数（向下增长）
+    // `AT_RANDOM` 块放在栈最高处（字符串之下），保证它在缓冲区内且可读。
+    let random_addr = if random {
+        if buffer.len() < AT_RANDOM_BYTES.len() {
+            return Err(ExecError::StackTooSmall);
+        }
+        let start = buffer.len() - AT_RANDOM_BYTES.len();
+        buffer[start..].copy_from_slice(&AT_RANDOM_BYTES);
+        pos = AT_RANDOM_BYTES.len();
+        top - pos as u64
+    } else {
+        0
+    };
     let mut argv_ptrs = [0u64; 16];
     let mut envp_ptrs = [0u64; 16];
     if argv.len() > 16 || envp.len() > 16 {
@@ -401,6 +423,10 @@ fn build_stack_inner(
     for &(key, value) in auxv {
         push(key);
         push(value);
+    }
+    if random {
+        push(AT_RANDOM);
+        push(random_addr);
     }
     if execfn {
         // `AT_EXECFN` 必须指向本映像的 `argv[0]`（Linux 语义），因此只能在字符串
@@ -707,9 +733,13 @@ mod tests {
         assert_eq!(execfn, argv0);
         let start = base_index(execfn);
         assert_eq!(&buffer[start..start + 7], b"busybox");
-        // 无安全熵：AT_RANDOM 必须缺省，不能伪造可预测的"随机"。
-        assert_eq!(value(25), None);
-        assert_eq!(pairs.len(), 15);
+        // D13：AT_RANDOM 以公开常量提供，内容确定、可审计，且不宣称机密性。
+        let random = value(AT_RANDOM).expect("AT_RANDOM");
+        assert_ne!(random, 0);
+        assert_eq!(random & 7, 0);
+        let start = base_index(random);
+        assert_eq!(&buffer[start..start + 16], &AT_RANDOM_BYTES);
+        assert_eq!(pairs.len(), 16);
     }
 
     #[test]
