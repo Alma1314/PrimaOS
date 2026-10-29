@@ -41,6 +41,8 @@ updated: 2026-10-27
 
 2026-10-29 阶段 6 启动后的第一份机制设计：[S6-M1 同步 syscall 门控递送](2026-10-29-stage6-m1-delivery-design.md)——能力化的同步请求/答复、一次性答复、内核代理复制、无 Linux 语义。**提案，未冻结、未实现、未分配 syscall 号**。
 
+同日六项机制裁决：[S6-M1 递送机制 D17–D22](2026-10-29-stage6-m1-mechanism-decisions.md)——追加号段 73–78、答复只写 `rax`、内核代理复制、`fork`/`exec` 留 S6-M4、模型采 `BlockedWait`+请求对象、队列满时阻塞。**仍不勾选 S6-D2**。
+
 ## 阶段 5
 
 本轮进程后继：[fork 续执行、COW 提交与等待写回](2026-10-24-fork-continuation-design.md)。

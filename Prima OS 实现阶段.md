@@ -119,6 +119,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 |---|---|---|
 | 2026-10-23 | M21 技术出口评审未签署；阶段6 D10 不启动 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) |
 | 2026-10-27（签署） | **阶段5签署（SPEC-152）**：冻结 profile v2；确认 D1–D10 处置；BLK-003 按阶段5范围关闭；阶段6具备入口但按 D10 不启动。范围限有界 partial profile，不代表完整 POSIX/Linux 兼容 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md) |
+| 2026-10-29（裁决） | **D17–D22 关闭**：S6-M1 追加号段 73–78（逐项分配、不重编号 1–72）；v1 答复只写 `rax`；请求者内存用内核代理复制；门控任务 `fork`/`exec` 由 LibOS 答复 `ENOSYS` 留 S6-M4；抽象模型复用 `BlockedWait`＋请求对象；队列满阻塞不丢弃。不勾选 S6-D2 | [机制裁决](docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md) |
 | 2026-10-29（启动） | **阶段 6 启动（作者指令）**：状态 未开始→进行中；D10 的实质约束（Linux persona 留用户态、内核只做中立机制）不变；D14 的 7-A 探索原型改为 S6-M1 评审前检查点；首个增量＝D13 `AT_RANDOM` + D12 白名单台账 | [启动报告](docs/superpowers/reports/2026-10-29-stage6-start.md) |
 | 2026-10-28（裁决） | **D11–D16 关闭**：D11 动态链接维持阶段 7（7-E）；D12 白名单冻结为 `busybox-static 1.36.1` 六 applet + 2 探针（sha256 固定）；D13 提供公开确定的 `AT_RANDOM`（非机密、无 ASLR/canary 安全主张）；D14 多 LibOS 升 7-A P0 且阶段 6 前先做有界探索原型；D15 SMP 前先做状态按 CPU 分区；D16 阶段 7 拆为 9 条子轨。**不启动阶段 6**，S6-M1 递送仍需架构评审 | [前置裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md) |
 | 2026-10-28（实现） | 阶段 6 准备性硬化：ELF 段同余对齐、`PT_LOAD` 上限 4→8、W+X/可执行栈拒绝、初始栈 auxv 收敛并补齐 `AT_EXECFN`；阶段状态不变、未勾选任何条件 | [装载切片报告](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md) |
