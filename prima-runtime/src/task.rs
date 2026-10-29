@@ -48,7 +48,7 @@ fn task_create_words(spec: &TaskSpec) -> [u64; TASK_CREATE_WORDS] {
         spec.entry,
         spec.stack_top,
         spec.parent_namespace.map_or(0, Capability::as_raw),
-        spec.root_rights.bits() as u64,
+        spec.root_rights.bits(),
         spec.initial_capabilities[0].map_or(0, Capability::as_raw),
         spec.initial_capabilities[1].map_or(0, Capability::as_raw),
         spec.name,

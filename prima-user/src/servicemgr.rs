@@ -487,6 +487,8 @@ pub extern "C" fn _start(
     // SPEC-105/106：建端点状态。
     let mut ns: Option<Capability> = None;
     let mut isolated_ns: Option<Capability> = None;
+    let mut domain_roots: [Option<Capability>; 2] = [None; 2];
+    let mut domain_managers: [Option<Capability>; 2] = [None; 2];
     let mut pending: [Option<Pending>; SERVICES] = [None; SERVICES];
     let mut c_probe: Option<Pending> = None;
     let mut tty_pending: Option<Pending> = None;
@@ -1275,6 +1277,14 @@ pub extern "C" fn _start(
         if let (Some(parent_ns), Some(_)) = (isolated_ns, segment) {
             let mut slot = 0;
             while slot < SERVICES {
+                let parent_ns = if prima_user::domain_probe::ENABLED && slot < 2 {
+                    if domain_roots[slot].is_none() {
+                        domain_roots[slot] = runtime.namespace_create().ok();
+                    }
+                    domain_roots[slot].unwrap_or(parent_ns)
+                } else {
+                    parent_ns
+                };
                 if !created_slot[slot]
                     && let Some(spec) = pending[slot]
                     && let Some((_token, manager, _entry, stack, _data)) = create_service(
@@ -1288,6 +1298,9 @@ pub extern "C" fn _start(
                         None,
                     )
                 {
+                    if slot < 2 {
+                        domain_managers[slot] = Some(manager);
+                    }
                     if slot == STORE_SLOT {
                         store_manager = Some(manager);
                     }
@@ -1612,6 +1625,33 @@ pub extern "C" fn _start(
                     }
                 }
                 cleanup_done = true;
+            }
+            if prima_user::domain_probe::ENABLED && cleanup_done {
+                let passed = run_domain_probe(
+                    &runtime,
+                    self_cap,
+                    &registry,
+                    domain_roots,
+                    domain_managers,
+                    mgr_serial,
+                );
+                if let Some(serial) = mgr_serial {
+                    let _ = serial_puts(
+                        &runtime,
+                        serial,
+                        if passed {
+                            b"S6DOM|PASS\r\n"
+                        } else {
+                            b"S6DOM|FAIL\r\n"
+                        },
+                    );
+                }
+                if let Ok(exit) = runtime.dev_ioport_create(0xf4, 1) {
+                    let _ = runtime.dev_ioport_out(exit, 0xf4, if passed { 16 } else { 17 });
+                }
+                loop {
+                    let _ = runtime.receive();
+                }
             }
             if echo_mode && let Some(serial) = mgr_serial {
                 let _ = serial_puts(&runtime, serial, b"\r\nECHO|status=");
@@ -2860,4 +2900,109 @@ fn idle() -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
     idle()
+}
+
+fn run_domain_probe(
+    runtime: &Runtime<impl SyscallTransport>,
+    self_cap: Capability,
+    registry: &[Option<Endpoint>; SERVICES],
+    roots: [Option<Capability>; 2],
+    managers: [Option<Capability>; 2],
+    serial: Option<Capability>,
+) -> bool {
+    use prima_user::domain_probe::{FOREIGN, INIT, LOG, TAG_MASK, WORD_MASK};
+    let (Some(a), Some(b), Some(ra), Some(rb), Some(kill), Some(serial)) = (
+        registry[0],
+        registry[1],
+        roots[0],
+        roots[1],
+        managers[0],
+        serial,
+    ) else {
+        return false;
+    };
+    if ra == rb || ra.as_raw() & !WORD_MASK != 0 || rb.as_raw() & !WORD_MASK != 0 {
+        return false;
+    }
+    let _ = serial_puts(runtime, serial, b"S6DOM|roots a=");
+    let _ = serial_dec(runtime, serial, ra.as_raw());
+    let _ = serial_puts(runtime, serial, b";b=");
+    let _ = serial_dec(runtime, serial, rb.as_raw());
+    let _ = serial_puts(runtime, serial, b"\r\n");
+    for (endpoint, root) in [(a, ra), (b, rb)] {
+        let Ok(log) = runtime.cap_derive(self_cap, Rights::from_bits(1 | (1 << 5))) else {
+            return false;
+        };
+        if runtime.namespace_bind(root, "log", log).is_err() {
+            return false;
+        }
+        let Ok(view) = runtime.cap_derive(root, NS_RESOLVE_RIGHTS) else {
+            return false;
+        };
+        if runtime
+            .send(
+                TaskId::from_raw(endpoint.id as u32),
+                endpoint.authority,
+                INIT,
+                &[view],
+            )
+            .is_err()
+        {
+            return false;
+        }
+    }
+    // Both clients must have initialized the same VA before either checks it.
+    let mut initialized = 0u8;
+    for _ in 0..2 {
+        let Ok(message) = runtime.receive() else {
+            return false;
+        };
+        if message.sender == Some(TaskId::from_raw(a.id as u32))
+            && message.payload == INIT | a.id
+            && initialized & 1 == 0
+        {
+            initialized |= 1;
+        } else if message.sender == Some(TaskId::from_raw(b.id as u32))
+            && message.payload == INIT | b.id
+            && initialized & 2 == 0
+        {
+            initialized |= 2;
+        } else {
+            return false;
+        }
+    }
+    if initialized != 3 {
+        return false;
+    }
+    for (step, endpoint, foreign) in [(0, a, rb), (1, b, ra), (2, b, ra)] {
+        if step == 2 && runtime.process_terminate(kill, 9).is_err() {
+            return false;
+        }
+        if runtime
+            .send(
+                TaskId::from_raw(endpoint.id as u32),
+                endpoint.authority,
+                FOREIGN | foreign.as_raw(),
+                &[],
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(message) = runtime.receive() else {
+            return false;
+        };
+        if message.sender != Some(TaskId::from_raw(endpoint.id as u32))
+            || message.payload & TAG_MASK != LOG
+            || message.payload & WORD_MASK != (endpoint.id << 8) | 7
+        {
+            return false;
+        }
+        let _ = serial_puts(runtime, serial, b"S6DOM|log step=");
+        let _ = serial_dec(runtime, serial, step);
+        let _ = serial_puts(runtime, serial, b";task=");
+        let _ = serial_dec(runtime, serial, endpoint.id);
+        let _ = serial_puts(runtime, serial, b";flags=7\r\n");
+    }
+    true
 }

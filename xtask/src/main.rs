@@ -25,6 +25,19 @@ fn run() -> Result<(), String> {
             let _images = build_and_report()?;
             Ok(())
         }
+        "test-domains" => {
+            require_no_args(&rest)?;
+            if env::var_os("PRIMA_STAGE6_DOMAINS").is_none() {
+                return Err(
+                    "test-domains requires PRIMA_STAGE6_DOMAINS=1 at cargo build time".to_owned(),
+                );
+            }
+            let images = build_and_report()?;
+            for round in 1..=2 {
+                qemu::run_bios_domains(&images.bios, round)?;
+            }
+            Ok(())
+        }
         "run" => {
             require_no_args(&rest)?;
             let images = build_and_report()?;
@@ -596,7 +609,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
      \x20      cargo xtask test-rust [R1|R2|R3]\n\

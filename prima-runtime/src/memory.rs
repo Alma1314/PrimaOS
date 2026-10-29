@@ -7,7 +7,7 @@ impl<T: SyscallTransport> Runtime<T> {
     pub fn memseg_create(&self, pages: u64, allowed_access: Rights) -> Result<Capability> {
         let raw = self.call(
             syscall::MEMSEG_CREATE,
-            [pages, allowed_access.bits() as u64, 0, 0, 0, 0],
+            [pages, allowed_access.bits(), 0, 0, 0, 0],
         )?;
         Capability::from_raw(raw)
     }
@@ -30,7 +30,7 @@ impl<T: SyscallTransport> Runtime<T> {
                 segment_offset,
                 target_address,
                 pages,
-                access.bits() as u64,
+                access.bits(),
             ],
         )
     }

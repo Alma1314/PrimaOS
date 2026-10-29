@@ -56,6 +56,7 @@ pub extern "C" fn _start(
     peer_raw: u64,
 ) -> ! {
     let runtime = Runtime::x86_64();
+    let mut domains = prima_user::domain_probe::Client::default();
     let peer = TaskId::from_raw(peer_raw as u32);
     if let (Ok(self_cap), Ok(send_cap), Ok(id)) = (
         Capability::from_raw(self_cap_raw),
@@ -85,6 +86,9 @@ pub extern "C" fn _start(
             let Ok(message) = runtime.receive() else {
                 break;
             };
+            if domains.handle(&runtime, self_cap, peer, send_cap, message) {
+                continue;
+            }
             if let Some(segment) = message.capabilities[0] {
                 if runtime
                     .memseg_map(segment, self_cap, 0, USER_HELLO_VA, 1, HELLO_RW_ACCESS)
@@ -130,7 +134,13 @@ pub extern "C" fn _start(
         }
     }
     loop {
-        let _ = runtime.receive();
+        if let (Ok(message), Ok(self_cap), Ok(send_cap)) = (
+            runtime.receive(),
+            Capability::from_raw(self_cap_raw),
+            Capability::from_raw(send_cap_raw),
+        ) {
+            domains.handle(&runtime, self_cap, peer, send_cap, message);
+        }
     }
 }
 

@@ -34,16 +34,16 @@ impl Capability {
 /// Runtime 权限位集。位号由内核规范定义；构造该值本身不会授予对应权限。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(transparent)]
-pub struct Rights(u32);
+pub struct Rights(u64);
 
 impl Rights {
     /// 从规范定义的位集构造权限请求。
-    pub const fn from_bits(bits: u32) -> Self {
+    pub const fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
 
     /// 返回权限位集，供内核原语和服务协议使用。
-    pub const fn bits(self) -> u32 {
+    pub const fn bits(self) -> u64 {
         self.0
     }
 }
@@ -53,8 +53,30 @@ impl<T: crate::SyscallTransport> crate::Runtime<T> {
     pub fn cap_derive(&self, parent: Capability, requested: Rights) -> crate::Result<Capability> {
         let raw = self.call(
             crate::syscall::CAP_DERIVE,
-            [parent.as_raw(), requested.bits() as u64, 0, 0, 0, 0],
+            [parent.as_raw(), requested.bits(), 0, 0, 0, 0],
         )?;
         Capability::from_raw(raw)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Runtime, SyscallTransport, TransportError, syscall};
+
+    struct Echo;
+    impl SyscallTransport for Echo {
+        fn invoke(&self, number: u64, args: [u64; 6]) -> core::result::Result<u64, TransportError> {
+            assert_eq!(number, syscall::CAP_DERIVE);
+            assert_eq!(args[1], (1u64 << 32) | (1u64 << 63) | 1);
+            Ok(args[0])
+        }
+    }
+
+    #[test]
+    fn capability_request_transports_high_right_bits_without_truncation() {
+        let rights = Rights::from_bits((1u64 << 32) | (1u64 << 63) | 1);
+        let cap = Capability::from_raw(0x1_0000_0001).unwrap();
+        assert_eq!(Runtime::new(Echo).cap_derive(cap, rights), Ok(cap));
     }
 }

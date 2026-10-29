@@ -4,7 +4,7 @@ kind: reference
 authority: model-mapping
 status: maintained
 lifecycle: current
-updated: 2026-10-26
+updated: 2026-10-30
 ---
 
 # 形式化模型与内核映照（Lean）
@@ -122,3 +122,17 @@ Timer/异常fan-out/WaitObject/upcall/远端数据的cosir host回归已通过�
 原memseg/tlb/cow/GPU/设备/调度的范围限制继续有效；本次不自动升级REFINEMENT-PROOF或完整W1–W17。
 
 本轮cosir authority模型21项Miri检查通过；它属于host解释执行证据，不扩展本页Lean定理或机器细化范围。
+
+
+## 2026-10-29 门控探索的映照边界
+
+[S6-M1 协议](../docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md)与
+[整改报告](../docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)新增 host-only
+`cosir::gate`/`gate_memory` 组合模型；复用真实 `BlockedWait`/WaitObject 双向注册和 W17 检查，
+Gate/Request 是外围实验对象，未加入冻结的 `CapObject`，也没有新增 Lean 构造子或定理。
+模型私有 token 与服务者检查不等于真实 CapTable 派生/移动/drop 已接线；跨任务页复制只证明
+host 私有/COW 页预检和提交，不证明硬件页表、TLB、调度、分配失败或共享可写页。
+
+内核与 Runtime 的机器权限载体扩为 u64，既有有效权限仍限 bit0–30，所有未知高位被拒绝；
+GateAttach/GateServe 仅有协议中的 bit31/32 目标，尚未发布。上表 COSIR u32 / Lean UInt32
+属于独立抽象权限命名空间，保持原样。本轮 Rust 测试不扩展任何 Lean 证明覆盖，未重新运行 Lean。

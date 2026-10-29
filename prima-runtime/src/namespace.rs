@@ -91,7 +91,7 @@ impl<T: SyscallTransport> Runtime<T> {
                 namespace.as_raw(),
                 path_ptr,
                 path_len,
-                requested.bits() as u64,
+                requested.bits(),
                 0,
                 0,
             ],

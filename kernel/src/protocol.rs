@@ -119,11 +119,11 @@ pub(crate) fn bootstrap_ready(snapshot: &BootstrapSnapshot) {
     serial::write_bytes(b";free_frames=");
     write_u64(snapshot.free_frames);
     serial::write_bytes(b";image_rights=");
-    write_rights(snapshot.image_rights);
+    write_rights(snapshot.image_rights());
     serial::write_bytes(b";namespace_rights=");
-    write_rights(snapshot.namespace_rights);
+    write_rights(snapshot.namespace_rights());
     serial::write_bytes(b";task_rights=");
-    write_rights(snapshot.task_rights);
+    write_rights(snapshot.task_rights());
     serial::write_bytes(b"\r\n");
 }
 

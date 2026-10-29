@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-27
+updated: 2026-10-30
 ---
 
 # Reports 索引
@@ -96,13 +96,15 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-start-stack.md](2026-10-18-stage5-c-start-stack.md) | 阶段 5：C Task 初始栈见证 |
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
-## 阶段 6（进行中，2026-10-28 启动）
+## 阶段 6（进行中，2026-10-29 启动）
 
 阶段 6 于 2026-10-29 由作者指令启动，状态为**进行中**；退出条件与交付检查仍全部未勾选。
 本节收录阶段 6 的实现证据与准备性证据。
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-29 | [2026-10-29-stage6-m1-blocker-closure.md](2026-10-29-stage6-m1-blocker-closure.md) | R1–R6 协议收口、候选 A 技术设计评审、u64 权限及 8 组 host 反例；D14 ring3 人格桩 QEMU 双轮，非 Gate 接线/阶段退出 |
+| 2026-10-29 | [2026-10-29-stage6-m1-decision-review.md](2026-10-29-stage6-m1-decision-review.md) | S6-M1 六项决定复审：保留路线，R1–R6 需修订；静态预审，非架构通过 |
 | 2026-10-29 | [2026-10-29-stage6-start.md](2026-10-29-stage6-start.md) | 阶段 6 启动与首个 S6-M2 增量：确定性 `AT_RANDOM` |
 | 2026-10-28 | [2026-10-28-stage6-loader-slice.md](2026-10-28-stage6-loader-slice.md) | 阶段 6 装载一致性切片（启动前）：静态 ELF 装载与初始 auxv，含未完成清单 |
 

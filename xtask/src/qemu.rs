@@ -73,6 +73,27 @@ pub(crate) fn run_bios_test(image: &Path) -> Result<(), String> {
     protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, &output))
 }
 
+/// D14 has its own scoped witness; the supervisor intentionally terminates
+/// ALPHA and exits through a capability-authorized debug port before init's
+/// ordinary acceptance. It must not be counted as a normal boot-suite round.
+pub(crate) fn run_bios_domains(image: &Path, round: u32) -> Result<(), String> {
+    let output = run_captured(image)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    fs_write_domain_log(root, round, &output.stdout)?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|e| with_output(e, &output))?;
+    protocol::validate_domains(&output.stdout).map_err(|e| with_output(e, &output))?;
+    println!("PASS S6DOM round={round} roots=2 shared_log=3 denied=3 survivor=1");
+    Ok(())
+}
+fn fs_write_domain_log(root: &Path, round: u32, text: &str) -> Result<(), String> {
+    std::fs::write(
+        root.join(format!("target/prima-os/S6DOM-{round}.log")),
+        text,
+    )
+    .map_err(|e| format!("could not preserve domain witness: {e}"))
+}
+
 /// M5–M9：托管程序轮（echo、时间/fd/vfs/meta 探针与 sbase cat/ls 共用同一证据通道）。
 pub(crate) fn run_bios_test_program(
     image: &Path,

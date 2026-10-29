@@ -7,6 +7,8 @@
 pub mod abstract_ops;
 pub mod authority;
 pub mod cow_refine;
+pub mod gate;
+pub mod gate_memory;
 pub mod machine;
 pub mod memseg_refine;
 pub mod ops;

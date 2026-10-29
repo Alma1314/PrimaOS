@@ -1321,7 +1321,7 @@ pub fn install_boot_info(offset: u64) -> Result<(), VspaceError> {
     );
     write_u64(
         prima_abi::boot_abi::OFF_TASK_CREATE_ROOT_NS_RIGHTS,
-        TASK_CREATE_ROOT_NS_RIGHTS.bits() as u64,
+        TASK_CREATE_ROOT_NS_RIGHTS.bits(),
     );
     Ok(())
 }

@@ -4,13 +4,34 @@ kind: specification
 authority: mechanism-scope-decision
 status: accepted-scoped
 lifecycle: current
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # S6-M1 递送机制的六项裁决（D17–D22）
 
 承接 [S6-M1 递送设计提案](2026-10-29-stage6-m1-delivery-design.md)的六个开放问题，
 编号接续[阶段 6–7 裁决](2026-10-28-stage6-7-release-decisions.md)的 D11–D16。
+
+## 当前后继：M1a 协议与有界评审收口
+
+[协议](2026-10-29-stage6-m1-protocol.md)与[整改报告](../reports/2026-10-29-stage6-m1-blocker-closure.md)
+闭合当前 R1–R6 定义阻塞，并记录候选 A 技术设计评审、host 反例与 D14 ring3 双轮探索。
+明确取代下文早期措辞的三点：D19 改为可信挂接者授权整个私有地址空间、请求存活期间按显式
+client VA 代理复制（支持嵌套指针）；D22 v1 所有门控等待不可警报、无自动取消/重放、无完成时限；
+审计耗尽为全局 fail-stop。下文原始依据与随后静态复审保留为历史，不再作为这些细节的现行协议。
+机器 Gate ABI、真实能力生命周期与 G1–G3 仍待 M1b，不勾选 S6-D2。
+
+## 后继复审（2026-10-29）
+
+[六项决定复审 R1–R6](../reports/2026-10-29-stage6-m1-decision-review.md)保留下文六条路线，
+但发现接线前缺口。下文保留原裁决依据，**不能继续据此宣称有界等待、自动重放安全、
+现有复制 helper 可直接跨任务使用或 A 已通过 COSIR 评审**。当前修订见
+[递送设计的冻结前义务](2026-10-29-stage6-m1-delivery-design.md#冻结前义务2026-10-29-复审)。
+
+复审修订范围：D19 的复制授权/COW/双端预检需显式实现；D20 的 ENOSYS 由 LibOS 经普通
+reply/abort 编码，内核只搬运不透明值；孤儿返回值由可信挂接者配置。D21 必须闭合 W17、
+请求别名一次终结与权限位宽。D22 改为真实预留下的阻塞背压，明确 EAGAIN 可审计；
+Delivered 后取消须确认，不自动重放，服务不进展时不保证完成时限。上述协议仍待冻结。
 
 ## 性质与效力
 

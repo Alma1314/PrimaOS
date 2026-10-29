@@ -93,10 +93,9 @@ pub const NS_PATH_Y_OFF: u64 = 27;
 /// SPEC-081：路径文本数据区的字节长度（含各串的 NUL 终止符与尾部对齐）。
 pub const NS_PATH_DATA_LEN: usize = 32;
 /// SPEC-081：`{Derive, SegMapR}` 位集——ring3 见证里被绑进 Namespace 的可绑定 Capability 权限。
-pub const NS_BIND_RIGHTS_BITS: u64 =
-    Rights::from_rights(&[Right::Derive, Right::SegMapR]).bits() as u64;
+pub const NS_BIND_RIGHTS_BITS: u64 = Rights::from_rights(&[Right::Derive, Right::SegMapR]).bits();
 /// SPEC-081：Namespace 根权限位集（`ns_create` 铸出的根 cap，供派生副本用）。
-pub const NS_ROOT_RIGHTS_BITS: u64 = crate::bootstrap::NAMESPACE_RIGHTS.bits() as u64;
+pub const NS_ROOT_RIGHTS_BITS: u64 = crate::bootstrap::NAMESPACE_RIGHTS.bits();
 
 /// SPEC-081：Y 回执页中各步的字节偏移（紧接 SPEC-067 的 496）。
 pub const NS_RECEIPT_CREATE_A: u64 = 512;
@@ -605,7 +604,7 @@ fn cap_derive_call(raw_parent: u64, rights_bits: u64) -> u64 {
     let Ok(parent) = decode_caller_handle(raw_parent) else {
         return encode_errno(Errno::Invalid);
     };
-    let rights = Rights::from_bits(rights_bits as u32);
+    let rights = Rights::from_bits(rights_bits);
     match bootstrap::derive_capability(sched::current(), parent, rights) {
         Ok(child) => encode_caller_handle(child),
         Err(error) => encode_errno(derive_errno(error)),
@@ -765,7 +764,7 @@ fn ns_resolve_call(raw_ns_cap: u64, path_ptr: u64, path_len: u64, rights_bits: u
         Ok(path) => path,
         Err(errno) => return encode_errno(errno),
     };
-    let rights = Rights::from_bits(rights_bits as u32);
+    let rights = Rights::from_bits(rights_bits);
     match bootstrap::ns_resolve(sched::current(), ns_cap, path, rights) {
         Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(ns_errno(error)),
@@ -2887,7 +2886,7 @@ fn memseg_create_call(page_count: u64, access_bits: u64) -> u64 {
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
-    let access = Rights::from_bits(access_bits as u32);
+    let access = Rights::from_bits(access_bits);
     match bootstrap::memseg_create(sched::current(), page_count as usize, access, offset) {
         Ok(handle) => encode_caller_handle(handle),
         Err(error) => encode_errno(memseg_errno(error)),
@@ -2922,7 +2921,7 @@ fn memseg_map_call(
     let Some(root) = sched::root(task_id) else {
         return encode_errno(Errno::NoEnt);
     };
-    let access = Rights::from_bits(access_bits as u32);
+    let access = Rights::from_bits(access_bits);
     match bootstrap::memseg_map(
         sched::current(),
         seg_cap,
@@ -2983,7 +2982,7 @@ fn memseg_protect_call(raw_task: u64, target_base: u64, page_count: u64, access_
         task_cap,
         target_base,
         page_count as usize,
-        Rights::from_bits(access_bits as u32),
+        Rights::from_bits(access_bits),
         root,
         offset,
     ) {
@@ -3445,7 +3444,7 @@ fn read_task_req(ptr: u64) -> Result<bootstrap::TaskCreateRequest, Errno> {
         entry: words[4],
         stack_top: words[5],
         parent_ns_cap: decode_optional_handle(words[6])?,
-        root_rights: Rights::from_bits(words[7] as u32),
+        root_rights: Rights::from_bits(words[7]),
         initial_caps: [
             decode_optional_handle(words[8])?,
             decode_optional_handle(words[9])?,

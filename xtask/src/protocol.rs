@@ -6433,3 +6433,64 @@ mod tests {
         }
     }
 }
+
+/// D14 bounded prototype: distinct roots, two live senders, and B after A dies.
+pub(crate) fn validate_domains(output: &str) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("S6DOM|"))
+        .collect();
+    if records.len() != 5 || records[4] != "S6DOM|PASS" {
+        return Err("S6DOM requires roots, three logs and one final PASS".to_owned());
+    }
+    let fields = |line: &str, prefix: &str, names: &[&str]| -> Result<Vec<u64>, String> {
+        line.strip_prefix(prefix)
+            .ok_or_else(|| "bad domain record".to_owned())?
+            .split(';')
+            .enumerate()
+            .map(|(i, f)| {
+                let (name, value) = f.split_once('=').ok_or_else(|| "bad field".to_owned())?;
+                if names.get(i).copied() != Some(name) {
+                    return Err("bad field name".to_owned());
+                }
+                value.parse().map_err(|_| "bad domain integer".to_owned())
+            })
+            .collect()
+    };
+    let roots = fields(records[0], "S6DOM|roots ", &["a", "b"])?;
+    if roots.len() != 2 || roots[0] == 0 || roots[1] == 0 || roots[0] == roots[1] {
+        return Err("domain roots must differ".to_owned());
+    }
+    let mut ids = [0; 3];
+    for step in 0..3 {
+        let values = fields(records[step + 1], "S6DOM|log ", &["step", "task", "flags"])?;
+        if values.len() != 3 || values[0] != step as u64 || values[1] == 0 || values[2] != 7 {
+            return Err("domain step, sender or permission/memory checks failed".to_owned());
+        }
+        ids[step] = values[1];
+    }
+    if ids[0] == ids[1] || ids[1] != ids[2] {
+        return Err("missing distinct domain/surviving sender".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::validate_domains;
+    const VALID: &str = "S6DOM|roots a=1;b=2\nS6DOM|log step=0;task=10;flags=7\nS6DOM|log step=1;task=11;flags=7\nS6DOM|log step=2;task=11;flags=7\nS6DOM|PASS\n";
+    #[test]
+    fn domain_witness_requires_isolation_distinct_senders_and_post_crash_progress() {
+        assert_eq!(validate_domains(VALID), Ok(()));
+        for bad in [
+            VALID.replace("b=2", "b=1"),
+            VALID.replace("flags=7", "flags=6"),
+            VALID.replace("step=2;task=11", "step=2;task=10"),
+            VALID.replace("S6DOM|PASS", "S6DOM|FAIL"),
+            format!("{VALID}S6DOM|PASS\n"),
+        ] {
+            assert!(validate_domains(&bad).is_err());
+        }
+    }
+}

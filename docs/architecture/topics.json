@@ -236,7 +236,12 @@
       "docs/superpowers/specs/2026-10-25-capability-location-model-design.md",
       "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
       "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
-      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md",
+      "docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md",
+      "docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md",
+      "docs/superpowers/reports/2026-10-29-stage6-m1-decision-review.md",
+      "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
+      "docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -252,13 +257,18 @@
       "cosir/src/authority/events.rs",
       "cosir/src/authority/remote.rs",
       "cosir/src/authority/wait.rs",
-      "lean/Formal/Location.lean"
+      "lean/Formal/Location.lean",
+      "cosir/src/gate.rs",
+      "cosir/src/gate_memory.rs",
+      "prima-user/src/domain_probe.rs"
     ],
     "tests": [
       "kernel/src/test_support.rs",
       "xtask/src/protocol.rs",
       "cosir/src/authority/tests.rs",
-      "cosir/src/authority/event_tests.rs"
+      "cosir/src/authority/event_tests.rs",
+      "cosir/tests/stage6_gate.rs",
+      "cosir/examples/stage6_domains.rs"
     ],
     "guide": "docs/architecture/topics/capability-ipc.md"
   },

@@ -35,13 +35,13 @@ updated: 2026-10-27
 |---|---|---|
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
-## 阶段 6–7（前置裁决，未启动）
+## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
 
 2026-10-28 裁决：[阶段 6–7 前置裁决（D11–D16）](2026-10-28-stage6-7-release-decisions.md)——白名单冻结、`AT_RANDOM` 兼容字段、多 LibOS 升 7-A 并先做探索原型、SMP 前状态分区、阶段 7 拆九条子轨。裁决不启动阶段 6，也不签署任何阶段。
 
 2026-10-29 阶段 6 启动后的第一份机制设计：[S6-M1 同步 syscall 门控递送](2026-10-29-stage6-m1-delivery-design.md)——能力化的同步请求/答复、一次性答复、内核代理复制、无 Linux 语义。**提案，未冻结、未实现、未分配 syscall 号**。
 
-同日六项机制裁决：[S6-M1 递送机制 D17–D22](2026-10-29-stage6-m1-mechanism-decisions.md)——追加号段 73–78、答复只写 `rax`、内核代理复制、`fork`/`exec` 留 S6-M4、模型采 `BlockedWait`+请求对象、队列满时阻塞。**仍不勾选 S6-D2**。
+同日六项机制裁决：[S6-M1 递送机制 D17–D22](2026-10-29-stage6-m1-mechanism-decisions.md)——追加号段 73–78、答复只写 `rax`、内核代理复制、`fork`/`exec` 留 S6-M4、模型采 `BlockedWait`+请求对象、队列满时阻塞。**仍不勾选 S6-D2**。 后继[六项决定复审](../reports/2026-10-29-stage6-m1-decision-review.md)保留路线，要求修订 R1–R6；提案未冻结，不能据原裁决推断有界等待或已可接线。
 
 ## 阶段 5
 
@@ -161,3 +161,5 @@ updated: 2026-10-27
 - [事件/位置模型组合](2026-10-26-event-authority-model-design.md)：Timer、异常、等待、远端数据的host回归及Lean有界位置证明构建已通过；机器统一验收仍进行中。
 
 - [POSIX std 后端：目标、ABI、标准入口及验证](2026-10-27-posix-std-backend-design.md)
+
+同日当前收口：[S6-M1 协议](2026-10-29-stage6-m1-protocol.md)定义真实等待、固定服务授权、不可警报等待、全地址空间代理复制、预留及全局 fail-stop；[整改证据](../reports/2026-10-29-stage6-m1-blocker-closure.md)记录候选 A 技术设计评审与 D14 有界探索。模型可执行，机器 ABI 仍未冻结、未接线。

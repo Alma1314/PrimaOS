@@ -127,7 +127,7 @@ impl Right {
         }
     }
 
-    const fn bit(self) -> u32 {
+    const fn bit(self) -> u64 {
         1 << (self as u32)
     }
 
@@ -198,14 +198,14 @@ pub enum RightsError {
 
 /// 权限有限集合（位集）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rights(u32);
+pub struct Rights(u64);
 
 impl Rights {
     pub const EMPTY: Self = Self(0);
 
     /// 由显式 Right 列表构造（const 上下文可用，供初始 Authority 常量使用）。
     pub const fn from_rights(rights: &[Right]) -> Self {
-        let mut bits = 0u32;
+        let mut bits = 0u64;
         let mut index = 0;
         while index < rights.len() {
             bits |= rights[index].bit();
@@ -215,13 +215,13 @@ impl Rights {
     }
 
     /// 原始位数（仅供跨 crate 镜像常量与测试使用）。
-    pub const fn bits(self) -> u32 {
+    pub const fn bits(self) -> u64 {
         self.0
     }
 
     /// 由原始位集还原（syscall ABI 的 `cap_derive` 请求权限），未定义位被保留原样，
     /// 由后续 `well_typed` / `subset_of` 判定拒绝。
-    pub const fn from_bits(bits: u32) -> Self {
+    pub const fn from_bits(bits: u64) -> Self {
         Self(bits)
     }
 
@@ -269,7 +269,7 @@ impl Rights {
 
     /// 解析逗号分隔的权限名。空白会被忽略；空名与未知名报错。
     pub fn parse(text: &str) -> Result<Self, RightsError> {
-        let mut bits = 0u32;
+        let mut bits = 0u64;
         for part in text.split(',') {
             let name = part.trim();
             if name.is_empty() {
@@ -324,6 +324,18 @@ mod tests {
             .render(&mut buffer)
             .expect("buffer is large enough")
             .to_owned()
+    }
+
+    #[test]
+    fn wide_rights_preserve_bit_32_and_reject_all_unknown_high_bits() {
+        let low = parse("Derive,SegMapR");
+        for bit in 31..64 {
+            let high = Rights::from_bits(1u64 << bit);
+            assert_eq!(high.bits(), 1u64 << bit);
+            assert!(!high.is_empty());
+            assert!(!high.subset_of(low));
+            assert!(!high.union(low).well_typed(ObjectKind::Segment));
+        }
     }
 
     #[test]
@@ -421,7 +433,7 @@ mod tests {
                 mask |= right.bit();
             }
             assert!(Rights::from_bits(mask).well_typed(kind));
-            for bit in 0..32 {
+            for bit in 0..64 {
                 let single = 1 << bit;
                 assert_eq!(
                     Rights::from_bits(single).well_typed(kind),

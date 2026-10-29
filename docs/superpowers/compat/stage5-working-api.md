@@ -4,7 +4,7 @@ kind: reference
 authority: scoped-compatibility-ledger
 status: working-scoped-validation
 lifecycle: current
-updated: 2026-10-27
+updated: 2026-10-30
 ---
 
 # 阶段 5 当前工作 API 与符号调用边界
@@ -140,3 +140,12 @@ xtask的台账回归只检查C分派入口均有行，不证明符号执行、�
 
 2026-10-27：sendto接受MSG_NOSIGNAL（UDP本就不产生SIGPIPE），其余未登记flags仍EINVAL；
 R3实际使用该flag，适配层host检查接受后进入长度检查并拒绝未知组合。
+
+
+## 2026-10-30 原生权限载体增量
+
+[S6-M1 整改](../reports/2026-10-29-stage6-m1-blocker-closure.md)将内核/Runtime 的 Rights
+从 u32 扩为 u64；Rust `from_bits`/`bits` 的类型随之改变。机器调用参数原本就是 u64，
+低位含义与号段 1–72 不变；未定义的 bit31–63 保留到校验并拒绝，不再截断成低位请求。
+此次没有新增 Gate 对象/权利或 73–78 调用。候选 Gate 的审计耗尽 fail-stop 仅属于其
+[待接线协议](../specs/2026-10-29-stage6-m1-protocol.md)，不改现有原生 AuditFull 返回规则。

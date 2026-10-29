@@ -1148,9 +1148,20 @@ pub struct BootstrapSnapshot {
     pub image_len: u64,
     pub image_frames: u64,
     pub free_frames: u64,
-    pub image_rights: Rights,
-    pub namespace_rights: Rights,
-    pub task_rights: Rights,
+}
+
+// Initial rights are immutable constants, not independent snapshot state. Keep
+// them computed so widening Rights does not enlarge the bounded bootstrap stack.
+impl BootstrapSnapshot {
+    pub const fn image_rights(self) -> Rights {
+        IMAGE_RIGHTS
+    }
+    pub const fn namespace_rights(self) -> Rights {
+        NAMESPACE_RIGHTS
+    }
+    pub const fn task_rights(self) -> Rights {
+        TASK_RIGHTS
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8978,9 +8989,6 @@ pub fn create_snapshot(
         image_len,
         image_frames: image_frames as u64,
         free_frames: free_frames as u64,
-        image_rights: IMAGE_RIGHTS,
-        namespace_rights: NAMESPACE_RIGHTS,
-        task_rights: TASK_RIGHTS,
     })
 }
 
@@ -14100,9 +14108,9 @@ mod tests {
         assert_eq!(snapshot.image_len, 0x3000);
         assert_eq!(snapshot.image_frames, 3);
         assert_eq!(snapshot.free_frames, 16);
-        assert_eq!(snapshot.image_rights, IMAGE_RIGHTS);
-        assert_eq!(snapshot.namespace_rights, NAMESPACE_RIGHTS);
-        assert_eq!(snapshot.task_rights, TASK_RIGHTS);
+        assert_eq!(snapshot.image_rights(), IMAGE_RIGHTS);
+        assert_eq!(snapshot.namespace_rights(), NAMESPACE_RIGHTS);
+        assert_eq!(snapshot.task_rights(), TASK_RIGHTS);
     }
 
     #[test]

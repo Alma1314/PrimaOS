@@ -89,7 +89,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（179）
+## report（181）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -271,6 +271,8 @@
 | [POSIX std 后继：文件I/O与IPC接收归账](../superpowers/reports/2026-10-27-posix-std-file-io-report.md) | historical | `docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md` |
 | [阶段 5 出口签署（SPEC-152）](../superpowers/reports/2026-10-27-stage5-exit-signoff.md) | current | `docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md` |
 | [阶段 6 准备性切片：静态 ELF 装载一致性与初始 auxv](../superpowers/reports/2026-10-28-stage6-loader-slice.md) | current | `docs/superpowers/reports/2026-10-28-stage6-loader-slice.md` |
+| [S6-M1 当前评审阻塞整改、COSIR 技术评审与 7-A 有界探索](../superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md) | historical | `docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md` |
+| [S6-M1 六项决定复审：保留最小路线，纠正安全与活性主张](../superpowers/reports/2026-10-29-stage6-m1-decision-review.md) | historical | `docs/superpowers/reports/2026-10-29-stage6-m1-decision-review.md` |
 | [阶段 6 启动与首个 S6-M2 增量：确定性 `AT_RANDOM`](../superpowers/reports/2026-10-29-stage6-start.md) | current | `docs/superpowers/reports/2026-10-29-stage6-start.md` |
 
 ## spec（4）
@@ -282,7 +284,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（84）
+## specification（85）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -370,6 +372,7 @@
 | [阶段 6–7 前置裁决（D11–D16）](../superpowers/specs/2026-10-28-stage6-7-release-decisions.md) | current | `docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md` |
 | [S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）](../superpowers/specs/2026-10-29-stage6-m1-delivery-design.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md` |
 | [S6-M1 递送机制的六项裁决（D17–D22）](../superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md` |
+| [S6-M1 协议收口：候选 A、单服务者与不可警报等待](../superpowers/specs/2026-10-29-stage6-m1-protocol.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md` |
 
 ## template（4）
 
