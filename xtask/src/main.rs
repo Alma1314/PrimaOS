@@ -1,4 +1,5 @@
 mod compat;
+mod gate_audit;
 mod image;
 mod lint;
 mod linux;
@@ -19,7 +20,20 @@ fn run() -> Result<(), String> {
     let command = args.next().ok_or_else(usage)?;
     let rest: Vec<String> = args.collect();
 
+    if cfg!(feature = "gate-audit-probe") && command != "test-gate-audit" {
+        return Err("gate-audit-probe images are only for test-gate-audit".to_owned());
+    }
+
     match command.as_str() {
+        "test-gate-audit" => {
+            require_no_args(&rest)?;
+            let site = gate_audit::selected_site()?;
+            let images = build_and_report()?;
+            for round in 1..=2 {
+                qemu::run_bios_gate_audit(&images.bios, site, round)?;
+            }
+            Ok(())
+        }
         "build" => {
             require_no_args(&rest)?;
             let _images = build_and_report()?;
@@ -611,6 +625,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 fn usage() -> String {
     "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      PRIMA_GATE_AUDIT_SITE=<site> cargo run -p xtask --features gate-audit-probe -- test-gate-audit\n\
      \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
      \x20      cargo xtask test-rust [R1|R2|R3]\n\
      \x20      cargo xtask test-musl [--host-only]\n\

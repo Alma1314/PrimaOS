@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+gate-audit-probe = ["kernel/gate-audit-probe"]
+
 [dependencies]
 prima-abi = { path = "../prima-abi" }
 prima-initgen = { path = "../prima-initgen" }

@@ -94,3 +94,9 @@ WaitSignal/WaitDestroy 权限。公共 32 与私有 80 的对象预算独立。
 AuditFull 收紧为首次诊断与持久停止，并在分派、调度及 IRQ 入口消费停止标记；
 [gate_audit.rs](../../../kernel/src/gate_audit.rs) 的记录与普通日志池独立，不能释放压力后重试。
 Gate 完整事务与 G1–G3 仍需后继验证。
+
+[裸机耗尽验证后继](../../superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md)提供
+显式编译启用的七边界 QEMU 探针与停止调用变异拒绝；实现见
+[gate_audit_probe.rs](../../../kernel/src/gate_audit_probe.rs)、
+[专用 runner/校验器](../../../xtask/src/gate_audit.rs)。这是既有控制器的故障注入证据，
+不是门控 ring3 服务、Gate 生命周期或 G1–G3；普通镜像不包含该探针。

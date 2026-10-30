@@ -11,6 +11,9 @@ use prima_ostd::sync::StaticCell;
 pub mod completion;
 #[path = "gate_audit.rs"]
 pub mod gate_audit;
+#[cfg(feature = "gate-audit-probe")]
+#[path = "gate_audit_probe.rs"]
+pub mod gate_audit_probe;
 
 pub const INIT_TASK_ID: u32 = 1;
 /// 初始根 Capability 的**物理槽索引**（S2-D1：句柄 = 槽索引 + generation）。

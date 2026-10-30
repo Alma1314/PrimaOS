@@ -79,12 +79,16 @@ impl BootstrapState {
 /// Check outside the State lock, before dispatch, wake processing or scheduling.
 /// Uses the existing terminal kernel panic path (QEMU failure exit, CPU halt on
 /// hardware); the dedicated record exists before any diagnostic output begins.
-pub fn enforce_stop() {
+pub fn enforce_stop(_boundary: &'static str) {
+    #[cfg(feature = "gate-audit-probe")]
+    super::gate_audit_probe::before(_boundary);
     let diagnostic = BOOTSTRAP_STATE.with(|slot| {
         slot.as_ref()
             .and_then(BootstrapState::gate_audit_diagnostic)
     });
     enforce_diagnostic(diagnostic);
+    #[cfg(feature = "gate-audit-probe")]
+    super::gate_audit_probe::after(_boundary);
 }
 
 fn enforce_diagnostic(diagnostic: Option<Diagnostic>) {

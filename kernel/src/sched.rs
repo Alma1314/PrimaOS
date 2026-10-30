@@ -389,7 +389,7 @@ pub fn clear_task(task_id: u32) {
 
 /// 选择下一个 Ready 任务（最小 id，排除 `cur`）。
 pub fn pick_next(cur: u32) -> Option<u32> {
-    bootstrap::gate_audit::enforce_stop();
+    bootstrap::gate_audit::enforce_stop("pick-next");
     (0..MAX_TASKS as u32)
         .filter(|task_id| *task_id != cur)
         .find(|task_id| bootstrap::task_status(*task_id) == Some(bootstrap::TaskStatus::Ready))
@@ -520,7 +520,7 @@ pub fn flush_deferred_frames() {
 /// [`crate::vspace::clone_root`] 复制了 bootloader 根的全部 PML4 项，故内核高半区
 /// （本函数所在代码、当前栈、直映射）在新根下仍然可见。
 pub fn resume(task_id: u32) -> ! {
-    bootstrap::gate_audit::enforce_stop();
+    bootstrap::gate_audit::enforce_stop("resume");
     if let Some(top) = kstack_top(task_id) {
         crate::gdt::set_rsp0(top);
     }

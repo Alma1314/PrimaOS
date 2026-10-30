@@ -94,6 +94,24 @@ fn fs_write_domain_log(root: &Path, round: u32, text: &str) -> Result<(), String
     .map_err(|e| format!("could not preserve domain witness: {e}"))
 }
 
+/// Expected terminal failure, distinct from every ordinary success suite. The
+/// panic status alone is insufficient: require the nominated guard's evidence.
+pub(crate) fn run_bios_gate_audit(image: &Path, site: &str, round: u32) -> Result<(), String> {
+    let output = run_captured(image)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/S6AUDIT-{site}-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|e| format!("could not preserve audit-stop witness: {e}"))?;
+    validate_exit_code(output.status.code(), PANIC_EXIT_CODE)
+        .map_err(|e| with_output(e, &output))?;
+    crate::gate_audit::validate_output(&output.stdout, site)
+        .map_err(|e| with_output(e, &output))?;
+    println!("PASS S6AUDIT site={site} round={round} exit=35 unchanged=1");
+    Ok(())
+}
+
 /// M5–M9：托管程序轮（echo、时间/fd/vfs/meta 探针与 sbase cat/ls 共用同一证据通道）。
 pub(crate) fn run_bios_test_program(
     image: &Path,

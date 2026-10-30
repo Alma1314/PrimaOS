@@ -529,7 +529,8 @@
       "CompletionWait",
       "CompletionTicket",
       "不可警报等待",
-      "gate audit fail-stop"
+      "gate audit fail-stop",
+      "S6AUDIT"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -550,7 +551,8 @@
       "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
       "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
       "docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md",
-      "docs/superpowers/reports/2026-10-30-stage6-audit-fail-stop.md"
+      "docs/superpowers/reports/2026-10-30-stage6-audit-fail-stop.md",
+      "docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -572,7 +574,8 @@
       "cosir/src/authority/wait.rs",
       "lean/Formal/Location.lean",
       "kernel/src/completion.rs",
-      "kernel/src/gate_audit.rs"
+      "kernel/src/gate_audit.rs",
+      "kernel/src/gate_audit_probe.rs"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",
@@ -586,7 +589,8 @@
       "xtask/src/protocol.rs",
       "prima-user/src/console.rs",
       "prima-user/c/stage5_sigaction.c",
-      "cosir/src/authority/event_tests.rs"
+      "cosir/src/authority/event_tests.rs",
+      "xtask/src/gate_audit.rs"
     ],
     "guide": "docs/architecture/topics/synchronization.md"
   },

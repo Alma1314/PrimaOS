@@ -103,6 +103,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-30 | [2026-10-30-stage6-audit-stop-qemu.md](2026-10-30-stage6-audit-stop-qemu.md) | 审计停止裸机验证：七个执行边界的专用 QEMU 注入与停止调用变异拒绝；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-audit-fail-stop.md](2026-10-30-stage6-audit-fail-stop.md) | M1b 审计停止控制器：首次诊断、不可恢复标记、分派/调度/IRQ 接线；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-private-completion-waits.md](2026-10-30-stage6-private-completion-waits.md) | M1b 私有等待基础：真实对象登记、不可警报、代次完成、销毁与独立预算；Gate 尚未接入，非 G1/G2 |
 | 2026-10-30 | [2026-10-30-stage6-user-copy-transactions.md](2026-10-30-stage6-user-copy-transactions.md) | M1b/M1c 内存前置：真实页表全范围输出预检、COW 预留回滚；原生输出/IPC/wait 接入，W9 跨页 COW，非 Gate G3 |

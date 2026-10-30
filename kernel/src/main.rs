@@ -346,6 +346,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         serial::flush();
                                         qemu::exit(qemu::PANIC)
                                     }
+                                    #[cfg(feature = "gate-audit-probe")]
+                                    kernel::bootstrap::gate_audit_probe::set_observer(
+                                        audit_probe_record,
+                                    );
                                     kernel::user::enter();
                                 }
                                 Err(_) => {
@@ -381,6 +385,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 fn panic(info: &PanicInfo<'_>) -> ! {
     serial::init();
     protocol::panic_event();
+    #[cfg(feature = "gate-audit-probe")]
+    kernel::bootstrap::gate_audit_probe::panic_evidence();
     if let Some(location) = info.location() {
         serial::write_bytes(b"[panic] ");
         serial::write_bytes(location.file().as_bytes());
@@ -403,4 +409,22 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     }
     serial::flush();
     qemu::exit(qemu::PANIC)
+}
+
+#[cfg(feature = "gate-audit-probe")]
+fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe::Evidence) {
+    use core::fmt::Write;
+    struct Serial;
+    impl Write for Serial {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            serial::write_bytes(text.as_bytes());
+            Ok(())
+        }
+    }
+    let d = evidence.diagnostic;
+    let _ = writeln!(
+        Serial,
+        "S6AUDIT|{phase} site={};owner={};required={};used={};reserved={};unchanged=1",
+        evidence.site, d.owner, d.required, d.used, d.reserved,
+    );
 }
