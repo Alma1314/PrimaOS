@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # Prima OS 实现阶段
@@ -86,6 +86,8 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 [本次报告](docs/superpowers/reports/2026-10-27-posix-std-backend-report.md)：独立Prima Unix/musl目标与完整std模块接入；
 原A子集和组织级签署边界保留，具体支持范围以R3及台账为准。
 [文件I/O与接收归账续做](docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md)已通过单次完整36组72/72轮、workspace1020、lint、三种Rust模式Clippy与compat；V4扩展和I1新归账按契约范围解释。
+
+阶段 1～5 后继复核见[2026-10-31 整改报告](docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md)：VFS 空文件内容别名、musl 检查假 PASS 与干净工作树聚焦验收修复；验证结果与限制以报告为准，阶段签署范围不变。
 
 ## 已知问题与当前阻塞
 

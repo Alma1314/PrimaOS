@@ -1198,3 +1198,25 @@ fn fork_reservation_shares_offset_and_last_holder_controls_ofd_reclamation() {
     files.close_all(&mut storage).unwrap();
     assert!(files.is_empty());
 }
+
+#[test]
+fn empty_file_offset_inside_grown_neighbor_does_not_alias_content() {
+    let mut storage = mounted();
+    let mut files = OpenFiles::<2>::new();
+    let (a, _) = files
+        .open(&mut storage, ROOT, b"/tmp/a", create_flags())
+        .unwrap();
+    files.write(&mut storage, a, b"a").unwrap();
+    let (b, _) = files
+        .open(&mut storage, ROOT, b"/tmp/b", create_flags())
+        .unwrap();
+    // b has no allocated bytes: a may grow across b's old placement hint.
+    files.write(&mut storage, a, &[b'A'; 64]).unwrap();
+    files.write(&mut storage, b, b"B").unwrap();
+    let mut bytes = [0; 65];
+    assert_eq!(files.read_at(&mut storage, a, 0, &mut bytes), Ok(65));
+    assert_eq!(bytes[0], b'a');
+    assert_eq!(&bytes[1..], &[b'A'; 64]);
+    assert_eq!(read_file(&mut storage, b"/tmp/b"), b"B");
+    files.close_all(&mut storage).unwrap();
+}

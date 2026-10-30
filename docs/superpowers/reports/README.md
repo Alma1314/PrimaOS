@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # Reports 索引
@@ -24,6 +24,8 @@ updated: 2026-10-30
 | 2026-10-24 | [2026-10-24-asterinas-reuse-report.md](2026-10-24-asterinas-reuse-report.md) | Asterinas 复用与 OSTD 临界区验证 |
 
 ## 跨阶段 / 文档体系
+
+阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 
 独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
 

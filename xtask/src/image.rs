@@ -1493,7 +1493,7 @@ pub(crate) const VFS2_EXPECTED_STDOUT: &[u8] = b"VFS2|sym=1;chain=1;ren=1;renlin
 pub(crate) const FILE_EXT_EXPECTED_STDOUT: &[u8] =
     b"FILEEXT|resize=1;pread=1;pwrite=1;cursor=1;access=1;orphan=1|ok=1\n";
 pub(crate) const VFS3_EXPECTED_STDOUT: &[u8] =
-    b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1;unlink_open=1;rename_open=1;unlink_link=1;sparse=1|ok=1;err=0\n";
+    b"VFS3|umask0=1;umask077=1;chmod=1;readonly=1;stdio=1;stdio_ro=1;missing=1;unlink_open=1;rename_open=1;unlink_link=1;sparse=1;independent=1|ok=1;err=0\n";
 
 /// M19 后继待验收的 loopback UDP 探针输出（Linux 与 Prima 逐字节相同）。
 pub(crate) const NET_EXPECTED_STDOUT: &[u8] =

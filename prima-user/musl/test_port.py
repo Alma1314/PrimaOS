@@ -5,6 +5,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+import contextlib
+import io
+import os
 import sys
 
 sys.dont_write_bytecode = True
@@ -85,6 +89,40 @@ class PortTests(unittest.TestCase):
             self.assertFalse(build.cache_valid(prefix, "stale"))
             (prefix / "lib/libc.a").write_bytes(b"")
             self.assertFalse(build.cache_valid(prefix, "current"))
+
+    def test_check_requires_current_cache_and_audits_before_pass(self):
+        with tempfile.TemporaryDirectory(prefix="prima-musl-check-") as directory:
+            root = Path(directory)
+            lock = root / "docs/superpowers/compat/musl-snapshot.lock.toml"
+            lock.parent.mkdir(parents=True)
+            lock.write_text('snapshot_dir="snapshot"\nsysroot_dir="prefix"\n')
+            with patch.object(build, "ROOT", root), \
+                 patch.object(build, "verify_snapshot"), \
+                 patch.object(build, "output", return_value="tool"), \
+                 patch.object(build, "cache_key", return_value="stamp"), \
+                 patch.object(build, "cache_valid", return_value=False) as valid, \
+                 patch.object(build, "audit_archive") as audit, \
+                 contextlib.redirect_stdout(io.StringIO()) as stdout:
+                with self.assertRaisesRegex(ValueError, "cache missing"):
+                    build.build(check=True)
+                self.assertEqual(stdout.getvalue(), "")
+                audit.assert_not_called()
+                valid.return_value = True
+                audit.side_effect = ValueError("bad archive")
+                with self.assertRaisesRegex(ValueError, "bad archive"):
+                    build.build(check=True)
+                self.assertEqual(stdout.getvalue(), "")
+                audit.side_effect = None
+                build.build(check=True)
+                self.assertIn("archive; cache=hit", stdout.getvalue())
+
+    def test_tool_output_forces_c_locale_without_changing_parent(self):
+        with patch.dict(os.environ, LC_ALL="zh_CN.UTF-8", LANG="zh_CN.UTF-8"), \
+             patch.object(build.subprocess, "check_output", return_value="tool\n") as output:
+            self.assertEqual(build.output("objdump", "--version"), "tool")
+            self.assertEqual(output.call_args.kwargs["env"]["LC_ALL"], "C")
+            self.assertEqual(output.call_args.kwargs["env"]["LANG"], "C")
+            self.assertEqual(os.environ["LC_ALL"], "zh_CN.UTF-8")
 
     def test_archive_rejects_linux_or_unlisted_raw_traps(self):
         allowed = "restore.lo:     file format elf64-x86-64\n mov $0x3a,%eax\n syscall\nclone.lo:     file format elf64-x86-64\n mov $0x30,%al\n syscall\n"

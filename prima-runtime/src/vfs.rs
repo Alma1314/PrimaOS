@@ -1453,6 +1453,11 @@ fn growth_limit<S: Storage>(storage: &mut S, id: NodeId, node: &Node) -> Result<
             continue;
         }
         let start = node.data as usize;
+        // 空文件的 data 只是旧位置提示；邻居增长或压实后可能已覆盖它。
+        // 此时不能原地写入，须走压实/搬迁路径重新取得独占区间。
+        if start <= data && data < start + node.size as usize {
+            return Ok(0);
+        }
         if start >= data && start - data < limit {
             limit = start - data;
         }

@@ -411,7 +411,8 @@
       "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md",
       "docs/superpowers/specs/2026-10-24-native-runtime-service-design.md",
       "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md",
-      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md",
+      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md"
     ],
     "code": [
       "prima-runtime/src/vfs.rs",
@@ -650,7 +651,8 @@
       "docs/superpowers/compat/stage5-working-api.md",
       "docs/superpowers/specs/2026-10-27-posix-std-backend-design.md",
       "docs/superpowers/reports/2026-10-27-posix-std-backend-report.md",
-      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md"
+      "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md",
+      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
