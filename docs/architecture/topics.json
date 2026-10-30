@@ -140,7 +140,10 @@
       "ISSUE-FORK-CONTINUATION-001",
       "clone_root_cow",
       "wait_status_bytes",
-      "test-process"
+      "test-process",
+      "PreparedUserWrite",
+      "prepare_task_output",
+      "USER_COPY_LIMIT"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -165,7 +168,8 @@
       "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
       "docs/superpowers/specs/2026-10-24-fork-continuation-design.md",
-      "docs/superpowers/reports/2026-10-24-fork-continuation-report.md"
+      "docs/superpowers/reports/2026-10-24-fork-continuation-report.md",
+      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -201,7 +205,8 @@
       "kernel/src/vspace.rs",
       "kernel/src/bootstrap.rs",
       "kernel/src/sched.rs",
-      "xtask/src/main.rs"
+      "xtask/src/main.rs",
+      "prima-user/c/stage5_sigaction.c"
     ],
     "guide": "docs/architecture/topics/memory.md"
   },
@@ -241,7 +246,8 @@
       "docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md",
       "docs/superpowers/reports/2026-10-29-stage6-m1-decision-review.md",
       "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
-      "docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md"
+      "docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md",
+      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
     ],
     "code": [
       "kernel/src/handle.rs",

@@ -144,46 +144,7 @@ pub fn prepare_wait_status(task: u32, ptr: u64) -> Result<(), crate::syscall::Er
     if ptr == 0 {
         return Ok(());
     }
-    let root = root(task).ok_or(crate::syscall::Errno::Fault)?;
-    let (_, offset) = crate::cow::root_and_offset().ok_or(crate::syscall::Errno::Fault)?;
-    let last = ptr.checked_add(3).ok_or(crate::syscall::Errno::Fault)? & !4095;
-    let first = ptr & !4095;
-    let mut segments = [0; 2];
-    let mut count = 0;
-    for page in [first, last] {
-        if page == last && last == first && count > 0 {
-            break;
-        }
-        let leaf = crate::vspace::read_user_leaf(root, page, |phys| {
-            crate::mem::phys_to_virt(phys, offset)
-        })
-        .map_err(wait_copy_errno)?;
-        if leaf & crate::vspace::PT_WRITABLE == 0 {
-            segments[count] =
-                bootstrap::task_segment_at(task, page).ok_or(crate::syscall::Errno::Fault)?;
-            count += 1;
-        }
-    }
-    let mut allocated = 0;
-    crate::vspace::prepare_user_u32_write(
-        root,
-        ptr,
-        |phys| crate::mem::phys_to_virt(phys, offset),
-        || {
-            let segment = *segments.get(allocated)?;
-            allocated += 1;
-            crate::frames::allocate_for_segment(segment).ok()
-        },
-        prima_ostd::arch::invlpg,
-    )
-    .map_err(wait_copy_errno)
-}
-
-fn wait_copy_errno(error: crate::vspace::VspaceError) -> crate::syscall::Errno {
-    match error {
-        crate::vspace::VspaceError::NoFrame => crate::syscall::Errno::NoSpace,
-        _ => crate::syscall::Errno::Fault,
-    }
+    crate::syscall::prepare_task_output(task, ptr, 4).map(|_| ())
 }
 
 pub fn write_wait_status(
@@ -207,9 +168,10 @@ pub fn write_user_word(task: u32, ptr: u64, bytes: [u8; 4]) -> Result<(), crate:
         bytes,
         |phys| crate::mem::phys_to_virt(phys, offset),
         || None,
+        |_| unreachable!("preflight leaves no COW allocation"),
         prima_ostd::arch::invlpg,
     )
-    .map_err(wait_copy_errno)
+    .map_err(|_| crate::syscall::Errno::Fault)
 }
 
 fn write_pending_status(task_id: u32) {

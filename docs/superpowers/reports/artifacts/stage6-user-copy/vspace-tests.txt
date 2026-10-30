@@ -1,0 +1,39 @@
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.60s
+     Running unittests src/lib.rs (target/debug/deps/kernel-0632b9c2ccf45562)
+
+running 32 tests
+test vspace::tests::bounded_copy_preflights_ranges_and_all_source_pages_before_touching_buffers ... ok
+test vspace::tests::bounded_copy_accepts_a_reserved_physical_frame_zero ... ok
+test vspace::tests::build_self_root_requires_every_stack_page ... ok
+test vspace::tests::bounded_copy_rolls_back_real_frame_ownership_on_second_cow_allocation_failure ... ok
+test vspace::tests::build_self_root_maps_each_page_to_its_own_physical_frame ... ok
+test vspace::tests::build_self_root_skips_image_pages_absent_from_the_source ... ok
+test vspace::tests::clone_root_copies_all_512_entries ... ok
+test vspace::tests::four_k_walk_rejects_a_huge_page_in_the_path ... ok
+test vspace::tests::cow_clone_rejects_user_huge_pages_and_alias_without_changing_parent ... ok
+test vspace::tests::cow_resolve_preserves_nx_and_supervisor_siblings_are_never_protected ... ok
+test vspace::tests::cow_clone_shares_frames_and_resolve_copies_on_write ... ok
+test vspace::tests::indices_decode_vspace_va_into_slot_one ... ok
+test vspace::tests::leaf_phys_or_none_ignores_huge_page_pat_bit ... ok
+test vspace::tests::hidden_and_readonly_leaves_are_retained_and_shared_on_fork ... ok
+test vspace::tests::leaf_phys_or_none_resolves_two_mib_huge_pages ... ok
+test vspace::tests::map_4k_builds_all_levels_and_reads_leaf ... ok
+test vspace::tests::map_4k_no_frame_leaves_state_untouched ... ok
+test vspace::tests::map_4k_reuses_existing_path ... ok
+test vspace::tests::map_4k_fresh_path_allocates_exactly_the_tables_it_uses ... ok
+test vspace::tests::cow_clone_keeps_readonly_shared_and_copies_supervisor_entries ... ok
+test vspace::tests::pte_flags_sets_present_and_writable ... ok
+test vspace::tests::map_returns_each_unlinked_table_reservation_on_partial_allocation_failure ... ok
+test vspace::tests::read_leaf_without_path_is_bad_root ... ok
+test vspace::tests::set_leaf_without_path_is_bad_root ... ok
+test vspace::tests::set_leaf_can_clear_writable_for_write_protect ... ok
+test vspace::tests::user_int_write_rejects_bad_ranges_and_all_protection_levels_without_data_changes ... ok
+test vspace::tests::zero_slot_clears_only_one_pml4_entry ... ok
+test vspace::tests::bounded_copy_selects_explicit_roots_at_the_same_va ... ok
+test vspace::tests::range_planning_counts_shared_prefixes_once_across_pt_boundaries ... ok
+test vspace::tests::user_int_write_resolves_both_cow_pages_and_preserves_neighbor_bytes_and_parent ... ok
+test vspace::tests::user_int_write_allocation_failure_never_partially_writes_bytes ... ok
+test vspace::tests::cow_clone_rolls_back_every_allocation_failure_and_flushes_only_after_commit ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.01s

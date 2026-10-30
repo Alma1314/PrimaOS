@@ -1230,70 +1230,81 @@ fn wait4_call(pid: u64, status_ptr: u64, options: u64) -> u64 {
 /// M17c：exec 的初始栈固定 VA（PML4 槽 254，单页）。
 const EXEC_STACK_VA: u64 = 0x0000_7f00_0000_0000;
 
-/// Page-checked copy-in, including unaligned buffers crossing page boundaries.
+/// Page-checked copy-in with an explicit root at the mechanism boundary.
 fn copy_user_bytes(ptr: u64, output: &mut [u8]) -> Result<(), Errno> {
-    let end = ptr.checked_add(output.len() as u64).ok_or(Errno::Fault)?;
-    if ptr == 0 || end > (1 << 47) {
+    if ptr == 0 {
         return Err(Errno::Fault);
     }
     let root = sched::current_root().ok_or(Errno::Fault)?;
     let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
-    let mut copied = 0;
-    while copied < output.len() {
-        let address = ptr + copied as u64;
-        let leaf = vspace::read_user_leaf(root, address, |phys| phys_to_virt(phys, offset))
-            .map_err(|_| Errno::Fault)?;
-        let count = core::cmp::min(4096 - (address as usize & 4095), output.len() - copied);
-        let source = phys_to_virt(leaf & PT_ADDR_MASK, offset) + (address & 4095);
-        for index in 0..count {
-            output[copied + index] = prima_ostd::mm::read_u8_at(source, index as u64);
-        }
-        copied += count;
+    vspace::read_user_bytes(root, ptr, output, |phys| phys_to_virt(phys, offset))
+        .map_err(user_copy_errno)
+}
+
+fn user_copy_errno(error: vspace::VspaceError) -> Errno {
+    if error == vspace::VspaceError::NoFrame {
+        Errno::NoSpace
+    } else {
+        Errno::Fault
     }
-    Ok(())
+}
+
+/// Shared by native output, IPC direct delivery and wait status. Single CPU,
+/// kernel non-preemptible: the plan must be consumed before scheduling or VM
+/// mutation. Gate must additionally validate its request/Task/root generations
+/// and reject shared roots before using this mechanism.
+pub(crate) fn prepare_task_output(
+    task: u32,
+    ptr: u64,
+    len: usize,
+) -> Result<vspace::PreparedUserWrite, Errno> {
+    let root = sched::root(task).ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let map = |phys| phys_to_virt(phys, offset);
+    // Keep missing Segment errors distinct from allocation failure. Validate
+    // every COW owner before the first reservation; writable platform mappings
+    // retain their existing behavior.
+    let end = ptr.checked_add(len as u64).ok_or(Errno::Fault)?;
+    if len > vspace::USER_COPY_LIMIT || len != 0 && (ptr == 0 || end > 1 << 47) {
+        return Err(Errno::Fault);
+    }
+    if len != 0 {
+        let first = ptr & !4095;
+        let last = (end - 1) & !4095;
+        for page in [first, last] {
+            let leaf = vspace::read_user_leaf(root, page, map).map_err(user_copy_errno)?;
+            if leaf & PT_WRITABLE == 0 && bootstrap::task_segment_at(task, page).is_none() {
+                return Err(Errno::Fault);
+            }
+        }
+    }
+    let active = sched::current_root() == Some(root);
+    vspace::prepare_user_write(
+        root,
+        ptr,
+        len,
+        map,
+        |page| crate::frames::allocate_for_segment(bootstrap::task_segment_at(task, page)?).ok(),
+        |page, frame| {
+            let segment = bootstrap::task_segment_at(task, page).expect("exclusive output mapping");
+            crate::frames::release_frame(segment, frame).expect("uncommitted COW reservation");
+        },
+        |page| {
+            if active {
+                prima_ostd::arch::invlpg(page);
+            }
+        },
+    )
+    .map_err(user_copy_errno)
 }
 
 fn copy_out_user(ptr: u64, bytes: &[u8]) -> Result<(), Errno> {
     if bytes.is_empty() {
         return Ok(());
     }
-    let end = ptr
-        .checked_add(bytes.len() as u64 - 1)
-        .ok_or(Errno::Fault)?;
-    if ptr == 0 || end >> 47 != 0 {
-        return Err(Errno::Fault);
-    }
-    let task = sched::current();
-    let root = sched::root(task).ok_or(Errno::Fault)?;
+    let output = prepare_task_output(sched::current(), ptr, bytes.len())?;
     let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
-    let map = |phys| phys_to_virt(phys, offset);
-    let mut page = ptr & !4095;
-    while page <= (end & !4095) {
-        let leaf = vspace::read_user_leaf(root, page, map).map_err(|_| Errno::Fault)?;
-        if leaf & PT_WRITABLE == 0 {
-            let segment = bootstrap::task_segment_at(task, page).ok_or(Errno::Fault)?;
-            vspace::prepare_user_u32_write(
-                root,
-                page,
-                map,
-                || crate::frames::allocate_for_segment(segment).ok(),
-                prima_ostd::arch::invlpg,
-            )
-            .map_err(|error| {
-                if error == vspace::VspaceError::NoFrame {
-                    Errno::NoSpace
-                } else {
-                    Errno::Fault
-                }
-            })?;
-        }
-        page += 4096;
-    }
-    for (index, byte) in bytes.iter().enumerate() {
-        let va = ptr + index as u64;
-        let leaf = vspace::read_user_leaf(root, va, map).map_err(|_| Errno::Fault)?;
-        prima_ostd::mm::write_u8_at(map(leaf & PT_ADDR_MASK), va & 4095, *byte);
-    }
+    output.write(bytes, |phys| phys_to_virt(phys, offset));
     Ok(())
 }
 
@@ -3172,9 +3183,9 @@ pub const fn recv_out_bounds(ptr: u64) -> Result<(), Errno> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
 struct RecvOutPhys {
-    words: [u64; 5],
+    output: vspace::PreparedUserWrite,
+    offset: u64,
     len: usize,
 }
 
@@ -3185,54 +3196,21 @@ pub const fn recv_extended_bounds(ptr: u64) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Validate/COW-prepare every destination page before consuming a message or
-/// moving a transferred token. Each u64 is aligned and stays within one page.
+/// Preflight the full output before consuming a message or moving any token.
 fn prepare_recv_out(receiver: u32, ptr: u64, extended: bool) -> Result<RecvOutPhys, Errno> {
     if extended {
         recv_extended_bounds(ptr)?;
     } else {
         recv_out_bounds(ptr)?;
     }
-    let root = sched::root(receiver).ok_or(Errno::Fault)?;
-    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
-    let map = |phys| phys_to_virt(phys, offset);
     let len = if extended { 5 } else { 3 };
-    let mut output = RecvOutPhys { words: [0; 5], len };
-    let mut prepared_page = None;
-    for index in 0..len {
-        let address = ptr + index as u64 * 8;
-        let page = address & !0xfff;
-        if prepared_page != Some(page) {
-            let leaf = vspace::read_user_leaf(root, address, map).map_err(|_| Errno::Fault)?;
-            if leaf & (PT_PRESENT | PT_USER) != (PT_PRESENT | PT_USER) {
-                return Err(Errno::Fault);
-            }
-            if leaf & PT_WRITABLE == 0 {
-                let segment = bootstrap::task_segment_at(receiver, address).ok_or(Errno::Fault)?;
-                vspace::prepare_user_u32_write(
-                    root,
-                    address,
-                    map,
-                    || crate::frames::allocate_for_segment(segment).ok(),
-                    prima_ostd::arch::invlpg,
-                )
-                .map_err(|error| {
-                    if error == vspace::VspaceError::NoFrame {
-                        Errno::NoSpace
-                    } else {
-                        Errno::Fault
-                    }
-                })?;
-            }
-            prepared_page = Some(page);
-        }
-        let leaf = vspace::read_user_leaf(root, address, map).map_err(|_| Errno::Fault)?;
-        if leaf & (PT_PRESENT | PT_USER | PT_WRITABLE) != (PT_PRESENT | PT_USER | PT_WRITABLE) {
-            return Err(Errno::Fault);
-        }
-        output.words[index] = phys_to_virt((leaf & PT_ADDR_MASK) + (address & 0xfff), offset);
-    }
-    Ok(output)
+    let output = prepare_task_output(receiver, ptr, len * 8)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    Ok(RecvOutPhys {
+        output,
+        offset,
+        len,
+    })
 }
 
 fn recv_out_phys(receiver: u32, ptr: u64) -> Result<RecvOutPhys, Errno> {
@@ -3261,9 +3239,12 @@ fn write_recv_out(receiver: u32, out: RecvOutPhys, message: Option<&bootstrap::I
         values[3] = ((message.sender_generation as u64) << 32) | message.sender as u64;
         values[4] = message.id as u64;
     }
-    for (phys, value) in out.words[..out.len].iter().zip(&values[..out.len]) {
-        prima_ostd::mm::write_u64_at(*phys, 0, *value);
+    let mut bytes = [0; 40];
+    for (index, value) in values[..out.len].iter().enumerate() {
+        bytes[index * 8..index * 8 + 8].copy_from_slice(&value.to_le_bytes());
     }
+    out.output
+        .write(&bytes[..out.len * 8], |phys| phys_to_virt(phys, out.offset));
 }
 
 /// Kernel-origin direct deliveries also complete a pending receive on resume.

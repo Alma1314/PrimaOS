@@ -1638,7 +1638,7 @@ pub(crate) const PROC_EXPECTED_STDOUT: &[u8] =
 pub(crate) const SIG_EXPECTED_STDOUT: &[u8] = b"SIG|kill=1;wait=1;signal=1|ok=1;err=0\n";
 
 pub(crate) const SIGACT_EXPECTED_STDOUT: &[u8] =
-    b"SIGACT|sigaction=1;kill=1;ran=1;mask=1;info=1;nested=1;suspend=1;eintr=1;restart=1;child=1;sleep=1;fault=1;guard=1;ignore=1|ok=1;err=0\n";
+    b"SIGACT|sigaction=1;kill=1;ran=1;mask=1;info=1;nested=1;suspend=1;eintr=1;restart=1;child=1;sleep=1;fault=1;guard=1;copy=1;ignore=1|ok=1;err=0\n";
 
 pub(crate) fn check_stage5_linux_exec() -> Result<(), String> {
     check_linux_exec_reference("stage5_exec.c", "exec-linux", EXEC_EXPECTED_STDOUT)

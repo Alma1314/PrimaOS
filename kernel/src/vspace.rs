@@ -833,47 +833,175 @@ pub fn resolve_cow<F: Fn(u64) -> u64 + Copy>(
     Ok(new)
 }
 
-/// Validate a four-byte user output and resolve COW before any data write.
-/// The range may span two pages. Requires exclusive access to this root and its
-/// mappings; supports only 4 KiB pages. Failure preserves user bytes, but a COW
-/// page already privatized before a later allocation failure remains private.
-pub fn prepare_user_u32_write(
-    root: u64,
-    ptr: u64,
-    map: impl Fn(u64) -> u64 + Copy,
-    mut alloc: impl FnMut() -> Option<u64>,
-    mut invalidate: impl FnMut(u64),
-) -> Result<(), VspaceError> {
-    let end = ptr.checked_add(3).ok_or(VspaceError::BadRoot)?;
-    if ptr == 0 || end >> 47 != 0 {
+/// Bounded user transfers touch at most two 4 KiB pages. This is an internal
+/// mechanism limit, not an address authorization or a machine ABI promise.
+pub const USER_COPY_LIMIT: usize = 4096;
+
+#[derive(Clone, Copy, Default)]
+struct UserChunk {
+    physical: u64,
+    len: usize,
+}
+
+fn user_chunks(ptr: u64, len: usize) -> Result<[UserChunk; 2], VspaceError> {
+    let end = ptr.checked_add(len as u64).ok_or(VspaceError::BadRoot)?;
+    if len > USER_COPY_LIMIT || len != 0 && (ptr == 0 || end > 1 << 47) {
         return Err(VspaceError::BadRoot);
     }
-    let first = ptr & !0xfff;
-    let last = end & !0xfff;
-    // Validate both pages before allocating or changing either PTE.
-    for page in [first, last] {
-        user_write_leaf(root, page, map)?;
-    }
-    for page in [first, last] {
-        let leaf = user_write_leaf(root, page, map)?;
-        if leaf & PT_WRITABLE == 0 {
-            resolve_cow(root, page, map, &mut alloc)?;
-            invalidate(page);
+    let first = len.min(4096 - (ptr & 4095) as usize);
+    Ok([
+        UserChunk {
+            physical: ptr,
+            len: first,
+        },
+        UserChunk {
+            physical: ptr + first as u64,
+            len: len - first,
+        },
+    ])
+}
+
+/// All output pages are validated and private before this value is returned.
+/// The caller must keep the root, mappings and frames exclusively owned until
+/// write completes; do not store this across scheduling or a VM mutation.
+/// This is a physical write plan, never a capability or a user-visible handle.
+pub struct PreparedUserWrite {
+    chunks: [UserChunk; 2],
+    len: usize,
+}
+
+impl PreparedUserWrite {
+    /// Commit without another fallible page walk or allocation.
+    pub fn write(self, bytes: &[u8], map: impl Fn(u64) -> u64) {
+        assert_eq!(
+            bytes.len(),
+            self.len,
+            "preflight covers the complete output"
+        );
+        let mut copied = 0;
+        for chunk in self.chunks {
+            for index in 0..chunk.len {
+                prima_ostd::mm::write_u8_at(
+                    map(chunk.physical),
+                    index as u64,
+                    bytes[copied + index],
+                );
+            }
+            copied += chunk.len;
         }
+    }
+}
+
+/// Explicit-root copy-in. Validate the entire range before modifying the kernel
+/// buffer, including user access on intermediate levels. The caller owns the
+/// root for the whole operation; no implicit current-root lookup occurs here.
+pub fn read_user_bytes(
+    root: u64,
+    ptr: u64,
+    output: &mut [u8],
+    map: impl Fn(u64) -> u64 + Copy,
+) -> Result<(), VspaceError> {
+    let mut chunks = user_chunks(ptr, output.len())?;
+    for chunk in &mut chunks {
+        if chunk.len != 0 {
+            let leaf = read_user_leaf(root, chunk.physical, map)?;
+            chunk.physical = (leaf & PT_ADDR_MASK) + (chunk.physical & 4095);
+        }
+    }
+    let mut copied = 0;
+    for chunk in chunks {
+        for index in 0..chunk.len {
+            output[copied + index] = prima_ostd::mm::read_u8_at(map(chunk.physical), index as u64);
+        }
+        copied += chunk.len;
     }
     Ok(())
 }
 
-fn user_write_leaf(root: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<u64, VspaceError> {
+/// Preflight a complete output, including writable intermediate page tables.
+/// Reserve every COW frame before changing any PTE; allocation failure releases
+/// all reservations, preserving PTEs, bytes and frame ownership. Allocation and
+/// release callbacks receive the destination page so different Segment owners
+/// can be handled without an implicit current Task. Allocated frames must be
+/// fresh, owned and 4 KiB aligned; physical frame zero is valid. No callback may
+/// schedule or mutate these mappings. `invalidate` must invalidate this root (or be a no-op
+/// for an inactive root whose next activation flushes the TLB).
+pub fn prepare_user_write(
+    root: u64,
+    ptr: u64,
+    len: usize,
+    map: impl Fn(u64) -> u64 + Copy,
+    mut alloc: impl FnMut(u64) -> Option<u64>,
+    mut release: impl FnMut(u64, u64),
+    mut invalidate: impl FnMut(u64),
+) -> Result<PreparedUserWrite, VspaceError> {
+    let mut chunks = user_chunks(ptr, len)?;
+    let mut slots = [(0, 0); 2];
+    let mut reserved = [None; 2];
+    // No allocation or mapping change until all permissions have passed.
+    for (index, chunk) in chunks.iter().enumerate() {
+        if chunk.len != 0 {
+            slots[index] = user_write_leaf_slot(root, chunk.physical, map)?;
+        }
+    }
+    for index in 0..2 {
+        if chunks[index].len != 0 && slots[index].1 & PT_WRITABLE == 0 {
+            let page = chunks[index].physical & !4095;
+            let Some(frame) = alloc(page) else {
+                for previous in (0..index).rev() {
+                    if let Some(frame) = reserved[previous] {
+                        release(chunks[previous].physical & !4095, frame);
+                    }
+                }
+                return Err(VspaceError::NoFrame);
+            };
+            reserved[index] = Some(frame);
+        }
+    }
+    // Nothing below can fail under the exclusive-root contract. Stage the full
+    // original pages before committing either PTE; no fault-driven recursion.
+    for index in 0..2 {
+        if let Some(frame) = reserved[index] {
+            let old = map(slots[index].1 & PT_ADDR_MASK);
+            let new = map(frame);
+            for word in 0..512u64 {
+                write_raw(new + word * 8, read_raw(old + word * 8));
+            }
+        }
+    }
+    for index in 0..2 {
+        if chunks[index].len == 0 {
+            continue;
+        }
+        let (slot, old) = slots[index];
+        let frame = if let Some(frame) = reserved[index] {
+            let flags = (old | PT_WRITABLE) & !(PT_ADDR_MASK | PT_COW | PT_SHARED);
+            write_raw(slot, frame | flags);
+            invalidate(chunks[index].physical & !4095);
+            frame
+        } else {
+            old & PT_ADDR_MASK
+        };
+        chunks[index].physical = frame + (chunks[index].physical & 4095);
+    }
+    Ok(PreparedUserWrite { chunks, len })
+}
+
+fn user_write_leaf_slot(
+    root: u64,
+    va: u64,
+    map: impl Fn(u64) -> u64,
+) -> Result<(u64, u64), VspaceError> {
     let mut table = root;
     for (level, index) in indices(va).into_iter().enumerate() {
-        let entry = read_raw(map(table) + index as u64 * 8);
+        let slot = map(table) + index as u64 * 8;
+        let entry = read_raw(slot);
         if entry & (PT_PRESENT | PT_USER) != (PT_PRESENT | PT_USER) {
             return Err(VspaceError::BadRoot);
         }
         if level == 3 {
             return if entry & (PT_WRITABLE | PT_COW) != 0 {
-                Ok(entry)
+                Ok((slot, entry))
             } else {
                 Err(VspaceError::BadRoot)
             };
@@ -886,22 +1014,26 @@ fn user_write_leaf(root: u64, va: u64, map: impl Fn(u64) -> u64) -> Result<u64, 
     Err(VspaceError::BadRoot)
 }
 
-/// Write a Linux int output through the validated physical mapping, never by
-/// blindly dereferencing a user VA while running with supervisor privileges.
+/// Write an int output through the preflighted physical plan.
 pub fn write_user_u32(
     root: u64,
     ptr: u64,
     value: [u8; 4],
     map: impl Fn(u64) -> u64 + Copy,
-    alloc: impl FnMut() -> Option<u64>,
+    mut alloc: impl FnMut() -> Option<u64>,
+    mut release: impl FnMut(u64),
     invalidate: impl FnMut(u64),
 ) -> Result<(), VspaceError> {
-    prepare_user_u32_write(root, ptr, map, alloc, invalidate)?;
-    for (index, byte) in value.into_iter().enumerate() {
-        let va = ptr + index as u64;
-        let leaf = user_write_leaf(root, va, map)?;
-        prima_ostd::mm::write_u8_at(map(leaf & PT_ADDR_MASK), va & 0xfff, byte);
-    }
+    prepare_user_write(
+        root,
+        ptr,
+        4,
+        map,
+        |_| alloc(),
+        |_, frame| release(frame),
+        invalidate,
+    )?
+    .write(&value, map);
     Ok(())
 }
 
@@ -1231,6 +1363,7 @@ mod tests {
             value,
             identity,
             || pool.alloc(),
+            |_| panic!("successful reservation"),
             |va| invalidated.push(va),
         )
         .unwrap();
@@ -1248,6 +1381,7 @@ mod tests {
             value,
             identity,
             || panic!("already writable"),
+            |_| panic!("no reservation"),
             |_| panic!("already private"),
         )
         .unwrap();
@@ -1279,6 +1413,7 @@ mod tests {
                     [0; 4],
                     identity,
                     || panic!("invalid"),
+                    |_| panic!("no reservation"),
                     |_| panic!("invalid")
                 ),
                 Err(VspaceError::BadRoot)
@@ -1291,6 +1426,15 @@ mod tests {
             let saved = read_raw(at);
             for bit in [PT_USER, PT_WRITABLE, PT_PRESENT] {
                 write_raw(at, saved & !bit);
+                let mut input = [0xa5; 4];
+                let read = read_user_bytes(root, VSPACE_VA, &mut input, identity);
+                if bit == PT_WRITABLE {
+                    assert_eq!(read, Ok(()));
+                    assert_eq!(input, [0xed, 0xfe, 0xce, 0xfa]);
+                } else {
+                    assert_eq!(read, Err(VspaceError::BadRoot));
+                    assert_eq!(input, [0xa5; 4]);
+                }
                 assert_eq!(
                     write_user_u32(
                         root,
@@ -1298,6 +1442,7 @@ mod tests {
                         [0; 4],
                         identity,
                         || panic!("invalid permission"),
+                        |_| panic!("no reservation"),
                         |_| panic!("invalid permission")
                     ),
                     Err(VspaceError::BadRoot),
@@ -1323,6 +1468,9 @@ mod tests {
         write_raw(data + 4088, u64::MAX);
         clone_root_cow(src, dst, identity, || pool.alloc(), |_| {}, || {}).unwrap();
         let mut allocations = 0;
+        let mut released = Vec::new();
+        let mut before = Vec::new();
+        table_snapshot(dst, 4, &mut before);
         assert_eq!(
             write_user_u32(
                 dst,
@@ -1333,13 +1481,301 @@ mod tests {
                     allocations += 1;
                     if allocations == 1 { pool.alloc() } else { None }
                 },
-                |_| {}
+                |frame| released.push(frame),
+                |_| panic!("failed reservation must not invalidate")
             ),
             Err(VspaceError::NoFrame)
         );
+        assert_eq!(released.len(), 1);
+        let mut after = Vec::new();
+        table_snapshot(dst, 4, &mut after);
+        assert_eq!(before, after);
         let first = read_leaf(dst, VSPACE_VA, identity).unwrap() & PT_ADDR_MASK;
         assert_eq!(read_raw(first + 4088), u64::MAX);
         assert_eq!(read_raw(data), u64::MAX);
+    }
+
+    #[test]
+    fn bounded_copy_selects_explicit_roots_at_the_same_va() {
+        let mut pool = PagePool::new();
+        let roots = [pool.alloc().unwrap(), pool.alloc().unwrap()];
+        for (which, root) in roots.into_iter().enumerate() {
+            for page in 0..2 {
+                let data = pool.alloc().unwrap();
+                map_4k(
+                    root,
+                    VSPACE_VA + page * 4096,
+                    identity,
+                    || pool.alloc(),
+                    data,
+                    true,
+                    true,
+                    |_| {},
+                )
+                .unwrap();
+                for offset in 0..4096 {
+                    prima_ostd::mm::write_u8_at(
+                        data,
+                        offset,
+                        if which == 0 { offset as u8 } else { 0xa5 },
+                    );
+                }
+            }
+        }
+        for len in [0, 64, 4096] {
+            let address = VSPACE_VA + 4090;
+            let mut scratch = [0; USER_COPY_LIMIT];
+            read_user_bytes(roots[0], address, &mut scratch[..len], identity).unwrap();
+            prepare_user_write(
+                roots[1],
+                address,
+                len,
+                identity,
+                |_| panic!("already writable"),
+                |_, _| panic!("no reservation"),
+                |_| panic!("no COW"),
+            )
+            .unwrap()
+            .write(&scratch[..len], identity);
+            let mut actual = [0; USER_COPY_LIMIT];
+            read_user_bytes(roots[1], address, &mut actual[..len], identity).unwrap();
+            assert_eq!(actual[..len], scratch[..len]);
+        }
+        let mut whole = [0; 4096];
+        read_user_bytes(roots[0], VSPACE_VA, &mut whole, identity).unwrap();
+        assert!(
+            whole
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| *byte == index as u8)
+        );
+        let mut guard = [0; 6];
+        read_user_bytes(roots[1], VSPACE_VA + 4084, &mut guard, identity).unwrap();
+        assert_eq!(guard, [0xa5; 6]);
+        read_user_bytes(roots[1], VSPACE_VA + 8186, &mut guard, identity).unwrap();
+        assert_eq!(guard, [0xa5; 6]);
+    }
+
+    #[test]
+    fn bounded_copy_preflights_ranges_and_all_source_pages_before_touching_buffers() {
+        // Empty transfers do not dereference even an invalid root or pointer.
+        for ptr in [0, u64::MAX] {
+            read_user_bytes(0, ptr, &mut [], |_| panic!("empty read")).unwrap();
+            prepare_user_write(
+                0,
+                ptr,
+                0,
+                |_| panic!("empty write"),
+                |_| panic!("empty allocation"),
+                |_, _| panic!("empty release"),
+                |_| panic!("empty TLB"),
+            )
+            .unwrap()
+            .write(&[], |_| panic!("empty commit"));
+        }
+        for (ptr, len) in [
+            (0, 1),
+            (u64::MAX, 1),
+            ((1 << 47) - 1, 2),
+            (1 << 47, 1),
+            (VSPACE_VA, 4097),
+        ] {
+            let mut bytes = vec![0xa5; len];
+            assert_eq!(
+                read_user_bytes(0, ptr, &mut bytes, |_| panic!("invalid range")),
+                Err(VspaceError::BadRoot)
+            );
+            assert_eq!(bytes, vec![0xa5; len]);
+            assert!(matches!(
+                prepare_user_write(
+                    0,
+                    ptr,
+                    len,
+                    |_| panic!("invalid range"),
+                    |_| panic!("invalid allocation"),
+                    |_, _| panic!("invalid release"),
+                    |_| panic!("invalid TLB")
+                ),
+                Err(VspaceError::BadRoot)
+            ));
+        }
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        map_4k(
+            root,
+            VSPACE_VA,
+            identity,
+            || pool.alloc(),
+            data,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        for offset in 0..4096 {
+            prima_ostd::mm::write_u8_at(data, offset, 0x5a);
+        }
+        let mut bytes = [0xa5; 96];
+        assert_eq!(
+            read_user_bytes(root, VSPACE_VA + 4080, &mut bytes, identity),
+            Err(VspaceError::BadRoot)
+        );
+        assert_eq!(bytes, [0xa5; 96]);
+        // A COW first page must stay shared if the second page is absent/RO/hidden.
+        let old = read_leaf(root, VSPACE_VA, identity).unwrap();
+        write_leaf_raw(root, VSPACE_VA, cow_leaf(old), identity).unwrap();
+        let second = pool.alloc().unwrap();
+        map_4k(
+            root,
+            VSPACE_VA + 4096,
+            identity,
+            || pool.alloc(),
+            second,
+            false,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        let readonly = read_leaf(root, VSPACE_VA + 4096, identity).unwrap();
+        for flags in [0, readonly, (readonly & !PT_USER) | PT_HIDDEN] {
+            write_leaf_raw(root, VSPACE_VA + 4096, flags, identity).unwrap();
+            assert!(matches!(
+                prepare_user_write(
+                    root,
+                    VSPACE_VA + 4080,
+                    96,
+                    identity,
+                    |_| panic!("both pages must pass before allocating"),
+                    |_, _| panic!("no reservation"),
+                    |_| panic!("no COW commit")
+                ),
+                Err(VspaceError::BadRoot)
+            ));
+            assert_eq!(read_leaf(root, VSPACE_VA, identity).unwrap(), cow_leaf(old));
+            assert_eq!(read_raw(data + 4088), 0x5a5a5a5a5a5a5a5a);
+        }
+    }
+
+    #[test]
+    fn bounded_copy_accepts_a_reserved_physical_frame_zero() {
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let old = pool.alloc().unwrap();
+        let zero_frame = pool.alloc().unwrap();
+        let map = |phys| if phys < 4096 { zero_frame + phys } else { phys };
+        map_4k(
+            root,
+            VSPACE_VA,
+            map,
+            || pool.alloc(),
+            old,
+            true,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        write_raw(old, u64::MAX);
+        let pte = read_leaf(root, VSPACE_VA, map).unwrap();
+        write_leaf_raw(root, VSPACE_VA, cow_leaf(pte), map).unwrap();
+        let mut invalidated = Vec::new();
+        prepare_user_write(
+            root,
+            VSPACE_VA + 1,
+            2,
+            map,
+            |_| Some(0),
+            |_, _| panic!("successful reservation"),
+            |page| invalidated.push(page),
+        )
+        .unwrap()
+        .write(&[0x12, 0x34], map);
+        assert_eq!(invalidated, [VSPACE_VA]);
+        assert_eq!(read_leaf(root, VSPACE_VA, map).unwrap() & PT_ADDR_MASK, 0);
+        assert_eq!(read_raw(zero_frame), 0xffffffffff3412ff);
+        assert_eq!(read_raw(old), u64::MAX);
+    }
+
+    #[test]
+    fn bounded_copy_rolls_back_real_frame_ownership_on_second_cow_allocation_failure() {
+        use crate::frames::{FrameOwner, FrameRegistry, Pool};
+        use crate::mem::{FrameInventory, FreeFrameAllocator};
+        use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+        use std::cell::RefCell;
+        let mut pool = PagePool::new();
+        let root = pool.alloc().unwrap();
+        let data = pool.alloc().unwrap();
+        for page in [VSPACE_VA, VSPACE_VA + 4096] {
+            map_4k(
+                root,
+                page,
+                identity,
+                || pool.alloc(),
+                data,
+                true,
+                true,
+                |_| {},
+            )
+            .unwrap();
+            let old = read_leaf(root, page, identity).unwrap();
+            write_leaf_raw(root, page, cow_leaf(old), identity).unwrap();
+        }
+        let spare = pool.alloc().unwrap();
+        let image = pool.alloc().unwrap();
+        let regions = [MemoryRegion {
+            start: spare,
+            end: spare + 4096,
+            kind: MemoryRegionKind::Usable,
+        }];
+        let inventory = FrameInventory {
+            usable_frames: 1,
+            image_frames: 1,
+            free_frames: 1,
+            usable_regions: 1,
+            kernel_phys_start: image,
+            kernel_phys_end: image + 4096,
+        };
+        let alloc = FreeFrameAllocator::from_regions(&regions, image, image + 4096).unwrap();
+        let registry = RefCell::new(FrameRegistry::new(&inventory, alloc).unwrap());
+        for segment in [2, 3] {
+            registry
+                .borrow_mut()
+                .open_segment(segment, Pool::Cpu)
+                .unwrap();
+        }
+        let before = registry.borrow().witness();
+        let mut tables_before = Vec::new();
+        table_snapshot(root, 4, &mut tables_before);
+        let owner = |page| if page == VSPACE_VA { 2 } else { 3 };
+        let mut released = Vec::new();
+        assert!(matches!(
+            prepare_user_write(
+                root,
+                VSPACE_VA + 4080,
+                96,
+                identity,
+                |page| registry.borrow_mut().allocate_for_segment(owner(page)).ok(),
+                |page, frame| {
+                    released.push((page, frame));
+                    registry
+                        .borrow_mut()
+                        .release_frame(owner(page), frame)
+                        .unwrap();
+                },
+                |_| panic!("failed preflight cannot invalidate")
+            ),
+            Err(VspaceError::NoFrame)
+        ));
+        assert_eq!(released, [(VSPACE_VA, spare)]);
+        assert_eq!(registry.borrow().witness(), before);
+        assert_eq!(registry.borrow().owner_of(spare), FrameOwner::Free);
+        let mut tables_after = Vec::new();
+        table_snapshot(root, 4, &mut tables_after);
+        assert_eq!(tables_before, tables_after);
+        assert_eq!(
+            registry.borrow_mut().allocate_for_segment(3).unwrap(),
+            spare
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-25
+updated: 2026-10-30
 ---
 
 # 页帧、映射、TLB 与 COW
@@ -105,3 +105,13 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 clone_root_cow 的构造/写保护/同步刷新顺序，分配失败回收、NX 保留、wait_status_bytes 的四字节边界、
 跨页/COW 输出以及 musl 子进程退出。`cargo xtask test-process [W6|W7|W7b|W8]` 使用原双轮验收。
 没有新增抽象原语、SMP、fd close 隔离或子任务完整 VFS 授权；历史失败不删除。
+
+## S6-M1 输出与复制的内核前置
+
+[M1 协议](../../superpowers/specs/2026-10-29-stage6-m1-protocol.md)与
+[真实页表事务证据](../../superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)给出
+显式 root 读入、完整页权限预检和全部 COW 帧先预留/失败归还的路径。
+`PreparedUserWrite` 不能跨调度或映射变更保存；原生输出、IPC 接收和 wait 写回共用该路径。
+内存原语不承担 Gate 请求授权/Task 代次检查，G1–G3 与服务接线仍待完成。
+测试见 [vspace.rs](../../../kernel/src/vspace.rs) 与
+[W9 跨页 COW 探针](../../../prima-user/c/stage5_sigaction.c)。

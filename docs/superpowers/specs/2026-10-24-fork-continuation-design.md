@@ -4,7 +4,7 @@ kind: specification
 authority: implementation-contract
 status: current-contract
 lifecycle: current
-updated: 2026-10-25
+updated: 2026-10-30
 ---
 
 # fork 续执行、COW 提交与等待写回
@@ -61,3 +61,11 @@ fd close 隔离/子 VFS 授权/完整 execve、子 COW 数据帧独立生命周�
 本片明确修订 [M17b-2a](../reports/2026-10-23-stage5-m17b2-cow-primitives.md) 的用户大页原样共享行为：
 当前用户映射只支持4KiB，遇到用户大页/global叶按错误返回，不能继续共享可写页。
 这不是大页COW支持；supervisor大页共享保持原机制。
+
+## 输出准备的后继收紧（2026-10-30）
+
+[S6-M1 内存事务](../reports/2026-10-30-stage6-user-copy-transactions.md)将上文第 5 项允许的
+“第二页缺帧时第一页可保留私有化”收紧：现有四字节 wait 输出和至多 4096 字节的通用输出
+共用全范围检查/全量 COW 帧预留，准备失败归还预留并保持所有 PTE、用户字节与帧归属。
+这是内存准备操作的更强保证，不承诺整个 wait/fork/IPC 控制事务的 PTE 回滚，
+不改变等待中多线程撤图的原有并发边界；历史报告仍按原版本解释。

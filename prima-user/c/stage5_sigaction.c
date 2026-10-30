@@ -78,6 +78,37 @@ static int check_sleep_interrupt(void) {
     return interrupted && got == SIGUSR1 && (remaining.tv_sec || remaining.tv_nsec) &&
         remaining.tv_sec <= 2 && waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
+/* The raw old-mask output starts four bytes before a page boundary. After fork
+ * both pages are still COW when the kernel first writes them. Same source runs
+ * on Linux; this tests successful copying and parent isolation, not Linux's
+ * unspecified partial-output behavior on EFAULT. */
+static int check_output_cow(void) {
+    unsigned char *pages = mmap(0, 8192, PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pages == MAP_FAILED) return 0;
+    for (int i = 0; i < 8192; i++) pages[i] = 0xa5;
+    uint64_t mask = 0;
+    int queried = syscall(14L, 2L, 0L, (long)&mask, 8L) == 0;
+    pid_t child = queried ? fork() : -1;
+    if (!child) {
+        int ok = syscall(14L, 2L, 0L, (long)(pages + 4092), 8L) == 0;
+        for (int i = 0; i < 8192; i++) {
+            unsigned char expected = i >= 4092 && i < 4100 ?
+                (unsigned char)(mask >> ((i - 4092) * 8)) : 0xa5;
+            ok = ok && pages[i] == expected;
+        }
+        _exit(ok ? 0 : 91);
+    }
+    int status = 0;
+    pid_t waited = -1;
+    if (child > 0) {
+        do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    }
+    int ok = child > 0 && waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    for (int i = 0; i < 8192; i++) ok = ok && pages[i] == 0xa5;
+    return munmap(pages, 8192) == 0 && ok;
+}
+
 int main(void) {
     emit("SIGACT");
     struct sigaction sa = {0}, old = {0};
@@ -144,6 +175,7 @@ int main(void) {
         guard = munmap(page, 4096) == 0 && guard;
     }
     field("guard", guard, errno);
+    field("copy", check_output_cow(), errno);
     sa.sa_handler = SIG_IGN; sa.sa_flags = 0;
     got = 0;
     int ignored = sigaction(SIGUSR1, &sa, 0) == 0 && kill(getpid(), SIGUSR1) == 0 && got == 0;
