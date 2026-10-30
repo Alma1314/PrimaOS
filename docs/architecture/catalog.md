@@ -76,7 +76,7 @@
 | [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 | [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
 
-## reference（8）
+## reference（9）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -86,6 +86,7 @@
 | [证据范围与结论规则](evidence.md) | current | `docs/architecture/evidence.md` |
 | [术语与检索别名](glossary.md) | current | `docs/architecture/glossary.md` |
 | [接口、号段与版本边界](interfaces.md) | current | `docs/architecture/interfaces.md` |
+| [许可证：GPLv3 与本仓库的许可分布](licensing.md) | current | `docs/architecture/licensing.md` |
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 

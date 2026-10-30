@@ -24,6 +24,7 @@ PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与
 | 查术语、缩写或编号 | [术语表](architecture/glossary.md) | [接口与编号边界](architecture/interfaces.md) |
 | 构建、运行与排错 | [开发与验证手册](architecture/development.md) | 命令实现、报告中的运行环境 |
 | 评估安全、兼容或证明主张 | [证据规则](architecture/evidence.md) | 具体报告范围、反例和未覆盖项 |
+| 确认许可与再分发义务 | [许可证](architecture/licensing.md) | 根目录 `LICENSE`；MPL-2.0 例外与第三方 NOTICE |
 | 新写或维护文档 | [文档治理规范](superpowers/specs/2026-10-23-documentation-system-design.md) | [维护手册与模板](architecture/documentation-maintenance.md) |
 | 精确查文件与章节 | [全量目录](architecture/catalog.md) | [机器目录 JSON](catalog.json)；本地全文检索 |
 

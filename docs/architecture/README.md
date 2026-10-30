@@ -18,6 +18,7 @@ updated: 2026-10-24
 | [系统/代码地图](system-map.md) | crate职责、启动与调用路径、改动影响 |
 | [主题地图](topics/README.md) | 十个子系统的契约/证据/代码/测试入口 |
 | [术语表](glossary.md) | 中英文别名与容易冲突的编号 |
+| [许可证](licensing.md) | GPLv3 范围、MPL-2.0 例外与第三方归属 |
 | [接口与版本](interfaces.md) | 抽象操作、原生号、C适配与多个版本域 |
 | [证据规则](evidence.md) | host/Lean/QEMU/差分/签署的范围 |
 | [开发与验证](development.md) | 依赖、命令、构建产物与故障定位 |

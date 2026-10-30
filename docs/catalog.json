@@ -3937,51 +3937,51 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "d2acf087274cf74f61ede3716ac2828b1caeb4438497d7df946281b7d2df27d3",
+      "sha256": "4361a3a5680092c62cbea3402080d8c3ce1c419b865963564a6e2d3685862e8c",
       "topic_ids": [],
-      "lines": 88,
+      "lines": 89,
       "sections": [
         {
           "level": 1,
           "title": "PrimaOS 文档中心",
           "line": 10,
           "anchor": "primaos-文档中心",
-          "end_line": 88
+          "end_line": 89
         },
         {
           "level": 2,
           "title": "按任务进入",
           "line": 16,
           "anchor": "按任务进入",
-          "end_line": 29
+          "end_line": 30
         },
         {
           "level": 2,
           "title": "权威来源按问题分工",
-          "line": 30,
+          "line": 31,
           "anchor": "权威来源按问题分工",
-          "end_line": 44
+          "end_line": 45
         },
         {
           "level": 2,
           "title": "文档布局",
-          "line": 45,
+          "line": 46,
           "anchor": "文档布局",
-          "end_line": 72
+          "end_line": 73
         },
         {
           "level": 2,
           "title": "离线检索",
-          "line": 73,
+          "line": 74,
           "anchor": "离线检索",
-          "end_line": 85
+          "end_line": 86
         },
         {
           "level": 2,
           "title": "编写与废弃入口",
-          "line": 86,
+          "line": 87,
           "anchor": "编写与废弃入口",
-          "end_line": 88
+          "end_line": 89
         }
       ],
       "mentioned_ids": [
@@ -4030,58 +4030,62 @@
         },
         {
           "line": 27,
+          "target": "architecture/licensing.md"
+        },
+        {
+          "line": 28,
           "target": "superpowers/specs/2026-10-23-documentation-system-design.md"
         },
         {
-          "line": 27,
+          "line": 28,
           "target": "architecture/documentation-maintenance.md"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "architecture/catalog.md"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "catalog.json"
         },
         {
-          "line": 34,
+          "line": 35,
           "target": "../Prima%20OS.md"
         },
         {
-          "line": 35,
+          "line": 36,
           "target": "../COSIR%20原语规范.md"
         },
         {
-          "line": 36,
+          "line": 37,
           "target": "../Prima%20OS%20实现阶段.md"
         },
         {
-          "line": 37,
+          "line": 38,
           "target": "superpowers/specs/README.md"
         },
         {
-          "line": 38,
+          "line": 39,
           "target": "superpowers/plans/README.md"
         },
         {
-          "line": 39,
+          "line": 40,
           "target": "superpowers/reports/README.md"
         },
         {
-          "line": 40,
+          "line": 41,
           "target": "superpowers/compat/README.md"
         },
         {
-          "line": 41,
+          "line": 42,
           "target": "../lean/README.md"
         },
         {
-          "line": 88,
+          "line": 89,
           "target": "architecture/documentation-maintenance.md"
         },
         {
-          "line": 88,
+          "line": 89,
           "target": "lifecycle.json"
         }
       ]
@@ -4097,16 +4101,16 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "3e9e2767d87397d95e88501b6203f095f299e8f6d305e7c16b706c504aebae79",
+      "sha256": "7697aad2a9568ab43480192a1fb581a2c0e5e492c25b5c1d3841e7393959734e",
       "topic_ids": [],
-      "lines": 31,
+      "lines": 32,
       "sections": [
         {
           "level": 1,
           "title": "架构、开发与检索手册",
           "line": 10,
           "anchor": "架构开发与检索手册",
-          "end_line": 31
+          "end_line": 32
         }
       ],
       "mentioned_ids": [],
@@ -4137,50 +4141,54 @@
         },
         {
           "line": 21,
-          "target": "interfaces.md"
+          "target": "licensing.md"
         },
         {
           "line": 22,
-          "target": "evidence.md"
+          "target": "interfaces.md"
         },
         {
           "line": 23,
-          "target": "development.md"
+          "target": "evidence.md"
         },
         {
           "line": 24,
-          "target": "documentation-maintenance.md"
+          "target": "development.md"
         },
         {
           "line": 25,
-          "target": "templates/plan.md"
+          "target": "documentation-maintenance.md"
         },
         {
           "line": 26,
-          "target": "templates/spec.md"
+          "target": "templates/plan.md"
         },
         {
           "line": 27,
-          "target": "templates/report.md"
+          "target": "templates/spec.md"
         },
         {
           "line": 28,
-          "target": "templates/decision.md"
+          "target": "templates/report.md"
         },
         {
           "line": 29,
+          "target": "templates/decision.md"
+        },
+        {
+          "line": 30,
           "target": "catalog.md"
         },
         {
-          "line": 31,
+          "line": 32,
           "target": "topics.json"
         },
         {
-          "line": 31,
+          "line": 32,
           "target": "../catalog.json"
         },
         {
-          "line": 31,
+          "line": 32,
           "target": "../superpowers/specs/2026-10-23-documentation-system-design.md"
         }
       ]
@@ -4288,48 +4296,48 @@
       "authority": "source-provenance",
       "status": "maintained",
       "date": "2026-10-25",
-      "sha256": "5aed890176327c56f81d8552371ca3f9540836075f496f46ab2eb8bace7c48e2",
+      "sha256": "4fecd872956f0afa33cc470d304eece4124589d77b989b47844c6067ec61f832",
       "topic_ids": [
         "boot",
         "memory",
         "synchronization"
       ],
-      "lines": 73,
+      "lines": 74,
       "sections": [
         {
           "level": 1,
           "title": "Asterinas 来源与修改",
           "line": 10,
           "anchor": "asterinas-来源与修改",
-          "end_line": 73
+          "end_line": 74
         },
         {
           "level": 2,
           "title": "上游输入 SHA-256",
-          "line": 25,
+          "line": 26,
           "anchor": "上游输入-sha-256",
-          "end_line": 35
+          "end_line": 36
         },
         {
           "level": 2,
           "title": "POD 与借用访问设计参考（后继）",
-          "line": 36,
+          "line": 37,
           "anchor": "pod-与借用访问设计参考后继",
-          "end_line": 49
+          "end_line": 50
         },
         {
           "level": 2,
           "title": "一次发布的设计参考（后继）",
-          "line": 50,
+          "line": 51,
           "anchor": "一次发布的设计参考后继",
-          "end_line": 62
+          "end_line": 63
         },
         {
           "level": 2,
           "title": "fork COW 提交顺序的设计参考（后继）",
-          "line": 63,
+          "line": 64,
           "anchor": "fork-cow-提交顺序的设计参考后继",
-          "end_line": 73
+          "end_line": 74
         }
       ],
       "mentioned_ids": [],
@@ -4343,31 +4351,35 @@
           "target": "../../prima-ostd/LICENSE-MPL"
         },
         {
-          "line": 20,
-          "target": "../../prima-ostd/src/align.rs"
+          "line": 17,
+          "target": "licensing.md"
         },
         {
           "line": 21,
+          "target": "../../prima-ostd/src/align.rs"
+        },
+        {
+          "line": 22,
           "target": "../../prima-ostd/src/sync/lock.rs"
         },
         {
-          "line": 23,
+          "line": 24,
           "target": "../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
         },
         {
-          "line": 38,
+          "line": 39,
           "target": "../../prima-ostd/src/pod.rs"
         },
         {
-          "line": 42,
+          "line": 43,
           "target": "../superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md"
         },
         {
-          "line": 52,
+          "line": 53,
           "target": "../superpowers/specs/2026-10-24-asterinas-once-publication-design.md"
         },
         {
-          "line": 65,
+          "line": 66,
           "target": "../superpowers/specs/2026-10-24-fork-continuation-design.md"
         }
       ]
@@ -4951,6 +4963,135 @@
         {
           "line": 93,
           "target": "../superpowers/compat/stage5-working-api.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture/licensing.md",
+      "id": "licensing",
+      "title": "许可证：GPLv3 与本仓库的许可分布",
+      "kind": "reference",
+      "lifecycle": "current",
+      "lifecycle_reason": null,
+      "replacements": [],
+      "authority": "license-policy",
+      "status": "maintained",
+      "date": "2026-10-29",
+      "sha256": "919605506bab4a7106d54178830d4af01d91db37d083cc9568ca8f506c1cde95",
+      "topic_ids": [],
+      "lines": 85,
+      "sections": [
+        {
+          "level": 1,
+          "title": "许可证：GPLv3 与本仓库的许可分布",
+          "line": 10,
+          "anchor": "许可证gplv3-与本仓库的许可分布",
+          "end_line": 85
+        },
+        {
+          "level": 2,
+          "title": "项目许可",
+          "line": 16,
+          "anchor": "项目许可",
+          "end_line": 31
+        },
+        {
+          "level": 2,
+          "title": "例外：`prima-ostd` 的三个 MPL-2.0 文件",
+          "line": 32,
+          "anchor": "例外prima-ostd-的三个-mpl-20-文件",
+          "end_line": 52
+        },
+        {
+          "level": 2,
+          "title": "第三方材料",
+          "line": 53,
+          "anchor": "第三方材料",
+          "end_line": 61
+        },
+        {
+          "level": 2,
+          "title": "分发约束（现在不影响仓库，影响将来的发行物）",
+          "line": 62,
+          "anchor": "分发约束现在不影响仓库影响将来的发行物",
+          "end_line": 72
+        },
+        {
+          "level": 2,
+          "title": "后继与未覆盖",
+          "line": 73,
+          "anchor": "后继与未覆盖",
+          "end_line": 80
+        },
+        {
+          "level": 2,
+          "title": "重审触发",
+          "line": 81,
+          "anchor": "重审触发",
+          "end_line": 85
+        }
+      ],
+      "mentioned_ids": [],
+      "links": [
+        {
+          "line": 13,
+          "target": "../../LICENSE"
+        },
+        {
+          "line": 23,
+          "target": "../../LICENSE"
+        },
+        {
+          "line": 30,
+          "target": "#后继与未覆盖"
+        },
+        {
+          "line": 34,
+          "target": "https://github.com/asterinas/asterinas"
+        },
+        {
+          "line": 39,
+          "target": "../../prima-ostd/src/align.rs"
+        },
+        {
+          "line": 40,
+          "target": "../../prima-ostd/src/sync/lock.rs"
+        },
+        {
+          "line": 41,
+          "target": "../../prima-ostd/src/pod.rs"
+        },
+        {
+          "line": 44,
+          "target": "../../prima-ostd/LICENSE-MPL"
+        },
+        {
+          "line": 46,
+          "target": "asterinas-provenance.md"
+        },
+        {
+          "line": 57,
+          "target": "https://musl.libc.org/"
+        },
+        {
+          "line": 57,
+          "target": "../../prima-user/musl/COPYRIGHT"
+        },
+        {
+          "line": 59,
+          "target": "https://busybox.net/"
+        },
+        {
+          "line": 59,
+          "target": "../superpowers/compat/stage6-static-whitelist.md"
+        },
+        {
+          "line": 71,
+          "target": "../superpowers/reports/2026-10-29-stage6-start.md"
+        },
+        {
+          "line": 85,
+          "target": "asterinas-provenance.md"
         }
       ]
     },
@@ -40464,16 +40605,16 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "a89d2c15858c457a5bf019a02b7f6906e47c69cf4acb49c877225e4f0d9ef8dd",
+      "sha256": "09b726a1f27cc54c893d13eaaf4b443689c85c1f73845bf0357fb48fb5274001",
       "topic_ids": [],
-      "lines": 40,
+      "lines": 41,
       "sections": [
         {
           "level": 1,
           "title": "PrimaOS",
           "line": 10,
           "anchor": "primaos",
-          "end_line": 40
+          "end_line": 41
         },
         {
           "level": 2,
@@ -40487,14 +40628,14 @@
           "title": "Contracts and evidence",
           "line": 21,
           "anchor": "contracts-and-evidence",
-          "end_line": 29
+          "end_line": 30
         },
         {
           "level": 2,
           "title": "Machine-readable retrieval",
-          "line": 30,
+          "line": 31,
           "anchor": "machine-readable-retrieval",
-          "end_line": 40
+          "end_line": 41
         }
       ],
       "mentioned_ids": [],
@@ -40533,26 +40674,34 @@
         },
         {
           "line": 26,
-          "target": "lean/README.md"
+          "target": "LICENSE"
+        },
+        {
+          "line": 26,
+          "target": "docs/architecture/licensing.md"
         },
         {
           "line": 27,
-          "target": "docs/superpowers/compat/compat-state.md"
+          "target": "lean/README.md"
         },
         {
           "line": 28,
+          "target": "docs/superpowers/compat/compat-state.md"
+        },
+        {
+          "line": 29,
           "target": "docs/superpowers/compat/symbol-trace.md"
         },
         {
-          "line": 31,
+          "line": 32,
           "target": "docs/architecture/topics.json"
         },
         {
-          "line": 32,
+          "line": 33,
           "target": "docs/catalog.json"
         },
         {
-          "line": 35,
+          "line": 36,
           "target": "docs/lifecycle.json"
         }
       ]

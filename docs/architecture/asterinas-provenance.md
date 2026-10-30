@@ -13,7 +13,8 @@ updated: 2026-10-25
 `ceb65e3f850096d30283137845ac01ad51dfcdaf`。本轮读取本地 Git checkout，未抓取上游最新版本。
 版权归原贡献者，作者列表见上游对应版本 Git 历史；保留上游文件的 SPDX 标识。
 许可证全文见 [LICENSE-MPL](../../prima-ostd/LICENSE-MPL)（从该提交逐字复制）。本表只登记列出的移植文件，
-不改变其他 PrimaOS 文件的许可归属。
+不改变其他 PrimaOS 文件的许可归属。 全仓库的许可分布（GPL-3.0-only 与这三个 MPL-2.0 文件的组合依据）见
+[许可证](licensing.md)。
 
 | PrimaOS 文件 | 上游源文件（均为 MPL-2.0） | 修改 |
 |---|---|---|
