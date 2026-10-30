@@ -174,6 +174,7 @@ pub fn init_timer() {
 /// 且抢占已启用时动作：发 EOI、计数、记录当前任务 CR3/rsp，把当前完整 `SretFrame` 存入
 /// 调度器，若阈值达到则收尾，否则切到下一 Ready 任务（不返回）。
 extern "C" fn preempt_tick(frame: SaveBlock, entry_rsp: u64) {
+    crate::bootstrap::gate_audit::enforce_stop();
     // The kernel idle loop also receives IRQ0. Always acknowledge it before
     // inspecting CS, and never decode the absent ring0 RSP/SS slots.
     eoi();

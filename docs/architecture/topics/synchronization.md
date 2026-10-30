@@ -89,3 +89,8 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 WaitSignal/WaitDestroy 权限。公共 32 与私有 80 的对象预算独立。
 证据为 host 内核状态机与既有 QEMU 回归，Gate attach/trap/reply 尚未调用这些接口，
 不能据此认定 G1/G2 或 S6-D2 完成。
+
+[审计停止后继](../../superpowers/reports/2026-10-30-stage6-audit-fail-stop.md)将私有等待
+AuditFull 收紧为首次诊断与持久停止，并在分派、调度及 IRQ 入口消费停止标记；
+[gate_audit.rs](../../../kernel/src/gate_audit.rs) 的记录与普通日志池独立，不能释放压力后重试。
+Gate 完整事务与 G1–G3 仍需后继验证。

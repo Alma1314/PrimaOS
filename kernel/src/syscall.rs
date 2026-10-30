@@ -3870,6 +3870,7 @@ static COUNT: AtomicU64 = AtomicU64::new(0);
 /// `[1..7]=参数(rdi,rsi,rdx,r10,r8,r9)`、`[7]=进入时 CS`。解引用由框架的
 /// [`AbiFrame`] 访问器完成，本函数因此是 safe `extern "C" fn`（ABI 不变）。
 pub extern "C" fn handle(frame: AbiFrame) -> u64 {
+    bootstrap::gate_audit::enforce_stop();
     let num = frame.num();
     let mut args = [0u64; MAX_ARGS];
     let mut i = 0;
@@ -3887,6 +3888,7 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     let _ = bootstrap::take_wait_result(current);
 
     let ret = serve(num, &args);
+    bootstrap::gate_audit::enforce_stop();
     maybe_deliver_signals(ret);
 
     // 切片 M：只把 task 1 阶段一的前 MAX_CALLS 次进入记入 CALLS（既有证据固定下标）；
@@ -3909,6 +3911,7 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
 ///
 /// [`SYS_YIELD`] 会切走当前任务、不返回给调用者，故必须在 `dispatch_plain` 之前分支。
 fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
+    bootstrap::gate_audit::enforce_stop();
     crate::irq::retry_pending();
     if num == SYS_COPY_IN {
         match copy_in(args[0], args[1]) {
@@ -4108,6 +4111,7 @@ pub extern "C" fn handle_fast(frame: AbiFrame) -> u64 {
     }
     let cs = frame.cs();
     let ret = serve(num, &args);
+    bootstrap::gate_audit::enforce_stop();
     maybe_deliver_signals(ret);
     // 记录指定的 echo 快路径见证，而不让后来运行的服务 Runtime syscall 覆盖它。
     if num == SYS_ECHO && args[0] == FAST_ARG {

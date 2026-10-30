@@ -9,6 +9,8 @@ use prima_ostd::sync::StaticCell;
 
 #[path = "completion.rs"]
 pub mod completion;
+#[path = "gate_audit.rs"]
+pub mod gate_audit;
 
 pub const INIT_TASK_ID: u32 = 1;
 /// 初始根 Capability 的**物理槽索引**（S2-D1：句柄 = 槽索引 + generation）。
@@ -6828,7 +6830,7 @@ impl BootstrapState {
 
     /// §8.4 步骤 3 + §13.1：`Ready → Running` 并追加 `TaskStateChanged`。
     pub fn schedule_task(&mut self, task_id: u32) -> Result<(), TaskError> {
-        if !self.audit.can_append(1) {
+        if self.gate_audit_diagnostic().is_some() || !self.audit.can_append(1) {
             return Err(TaskError::AuditFull);
         }
         self.tasks.schedule(task_id)?;
@@ -6838,7 +6840,7 @@ impl BootstrapState {
 
     /// §8.4 + §13.1：`Running → Ready`（协作让出）并追加 `TaskStateChanged`。
     pub fn yield_task(&mut self, task_id: u32) -> Result<(), TaskError> {
-        if !self.audit.can_append(1) {
+        if self.gate_audit_diagnostic().is_some() || !self.audit.can_append(1) {
             return Err(TaskError::AuditFull);
         }
         self.tasks.yield_task(task_id)?;
@@ -7202,7 +7204,7 @@ impl BootstrapState {
             return self.task_destroy_self(caller, root_phys, phys_offset);
         }
         self.tasks.prepare_destroy(task_id)?;
-        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
+        if !self.can_audit_task_destroy(task_id) {
             return Err(TaskError::AuditFull);
         }
         self.cancel_prepared_children(task_id)?;
@@ -7227,7 +7229,7 @@ impl BootstrapState {
             return Err(TaskError::CannotDestroyInit);
         }
         // 自身作为销毁目标是合法的（§8.2），故不做 `CannotDestroyRunning` 检查。
-        if !self.audit.can_append(self.destroy_audit_events(caller)) {
+        if !self.can_audit_task_destroy(caller) {
             return Err(TaskError::AuditFull);
         }
         self.cancel_prepared_children(caller)?;
@@ -7305,7 +7307,20 @@ impl BootstrapState {
             .sum::<usize>()
             + MAX_TASKS
             + usize::from(callback_wake);
-        if !self.audit.can_append(cost) {
+        if self.gate_audit_diagnostic().is_some()
+            || (self
+                .wait_objects
+                .iter()
+                .any(|o| o.completion_owner.is_some())
+                && self
+                    .preflight_gate_audit(
+                        cost,
+                        self.task_cookie(leader).unwrap_or(0),
+                        gate_audit::Operation::Destroy,
+                    )
+                    .is_err())
+            || !self.audit.can_append(cost)
+        {
             return Err(TaskError::AuditFull);
         }
         if active_root
@@ -7475,7 +7490,7 @@ impl BootstrapState {
         if !self.is_unrecoverable_faulted(task_id) {
             return Err(TaskError::NotUnrecoverable);
         }
-        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
+        if !self.can_audit_task_destroy(task_id) {
             return Err(TaskError::AuditFull);
         }
         self.cancel_prepared_children(task_id)?;
@@ -7543,7 +7558,7 @@ impl BootstrapState {
                 }
             }
         }
-        if !self.audit.can_append(self.destroy_audit_events(task_id)) {
+        if !self.can_audit_task_destroy(task_id) {
             return Err(TaskError::AuditFull);
         }
         // Retire only the official kernel-minted thread root, preserving all
@@ -8667,7 +8682,7 @@ impl BootstrapState {
         {
             return Err(TaskError::NoSuchTask);
         }
-        if !self.audit.can_append(self.destroy_audit_events(caller)) {
+        if !self.can_audit_task_destroy(caller) {
             return Err(TaskError::AuditFull);
         }
         if pages == 0

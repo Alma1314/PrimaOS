@@ -528,7 +528,8 @@
       "published_once",
       "CompletionWait",
       "CompletionTicket",
-      "不可警报等待"
+      "不可警报等待",
+      "gate audit fail-stop"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -548,7 +549,8 @@
       "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
       "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
       "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
-      "docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md"
+      "docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md",
+      "docs/superpowers/reports/2026-10-30-stage6-audit-fail-stop.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -569,7 +571,8 @@
       "cosir/src/authority/remote.rs",
       "cosir/src/authority/wait.rs",
       "lean/Formal/Location.lean",
-      "kernel/src/completion.rs"
+      "kernel/src/completion.rs",
+      "kernel/src/gate_audit.rs"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",

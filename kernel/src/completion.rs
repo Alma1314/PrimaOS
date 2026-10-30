@@ -91,6 +91,9 @@ impl BootstrapState {
     /// Reserve before a future trap can block; never allocate at the blocking
     /// entry. A Gate attach must preflight ALL other resources before this step.
     pub fn reserve_completion_wait(&mut self, owner: u32) -> Result<CompletionWait, Error> {
+        if self.gate_audit_diagnostic().is_some() {
+            return Err(Error::AuditFull);
+        }
         let cookie = self.task_cookie(owner).ok_or(Error::Stale)?;
         if !matches!(
             self.tasks.status_of(owner),
@@ -108,9 +111,7 @@ impl BootstrapState {
             return Err(Error::Capacity);
         }
         let id = self.wait_objects.next_id().ok_or(Error::Capacity)?;
-        if !self.audit.can_append(1) {
-            return Err(Error::AuditFull);
-        }
+        self.preflight_gate_audit(1, cookie, gate_audit::Operation::Reserve)?;
         let object = WaitObject {
             id,
             creator: KERNEL_ACTOR,
@@ -136,6 +137,9 @@ impl BootstrapState {
         &mut self,
         wait: CompletionWait,
     ) -> Result<CompletionTicket, Error> {
+        if self.gate_audit_diagnostic().is_some() {
+            return Err(Error::AuditFull);
+        }
         let mut object = self.completion_object(wait)?;
         let task_id = wait.owner as u32;
         let task = self.tasks.find(task_id).ok_or(Error::Stale)?;
@@ -150,9 +154,7 @@ impl BootstrapState {
             return Err(Error::Busy);
         }
         let generation = object.generation.checked_add(1).ok_or(Error::Capacity)?;
-        if !self.audit.can_append(2) {
-            return Err(Error::AuditFull);
-        }
+        self.preflight_gate_audit(2, wait.owner, gate_audit::Operation::Block)?;
         object.generation = generation;
         object.waiters[0] = Some(task_id);
         object.waiter_count = 1;
@@ -169,6 +171,9 @@ impl BootstrapState {
     /// preflight its own audit and perform the rax-only frame commit in the SAME
     /// non-scheduling critical section. Never feed this through inject_wait_wakes.
     pub fn complete_completion_wait(&mut self, ticket: CompletionTicket) -> Result<(), Error> {
+        if self.gate_audit_diagnostic().is_some() {
+            return Err(Error::AuditFull);
+        }
         let mut object = self.completion_object(ticket.wait)?;
         let task_id = ticket.wait.owner as u32;
         let task = self.tasks.find(task_id).ok_or(Error::Stale)?;
@@ -182,9 +187,7 @@ impl BootstrapState {
         {
             return Err(Error::Stale);
         }
-        if !self.audit.can_append(2) {
-            return Err(Error::AuditFull);
-        }
+        self.preflight_gate_audit(2, ticket.wait.owner, gate_audit::Operation::Complete)?;
         object.waiters[0] = None;
         object.waiter_count = 0;
         self.wait_objects.write(object);
@@ -199,13 +202,14 @@ impl BootstrapState {
     /// Release only an idle reservation. Destruction of an owner uses the common
     /// Task lifecycle hook instead, without making a dead continuation Ready.
     pub fn release_completion_wait(&mut self, wait: CompletionWait) -> Result<(), Error> {
+        if self.gate_audit_diagnostic().is_some() {
+            return Err(Error::AuditFull);
+        }
         let object = self.completion_object(wait)?;
         if object.waiter_count != 0 {
             return Err(Error::Busy);
         }
-        if !self.audit.can_append(1) {
-            return Err(Error::AuditFull);
-        }
+        self.preflight_gate_audit(1, wait.owner, gate_audit::Operation::Release)?;
         self.wait_objects
             .remove(wait.object)
             .expect("reservation preflighted");
@@ -298,10 +302,10 @@ impl BootstrapState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn state() -> BootstrapState {
+    pub(in crate::bootstrap) fn state() -> BootstrapState {
         let inventory = crate::mem::FrameInventory {
             usable_frames: 16,
             image_frames: 3,
@@ -473,6 +477,9 @@ mod tests {
         assert_eq!(state.block_completion_wait(wait), Err(Error::AuditFull));
         assert_eq!(snapshot(&state), before);
         state.audit.release_reservation(reservation);
+        assert_eq!(state.block_completion_wait(wait), Err(Error::AuditFull));
+        let mut state = self::state();
+        let wait = state.reserve_completion_wait(2).unwrap();
         let ticket = state.block_completion_wait(wait).unwrap();
         let reservation = MAX_AUDIT_EVENTS - state.audit.count - 1;
         assert!(state.audit.reserve(reservation));
@@ -485,8 +492,12 @@ mod tests {
         // Deferring an upcall needs no audit space and cannot silently unregister.
         assert!(!state.interrupt_for_upcall(2).unwrap());
         state.audit.release_reservation(reservation);
-        state.complete_completion_wait(ticket).unwrap();
-        state.schedule_task(2).unwrap();
+        assert_eq!(
+            state.complete_completion_wait(ticket),
+            Err(Error::AuditFull)
+        );
+        let mut state = self::state();
+        let wait = state.reserve_completion_wait(2).unwrap();
         let mut object = state.wait_objects.find(wait.object).unwrap();
         object.generation = u64::MAX;
         state.wait_objects.write(object);
@@ -534,6 +545,8 @@ mod tests {
         assert_eq!(state.reserve_completion_wait(2), Err(Error::AuditFull));
         assert_eq!(snapshot(&state), before);
         state.audit.release_reservation(reservation);
+        assert_eq!(state.reserve_completion_wait(2), Err(Error::AuditFull));
+        let mut state = self::state();
         let wait = state.reserve_completion_wait(2).unwrap();
         let reservation = MAX_AUDIT_EVENTS - state.audit.count;
         assert!(state.audit.reserve(reservation));
@@ -541,6 +554,9 @@ mod tests {
         assert_eq!(state.release_completion_wait(wait), Err(Error::AuditFull));
         assert_eq!(snapshot(&state), before);
         state.audit.release_reservation(reservation);
+        assert_eq!(state.release_completion_wait(wait), Err(Error::AuditFull));
+        let mut state = self::state();
+        let wait = state.reserve_completion_wait(2).unwrap();
         let ticket = state.block_completion_wait(wait).unwrap();
         let reservation = MAX_AUDIT_EVENTS - state.audit.count - state.destroy_audit_events(2) + 1;
         assert!(state.audit.reserve(reservation));
@@ -548,10 +564,12 @@ mod tests {
         assert_eq!(state.destroy_task(2), Err(TaskError::AuditFull));
         assert_eq!(snapshot(&state), before);
         state.audit.release_reservation(reservation);
-        state.destroy_task(2).unwrap();
-        assert_eq!(state.complete_completion_wait(ticket), Err(Error::Stale));
+        assert_eq!(state.destroy_task(2), Err(TaskError::AuditFull));
+        assert_eq!(
+            state.complete_completion_wait(ticket),
+            Err(Error::AuditFull)
+        );
         assert!(state.completion_waits_well_formed());
-        assert!(state.audit.any(|event| matches!(event, AuditEvent::Completion { owner, action: Action::OwnerDestroyed, .. } if *owner == wait.owner)));
     }
 
     #[test]
