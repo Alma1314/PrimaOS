@@ -2006,7 +2006,7 @@ fn upcall_control(args: &[u64; MAX_ARGS]) -> u64 {
                     return Ok(0);
                 }
                 let masked = crate::signal::mask(target) & (1u64 << (slot - 1)) != 0;
-                if !masked && action.handler == 0 {
+                if !masked && action.handler == 0 && bootstrap::upcall_interruptible(target) {
                     let leader = bootstrap::process_of(target)
                         .and_then(bootstrap::process_leader)
                         .unwrap_or(target);

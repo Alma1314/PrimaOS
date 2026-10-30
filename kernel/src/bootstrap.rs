@@ -7,6 +7,9 @@ use crate::namespace::{MAX_PATH_COMPONENTS, NsEntry, NsEntryKind, Path};
 use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
 use prima_ostd::sync::StaticCell;
 
+#[path = "completion.rs"]
+pub mod completion;
+
 pub const INIT_TASK_ID: u32 = 1;
 /// 初始根 Capability 的**物理槽索引**（S2-D1：句柄 = 槽索引 + generation）。
 pub const IMAGE_CAP_SLOT: u32 = 1;
@@ -201,6 +204,13 @@ pub enum AuditEvent {
         message_id: u32,
         sender: u32,
         receiver: u32,
+    },
+    /// Private completion lifecycle; no user capability is minted.
+    Completion {
+        object: u32,
+        owner: u64,
+        generation: u64,
+        action: completion::Action,
     },
     MessageReceived {
         message_id: u32,
@@ -592,6 +602,8 @@ pub struct WaitRequest {
     pub deadline: Option<Instant>,
     /// Physical monotonic ticks for native waits; abstract time remains separate.
     pub physical: bool,
+    /// Private kernel completions defer upcalls until their controlled terminal step.
+    pub alertable: bool,
 }
 
 /// COSIR §5.6：等待结果编码（0=满足、1=超时、2=目标死亡）。
@@ -3178,8 +3190,11 @@ impl ProcessTable {
     }
 }
 
-/// M15 / COSIR §21：活动 WaitObject 上限（32 个对象，内联表）。
-pub const MAX_WAIT_OBJECTS: usize = 32;
+/// Public wait quota remains independent of attach-time completion reservations.
+pub const MAX_PUBLIC_WAIT_OBJECTS: usize = 32;
+/// S6-M1: at most 64 client waits plus 16 service waits, stored in the arena.
+pub const MAX_COMPLETION_WAITS: usize = 80;
+pub const MAX_WAIT_OBJECTS: usize = MAX_PUBLIC_WAIT_OBJECTS + MAX_COMPLETION_WAITS;
 /// COSIR §21.1.1：根 WaitObject Capability 的权限集。
 pub const WAIT_RIGHTS: Rights = Rights::from_rights(&[
     Right::Derive,
@@ -3196,6 +3211,8 @@ pub struct WaitObject {
     pub generation: u64,
     pub waiters: [Option<u32>; MAX_WAITERS],
     pub waiter_count: usize,
+    /// Full Task cookie; private completion objects have no public authority.
+    completion_owner: Option<u64>,
 }
 
 /// 每个 WaitObject 的等待者上限（与 MAX_TASKS 对齐的保守值）。
@@ -4656,7 +4673,7 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
         }
-        if !rights.well_typed(target.kind()) {
+        if !rights.well_typed(target.kind()) || self.is_completion_target(target) {
             return Err(DeriveError::WrongRightType);
         }
         if !self.can_record_capability() {
@@ -4700,7 +4717,7 @@ impl BootstrapState {
         if !self.audit.can_append(1) {
             return Err(DeriveError::AuditFull);
         }
-        if !rights.well_typed(target.kind()) {
+        if !rights.well_typed(target.kind()) || self.is_completion_target(target) {
             return Err(DeriveError::WrongRightType);
         }
         if !self.can_record_capability() {
@@ -5212,7 +5229,7 @@ impl BootstrapState {
         if !rights.subset_of(parent_rights) {
             return Err(DeriveError::RightsEscalation);
         }
-        if !rights.well_typed(target.kind()) {
+        if !rights.well_typed(target.kind()) || self.is_completion_target(target) {
             return Err(DeriveError::WrongRightType);
         }
         if !self.audit.can_append(1) {
@@ -5303,7 +5320,7 @@ impl BootstrapState {
         if !rights.subset_of(parent_rights) {
             return Err(DeriveError::RightsEscalation);
         }
-        if !rights.well_typed(target.kind()) {
+        if !rights.well_typed(target.kind()) || self.is_completion_target(target) {
             return Err(DeriveError::WrongRightType);
         }
         if !self.audit.can_append(1) {
@@ -7366,6 +7383,7 @@ impl BootstrapState {
             + subscriptions
             + usize::from(pending)
             + 1
+            + self.completion_wait_count(task_id)
             + self.timers_of_recipient_audit_cost(task_id)
             + 2 * self.private_exec_segments.count_ones() as usize
     }
@@ -7575,6 +7593,7 @@ impl BootstrapState {
         self.destroy_timers_of_recipient(task_id);
         let _ = self.tasks.take_pending(task_id);
         self.ipc.remove_task(task_id);
+        self.destroy_completion_waits(task_id);
         self.tasks.finish_destroy(task_id)?;
         self.fork_views.clear(task_id);
         self.reclaim_exec_segments()
@@ -10893,8 +10912,9 @@ impl BootstrapState {
         let ObjectRef::WaitObject(id) = target else {
             return Err(WaitError::InvalidWaitObject);
         };
-        if self.wait_objects.find(id).is_none() {
-            return Err(WaitError::TargetDead);
+        let object = self.wait_objects.find(id).ok_or(WaitError::TargetDead)?;
+        if object.completion_owner.is_some() {
+            return Err(WaitError::InvalidWaitObject);
         }
         if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(WaitError::NotHeld);
@@ -10911,7 +10931,13 @@ impl BootstrapState {
         if !self.tasks.is_live(caller) {
             return Err(WaitError::InvalidCaller);
         }
-        if self.wait_objects.count == MAX_WAIT_OBJECTS {
+        if self
+            .wait_objects
+            .iter()
+            .filter(|o| o.completion_owner.is_none())
+            .count()
+            == MAX_PUBLIC_WAIT_OBJECTS
+        {
             return Err(WaitError::CapacityExceeded);
         }
         if !self.audit.can_append(3) {
@@ -10930,6 +10956,7 @@ impl BootstrapState {
             generation: 0,
             waiters: [None; MAX_WAITERS],
             waiter_count: 0,
+            completion_owner: None,
         }) {
             return Err(WaitError::CapacityExceeded);
         }
@@ -11033,6 +11060,9 @@ impl BootstrapState {
         let Some(request) = task.wait_request else {
             return false;
         };
+        if !request.alertable {
+            return false;
+        }
         task.wait_request = None;
         task.pending_wait_result = Some(result);
         task.status = TaskStatus::Ready;
@@ -11084,7 +11114,8 @@ impl BootstrapState {
         if !matches!(
             task.status,
             TaskStatus::BlockedRecv | TaskStatus::BlockedWait
-        ) {
+        ) || task.wait_request.is_some_and(|request| !request.alertable)
+        {
             return Ok(false);
         }
         if !self.audit.can_append(1) {
@@ -11169,6 +11200,7 @@ impl BootstrapState {
             mode: 0,
             deadline: Some(deadline),
             physical: true,
+            alertable: true,
         });
         task.status = TaskStatus::BlockedWait;
         self.audit_transition(caller, TaskStatus::BlockedWait);
@@ -11187,7 +11219,7 @@ impl BootstrapState {
         mode: u64,
         timeout: u64,
     ) -> Result<WaitOutcome, WaitError> {
-        if !self.tasks.is_live(caller) {
+        if !self.tasks.is_live(caller) || !self.upcall_interruptible(caller) {
             return Err(WaitError::InvalidCaller);
         }
         let id0 = self.wait_cap(caller, cap0, Right::WaitWait)?;
@@ -11269,6 +11301,7 @@ impl BootstrapState {
             count,
             mode,
             physical: false,
+            alertable: true,
             deadline: if timeout == u64::MAX {
                 None
             } else {
@@ -11450,6 +11483,14 @@ pub fn block_upcall(task: u32) -> Result<(), TaskError> {
         slot.as_mut()
             .ok_or(TaskError::NoSuchTask)?
             .block_upcall(task)
+    })
+}
+
+/// False only while a kernel-private completion owns this Task's return.
+pub fn upcall_interruptible(task: u32) -> bool {
+    BOOTSTRAP_STATE.with(|slot| {
+        slot.as_ref()
+            .is_none_or(|state| state.upcall_interruptible(task))
     })
 }
 
@@ -11674,6 +11715,7 @@ pub fn set_wait_physical_deadline(caller: u32, deadline: u64) {
             .as_mut()
             .and_then(|s| s.tasks.find_mut(caller))
             .and_then(|t| t.wait_request.as_mut())
+            .filter(|request| request.alertable)
         {
             request.physical = true;
             request.deadline = Some(deadline);

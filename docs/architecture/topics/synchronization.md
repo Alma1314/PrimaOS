@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-30
 ---
 
 # 等待、唤醒、futex、时间与 TTY
@@ -79,3 +79,13 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 检索：Once、get_or_try_init、KernelRootInfo、published_once；实现见
 [sync.rs](../../../prima-ostd/src/sync.rs)、[user.rs](../../../kernel/src/user.rs)、
 [trace 校验](../../../xtask/src/protocol.rs)。该机制未替换所有 boot 标志或证明 SMP。
+
+## S6-M1 私有完成等待
+
+[协议 §2](../../superpowers/specs/2026-10-29-stage6-m1-protocol.md)与
+[内核等待基础证据](../../superpowers/reports/2026-10-30-stage6-private-completion-waits.md)：
+[completion.rs](../../../kernel/src/completion.rs) 使用真实 WaitObject/WaitRequest，
+以 Task cookie 和每次登记的 CompletionTicket 区分迟到完成；私有等待不可警报、没有普通
+WaitSignal/WaitDestroy 权限。公共 32 与私有 80 的对象预算独立。
+证据为 host 内核状态机与既有 QEMU 回归，Gate attach/trap/reply 尚未调用这些接口，
+不能据此认定 G1/G2 或 S6-D2 完成。

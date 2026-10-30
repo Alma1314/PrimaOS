@@ -1,0 +1,1164 @@
+    Blocking waiting for file lock on build directory
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/xtask)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.15s
+     Running unittests src/lib.rs (target/debug/deps/cosir-05d318f967a232d3)
+
+running 167 tests
+test abstract_ops::tests::bootstrap_idempotent_returns_already_booted ... ok
+test abstract_ops::tests::alpha_pre_bootstrap_projects_to_empty_state ... ok
+test abstract_ops::tests::alpha_projection_preserves_booted_flag ... ok
+test abstract_ops::tests::dynamic_machine_steps_map_to_bootstrap_migration ... ok
+test abstract_ops::tests::bootstrap_produces_booted_state_with_init_task ... ok
+test authority::event_tests::recipient_death_cancels_timers_but_does_not_reclaim_external_tokens ... ok
+test authority::event_tests::immediate_timer_satisfies_blocked_recv_and_ids_fail_atomically ... ok
+test authority::event_tests::remote_data_has_no_local_queue_or_cap_copy_and_bad_destination_creates_no_proxy ... ok
+test authority::event_tests::exception_signatures_allow_general_fault_sets_and_reject_incompatible_kinds_atomically ... ok
+test authority::event_tests::wait_all_alert_timeout_and_target_death_keep_registrations_consistent ... ok
+test authority::event_tests::exception_fanout_uses_kernel_origin_and_last_token_loss_unsubscribes ... ok
+test authority::tests::direct_send_completes_blocked_recv_without_message_container ... ok
+test authority::tests::controlled_fork_inherits_non_derivable_tokens_and_rebinds_self_without_cdt_target_mismatch ... ok
+test authority::event_tests::timers_fire_once_in_deadline_id_order_and_keep_stale_notifications ... ok
+test authority::tests::derive_checks_authority_rights_and_id_exhaustion_atomically ... ok
+test authority::tests::invariant_rejects_dangling_duplicate_and_mismatched_carriers ... ok
+test authority::tests::last_subscription_authority_lost_by_move_or_drop_unsubscribes_once ... ok
+test authority::tests::namespace_bound_carrier_resolves_derived_authority_and_recovers_stale_tokens ... ok
+test authority::tests::mount_resolution_records_path_and_unmount_preserves_derived_children ... ok
+test authority::tests::mount_cycle_rejection_is_atomic_and_destroyed_target_can_be_unmounted ... ok
+test authority::tests::namespace_delegation_and_component_limits_are_enforced ... ok
+test authority::tests::queued_send_revokes_old_holder_and_fifo_recv_preserves_record ... ok
+test authority::tests::provenance_replay_rejects_missing_events_or_forged_source_locations ... ok
+test authority::tests::namespace_paths_reject_empty_noncanonical_and_terminal_overlap_atomically ... ok
+test authority::tests::send_rejects_duplicate_structural_stale_and_invalid_caps_without_partial_moves ... ok
+test authority::tests::sender_exit_preserves_queued_and_delivered_tokens_but_receiver_exit_drops_them ... ok
+test cow_refine::tests::authority_accepts_valid_segment_and_task_capabilities ... ok
+test cow_refine::tests::authority_checks_foreign_task_holder_before_allowed_access ... ok
+test cow_refine::tests::authority_checks_inactive_task_cap_before_allowed_access ... ok
+test cow_refine::tests::authority_checks_allowed_access_after_both_capability_stages ... ok
+test cow_refine::tests::authority_checks_missing_task_right_before_allowed_access ... ok
+test cow_refine::tests::authority_checks_stale_task_target_before_allowed_access ... ok
+test cow_refine::tests::access_rejects_non_current_task_atomically ... ok
+test cow_refine::tests::authority_checks_wrong_task_object_before_allowed_access ... ok
+test cow_refine::tests::authority_checks_segment_stage_before_task_stage ... ok
+test cow_refine::tests::authority_rejects_access_beyond_segment_allowed_access ... ok
+test cow_refine::tests::access_allows_read_without_scheduling ... ok
+test cow_refine::tests::authority_rejects_inactive_segment_capability ... ok
+test cow_refine::tests::authority_rejects_missing_segment_map_right ... ok
+test cow_refine::tests::access_unmapped_faults_without_implicit_schedule ... ok
+test cow_refine::tests::authority_rejects_missing_task_capability ... ok
+test cow_refine::tests::authority_rejects_missing_segment_capability ... ok
+test cow_refine::tests::authority_rejects_invalid_requested_bits_before_missing_caps ... ok
+test cow_refine::tests::authority_rejects_foreign_segment_capability_holder ... ok
+test cow_refine::tests::capability_right_domains_do_not_overlap ... ok
+test cow_refine::tests::authority_rejects_missing_task_manage_right ... ok
+test cow_refine::tests::authorize_mapping_rejects_namespace_object_caps ... ok
+test cow_refine::tests::authority_rejects_stale_segment_target ... ok
+test cow_refine::tests::check_invariants_rejects_dead_task_tlb ... ok
+test cow_refine::tests::authority_rejects_wrong_task_capability_object ... ok
+test cow_refine::tests::check_invariants_rejects_current_pointing_to_ready_task ... ok
+test cow_refine::tests::authority_rejects_wrong_segment_capability_object ... ok
+test cow_refine::tests::check_invariants_rejects_faulted_current_task ... ok
+test cow_refine::tests::check_invariants_rejects_faulted_task_without_pending_exception ... ok
+test cow_refine::tests::check_invariants_rejects_mapping_frame_mismatch ... ok
+test cow_refine::tests::check_invariants_rejects_memory_ops_task_set_mismatch ... ok
+test cow_refine::tests::check_invariants_rejects_mapping_access_mismatch ... ok
+test cow_refine::tests::check_invariants_rejects_mapping_segment_mismatch ... ok
+test cow_refine::tests::check_invariants_rejects_non_user_mapping ... ok
+test cow_refine::tests::check_invariants_rejects_mapping_offset_mismatch ... ok
+test cow_refine::tests::check_invariants_rejects_nonpresent_memory_leaf ... ok
+test cow_refine::tests::check_invariants_rejects_ready_task_with_pending_exception ... ok
+test cow_refine::tests::check_invariants_rejects_second_running_task ... ok
+test cow_refine::tests::create_segment_mints_root_capability_with_requested_mapping_rights ... ok
+test cow_refine::tests::check_invariants_rejects_ops_task_key_id_mismatch ... ok
+test cow_refine::tests::destroy_segment_rejects_missing_destroy_right_without_mutating_state ... ok
+test cow_refine::tests::destroy_task_rejects_current_parent_atomically ... ok
+test cow_refine::tests::destroy_ready_task_removes_all_task_state_and_tlb ... ok
+test cow_refine::tests::child_first_write_after_cow_faults_and_releases_cpu ... ok
+test cow_refine::tests::destroy_segment_requires_authority_and_is_atomic_while_mapped ... ok
+test cow_refine::tests::establish_cow_leaves_child_tlb_invalidation_idempotent ... ok
+test cow_refine::tests::destroy_task_requires_actor_task_authority_and_cleans_holder_state ... ok
+test cow_refine::tests::destroy_task_rejects_faulted_task_atomically ... ok
+test cow_refine::tests::establish_cow_rejects_invalid_address_atomically ... ok
+test cow_refine::tests::establish_cow_rejects_bad_authority_atomically ... ok
+test cow_refine::tests::fresh_slice_has_one_current_running_parent ... ok
+test cow_refine::tests::establish_cow_makes_parent_and_child_readonly_on_same_frame ... ok
+test cow_refine::tests::establish_cow_rejects_existing_child_mapping_atomically ... ok
+test cow_refine::tests::parent_first_write_after_cow_faults_despite_preexisting_rw_tlb_entry ... ok
+test cow_refine::tests::privatize_cow_rejects_missing_fault_preconditions_atomically ... ok
+test cow_refine::tests::parent_write_fault_private_resume_schedule_succeeds_via_public_api ... ok
+test cow_refine::tests::privatize_cow_rejects_current_faulted_task_as_corrupt_atomically ... ok
+test cow_refine::tests::privatize_cow_rejects_fault_va_mismatch_atomically ... ok
+test cow_refine::tests::r1_fixed_two_task_order_writes_each_fault_on_shared_readonly ... ok
+test cow_refine::tests::cow_slice_child_write_fault_private_resume_schedule_succeeds ... ok
+test cow_refine::tests::privatize_cow_rejects_when_another_task_is_current_atomically ... ok
+test cow_refine::tests::schedule_rejects_busy_cpu ... ok
+test cow_refine::tests::schedule_ready_task_sets_the_single_current ... ok
+test cow_refine::tests::schedule_rejects_non_ready_task ... ok
+test cow_refine::tests::schedule_rejects_unknown_task ... ok
+test memseg_refine_tests::alpha_detects_vspace_view_divergence ... ok
+test cow_refine::tests::yield_current_rejects_non_current_task ... ok
+test cow_refine::tests::privatize_cow_uses_equal_page_count_and_disjoint_frames ... ok
+test memseg_refine_tests::alpha_rejects_bad_offset ... ok
+test memseg_refine_tests::alpha_rejects_allowed_access_subset_violation_with_tid_and_va_diagnostic ... ok
+test memseg_refine_tests::alpha_rejects_duplicate_free_frame ... ok
+test memseg_refine_tests::alpha_rejects_nonpresent_leaf ... ok
+test memseg_refine_tests::alpha_rejects_nx_mismatch ... ok
+test cow_refine::tests::yield_current_clears_current_and_readies_task ... ok
+test memseg_refine_tests::alpha_rejects_wrong_frame_phys ... ok
+test memseg_refine_tests::create_allocates_frames_and_segment ... ok
+test memseg_refine_tests::alpha_validates_empty_state ... ok
+test memseg_refine_tests::create_exhausts_memory_returns_no_memory ... ok
+test memseg_refine_tests::alpha_rejects_writable_mismatch ... ok
+test memseg_refine_tests::create_requires_no_preexisting_segment_authority ... ok
+test memseg_refine_tests::create_rejects_exhausted_segment_id_atomically ... ok
+test memseg_refine_tests::destroy_invalid_segment_rejected ... ok
+test memseg_refine_tests::destroy_idempotent_double_frees_rejected ... ok
+test memseg_refine_tests::destroy_rejects_corrupt_allocator_atomically ... ok
+test memseg_refine_tests::alpha_rejects_supervisor_leaf ... ok
+test memseg_refine_tests::destroy_returns_frames_and_removes_segment ... ok
+test memseg_refine_tests::destroy_still_mapped_rejected ... ok
+test memseg_refine_tests::map_inserts_leaf_and_vspace ... ok
+test memseg_refine_tests::map_out_of_bounds_rejected ... ok
+test memseg_refine_tests::map_rejects_page_address_addition_overflow_atomically ... ok
+test memseg_refine_tests::map_rejects_page_index_multiplication_overflow_atomically ... ok
+test memseg_refine_tests::map_rejects_range_crossing_canonical_boundary_atomically ... ok
+test memseg_refine_tests::map_rejects_segment_range_overflow_atomically ... ok
+test memseg_refine_tests::spawn_task_registers_aspace_with_entry ... ok
+test memseg_refine_tests::map_rights_exceeded_rejected ... ok
+test memseg_refine_tests::full_memseg_lifecycle_alpha_preserved ... ok
+test memseg_refine_tests::unmap_entry_page_rejected ... ok
+test memseg_refine_tests::unmap_later_unmapped_page_leaves_refine_state_unchanged ... ok
+test memseg_refine_tests::unmap_not_mapped_rejected ... ok
+test memseg_refine_tests::unmap_rejects_address_arithmetic_overflow_atomically ... ok
+test memseg_refine_tests::unmap_rejects_range_crossing_canonical_boundary_atomically ... ok
+test pagewalk_tests::allocate_exhausts_universe_returns_none ... ok
+test memseg_refine_tests::unmap_clears_leaf_and_vspace ... ok
+test pagewalk_tests::allocator_invariants_reject_duplicate_free_state ... ok
+test memseg_refine_tests::verified_map_rejects_overlap_atomically ... ok
+test pagewalk_tests::allocator_rejects_duplicate_return_atomically ... ok
+test pagewalk_tests::allocator_invariants_reject_free_frame_outside_universe ... ok
+test pagewalk_tests::allocator_rejects_duplicate_universe ... ok
+test memseg_refine_tests::unmap_rejects_noncanonical_address_atomically ... ok
+test pagewalk_tests::allocator_rejects_unknown_return_atomically ... ok
+test pagewalk_tests::frame_allocator_alloc_free_roundtrip ... ok
+test pagewalk_tests::collect_leaves_maps_vaddr_to_segment_ref ... ok
+test pagewalk_tests::map_rejects_page_offset_without_modifying_tree ... ok
+test pagewalk_tests::high_half_leaf_roundtrips_with_sign_extension ... ok
+test pagewalk_tests::owned_page_table_allocates_and_reclaims_backing_frames ... ok
+test pagewalk_tests::page_table_structure_is_valid_after_map_and_unmap ... ok
+test pagewalk_tests::page_table_structure_rejects_wrong_level_and_orphan_node ... ok
+test pagewalk_tests::pagewalk_rejects_noncanonical_alias ... ok
+test pagewalk_tests::translate_rejects_unaligned_and_noncanonical_addresses ... ok
+test pagewalk_tests::translate_returns_leaf_after_map ... ok
+test pagewalk_tests::unmap_clears_leaf_and_reclaims_empty_tables ... ok
+test tlb_refine_tests::flush_live_task_without_cache_is_idempotent ... ok
+test tlb_refine_tests::invalidate_live_task_without_cache_is_idempotent ... ok
+test cow_refine::tests::r4_resume_without_privatization_faults_again_after_schedule ... ok
+test cow_refine::tests::resume_requires_explicit_schedule_before_running_again ... ok
+test tlb_refine_tests::invalidate_rejects_noncanonical_address_atomically ... ok
+test tlb_refine_tests::access_kind_matrix_enforces_each_bit_independently ... ok
+test pagewalk_tests::unmap_rejects_invalid_addresses_without_modifying_tree ... ok
+test tlb_refine_tests::invalidate_rejects_unaligned_address_atomically ... ok
+test tlb_refine_tests::missing_task_errors ... ok
+test tlb_refine_tests::missing_task_errors_even_without_cache ... ok
+test tlb_refine_tests::invalidation_is_per_task ... ok
+test tlb_refine_tests::not_mapped_preserves_full_tlb_state_with_unrelated_cache ... ok
+test tlb_refine_tests::miss_fills_and_permits ... ok
+test tlb_refine_tests::remap_without_flush_hits_stale ... ok
+test tlb_refine_tests::translate_rejects_task_missing_from_refine_state_atomically ... ok
+test tlb_refine_tests::remove_task_discards_all_cached_translations_idempotently ... ok
+test tlb_refine_tests::translate_rejects_task_missing_from_state_atomically ... ok
+test tlb_refine_tests::invalidation_then_walk_permits_write ... ok
+test tlb_refine_tests::stale_frame_survives_without_flush ... ok
+test cow_refine::tests::privatize_cow_covers_remaining_reachable_public_rejections_atomically ... ok
+test cow_refine::tests::privatize_cow_public_rejections_are_independently_atomic ... ok
+
+test result: ok. 167 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+     Running unittests src/main.rs (target/debug/deps/cosir_state-681ebe658e5d4436)
+
+running 43 tests
+test tests::exc_resume_accepts_same_kind_different_cause ... ok
+test tests::exc_resume_consumes_frame_and_commits_resume_atomically ... ok
+test tests::exc_resume_after_consumed_is_no_pending ... ok
+test tests::exc_resume_double_fault_is_unrecoverable ... ok
+test tests::exc_resume_accepts_sixteen_byte_aligned_offset ... ok
+test tests::exc_resume_does_not_authorize_owner_after_token_location_is_removed ... ok
+test tests::exc_resume_failure_does_not_append_audit ... ok
+test tests::exc_resume_accepts_each_variable_allowed_user_rflags_bit ... ok
+test tests::exc_resume_misaligned_frame_rejected ... ok
+test tests::exc_resume_frame_address_mutations_are_atomic ... ok
+test tests::exc_resume_missing_frame_seg_rejected ... ok
+test tests::exc_resume_out_of_bounds_frame_rejected ... ok
+test tests::exc_resume_on_ready_is_no_pending ... ok
+test tests::exc_resume_recovers_faulted_to_ready ... ok
+test tests::exc_resume_rejects_foreign_frame_cap_atomically ... ok
+test tests::exc_resume_rejects_foreign_source_cap_atomically ... ok
+test tests::exc_resume_pending_source_kind_and_status_mutations_are_atomic ... ok
+test tests::exc_resume_rejects_frame_cap_with_wrong_object_type_atomically ... ok
+test tests::exc_resume_rejects_each_rflags_mutation_atomically ... ok
+test tests::exc_resume_rejects_inactive_frame_cap_atomically ... ok
+test tests::exc_resume_rejects_frame_cap_without_write_right_atomically ... ok
+test tests::exc_resume_rejects_missing_frame_cap_atomically ... ok
+test tests::exc_resume_rejects_inactive_source_cap_atomically ... ok
+test tests::exc_resume_rejects_inactive_source_object_atomically ... ok
+test tests::exc_resume_rejects_kernel_unreadable_frame_segment_atomically ... ok
+test tests::exc_resume_rejects_missing_source_cap_atomically ... ok
+test tests::exc_resume_rejects_missing_source_object_atomically ... ok
+test tests::exc_resume_rejects_missing_subscription_atomically ... ok
+test tests::exc_resume_rejects_namespace_object_caps ... ok
+test tests::exc_resume_rejects_selector_mutations_atomically ... ok
+test tests::exc_resume_rejects_source_cap_with_wrong_object_type_atomically ... ok
+test tests::exc_resume_second_consumption_is_no_pending_and_preserves_complete_state ... ok
+test tests::exc_resume_rip_mutations_are_atomic_and_interior_address_succeeds ... ok
+test tests::exc_resume_rsp_mutations_are_atomic_and_interior_address_succeeds ... ok
+test tests::page_mapping_with_overflowing_end_contains_no_address ... ok
+test tests::raise_exception_moves_running_to_faulted ... ok
+test tests::exc_resume_state_is_deeply_comparable ... ok
+test tests::page_mapping_contains_only_its_half_open_range ... ok
+test tests::exc_resume_source_mismatch_is_invalid_source ... ok
+test tests::exc_resume_rejects_source_cap_without_subscribe_right_atomically ... ok
+test tests::sret_frame_rejects_wrong_length ... ok
+test tests::sret_frame_wire_layout_is_fixed_little_endian ... ok
+test tests::sret_frame_round_trips ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/lean_backtrace.rs (target/debug/deps/lean_backtrace-96e4fb6cce8eed21)
+
+running 3 tests
+test exc_resume_failure_parity_lean ... ok
+test bootstrap_parity_lean ... ok
+test cdt_parity_lean ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/stage6_gate.rs (target/debug/deps/stage6_gate-1aaa37c520e76c29)
+
+running 8 tests
+test signal_before_and_after_delivery_never_cancels_or_restarts ... ok
+test reply_is_opaque_rax_only_once_and_private_wait_cannot_be_signalled ... ok
+test audit_exhaustion_rolls_back_delivery_reply_and_orphan_atomically ... ok
+test cow_cross_page_copy_preserves_sibling_and_rejects_stale_space_or_readonly_page ... ok
+test gate_service_cannot_be_gated_and_foreign_gate_cannot_be_shared ... ok
+test nonreply_is_unbounded_until_supervisor_orphans_then_binding_fails_closed ... ok
+test proxy_copy_selects_target_root_and_preflights_both_ranges ... ok
+test full_queue_uses_reserved_slots_and_promotes_fifo_after_cancel ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/lib.rs (target/debug/deps/kernel-0632b9c2ccf45562)
+
+running 504 tests
+test arena::tests::claim_returns_distinct_regions ... ok
+test arena::tests::claiming_past_the_last_region_panics - should panic ... ok
+test arena::tests::out_of_range_slot_is_none_and_write_is_ignored ... ok
+test arena::tests::clearing_a_slot_is_observable ... ok
+test arena::tests::regions_do_not_share_slots ... ok
+test bootstrap::completion::tests::audit_and_generation_exhaustion_leave_all_wait_state_unchanged ... ok
+test bootstrap::completion::tests::private_wait_projection_detects_a_missing_reverse_registration ... ok
+test bootstrap::completion::tests::private_waits_reject_public_authority_even_if_a_token_is_misinstalled ... ok
+test bootstrap::completion::tests::owner_destruction_releases_reservations_without_late_wake_or_id_reuse ... ok
+test bootstrap::tests::audit_entries_expose_only_appended_records_and_keep_instances_isolated ... ok
+test bootstrap::tests::audit_trace_accepts_a_held_capability_with_dead_target ... ok
+test bootstrap::tests::audit_trace_follows_a_dropped_and_reused_parent_slot ... ok
+test bootstrap::tests::audit_trace_reconstructs_parent_and_position_without_mutating ... ok
+test bootstrap::tests::audit_trace_rejects_invalid_caller_cap_and_foreign_holder ... ok
+test bootstrap::tests::audit_trace_separates_same_id_object_kinds ... ok
+test bootstrap::completion::tests::reservation_release_and_owner_destroy_preflight_audit_before_any_mutation ... ok
+test bootstrap::tests::advance_time_fires_due_timers_in_stable_order ... ok
+test bootstrap::tests::authority_validation_rejects_position_and_rights_corruption ... ok
+test bootstrap::completion::tests::private_wait_defers_alerts_and_native_wakes_then_completes_once ... ok
+test bootstrap::tests::advance_time_rejects_a_backwards_clock_without_mutating ... ok
+test bootstrap::tests::authorize_reports_unknown_and_stale_handles_distinctly ... ok
+test bootstrap::completion::tests::public_and_private_quotas_do_not_steal_each_others_capacity ... ok
+test bootstrap::tests::authorize_denies_missing_right ... ok
+test bootstrap::tests::bootstrap_state_stays_within_the_stack_budget ... ok
+test bootstrap::tests::authorize_rejects_non_holder ... ok
+test bootstrap::tests::authorize_grants_held_capability_with_right ... ok
+test bootstrap::tests::capability_derivation_enforces_permission_monotonicity ... ok
+test bootstrap::tests::bootstrap_audit_records_the_three_initial_capability_mints ... ok
+test bootstrap::tests::capability_move_and_drop_preserve_unique_location ... ok
+test bootstrap::tests::create_task_derives_a_structural_root_namespace_capability ... ok
+test bootstrap::tests::boot_service_frame_vector_preserves_noncontiguous_order_outside_stack_values ... ok
+test bootstrap::tests::destroyed_fault_source_does_not_make_a_faulted_task_reclaimable ... ok
+test bootstrap::tests::destroying_a_recipient_cancels_its_timers ... ok
+test bootstrap::tests::destroying_one_recipient_preserves_other_recipients_timers ... ok
+test bootstrap::tests::dev_destroy_requires_the_destroy_right ... ok
+test bootstrap::tests::destroyed_namespace_id_cannot_resurrect_stale_capability ... ok
+test bootstrap::tests::destroyed_wait_object_tokens_do_not_revive_when_another_object_is_created ... ok
+test bootstrap::tests::dev_ioport_create_mints_a_typed_device_capability ... ok
+test bootstrap::tests::dev_destroy_stales_existing_caps_and_frees_capacity ... ok
+test bootstrap::tests::dev_ioport_create_rejects_an_empty_range ... ok
+test bootstrap::tests::device_table_saturates_at_its_capacity ... ok
+test bootstrap::tests::cap_id_ordering_stays_monotonic_across_slot_reuse ... ok
+test bootstrap::tests::capability_slot_capacity_is_enforced ... ok
+test bootstrap::tests::capability_history_survives_drop_and_records_creation_order ... ok
+test bootstrap::tests::dead_target_makes_the_token_stale_for_authorization_but_droppable ... ok
+test bootstrap::tests::drop_capability_protects_the_live_structural_root ... ok
+test bootstrap::tests::entry_must_lie_inside_the_image_range ... ok
+test bootstrap::tests::entry_range_is_checked_in_image_pages_not_partial_bytes ... ok
+test bootstrap::tests::every_scheduler_transition_appends_a_state_change_event ... ok
+test bootstrap::tests::exc_raise_on_faults_a_running_task_and_delivers_to_nobody ... ok
+test bootstrap::tests::drop_capability_rejects_non_holder_and_unknown_handle ... ok
+test bootstrap::tests::exc_raise_on_keeps_status_for_non_hardware_kinds ... ok
+test bootstrap::tests::exc_raise_on_rejects_a_non_running_faulting_task ... ok
+test bootstrap::tests::exc_raise_queues_notification_for_running_subscriber ... ok
+test bootstrap::tests::exc_source_create_mints_distinct_caps_and_audits ... ok
+test bootstrap::tests::exc_source_destroy_removes_the_source_and_stales_its_cap ... ok
+test bootstrap::tests::exc_subscribe_checks_holder_kind_and_duplicates ... ok
+test bootstrap::tests::exception_kind_classification_matrix ... ok
+test bootstrap::tests::exhausted_generation_retires_slot_and_never_revives_old_handles ... ok
+test bootstrap::tests::exc_raise_rejects_unknown_source_and_kind_mismatch ... ok
+test bootstrap::tests::exc_unsubscribe_removes_and_audits_only_when_subscribed ... ok
+test bootstrap::tests::exc_raise_writes_pending_for_blocked_subscriber ... ok
+test bootstrap::tests::exc_resume_moves_a_recoverable_faulted_task_to_ready ... ok
+test bootstrap::tests::failed_ns_operations_leave_the_state_unchanged ... ok
+test bootstrap::tests::exc_resume_rejects_precondition_violations_atomically ... ok
+test bootstrap::tests::faulted_invariant_holds_across_transitions_and_destroy ... ok
+test bootstrap::tests::faulting_a_non_running_task_is_rejected_without_state_change ... ok
+test bootstrap::tests::faulting_a_running_task_sets_pending_exc_and_faulted_status ... ok
+test bootstrap::tests::fork_create_then_wait4_finds_child_by_pid ... ok
+test bootstrap::tests::fork_inherits_authority_into_distinct_tokens_without_parent_close_effects ... ok
+test bootstrap::tests::forked_child_process_survives_task_destroy_until_reaped ... ok
+test bootstrap::tests::init_starts_ready_and_activation_appends_a_state_change ... ok
+test bootstrap::tests::fork_rebinds_self_authority_and_inherits_non_derivable_send_tokens ... ok
+test bootstrap::tests::dropping_prepared_ticket_cancels_even_when_ordinary_audit_space_is_full ... ok
+test bootstrap::tests::fork_rejects_multithreaded_process ... ok
+test bootstrap::tests::handover_platform_caps_assigns_owners_and_keeps_kernel_privates ... ok
+test bootstrap::tests::init_task_represents_spec_creator_kind_and_node ... ok
+test bootstrap::tests::initial_authority_rights_are_well_typed_and_finite ... ok
+test bootstrap::tests::initial_capability_handles_are_slot_and_generation_encoded ... ok
+test bootstrap::tests::ipc_send_requires_task_send_capability_and_preserves_queue_on_denial ... ok
+test bootstrap::tests::ipc_fifo_blocks_empty_receiver_wakes_and_cleans_on_destroy ... ok
+test bootstrap::tests::audit_trace_follows_history_beyond_concurrent_slot_count ... ok
+test bootstrap::tests::irq_subscription_delegation_and_destroy_use_current_locations_and_fresh_ids ... ok
+test bootstrap::tests::ipc_send_authorization_is_bound_to_the_receiver ... ok
+test bootstrap::tests::kernel_reclaim_rejects_a_recoverable_faulted_task ... ok
+test bootstrap::tests::ipc_transfers_capability_atomically_through_message ... ok
+test bootstrap::tests::kernel_reclaim_rejects_non_faulted_and_init ... ok
+test bootstrap::tests::memseg_protect_rejects_bad_ranges_and_access_atomically ... ok
+test bootstrap::tests::memseg_protect_authorizes_a_moved_segment_capability ... ok
+test bootstrap::tests::logical_cap_id_exhaustion_does_not_consume_a_slot ... ok
+test bootstrap::tests::malformed_out_of_range_handles_fail_safety_not_panic ... ok
+test bootstrap::tests::message_id_allocator_stops_after_last_id ... ok
+test bootstrap::tests::memseg_protect_atomically_updates_access_and_write_bit ... ok
+test bootstrap::tests::kernel_reclaim_destroys_an_unrecoverable_faulted_task ... ok
+test bootstrap::tests::mint_rejects_unknown_right_bits_without_mutation ... ok
+test bootstrap::tests::namespace_derivation_exhaustion_leaves_cap_id_and_audit_unchanged ... ok
+test bootstrap::tests::ns_bind_moves_the_capability_into_the_namespace ... ok
+test bootstrap::tests::ns_bind_rejects_a_structural_root_namespace_capability ... ok
+test bootstrap::tests::ns_bind_rejects_overlap_including_ancestors_and_descendants ... ok
+test bootstrap::tests::namespace_reaches_checks_branches_after_duplicate_mount_edges ... ok
+test bootstrap::tests::next_free_id_and_rollback_remove ... ok
+test bootstrap::tests::ns_bind_rejects_missing_rights_and_foreign_namespaces ... ok
+test bootstrap::tests::ns_create_mints_a_root_capability_in_the_reserved_slot_range ... ok
+test bootstrap::tests::ns_mount_links_namespaces_and_rejects_cycles ... ok
+test bootstrap::tests::ns_create_rejects_a_non_live_caller ... ok
+test bootstrap::tests::namespace_reaches_is_a_bounded_dfs ... ok
+test bootstrap::tests::ns_destroy_clears_entries_and_removes_the_object ... ok
+test bootstrap::tests::ns_destroy_rejects_a_structural_root_namespace ... ok
+test bootstrap::tests::ns_resolve_enforces_the_parent_rights_subset ... ok
+test bootstrap::tests::ns_mount_requires_a_delegable_source ... ok
+test bootstrap::tests::ns_reserved_range_is_disjoint_from_fixed_cap_slots ... ok
+test bootstrap::tests::ns_resolve_rejects_missing_and_non_directory_paths ... ok
+test bootstrap::tests::ns_unbind_returns_the_capability_to_the_caller ... ok
+test bootstrap::tests::ns_resolve_reports_mount_target_dead_for_stale_mounts ... ok
+test bootstrap::tests::ns_resolve_walks_bound_and_mounted_entries ... ok
+test bootstrap::tests::parent_removal_orphans_live_children_and_reaps_dead_children_before_id_reuse ... ok
+test bootstrap::tests::ns_unbind_rejects_a_mount_entry ... ok
+test bootstrap::tests::ns_resolve_terminates_on_the_deepest_path ... ok
+test bootstrap::tests::parent_destruction_cancels_unpublished_child_without_creating_a_zombie ... ok
+test bootstrap::tests::platform_segment_ids_and_cap_slots_are_stable_and_disjoint ... ok
+test bootstrap::tests::platform_create_segment_validates_id_range_and_access_first ... ok
+test bootstrap::tests::port_authorization_is_scoped_to_the_device_range ... ok
+test bootstrap::tests::physical_deadlines_ignore_abstract_time_and_cancel_on_upcall ... ok
+test bootstrap::tests::platform_init_witnesses_pending_delivery_and_audits ... ok
+test bootstrap::tests::platform_segment_record_witnesses_objects_caps_and_vspace ... ok
+test bootstrap::tests::platform_root_capability_is_minted_at_an_explicit_kernel_held_slot ... ok
+test bootstrap::tests::port_authorization_rejects_a_non_device_capability ... ok
+test bootstrap::tests::port_authorization_requires_the_matching_right ... ok
+test bootstrap::tests::process_family_notification_cannot_target_independent_services_or_reused_tasks ... ok
+test bootstrap::tests::process_identity_is_shared_by_threads_and_fork_parent_is_the_process_leader ... ok
+test bootstrap::tests::queued_capability_position_keeps_authority_valid ... ok
+test bootstrap::tests::process_termination_removes_shared_workers_and_delivers_one_signal_status ... ok
+test bootstrap::tests::prepared_fork_is_invisible_to_wait_and_scheduler_until_publication ... ok
+test bootstrap::tests::resume_buffer_consumes_only_the_successfully_committed_window ... ok
+test bootstrap::tests::resume_buffer_rejects_overflow_and_bounds_without_mutation ... ok
+test bootstrap::tests::process_groups_tasks_and_last_thread_removes_it ... ok
+test bootstrap::tests::process_exit_with_waiter_reaps_the_zombie ... ok
+test bootstrap::tests::retired_slots_fail_dynamic_and_explicit_allocation_without_mutation ... ok
+test bootstrap::tests::queued_status_survives_sender_destruction_before_or_after_receive ... ok
+test bootstrap::tests::reused_task_id_keeps_queued_and_held_old_target_tokens_stale ... ok
+test bootstrap::tests::retiring_a_delegated_ticket_cancels_without_panicking_or_leaving_the_token ... ok
+test bootstrap::tests::remove_subscriber_covers_every_source ... ok
+test bootstrap::tests::snapshot_contains_exact_initial_authority ... ok
+test bootstrap::tests::snapshot_rejects_invalid_image ... ok
+test bootstrap::tests::process_termination_audit_failure_preserves_entire_group ... ok
+test bootstrap::tests::reused_segment_storage_never_revives_an_old_capability_or_wraps_identity ... ok
+test bootstrap::tests::stage5_message_queue_high_water_survives_full_rejection_and_receive ... ok
+test bootstrap::tests::stage5_has_one_task_id_after_existing_services ... ok
+test bootstrap::tests::revoking_parent_invalidates_derived_subtree_atomically ... ok
+test bootstrap::tests::stale_handle_is_rejected_after_slot_reuse ... ok
+test bootstrap::tests::state_rejects_inconsistent_frame_inventory ... ok
+test bootstrap::tests::stage5_segment_table_exhaustion_is_atomic ... ok
+test bootstrap::tests::send_rejects_a_structural_root_namespace_capability ... ok
+test bootstrap::tests::send_rejects_a_capability_whose_target_is_dead ... ok
+test bootstrap::tests::state_has_unique_capability_records_and_disjoint_frame_classes ... ok
+test bootstrap::tests::prepared_cancellation_retires_incoming_caps_and_preserves_external_descendants ... ok
+test bootstrap::tests::structural_root_capability_cannot_be_moved_or_revoked ... ok
+test bootstrap::tests::task_create_rejects_structural_root_in_initial_caps ... ok
+test bootstrap::tests::task_create_rejects_foreign_handles_and_rolls_back_on_no_memory ... ok
+test bootstrap::tests::task_capability_cleanup_is_atomic_and_drops_only_held_tokens ... ok
+test bootstrap::tests::task_destroy_audit_exhaustion_preserves_process_root_and_held_capabilities ... ok
+test bootstrap::tests::task_created_event_exists_and_destroy_audit_is_counted ... ok
+test bootstrap::tests::task_destroy_still_rejects_running_others ... ok
+test bootstrap::tests::task_create_rejects_every_precondition_without_state_change ... ok
+test bootstrap::tests::task_destroy_removes_exception_subscribers ... ok
+test bootstrap::tests::task_destroy_allows_self_and_keeps_init_protected ... ok
+test bootstrap::tests::task_exit_preserves_external_derived_tokens_and_queued_transfers ... ok
+test bootstrap::tests::thread_create_shares_process_and_capability_space ... ok
+test bootstrap::tests::timer_audit_reports_exactly_once_for_fired_timers ... ok
+test bootstrap::tests::task_lifecycle_enforces_single_running_and_destroy_cleanup ... ok
+test bootstrap::tests::thread_registration_rollback_removes_membership_and_fresh_self_root ... ok
+test bootstrap::tests::timer_cancel_returns_state_outcomes_not_failures ... ok
+test bootstrap::tests::task_state_audit_counts_each_target_status ... ok
+test bootstrap::tests::timer_destroy_cancels_pending_and_keeps_a_fired_notification ... ok
+test bootstrap::tests::tlb_flush_only_for_current_root ... ok
+test bootstrap::tests::timer_destroy_does_not_reuse_ids_or_revive_an_old_capability ... ok
+test bootstrap::tests::timer_set_with_a_future_deadline_leaves_it_pending ... ok
+test bootstrap::tests::validate_authority_rejects_an_active_task_without_a_structural_root ... ok
+test bootstrap::tests::validate_authority_rejects_source_cap_without_record ... ok
+test bootstrap::tests::timer_set_with_a_past_deadline_fires_in_the_same_operation ... ok
+test bootstrap::tests::user_ipc_caps_do_not_touch_platform_task_caps ... ok
+test bootstrap::tests::wait4_nohang_reports_running_child_and_echild_without_children ... ok
+test bootstrap::tests::wait4_blocks_then_child_exit_wakes_and_reaps ... ok
+test bootstrap::tests::wait_blocks_then_signal_wakes_satisfied ... ok
+test bootstrap::tests::wait_destroy_wakes_target_dead ... ok
+test bootstrap::tests::user_segment_slots_start_after_the_platform_range ... ok
+test bootstrap::tests::wait_expires_only_at_the_deadline ... ok
+test bootstrap::tests::transition_is_rejected_when_the_audit_log_is_full ... ok
+test bootstrap::tests::wait_object_create_observe_signal_and_destroy ... ok
+test bootstrap::tests::wait_object_rights_are_enforced ... ok
+test cow::tests::accepts_complete_cow_evidence ... ok
+test cap_view::tests::exhausted_local_generations_retire_instead_of_wrapping ... ok
+test cow::tests::pattern_encodes_index_in_low_bits ... ok
+test cow::tests::rejects_failed_retry ... ok
+test cap_view::tests::grandchild_inherits_vacant_generations_and_never_falls_back_to_global_handles ... ok
+test bootstrap::tests::wait_objects_any_all_and_duplicates ... ok
+test cap_view::tests::retiring_a_clone_does_not_reactivate_its_local_handle_when_original_is_received ... ok
+test cow::tests::cow_va_is_slot_sixteen_low_half ... ok
+test cow::tests::rejects_alias_frame ... ok
+test bootstrap::tests::witness_tasks_are_created_with_structural_roots ... ok
+test cow::tests::rejects_incomplete_frame_copy ... ok
+test cow::tests::rejects_shared_page_modified ... ok
+test cow::tests::rejects_wrong_fault_class ... ok
+test cow::tests::rejects_wrong_va ... ok
+test cpu::tests::page_table_entry_addr_bits_mask_offsets ... ok
+test cpu::tests::audit_reachable_page_tables_visits_all_levels ... ok
+test cpu::tests::page_table_entry_huge_bit ... ok
+test cpu::tests::page_table_entry_is_present_uses_lsb ... ok
+test cpu::tests::page_table_entry_new_zero_flags ... ok
+test cpu::tests::phys_addr_newtype_is_u64 ... ok
+test cpu::tests::read_cr0_wp_wp_bit_decision_is_legal_and_stable ... ok
+test cpu::tests::sse_bit_masks_preserve_unrelated_control_bits ... ok
+test cpu::tests::translate_not_mapped_returns_error ... ok
+test cpu::tests::translate_offsets_into_last_level ... ok
+test cpu::tests::translate_single_page_4k ... ok
+test exc::tests::accepts_rsp_at_top_one_past_end ... ok
+test exc::tests::accepts_valid_kernel_frame ... ok
+test exc::tests::decode_encode_round_trip ... ok
+test exc::tests::encode_places_fields_at_cosir_wire_offsets ... ok
+test exc::tests::is_canonical_accepts_low_and_high_half ... ok
+test exc::tests::rejects_bad_cs ... ok
+test exc::tests::rejects_bad_ss ... ok
+test exc::tests::rejects_misaligned_rsp ... ok
+test cpu::tests::page_table_entry_field_size ... ok
+test exc::tests::rejects_rip_not_landing ... ok
+test exc::tests::rejects_forbidden_rflags_bits ... ok
+test exc::tests::rejects_non_canonical_rip ... ok
+test exc::tests::rejects_non_canonical_rsp ... ok
+test exc::tests::rejects_rsp_above_stack ... ok
+test exc::tests::rejects_rflags_without_fixed_bit ... ok
+test exc::tests::sret_frame_size_is_0xa0 ... ok
+test exc::tests::validator_does_not_mutate_input ... ok
+test exec::tests::initial_stack_carries_frozen_auxv_and_execfn_pointer ... ok
+test exec::tests::load_segment_cap_is_frozen_and_overflow_is_deterministic ... ok
+test exc::tests::rejects_rsp_below_stack ... ok
+test exec::tests::malformed_load_ranges_and_entry_are_rejected_before_loading ... ok
+test exec::tests::plan_accepts_operator_supplied_static_linux_elf ... ignored, needs PRIMA_ELF_SAMPLE pointing at an unmodified static Linux ELF
+test exec::tests::plan_accepts_congruent_unaligned_load_segments ... ok
+test exec::tests::plan_accepts_static_elf_with_two_load_segments ... ok
+test exec::tests::plan_rejects_dynamic_pie_and_bad_headers ... ok
+test exec::tests::plan_rejects_writable_executable_and_executable_stack ... ok
+test exec::tests::plan_len_accepts_prefix_with_segment_bound_checked_against_length ... ok
+test exec::tests::stack_rejects_oversized_auxv_and_aligns_rsp_to_sixteen_bytes ... ok
+test fault::tests::absent_read_is_not_present ... ok
+test fault::tests::as_str_names_wire_lowercase ... ok
+test exec::tests::stack_layout_places_argc_argv_envp_auxv_and_strings ... ok
+test fault::tests::instruction_fetch_format_error_is_other ... ok
+test fault::tests::present_read_protection_is_other ... ok
+test exec::tests::stack_rejects_tiny_buffers ... ok
+test fault::tests::pk_wins_over_present_write ... ok
+test fault::tests::user_write_protection_still_write_protection ... ok
+test fault::tests::rsvd_wins_over_present_write ... ok
+test fault::tests::write_to_absent_page_is_not_present_not_write_protection ... ok
+test fork_tx::tests::cancel_restores_only_unchanged_snapshot_pages ... ok
+test frames::tests::allocator_exhaustion_is_reported ... ok
+test fault::tests::write_protection_is_present_plus_write ... ok
+test frames::tests::image_vector_capacity_is_enforced ... ok
+test frames::tests::duplicate_segment_id_is_rejected ... ok
+test frames::tests::image_frames_are_materialized_as_a_real_vector ... ok
+test frames::tests::init_at_failure_leaves_the_registry_untouched ... ok
+test frames::tests::inventory_mismatch_is_rejected ... ok
+test frames::tests::image_vector_self_overlap_is_detected ... ok
+test frames::tests::owner_query_release_and_disjointness_hold ... ok
+test frames::tests::registry_stays_within_the_value_size_budget ... ok
+test frames::tests::segment_and_table_allocations_stay_conserved ... ok
+test frames::tests::rejected_release_preserves_frame_ownership ... ok
+test frames::tests::segment_destruction_reclaims_initial_and_later_copy_frames_only ... ok
+test frames::tests::releasing_a_frame_that_is_not_owned_is_rejected ... ok
+test frames::tests::table_frame_capacity_is_enforced ... ok
+test gdt::tests::code_descriptor_layout ... ok
+test gdt::tests::data_descriptor_layout ... ok
+test gdt::tests::descriptor_is_16_bytes ... ok
+test gdt::tests::gdt_capacity_covers_user_code_slot ... ok
+test gdt::tests::gdt_gdtr_limit_covers_user_descriptors ... ok
+test gdt::tests::gdt_layout_code_slot ... ok
+test gdt::tests::gdt_layout_data_slot ... ok
+test gdt::tests::gdt_layout_tss_slot ... ok
+test frames::tests::universe_includes_image_and_starts_conserved ... ok
+test frames::tests::unknown_segment_is_rejected ... ok
+test frames::tests::untagged_free_frame_loss_breaks_conservation ... ok
+test gdt::tests::gdt_layout_user_slots ... ok
+test gdt::tests::tss_desc_upper_base_bytes ... ok
+test gdt::tests::null_descriptor_is_zero ... ok
+test gdt::tests::tss_is_104_bytes ... ok
+test gdt::tests::user_descriptor_layout ... ok
+test handle::tests::encodes_index_in_low_bits_and_generation_in_high_bits ... ok
+test handle::tests::generation_one_is_not_the_bare_index ... ok
+test handle::tests::next_generation_stops_at_exhaustion ... ok
+test handle::tests::zero_handle_is_the_absent_sentinel_and_does_not_decode ... ok
+test handle::tests::zero_index_or_generation_is_rejected ... ok
+test idt::tests::breakpoint_gate_encodes_offsets_and_selector ... ok
+test idt::tests::default_entry_is_not_present ... ok
+test idt::tests::fault_frame_defaults_to_zero ... ok
+test idt::tests::idt_entry_size_is_16 ... ok
+test idt::tests::idt_total_size_is_4096 ... ok
+test idt::tests::interrupt_stack_frame_field_layout ... ok
+test idt::tests::last_fault_err_defaults_to_zero ... ok
+test idt::tests::set_handler_addr_dpl3_encodes_naked_entry_with_dpl3 ... ok
+test gdt::tests::tss_rsp0_offset_is_4 ... ok
+test idt::tests::set_handler_addr_dpl3_sets_gate_dpl ... ok
+test idt::tests::set_handler_addr_encodes_naked_entry_offsets_and_selector ... ok
+test gdt::tests::user_selectors_are_slot_offset_plus_rpl3 ... ok
+test handle::tests::decode_round_trips_and_rejects_malformed ... ok
+test idt::tests::syscall_vector_is_0x80 ... ok
+test mem::tests::allocator_detects_duplicate_recycled_frame ... ok
+test mem::tests::allocator_returns_only_unique_usable_frames ... ok
+test mem::tests::allocator_skips_exhausted_ranges_and_reuses_recycled_frames ... ok
+test mem::tests::allocator_rejects_image_overlap_and_unsorted_regions ... ok
+test mem::tests::allocator_releases_and_reuses_a_frame_once ... ok
+test mem::tests::counts_frames_in_a_single_usable_region ... ok
+test mem::tests::allocator_detects_recycled_frame_in_free_tail ... ok
+test mem::tests::drops_unaligned_region_boundary_pages ... ok
+test mem::tests::external_page_table_root_must_not_be_usable ... ok
+test mem::tests::external_page_table_root_rejects_bad_address ... ok
+test mem::tests::image_frames_reported_but_not_subtracted ... ok
+test mem::tests::image_in_bootloader_does_not_reduce_free ... ok
+test mem::tests::phys_to_virt_adds_offset ... ok
+test mem::tests::first_usable_frame_none_when_no_usable ... ok
+test mem::tests::first_usable_frame_returns_aligned_start ... ok
+test mem::tests::ignores_non_usable_regions ... ok
+test mem::tests::rejects_image_address_overflow ... ok
+test mem::tests::rejects_empty_kernel_image ... ok
+test mem::tests::phys_to_virt_large_phys_near_limit ... ok
+test mem::tests::phys_to_virt_zero_offset_keeps_phys ... ok
+test mem::tests::probe_returns_va_and_byte_shape ... ok
+test mem::tests::rounds_unaligned_kernel_image_up_to_full_frames ... ok
+test mem::tests::sums_multiple_usable_regions ... ok
+test msr::tests::efer_sce_sets_bit_zero_without_clearing_others ... ok
+test msr::tests::fmask_covers_if_tf_df ... ok
+test msr::tests::star_encodes_kernel_and_user_bases ... ok
+test msr::tests::star_user_base_yields_expected_sysret_selectors ... ok
+test mem::tests::rejects_reversed_regions_and_skips_unrepresentable_tail ... ok
+test namespace::tests::parsed_paths_are_equal_by_value ... ok
+test mem::tests::rejects_image_overlapping_usable ... ok
+test mem::tests::rejects_overlapping_regions ... ok
+test namespace::tests::parses_a_single_component ... ok
+test namespace::tests::parses_multiple_components_in_order ... ok
+test namespace::tests::extend_builds_paths_and_enforces_limits ... ok
+test namespace::tests::parent_and_suffix ... ok
+test namespace::tests::rejects_dot_and_dotdot_components ... ok
+test namespace::tests::rejects_empty_path ... ok
+test namespace::tests::rejects_leading_trailing_and_double_slashes ... ok
+test namespace::tests::rejects_components_longer_than_the_limit ... ok
+test namespace::tests::rejects_non_ascii_components ... ok
+test namespace::tests::rejects_too_many_components ... ok
+test namespace::tests::render_joins_components_without_leading_or_trailing_slash ... ok
+test namespace::tests::prefix_relations_including_equality_and_root ... ok
+test preempt::tests::accepts_complete_preempt_evidence ... ok
+test preempt::tests::counter_delta_handles_reload_and_same_sample ... ok
+test preempt::tests::rejects_same_kernel_stack ... ok
+test preempt::tests::rejects_shared_physical_frame ... ok
+test preempt::tests::rejects_shared_address_space ... ok
+test preempt::tests::rejects_unrotated_tasks ... ok
+test preempt::tests::rejects_wrong_marker ... ok
+test rights::tests::empty_rights_are_empty_and_not_well_typed_violating ... ok
+test preempt::tests::timer_vector_is_master_pic_base ... ok
+test rights::tests::all_spec_4_1_rights_parse_and_round_trip ... ok
+test rights::tests::device_ioport_rights_are_typed_to_devices_only ... ok
+test rights::tests::parses_and_renders_in_canonical_order ... ok
+test rights::tests::render_reports_small_buffers ... ok
+test rights::tests::initial_authority_rights_match_spec_4_1 ... ok
+test rights::tests::well_typed_matches_the_object_kind_table ... ok
+test rights::tests::wide_rights_preserve_bit_32_and_reject_all_unknown_high_bits ... ok
+test rights::tests::wildcard_is_not_a_right ... ok
+test rights::tests::every_raw_bit_is_checked_for_each_object_kind ... ok
+test rights::tests::rejects_unknown_and_empty_names ... ok
+test rights::tests::subset_and_superset_track_derivation_monotonicity ... ok
+test sched::tests::frames_round_trip_by_task_id ... ok
+test sched::tests::clear_task_resets_root_kstack_and_frame ... ok
+test sched::tests::deferred_frames_stay_pending_until_flush ... ok
+test sched::tests::deferred_queue_rejects_overflow ... ok
+test sched::tests::fpu_default_state_and_task_clear ... ok
+test sched::tests::fs_bases_are_per_task_and_cleared_with_task ... ok
+test sched::tests::kernel_resume_frame_storage_contract ... ok
+test sched::tests::roots_and_kstacks_round_trip_and_default_to_none ... ok
+test sched::tests::wait_status_has_exact_int_width_and_clear_task_discards_pending_output ... ok
+test signal::tests::user_return_cannot_install_kernel_selectors_privileged_flags_or_noncanonical_pc ... ok
+test signal::tests::nested_returns_restore_masks_frames_and_red_zone_without_overwriting_saved_context ... ok
+test syscall::tests::accepts_complete_exc_evidence ... ok
+test signal::tests::threads_share_actions_but_not_masks_and_fork_has_its_own_dispositions ... ok
+test syscall::tests::accepts_complete_exc_wait_evidence ... ok
+test syscall::tests::abi_check_accepts_compatible_version_and_rejects_other_requests ... ok
+test signal::tests::suspend_delivery_restores_original_mask_instead_of_temporary_mask ... ok
+test syscall::tests::accepts_complete_fast_path_evidence ... ok
+test syscall::tests::accepts_complete_auth_evidence ... ok
+test syscall::tests::accepts_complete_pending_evidence ... ok
+test syscall::tests::accepts_complete_ipc_evidence ... ok
+test syscall::tests::alignment_fault_uses_the_bus_route_instead_of_page_fault_route ... ok
+test syscall::tests::auth_errno_maps_failure_reasons ... ok
+test syscall::tests::bad_ptr_is_in_same_pml4_slot_but_distinct_page ... ok
+test syscall::tests::blocked_recv_out_translation_requires_writable_user_page ... ok
+test syscall::tests::cap_witness_accepts_the_canonical_lifecycle ... ok
+test syscall::tests::copy_in_bounds_rejects_cross_page ... ok
+test syscall::tests::copy_in_bounds_rejects_length_out_of_range ... ok
+test syscall::tests::decode_optional_handle_treats_zero_as_absent ... ok
+test syscall::tests::accepts_complete_task_evidence ... ok
+test syscall::tests::accepts_complete_multitask_evidence ... ok
+test syscall::tests::echo_returns_masked_arg ... ok
+test syscall::tests::accepts_complete_syscall_evidence ... ok
+test syscall::tests::errno_encodings_are_negative_twos_complement ... ok
+test syscall::tests::kind_of_maps_known_codes ... ok
+test syscall::tests::recv_out_bounds_rejects_misaligned_and_cross_page ... ok
+test syscall::tests::rejects_auth_denied_accepted ... ok
+test syscall::tests::rejects_auth_non_cpl3 ... ok
+test signal::tests::ignore_coalescing_reset_and_exec_have_explicit_lifecycle ... ok
+test syscall::tests::fs_base_validation_rejects_non_canonical_and_kernel_addresses ... ok
+test syscall::tests::exc_errno_maps_failure_reasons ... ok
+test syscall::tests::rejects_bad_ptr_accepted ... ok
+test syscall::tests::rejects_exc_duplicate_accepted ... ok
+test syscall::tests::rejects_exc_non_cpl3 ... ok
+test syscall::tests::rejects_exc_receipt_mismatch ... ok
+test syscall::tests::rejects_exc_wait_non_cpl3 ... ok
+test syscall::tests::rejects_exc_kind_mismatch_accepted ... ok
+test syscall::tests::rejects_exc_wait_not_blocked ... ok
+test syscall::tests::rejects_exc_wait_not_direct_delivery ... ok
+test syscall::tests::rejects_exc_wait_receipt_mismatch ... ok
+test syscall::tests::rejects_exc_wrong_audit_counts ... ok
+test syscall::tests::rejects_fast_path_corrupted_stack_canary ... ok
+test syscall::tests::rejects_fast_path_lstar_mismatch ... ok
+test syscall::tests::rejects_fast_path_missing_sce ... ok
+test syscall::tests::rejects_fast_path_non_cpl3 ... ok
+test syscall::tests::rejects_exc_wait_wrong_waker ... ok
+test syscall::tests::rejects_fast_path_receipt_mismatch ... ok
+test syscall::tests::rejects_fast_path_wrong_star ... ok
+test syscall::tests::rejects_fast_path_without_unmapped_guard ... ok
+test syscall::tests::ipc_errno_maps_every_variant ... ok
+test syscall::tests::rejects_auth_receipt_mismatch ... ok
+test syscall::tests::rejects_auth_unknown_cap_granted ... ok
+test syscall::tests::rejects_ipc_direct_payload_not_delivered_on_wake ... ok
+test syscall::tests::rejects_ipc_unauthorized_send_granted ... ok
+test syscall::tests::rejects_ipc_cross_task_map_granted ... ok
+test syscall::tests::rejects_missing_errno_for_unknown_number ... ok
+test syscall::tests::rejects_ipc_when_task2_reads_a_different_frame ... ok
+test syscall::tests::rejects_missing_call ... ok
+test syscall::tests::rejects_ipc_without_direct_capability_delivery ... ok
+test syscall::tests::rejects_multitask_no_switch_back ... ok
+test syscall::tests::rejects_multitask_non_cpl3 ... ok
+test syscall::tests::rejects_multitask_task1_not_resumed ... ok
+test syscall::tests::rejects_multitask_task2_granted ... ok
+test syscall::tests::rejects_multitask_wrong_task_id ... ok
+test syscall::tests::rejects_non_cpl3_origin ... ok
+test syscall::tests::rejects_pending_without_direct_delivery ... ok
+test syscall::tests::rejects_pending_task_not_ready ... ok
+test syscall::tests::rejects_receipt_mismatch ... ok
+test syscall::tests::reserved_number_is_einval ... ok
+test syscall::tests::right_of_maps_known_codes ... ok
+test syscall::tests::rejects_pending_wrong_payload ... ok
+test syscall::tests::rejects_wrong_sum ... ok
+test syscall::tests::rejects_ipc_without_both_delivery_paths ... ok
+test syscall::tests::sum4_adds_four_registers ... ok
+test syscall::tests::rejects_ipc_without_capability_transfer ... ok
+test syscall::tests::task_create_errno_maps_every_variant ... ok
+test syscall::tests::task_destroy_errno_maps_every_variant ... ok
+test syscall::tests::save_block_maps_every_slot_by_name ... ok
+test syscall::tests::task_evidence_requires_all_six_denials_and_successes ... ok
+test syscall::tests::task_req_bounds_rejects_misaligned_and_cross_page ... ok
+test syscall::tests::unknown_number_is_enosys ... ok
+test user::tests::accepts_complete_user_cow_evidence ... ok
+test user::tests::every_task_stack_has_a_distinct_page_aligned_lower_guard ... ok
+test user::tests::rejects_failed_retry ... ok
+test user::tests::rejects_incomplete_copy ... ok
+test user::tests::rejects_missing_receipt ... ok
+test user::tests::rejects_non_user_fault ... ok
+test user::tests::rejects_shared_page_modified ... ok
+test user::tests::runtime_elf_matches_loader_layout ... ok
+test test_support::tests::pages_are_aligned_zeroed_and_independent ... ok
+test user::tests::task3_code_bytes_are_fixed ... ok
+test user::tests::task2_code_bytes_are_fixed ... ok
+test user::tests::task4_code_bytes_are_fixed ... ok
+test vspace::tests::bounded_copy_accepts_a_reserved_physical_frame_zero ... ok
+test vspace::tests::build_self_root_requires_every_stack_page ... ok
+test vspace::tests::bounded_copy_rolls_back_real_frame_ownership_on_second_cow_allocation_failure ... ok
+test vspace::tests::bounded_copy_preflights_ranges_and_all_source_pages_before_touching_buffers ... ok
+test vspace::tests::build_self_root_skips_image_pages_absent_from_the_source ... ok
+test vspace::tests::clone_root_copies_all_512_entries ... ok
+test vspace::tests::cow_clone_keeps_readonly_shared_and_copies_supervisor_entries ... ok
+test vspace::tests::cow_clone_rejects_user_huge_pages_and_alias_without_changing_parent ... ok
+test vspace::tests::bounded_copy_selects_explicit_roots_at_the_same_va ... ok
+test vspace::tests::build_self_root_maps_each_page_to_its_own_physical_frame ... ok
+test user::tests::user_vas_are_distinct_and_in_expected_slots ... ok
+test vspace::tests::cow_clone_shares_frames_and_resolve_copies_on_write ... ok
+test vspace::tests::four_k_walk_rejects_a_huge_page_in_the_path ... ok
+test vspace::tests::cow_resolve_preserves_nx_and_supervisor_siblings_are_never_protected ... ok
+test vspace::tests::hidden_and_readonly_leaves_are_retained_and_shared_on_fork ... ok
+test vspace::tests::leaf_phys_or_none_ignores_huge_page_pat_bit ... ok
+test vspace::tests::map_4k_fresh_path_allocates_exactly_the_tables_it_uses ... ok
+test vspace::tests::leaf_phys_or_none_resolves_two_mib_huge_pages ... ok
+test vspace::tests::map_4k_builds_all_levels_and_reads_leaf ... ok
+test vspace::tests::map_4k_reuses_existing_path ... ok
+test vspace::tests::pte_flags_sets_present_and_writable ... ok
+test vspace::tests::map_4k_no_frame_leaves_state_untouched ... ok
+test vspace::tests::map_returns_each_unlinked_table_reservation_on_partial_allocation_failure ... ok
+test vspace::tests::range_planning_counts_shared_prefixes_once_across_pt_boundaries ... ok
+test vspace::tests::read_leaf_without_path_is_bad_root ... ok
+test vspace::tests::set_leaf_can_clear_writable_for_write_protect ... ok
+test vspace::tests::set_leaf_without_path_is_bad_root ... ok
+test vspace::tests::user_int_write_allocation_failure_never_partially_writes_bytes ... ok
+test vspace::tests::user_int_write_rejects_bad_ranges_and_all_protection_levels_without_data_changes ... ok
+test vspace::tests::zero_slot_clears_only_one_pml4_entry ... ok
+test vspace::tests::user_int_write_resolves_both_cow_pages_and_preserves_neighbor_bytes_and_parent ... ok
+test vspace::tests::indices_decode_vspace_va_into_slot_one ... ok
+test vspace::tests::cow_clone_rolls_back_every_allocation_failure_and_flushes_only_after_commit ... ok
+test frames::tests::all_live_frames_can_be_returned_without_filling_the_recycle_pool ... ok
+test bootstrap::tests::fork_capacity_failure_and_abort_leave_no_partial_process_or_mappings ... ok
+
+test result: ok. 503 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running unittests src/lib.rs (target/debug/deps/prima_abi-dac6f316a3113a58)
+
+running 1 test
+test program_contract::tests::program_declarations_reject_wrong_versions_persona_and_note_bounds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/prima_initgen-479c283f5d022aaa)
+
+running 2 tests
+test tests::generated_image_reads_boot_info_and_is_stable ... ok
+test tests::service_setup_derives_a_namespace_copy_before_handoff ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/prima_ostd-d991e16101f44460)
+
+running 42 tests
+test align::test::align_down ... ok
+test align::checked_tests::every_integer_width_preserves_top_boundary_and_rejects_overflow ... ok
+test arch::tests::safe_apis_are_callable_without_unsafe ... ok
+test entry::tests::abi_frame_reads_number_args_and_cs ... ok
+test align::test::align_up ... ok
+test entry::tests::abi_frame_newtype_is_pointer_sized ... ok
+test align::checked_tests::infallible_helpers_reject_invalid_alignment_and_overflow ... ok
+test entry::tests::decode_encode_round_trip ... ok
+test entry::tests::audited_hardware_types_match_independent_byte_encodings ... ok
+test entry::tests::entry_addresses_are_non_zero_and_distinct ... ok
+test entry::tests::save_block_cs_is_hardware_frame_cs ... ok
+test entry::tests::save_block_maps_every_slot_by_name ... ok
+test entry::tests::raw_entry_symbols_still_start_at_their_values ... ok
+test entry::tests::fault_and_trap_accessors_default_to_zero ... ok
+test entry::tests::error_code_exception_shifts_only_hardware_return_words ... ok
+test entry::tests::sret_frame_layout_is_pinned ... ok
+test entry::tests::interrupt_stack_frame_field_layout ... ok
+test entry::tests::stack_canary_detects_each_boundary_byte_change ... ok
+test mm::tests::bytes_of_exposes_object_bytes ... ok
+test entry::tests::user_frame_layout_is_five_qwords ... ok
+test mm::tests::indexed_access_uses_eight_byte_stride ... ok
+test mm::tests::read_write_u64_roundtrip ... ok
+test pod::tests::decoding_checks_length_and_accepts_unaligned_input ... ok
+test mm::tests::fill_zero_writes_requested_bytes ... ok
+test sync::lock::tests::nested_guards_restore_only_the_original_interrupt_state ... ok
+test sync::lock::tests::unwinding_unlocks_and_restores_interrupts ... ok
+test sync::tests::assembly_visible_value_starts_at_the_cell_address ... ok
+test sync::tests::once_is_empty_then_initialized_once ... ok
+test mm::tests::u8_accessors_roundtrip ... ok
+test pod::tests::integer_arrays_and_zero_sized_arrays_round_trip ... ok
+test sync::tests::once_drops_only_published_value_and_returns_rejected_ownership ... ok
+test sync::lock::tests::once_initialization_and_failed_try_lock_restore_original_irq_state ... ok
+test sync::tests::once_set_rejects_second_write ... ok
+test sync::tests::once_failed_initialization_does_not_publish_and_success_skips_later_closures ... ok
+test sync::tests::static_cell_as_ptr_addresses_the_value ... ok
+test sync::tests::static_cell_reads_and_mutates ... ok
+test sync::tests::static_cell_returns_closure_result ... ok
+test align::checked_tests::checked_alignment_matches_widened_arithmetic_for_every_u8_input ... ok
+test sync::tests::once_publishes_one_complete_value_to_contending_readers ... ok
+test sync::tests::static_cell_unlocks_after_panicking_closure ... ok
+test sync::tests::once_waiter_can_initialize_after_error_or_unwind ... ok
+test sync::tests::static_cell_serializes_parallel_read_modify_write ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/prima_runtime-fe309b10b2ceebfb)
+
+running 40 tests
+test capability::tests::capability_request_transports_high_right_bits_without_truncation ... ok
+test protocol::tests::hello_rejects_each_inconsistent_header_before_negotiating ... ok
+test ipc::tests::receive_metadata_distinguishes_kernel_origin_and_rejects_invalid_ids ... ok
+test protocol::tests::hello_roundtrips_and_negotiates_version_features_and_size ... ok
+test protocol::tests::invalid_offers_and_missing_required_features_remain_distinguishable ... ok
+test protocol::tests::ring3_negatives_include_all_six_structural_rejections ... ok
+test task::tests::task_create_request_carries_name_as_the_last_word ... ok
+test vfs::tests::chmod_updates_mode_and_access_checks ... ok
+test vfs::tests::content_capacity_is_enforced ... ok
+test vfs::tests::compaction_preserves_orphan_data_and_reclaims_it_after_close ... ok
+test vfs::tests::deleted_nodes_are_skipped_and_reused ... ok
+test vfs::tests::deleted_content_is_reclaimed_by_compaction ... ok
+test vfs::tests::directory_listing_includes_dot_and_dot_dot ... ok
+test vfs::tests::empty_and_sparse_writes_do_not_expose_old_bytes ... ok
+test vfs::tests::fork_reservation_shares_offset_and_last_holder_controls_ofd_reclamation ... ok
+test vfs::tests::io_errors_preserve_cursors_and_retryable_close ... ok
+test vfs::tests::directory_handles_keep_parent_relationship_until_close ... ok
+test vfs::tests::mount_builds_the_multi_level_rootfs ... ok
+test vfs::tests::file_creation_reuses_a_freed_slot ... ok
+test vfs::tests::open_cursors_access_append_and_chmod_are_object_state ... ok
+test vfs::tests::mount_is_idempotent_and_capacity_is_finite ... ok
+test vfs::tests::positioned_io_and_resize_preserve_shared_cursor_and_open_access ... ok
+test vfs::tests::open_enforces_access_create_and_exclusive ... ok
+test vfs::tests::rename_enforces_replace_and_error_rules ... ok
+test vfs::tests::path_checks_apply_to_dot_components_links_and_creation ... ok
+test vfs::tests::mkdir_creates_writable_empty_directories ... ok
+test vfs::tests::full_open_table_does_not_create_or_truncate ... ok
+test vfs::tests::mount_errors_never_silently_format_and_recovery_reaps_lost_sessions ... ok
+test vfs::tests::rename_moves_and_replaces_files ... ok
+test vfs::tests::rename_moves_directories_and_rejects_subtree ... ok
+test vfs::tests::rename_replacement_keeps_open_target_and_symlink_unlink_does_not_touch_target ... ok
+test vfs::tests::resize_relocation_preserves_neighbor_and_capacity_failure_preserves_contents ... ok
+test vfs::tests::resolution_reports_frozen_errors ... ok
+test vfs::tests::symlink_loops_and_dangling_targets_fail_deterministically ... ok
+test vfs::tests::unlinked_open_objects_survive_across_tables_until_last_close ... ok
+test vfs::tests::tiny_elf_fixture_is_readable ... ok
+test vfs::tests::write_truncate_and_append_round_trip ... ok
+test vfs::tests::symlinks_create_read_and_resolve ... ok
+test vfs::tests::shared_node_reference_limit_rejects_truncate_before_mutation ... ok
+test vfs::tests::unlink_and_rmdir_enforce_kind_empty_and_parent_rights ... ok
+
+test result: ok. 40 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/prima_user-227eeb4cc30511f1)
+
+running 17 tests
+test network::tests::fork_holders_authenticate_generation_and_last_close_reclaims_endpoint ... ok
+test console::tests::cancellation_preserves_commit_and_fifo_and_authenticates_the_generation ... ok
+test network::tests::interleaved_workers_keep_private_staging_reply_routes_and_snapshots_after_close ... ok
+test network::tests::separate_tasks_keep_send_staging_and_receive_snapshots_and_cancel_without_consuming ... ok
+test staging::tests::empty_and_invalid_path_headers_obey_operation_boundaries ... ok
+test sessions::tests::a_released_owner_slot_cannot_authorize_an_old_client_after_reuse ... ok
+test file_ops::tests::live_extension_protocol_preserves_cursor_and_rejects_malformed_requests ... ok
+test staging::tests::new_pair_clears_both_paths ... ok
+test staging::tests::pair_rejects_incomplete_and_invalid_headers_then_accepts_fresh_request ... ok
+test staging::tests::invalid_fragments_do_not_modify_bytes_or_allow_later_completion ... ok
+test staging::tests::all_path_lengths_reassemble_exactly_and_restart_after_failure ... ok
+test sessions::tests::reservations_bind_to_parent_cookie_and_reused_task_ids_cannot_select_old_sessions ... ok
+test staging::tests::pair_rejects_wrong_order_op_slot_and_replayed_confirmation ... ok
+test staging::tests::rejected_fragment_invalidates_the_single_path ... ok
+test staging::tests::second_slot_cannot_start_a_transaction ... ok
+test startup::tests::startup_blocks_keep_alignment_and_fit_without_truncation ... ok
+test staging::tests::pair_sequences_accept_all_lengths_and_consume_final_commit_once ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/xtask-6d1fb420d3e63924)
+
+running 213 tests
+test compat::tests::baseline_rejects_unknown_keys ... ok
+test compat::tests::embedded_prima_class_wins_over_error_code ... ok
+test compat::tests::missing_fault_is_reported ... ok
+test compat::tests::order_violation_is_reported ... ok
+test compat::tests::error_code_bit_mismatch_is_reported ... ok
+test compat::tests::page_offset_mismatch_is_reported ... ok
+test compat::tests::prima_output_requires_the_user_cow_event ... ok
+test compat::tests::resolution_mismatch_is_reported ... ok
+test image::tests::manifest_index_follows_entry_order_and_rejects_missing_kind ... ok
+test image::tests::program_args_reject_capacity_overflow_without_truncation ... ok
+test image::tests::static_pie_accepts_only_relative_rela ... ok
+test image::tests::program_args_with_env_are_versioned_and_append_prima_abi ... ok
+test lint::tests::char_literal_len_distinguishes_lifetimes_and_literals ... ok
+test image::tests::static_pie_rejects_non_dyn_and_missing_sections ... ok
+test image::tests::program_args_without_env_keep_the_m5_legacy_block ... ok
+test lint::tests::scan_source_flags_unsafe_and_allowances ... ok
+test lint::tests::scan_source_ignores_lint_names_that_are_not_the_token ... ok
+test lint::tests::strip_comments_removes_line_and_nested_block_comments ... ok
+test lint::tests::tcb_report_is_a_ratio_of_the_two_layers ... ok
+test lint::tests::strip_comments_skips_char_literal_containing_a_quote ... ok
+test lint::tests::strip_comments_blanks_string_literal_contents ... ok
+test compat::tests::prima_class_matches_its_error_code ... ok
+test linux::tests::normalize_keeps_semantics_and_drops_addresses ... ok
+test compat::tests::prima_and_linux_agree ... ok
+test linux::tests::normalize_rejects_a_missing_target_fault ... ok
+test lint::tests::scan_source_counts_only_non_blank_non_comment_lines ... ok
+test linux::tests::normalize_rejects_a_failed_child ... ok
+test compat::tests::every_c_linux_dispatch_entry_has_a_current_api_ledger_row ... ok
+test linux::tests::normalize_rejects_a_second_target_fault ... ok
+test protocol::domain_tests::domain_witness_requires_isolation_distinct_senders_and_post_crash_progress ... ok
+test protocol::tests::interactive_ipc_requires_complete_unambiguous_receive_accounting ... ok
+test protocol::tests::accepts_unterminated_non_prima_firmware_tail ... ok
+test protocol::tests::interactive_ipc_accounts_for_every_receive_across_uart_arrival_orders ... ok
+test protocol::tests::native_app_trace_requires_large_transfer_cancel_rejection_and_retry ... ok
+test protocol::tests::accepts_expected_sequence_and_ignores_firmware_output ... ok
+test protocol::tests::rejects_auth_denied_as_granted ... ok
+test protocol::tests::rejects_auth_receipt_mismatch ... ok
+test protocol::tests::rejects_auth_not_all_cpl3 ... ok
+test protocol::tests::rejects_audit_that_mutates_the_log ... ok
+test protocol::tests::rejects_audit_without_the_position_history ... ok
+test protocol::tests::rejects_audit_that_cannot_query_a_dead_target ... ok
+test protocol::tests::rejects_auth_unknown_cap_granted ... ok
+test protocol::tests::rejects_auth_wrong_grant ... ok
+test protocol::tests::rejects_cow_shared_modified ... ok
+test protocol::tests::rejects_cow_failed_retry ... ok
+test protocol::tests::rejects_authority_ready_without_booted_flag ... ok
+test protocol::tests::rejects_cow_alias_frame ... ok
+test protocol::tests::rejects_cow_incomplete_copy ... ok
+test protocol::tests::rejects_cow_wrong_err ... ok
+test protocol::tests::rejects_cap_lifecycle_without_generation_bump ... ok
+test protocol::tests::rejects_authority_ready_with_wrong_initial_status ... ok
+test protocol::tests::rejects_cow_wrong_va ... ok
+test protocol::tests::rejects_duplicate_event ... ok
+test protocol::tests::rejects_exc_duplicate_as_granted ... ok
+test protocol::tests::rejects_exc_receipt_mismatch ... ok
+test protocol::tests::rejects_exc_resume_rsp_not_ok ... ok
+test protocol::tests::rejects_exc_resume_flags_not_ok ... ok
+test protocol::tests::rejects_exc_resume_not_resumed ... ok
+test protocol::tests::rejects_exc_resume_wrong_sentinel ... ok
+test protocol::tests::rejects_exc_kind_mismatch_accepted ... ok
+test protocol::tests::rejects_exc_not_all_cpl3 ... ok
+test protocol::tests::rejects_exc_resume_wrong_sentinel2 ... ok
+test protocol::tests::rejects_exc_resume_missing_data ... ok
+test protocol::tests::rejects_exc_wait_not_from_cpl3 ... ok
+test protocol::tests::rejects_exc_wait_receipt_mismatch ... ok
+test protocol::tests::rejects_exc_wait_no_block ... ok
+test protocol::tests::rejects_exc_wait_no_pending ... ok
+test protocol::tests::rejects_exc_wait_wrong_payload ... ok
+test protocol::tests::rejects_exc_wrong_audit_counts ... ok
+test protocol::tests::rejects_fast_not_from_cpl3 ... ok
+test protocol::tests::rejects_fast_lstar_mismatch ... ok
+test protocol::tests::rejects_exc_wait_wrong_waker ... ok
+test protocol::tests::rejects_fast_receipt_mismatch ... ok
+test protocol::tests::rejects_fast_wrong_star ... ok
+test protocol::tests::rejects_fast_wrong_ret ... ok
+test protocol::tests::rejects_fault_witness_without_the_faulted_transition ... ok
+test protocol::tests::rejects_fault_witness_starting_from_a_non_running_task ... ok
+test protocol::tests::rejects_frames_ready_that_violates_w6_conservation ... ok
+test protocol::tests::rejects_fault_witness_without_invariant_and_unschedulable_flags ... ok
+test protocol::tests::rejects_frames_ready_without_disjointness ... ok
+test protocol::tests::rejects_fast_missing_sce ... ok
+test protocol::tests::rejects_frames_ready_without_conserved_flag ... ok
+test protocol::tests::rejects_frames_ready_without_page_table_ownership ... ok
+test protocol::tests::rejects_gdt_tss_error ... ok
+test protocol::tests::rejects_handle_ready_with_bare_index_encoding ... ok
+test protocol::tests::rejects_invalid_sequence_number ... ok
+test protocol::tests::rejects_invalid_status ... ok
+test protocol::tests::rejects_fault_witness_with_wrong_pending_exc ... ok
+test protocol::tests::rejects_ipc_ready_when_task2_reads_a_different_frame ... ok
+test protocol::tests::rejects_ipc_ready_with_cross_task_map_granted ... ok
+test protocol::tests::rejects_idt_error ... ok
+test protocol::tests::rejects_ipc_ready_without_blocked_capability_delivery ... ok
+test protocol::tests::rejects_ipc_ready_with_unauthorized_send_granted ... ok
+test protocol::tests::rejects_memory_ready_inconsistent_counts ... ok
+test protocol::tests::rejects_memory_error_event ... ok
+test protocol::tests::rejects_memory_ready_missing_data ... ok
+test protocol::tests::rejects_ipc_ready_without_the_direct_wake_path ... ok
+test protocol::tests::rejects_memory_ready_unaligned_address ... ok
+test protocol::tests::rejects_ipc_ready_without_capability_transfer ... ok
+test protocol::tests::rejects_memseg_ready_with_stale_mapping_granted ... ok
+test protocol::tests::rejects_memseg_ready_with_dirty_recycled_frame ... ok
+test protocol::tests::rejects_missing_event ... ok
+test protocol::tests::rejects_malformed_prima_line ... ok
+test protocol::tests::rejects_multitask_missing_switch_back ... ok
+test protocol::tests::rejects_multitask_receipt_mismatch ... ok
+test protocol::tests::rejects_multitask_task2_granted ... ok
+test protocol::tests::rejects_multitask_wrong_switch_count ... ok
+test protocol::tests::rejects_missing_or_corrupt_syscall_stack_canary ... ok
+test protocol::tests::rejects_multitask_not_all_cpl3 ... ok
+test protocol::tests::rejects_multitask_wrong_task_id ... ok
+test protocol::tests::rejects_namespace_when_the_cycle_dfs_did_not_run_per_mount ... ok
+test protocol::tests::rejects_namespace_missing_data ... ok
+test protocol::tests::rejects_namespace_when_a_path_audit_event_is_missing ... ok
+test protocol::tests::rejects_namespace_with_wrong_live_object_count ... ok
+test protocol::tests::rejects_missing_or_mapped_syscall_stack_guard ... ok
+test protocol::tests::rejects_out_of_order_event ... ok
+test protocol::tests::rejects_page_fault_bad_err ... ok
+test protocol::tests::rejects_page_table_error ... ok
+test protocol::tests::rejects_namespace_without_a_rejected_cycle ... ok
+test protocol::tests::rejects_page_fault_wrong_class ... ok
+test protocol::tests::rejects_page_table_ready_zero ... ok
+test protocol::tests::rejects_page_fault_missing_data ... ok
+test protocol::tests::rejects_non_data_event_carrying_data ... ok
+test protocol::tests::rejects_panic_event ... ok
+test protocol::tests::rejects_page_table_translated_mismatch ... ok
+test protocol::tests::rejects_namespace_without_the_ring3_evidence_flag ... ok
+test protocol::tests::rejects_pending_task_not_ready ... ok
+test protocol::tests::rejects_physical_map_ready_bad_address ... ok
+test protocol::tests::rejects_pending_wrong_payload ... ok
+test protocol::tests::rejects_page_fault_wrong_addr ... ok
+test protocol::tests::rejects_pending_without_direct_delivery ... ok
+test protocol::tests::rejects_physical_map_error ... ok
+test protocol::tests::rejects_page_table_ready_missing_data ... ok
+test protocol::tests::rejects_platform_segments_with_non_unified_frame_labels ... ok
+test protocol::tests::rejects_platform_segments_with_wrong_frame_counts ... ok
+test protocol::tests::rejects_platform_segments_with_shifted_root_cap_slots ... ok
+test protocol::tests::rejects_platform_segments_without_direct_boundary ... ok
+test protocol::tests::rejects_prima_record_with_cr_only_terminator ... ok
+test protocol::tests::rejects_prima_record_with_extra_cr_before_line_feed ... ok
+test protocol::tests::rejects_prima_record_without_line_feed_terminator ... ok
+test protocol::tests::rejects_reclaim_of_a_recoverable_faulted_task ... ok
+test protocol::tests::rejects_reclaim_without_clearing_pending_exc ... ok
+test protocol::tests::rejects_resume_without_the_ready_transition ... ok
+test protocol::tests::rejects_self_root_translating_to_a_different_physical_base ... ok
+test protocol::tests::rejects_resume_without_frame_consumption_on_schedule ... ok
+test protocol::tests::rejects_reclaim_that_leaves_the_task_alive ... ok
+test protocol::tests::rejects_resume_without_zeroing_the_consumed_frame ... ok
+test protocol::tests::rejects_self_root_with_misaligned_root_frame ... ok
+test protocol::tests::rejects_state_audit_with_a_missing_transition_path ... ok
+test protocol::tests::rejects_self_root_losing_page_table_ownership ... ok
+test protocol::tests::rejects_self_root_with_no_materialized_image_pages ... ok
+test protocol::tests::rejects_state_audit_with_an_overflowed_log ... ok
+test protocol::tests::rejects_resume_without_the_unrecoverable_rejection ... ok
+test protocol::tests::rejects_syscall_fault_not_efault ... ok
+test protocol::tests::rejects_state_audit_with_inconsistent_total ... ok
+test protocol::tests::rejects_syscall_illegal_number_accepted ... ok
+test protocol::tests::rejects_syscall_missing_receipt ... ok
+test protocol::tests::rejects_syscall_not_from_cpl3 ... ok
+test protocol::tests::rejects_syscall_not_all_from_cpl3 ... ok
+test protocol::tests::rejects_syscall_reserved_not_einval ... ok
+test protocol::tests::rejects_syscall_wrong_copy_result ... ok
+test protocol::tests::rejects_syscall_wrong_sum ... ok
+test protocol::tests::rejects_task_ready_when_a_stale_manager_cap_destroys_again ... ok
+test protocol::tests::rejects_task_ready_when_child_caps_stay_live ... ok
+test protocol::tests::rejects_syscall_wrong_call_count ... ok
+test protocol::tests::rejects_task_ready_when_destroy_is_denied ... ok
+test protocol::tests::rejects_task_ready_when_the_child_reports_a_foreign_id ... ok
+test protocol::tests::rejects_task_ready_with_bad_entry_accepted ... ok
+test protocol::tests::rejects_task_ready_when_the_child_stays_in_the_task_table ... ok
+test protocol::tests::rejects_task_ready_when_create_is_an_errno ... ok
+test protocol::tests::rejects_task_ready_without_missing_segmapx_denial ... ok
+test protocol::tests::rejects_task_ready_when_the_destroyed_task_is_still_mappable ... ok
+test protocol::tests::rejects_timer_missing_data ... ok
+test protocol::tests::rejects_timer_when_exactly_once_is_not_established ... ok
+test protocol::tests::rejects_trap_wrong_seen ... ok
+test protocol::tests::rejects_timer_with_a_missing_fired_count ... ok
+test protocol::tests::rejects_timer_without_an_immediate_fire ... ok
+test protocol::tests::rejects_task_ready_without_root_cleanup ... ok
+test protocol::tests::rejects_timer_without_a_clock_advanced_by_ticks ... ok
+test protocol::tests::rejects_unknown_data_key ... ok
+test protocol::tests::rejects_unsupported_version ... ok
+test protocol::tests::rejects_user_cow_failed_retry ... ok
+test protocol::tests::rejects_user_cow_not_from_cpl3 ... ok
+test protocol::tests::rejects_user_cow_shared_modified ... ok
+test protocol::tests::rejects_timer_without_the_state_return_receipt ... ok
+test protocol::tests::rejects_user_cow_wrong_va ... ok
+test protocol::tests::rejects_vspace_translated_frame_mismatch ... ok
+test protocol::tests::rejects_vspace_wrong_va ... ok
+test protocol::tests::rejects_vspace_unknown_stale_value ... ok
+test protocol::tests::rejects_vspace_wrong_read_after ... ok
+test protocol::tests::rejects_vspace_bad_translation ... ok
+test protocol::tests::rejects_vspace_wrong_wp_class ... ok
+test protocol::tests::self_root_requires_successful_once_publication_evidence ... ok
+test protocol::tests::rejects_vspace_wrong_wp_err ... ok
+test protocol::tests::resume_trace_requires_successful_bounds_rejection ... ok
+test protocol::tests::rejects_user_cow_missing_receipt ... ok
+test protocol::tests::stage5_tty_requires_c_writes_and_tty_ioport_answers ... ok
+test protocol::tests::timed_ipc_preserves_traffic_and_unmatched_receive_blocks ... ok
+test protocol::tests::user_fault_trace_requires_faulted_driver ... ok
+test qemu::tests::accepts_success_exit_code ... ok
+test qemu::tests::failed_kill_of_running_child_never_calls_blocking_wait ... ok
+test qemu::tests::arguments_are_fixed_single_core_and_headless ... ok
+test qemu::tests::failed_reader_startup_cleanup_does_not_join_live_pipe_reader ... ok
+test qemu::tests::reader_error_still_collects_other_stream_diagnostic ... ok
+test qemu::tests::rejects_missing_process_exit_code ... ok
+test qemu::tests::rejects_panic_exit_code_when_success_is_expected ... ok
+test protocol::tests::stage5_capacity_requires_ring3_and_kernel_evidence ... ok
+test qemu::tests::reader_panic_still_collects_other_stream_diagnostic ... ok
+test qemu::tests::first_reader_startup_failure_terminates_and_reaps_child ... ok
+test qemu::tests::second_reader_startup_failure_cleans_child_then_joins_first_reader ... ok
+test protocol::tests::service_trace_rejects_missing_duplicate_malformed_and_divergent_records ... ok
+test protocol::tests::service_trace_requires_every_malformed_hello_rejection ... ok
+test lint::tests::scanned_repository_has_zero_unsafe_in_the_mechanism_layer ... ok
+
+test result: ok. 213 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+   Doc-tests cosir
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prima_abi
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prima_initgen
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prima_ostd
+
+running 2 tests
+test prima-ostd/src/align.rs - align::AlignExt::align_down (line 41) ... ok
+test prima-ostd/src/align.rs - align::AlignExt::align_up (line 24) ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test prima-ostd/src/sync.rs - sync::Once (line 70) - compile fail ... ok
+test prima-ostd/src/pod.rs - pod::Pod (line 36) - compile fail ... ok
+test prima-ostd/src/pod.rs - pod::Pod (line 33) - compile fail ... ok
+test prima-ostd/src/pod.rs - pod::Pod (line 24) - compile fail ... ok
+test prima-ostd/src/pod.rs - pod::Pod (line 27) - compile fail ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+all doctests ran in 0.49s; merged doctests compilation took 0.37s
+   Doc-tests prima_runtime
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prima_user
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

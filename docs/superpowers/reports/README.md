@@ -103,6 +103,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-30 | [2026-10-30-stage6-private-completion-waits.md](2026-10-30-stage6-private-completion-waits.md) | M1b 私有等待基础：真实对象登记、不可警报、代次完成、销毁与独立预算；Gate 尚未接入，非 G1/G2 |
 | 2026-10-30 | [2026-10-30-stage6-user-copy-transactions.md](2026-10-30-stage6-user-copy-transactions.md) | M1b/M1c 内存前置：真实页表全范围输出预检、COW 预留回滚；原生输出/IPC/wait 接入，W9 跨页 COW，非 Gate G3 |
 | 2026-10-29 | [2026-10-29-stage6-m1-blocker-closure.md](2026-10-29-stage6-m1-blocker-closure.md) | R1–R6 协议收口、候选 A 技术设计评审、u64 权限及 8 组 host 反例；D14 ring3 人格桩 QEMU 双轮，非 Gate 接线/阶段退出 |
 | 2026-10-29 | [2026-10-29-stage6-m1-decision-review.md](2026-10-29-stage6-m1-decision-review.md) | S6-M1 六项决定复审：保留路线，R1–R6 需修订；静态预审，非架构通过 |

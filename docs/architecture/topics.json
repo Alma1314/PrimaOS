@@ -525,7 +525,10 @@
       "Once",
       "get_or_try_init",
       "KernelRootInfo",
-      "published_once"
+      "published_once",
+      "CompletionWait",
+      "CompletionTicket",
+      "不可警报等待"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -543,7 +546,9 @@
       "docs/architecture/asterinas-provenance.md",
       "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
-      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
+      "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
+      "docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -563,7 +568,8 @@
       "cosir/src/authority/events.rs",
       "cosir/src/authority/remote.rs",
       "cosir/src/authority/wait.rs",
-      "lean/Formal/Location.lean"
+      "lean/Formal/Location.lean",
+      "kernel/src/completion.rs"
     ],
     "tests": [
       "prima-user/c/stage5_wait.c",

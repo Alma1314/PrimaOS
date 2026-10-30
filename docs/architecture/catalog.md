@@ -89,7 +89,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（182）
+## report（183）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -274,6 +274,7 @@
 | [S6-M1 当前评审阻塞整改、COSIR 技术评审与 7-A 有界探索](../superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md) | historical | `docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md` |
 | [S6-M1 六项决定复审：保留最小路线，纠正安全与活性主张](../superpowers/reports/2026-10-29-stage6-m1-decision-review.md) | historical | `docs/superpowers/reports/2026-10-29-stage6-m1-decision-review.md` |
 | [阶段 6 启动与首个 S6-M2 增量：确定性 `AT_RANDOM`](../superpowers/reports/2026-10-29-stage6-start.md) | current | `docs/superpowers/reports/2026-10-29-stage6-start.md` |
+| [S6-M1 内核私有等待：登记、信号隔离与代次完成](../superpowers/reports/2026-10-30-stage6-private-completion-waits.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md` |
 | [S6-M1 接线前置：真实页表输出预检与 COW 事务](../superpowers/reports/2026-10-30-stage6-user-copy-transactions.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md` |
 
 ## spec（4）
