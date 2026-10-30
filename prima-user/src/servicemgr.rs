@@ -2230,9 +2230,8 @@ const MAX_C_ARGS: usize = 16;
 const MAX_C_ENV: usize = 8;
 const ARGS_MAGIC: u8 = 0xa5;
 const ARGS_VERSION: u8 = 2;
-/// auxv 字数：`AT_PAGESZ`/`AT_PHDR`/`AT_PHENT`/`AT_PHNUM`/`AT_ENTRY`/`AT_BASE`/
-/// `AT_EXECFN` 各一对 key/value，再加 `AT_NULL` 一对。
-const AUX_WORDS: usize = 16;
+/// auxv 字数：[`prima_abi::auxv::CORE_KEYS`] 的 7 对 key/value，再加 `AT_NULL` 一对。
+const AUX_WORDS: usize = 2 * prima_abi::auxv::CORE_KEYS.len() + 2;
 /// 参数载体在管理器根内的临时映射 VA（与代码探测页/数据探测页分离）。
 const ARGS_PROBE_VA: u64 = 0x0000_0A00_0010_0000;
 
@@ -2425,6 +2424,9 @@ fn write_stack_word(
 }
 
 /// 把冻结的 auxv 写入栈。`argv0` 是 `argv[0]` 的栈内绝对地址（`AT_EXECFN`）。
+///
+/// 键号、键序与取值口径都来自 [`prima_abi::auxv`]（S6-M2 ⑤），本函数只提供装载相关的
+/// 值；`AT_BASE` 恒为 0（静态 PIE 无解释器）。
 fn write_auxv(
     runtime: &Runtime<impl SyscallTransport>,
     stack: u64,
@@ -2432,21 +2434,19 @@ fn write_auxv(
     argv0: u64,
     aux: &ElfAux,
 ) -> bool {
-    let pairs = [
-        (6u64, FRAME_SIZE), // AT_PAGESZ
-        (3, aux.phdr),      // AT_PHDR
-        (4, aux.phent),     // AT_PHENT
-        (5, aux.phnum),     // AT_PHNUM
-        (9, aux.entry),     // AT_ENTRY
-        (7, 0),             // AT_BASE：静态 PIE，无解释器
-        (31, argv0),        // AT_EXECFN
-        (0, 0),             // AT_NULL
-    ];
+    let values = prima_abi::auxv::Values {
+        execfn: argv0,
+        ..prima_abi::auxv::Values::new(FRAME_SIZE, aux.phdr, aux.phent, aux.phnum, aux.entry)
+    };
+    let pairs = prima_abi::auxv::core_pairs(&values);
     let mut written = true;
     for (offset, (key, value)) in pairs.iter().enumerate() {
         written &= write_stack_word(runtime, stack, index + offset * 2, *key);
         written &= write_stack_word(runtime, stack, index + offset * 2 + 1, *value);
     }
+    // AT_NULL 终止符。
+    written &= write_stack_word(runtime, stack, index + AUX_WORDS - 2, 0);
+    written &= write_stack_word(runtime, stack, index + AUX_WORDS - 1, 0);
     written
 }
 
