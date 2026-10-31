@@ -104,6 +104,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+2026-10-31：[Ready 挂接准入整改](2026-10-31-stage6-gate-admission.md)，拒绝待领取原生返回及恢复续体，24 个 host 拒绝组合与 ring3 注入反例双轮通过；workspace1089、lint PASS，完整BIOS70/72（W7双轮30秒超时）；完整 G2/G3、代理复制与失败尝试审计仍待完成。
+
 2026-10-31：[trap 与四个控制入口及 G1](2026-10-31-stage6-gate-dispatch.md)，原生73/74/77/78、syscall/int80截获、只写rax、信号保留与wait输出事务；修复原生分派栈回归，最终BIOS71/72、W7一轮超时仍保留；75/76与完整G2/G3未完成。
 
 2026-10-31：[最后服务授权丢失钩子](2026-10-31-stage6-gate-authority-loss.md)，drop/move/revoke、Namespace/IPC 转移共用总预算与孤儿化提交；请求根丢弃后的别名回收，host 证据，非 G1–G3。
@@ -121,6 +123,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-31 | [2026-10-31-stage6-gate-admission.md](2026-10-31-stage6-gate-admission.md) | S6-M1 Ready 目标未决返回与恢复续体准入整改 |
 | 2026-10-31 | [2026-10-31-stage6-gate-dispatch.md](2026-10-31-stage6-gate-dispatch.md) | S6-M1/M1b trap、四个控制入口与 G1 有界见证 |
 | 2026-10-31 | [2026-10-31-stage6-gate-lifecycle.md](2026-10-31-stage6-gate-lifecycle.md) | S6-M1/M1b 内核门控对象与请求生命周期：预留/队列/交付/答复/清理事务、`AuditFull` 停止与 10 组 host 反例；未分配 ABI、未接 trap、非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-freeze-ledgers.md](2026-10-30-stage6-freeze-ledgers.md) | S6-M2 机械项：D17 调用号/权限位序冻结台账、单一 `auxv` 键源、映像长度窗口；更正"整块 copy-in"旧判断，非 Gate 接线 |

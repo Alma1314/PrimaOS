@@ -436,7 +436,21 @@ impl BootstrapState {
             return Err(Error::Denied);
         };
         let client_cookie = self.task_cookie(client).ok_or(Error::Denied)?;
-        if self.tasks.status_of(client) != Some(TaskStatus::Ready) {
+        let target = self.tasks.find(client).ok_or(Error::Denied)?;
+        // Ready can still carry a native return (IPC/wait/exception/upcall).
+        // Reject before reserving anything: those continuations may write the
+        // saved frame or user memory when the scheduler next resumes the Task.
+        if target.status != TaskStatus::Ready
+            || target.node != LOCAL_NODE
+            || target.pending.is_some()
+            || target.wait_request.is_some()
+            || target.pending_wait_result.is_some()
+            || target.pending_exc.is_some()
+            || target.waiting_process.is_some()
+            || crate::sched::has_pending_return(client)
+            || crate::syscall::has_pending_native_call(client)
+            || crate::signal::has_return_context(client)
+        {
             return Err(Error::Busy);
         }
         if self.gate_binding_slot(&tables, client).is_some() {
@@ -1505,6 +1519,121 @@ mod tests {
         );
         assert_eq!(state.gate_tables().binding_count, 0);
         assert_eq!(state.gate_tables().gate_count, 0);
+    }
+
+    #[test]
+    fn attach_rejects_ready_native_returns_before_new_or_existing_gate_reservations() {
+        let _serial = serial();
+        // Keep refinement-layer state separate from the platform Task ids used
+        // by the exception/scheduler storage tests.
+        let client = 16;
+        for existing in [false, true] {
+            let mut state = pair();
+            state.create_task(client).unwrap();
+            let cap = state
+                .mint_root_capability(
+                    2,
+                    Rights::from_rights(&[Right::TaskManageVSpace]),
+                    ObjectRef::Task(client),
+                )
+                .unwrap();
+            let gate_cap = if existing {
+                attach(&mut state, 3, 0).gate_cap
+            } else {
+                Handle::ZERO
+            };
+            let clean = *state.tasks.find(client).unwrap();
+            for case in 0..12 {
+                let target = state.tasks.find_mut(client).unwrap();
+                match case {
+                    0 => {
+                        target.pending = Some(IpcMessage {
+                            id: 1,
+                            sender: 2,
+                            sender_generation: 1,
+                            receiver: client,
+                            payload: 0x1234,
+                            capabilities: [Handle::ZERO; MAX_MESSAGE_CAPABILITIES],
+                            capability_count: 0,
+                        });
+                    }
+                    1 => {
+                        target.wait_request = Some(WaitRequest {
+                            entries: [WaitEntry {
+                                object: 1,
+                                observed: 0,
+                            }; 2],
+                            count: 1,
+                            mode: 0,
+                            deadline: None,
+                            physical: false,
+                            alertable: true,
+                        });
+                    }
+                    2..=4 => {
+                        target.pending_wait_result = Some(
+                            [
+                                WaitResultCode::Satisfied,
+                                WaitResultCode::TimedOut,
+                                WaitResultCode::TargetDead,
+                            ][case - 2],
+                        );
+                    }
+                    5 => {
+                        target.pending_exc = Some(PendingExc {
+                            source_id: 1,
+                            kind: ExcKind::PageFault,
+                        });
+                    }
+                    6 => target.waiting_process = Some(1),
+                    7 => target.node = LOCAL_NODE + 1,
+                    8 => crate::sched::set_kernel_resume_frame(client, crate::exc::SretFrame::ZERO),
+                    9 => crate::sched::set_recv_out(client, 0x4000),
+                    // A null output pointer still has a pending wait4 return.
+                    10 => crate::sched::set_pending_status(client, 0, ProcessExit::Exited(7)),
+                    11 => crate::signal::suspend_mask(client, 0),
+                    _ => unreachable!(),
+                }
+                let before = (
+                    state.tasks,
+                    state.slots,
+                    state.positions,
+                    state.audit.count,
+                    state.wait_objects.iter().collect::<Vec<_>>(),
+                    state.gate_tables(),
+                    state.gate_tables().find(1),
+                );
+                assert_eq!(
+                    state.gate_attach(2, cap, gate_cap, 0),
+                    Err(Error::Busy),
+                    "existing={existing} case={case}"
+                );
+                assert_eq!(
+                    before,
+                    (
+                        state.tasks,
+                        state.slots,
+                        state.positions,
+                        state.audit.count,
+                        state.wait_objects.iter().collect::<Vec<_>>(),
+                        state.gate_tables(),
+                        state.gate_tables().find(1),
+                    )
+                );
+                assert!(!state.task_is_gated(client));
+                *state.tasks.find_mut(client).unwrap() = clean;
+                crate::sched::clear_kernel_resume_frame(client);
+                crate::sched::clear_recv_out(client);
+                crate::sched::clear_task(client);
+            }
+            // Historical wait4 pointers and queued signals are not continuations.
+            state.tasks.find_mut(client).unwrap().wait_status_ptr = 0x4000;
+            crate::signal::set_pending(client, 10);
+            state.gate_attach(2, cap, gate_cap, 0).unwrap();
+            assert_eq!(crate::signal::all_pending(client), 1 << 9);
+            assert!(state.gate_well_formed());
+            crate::sched::clear_task(client);
+        }
     }
 
     #[test]

@@ -106,7 +106,7 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
         .map_err(|e| with_output(e, &output))?;
     validate_gate_output(&output.stdout).map_err(|e| with_output(e, &output))?;
     println!(
-        "PASS S6GATE round={round} int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 audit=1"
+        "PASS S6GATE round={round} int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 audit=1"
     );
     Ok(())
 }
@@ -114,13 +114,15 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
 #[cfg(test)]
 #[test]
 fn gate_witness_rejects_missing_duplicate_failed_or_panicked_records() {
-    let good = "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1\n";
+    let good = "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;admission=1;audit=1\n";
     assert!(validate_gate_output(good).is_ok());
     for bad in [
         String::new(),
         good.repeat(2),
         good.replace("fast=1", "fast=0"),
         good.replace("output_failures=3", "output_failures=2"),
+        good.replace(";admission=1", ""),
+        good.replace("admission=1", "admission=0"),
         good.to_owned() + "PRIMA|v=1|seq=9|event=panic|status=error\n",
     ] {
         assert!(validate_gate_output(&bad).is_err());
@@ -134,7 +136,7 @@ fn validate_gate_output(output: &str) -> Result<(), String> {
         .collect();
     if records
         != [
-            "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1",
+            "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;admission=1;audit=1",
         ]
         || output.contains("|event=panic|")
     {

@@ -10,6 +10,8 @@ const ORPHAN: u64 = 0xaabb_ccdd_eeff_1122;
 const ARGS: [u64; 6] = [11, 22, 33, 44, 55, 66];
 const NUMBERS: [u64; 2] = [SYS_TASK_ID, SYS_GATE_ATTACH];
 static EXPECTED: StaticCell<[[u64; 17]; 2]> = StaticCell::new([[0; 17]; 2]);
+static ADMISSION: StaticCell<Option<(u64, [usize; 3], extern "C" fn() -> !)>> =
+    StaticCell::new(None);
 
 // Tiny byte emitter, matching user.rs's existing platform witnesses. No toolchain
 // assembler or executable writable user mapping is introduced.
@@ -119,6 +121,11 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
     service.mov(3, user::USER_Y_VA);
     service.call(SYS_GATE_ATTACH, [task_cap, 0, ORPHAN, 1, 0, 0]);
     service.store(0, 512);
+    // A Ready target with an exception-resume continuation must be rejected.
+    service.call(SYS_GATE_ATTACH, [task_cap, 0, ORPHAN, 0, 0, 0]);
+    service.store(0, 600);
+    service.emit(&[0xcc]);
+    let continuation = user::USER_CODE_VA + service.len as u64;
     service.call(SYS_GATE_ATTACH, [task_cap, 0, ORPHAN, 0, 0, 0]);
     service.emit(&[0x49, 0x89, 0xc4]); // r12 = Gate handle
     service.gate_wait(user::USER_Y_VA);
@@ -183,7 +190,17 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
     EXPECTED.with_mut(|slot| *slot = expected);
     install(1, user::USER_CODE_VA, &service, offset);
     install(2, user::USER2_CODE_VA, &client, offset);
-    crate::idt::set_user_trap_handler(terminal);
+    let counts = BOOTSTRAP_STATE.with(|slot| {
+        let state = slot.as_ref().unwrap();
+        [
+            state.audit.count,
+            state.slots.live_count(),
+            state.wait_objects.count,
+        ]
+    });
+    ADMISSION.with_mut(|slot| *slot = Some((continuation, counts, terminal)));
+    sched::set_kernel_resume_frame(2, user::task2_frame());
+    crate::idt::set_user_trap_handler(admission_checkpoint);
     crate::signal::set_pending(2, 10);
     sched::init();
     sched::set_frame(1, user::task1_frame());
@@ -191,20 +208,56 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
     sched::resume(1)
 }
 
+/// Probe-only checkpoint: verify rejection before consuming the injected native
+/// continuation, then resume the service at the next known program location.
+extern "C" fn admission_checkpoint() -> ! {
+    assert_eq!(sched::current(), 1);
+    let (rip, counts, terminal) = ADMISSION.with_mut(|slot| slot.take().unwrap());
+    assert_eq!(
+        read_word(1, user::USER_Y_VA + 600),
+        syscall::encode_errno(syscall::Errno::Again)
+    );
+    assert_eq!(sched::kernel_resume_frame(2), Some(user::task2_frame()));
+    assert_eq!(sched::frame(2), Some(user::task2_frame()));
+    BOOTSTRAP_STATE.with(|slot| {
+        let state = slot.as_ref().unwrap();
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Ready));
+        assert_eq!(
+            [
+                state.audit.count,
+                state.slots.live_count(),
+                state.wait_objects.count
+            ],
+            counts
+        );
+        assert_eq!(state.gate_tables().gate_count, 0);
+        assert_eq!(state.gate_tables().binding_count, 0);
+    });
+    sched::clear_kernel_resume_frame(2);
+    let mut frame = user::task1_frame();
+    frame.rip = rip;
+    frame.rbx = user::USER_Y_VA;
+    sched::set_frame(1, frame);
+    crate::idt::set_user_trap_handler(terminal);
+    sched::resume(1)
+}
+
+fn read_word(task: u32, pointer: u64) -> u64 {
+    let (_, offset) = crate::cow::root_and_offset().unwrap();
+    let mut bytes = [0; 8];
+    vspace::read_user_bytes(sched::root(task).unwrap(), pointer, &mut bytes, |p| {
+        crate::mem::phys_to_virt(p, offset)
+    })
+    .unwrap();
+    u64::from_le_bytes(bytes)
+}
+
 /// Verify the real user receipts, saved frames, queues/waits and audit chain.
 /// Any mismatch panics instead of emitting the success record.
 pub fn verify() {
     assert_eq!(sched::current(), 2);
     assert_eq!(crate::signal::pending(2), 1 << 9, "Gate v1 retains signals");
-    let (_, offset) = crate::cow::root_and_offset().unwrap();
-    let read = |task, pointer| {
-        let mut bytes = [0; 8];
-        vspace::read_user_bytes(sched::root(task).unwrap(), pointer, &mut bytes, |p| {
-            crate::mem::phys_to_virt(p, offset)
-        })
-        .unwrap();
-        u64::from_le_bytes(bytes)
-    };
+    let read = read_word;
     let expected = EXPECTED.with(|slot| *slot);
     for (round, regs) in expected.iter().enumerate() {
         for (reg, value) in regs.iter().enumerate() {

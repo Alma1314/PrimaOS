@@ -91,7 +91,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（195）
+## report（196）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -285,6 +285,7 @@
 | [Rust 句柄源码到 Lean 模型的细化证明](../superpowers/reports/2026-10-31-rust-handle-source-refinement.md) | historical | `docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md` |
 | [阶段 1～5 复核与整改](../superpowers/reports/2026-10-31-stage1-5-regression-remediation.md) | historical | `docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md` |
 | [S6-M2：526 页映像、额度失败与大映像再次 exec](../superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md` |
+| [S6-M1 Ready 目标挂接准入整改](../superpowers/reports/2026-10-31-stage6-gate-admission.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-admission.md` |
 | [S6-M1/M1b 最后服务授权丢失钩子](../superpowers/reports/2026-10-31-stage6-gate-authority-loss.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md` |
 | [S6-M1/M1b trap 接线与 G1 裸机见证](../superpowers/reports/2026-10-31-stage6-gate-dispatch.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md` |
 | [S6-M1/M1b 内核门控对象与请求生命周期](../superpowers/reports/2026-10-31-stage6-gate-lifecycle.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md` |

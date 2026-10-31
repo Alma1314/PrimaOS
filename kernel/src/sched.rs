@@ -130,6 +130,13 @@ pub fn set_pending_status(task_id: u32, ptr: u64, status: bootstrap::ProcessExit
     }
 }
 
+/// Native continuations that must be consumed before a Ready Task is gated.
+pub(crate) fn has_pending_return(task: u32) -> bool {
+    KERNEL_RESUME_FRAMES.with(|frames| frames.get(task as usize).is_some_and(Option::is_some))
+        || recv_out(task).is_some()
+        || PENDING_STATUS.with(|slots| slots.get(task as usize).is_some_and(Option::is_some))
+}
+
 /// Linux wait status is an int (4 bytes), never an 8-byte syscall word.
 pub const fn wait_status_bytes(status: bootstrap::ProcessExit) -> [u8; 4] {
     let word = match status {
@@ -549,6 +556,9 @@ pub fn resume(task_id: u32) -> ! {
 mod tests {
     use super::*;
 
+    // Both tests mutate the same global deferred-frame queue.
+    static DEFERRED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn wait_status_has_exact_int_width_and_clear_task_discards_pending_output() {
         assert_eq!(
@@ -667,6 +677,7 @@ mod tests {
     /// 即「尚未归还」的直接证据。
     #[test]
     fn deferred_frames_stay_pending_until_flush() {
+        let _guard = DEFERRED_TEST_LOCK.lock().unwrap();
         flush_deferred_frames();
         assert_eq!(deferred_frame_count(), 0);
         defer_table_frame(0x1000).unwrap();
@@ -682,6 +693,7 @@ mod tests {
     /// 切片 V：队列满时确定性失败，不静默丢弃已入队的帧。
     #[test]
     fn deferred_queue_rejects_overflow() {
+        let _guard = DEFERRED_TEST_LOCK.lock().unwrap();
         flush_deferred_frames();
         for index in 0..MAX_DEFERRED_FRAMES {
             assert!(defer_table_frame(0x1000 + index as u64 * 0x1000).is_ok());

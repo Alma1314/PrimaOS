@@ -136,6 +136,11 @@ impl SignalState {
     pub fn pending(&self, task: u32) -> u64 {
         self.threads.get(task as usize).map_or(0, |t| t.pending)
     }
+    fn has_return_context(&self, task: u32) -> bool {
+        self.threads
+            .get(task as usize)
+            .is_some_and(|thread| thread.depth != 0 || thread.suspended_mask.is_some())
+    }
     pub fn deliverable(&self, task: u32) -> u64 {
         self.threads
             .get(task as usize)
@@ -324,6 +329,11 @@ pub fn set_pending(task: u32, slot: u32) {
 pub fn suspend_mask(task: u32, old: u64) {
     STATE.with_mut(|s| s.threads[task as usize].suspended_mask = Some(old));
 }
+
+/// Queued notifications are allowed; active native return contexts are not.
+pub(crate) fn has_return_context(task: u32) -> bool {
+    STATE.with(|s| s.has_return_context(task))
+}
 pub fn pending(task: u32) -> u64 {
     STATE.with(|s| s.deliverable(task))
 }
@@ -452,6 +462,30 @@ mod tests {
             rip: 0x1000,
             ..SretFrame::ZERO
         }
+    }
+    #[test]
+    fn gate_admission_distinguishes_queued_signals_from_native_return_contexts() {
+        let mut state = SignalState::new();
+        state.set_action(
+            1,
+            10,
+            Action {
+                handler: 0x2000,
+                ..Action::DEFAULT
+            },
+        );
+        state.queue(1, 10, Info::ZERO);
+        assert!(!state.has_return_context(1));
+        state.threads[1].suspended_mask = Some(0);
+        assert!(state.has_return_context(1));
+        state.enter(1, 10, frame()).unwrap();
+        assert!(state.has_return_context(1));
+        assert!(state.threads[1].suspended_mask.is_none());
+        let saved = state.saved(1).unwrap();
+        assert!(state.has_return_context(1));
+        assert_eq!(state.saved(1), Some(saved));
+        state.leave(1, None).unwrap();
+        assert!(!state.has_return_context(1));
     }
     #[test]
     fn user_return_cannot_install_kernel_selectors_privileged_flags_or_noncanonical_pc() {

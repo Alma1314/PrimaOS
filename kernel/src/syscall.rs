@@ -1069,6 +1069,12 @@ static BLOCKED_CALL: StaticCell<[Option<u64>; sched::MAX_TASKS]> =
     StaticCell::new([None; sched::MAX_TASKS]);
 static UPCALL_INTERRUPTED: StaticCell<[bool; sched::MAX_TASKS]> =
     StaticCell::new([false; sched::MAX_TASKS]);
+
+pub(crate) fn has_pending_native_call(task: u32) -> bool {
+    BLOCKED_CALL.with(|calls| calls.get(task as usize).is_some_and(Option::is_some))
+        || UPCALL_INTERRUPTED.with(|flags| flags.get(task as usize).copied().unwrap_or(false))
+}
+
 pub fn clear_blocked_call(task: u32) {
     if (task as usize) < sched::MAX_TASKS {
         BLOCKED_CALL.with_mut(|calls| calls[task as usize] = None);
@@ -1078,6 +1084,26 @@ pub fn clear_blocked_call(task: u32) {
 fn mark_blocked_call(task: u32, number: u64) {
     BLOCKED_CALL.with_mut(|calls| calls[task as usize] = Some(number));
     UPCALL_INTERRUPTED.with_mut(|calls| calls[task as usize] = false);
+}
+
+#[cfg(test)]
+#[test]
+fn gate_admission_detects_native_restart_and_interruption_without_consuming_them() {
+    let task = 17;
+    clear_blocked_call(task);
+    assert!(!has_pending_native_call(task));
+    mark_blocked_call(task, SYS_RECV);
+    assert!(has_pending_native_call(task));
+    assert_eq!(
+        BLOCKED_CALL.with(|calls| calls[task as usize]),
+        Some(SYS_RECV)
+    );
+    clear_blocked_call(task);
+    UPCALL_INTERRUPTED.with_mut(|flags| flags[task as usize] = true);
+    assert!(has_pending_native_call(task));
+    assert!(UPCALL_INTERRUPTED.with(|flags| flags[task as usize]));
+    clear_blocked_call(task);
+    assert!(!has_pending_native_call(task));
 }
 
 /// M17b：fork（COW 地址空间；子进程独立用户栈）。

@@ -263,6 +263,7 @@
       "docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md",
       "docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md",
       "docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md",
+      "docs/superpowers/reports/2026-10-31-stage6-gate-admission.md",
       "docs/superpowers/compat/stage6-gate-native-abi.md",
       "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
     ],
@@ -273,6 +274,7 @@
       "kernel/src/gate.rs",
       "kernel/src/syscall.rs",
       "kernel/src/sched.rs",
+      "kernel/src/signal.rs",
       "prima-runtime/src/capability.rs",
       "prima-runtime/src/ipc.rs",
       "prima-runtime/src/task.rs",
