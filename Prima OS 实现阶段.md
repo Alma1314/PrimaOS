@@ -62,6 +62,10 @@ musl 后继实现见[调用边界与 fd/stdio 报告](docs/superpowers/reports/2
 
 内核句柄与 Lean 后继补强见[验证报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)：generation 耗尽永久退役、权限未知位拒绝、分配失败不推进逻辑 CapId，以及单槽任意后续迁移中的旧句柄不复活证明；证据分层及未覆盖项以报告/Lean 映照为准，不改变阶段签署。
 
+2026-10-31 后继见[有限槽表组合证明](docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md)：逐槽投影、跨槽隔离、整表良构及任意后续序列旧句柄不复活；10 条一般 Lean 定理与真实 Rust 有界遍历，不构成 Rust 源码 refinement proof，阶段勾选不变。
+
+同日[源码细化后继](docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md)直接提取生产 Handle::new/next_generation，完成 5 条条件性源码细化定理及 Rust 语义 mutation 拒绝；限构造器和 generation 更新核心，不等于整张 Rust 槽表或完整内核证明。
+
 原生运行时与服务后继见[握手/路径重构报告](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)：Hello 一致性验证、顺序分片、双路径事务重置与单次消费；仍限单客户端/单在途，未改变阶段签署。
 
 Asterinas OSTD 复用后继见[移植报告](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)：

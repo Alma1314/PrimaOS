@@ -90,7 +90,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（186）
+## report（188）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -279,6 +279,8 @@
 | [S6-M1 审计停止控制器：裸机耗尽与停止边界验收](../superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md` |
 | [S6-M1 内核私有等待：登记、信号隔离与代次完成](../superpowers/reports/2026-10-30-stage6-private-completion-waits.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md` |
 | [S6-M1 接线前置：真实页表输出预检与 COW 事务](../superpowers/reports/2026-10-30-stage6-user-copy-transactions.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md` |
+| [内核有限能力槽表的 Lean 组合证明](../superpowers/reports/2026-10-31-kernel-handle-table-proof.md) | historical | `docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md` |
+| [Rust 句柄源码到 Lean 模型的细化证明](../superpowers/reports/2026-10-31-rust-handle-source-refinement.md) | historical | `docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md` |
 | [阶段 1～5 复核与整改](../superpowers/reports/2026-10-31-stage1-5-regression-remediation.md) | historical | `docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md` |
 
 ## spec（4）
@@ -290,7 +292,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（85）
+## specification（86）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -379,6 +381,7 @@
 | [S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）](../superpowers/specs/2026-10-29-stage6-m1-delivery-design.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md` |
 | [S6-M1 递送机制的六项裁决（D17–D22）](../superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md` |
 | [S6-M1 协议收口：候选 A、单服务者与不可警报等待](../superpowers/specs/2026-10-29-stage6-m1-protocol.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md` |
+| [Rust 句柄源码到 Lean 的首个细化切片](../superpowers/specs/2026-10-31-rust-handle-refinement-design.md) | current | `docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md` |
 
 ## template（4）
 

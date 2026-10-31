@@ -22,7 +22,10 @@
       "docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md",
       "docs/superpowers/reports/2026-10-17-stage0-thirdparty-organizational-review-verdict.md",
       "docs/superpowers/specs/2026-10-24-kernel-handle-model-design.md",
-      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md"
+      "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md",
+      "docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md",
+      "docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md",
+      "docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -32,11 +35,18 @@
       "lean/Formal/State.lean",
       "lean/Formal/Derive.lean",
       "lean/Formal/Forest.lean",
-      "lean/Formal/KernelHandle.lean"
+      "lean/Formal/KernelHandle.lean",
+      "lean/Formal/KernelHandleTable.lean",
+      "lean/refinement/Refinement/Handle.lean",
+      "lean/refinement/Refinement/Generated/Funs.lean"
     ],
     "tests": [
       "cosir/tests/lean_backtrace.rs",
-      "lean/Formal.lean"
+      "lean/Formal.lean",
+      "lean/Checks/KernelHandleTable.lean",
+      "kernel/src/handle_table_tests.rs",
+      "lean/refinement/Checks.lean",
+      "scripts/check_handle_refinement.py"
     ],
     "guide": "docs/architecture/topics/semantics.md"
   },

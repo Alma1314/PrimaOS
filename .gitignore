@@ -3,3 +3,4 @@
 .obsidian
 /lean/.lake/
 .claude
+/lean/refinement/.lake/
