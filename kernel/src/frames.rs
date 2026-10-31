@@ -14,7 +14,7 @@
 //! 可各自推进），以及页表帧取走后完全无归属记账。本模块同时修掉这两点。
 //!
 //! SPEC-068（ISSUE-FRAME-001 收尾）：image 帧集合原以 `(start, end)` **区间**表达，
-//! 本模块改为**真实逐帧向量** [`FrameRegistry::image_frame_ids`]（§5.1 `frames: Vector<FrameId>`）。
+//! 本模块改为**真实逐帧向量** [`FrameRegistry::image_frame_at`]（§5.1 `frames: Vector<FrameId>`）。
 //! 向量随注册表一起落在 `BootstrapState` **之外**（后者已贴近 16 KiB 结构体守卫），
 //! 逐帧归属查询与不交性判定都覆盖它，不再有「区间判断」这条旁路。
 
@@ -52,7 +52,7 @@ pub const MAX_TABLE_FRAMES: usize = 256;
 ///
 /// SPEC-106：从 32 提到 **48**，与 `bootstrap::MAX_SEGMENT_OBJECTS` 对齐——S4-D3 的三个基础
 /// 服务端点各占一个代码段与一个栈段，段表在 32 时触顶使后续 `memseg_create` 失败。
-pub const MAX_SEGMENTS: usize = 48;
+pub const MAX_SEGMENTS: usize = crate::bootstrap::MAX_SEGMENT_OBJECTS;
 /// 非 image 数据帧的逐帧归属条目上限（S2-D3 的 frame → owner 查询）。
 ///
 /// **M3b 192 → 256**：C 任务的栈与匿名 arena 合并为一个 72 页 Segment。旧上限
@@ -64,15 +64,17 @@ pub const MAX_SEGMENTS: usize = 48;
 /// 32 项余量；`memseg_create` 仍以 `owner_count == MAX_FRAME_OWNERS` 确定失败。
 /// The exec handoff can retain the old arena, prepare up to 149 image/stack
 /// frames, and privatize all 96 retained heap pages: 320+149+96+3=568 entries.
-/// With the 192-page boot vector the bound is 320+192+96+3=611. Keep 640
-/// external owner entries; the matching recycle budget must also fit the
-/// FrameRegistry's unchanged 32 KiB value-size guard.
-pub const MAX_FRAME_OWNERS: usize = 640;
+/// S6-M2: allow the 526-page file source and old/new 534-page images alongside
+/// the bounded base services and retained pages: 320+526+534+534+96=2010.
+/// The global 2048-entry quota still rejects excess concurrent allocations.
+/// Image IDs live outside the value so the larger recycle stack still fits
+/// the unchanged 32 KiB FrameRegistry guard.
+pub const MAX_FRAME_OWNERS: usize = 2048;
 /// SPEC-068：image 帧向量容量（§5.1 的 `frames: Vector<FrameId>`）。
 ///
 /// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`
-/// 的定长数组所能承受的规模，故该向量物化在**注册表内部的独立数组**（注册表本身是
-/// boot 早期安装的静态，不占结构体守卫额度）。超出即 `CapacityExceeded`——内核镜像
+/// 的定长数组所能承受的规模。S6-M2 把物化向量移到 IMAGE_VECTORS，复用每个注册表的
+/// owner region 身份，释放按值预算给回收栈。超出即 `CapacityExceeded`——内核镜像
 /// 超过 8 MiB 时启动失败，显式报错而非静默截断。
 pub const MAX_IMAGE_FRAMES: usize = 2048;
 
@@ -85,6 +87,10 @@ const OWNER_REGIONS: usize = 1024;
 /// 非 image 帧归属表的静态存储（每注册表实例一段，见 [`FrameRegistry`]）。
 static OWNER_ARENA: crate::arena::Arena<(u64, u32), MAX_FRAME_OWNERS, OWNER_REGIONS> =
     crate::arena::Arena::new();
+// The existing owner region is the identity for both ledgers. No new handle,
+// interval shortcut, per-lookup allocation, or runtime-sized stack value.
+static IMAGE_VECTORS: StaticCell<[[u64; MAX_IMAGE_FRAMES]; OWNER_REGIONS]> =
+    StaticCell::new([[0; MAX_IMAGE_FRAMES]; OWNER_REGIONS]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pool {
@@ -137,12 +143,7 @@ pub struct FrameWitness {
 pub struct FrameRegistry {
     alloc: FreeFrameAllocator,
     universe: usize,
-    /// SPEC-068：image Segment 的**真实逐帧向量**（§5.1 `Vector<FrameId>`）。
-    ///
-    /// 第 `i` 项即 image 的第 `i` 帧物理地址，`image_count` 是其长度。该向量是 image
-    /// 帧归属的**唯一真值源**（逐帧查询与不交性判定都读它），物化在注册表内部而非
-    /// `BootstrapState`，不占后者的结构体守卫额度。
-    image_frame_ids: [u64; MAX_IMAGE_FRAMES],
+    /// Image IDs are materialized in IMAGE_VECTORS using owner_slice's region.
     image_count: usize,
     segment_frames: usize,
     table_frames: [u64; MAX_TABLE_FRAMES],
@@ -158,6 +159,12 @@ pub struct FrameRegistry {
 }
 
 impl FrameRegistry {
+    fn image_contains(&self, frame: u64, count: usize) -> bool {
+        self.owner_slice.is_some_and(|slice| {
+            IMAGE_VECTORS.with(|vectors| vectors[slice.region()][..count].contains(&frame))
+        })
+    }
+
     /// 第 `index` 项归属（未初始化或越界返回 `None`）。
     fn owner(&self, index: usize) -> Option<(u64, u32)> {
         self.owner_slice
@@ -180,7 +187,6 @@ impl FrameRegistry {
         Self {
             alloc: FreeFrameAllocator::empty(),
             universe: 0,
-            image_frame_ids: [0; MAX_IMAGE_FRAMES],
             image_count: 0,
             segment_frames: 0,
             table_frames: [0; MAX_TABLE_FRAMES],
@@ -213,18 +219,15 @@ impl FrameRegistry {
         self.alloc = alloc;
         self.universe = inventory.usable_frames + inventory.image_frames;
         self.image_count = inventory.image_frames;
-        // 物化真实帧向量：第 i 项即 image 的第 i 帧物理地址。
-        // `mem::build_inventory` 由**帧对齐**的 `[kernel_phys_start, kernel_phys_end)` 导出
-        // `image_frames`，故逐帧物化与旧的区间判断是同一帧集合（host 单测钉住这一点）。
-        for (index, slot) in self.image_frame_ids[..self.image_count]
-            .iter_mut()
-            .enumerate()
-        {
-            *slot = inventory.kernel_phys_start + (index as u64) * crate::mem::FRAME_SIZE;
-        }
         if self.owner_slice.is_none() {
             self.owner_slice = Some(OWNER_ARENA.claim());
         }
+        let region = self.owner_slice.expect("registry region").region();
+        IMAGE_VECTORS.with_mut(|vectors| {
+            for (index, slot) in vectors[region][..self.image_count].iter_mut().enumerate() {
+                *slot = inventory.kernel_phys_start + (index as u64) * crate::mem::FRAME_SIZE;
+            }
+        });
         self.segment_frames = 0;
         self.table_count = 0;
         self.owner_count = 0;
@@ -317,15 +320,19 @@ impl FrameRegistry {
         else {
             return Err(FrameError::NotOwned);
         };
-        // 分配器可能拒绝归还；先完成可能失败的步骤，避免丢失归属记录。
+        self.release_owner_at(index, frame)
+    }
+
+    // The owner ledger is an unordered set; each Segment's ordered vector is
+    // stored separately. Swap removal avoids copying the whole ledger per page.
+    fn release_owner_at(&mut self, index: usize, frame: u64) -> Result<(), FrameError> {
+        // Complete the fallible release before removing its ownership record.
         self.alloc
             .release(frame)
             .map_err(|_| FrameError::NotOwned)?;
-        for shift in index..self.owner_count - 1 {
-            self.set_owner(shift, self.owner(shift + 1));
-        }
-        self.set_owner(self.owner_count - 1, None);
         self.owner_count -= 1;
+        self.set_owner(index, self.owner(self.owner_count));
+        self.set_owner(self.owner_count, None);
         self.segment_frames -= 1;
         Ok(())
     }
@@ -351,16 +358,14 @@ impl FrameRegistry {
     /// Reclaim the actual ownership ledger, including later COW allocations.
     /// The caller must first prove that no address space references the Segment.
     pub fn release_segment_frames(&mut self, id: u32) -> Result<(), FrameError> {
-        loop {
-            let frame = (0..self.owner_count).find_map(|index| {
-                self.owner(index)
-                    .filter(|(_, owner)| *owner == id)
-                    .map(|(frame, _)| frame)
-            });
-            let Some(frame) = frame else {
-                break;
-            };
-            self.release_frame(id, frame)?;
+        let mut index = 0;
+        while index < self.owner_count {
+            let (frame, owner) = self.owner(index).expect("live ownership record");
+            if owner == id {
+                self.release_owner_at(index, frame)?;
+            } else {
+                index += 1;
+            }
         }
         self.close_segment(id)
     }
@@ -369,7 +374,7 @@ impl FrameRegistry {
     ///
     /// SPEC-068：image 归属经**物化向量**逐帧判定，不再用 `(start, end)` 区间。
     pub fn owner_of(&self, frame: u64) -> FrameOwner {
-        if self.image_frame_ids[..self.image_count].contains(&frame) {
+        if self.image_contains(frame, self.image_count) {
             return FrameOwner::Image;
         }
         for index in 0..self.owner_count {
@@ -392,8 +397,8 @@ impl FrameRegistry {
     pub fn check_disjoint(&self) -> Result<(), FrameError> {
         let mut index = 0;
         while index < self.image_count {
-            let frame = self.image_frame_ids[index];
-            if self.image_frame_ids[..index].contains(&frame) {
+            let frame = self.image_frame_at(index).expect("image vector entry");
+            if self.image_contains(frame, index) {
                 return Err(FrameError::Overlap);
             }
             index += 1;
@@ -401,7 +406,7 @@ impl FrameRegistry {
         index = 0;
         while index < self.owner_count {
             let frame = self.owner(index).map(|(frame, _)| frame).unwrap_or(0);
-            if self.image_frame_ids[..self.image_count].contains(&frame) {
+            if self.image_contains(frame, self.image_count) {
                 return Err(FrameError::Overlap);
             }
             if self.table_frames[..self.table_count].contains(&frame) {
@@ -422,7 +427,7 @@ impl FrameRegistry {
         index = 0;
         while index < self.table_count {
             let frame = self.table_frames[index];
-            if self.image_frame_ids[..self.image_count].contains(&frame)
+            if self.image_contains(frame, self.image_count)
                 || self.table_frames[..index].contains(&frame)
             {
                 return Err(FrameError::Overlap);
@@ -471,7 +476,8 @@ impl FrameRegistry {
     /// SPEC-068：image 帧向量的第 `index` 项（越界返回 `None`）。
     pub fn image_frame_at(&self, index: usize) -> Option<u64> {
         if index < self.image_count {
-            Some(self.image_frame_ids[index])
+            let region = self.owner_slice?.region();
+            Some(IMAGE_VECTORS.with(|vectors| vectors[region][index]))
         } else {
             None
         }
@@ -732,6 +738,14 @@ mod tests {
         for frame in &mut tables {
             *frame = registry.allocate_table_frame().unwrap();
         }
+        assert_eq!(
+            registry.allocate_for_segment(1),
+            Err(FrameError::CapacityExceeded)
+        );
+        assert_eq!(
+            registry.allocate_table_frame(),
+            Err(FrameError::CapacityExceeded)
+        );
         for frame in data {
             registry.release_frame(1, frame).unwrap();
         }
@@ -740,6 +754,15 @@ mod tests {
         }
         assert_eq!(registry.alloc.remaining(), count);
         assert!(registry.check_conservation().is_ok());
+        // The enlarged recycle stack must return every frame exactly once too.
+        let recycled: std::collections::BTreeSet<_> = (0..count)
+            .map(|_| registry.alloc.allocate().unwrap())
+            .collect();
+        assert_eq!(recycled.len(), count);
+        assert_eq!(
+            registry.alloc.allocate(),
+            Err(crate::mem::AllocatorError::NoFrame)
+        );
     }
 
     #[test]
@@ -813,12 +836,17 @@ mod tests {
         registry.open_segment(1, Pool::Cpu).unwrap();
         registry.open_segment(2, Pool::Cpu).unwrap();
         let initial = registry.allocate_for_segment(1).unwrap();
-        let copied = registry.allocate_for_segment(1).unwrap();
         let other = registry.allocate_for_segment(2).unwrap();
+        let copied = registry.allocate_for_segment(1).unwrap();
+        let other2 = registry.allocate_for_segment(2).unwrap();
+        let copied2 = registry.allocate_for_segment(1).unwrap();
         registry.release_segment_frames(1).unwrap();
         assert_eq!(registry.owner_of(initial), FrameOwner::Free);
         assert_eq!(registry.owner_of(copied), FrameOwner::Free);
+        assert_eq!(registry.owner_of(copied2), FrameOwner::Free);
         assert_eq!(registry.owner_of(other), FrameOwner::Segment(2));
+        assert_eq!(registry.owner_of(other2), FrameOwner::Segment(2));
+        assert!(registry.check_disjoint().is_ok());
         assert!(registry.check_conservation().is_ok());
     }
 
@@ -876,13 +904,44 @@ mod tests {
         assert!(registry.check_conservation().is_ok());
     }
 
+    #[test]
+    fn external_image_vectors_are_isolated_and_invalid_reinit_preserves_bytes() {
+        let mut first = registry();
+        let second = registry();
+        let original: Vec<_> = (0..second.image_frame_count())
+            .map(|i| second.image_frame_at(i).unwrap())
+            .collect();
+        let region = first.owner_slice.unwrap().region();
+        super::IMAGE_VECTORS.with_mut(|vectors| vectors[region][0] = 0xdead_0000);
+        assert_eq!(first.image_frame_at(0), Some(0xdead_0000));
+        for (i, frame) in original.into_iter().enumerate() {
+            assert_eq!(second.image_frame_at(i), Some(frame));
+        }
+        let inventory = FrameInventory {
+            usable_frames: 7,
+            image_frames: MAX_IMAGE_FRAMES + 1,
+            free_frames: 7,
+            usable_regions: 3,
+            kernel_phys_start: 0x40_0000,
+            kernel_phys_end: 0x40_2000,
+        };
+        let alloc = FreeFrameAllocator::from_regions(&regions(), 0x40_0000, 0x40_2000).unwrap();
+        assert_eq!(
+            first.init_at(&inventory, alloc),
+            Err(FrameError::CapacityExceeded)
+        );
+        assert_eq!(first.image_frame_at(0), Some(0xdead_0000));
+        assert!(second.check_disjoint().is_ok());
+    }
+
     /// SPEC-068：向量自身重复必须被不交性判定检出（区间表达下这一反例不可表达）。
     #[test]
     fn image_vector_self_overlap_is_detected() {
-        let mut registry = registry();
+        let registry = registry();
         assert!(registry.check_disjoint().is_ok());
         // 构造外错误：把第 1 项改写成第 0 项 → 同一帧在 image 向量内出现两次。
-        registry.image_frame_ids[1] = registry.image_frame_ids[0];
+        let region = registry.owner_slice.unwrap().region();
+        super::IMAGE_VECTORS.with_mut(|vectors| vectors[region][1] = vectors[region][0]);
         assert_eq!(registry.check_disjoint(), Err(FrameError::Overlap));
         assert!(!registry.witness().disjoint);
         // 守恒只看计数，故不受影响——不交性与守恒是两条独立判据。
@@ -936,6 +995,11 @@ mod tests {
     /// host 单测与未来调用点都受此约束）。
     #[test]
     fn registry_stays_within_the_value_size_budget() {
+        println!(
+            "FrameRegistry={} B; FreeFrameAllocator={} B",
+            core::mem::size_of::<FrameRegistry>(),
+            core::mem::size_of::<FreeFrameAllocator>()
+        );
         assert!(
             core::mem::size_of::<FrameRegistry>() <= 32 * 1024,
             "FrameRegistry 按值大小 {} B 超出 32 KiB 预算",

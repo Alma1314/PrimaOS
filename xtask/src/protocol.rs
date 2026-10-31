@@ -829,7 +829,7 @@ pub(crate) fn validate_stage5_echo(
         .collect();
     if capacity.len() != 1
         || !capacity[0].contains("caps_limit=192")
-        || !capacity[0].contains("segment_limit=48")
+        || !capacity[0].contains("segment_limit=64")
         || !capacity[0].contains("messages_limit=32")
         || !capacity[0].contains("audit_limit=16384")
     {
@@ -898,7 +898,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384"
+            != "CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -4689,7 +4689,7 @@ mod tests {
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
         output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=134\r\n");
-        output.push_str("CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=48;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384\r\n");
+        output.push_str("CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);

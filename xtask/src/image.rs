@@ -1781,7 +1781,8 @@ fn check_linux_exec_reference(source: &str, name: &str, expected: &[u8]) -> Resu
     Ok(())
 }
 
-pub(crate) const EXEC_EXPECTED_STDOUT: &[u8] = b"EXEC|exec=1;wait=1;bad=1;stream=1|ok=1;err=0\n";
+pub(crate) const EXEC_EXPECTED_STDOUT: &[u8] =
+    b"EXEC|exec=1;wait=1;bad=1;stream=1;large=1|ok=1;err=0\n";
 
 pub(crate) const EXECVE_EXPECTED_STDOUT: &[u8] =
     b"EXECVE|read=1;exec=1;wait=1;env=1;cloexec=1;atomic=1;contract=1;crt=1;reexec=1;ofd=1|ok=1;err=0\n";

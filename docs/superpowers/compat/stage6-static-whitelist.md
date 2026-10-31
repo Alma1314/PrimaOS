@@ -36,7 +36,7 @@ updated: 2026-10-31
 | `GNU_RELRO` | 存在（覆盖 `.data.rel.ro`/`.got`） | 装载期必须可写，只读化属装载后 `mprotect` |
 | `GNU_STACK` | `RW`（非可执行） | 装载器拒绝可执行栈 |
 | SSP | 开启：2 402 处 `%fs:0x28` | D13：必须提供 `AT_RANDOM` 兼容字段 |
-| 页需求 | 526 页（`1+424+83+18`） | 当前 `MAX_SEGMENT_FRAMES=149` 仍不够；原生 exec 的 1 MiB 文件限制已由后继移除，见下方容量缺口 |
+| 页需求 | 526 页（`1+424+83+18`） | 普通段仍≤149页；[容量后继](../reports/2026-10-31-stage6-exec-frame-capacity.md)将私有exec扩至640页（含栈），覆盖本制品526载入页的预算，非本制品实际运行 |
 
 复现命令（宿主）：
 
@@ -79,7 +79,7 @@ LC_ALL=C objdump -d /usr/bin/busybox | grep -c 'fs:0x28'
 | 白名单定义（D12） | **已冻结** |
 | 装载器解析该制品 | 已成立（2026-10-28 装载切片，`PRIMA_ELF_SAMPLE` 演练，见[装载切片报告](../reports/2026-10-28-stage6-loader-slice.md)） |
 | 任何成员在本系统运行 | **未发生**（缺 S6-M1 递送与 S6-M3 profile） |
-| 容量缺口 | [按需输入后继](../reports/2026-10-31-stage6-streamed-elf-input.md)已移除原生 exec 的 1 MiB 与首个 4 KiB 程序头限制；`MAX_SEGMENT_FRAMES=149`（需 526 页）、全局资源预算、8 页初始栈验证及 VFS 大文件来源仍待完成 |
+| 容量/验证缺口 | [输入](../reports/2026-10-31-stage6-streamed-elf-input.md)与[容量后继](../reports/2026-10-31-stage6-exec-frame-capacity.md)已移除原生exec的1 MiB/首个4 KiB程序头/149页私有映像限制，并补齐有界全局预算；VFS大文件来源、本制品真实几何/8页初始栈与完整Linux启动仍待验证 |
 
 ## 后继关系
 

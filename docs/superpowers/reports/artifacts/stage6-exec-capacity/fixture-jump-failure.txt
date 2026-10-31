@@ -1,0 +1,5 @@
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.30s
+     Running `target/debug/xtask test-process W7`
+ERROR exec-linux mismatch: exit Some(1), stdout "EXEC|exec=1;wait=1;bad=1;stream=1;large=0|ok=0;err=11\n", stderr ""

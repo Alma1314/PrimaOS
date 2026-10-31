@@ -2484,6 +2484,11 @@ pub const MAX_SEGMENT_FRAMES: usize = 149;
 /// The aggregate boot service image uses external vector storage. This budget
 /// is independent of per-user Segment size and does not enlarge stack values.
 pub const MAX_BOOT_SERVICE_FRAMES: usize = 192;
+/// Private replacement image, including its stack. The frozen 526-page ELF
+/// needs 534 pages with the current eight-page stack. Public memseg stays 149.
+pub const MAX_EXEC_IMAGE_FRAMES: usize = 640;
+// External vector metadata has a disjoint boot prefix and a bounded exec pool.
+const MAX_EXTERNAL_FRAMES: usize = MAX_BOOT_SERVICE_FRAMES + crate::frames::MAX_FRAME_OWNERS;
 
 /// §7.2：`access` 只允许 R/W/X 三个 Segment 映射权限。
 pub const SEGMENT_ACCESS_RIGHTS: Rights =
@@ -2500,8 +2505,8 @@ pub const SEGMENT_ROOT_RIGHTS: Rights = SEGMENT_ACCESS_RIGHTS;
 /// [`MAX_SEGMENT_OBJECTS`] 注释），故向量物化在帧注册表 `frames::image_frame_*` 中，
 /// 此处持有其长度。`frame_at` 对 `Image` 逐帧委托注册表——与 `Vector` 同为 §5.1 的
 /// `Vector<FrameId>`，不再是 `(base, count)` 区间表达（ISSUE-FRAME-001）。
-// `Vector` 内联 48 帧（SPEC-109 服务映像段需 43 页），远大于 `Image`——本 crate 无堆，
-// 帧向量必须内联在静态段对象表里，此处刻意不 Box。
+// Keep the 149-frame inline variant unchanged. Large exec/boot vectors use
+// the external arena, so growth does not enlarge values on the kernel stack.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentFrames {
@@ -2512,18 +2517,33 @@ pub enum SegmentFrames {
     Image {
         count: usize,
     },
-    BootServices {
+    External {
         slice: crate::arena::ArenaSlice,
+        start: usize,
         count: usize,
     },
 }
 
 impl SegmentFrames {
+    /// Release metadata only after the ownership ledger has returned all frames.
+    fn clear_external(&self) {
+        if let Self::External {
+            slice,
+            start,
+            count,
+        } = *self
+        {
+            for index in start..start + count {
+                EXTERNAL_FRAME_ARENA.set(slice, index, None);
+            }
+        }
+    }
+
     pub fn frame_count(&self) -> usize {
         match self {
             SegmentFrames::Vector { count, .. } => *count,
             SegmentFrames::Image { count } => *count,
-            SegmentFrames::BootServices { count, .. } => *count,
+            SegmentFrames::External { count, .. } => *count,
         }
     }
 
@@ -2543,8 +2563,12 @@ impl SegmentFrames {
                     None
                 }
             }
-            SegmentFrames::BootServices { slice, count } => (index < *count)
-                .then(|| BOOT_FRAME_ARENA.get(*slice, index))
+            SegmentFrames::External {
+                slice,
+                start,
+                count,
+            } => (index < *count)
+                .then(|| EXTERNAL_FRAME_ARENA.get(*slice, start + index))
                 .flatten(),
         }
     }
@@ -2637,7 +2661,8 @@ pub struct VspaceEntry {
 /// 这是真实增长而非放宽检查；`memseg_map` 的容量判定保持 `>` 语义。
 // Fork duplicates logical mappings while physical read-only/COW pages remain
 // shared. Include the base services, parent, child and replacement exec image.
-pub const MAX_VSPACE_ENTRIES: usize = 1024;
+// S6-M2: source plus old/new large images and base services remain bounded.
+pub const MAX_VSPACE_ENTRIES: usize = 2048;
 
 /// SPEC-091：arena 区段数。内核只构造一个 `BootstrapState`（1 段），host 单测并行构造多个 state。
 #[cfg(not(test))]
@@ -3715,7 +3740,10 @@ pub struct BootstrapRecord {
 /// `memseg_destroy` 保留死亡记录直到槽复用；新对象使用严格递增ID，旧cap不复活。
 /// SPEC-106 起该表移入静态 arena（[`SEGMENT_ARENA`]），**不再占用 `BootstrapState` 空间**，
 /// 故可自由扩容——从 32 提到 **48**，为 S4-D3 的三个基础服务端点（各代码段 + 栈段）腾槽。
-pub const MAX_SEGMENT_OBJECTS: usize = 48;
+// S6-M2: base objects + four source chunks + six pressure objects + old/new
+// image staging exceed 48. Keep a bounded 64-slot table and the existing mask.
+pub const MAX_SEGMENT_OBJECTS: usize = 64;
+const _: () = assert!(MAX_SEGMENT_OBJECTS <= u64::BITS as usize);
 /// SPEC-106：Segment arena 的区段数（内核只构造一个 state ⇒ 1 段；host 单测并行构造多个 state，
 /// 每实例领一段，故与 [`VSPACE_REGIONS`] 同款留足）。
 #[cfg(not(test))]
@@ -3725,7 +3753,7 @@ const SEGMENT_REGIONS: usize = 512;
 /// SPEC-106：Segment 对象表的静态 arena（内容在此，`BootstrapState` 只留 8 B 句柄）。
 static SEGMENT_ARENA: crate::arena::Arena<SegmentObject, MAX_SEGMENT_OBJECTS, SEGMENT_REGIONS> =
     crate::arena::Arena::new();
-static BOOT_FRAME_ARENA: crate::arena::Arena<u64, MAX_BOOT_SERVICE_FRAMES, SEGMENT_REGIONS> =
+static EXTERNAL_FRAME_ARENA: crate::arena::Arena<u64, MAX_EXTERNAL_FRAMES, SEGMENT_REGIONS> =
     crate::arena::Arena::new();
 /// SPEC-081：Namespace 对象上限（init + `ns_create` 创建的）。
 ///
@@ -3815,7 +3843,7 @@ pub struct BootstrapState {
     /// [`SEGMENT_ARENA`]，本字段只是一个区段句柄（SPEC-106：`BootstrapState` 贴 13 KiB 守卫，
     /// 内联的 `[Option<SegmentObject>; N]` 是最大一块，且 S4-D3 的服务端点需要更多段槽）。
     pub segments: crate::arena::ArenaSlice,
-    boot_frames: crate::arena::ArenaSlice,
+    external_frames: crate::arena::ArenaSlice,
     pub segment_count: usize,
     /// Kernel-private exec Segments are reclaimed after their final mapping.
     private_exec_segments: u64,
@@ -7246,7 +7274,8 @@ impl BootstrapState {
             let map = |phys: u64| crate::mem::phys_to_virt(phys, phys_offset);
             // SPEC-107：逐个挑出该任务的映射并拆除——不复制 VA 到栈上快照，去掉「容量常量放大
             // 即挤压内核栈」的隐式耦合（SPEC-106 §5.4 的 `SYS_TASK_DESTROY` 栈溢出）。
-            // ponytail: O(n²) 扫描（n ≤ MAX_VSPACE_ENTRIES = 144），只在内核销毁路径，可忽略。
+            // ponytail: bounded O(n²) scan on destroy; indexed mappings if this
+            // becomes a bottleneck with larger address spaces.
             while let Some(entry_va) = self.vspace.first_mapping(caller) {
                 match crate::vspace::unmap_4k(root, entry_va, map, |frame| {
                     crate::sched::defer_table_frame(frame)
@@ -7914,19 +7943,28 @@ impl BootstrapState {
         phys_offset: u64,
         cap_at: Option<(CapabilityLocation, u32)>,
     ) -> Result<(Handle, SegmentFrames), MemsegError> {
-        let external = page_count > MAX_SEGMENT_FRAMES;
-        if external
-            && (page_count > MAX_BOOT_SERVICE_FRAMES
-                || id != USER_SEGMENT_ID_FIRST
-                || creator != KERNEL_ACTOR
-                || cap_at
-                    != Some((
-                        CapabilityLocation::HeldByTask(INIT_TASK_ID),
-                        SERVICE_IMAGE_CAP_SLOT,
-                    )))
+        let external_start = if page_count <= MAX_SEGMENT_FRAMES {
+            None
+        } else if page_count <= MAX_BOOT_SERVICE_FRAMES
+            && id == USER_SEGMENT_ID_FIRST
+            && creator == KERNEL_ACTOR
+            && cap_at
+                == Some((
+                    CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                    SERVICE_IMAGE_CAP_SLOT,
+                ))
         {
+            Some(0)
+        } else if creator == KERNEL_ACTOR
+            && matches!(cap_at, Some((CapabilityLocation::HeldByKernel, _)))
+        {
+            Some(
+                self.exec_frame_start(page_count)
+                    .ok_or(MemsegError::CapacityExceeded)?,
+            )
+        } else {
             return Err(MemsegError::CapacityExceeded);
-        }
+        };
         if !self.segment_slot_free(id) {
             return Err(MemsegError::CapacityExceeded);
         }
@@ -7939,9 +7977,10 @@ impl BootstrapState {
         if crate::frames::open_segment(id, crate::frames::Pool::Cpu).is_err() {
             return Err(MemsegError::NoMemory);
         }
-        let mut segment_frames = if external {
-            SegmentFrames::BootServices {
-                slice: self.boot_frames,
+        let mut segment_frames = if let Some(start) = external_start {
+            SegmentFrames::External {
+                slice: self.external_frames,
+                start,
                 count: 0,
             }
         } else {
@@ -7955,16 +7994,9 @@ impl BootstrapState {
             let frame = match crate::frames::allocate_for_segment(id) {
                 Ok(frame) => frame,
                 Err(_) => {
-                    // 回滚已取帧，保持失败原子。
-                    let mut rollback = 0;
-                    while rollback < count {
-                        let _ = crate::frames::release_frame(
-                            id,
-                            segment_frames.frame_at(rollback).expect("allocated frame"),
-                        );
-                        rollback += 1;
-                    }
-                    let _ = crate::frames::close_segment(id);
+                    crate::frames::release_segment_frames(id)
+                        .expect("fresh Segment allocation rollback");
+                    segment_frames.clear_external();
                     return Err(MemsegError::NoMemory);
                 }
             };
@@ -7978,11 +8010,12 @@ impl BootstrapState {
                     frames[count] = frame;
                     *length += 1;
                 }
-                SegmentFrames::BootServices {
+                SegmentFrames::External {
                     slice,
+                    start,
                     count: length,
                 } => {
-                    BOOT_FRAME_ARENA.set(*slice, count, Some(frame));
+                    EXTERNAL_FRAME_ARENA.set(*slice, *start + count, Some(frame));
                     *length += 1;
                 }
                 SegmentFrames::Image { .. } => unreachable!(),
@@ -8001,15 +8034,9 @@ impl BootstrapState {
         let handle = match minted {
             Ok(handle) => handle,
             Err(_) => {
-                let mut rollback = 0;
-                while rollback < count {
-                    let _ = crate::frames::release_frame(
-                        id,
-                        segment_frames.frame_at(rollback).expect("allocated frame"),
-                    );
-                    rollback += 1;
-                }
-                let _ = crate::frames::close_segment(id);
+                crate::frames::release_segment_frames(id)
+                    .expect("fresh Segment capability rollback");
+                segment_frames.clear_external();
                 return Err(MemsegError::CapacityExceeded);
             }
         };
@@ -8151,7 +8178,7 @@ impl BootstrapState {
                 frames[*count] = frame;
                 *count += 1;
             }
-            SegmentFrames::Image { .. } | SegmentFrames::BootServices { .. } => {
+            SegmentFrames::Image { .. } | SegmentFrames::External { .. } => {
                 let _ = crate::frames::release_frame(id, frame);
                 return Err(MemsegError::CapacityExceeded);
             }
@@ -8960,6 +8987,7 @@ impl BootstrapState {
         };
         let segment = self.segment_at(index).ok_or(MemsegError::TargetDead)?;
         crate::frames::release_segment_frames(seg_id).map_err(|_| MemsegError::NoMemory)?;
+        segment.frames.clear_external();
         self.set_segment_at(
             index,
             Some(SegmentObject {
@@ -9150,7 +9178,7 @@ pub fn create_state(
         exc_sources: ExcSourceTable::empty(),
         exc_boot: None,
         segments,
-        boot_frames: BOOT_FRAME_ARENA.claim(),
+        external_frames: EXTERNAL_FRAME_ARENA.claim(),
         segment_count: 1,
         namespaces,
         namespace_count: 1,
@@ -10222,13 +10250,37 @@ impl BootstrapState {
         Ok(())
     }
 
+    /// Bounded first-fit pool, serialized by exclusive BootstrapState access.
+    /// ponytail: contiguous runs may fragment; use indexed chunks if workloads
+    /// need to admit an image despite fragmentation, without enlarging values.
+    fn exec_frame_start(&self, pages: usize) -> Option<usize> {
+        if pages == 0 || pages > MAX_EXEC_IMAGE_FRAMES {
+            return None;
+        }
+        let mut free = 0;
+        for index in MAX_BOOT_SERVICE_FRAMES..MAX_EXTERNAL_FRAMES {
+            if EXTERNAL_FRAME_ARENA
+                .get(self.external_frames, index)
+                .is_none()
+            {
+                free += 1;
+                if free == pages {
+                    return Some(index + 1 - pages);
+                }
+            } else {
+                free = 0;
+            }
+        }
+        None
+    }
+
     /// Stage an exec image in a private Segment; no user receives its root cap.
     pub fn allocate_exec_segment(
         &mut self,
         pages: usize,
         offset: u64,
     ) -> Result<(u32, SegmentFrames), MemsegError> {
-        if pages == 0 || pages > MAX_SEGMENT_FRAMES {
+        if pages == 0 || pages > MAX_EXEC_IMAGE_FRAMES {
             return Err(MemsegError::CapacityExceeded);
         }
         if !self
@@ -15816,14 +15868,15 @@ mod tests {
     #[test]
     fn boot_service_frame_vector_preserves_noncontiguous_order_outside_stack_values() {
         let state = fresh_state();
-        super::BOOT_FRAME_ARENA.set(state.boot_frames, 0, Some(0x9000));
-        super::BOOT_FRAME_ARENA.set(
-            state.boot_frames,
+        super::EXTERNAL_FRAME_ARENA.set(state.external_frames, 0, Some(0x9000));
+        super::EXTERNAL_FRAME_ARENA.set(
+            state.external_frames,
             super::MAX_BOOT_SERVICE_FRAMES - 1,
             Some(0x3000),
         );
-        let frames = SegmentFrames::BootServices {
-            slice: state.boot_frames,
+        let frames = SegmentFrames::External {
+            slice: state.external_frames,
+            start: 0,
             count: super::MAX_BOOT_SERVICE_FRAMES,
         };
         assert_eq!(frames.frame_at(0), Some(0x9000));
@@ -15833,6 +15886,87 @@ mod tests {
         );
         assert_eq!(frames.frame_at(super::MAX_BOOT_SERVICE_FRAMES), None);
         assert!(core::mem::size_of::<SegmentFrames>() <= (MAX_SEGMENT_FRAMES + 4) * 8);
+    }
+
+    #[test]
+    fn exec_vectors_reuse_only_their_own_run_and_keep_public_quotas() {
+        let mut state = fresh_state();
+        let other = fresh_state();
+        let boot = SegmentFrames::External {
+            slice: state.external_frames,
+            start: 0,
+            count: super::MAX_BOOT_SERVICE_FRAMES,
+        };
+        super::EXTERNAL_FRAME_ARENA.set(state.external_frames, 0, Some(0));
+        let start = state.exec_frame_start(534).unwrap();
+        assert_eq!(start, super::MAX_BOOT_SERVICE_FRAMES);
+        let first = SegmentFrames::External {
+            slice: state.external_frames,
+            start,
+            count: 534,
+        };
+        for i in 0..534 {
+            super::EXTERNAL_FRAME_ARENA.set(
+                state.external_frames,
+                start + i,
+                Some((534 - i) as u64 * 4096),
+            );
+        }
+        let next = state.exec_frame_start(534).unwrap();
+        assert_eq!(next, start + 534);
+        let second = SegmentFrames::External {
+            slice: state.external_frames,
+            start: next,
+            count: 534,
+        };
+        for i in 0..534 {
+            super::EXTERNAL_FRAME_ARENA.set(state.external_frames, next + i, Some(i as u64 * 4096));
+        }
+        assert_eq!(first.frame_at(0), Some(534 * 4096));
+        assert_eq!(first.frame_at(533), Some(4096));
+        assert_eq!(first.frame_at(534), None);
+        assert_eq!(
+            second.frame_at(0),
+            Some(0),
+            "physical frame zero occupies a slot"
+        );
+        assert_eq!(other.exec_frame_start(534), Some(start));
+        first.clear_external();
+        assert_eq!(state.exec_frame_start(534), Some(start));
+        assert_eq!(boot.frame_at(0), Some(0));
+        assert_eq!(second.frame_at(533), Some(533 * 4096));
+        assert_eq!(
+            state.exec_frame_start(super::MAX_EXEC_IMAGE_FRAMES + 1),
+            None
+        );
+        let before = (state.slots, state.audit.count, state.segment_count);
+        assert_eq!(
+            state.memseg_create(
+                INIT_TASK_ID,
+                MAX_SEGMENT_FRAMES + 1,
+                Rights::from_rights(&[Right::SegMapR]),
+                0
+            ),
+            Err(MemsegError::CapacityExceeded)
+        );
+        assert_eq!(
+            state.allocate_exec_segment(super::MAX_EXEC_IMAGE_FRAMES + 1, 0),
+            Err(MemsegError::CapacityExceeded)
+        );
+        assert_eq!(
+            (state.slots, state.audit.count, state.segment_count),
+            before
+        );
+        second.clear_external();
+        assert_eq!(
+            state.exec_frame_start(super::MAX_EXEC_IMAGE_FRAMES),
+            Some(start)
+        );
+        assert_eq!(state.exec_frame_start(0), None);
+        for index in start..super::MAX_EXTERNAL_FRAMES {
+            super::EXTERNAL_FRAME_ARENA.set(state.external_frames, index, Some(0));
+        }
+        assert_eq!(state.exec_frame_start(1), None);
     }
 
     #[test]
@@ -16604,6 +16738,11 @@ mod tests {
 
     #[test]
     fn bootstrap_state_stays_within_the_stack_budget() {
+        println!(
+            "BootstrapState={} B; SegmentFrames={} B",
+            core::mem::size_of::<super::BootstrapState>(),
+            core::mem::size_of::<SegmentFrames>()
+        );
         // `create_state` 按值返回该结构，内核启动栈有限：钉死上限防止后续扩容悄悄超栈。
         let size = core::mem::size_of::<super::BootstrapState>();
         assert!(size <= 16 * 1024, "BootstrapState size = {size} bytes");

@@ -30,6 +30,11 @@ S6-M2 的[按需 ELF 输入契约](../../superpowers/specs/2026-10-31-stage6-str
 原生 exec 的 1 MiB 输入及首个 4 KiB 程序头限制；稀疏输入仅载入两页段数据，
 不能替代 busybox 的 526 页装载、Gate 或 Linux LibOS。
 
+S6-M2 的[大映像帧契约](../../superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md)
+与[失败/容量证据](../../superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)扩展
+私有exec向量及全局预算，验证526页、失败回收与大映像再次exec；普通段仍≤149页，
+不代表完整VFS、冻结busybox、Gate或LibOS运行。
+
 ## 契约、计划与证据入口
 
 - [2026-10-23-stage5-m15-process-thread-wait-design.md](../../superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)

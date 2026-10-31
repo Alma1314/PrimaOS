@@ -143,7 +143,9 @@
       "test-process",
       "PreparedUserWrite",
       "prepare_task_output",
-      "USER_COPY_LIMIT"
+      "USER_COPY_LIMIT",
+      "MAX_EXEC_IMAGE_FRAMES",
+      "外部帧向量"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -169,7 +171,9 @@
       "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
       "docs/superpowers/specs/2026-10-24-fork-continuation-design.md",
       "docs/superpowers/reports/2026-10-24-fork-continuation-report.md",
-      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
+      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md",
+      "docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md",
+      "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -456,7 +460,9 @@
       "test-process",
       "plan_read",
       "streamed ELF",
-      "稀疏 ELF"
+      "稀疏 ELF",
+      "MAX_EXEC_IMAGE_FRAMES",
+      "外部帧向量"
     ],
     "sources": [
       "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
@@ -481,7 +487,9 @@
       "docs/superpowers/specs/2026-10-25-stage5-gap-closure-design.md",
       "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md",
       "docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md",
-      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md"
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
+      "docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md",
+      "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",

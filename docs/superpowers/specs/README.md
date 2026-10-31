@@ -37,6 +37,8 @@ updated: 2026-10-31
 
 ## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
 
+2026-10-31：[S6-M2 大映像帧容量与预算](2026-10-31-stage6-exec-frame-capacity.md)，私有exec≤640页、526页合成文件与失败回收验证；不代表冻结busybox或LibOS运行。
+
 2026-10-31：[S6-M2 按需 ELF 输入与故障回滚](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；149 页上限和 Gate/LibOS 仍未完成。
 
 2026-10-28 裁决：[阶段 6–7 前置裁决（D11–D16）](2026-10-28-stage6-7-release-decisions.md)——白名单冻结、`AT_RANDOM` 兼容字段、多 LibOS 升 7-A 并先做探索原型、SMP 前状态分区、阶段 7 拆九条子轨。裁决不启动阶段 6，也不签署任何阶段。

@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # 页帧、映射、TLB 与 COW
@@ -26,6 +26,11 @@ updated: 2026-10-30
 host memseg/pagewalk、COW、TLB 设计实验 → 阶段1/2 实际页表与帧管理 → M10 匿名内存保护 → M17b-2 COW 页表原语/故障接线 → M17b-4 W6。host 细化实验与内核 COW 执行不能合并为同一证据。
 
 旧 MemorySegment 设计/计划明确由 2026-08-12 细化审查纠偏设计限定证据与术语；2026-08-13 历史工件一致性报告记录了这次校准。host W8 支持仅限 unmap 入口页 guard，不代表完整 W8 抽象投影。
+
+S6-M2 的[大映像帧契约](../../superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md)
+与[失败/容量证据](../../superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)扩展
+私有exec向量及全局预算，验证526页、失败回收与大映像再次exec；普通段仍≤149页，
+不代表完整VFS、冻结busybox、Gate或LibOS运行。
 
 ## 契约、计划与证据入口
 
