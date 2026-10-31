@@ -1634,7 +1634,7 @@ fn exec_call(
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
-    if !(120..=(1 << 20)).contains(&image_len) {
+    if !crate::exec::image_len_ok(image_len) {
         return encode_errno(Errno::Exec);
     }
     if argv_count > 16 || env_count > 16 {

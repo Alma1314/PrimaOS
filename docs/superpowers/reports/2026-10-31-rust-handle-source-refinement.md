@@ -83,3 +83,10 @@ updated: 2026-10-31
 尚未覆盖整个 Rust 槽表的状态写入/最小槽选择/保留区间策略、完整句柄编码、权限/位置/审计、任意后续真实 Rust 操作、unsafe/硬件、并发和机器码。生产 Rust 与抽取 Rust 工具链不同；本切片不证明其编译结果等价。形式结果以可信翻译器及标准库语义正确为前提。
 
 本报告不改阶段退出或签署；下一项是扩大真实槽表源码抽取与状态投影，而不是把已有整表手写模型结果当作已落实到实现。
+
+
+## 主分支合并复核（2026-10-31）
+
+将本轮证明提交 `527f38b`（包含上轮 `59f4d8a` 的阶段1～5整改）与主分支 `2ed0d04` 整合。主分支的阶段6冻结台账/auxv注册表变更保留；`exec.rs`、`rights.rs`、`syscall.rs`、`prima-abi/src/lib.rs`、`servicemgr.rs`、Cargo.lock及prima-user依赖相对该主分支无差异。冲突仅为两个生成目录，按合并后的源文档重新生成。
+
+本次整合实跑：`CARGO_NET_OFFLINE=true cargo test --workspace` 共1062项（含doctest）通过；`cargo xtask lint`（同offline环境）通过；默认源码重新提取/生成物新鲜度/细化定理/全公理审计通过；docs self-test、build、check及`check --base master`通过（341篇文档）。原始日志 `/tmp/prima-merge-{workspace,lint,refinement,docs}.log`。本次没有重跑QEMU或语义mutation（前节保留其原验证范围）。不扩大源码细化的两个方法范围或阶段签署。

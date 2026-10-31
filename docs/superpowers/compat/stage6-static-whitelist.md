@@ -4,7 +4,7 @@ kind: ledger
 authority: frozen-whitelist
 status: frozen-by-decision-d12
 lifecycle: current
-updated: 2026-10-29
+updated: 2026-10-30
 ---
 
 # 阶段 6 静态 ELF 白名单（D12 冻结）
@@ -36,7 +36,7 @@ updated: 2026-10-29
 | `GNU_RELRO` | 存在（覆盖 `.data.rel.ro`/`.got`） | 装载期必须可写，只读化属装载后 `mprotect` |
 | `GNU_STACK` | `RW`（非可执行） | 装载器拒绝可执行栈 |
 | SSP | 开启：2 402 处 `%fs:0x28` | D13：必须提供 `AT_RANDOM` 兼容字段 |
-| 页需求 | 526 页（`1+424+83+18`） | 当前 `MAX_SEGMENT_FRAMES=149` 与 `image_len ≤ 1 MiB` 都不够，见剩余工作 |
+| 页需求 | 526 页（`1+424+83+18`） | 当前 `MAX_SEGMENT_FRAMES=149` 不够（映像字节长度上界已放宽，见[本轮报告](../reports/2026-10-30-stage6-freeze-ledgers.md)），见剩余工作 |
 
 复现命令（宿主）：
 
@@ -77,9 +77,9 @@ LC_ALL=C objdump -d /usr/bin/busybox | grep -c 'fs:0x28'
 | 项 | 状态 |
 |---|---|
 | 白名单定义（D12） | **已冻结** |
-| 装载器解析该制品 | 已成立（2026-10-28 装载切片，`PRIMA_ELF_SAMPLE` 演练，见[装载切片报告](../reports/2026-10-28-stage6-loader-slice.md)） |
+| 装载器解析该制品 | 已成立（2026-10-28 装载切片；2026-10-30 用同一 `sha256` 的二进制重跑 `PRIMA_ELF_SAMPLE` 演练，解析、长度窗口与 526 页页数均按断言复核，见[本轮机械项报告](../reports/2026-10-30-stage6-freeze-ledgers.md)） |
 | 任何成员在本系统运行 | **未发生**（缺 S6-M1 递送与 S6-M3 profile） |
-| 容量缺口 | `image_len ≤ 1 MiB`、`MAX_SEGMENT_FRAMES=149`（需 526 页）、8 页初始栈 |
+| 容量缺口 | `MAX_SEGMENT_FRAMES=149`（需 526 页）与 8 页初始栈；映像**字节**长度上界已由 S6-M2 ① 放宽到 4 MiB，但它不是容量门 |
 
 ## 后继关系
 

@@ -25,7 +25,7 @@ updated: 2026-10-31
 
 ## 跨阶段 / 文档体系
 
-源码细化：[生产 Rust 句柄方法→Lean](2026-10-31-rust-handle-source-refinement.md)，Charon/Aeneas 自动提取、生成物新鲜度、5 条一般定理与真实 Rust mutation；范围限构造/后继值，翻译器为可信边界。
+源码细化：[生产 Rust 句柄方法→Lean](2026-10-31-rust-handle-source-refinement.md)，Charon/Aeneas 自动提取、生成物新鲜度、5 条一般定理与真实 Rust mutation；范围限构造/后继值，翻译器为可信边界。 主分支整合复核见该报告末节。
 
 形式化后继：[有限能力槽表组合证明](2026-10-31-kernel-handle-table-proof.md)，10 条一般 Lean 定理、整表任意序列无复活、真实 Rust 三槽六步回归；不宣称 Rust 源码细化证明。
 
@@ -109,6 +109,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-30 | [2026-10-30-stage6-freeze-ledgers.md](2026-10-30-stage6-freeze-ledgers.md) | S6-M2 机械项：D17 调用号/权限位序冻结台账、单一 `auxv` 键源、映像长度窗口；更正"整块 copy-in"旧判断，非 Gate 接线 |
 | 2026-10-30 | [2026-10-30-stage6-audit-stop-qemu.md](2026-10-30-stage6-audit-stop-qemu.md) | 审计停止裸机验证：七个执行边界的专用 QEMU 注入与停止调用变异拒绝；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-audit-fail-stop.md](2026-10-30-stage6-audit-fail-stop.md) | M1b 审计停止控制器：首次诊断、不可恢复标记、分派/调度/IRQ 接线；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-private-completion-waits.md](2026-10-30-stage6-private-completion-waits.md) | M1b 私有等待基础：真实对象登记、不可警报、代次完成、销毁与独立预算；Gate 尚未接入，非 G1/G2 |
