@@ -10,6 +10,14 @@ pub enum Operation {
     Complete,
     Release,
     Destroy,
+    /// S6-M1/M1b：门控绑定事务。
+    Attach,
+    /// S6-M1/M1b：被门控任务 trap 入队/容量等待。
+    Trap,
+    /// S6-M1/M1b：请求出队并交付给服务者。
+    Deliver,
+    /// S6-M1/M1b：请求终结（答复、中止或孤儿化）。
+    Terminate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

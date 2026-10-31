@@ -9,6 +9,8 @@ use prima_ostd::sync::StaticCell;
 
 #[path = "completion.rs"]
 pub mod completion;
+#[path = "gate.rs"]
+pub mod gate;
 #[path = "gate_audit.rs"]
 pub mod gate_audit;
 #[cfg(feature = "gate-audit-probe")]
@@ -401,6 +403,61 @@ pub enum AuditEvent {
         page_count: u32,
         enabled: bool,
         task_cap: Handle,
+    },
+    /// S6-M1/M1b：门控创建（铸出 Gate 根能力之前）。`service_cookie` 含 Task 代次。
+    GateCreated {
+        gate: u32,
+        service: u32,
+        service_cookie: u64,
+    },
+    /// S6-M1/M1b：一个客户端绑定到门控；`orphan` 是服务授权消失后的返回值。
+    GateAttached {
+        gate: u32,
+        client: u32,
+        client_cookie: u64,
+        orphan: u64,
+    },
+    /// S6-M1/M1b：客户端 trap 被拦下，原始 number/args 按不透明 u64 记录。
+    GateTrapped {
+        gate: u32,
+        request: u32,
+        client_cookie: u64,
+        number: u64,
+        args: [u64; 6],
+        flags: u64,
+    },
+    /// S6-M1/M1b：请求交付给服务者（请求能力已安装）。
+    GateDelivered {
+        gate: u32,
+        request: u32,
+        service: u32,
+    },
+    /// S6-M1/M1b：容量等待者按 FIFO 晋级到可递送队列。
+    GatePromoted {
+        gate: u32,
+        request: u32,
+    },
+    /// S6-M1/M1b：请求终结（reply/abort/孤儿化各有原因）；`value` 为不透明返回值。
+    GateTerminated {
+        gate: u32,
+        request: u32,
+        value: u64,
+        reason: gate::Reason,
+    },
+    /// S6-M1/M1b：固定服务者死亡，门控孤儿化；`requests` 是同时终结的请求数。
+    GateOrphaned {
+        gate: u32,
+        requests: u32,
+    },
+    /// S6-M1/M1b：客户端销毁解除绑定（服务者侧保留 fail-closed 的其余绑定）。
+    GateDetached {
+        gate: u32,
+        client: u32,
+    },
+    /// S6-M1/M1b：请求者销毁时不恢复帧，只撤销请求能力。
+    GateCancelled {
+        gate: u32,
+        request: u32,
     },
 }
 
@@ -1217,6 +1274,10 @@ pub enum ObjectRef {
     Device(u32, DeviceKind),
     /// M15 / COSIR §5.6：通用等待对象。
     WaitObject(u32),
+    /// S6-M1（M1b）：门控对象。
+    Gate(u32),
+    /// S6-M1（M1b）：被拦下的单个请求；终结后句柄全部失效。
+    GateRequest(u32),
 }
 
 impl ObjectRef {
@@ -1229,6 +1290,8 @@ impl ObjectRef {
             ObjectRef::Timer(_) => ObjectKind::Timer,
             ObjectRef::Device(_, kind) => ObjectKind::Device(kind),
             ObjectRef::WaitObject(_) => ObjectKind::WaitObject,
+            ObjectRef::Gate(_) => ObjectKind::Gate,
+            ObjectRef::GateRequest(_) => ObjectKind::GateRequest,
         }
     }
 
@@ -1242,7 +1305,9 @@ impl ObjectRef {
             | Self::ExcSource(id)
             | Self::Timer(id)
             | Self::Device(id, _)
-            | Self::WaitObject(id) => id,
+            | Self::WaitObject(id)
+            | Self::Gate(id)
+            | Self::GateRequest(id) => id,
         }
     }
 }
@@ -4397,6 +4462,13 @@ impl BootstrapState {
             ObjectRef::Timer(id) => self.timers.find(id).is_some(),
             ObjectRef::Device(id, _) => self.devices.find(id).is_some(),
             ObjectRef::WaitObject(id) => self.wait_objects.find(id).is_some(),
+            ObjectRef::Gate(id) => self.gate_tables().find(id).is_some_and(|gate| gate.live),
+            ObjectRef::GateRequest(id) => {
+                let tables = self.gate_tables();
+                tables
+                    .request(id)
+                    .is_some_and(|request| tables.find(request.gate).is_some_and(|gate| gate.live))
+            }
         }
     }
 
@@ -7433,6 +7505,7 @@ impl BootstrapState {
             + self.completion_wait_count(task_id)
             + self.timers_of_recipient_audit_cost(task_id)
             + 2 * self.private_exec_segments.count_ones() as usize
+            + self.gate_cleanup_audit_events(task_id)
     }
 
     /// 既有模型层入口（无地址空间拆除）：`caller` 取一个不可能是任务 id 的值。
@@ -7593,6 +7666,9 @@ impl BootstrapState {
         if !self.can_audit_task_destroy(task_id) {
             return Err(TaskError::AuditFull);
         }
+        // S6-M1/M1b：门控清理与预算同一事务——客户端销毁取消请求且不恢复帧，
+        // 服务者销毁孤儿化门控并以 attach 配置值终结全部未决请求。
+        self.gate_on_task_destroy(task_id);
         // Retire only the official kernel-minted thread root, preserving all
         // delegated descendants and other shared-Process capabilities.
         if self.space_of(task_id) != task_id {
@@ -9208,6 +9284,8 @@ pub fn create_state(
     if let Some(task) = state.tasks.find_mut(INIT_TASK_ID) {
         task.entry = entry;
     }
+    // S6-M1/M1b：门控表存放在静态 arena（实例索引复用审计区段号），不增加结构体尺寸。
+    state.claim_gate_tables();
     // §14 步骤 9 / §13.1：写第一组 Audit 事件。
     state.audit.append(AuditEvent::Bootstrapped);
     state.audit.append(AuditEvent::ObjectCreated {

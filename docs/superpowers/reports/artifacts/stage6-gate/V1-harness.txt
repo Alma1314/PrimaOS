@@ -1,0 +1,6 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running `target/debug/xtask test-vfs V1`
+PASS linux stage5 vfs multi-level path and directory references
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V1 run=1
+PASS qemu bios V1 run=2

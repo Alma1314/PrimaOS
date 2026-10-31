@@ -104,6 +104,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+2026-10-31：[S6-M1/M1b 内核门控对象与请求生命周期](2026-10-31-stage6-gate-lifecycle.md)，attach 预留、trap 入队/容量等待、出队交付、一次性答复、客户端销毁与服务者孤儿化在真实内核状态表上落地并有 10 组 host 反例；未分配 73–78、未接管 trap 入口、无 QEMU G1–G3。
+
 主分支整合：[按需输入、私有容量与冻结台账](2026-10-31-stage6-main-merge.md)，明确长度窗口冲突的取舍与整合验证范围。
 
 2026-10-31：[S6-M2 大映像帧容量与预算](2026-10-31-stage6-exec-frame-capacity.md)，私有exec≤640页、526页合成文件与失败回收验证；不代表冻结busybox或LibOS运行。
@@ -115,6 +117,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-31 | [2026-10-31-stage6-gate-lifecycle.md](2026-10-31-stage6-gate-lifecycle.md) | S6-M1/M1b 内核门控对象与请求生命周期：预留/队列/交付/答复/清理事务、`AuditFull` 停止与 10 组 host 反例；未分配 ABI、未接 trap、非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-freeze-ledgers.md](2026-10-30-stage6-freeze-ledgers.md) | S6-M2 机械项：D17 调用号/权限位序冻结台账、单一 `auxv` 键源、映像长度窗口；更正"整块 copy-in"旧判断，非 Gate 接线 |
 | 2026-10-30 | [2026-10-30-stage6-audit-stop-qemu.md](2026-10-30-stage6-audit-stop-qemu.md) | 审计停止裸机验证：七个执行边界的专用 QEMU 注入与停止调用变异拒绝；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-audit-fail-stop.md](2026-10-30-stage6-audit-fail-stop.md) | M1b 审计停止控制器：首次诊断、不可恢复标记、分派/调度/IRQ 接线；非 G1–G3 |

@@ -1,0 +1,8 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running `target/debug/xtask lint`
+PASS fmt --all --check
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+PASS clippy -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+PASS kernel builds under deny(unsafe_code) for x86_64-unknown-none
+PASS kernel kernel/src has zero `unsafe` (37 files scanned)

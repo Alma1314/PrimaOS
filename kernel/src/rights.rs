@@ -44,6 +44,12 @@ pub enum Right {
     DevDMAR,
     DevDMAW,
     DevInterruptSubscribe,
+    // S6-M1（M1b）：门控对象权利。按 D17 的追加规则只加在末尾（位 31、32），
+    // 既有 0–30 的位号、枚举序与渲染顺序不变。
+    /// 把一个 Task 挂到门控上（`Gate` 对象；另需 `TaskManageVSpace`）。
+    GateAttach,
+    /// 等待/答复请求与代理复制（`Gate` 与 `GateRequest` 对象）。
+    GateServe,
 }
 
 /// §15.2 的设备种类；`ObjectRef::Device(dev, kind)` 随引用携带，供 W2 类型检查。
@@ -56,7 +62,7 @@ pub enum DeviceKind {
 }
 
 /// 全部 Right 的规范枚举顺序（同时是渲染顺序与解析顺序）。
-pub const ALL_RIGHTS: [Right; 31] = [
+pub const ALL_RIGHTS: [Right; 33] = [
     Right::Derive,
     Right::SegMapR,
     Right::SegMapW,
@@ -88,6 +94,8 @@ pub const ALL_RIGHTS: [Right; 31] = [
     Right::DevDMAR,
     Right::DevDMAW,
     Right::DevInterruptSubscribe,
+    Right::GateAttach,
+    Right::GateServe,
 ];
 
 impl Right {
@@ -124,6 +132,8 @@ impl Right {
             Right::DevDMAR => "DevDMAR",
             Right::DevDMAW => "DevDMAW",
             Right::DevInterruptSubscribe => "DevInterruptSubscribe",
+            Right::GateAttach => "GateAttach",
+            Right::GateServe => "GateServe",
         }
     }
 
@@ -147,6 +157,10 @@ pub enum ObjectKind {
     Node,
     /// §5.6 / §4.1：等待对象。
     WaitObject,
+    /// S6-M1：门控对象（固定服务 Task，多个客户端）。
+    Gate,
+    /// S6-M1：单个被拦下的请求（答复后终结）。
+    GateRequest,
     /// §15.2 `Device(DevId, kind)`——按设备种类做 W2 类型检查（本片仅实现 `IOPortRange`）。
     Device(DeviceKind),
 }
@@ -174,6 +188,8 @@ impl ObjectKind {
             ObjectKind::ExcSource => &[Right::ExcSubscribe, Right::ExcSourceDestroy],
             ObjectKind::Node => &[Right::NodeConnect, Right::NodeDestroy],
             ObjectKind::WaitObject => &[Right::WaitWait, Right::WaitSignal, Right::WaitDestroy],
+            ObjectKind::Gate => &[Right::GateAttach, Right::GateServe],
+            ObjectKind::GateRequest => &[Right::GateServe],
             ObjectKind::Device(DeviceKind::MmioRegion) => {
                 &[Right::DevMMIOR, Right::DevMMIOW, Right::DevDestroy]
             }
@@ -509,7 +525,7 @@ mod tests {
     /// 加在末尾（位 31、32）；重排、插入或删除会静默改变既有证据的语义，因此逐项钉死。
     #[test]
     fn right_bit_order_is_frozen_and_only_appendable() {
-        const FROZEN: [&str; 31] = [
+        const FROZEN: [&str; 33] = [
             "Derive",
             "SegMapR",
             "SegMapW",
@@ -541,6 +557,9 @@ mod tests {
             "DevDMAR",
             "DevDMAW",
             "DevInterruptSubscribe",
+            // M1b 追加位 31/32（D17 只允许末尾追加）。
+            "GateAttach",
+            "GateServe",
         ];
         assert_eq!(ALL_RIGHTS.len(), FROZEN.len());
         for (index, (right, name)) in ALL_RIGHTS.iter().zip(FROZEN).enumerate() {
