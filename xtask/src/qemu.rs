@@ -94,6 +94,55 @@ fn fs_write_domain_log(root: &Path, round: u32, text: &str) -> Result<(), String
     .map_err(|e| format!("could not preserve domain witness: {e}"))
 }
 
+pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
+    let output = run_captured(image)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/S6GATE-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|e| format!("could not preserve gate witness: {e}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|e| with_output(e, &output))?;
+    validate_gate_output(&output.stdout).map_err(|e| with_output(e, &output))?;
+    println!(
+        "PASS S6GATE round={round} int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 audit=1"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn gate_witness_rejects_missing_duplicate_failed_or_panicked_records() {
+    let good = "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1\n";
+    assert!(validate_gate_output(good).is_ok());
+    for bad in [
+        String::new(),
+        good.repeat(2),
+        good.replace("fast=1", "fast=0"),
+        good.replace("output_failures=3", "output_failures=2"),
+        good.to_owned() + "PRIMA|v=1|seq=9|event=panic|status=error\n",
+    ] {
+        assert!(validate_gate_output(&bad).is_err());
+    }
+}
+
+fn validate_gate_output(output: &str) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .filter(|line| line.starts_with("S6GATE|"))
+        .collect();
+    if records
+        != [
+            "S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1",
+        ]
+        || output.contains("|event=panic|")
+    {
+        return Err("missing or invalid G1 gate witness".into());
+    }
+    Ok(())
+}
+
 /// Expected terminal failure, distinct from every ordinary success suite. The
 /// panic status alone is insufficient: require the nominated guard's evidence.
 pub(crate) fn run_bios_gate_audit(image: &Path, site: &str, round: u32) -> Result<(), String> {

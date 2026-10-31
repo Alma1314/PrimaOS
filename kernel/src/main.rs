@@ -350,6 +350,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     kernel::bootstrap::gate_audit_probe::set_observer(
                                         audit_probe_record,
                                     );
+                                    #[cfg(feature = "gate-probe")]
+                                    kernel::bootstrap::gate_probe::enter(offset, gate_probe_exit);
+                                    #[cfg(not(feature = "gate-probe"))]
                                     kernel::user::enter();
                                 }
                                 Err(_) => {
@@ -427,4 +430,12 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
         "S6AUDIT|{phase} site={};owner={};required={};used={};reserved={};unchanged=1",
         evidence.site, d.owner, d.required, d.used, d.reserved,
     );
+}
+
+#[cfg(feature = "gate-probe")]
+extern "C" fn gate_probe_exit() -> ! {
+    kernel::bootstrap::gate_probe::verify();
+    serial::write_bytes(b"S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1\n");
+    serial::flush();
+    qemu::exit(qemu::SUCCESS)
 }

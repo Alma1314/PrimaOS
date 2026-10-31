@@ -7,6 +7,7 @@ license = "GPL-3.0-or-later"
 
 [features]
 gate-audit-probe = ["kernel/gate-audit-probe"]
+gate-probe = ["kernel/gate-probe"]
 
 [dependencies]
 prima-abi = { path = "../prima-abi" }

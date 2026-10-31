@@ -262,12 +262,15 @@
       "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
       "docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md",
       "docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md",
+      "docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md",
+      "docs/superpowers/compat/stage6-gate-native-abi.md",
       "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
     ],
     "code": [
       "kernel/src/handle.rs",
       "kernel/src/rights.rs",
       "kernel/src/bootstrap.rs",
+      "kernel/src/gate.rs",
       "kernel/src/syscall.rs",
       "kernel/src/sched.rs",
       "prima-runtime/src/capability.rs",
@@ -284,6 +287,8 @@
       "prima-user/src/domain_probe.rs"
     ],
     "tests": [
+      "kernel/src/gate_probe.rs",
+      "xtask/src/qemu.rs",
       "kernel/src/test_support.rs",
       "xtask/src/protocol.rs",
       "cosir/src/authority/tests.rs",

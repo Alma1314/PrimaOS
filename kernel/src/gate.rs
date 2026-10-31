@@ -6,7 +6,7 @@
 //! `u64`，不比较调用号、不选择 Linux errno（S6-X3）。
 //!
 //! **本切片的边界**：这里只落地对象、预留、队列、一次性答复与清理事务，并用 host 单测钉住；
-//! 尚未分配 73–78 机器 ABI、尚未接管 trap 入口。适配层必须在同一个不可调度区间内调用
+//! 原生 73/74/77/78 与 syscall/int80 入口由 syscall 适配层接线；75/76 留 M1c。适配层在同一个不可调度区间内调用
 //! [`BootstrapState::gate_reply`]（它已写入客户端保存帧的 `rax`），随后才允许调度；
 //! `gate_copy_in/out` 属 M1c。
 //!
@@ -361,6 +361,11 @@ impl BootstrapState {
         })
     }
 
+    pub fn task_is_gated(&self, task: u32) -> bool {
+        let tables = self.gate_tables();
+        tables.binding_count != 0 && self.gate_binding_slot(&tables, task).is_some()
+    }
+
     fn gate_binding_of(&self, tables: &Tables, task: u32) -> Option<BindingRecord> {
         self.gate_binding_slot(tables, task)
             .and_then(|slot| tables.binding(slot))
@@ -391,8 +396,12 @@ impl BootstrapState {
             .is_none_or(|process| self.process_threads(process) <= 1)
     }
 
-    fn can_mint_gate_capability(&self) -> bool {
-        self.slots.normal_free_count() > 0
+    fn can_mint_gate_capability(&self, service: u32) -> bool {
+        self.fork_views
+            .can_expose(self.space_of(service), |handle| {
+                self.slots.check(handle) == SlotState::Live
+            })
+            && self.slots.normal_free_count() > 0
             && self.positions.count < MAX_CAPABILITY_POSITIONS
             && self.can_record_capability()
     }
@@ -475,7 +484,7 @@ impl BootstrapState {
         // 新门控：GateCreated + CapabilityMinted + 服务等待 Reserved + GateAttached + 客户端等待 Reserved。
         // 已有门控：GateAttached + 客户端等待 Reserved。
         let events = if new_gate { 5 } else { 2 };
-        if new_gate && !self.can_mint_gate_capability() {
+        if new_gate && !self.can_mint_gate_capability(caller) {
             return Err(Error::Capacity);
         }
         if !self.gate_completion_quota(if new_gate { 2 } else { 1 }) {
@@ -670,13 +679,9 @@ impl BootstrapState {
         Ok(TrapOutcome::Queued { request: id })
     }
 
-    /// 服务者取下一个请求：队列非空则出队、安装请求能力并返回输出字；否则登记到该门控的
-    /// 私有服务等待对象（不可警报、无期限）。
-    ///
-    /// 适配层必须在调用前验证 96 字节输出范围（含 COW 预备）并在返回 `Delivered` 后立即写入；
-    /// 返回 `Blocked` 时丢弃该计划、让控制调用以「重试」返回。孤儿化且队列为空返回
-    /// [`Error::Stale`]，输出保持不变。
-    pub fn gate_wait(&mut self, service: u32, gate_cap: Handle) -> Result<WaitOutcome, Error> {
+    /// Read-only validation and audit budget, before any output/COW preparation.
+    /// A caller must consume it without scheduling or table/audit mutation.
+    fn gate_wait_plan(&mut self, service: u32, gate_cap: Handle) -> Result<GateRecord, Error> {
         if self.slots.check(gate_cap) != SlotState::Live || !self.cap_target_live(gate_cap) {
             return Err(Error::Stale);
         }
@@ -696,12 +701,49 @@ impl BootstrapState {
         if !gate.live {
             return Err(Error::Stale);
         }
+        let events = if gate.queue_len == 0 {
+            if gate.service_wait.is_none() {
+                return Err(Error::Stale);
+            }
+            2
+        } else {
+            let request = tables
+                .request(gate.queue[gate.queue_head as usize])
+                .ok_or(Error::Stale)?;
+            if request.phase != Phase::Queued {
+                return Err(Error::Stale);
+            }
+            if !self.can_mint_gate_capability(service) {
+                return Err(Error::Capacity);
+            }
+            2 + usize::from(gate.capacity_len > 0)
+        };
+        self.preflight_gate_audit(
+            events,
+            service_cookie,
+            if gate.queue_len == 0 {
+                gate_audit::Operation::Block
+            } else {
+                gate_audit::Operation::Deliver
+            },
+        )
+        .map_err(|_| Error::AuditFull)?;
+        Ok(gate)
+    }
+
+    pub fn gate_wait_preflight(&mut self, service: u32, gate_cap: Handle) -> Result<(), Error> {
+        self.gate_wait_plan(service, gate_cap).map(|_| ())
+    }
+
+    /// Dequeue and install a request token, or block on the reserved service
+    /// wait. The adapter preflights the whole 96-byte output first, writes it
+    /// immediately on Delivered, and discards its physical plan on Blocked.
+    pub fn gate_wait(&mut self, service: u32, gate_cap: Handle) -> Result<WaitOutcome, Error> {
+        let gate = self.gate_wait_plan(service, gate_cap)?;
+        let tables = self.gate_tables();
         if gate.queue_len == 0 {
-            self.preflight_gate_audit(2, service_cookie, gate_audit::Operation::Block)
-                .map_err(|_| Error::AuditFull)?;
-            let wait = gate.service_wait.ok_or(Error::Stale)?;
             let ticket = self
-                .block_completion_wait(wait)
+                .block_completion_wait(gate.service_wait.unwrap())
                 .expect("gate reserved its service wait");
             let mut gate = gate;
             gate.service_ticket = Some(ticket);
@@ -709,20 +751,12 @@ impl BootstrapState {
             self.save_gate_tables(tables);
             return Ok(WaitOutcome::Blocked);
         }
-
         let id = gate.queue[gate.queue_head as usize];
-        let slot = tables.request_slot_of(id).ok_or(Error::Stale)?;
-        let request = tables.slot_request(slot).ok_or(Error::Stale)?;
-        if request.phase != Phase::Queued {
-            return Err(Error::Stale);
-        }
+        let slot = tables
+            .request_slot_of(id)
+            .expect("preflighted queued request");
+        let request = tables.slot_request(slot).unwrap();
         let promote = gate.capacity_len > 0;
-        let events = 2 + usize::from(promote);
-        if !self.can_mint_gate_capability() {
-            return Err(Error::Capacity);
-        }
-        self.preflight_gate_audit(events, service_cookie, gate_audit::Operation::Deliver)
-            .map_err(|_| Error::AuditFull)?;
 
         let request_cap = self
             .mint_root_capability(service, REQUEST_ROOT_RIGHTS, ObjectRef::GateRequest(id))
@@ -1297,6 +1331,18 @@ impl BootstrapState {
     }
 }
 
+/// Single-CPU adapter access. Callers must not schedule between preflight,
+/// output preparation and commit; no user-controlled callback runs here.
+pub(crate) fn with_state<R>(
+    call: impl FnOnce(&mut BootstrapState) -> Result<R, Error>,
+) -> Result<R, Error> {
+    BOOTSTRAP_STATE.with_mut(|slot| call(slot.as_mut().ok_or(Error::Stale)?))
+}
+
+pub fn task_is_gated(task: u32) -> bool {
+    BOOTSTRAP_STATE.with(|slot| slot.as_ref().is_some_and(|state| state.task_is_gated(task)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1345,11 +1391,69 @@ mod tests {
     }
 
     #[test]
+    fn wait_preflight_preserves_queue_token_and_wait_until_output_is_prepared() {
+        let _serial = serial();
+        let mut state = pair();
+        let out = attach(&mut state, 3, 0xdead);
+        for queued in [false, true] {
+            if queued {
+                state.yield_task(2).unwrap();
+                state.schedule_task(3).unwrap();
+                state.gate_trap(3, 7, [9; 6], 1).unwrap();
+                state.schedule_task(2).unwrap();
+            }
+            let before = (
+                state.audit.count,
+                state.slots.live_count(),
+                state.tasks,
+                state.gate_tables().find(out.gate),
+                state.gate_tables().slot_request(out.slot),
+            );
+            state.gate_wait_preflight(2, out.gate_cap).unwrap();
+            assert_eq!(
+                before,
+                (
+                    state.audit.count,
+                    state.slots.live_count(),
+                    state.tasks,
+                    state.gate_tables().find(out.gate),
+                    state.gate_tables().slot_request(out.slot)
+                )
+            );
+        }
+        let reserve = MAX_AUDIT_EVENTS - state.audit.count - 1;
+        assert!(state.audit.reserve(reserve));
+        let before = (
+            state.audit.count,
+            state.slots.live_count(),
+            state.tasks,
+            state.gate_tables().find(out.gate),
+            state.gate_tables().slot_request(out.slot),
+        );
+        assert_eq!(
+            state.gate_wait_preflight(2, out.gate_cap),
+            Err(Error::AuditFull)
+        );
+        assert_eq!(
+            before,
+            (
+                state.audit.count,
+                state.slots.live_count(),
+                state.tasks,
+                state.gate_tables().find(out.gate),
+                state.gate_tables().slot_request(out.slot)
+            )
+        );
+        assert!(state.gate_audit_diagnostic().is_some());
+    }
+
+    #[test]
     fn attach_reserves_waits_and_a_request_slot_atomically() {
         let _serial = serial();
         let mut state = pair();
         let audit = state.audit.count;
         let live = state.slots.live_count();
+        assert!(!state.task_is_gated(3));
         let out = attach(&mut state, 3, 0xdead);
         assert_eq!(
             state.audit.count,
@@ -1357,6 +1461,7 @@ mod tests {
             "GateCreated/Cap/2 reservations/Attached"
         );
         assert_eq!(state.slots.live_count(), live + 1);
+        assert!(state.task_is_gated(3));
         assert_eq!(state.gate_tables().binding_count, 1);
         assert_eq!(state.completion_wait_count(2), 1, "service wait");
         assert_eq!(state.completion_wait_count(3), 1, "client wait");
@@ -1525,6 +1630,7 @@ mod tests {
         );
         // 绑定保留为 fail-closed：再次 trap 得到配置值且不查原生分派。
         state.schedule_task(3).unwrap();
+        assert!(state.task_is_gated(3), "orphan bindings stay fail-closed");
         assert_eq!(
             state.gate_trap(3, 9, [0; 6], 0).unwrap(),
             TrapOutcome::Orphaned { value: 0x111 }
@@ -1559,6 +1665,7 @@ mod tests {
             "请求能力随请求者销毁失效"
         );
         assert_eq!(state.gate_tables().binding_count, 0);
+        assert!(!state.task_is_gated(3));
         assert_eq!(state.gate_tables().find(out.gate).unwrap().bindings, 0);
         assert!(state.gate_well_formed());
     }

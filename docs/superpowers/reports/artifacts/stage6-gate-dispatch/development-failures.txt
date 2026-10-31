@@ -1,0 +1,80 @@
+   Compiling prima-abi v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-abi)
+   Compiling prima-runtime v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-runtime)
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+   Compiling prima-initgen v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-initgen)
+   Compiling prima-user v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-user)
+error[E0599]: no method named `iter` found for struct `AuditLog` in the current scope
+   --> kernel/src/gate_probe.rs:258:34
+    |
+258 |         for event in state.audit.iter() {
+    |                                  ^^^^ method not found in `AuditLog`
+    |
+   ::: kernel/src/bootstrap.rs:468:1
+    |
+468 | pub struct AuditLog {
+    | ------------------- method `iter` not found for this struct
+
+error[E0026]: variant `bootstrap::AuditEvent::TaskStateChanged` does not have a field named `to`
+   --> kernel/src/gate_probe.rs:265:21
+    |
+265 |                     to: TaskStatus::BlockedWait,
+    |                     ^^
+    |                     |
+    |                     variant `bootstrap::AuditEvent::TaskStateChanged` does not have this field
+    |                     help: `bootstrap::AuditEvent::TaskStateChanged` has a field named `status`
+
+Some errors have detailed explanations: E0026, E0599.
+For more information about an error, try `rustc --explain E0026`.
+error: could not compile `kernel` (lib) due to 2 previous errors
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.00s
+     Running `target/debug/xtask test-gate`
+ERROR musl: musl snapshot missing: /home/alma/.codex/worktrees/05b3/PrimaOS/target/musl-1.2.5; restore from musl-snapshot.lock.toml
+ERROR failed to build Prima musl sysroot: /home/alma/.codex/worktrees/05b3/PrimaOS/prima-user/musl/build.sh
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.41s
+     Running `target/debug/xtask lint`
+PASS fmt --all --check
+    Checking prima-abi v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-abi)
+    Checking prima-runtime v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-runtime)
+    Checking prima-initgen v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-initgen)
+    Checking kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+    Checking prima-user v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/prima-user)
+error: using `chunks_exact_mut` with a constant chunk size
+    --> kernel/src/syscall.rs:3971:52
+     |
+3971 |                         for (chunk, word) in bytes.chunks_exact_mut(8).zip(words) {
+     |                                                    ^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks_mut` instead: `as_chunks_mut::<8>().0.iter_mut()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#chunks_exact_to_as_chunks
+     = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: could not compile `kernel` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kernel` (lib) due to 1 previous error
+error: could not compile `kernel` (lib) due to 1 previous error
+error: could not compile `kernel` (lib test) due to 1 previous error
+ERROR `cargo clippy --workspace --all-targets -- -D warnings` failed: exit status: 101
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+error: the loop variable `reg` is used to index `regs`
+   --> kernel/src/gate_probe.rs:206:20
+    |
+206 |         for reg in 0..17 {
+    |                    ^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/master/index.html#needless_range_loop
+    = note: `-D clippy::needless-range-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_range_loop)]`
+help: consider using an iterator and enumerate()
+    |
+206 -         for reg in 0..17 {
+206 +         for (reg, <item>) in regs.iter().enumerate().take(17) {
+    |
+
+error: could not compile `kernel` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `kernel` (lib) due to 1 previous error
+error: could not compile `kernel` (lib) due to 1 previous error

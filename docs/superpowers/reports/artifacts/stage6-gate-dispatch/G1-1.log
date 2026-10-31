@@ -1,0 +1,36 @@
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 25198 }, kernel: Region { start: 1000000, len: 7bd390 }, ramdisk: Region { start: 17be000, len: 6b45c0 }, config_file: Region { start: 1e725c0, len: 0 }, last_used_addr: 1e725bf, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12114, memory_map_len: 7 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 8115088,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 2a61c, mem_size: 2a61c, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 2a620, virtual_addr: 2b620, physical_addr: 2b620, file_size: 104a35, mem_size: 104a35, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 12f058, virtual_addr: 131058, physical_addr: 131058, file_size: 146e8, mem_size: 14fa8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 144000, virtual_addr: 147000, physical_addr: 147000, file_size: 57000, mem_size: 3e9de8, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x10000033250
+INFO : Creating GDT at PhysAddr(0x2267000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x10000033250)
+PRIMA|v=1|seq=1|event=boot_start|status=ok
+PRIMA|v=1|seq=2|event=serial_ready|status=ok
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=26883;image=1982;free=26883;regions=3;kstart=0x1000000;kend=0x17be000
+PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x30000000000;va=0x30000000000
+PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000
+PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok
+PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3
+PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present
+[pf] cr0.wp=1
+PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=8115088;image_frames=1982;free_frames=26883;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy
+PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection
+PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000
+S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;audit=1

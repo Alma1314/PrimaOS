@@ -13,11 +13,12 @@
 |---|---|---|
 | [Repository Guidelines](../../AGENTS.md) | current | `AGENTS.md` |
 
-## compatibility（2）
+## compatibility（3）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [阶段 5 兼容状态台账与历史基线](../superpowers/compat/compat-state.md) | unclassified | `docs/superpowers/compat/compat-state.md` |
+| [阶段 6 Gate 原生机器入口台账](../superpowers/compat/stage6-gate-native-abi.md) | current | `docs/superpowers/compat/stage6-gate-native-abi.md` |
 | [阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo）](../superpowers/compat/symbol-trace.md) | unclassified | `docs/superpowers/compat/symbol-trace.md` |
 
 ## guide（5）
@@ -90,7 +91,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（194）
+## report（195）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -285,6 +286,7 @@
 | [阶段 1～5 复核与整改](../superpowers/reports/2026-10-31-stage1-5-regression-remediation.md) | historical | `docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md` |
 | [S6-M2：526 页映像、额度失败与大映像再次 exec](../superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md` |
 | [S6-M1/M1b 最后服务授权丢失钩子](../superpowers/reports/2026-10-31-stage6-gate-authority-loss.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md` |
+| [S6-M1/M1b trap 接线与 G1 裸机见证](../superpowers/reports/2026-10-31-stage6-gate-dispatch.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md` |
 | [S6-M1/M1b 内核门控对象与请求生命周期](../superpowers/reports/2026-10-31-stage6-gate-lifecycle.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md` |
 | [阶段6主分支整合：输入、容量与冻结台账](../superpowers/reports/2026-10-31-stage6-main-merge.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-main-merge.md` |
 | [S6-M2：按需 ELF 输入与 exec 失败退栈回收](../superpowers/reports/2026-10-31-stage6-streamed-elf-input.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md` |

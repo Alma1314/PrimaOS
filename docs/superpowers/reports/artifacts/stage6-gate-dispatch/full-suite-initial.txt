@@ -1,0 +1,313 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running `target/debug/xtask test`
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 2.323s
+
+OK
+PASS linux stage5 fd dup/getpid references
+PASS linux stage5 C main exits 37/2/3, streams h/i plus xyz, passes file API and stdio probes
+PASS linux sbase echo E1-E6 stdout/exit references
+PASS linux sbase cat/ls references
+PASS linux stage5 startup references
+PASS linux stage5 time clock/nanosleep references
+PASS linux stage5 fd dup/getpid references
+PASS linux stage5 vfs multi-level path and directory references
+PASS linux stage5 symlink/rename/fchdir references
+PASS linux stage5 vfs3 references
+PASS linux stage5 file_ext references
+FAIL Linux N1: Linux stage5 net mismatch: exit Some(1), stdout "NET|pair=0;zero=0;large=0;drop=0;reuse=0;badfam=0;fork=0;interrupt=0;cancel=0;restart=0;closed=0|ok=0;err=1\n", expected exit 0, stdout "NET|pair=1;zero=1;large=1;drop=1;reuse=1;badfam=1;fork=1;interrupt=1;cancel=1;restart=1;closed=1|ok=1;err=0\n"
+PASS linux stage5 fork/wait references
+PASS linux exec-linux stdout/exit references
+PASS linux execve-linux stdout/exit references
+PASS linux stage5 signal references
+PASS linux stage5 sigaction references
+PASS linux stage5 pthread references
+PASS linux stage5 tty input references
+PASS linux stage5 statx/chdir/getcwd references
+PASS linux stage5 mkdir/rmdir/unlink references
+PASS linux stage5 mmap/munmap/mprotect references
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS build kernel
+PASS image bios
+PASS image uefi
+PASS qemu bios run=1
+PASS qemu bios run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E1 run=1
+PASS qemu bios E1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E2 run=1
+PASS qemu bios E2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E3 run=1
+PASS qemu bios E3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E4 run=1
+PASS qemu bios E4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E5 run=1
+PASS qemu bios E5 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E6 run=1
+PASS qemu bios E6 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios A2 run=1
+PASS qemu bios A2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios T1 run=1
+PASS qemu bios T1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios F1 run=1
+PASS qemu bios F1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V1 run=1
+PASS qemu bios V1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V2 run=1
+PASS qemu bios V2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V3 run=1
+PASS qemu bios V3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V4 run=1
+PASS qemu bios V4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios N1 run=1
+PASS qemu bios N1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W1 run=1
+PASS qemu bios W1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W2 run=1
+PASS qemu bios W2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W3 run=1
+PASS qemu bios W3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W6 run=1
+PASS qemu bios W6 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W8 run=1
+PASS qemu bios W8 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W9 run=1
+PASS qemu bios W9 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+FAIL W7: BIOS W7 run 1 failed: QEMU timed out after 30s; QEMU child terminated
+stdout:
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 25198 }, kernel: Region { start: 1000000, len: 795228 }, ramdisk: Region { start: 1796000, len: 6ae7dd }, config_file: Region { start: 1e447dd, len: 0 }, last_used_addr: 1e447dc, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12114, memory_map_len: 7 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 7950888,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 28d44, mem_size: 28d44, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 28d50, virtual_addr: 29d50, physical_addr: 29d50, file_size: fc5c5, mem_size: fc5c5, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 125318, virtual_addr: 127318, physical_addr: 127318, file_size: 13888, mem_size: 13ce8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 139000, virtual_addr: 13c000, physical_addr: 13c000, file_size: 57000, mem_size: 3ea060, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x1000002ace0
+INFO : Creating GDT at PhysAddr(0x2239000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x1000002ace0)
+PRIMA|v=1|seq=1|event=boot_start|status=ok
+PRIMA|v=1|seq=2|event=serial_ready|status=ok
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=26929;image=1942;free=26929;regions=3;kstart=0x1000000;kend=0x1796000
+PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x30000000000;va=0x30000000000
+PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000
+PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok
+PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3
+PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present
+[pf] cr0.wp=1
+PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=7950888;image_frames=1942;free_frames=26929;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy
+PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection
+PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000
+EXEC|exec=1;wait=1;bad=1;stream=1;large=1|ok=1;err=0
+
+ECHO|status=0;len=53;hash=1316587575
+PRIMA|v=1|seq=12|event=user_cow_ready|status=ok|data=va=0xa0000002000;err=0x7;class=write_protection;shared0=0xc0ffee0000000000;private0=0x5a5a1234deadbeef;private1=0xc0ffee0000000001;receipt=0x5a5a1234deadbeef
+PRIMA|v=1|seq=13|event=syscall_ready|status=ok|data=calls=15;cs=0x33;cs_all=1;echo_ret=0xfedc45677654cdef;sum_ret=0x3f3f3f3f3f3f3f3f;copy_ret=0x5a5a1234deadbeef;fault_ret=0xfffffffffffffff2;invalid_ret=0xffffffffffffffea;bad_ret=0xffffffffffffffda;receipt0=0x5a5a1234deadbeef;receipt1=0xfedc45677654cdef;receipt2=0x3f3f3f3f3f3f3f3f;receipt3=0x5a5a1234deadbeef;receipt4=0xfffffffffffffff2;receipt5=0xffffffffffffffea;receipt6=0xffffffffffffffda
+PRIMA|v=1|seq=14|event=syscall_auth_ready|status=ok|data=cs_all=1;granted_ret=0x100000001;denied_ret=0xfffffffffffffff3;unknown_ret=0xfffffffffffffffe;receipt_granted=0x100000001;receipt_denied=0xfffffffffffffff3;receipt_unknown=0xfffffffffffffffe
+PRIMA|v=1|seq=15|event=exc_ready|status=ok|data=cs_all=1;sub_ret=0x1;dup_ret=0xfffffffffffffff3;kind_ret=0xffffffffffffffea;sub2_ret=0x2;unsub_ret=0x1;unsub2_ret=0xfffffffffffffff3;receipt_sub=0x1;receipt_dup=0xfffffffffffffff3;receipt_kind=0xffffffffffffffea;receipt_sub2=0x2;receipt_unsub=0x1;receipt_unsub2=0xfffffffffffffff3;audit_created=3;audit_subscribed=4;audit_unsubscribed=1
+PRIMA|v=1|seq=16|event=exc_pending_ready|status=ok|data=delivered=1;pending=1;message_id=1;payload=0x10001;task_ready_after=1;audit_raised=1
+PRIMA|v=1|seq=17|event=syscall_fast_ready|status=ok|data=cs=0x33;num=0x1;arg=0xfedcba987654321;ret=0xf012cba9789a4321;receipt=0xf012cba9789a4321;efer_sce=1;star=0x20000800000000;fmask=0x700;lstar_ok=1;stack_canary=1;stack_guard=1
+PRIMA|v=1|seq=18|event=multitask_ready|status=ok|data=cs1_before=0x33;cs1_after=0x33;cs2=0x33;task1_before=0x1;task1_after=0x1;task2=0x2;switches=0x2;task2_auth=0xfffffffffffffff3;task2_sub=0xfffffffffffffff3;receipt1_before=0x1;receipt1_yield=0x0;receipt1_after=0x1;receipt2_id=0x2;receipt2_auth=0xfffffffffffffff3;receipt2_sub=0xfffffffffffffff3
+PRIMA|v=1|seq=19|event=exc_wait_ready|status=ok|data=cs_wait=0x33;cs_trap=0x33;delivered=1;pending=1;woken=1;payload=0x20002;blocks=1;wait_receipt=0x20002;trap_receipt=0x1
+PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1
+PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3
+PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0
+PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;
+stderr:
+
+
+BIOS W7 run 2 failed: QEMU timed out after 30s; QEMU child terminated
+stdout:
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 25198 }, kernel: Region { start: 1000000, len: 795228 }, ramdisk: Region { start: 1796000, len: 6ae7dd }, config_file: Region { start: 1e447dd, len: 0 }, last_used_addr: 1e447dc, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12114, memory_map_len: 7 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 7950888,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 28d44, mem_size: 28d44, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 28d50, virtual_addr: 29d50, physical_addr: 29d50, file_size: fc5c5, mem_size: fc5c5, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 125318, virtual_addr: 127318, physical_addr: 127318, file_size: 13888, mem_size: 13ce8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 139000, virtual_addr: 13c000, physical_addr: 13c000, file_size: 57000, mem_size: 3ea060, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x1000002ace0
+INFO : Creating GDT at PhysAddr(0x2239000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x1000002ace0)
+PRIMA|v=1|seq=1|event=boot_start|status=ok
+PRIMA|v=1|seq=2|event=serial_ready|status=ok
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=26929;image=1942;free=26929;regions=3;kstart=0x1000000;kend=0x1796000
+PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x30000000000;va=0x30000000000
+PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000
+PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok
+PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3
+PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present
+[pf] cr0.wp=1
+PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=7950888;image_frames=1942;free_frames=26929;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy
+PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection
+PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000
+EXEC|exec=1;wait=1;bad=1;stream=1;large=1|ok=1;err=0
+
+ECHO|status
+stderr:
+
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+FAIL W7b: BIOS W7b run 1 failed: unexpected QEMU exit code: expected 33, got 0; panic exit code is 35
+stdout:
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 25198 }, kernel: Region { start: 1000000, len: 795228 }, ramdisk: Region { start: 1796000, len: 6c051f }, config_file: Region { start: 1e5651f, len: 0 }, last_used_addr: 1e5651e, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12114, memory_map_len: 7 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 7950888,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 28d44, mem_size: 28d44, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 28d50, virtual_addr: 29d50, physical_addr: 29d50, file_size: fc5c5, mem_size: fc5c5, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 125318, virtual_addr: 127318, physical_addr: 127318, file_size: 13888, mem_size: 13ce8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 139000, virtual_addr: 13c000, physical_addr: 13c000, file_size: 57000, mem_size: 3ea060, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x1000002ace0
+INFO : Creating GDT at PhysAddr(0x224b000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x1000002ace0)
+PRIMA|v=1|seq=1|event=boot_start|status=ok
+PRIMA|v=1|seq=2|event=serial_ready|status=ok
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=26911;image=1942;free=26911;regions=3;kstart=0x1000000;kend=0x1796000
+PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x30000000000;va=0x30000000000
+PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000
+PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok
+PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3
+PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present
+[pf] cr0.wp=1
+PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=7950888;image_frames=1942;free_frames=26911;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy
+PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection
+PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000
+EXECVE|read=1
+stderr:
+
+
+BIOS W7b run 2 failed: unexpected QEMU exit code: expected 33, got 0; panic exit code is 35
+stdout:
+INFO : Framebuffer info: FrameBufferInfo { byte_len: 2764800, width: 1280, height: 720, pixel_format: Bgr, bytes_per_pixel: 3, stride: 1280 }
+INFO : 4th Stage
+INFO : BiosInfo { stage_4: Region { start: 130000, len: 25198 }, kernel: Region { start: 1000000, len: 795228 }, ramdisk: Region { start: 1796000, len: 6c051f }, config_file: Region { start: 1e5651f, len: 0 }, last_used_addr: 1e5651e, framebuffer: BiosFramebufferInfo { region: Region { start: fd000000, len: 2a3000 }, width: 500, height: 2d0, bytes_per_pixel: 3, stride: 500, pixel_format: Bgr }, memory_map_addr: 12114, memory_map_len: 7 }
+INFO : BIOS boot
+INFO : Elf file loaded at Pointer {
+    addr: 0x0000000001000000,
+    metadata: 7950888,
+}
+INFO : virtual_address_offset: 0x10000000000
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(4), offset: 0, virtual_addr: 0, physical_addr: 0, file_size: 28d44, mem_size: 28d44, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(5), offset: 28d50, virtual_addr: 29d50, physical_addr: 29d50, file_size: fc5c5, mem_size: fc5c5, align: 1000 })
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 125318, virtual_addr: 127318, physical_addr: 127318, file_size: 13888, mem_size: 13ce8, align: 1000 })
+INFO : Mapping bss section
+INFO : Handling Segment: Ph64(ProgramHeader64 { type_: Ok(Load), flags: Flags(6), offset: 139000, virtual_addr: 13c000, physical_addr: 13c000, file_size: 57000, mem_size: 3ea060, align: 1000 })
+INFO : Mapping bss section
+INFO : Entry point at: 0x1000002ace0
+INFO : Creating GDT at PhysAddr(0x224b000)
+INFO : Map framebuffer
+INFO : Map physical memory
+INFO : Allocate bootinfo
+INFO : Create Memory Map
+INFO : Create bootinfo
+INFO : Jumping to kernel entry point at VirtAddr(0x1000002ace0)
+PRIMA|v=1|seq=1|event=boot_start|status=ok
+PRIMA|v=1|seq=2|event=serial_ready|status=ok
+PRIMA|v=1|seq=3|event=memory_ready|status=ok|data=usable=26911;image=1942;free=26911;regions=3;kstart=0x1000000;kend=0x1796000
+PRIMA|v=1|seq=4|event=physical_map_ready|status=ok|data=offset=0x30000000000;va=0x30000000000
+PRIMA|v=1|seq=5|event=page_table_ready|status=ok|data=translated=0x1000000
+PRIMA|v=1|seq=6|event=gdt_tss_ready|status=ok
+PRIMA|v=1|seq=7|event=trap_ready|status=ok|data=seen=3
+PRIMA|v=1|seq=8|event=page_fault_ready|status=ok|data=addr=0x40000;err=0x0;class=not_present
+[pf] cr0.wp=1
+PRIMA|v=1|seq=9|event=bootstrap_ready|status=ok|data=task=1;caps=3;image_cap=0x100000001;namespace_cap=0x100000002;task_cap=0x100000003;image_base=0x10000000000;image_len=7950888;image_frames=1942;free_frames=26911;image_rights=Derive,SegMapR,SegMapX,SegDestroy;namespace_rights=Derive,NsResolve,NsBind,NsUnbind,NsMount,NsUnmount,NsDestroy;task_rights=Derive,TaskSend,TaskManageVSpace,TaskDestroy
+PRIMA|v=1|seq=10|event=vspace_ready|status=ok|data=va=0x8000000000;frame_a=0x0;frame_b=0x1000;read_before=0xaaaa000011112222;stale_read=0xaaaa000011112222;read_after=0xbbbb000033334444;translated=0x1000;wp_addr=0x8000000000;wp_err=0x3;class=write_protection
+PRIMA|v=1|seq=11|event=cow_ready|status=ok|data=va=0x80000000000;shared=0x5000;private=0x9000;err=0x3;class=write_protection;shared0=0xc0ffee0000000000;private0=0x80000000000;private1=0xc0ffee0000000001;private_last=0xc0ffee00000001ff;read_back=0x80000000000
+EXECVE|read=1
+stderr:
+
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W4 run=1
+PASS qemu bios W4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W5 run=1
+PASS qemu bios W5 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios I1 run=1
+PASS qemu bios I1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios M1 run=1
+PASS qemu bios M1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios D1 run=1
+PASS qemu bios D1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios A1 run=1
+PASS qemu bios A1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios C1 run=1
+PASS qemu bios C1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L1 run=1
+PASS qemu bios L1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L2 run=1
+PASS qemu bios L2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L3 run=1
+PASS qemu bios L3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios R1 run=1
+PASS qemu bios R1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios R2 run=1
+PASS qemu bios R2 run=2
+FAIL R3: R3 Linux reference: Output { status: ExitStatus(unix_wait_status(6)), stdout: "", stderr: "\nthread 'main' (5403) panicked at /home/alma/.codex/worktrees/05b3/PrimaOS/prima-user/rust-probe/src/posix.rs:88:49:\ncalled `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: \"Operation not permitted\" }\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n" }
+ERROR full BIOS suite: 4 failed groups/checks; details in target/prima-os/full-suite-errors.log

@@ -137,6 +137,19 @@ impl ForkViews {
         }
     }
 
+    /// Preflight installing one newly minted token without changing the view.
+    pub fn can_expose(&self, space: u32, mut live: impl FnMut(Handle) -> bool) -> bool {
+        !self.enabled(space)
+            || (1..MAX_CAPABILITY_SLOTS).any(|slot| {
+                self.get(space, slot).is_some_and(|entry| {
+                    entry.token.is_zero() && entry.generation != 0
+                        || !entry.token.is_zero()
+                            && !live(entry.token)
+                            && entry.generation != u32::MAX
+                })
+            })
+    }
+
     pub fn expose(
         &mut self,
         space: u32,
@@ -186,6 +199,50 @@ mod tests {
                 Handle::ZERO
             },
         )
+    }
+
+    #[test]
+    fn new_token_preflight_respects_exhausted_local_generations_without_mutation() {
+        let mut views = ForkViews::claim();
+        assert!(views.initialize(2, 1, seed));
+        let token = Handle::new(5, 1).unwrap();
+        for slot in 1..MAX_CAPABILITY_SLOTS {
+            views.set(
+                2,
+                slot,
+                LocalSlot {
+                    generation: 0,
+                    token: Handle::ZERO,
+                },
+            );
+        }
+        let revision = views.revision;
+        assert!(!views.can_expose(2, |_| false));
+        assert_eq!(views.revision, revision);
+        assert_eq!(views.expose(2, token, |_| false), Handle::ZERO);
+        views.set(
+            2,
+            1,
+            LocalSlot {
+                generation: u32::MAX,
+                token,
+            },
+        );
+        assert!(!views.can_expose(2, |_| false));
+        views.set(
+            2,
+            1,
+            LocalSlot {
+                generation: u32::MAX - 1,
+                token,
+            },
+        );
+        assert!(views.can_expose(2, |_| false));
+        assert!(
+            !views
+                .expose(2, Handle::new(6, 1).unwrap(), |_| false)
+                .is_zero()
+        );
     }
 
     #[test]

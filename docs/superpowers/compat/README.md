@@ -4,15 +4,16 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-27
+updated: 2026-10-31
 ---
 
 # 兼容性台账索引
 
-本目录保存阶段 5 的**兼容性状态台账**：冻结 profile 的 API 行、符号级状态和已知偏差。状态以最新报告与 [`Prima OS 实现阶段.md`](../../../Prima%20OS%20实现阶段.md) 为准。
+本目录保存**兼容性状态与有界机器入口台账**：冻结 profile 的 API 行、符号追溯、原生入口号和已知偏差。状态以最新报告与 [`Prima OS 实现阶段.md`](../../../Prima%20OS%20实现阶段.md) 为准。
 
 | 文档 | 标题 |
 |---|---|
+| [stage6-gate-native-abi.md](stage6-gate-native-abi.md) | 阶段6实验性Gate原生入口（73/74/77/78，75/76未分配） |
 | [stage6-static-whitelist.md](stage6-static-whitelist.md) | 阶段 6 静态 ELF 白名单（D12 冻结；契约非实现状态） |
 | [compat-state.md](compat-state.md) | 阶段5当前子集状态与历史基线（按章节区分） |
 | [stage5-working-api.md](stage5-working-api.md) | 当前工作逐入口表；运行范围见本轮报告，不升级为完整POSIX支持 |

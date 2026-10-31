@@ -24,6 +24,10 @@ fn run() -> Result<(), String> {
         return Err("gate-audit-probe images are only for test-gate-audit".to_owned());
     }
 
+    if cfg!(feature = "gate-probe") && command != "test-gate" {
+        return Err("gate-probe images are only for test-gate".to_owned());
+    }
+
     // 聚焦测试先编译 Linux 参考程序，不能依赖此前构建镜像创建输出目录。
     if command == "test" || command.starts_with("test-") {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +38,17 @@ fn run() -> Result<(), String> {
     }
 
     match command.as_str() {
+        "test-gate" => {
+            require_no_args(&rest)?;
+            if !cfg!(feature = "gate-probe") {
+                return Err("use --features gate-probe".into());
+            }
+            let images = build_and_report()?;
+            for round in 1..=2 {
+                qemu::run_bios_gate(&images.bios, round)?;
+            }
+            Ok(())
+        }
         "test-gate-audit" => {
             require_no_args(&rest)?;
             let site = gate_audit::selected_site()?;
@@ -634,6 +649,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 fn usage() -> String {
     "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      cargo run -p xtask --features gate-probe -- test-gate\n\
      \x20      PRIMA_GATE_AUDIT_SITE=<site> cargo run -p xtask --features gate-audit-probe -- test-gate-audit\n\
      \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
      \x20      cargo xtask test-rust [R1|R2|R3]\n\

@@ -1,0 +1,13 @@
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.88s
+     Running `target/debug/xtask lint`
+PASS fmt --all --check
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+    Checking xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.08s
+PASS clippy -D warnings
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.31s
+PASS kernel builds under deny(unsafe_code) for x86_64-unknown-none
+PASS kernel kernel/src has zero `unsafe` (38 files scanned)

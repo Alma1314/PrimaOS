@@ -42,16 +42,17 @@ pub use prima_abi::syscall::{
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT,
     SYS_DEV_IRQ_CREATE, SYS_DEV_IRQ_MASK, SYS_ECHO, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE,
     SYS_EXC_WAIT, SYS_EXEC_HANDOFF, SYS_EXEC_REPLACE, SYS_EXEC_REPLACE_ENV, SYS_FORK,
-    SYS_FORK_TRANSACTION, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
-    SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
-    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID,
-    SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL,
-    SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
-    SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE,
-    SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
-    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL,
-    SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS,
-    SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
+    SYS_FORK_TRANSACTION, SYS_GATE_ABORT, SYS_GATE_ATTACH, SYS_GATE_REPLY, SYS_GATE_WAIT,
+    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP,
+    SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND,
+    SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID, SYS_PROCESS_TERMINATE, SYS_RECV,
+    SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE,
+    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO, SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE,
+    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP,
+    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
+    SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL, SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE,
+    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD,
+    SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -1886,6 +1887,11 @@ fn sigreturn_call() -> u64 {
 /// Called on every scheduler return after selecting root, TLS and FPU state.
 /// A wait interrupted by a restartable upcall replays the original native trap.
 pub fn prepare_signal_resume(task: u32, mut frame: SretFrame) -> Option<SretFrame> {
+    // Gate v1 retains signals without delivering native frames or replaying
+    // opaque client numbers, including after reply and on orphan bindings.
+    if bootstrap::gate::task_is_gated(task) {
+        return None;
+    }
     let blocked = BLOCKED_CALL.with_mut(|calls| calls[task as usize].take());
     let interrupted =
         UPCALL_INTERRUPTED.with_mut(|calls| core::mem::take(&mut calls[task as usize]));
@@ -3893,7 +3899,7 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     ));
     let _ = bootstrap::take_wait_result(current);
 
-    let ret = serve(num, &args);
+    let ret = serve(num, &args, 1);
     bootstrap::gate_audit::enforce_stop("int80-return");
     maybe_deliver_signals(ret);
 
@@ -3913,13 +3919,135 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     ret
 }
 
+/// Native Gate controls. Every unused argument is required to be zero.
+fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
+    use bootstrap::gate::{self, WaitOutcome};
+    let result = (|| -> Result<u64, Errno> {
+        let used = match num {
+            SYS_GATE_ATTACH | SYS_GATE_WAIT => 3,
+            _ => 2,
+        };
+        if args[used..].iter().any(|&arg| arg != 0) {
+            return Err(Errno::Invalid);
+        }
+        let task = sched::current();
+        let cap = decode_caller_handle(args[0]).map_err(auth_errno)?;
+        match num {
+            SYS_GATE_ATTACH => {
+                let other = if args[1] == 0 {
+                    Handle::ZERO
+                } else {
+                    decode_caller_handle(args[1]).map_err(auth_errno)?
+                };
+                // Check the actual hardware root as well as Process membership.
+                let client = bootstrap::task_of_cap(cap).ok_or(Errno::Access)?;
+                let root = sched::root(client).ok_or(Errno::Fault)?;
+                if (1..sched::MAX_TASKS as u32).any(|id| {
+                    id != client
+                        && bootstrap::task_status(id).is_some()
+                        && sched::root(id) == Some(root)
+                }) {
+                    return Err(Errno::Again);
+                }
+                gate::with_state(|state| state.gate_attach(task, cap, other, args[2]))
+                    .map(|outcome| {
+                        let local = encode_caller_handle(outcome.gate_cap);
+                        assert_ne!(local, 0, "preflighted local Gate handle capacity");
+                        local
+                    })
+                    .map_err(gate_errno)
+            }
+            SYS_GATE_WAIT => {
+                if args[1] & 7 != 0 || args[2] != gate::OUTPUT_BYTES {
+                    return Err(Errno::Invalid);
+                }
+                gate::with_state(|state| state.gate_wait_preflight(task, cap))
+                    .map_err(gate_errno)?;
+                // Do not retain this physical plan across a blocked wait.
+                let output = prepare_task_output(task, args[1], gate::OUTPUT_BYTES as usize)?;
+                match gate::with_state(|state| state.gate_wait(task, cap)).map_err(gate_errno)? {
+                    delivered @ WaitOutcome::Delivered { .. } => {
+                        let mut bytes = [0; gate::OUTPUT_BYTES as usize];
+                        let mut words = delivered.words().unwrap();
+                        words[2] =
+                            encode_caller_handle(bootstrap::decode_handle(words[2]).unwrap());
+                        assert_ne!(words[2], 0, "preflighted local handle capacity");
+                        for (chunk, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+                            chunk.copy_from_slice(&word.to_le_bytes());
+                        }
+                        let (_, offset) =
+                            crate::cow::root_and_offset().expect("prepared output root");
+                        output.write(&bytes, |phys| phys_to_virt(phys, offset));
+                        Ok(0)
+                    }
+                    WaitOutcome::Blocked => {
+                        let mut frame = current_context();
+                        // Both native entry instructions are two bytes. Retry
+                        // validates the current root/output after service wake.
+                        frame.rip = frame.rip.checked_sub(2).expect("native wait instruction");
+                        frame.rax = SYS_GATE_WAIT;
+                        sched::set_frame(task, frame);
+                        sched::block_current()
+                    }
+                }
+            }
+            _ => gate::with_state(|state| {
+                state.gate_reply(task, cap, args[1], num == SYS_GATE_ABORT)
+            })
+            .map(|_| 0)
+            .map_err(gate_errno),
+        }
+    })();
+    // AuditFull is terminal, never an errno returned to either participant.
+    bootstrap::gate_audit::enforce_stop("gate-control");
+    result.unwrap_or_else(encode_errno)
+}
+
+const fn gate_errno(error: bootstrap::gate::Error) -> Errno {
+    use bootstrap::gate::Error;
+    match error {
+        Error::Denied => Errno::Access,
+        Error::Stale => Errno::NoEnt,
+        Error::Busy => Errno::Again,
+        Error::Capacity => Errno::NoSpace,
+        Error::AuditFull => Errno::NoSpace, // consumed by enforce_stop above
+    }
+}
+
+// Keep the frozen frame off native dispatch's stack: exec has a deep loader
+// path on the same guarded 32 KiB stack. Only Gate clients need this snapshot.
+#[inline(never)]
+fn gate_client_call(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
+    let task = sched::current();
+    let frame = current_context();
+    let outcome = bootstrap::gate::with_state(|state| state.gate_trap(task, num, *args, flags));
+    bootstrap::gate_audit::enforce_stop("gate-trap");
+    match outcome {
+        Ok(bootstrap::gate::TrapOutcome::Queued { .. }) => {
+            sched::set_frame(task, frame);
+            sched::block_current()
+        }
+        Ok(bootstrap::gate::TrapOutcome::Orphaned { value }) => value,
+        other => panic!("bound gate trap could not commit: {other:?}"),
+    }
+}
+
 /// 服务分派（`int 0x80` 与 `syscall` 快路径共用），不含进入记录。
 ///
 /// [`SYS_YIELD`] 会切走当前任务、不返回给调用者，故必须在 `dispatch_plain` 之前分支。
-fn serve(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
+fn serve(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
     bootstrap::gate_audit::enforce_stop("dispatch");
+    // Intercept before every native number, including zero and Gate controls.
+    if bootstrap::gate::task_is_gated(sched::current()) {
+        return gate_client_call(num, args, flags);
+    }
     crate::irq::retry_pending();
-    if num == SYS_COPY_IN {
+    if matches!(
+        num,
+        SYS_GATE_ATTACH | SYS_GATE_WAIT | SYS_GATE_REPLY | SYS_GATE_ABORT
+    ) {
+        gate_control_call(num, args)
+    } else if num == SYS_COPY_IN {
         match copy_in(args[0], args[1]) {
             Ok(value) => value,
             Err(errno) => encode_errno(errno),
@@ -4116,7 +4244,7 @@ pub extern "C" fn handle_fast(frame: AbiFrame) -> u64 {
         i += 1;
     }
     let cs = frame.cs();
-    let ret = serve(num, &args);
+    let ret = serve(num, &args, 0);
     bootstrap::gate_audit::enforce_stop("fast-return");
     maybe_deliver_signals(ret);
     // 记录指定的 echo 快路径见证，而不让后来运行的服务 Runtime syscall 覆盖它。

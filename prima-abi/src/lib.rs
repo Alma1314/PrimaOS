@@ -292,6 +292,14 @@ pub mod syscall {
         SYS_DEV_IRQ_MASK = 71,
         /// Block the current Task until a physical monotonic tick deadline; 1=elapsed.
         SYS_TASK_WAIT_DEADLINE = 72,
+        /// Bind a Ready private Task to an OS-neutral synchronous Gate.
+        SYS_GATE_ATTACH = 73,
+        /// Deliver a request into a 96-byte, 8-byte-aligned output record.
+        SYS_GATE_WAIT = 74,
+        /// Complete a Delivered request, changing only the client's rax.
+        SYS_GATE_REPLY = 77,
+        /// Complete as aborted; the value remains an opaque u64.
+        SYS_GATE_ABORT = 78,
     }
 
     /// 按号查名称；未实现、保留号或越界号返回 `None`。
@@ -522,10 +530,19 @@ mod tests {
     /// 逐号钉死：任何重编号、漏登记或提前预留都会在这里失败。
     #[test]
     fn numbers_match_the_frozen_d17_ledger() {
-        assert_eq!(syscall::NUMBERS, &FROZEN[..]);
+        assert_eq!(&syscall::NUMBERS[..FROZEN.len()], &FROZEN[..]);
+        assert_eq!(
+            &syscall::NUMBERS[FROZEN.len()..],
+            &[
+                (73, "SYS_GATE_ATTACH"),
+                (74, "SYS_GATE_WAIT"),
+                (77, "SYS_GATE_REPLY"),
+                (78, "SYS_GATE_ABORT"),
+            ]
+        );
     }
 
-    /// `0` 是保留号（确定性 `EINVAL`），`52` 保留、`73..=78` 尚未实现（D17：不预留）。
+    /// `0`/`52` 保留、`75/76` 的复制入口尚未实现（D17：不预留）。
     #[test]
     fn zero_reserved_and_unimplemented_numbers_are_absent() {
         assert!(syscall::name(0).is_none());
@@ -536,7 +553,7 @@ mod tests {
                 "保留号 {reserved} 不得实现"
             );
         }
-        for pending in 73..=78 {
+        for pending in [75, 76] {
             assert!(
                 syscall::name(pending).is_none(),
                 "追加号 {pending} 只能在实现时分配（D17）"
