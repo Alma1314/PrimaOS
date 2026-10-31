@@ -127,19 +127,18 @@ trap/96字节输出/原生ABI与有界ring3见证；75/76与完整G2/G3仍未完
 - `V1`（VFS）harness 通过（手工 19.8 秒），同一镜像族在低负载时留有明显余量。
 
 **没有放宽 30 秒门限、没有重试到通过、也没有把该套件记为 PASS**；其余 11 组只记录为超时，
-未逐组重新取证。套件日志只保留 PASS/ERROR 汇总行，失败运行的完整串口另存
-[失败日志](artifacts/stage6-gate/full-suite-errors.txt)。上述三次手工运行、基线 30.8 秒与
-V1 19.8 秒的原始计时输出合并保留在[计时日志](artifacts/stage6-gate/W7-timing.txt)。前序[主分支整合](2026-10-31-stage6-main-merge.md)的整套 PASS 仍只属于其基线，
+未逐组重新取证。失败轮次清单、W7输出和手工／基线／V1的计时关键行见[关键输出摘录](#关键输出摘录)；
+该节另标明原报告18轮与原附件17轮的计数差异。前序[主分支整合](2026-10-31-stage6-main-merge.md)的整套 PASS 仍只属于其基线，
 本报告不把它外推到本次改动。
 
 ## 命令与结果
 
 | 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib gate::tests` | PASS：10 组；[日志](artifacts/stage6-gate/focused.txt)，host 状态机，无 QEMU |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1076 passed、0 failed、1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-gate/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy `-D warnings`、裸机 `deny(unsafe_code)` 编译、kernel/src 37 文件零 `unsafe`；[日志](artifacts/stage6-gate/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | **未通过（环境性）**：13 组/18 次运行 30 秒超时，无断言失败或 panic；[失败日志](artifacts/stage6-gate/full-suite-errors.txt)、[W7 harness 复核](artifacts/stage6-gate/W7-rerun.txt)、[W7 手工串口](artifacts/stage6-gate/W7-manual-serial.txt)、[V1 harness](artifacts/stage6-gate/V1-harness.txt)、[基线 harness 对照](artifacts/stage6-gate/baseline-W7-harness.txt)；门限未放宽、未重试到通过 |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib gate::tests` | PASS：10 组，host 状态机，无 QEMU |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1076 passed、0 failed、1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy `-D warnings`、裸机 `deny(unsafe_code)` 编译、kernel/src 37 文件零 `unsafe` |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | **未通过（环境性）**：13 组/18 次运行 30 秒超时，无断言失败或 panic；门限未放宽、未重试到通过 |
 | 文档四项与 `git diff --check` | PASS：`self-test`、`build`、`check`、`check --base 477a768`，347 文档/3393 章节；`git diff --check` 无空白错误 |
 
 ## 阶段影响与后续
@@ -158,3 +157,50 @@ V1 19.8 秒的原始计时输出合并保留在[计时日志](artifacts/stage6-g
 阶段 6 仍进行中；S6-D1–D5 交付检查与 S6-X1–X4 退出条件全部未勾选。全量 BIOS 套件本轮
 未取得通过，阶段跟踪只记录 host 证据与本轮超时事实；当前状态只见
 [阶段跟踪](../../../Prima%20OS%20实现阶段.md)。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原报告正文记为13组、18轮超时；原失败附件逐条可核对的是13组、17轮。以下仅列有记录的轮次，保留这处计数差异，不补造第18轮或重判命令结果：
+
+| 程序 | 超时轮次 |
+|---|---|
+| A1 | 1, 2 |
+| C1 | 2 |
+| D1 | 2 |
+| E3 | 2 |
+| E6 | 1, 2 |
+| L1 | 1 |
+| M1 | 1 |
+| N1 | 1 |
+| V1 | 1 |
+| V2 | 2 |
+| V3 | 1 |
+| W7 | 1, 2 |
+| W7b | 1, 2 |
+
+原 `full-suite.txt` 的关键行：
+
+```text
+ERROR full BIOS suite: 13 failed groups/checks; details in target/prima-os/full-suite-errors.log
+```
+
+原 `W7-rerun.txt` 的关键行：
+
+```text
+ERROR BIOS W7 run 1 failed: QEMU timed out after 30s; QEMU child terminated
+EXEC|exec=1;wait=1;bad=1;stream=1
+BIOS W7 run 2 failed: QEMU timed out after 30s; QEMU child terminated
+```
+
+手工计时与基线/V1对照，按原记录顺序保留；不拼接为整套PASS：
+
+```text
+run1 real=29.00 exit=33
+run2 real=28.70 exit=33
+run3 real=28.31 exit=33
+real	0m30.812s
+manual real=19.78 exit=33
+```

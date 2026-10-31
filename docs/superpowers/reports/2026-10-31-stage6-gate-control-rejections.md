@@ -30,7 +30,7 @@ updated: 2026-10-31
 [七边界裸机证据](2026-10-30-stage6-audit-stop-qemu.md)。保留前序失败和限制，不扩大其证据范围。
 宿主 x86_64，rustc `1.99.0-nightly (1a833e165 2026-07-29)`，QEMU 8.2.2；
 QEMU 沿用单核 `qemu64`、128 MiB、TCG 和 30 秒门限，普通镜像不包含 `gate-probe`。
-源码身份记录于[SHA-256](artifacts/stage6-gate-control-rejections/source-sha256.txt)。
+源码身份记录于[SHA-256](#关键输出摘录)。
 
 `syscall::gate_control_call` 在参数及句柄解码前预检一条失败事件的容量，且在继续验证之前
 执行全局停止检查；成功事务另按已有路径预检完整审计成本。普通错误在用户返回前记录一次，
@@ -61,23 +61,22 @@ G1 专用镜像新增非法句柄、错误权限及快速 syscall 重复 abort�
 
 ## 命令与结果
 
-| 命令 | 本次结果与工件 |
+| 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test -p kernel rejected_controls_record_last_available_event_then_fail_stop_without_mutation -- --exact bootstrap::gate::tests::rejected_controls_record_last_available_event_then_fail_stop_without_mutation` | PASS：新增容量极限用例；[聚焦日志](artifacts/stage6-gate-control-rejections/focused.txt) |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1090 passed、0 failed、1 既有外部 ELF ignored；[日志](artifacts/stage6-gate-control-rejections/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机 deny unsafe 编译、kernel/src 38 文件零 unsafe；[日志](artifacts/stage6-gate-control-rejections/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo clippy --workspace --all-targets --features kernel/gate-probe,xtask/gate-probe -- -D warnings` | PASS：探针特性；[日志](artifacts/stage6-gate-control-rejections/probe-lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo run -p xtask --features gate-probe -- test-gate` | PASS：G1 两轮，含九条拒绝事件；[harness](artifacts/stage6-gate-control-rejections/G1.txt)、[串口1](artifacts/stage6-gate-control-rejections/G1-1.log)、[串口2](artifacts/stage6-gate-control-rejections/G1-2.log) |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel rejected_controls_record_last_available_event_then_fail_stop_without_mutation -- --exact bootstrap::gate::tests::rejected_controls_record_last_available_event_then_fail_stop_without_mutation` | PASS：新增容量极限用例 |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1090 passed、0 failed、1 既有外部 ELF ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机 deny unsafe 编译、kernel/src 38 文件零 unsafe |
+| `CARGO_NET_OFFLINE=true cargo clippy --workspace --all-targets --features kernel/gate-probe,xtask/gate-probe -- -D warnings` | PASS：探针特性 |
+| `CARGO_NET_OFFLINE=true cargo run -p xtask --features gate-probe -- test-gate` | PASS：G1 两轮，含九条拒绝事件 |
 
 `CARGO_NET_OFFLINE=true cargo xtask test`（经授权沙箱外）**退出1，未整套通过**：
 72轮中68轮PASS，默认启动第1轮、V1第1轮和W7双轮均30秒超时，其余轮次及所有Linux参考（含R3）通过。
-[完整命令日志](artifacts/stage6-gate-control-rejections/full-suite.txt)；失败细节见下节。
+[关键命令输出摘录](#关键输出摘录)；失败细节见下节。
 
 整套运行期间只加强新增 `cfg(test)` 用例的显式保存帧断言和 Task id 隔离，生产与探针路径不变；
 表中的 workspace、聚焦用例、lint、探针特性Clippy和G1均在最终用例上重跑。
 
-文档治理及差异检查记录于[校验日志](artifacts/stage6-gate-control-rejections/docs.txt)。
-归档日志只统一 LF、去行尾空白和末尾空行，不删除记录或改字段。
+该轮文档四项检查、源码哈希、差异和阶段6勾选状态检查均通过，关键结果内嵌于下文。
 
 ## 失败、限制与后继
 
@@ -89,10 +88,70 @@ G1 专用镜像新增非法句柄、错误权限及快速 syscall 重复 abort�
 | V1 第1轮 | 最后协议记录为 `authority_ready`（seq=36），无完整验收收尾；第2轮通过。 |
 | W7 两轮 | 均只有 `EXEC\|exec=1;wait=1;bad=1;stream=1` 前缀，缺少 `large=1\|ok=1;err=0`；与准入轮相同的未完成范围，不证明526页装载或再次exec成功，也不能区分慢执行、阻塞或其它原因。 |
 
-[完整失败串口](artifacts/stage6-gate-control-rejections/full-suite-errors.txt)保留实际输出。
+[关键失败串口](#关键输出摘录)保留实际输出。
 前序准入轮70/72、接线轮71/72和旧聚焦W7通过仍按各自报告解释，不能覆盖本轮失败。
 
 只关闭四个已接线控制入口的普通失败尝试审计缺口；未来接入 75/76 或其它 Gate 控制必须
 继续使用公共入口并补充方向/地址/长度及双端身份的复制审计，不能从本轮控制事件推出 G3。
 新错误路径若在返回前改变映射或业务状态，须重新评审事务原子性和审计预检。
 失败事件中的原始句柄只是尝试证据，不给予权限，也不保证失败时能解析到活动对象。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `focused.txt` 的关键行：
+
+```text
+test bootstrap::gate::tests::rejected_controls_record_last_available_event_then_fail_stop_without_mutation ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 535 filtered out; finished in 0.00s
+```
+
+两轮相同的最终串口判据（共同记录只列一次）：
+
+```text
+S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;admission=1;rejected=9;audit=1
+```
+
+原 `G1.txt` 的关键行：
+
+```text
+PASS S6GATE round=1 int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1
+PASS S6GATE round=2 int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1
+```
+
+原 `full-suite-errors.txt` 的关键行：
+
+```text
+default run=1: QEMU timed out after 30s; QEMU child terminated
+V1: BIOS V1 run 1 failed: QEMU timed out after 30s; QEMU child terminated
+W7: BIOS W7 run 1 failed: QEMU timed out after 30s; QEMU child terminated
+EXEC|exec=1;wait=1;bad=1;stream=1
+BIOS W7 run 2 failed: QEMU timed out after 30s; QEMU child terminated
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+ERROR full BIOS suite: 3 failed groups/checks; details in target/prima-os/full-suite-errors.log
+```
+
+该轮最终源码 SHA-256（历史身份，不表示当前文件仍有相同哈希）：
+
+```text
+14f06a619546ec946b4ef148530c8df9eeb97df24c4781762e5bec25fd4bbcdc  kernel/src/bootstrap.rs
+a07db06e9e518b101f60782bb198fb43f7a451ee98ec744d011b63f3d1c368d5  kernel/src/gate.rs
+4c1da19a94c5cdcc6ad553ade8013eb26584bbdb96ee620b0359f53621a61155  kernel/src/gate_audit.rs
+b9aa8e14f4713c7e3555772368599c18da86df3ea8d731b12ad6a20790800782  kernel/src/syscall.rs
+5a5b12b06b77b4ad7ede58e97bed82aa5083f8aed9ff611af983cd1b28576d1e  kernel/src/gate_probe.rs
+24e9cd3be97acf50b7ec8053f88d85f1a33e3bdc606adcc33cffc7ff904899d9  kernel/src/main.rs
+1659081204e9c41f3119134e02fc385b47cb076e8cc8db0ab4328532029b7043  xtask/src/qemu.rs
+```
+
+该轮文档／状态检查关键行：
+
+```text
+PASS docs: 352 documents; catalog, IDs, topics, local links and Markdown anchors
+PASS S6 delivery/exit checkbox states unchanged: 9 unchecked.
+```

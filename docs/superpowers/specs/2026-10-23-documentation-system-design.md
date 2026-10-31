@@ -4,7 +4,7 @@ kind: specification
 authority: documentation-contract
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # 文档系统设计与维护契约
@@ -92,6 +92,8 @@ updated: 2026-10-24
 新文档必须包含唯一 id、kind、authority、status、lifecycle、updated，并回答：读者要解决什么问题、适用版本/范围、上位来源、正文结论或预期、证据和限制、何时重审。规范、报告、计划、决策分别使用对应模板，复制后替换模板身份，禁止占位声明进入证据链。
 
 一次行为变更按“契约 → 代码/测试 → 证据报告 → 台账/阶段 → 主题/目录”收口；如属纯文档修正，应明确“不新增运行证据”。规范/计划/报告目录 README 必须可发现新工件。
+
+运行日志、完整命令输出及单独的日志／哈希附件不入库；原始输出留在 ignored `target/` 或 `/tmp/`。所属Markdown报告保留命令、基线／环境、退出状态、必要的关键输出与源码／输入哈希，失败和限制不能省略；不得将完整日志改扩展名塞进Markdown。历史日志附件清理须保留可验证的Git恢复版本、原路径／目录与承接报告；现有 `lifecycle.json` 的Markdown索引范围不变。
 
 发布前运行 docs self-test、build、check，并记录仓库要求的测试/lint 结果。不能通过忽略全部历史链接、抹掉失败记录或自动勾选阶段条件来让校验通过。
 

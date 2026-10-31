@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-evidence
 status: verified-scoped
 lifecycle: historical
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 审计耗尽：首次诊断与全局停止控制器
@@ -45,7 +45,7 @@ Gate/Request/cookie/原始号与参数审计。本次不认定 G1–G3 或 S6-D2
 
 首版内联诊断、随后新增 arena 句柄均触发既有 13 KiB 大小守卫；改为复用审计分区身份后通过。
 没有放宽守卫、内核栈、日志容量或测试超时。源码复核修正了让出路径的入口定位，补充
-停止后 yield 不修改状态的断言；第一次完整回归主动 SIGTERM 终止，退出码 143（[中止日志](artifacts/stage6-audit/interrupted-full-suite.txt)），不能计为通过。最终命令从头重跑。
+停止后 yield 不修改状态的断言；第一次完整回归主动 SIGTERM 终止，退出码 143（[中止输出摘录](#关键输出摘录)），不能计为通过。最终命令从头重跑。
 
 原有 7 组等待测试改为：耗尽后只能以独立新实例测试其它失败点，不能释放压力后继续旧请求。
 新增两组测试验证首次诊断、独立实例隔离、控制器 terminal panic、停止后完成/释放/调度/
@@ -54,13 +54,13 @@ Gate/Request/cookie/原始号与参数审计。本次不认定 G1–G3 或 S6-D2
 
 | 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1048 passed，0 failed，1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-audit/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy、裸机编译，kernel/src 34 文件零 unsafe；[日志](artifacts/stage6-audit/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部主机参考；[日志](artifacts/stage6-audit/full-suite.txt) |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1048 passed，0 failed，1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy、裸机编译，kernel/src 34 文件零 unsafe |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部主机参考 |
 | 文档四项 / 空白检查 | PASS：self-test、build、check、check --base 759c422；334 文档及 Git 空白检查 |
 
-完整回归获准沙箱外运行，因为既有 Linux N1/R3 参考需要主机套接字。日志归档仅移除末尾
-额外空行。既有 QEMU 套件只验证未触发停止时的回归；本轮没有 ring3 Gate、审计耗尽 QEMU
+完整回归获准沙箱外运行，因为既有 Linux N1/R3 参考需要主机套接字。关键输出内嵌于文末。
+既有 QEMU 套件只验证未触发停止时的回归；本轮没有 ring3 Gate、审计耗尽 QEMU
 注入或真实 copy/reply 的全链路 fail-stop 证据。
 
 ## 阶段影响与后继
@@ -73,3 +73,20 @@ Gate/Request/cookie/原始号与参数审计。本次不认定 G1–G3 或 S6-D2
 
 裸机验证后继：[七个执行边界的 QEMU 耗尽注入](2026-10-30-stage6-audit-stop-qemu.md)
 使用专用编译配置验证停止位置与预期失败变异；本文原有 host 与普通回归范围保持。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+被 SIGTERM 中止的首轮命令最后一条已通过记录；命令退出143，不是整套通过：
+
+```text
+PASS qemu bios E1 run=1
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```

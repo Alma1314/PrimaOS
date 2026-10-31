@@ -44,7 +44,7 @@ updated: 2026-10-31
 | `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：单次完整36程序、72/72轮BIOS QEMU，含V3/W7/W9/R3及Linux参考；无失败/超时 |
 | 文档 self-test/build/check/check --base e238a74 | PASS：346文档；最终目录与链接检查 |
 
-[验证输出摘录](artifacts/stage6-main-merge/validation.txt)保留测试汇总、lint/样本/工具测试及完整套件的PASS行；仅省略编译噪声和逐项host用例名。本次所有命令退出0，无整合测试失败。
+结果汇总见上表，必要的原始判据见[关键输出摘录](#关键输出摘录)。该轮所有命令退出0，无整合测试失败。
 
 Rust使用仓库固定nightly-2026-07-30；依赖离线。
 QEMU沿用BIOS/TCG/qemu64/单CPU/128 MiB及30秒门限。
@@ -58,3 +58,16 @@ Handle生产源码、提取包装器、生成Lean及证明与主分支完全相�
 阶段6仍进行中，5项交付及4项退出条件均不勾选。大文件VFS来源、冻结制品的实际
 4段/BSS装载与8页初始栈、可信停车入口、Gate/G1–G3及Linux LibOS仍待完成。
 审计停止14轮与D14 opt-in原型未在本整合重跑；对应结论仍限前序报告。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `validation.txt` 的关键行：
+
+```text
+PASS kernel kernel/src has zero `unsafe` (36 files scanned)
+test exec::tests::plan_accepts_operator_supplied_static_linux_elf ... ok
+PASS full BIOS suite: 36 programs, 72 runs
+```

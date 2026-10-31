@@ -376,6 +376,8 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 
+[2026-10-31 日志附件整理](docs/superpowers/reports/2026-10-31-documentation-log-inline.md)将必要输出内嵌到原证据报告，移除独立日志附件并保留Git恢复路径；不新增运行证据，当前阶段、退出0/4和历史失败保持。
+
 ## 阶段晋级规则
 
 1. 阶段状态由该阶段的退出条件决定，不由提交数量、代码行数或主观完成度决定；

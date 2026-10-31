@@ -66,14 +66,14 @@ trap/96字节输出/原生ABI与有界ring3见证；75/76与完整G2/G3仍未完
 
 | 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib gate::tests` | PASS：17 组（新增 7 组），[日志](artifacts/stage6-gate-authority/focused.txt)；host 对象/能力/等待/帧，无 QEMU |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1083 passed、0 failed、1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-gate-authority/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy `-D warnings`、裸机 `deny(unsafe_code)` 编译、kernel/src 37 文件零 unsafe；[日志](artifacts/stage6-gate-authority/lint.txt) |
-| 文档四项 | PASS：`self-test`、`build`、`check`、`check --base 79161be`，348 文档；[日志](artifacts/stage6-gate-authority/docs.txt) |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib gate::tests` | PASS：17 组（新增 7 组）；host 对象/能力/等待/帧，无 QEMU |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1083 passed、0 failed、1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy `-D warnings`、裸机 `deny(unsafe_code)` 编译、kernel/src 37 文件零 unsafe |
+| 文档四项 | PASS：`self-test`、`build`、`check`、`check --base 79161be`，348 文档 |
 | `git diff --check` | PASS，无空白错误 |
 
-[夹具失败日志](artifacts/stage6-gate-authority/development-failure.txt)保留上述 Free/Stale 与相对路径反例。
-文档首次检查因引用的 `docs.txt` 在检查后才复制而失败（[日志](artifacts/stage6-gate-authority/docs-first-failure.txt)）；
+[夹具失败输出摘录](#关键输出摘录)保留上述 Free/Stale 与相对路径反例。
+文档首次检查因引用的 `docs.txt` 在检查后才复制而失败（[输出摘录](#关键输出摘录)）；
 先生成该工件后完整重跑四项校验。最终验证对应本报告所述完整代码，未改断言门限或跳过失败用例。
 
 ## 阶段影响与后续
@@ -83,3 +83,30 @@ trap/96字节输出/原生ABI与有界ring3见证；75/76与完整G2/G3仍未完
 未改启动或 trap 入口，本切片没有运行 BIOS 套件；没有新增任何裸机通过主张。
 后继若开放共享客户端 root、可警报等待、多核提交或改变容器失效句柄语义，须重新审查。
 当前状态见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `development-failure.txt` 的关键行：
+
+```text
+assertion `left == right` failed
+  left: Free
+ right: Stale
+called `Result::unwrap()` on an `Err` value: EmptyComponent
+test result: FAILED. 13 passed; 3 failed; 0 ignored; 0 measured; 513 filtered out; finished in 0.02s
+```
+
+原 `focused.txt` 的关键行：
+
+```text
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 513 filtered out; finished in 0.02s
+```
+
+原 `docs-first-failure.txt` 的关键行：
+
+```text
+FAIL docs: 1 error(s)
+```

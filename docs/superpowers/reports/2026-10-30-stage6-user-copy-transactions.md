@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-evidence
 status: verified-scoped
 lifecycle: historical
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 接线前置：真实页表输出预检与 COW 事务
@@ -77,21 +77,16 @@ W9 同源 C 探针新增 `copy=1`：先 mmap 两页并填 `0xa5`，fork 后子�
 子进程检查完整输出及所有相邻字节，父进程 wait 后检查两页完整原值。
 Linux 参考与 Prima ring3 都实际运行这条检查；未把 Linux 的 EFAULT 部分输出行为当作原子性契约。
 `xtask` 严格 stdout 预期新增该字段，不能缺失或为 0。
-完整套件 W9 最后一轮串口保存在[归档](artifacts/stage6-user-copy/w9-last-run.txt)，
-只将 CRLF 归一为 LF：原始 21092 字节，SHA-256
-`e07dcf8066f6d94754d0c2fe7705e2a73c6a4286f788b63bf1797aa0da87c5eb`；
-归档 21006 字节，SHA-256
-`f448824216c5fc08a2ca7a7cdd5b4a3cbfb29644a66e33018adcbe248bedecc7`。
-其余轮次不从这一个串口文件倒推，由完整命令的逐轮校验结果记录。
-host 命令日志仅移除文件末尾多余的空行，以通过 Git 空白检查。
+完整套件 W9 末轮的 `copy=1` 实际串口输出见[关键输出摘录](#关键输出摘录)。
+原串口文件逐轮覆盖；其它轮次以完整命令的逐轮校验结果记录，不从末轮输出倒推。
 
 | 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib vspace::tests` | PASS：32 个真实页表逻辑测试（host 物理直映射），包含上述反例；[日志](artifacts/stage6-user-copy/vspace-tests.txt)，不是 Gate 请求授权测试 |
-| `CARGO_NET_OFFLINE=true cargo xtask test-process W9` | PASS：Linux 参考及 ring3 QEMU 双轮，`copy=1`；[命令日志](artifacts/stage6-user-copy/w9-command.txt) |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1039 passed、1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-user-copy/workspace-tests.txt)，未运行 Lean |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机内核编译、kernel/src 32 文件零 unsafe；[日志](artifacts/stage6-user-copy/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：沙箱外获准的单次完整命令 exit=0，36 程序 / 72 轮，全部主机参考通过；[日志](artifacts/stage6-user-copy/full-suite.txt) |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib vspace::tests` | PASS：32 个真实页表逻辑测试（host 物理直映射），包含上述反例，不是 Gate 请求授权测试 |
+| `CARGO_NET_OFFLINE=true cargo xtask test-process W9` | PASS：Linux 参考及 ring3 QEMU 双轮，`copy=1` |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1039 passed、1 个既有外部 ELF 样本 ignored，未运行 Lean |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机内核编译、kernel/src 32 文件零 unsafe |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：沙箱外获准的单次完整命令 exit=0，36 程序 / 72 轮，全部主机参考通过 |
 | 文档四项校验、`git diff --check` | PASS：`self-test`、`build`、`check`、`check --base 9dd0512`；332 文档，变更及链接一致 |
 
 ## 限制、后继与阶段影响
@@ -108,3 +103,35 @@ Segment 用户映射范围与设备页排除，拒绝共享 root，并把 VM map
 
 后继在另一主题补强：[私有完成等待](2026-10-30-stage6-private-completion-waits.md)将候选 A
 等待登记落实到真实内核状态表；不替代本报告的内存证据，仍未接入 Gate 或取得 G1–G3。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `vspace-tests.txt` 的关键行：
+
+```text
+test vspace::tests::bounded_copy_rolls_back_real_frame_ownership_on_second_cow_allocation_failure ... ok
+test vspace::tests::bounded_copy_selects_explicit_roots_at_the_same_va ... ok
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.01s
+```
+
+原 `w9-command.txt` 的关键行：
+
+```text
+PASS qemu bios W9 run=1
+PASS qemu bios W9 run=2
+```
+
+完整套件 W9 末轮的实际输出；不能据此倒推其它轮次：
+
+```text
+SIGACT|sigaction=1;kill=1;ran=1;mask=1;info=1;nested=1;suspend=1;eintr=1;restart=1;child=1;sleep=1;fault=1;guard=1;copy=1;ignore=1|ok=1;err=0
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```

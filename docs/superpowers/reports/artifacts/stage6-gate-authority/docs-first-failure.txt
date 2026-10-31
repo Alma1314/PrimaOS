@@ -1,6 +1,0 @@
-PASS docs self-test: Markdown, metadata, search, determinism, lifecycle, Git recovery, change guards
-Built 348 documents, 3402 sections
-docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md:67: missing target: artifacts/stage6-gate-authority/docs.txt
-FAIL docs: 1 error(s)
-docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md:67: missing target: artifacts/stage6-gate-authority/docs.txt
-FAIL docs: 1 error(s)

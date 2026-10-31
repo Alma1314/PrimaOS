@@ -1,5 +1,7 @@
 /.worktrees/
 /target/
+*.log
+/docs/superpowers/reports/artifacts/
 .obsidian
 /lean/.lake/
 .claude

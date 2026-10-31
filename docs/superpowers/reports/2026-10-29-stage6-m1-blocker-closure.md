@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-and-design-review
 status: verified-scoped
 lifecycle: historical
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 当前评审阻塞整改、COSIR 技术评审与 7-A 有界探索
@@ -31,10 +31,8 @@ Git 基线 `9a9f4a2eba4f779a73a23f700cc556c48d89c803`；进入本轮时工作区
 [COSIR W9/W17/§21](../../../COSIR%20原语规范.md)、[Lean 映照边界](../../../lean/README.md)。
 
 工具链固定 `nightly-2026-07-30`。QEMU 使用仓库参数：`pc-i440fx-8.2`、TCG 单线程、
-`qemu64`、1 vCPU、128 MiB，未跑 KVM/实机性能测试。完整双轮串口保存在
-[round1](artifacts/stage6-m1/domains-round1.txt)、[round2](artifacts/stage6-m1/domains-round2.txt)。
-归档只将 CRLF 统一为 LF，未删改内容，以满足 Git 空白检查；两份转换前串口均为 3670 字节，
-SHA-256=`0a41940946ab3019af2e968534b0102479b811aa20b923f17d3691156e44487b`。
+`qemu64`、1 vCPU、128 MiB，未跑 KVM/实机性能测试。两轮关键串口记录已内嵌于下文D14节；
+完整旧输出可按文末的整理记录从Git恢复。
 镜像为构建产物，不入库；新增 Rust 源码与测试随本报告同一提交保存。
 
 ## R1–R6 逐项闭合
@@ -136,14 +134,14 @@ sbase 同样复用本机源副本。未修改上游源、锁文件或全局 Carg
 |---|---|
 | `CARGO_NET_OFFLINE=true cargo test -p cosir --test stage6_gate` | PASS：8 个生命周期/复制/资源/权限模型反例组；不是 QEMU gate |
 | `CARGO_NET_OFFLINE=true cargo run -p cosir --example stage6_domains` | PASS：两根、能力授权共享 log、跨域 NotHeld、A 销毁后 B 继续、Audit 消息序列可重建 |
-| `PRIMA_STAGE6_DOMAINS=1 CARGO_NET_OFFLINE=true cargo xtask test-domains` | PASS：QEMU 2/2；已保留原始串口；不是 G1–G3 |
+| `PRIMA_STAGE6_DOMAINS=1 CARGO_NET_OFFLINE=true cargo xtask test-domains` | PASS：QEMU 2/2；关键串口已内嵌；不是 G1–G3 |
 | `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1035 passed，1 个既有外部 ELF 样本测试 ignored；包含新模型 8 组及协议负例，未运行 Lean |
 | `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、workspace/all-targets Clippy -D warnings、裸机内核编译及 kernel/src 32 文件零 unsafe |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：获准的沙箱外单次完整命令 exit=0，36 个程序 / 72 轮 QEMU、全部主机参考及 musl 检查通过；[完整日志](artifacts/stage6-m1/full-suite.txt) |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：获准的沙箱外单次完整命令 exit=0，36 个程序 / 72 轮 QEMU、全部主机参考及 musl 检查通过 |
 | `python3 scripts/docs.py self-test` / `build` / `check` / `check --base 9a9f4a2eba4f779a73a23f700cc556c48d89c803`，`git diff --check` | PASS：331 文档；生成目录、生命周期、新文档元数据、链接及变更守卫一致 |
 | Gate G1/G2/G3、Linux 白名单差分、复制性能、Lean gate 证明 | 未运行：本轮不接线 Gate、不实现 profile；不能算阶段退出证据 |
 
-[沙箱内首次完整命令记录](artifacts/stage6-m1/full-suite-sandbox-failure.txt)返回 1：Linux N1 参考创建套接字失败（全部网络标志为 0），
+沙箱内首次完整命令返回 1（[关键输出](#关键输出摘录)）：Linux N1 参考创建套接字失败（全部网络标志为 0），
 Rust R3 Linux 参考在 `posix.rs:88` 报 `Operation not permitted`，因此该组未进入 QEMU；
 其余 70 轮 QEMU 全部通过。随后以同一 `target/prima-os/net-linux` 二进制在获准的
 沙箱外环境、`env -i` 下单独重跑，exit=0，全部网络标志为 1。完整沙箱外后继结果见上表；
@@ -159,3 +157,22 @@ profile v2/SPEC-152 与阶段 6/7 退出条件不变。当前状态只在[阶段
 内存前置后继：[真实页表输出与 COW 事务](2026-10-30-stage6-user-copy-transactions.md)
 补强本报告 R3 中未覆盖的可失败帧分配/PTE 准备及已有内核输出调用点；
 不是 Gate 授权/ABI 接线，本文原有 host 模型与 D14 证据范围保持。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `full-suite-sandbox-failure.txt` 的关键行：
+
+```text
+ERROR full BIOS suite: 2 failed groups/checks; details in target/prima-os/full-suite-errors.log
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```
+
+D14 两轮的五条 `S6DOM` 记录已内嵌于“D14：7-A 有界探索”节；两份旧串口的对应记录逐字相同，本节不重复整段启动输出。

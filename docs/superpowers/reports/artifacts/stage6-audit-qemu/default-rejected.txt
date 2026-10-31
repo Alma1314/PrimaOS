@@ -1,3 +1,0 @@
-target/debug/xtask test-gate-audit
-Expected runner exit=1 (feature disabled).
-ERROR use cargo run -p xtask --features gate-audit-probe -- test-gate-audit

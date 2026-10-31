@@ -1,6 +1,0 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
-     Running `target/debug/xtask test-process W7`
-PASS linux exec-linux stdout/exit references
-PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
-PASS qemu bios W7 run=1
-PASS qemu bios W7 run=2

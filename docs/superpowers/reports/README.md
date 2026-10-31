@@ -25,6 +25,8 @@ updated: 2026-10-31
 
 ## 跨阶段 / 文档体系
 
+文档维护：[日志附件内嵌整理](2026-10-31-documentation-log-inline.md)，131个日志／命令输出附件的关键证据迁入13份原报告，完整旧附件保留Git恢复路径；不新增OS验证或改变阶段结论。
+
 源码细化：[生产 Rust 句柄方法→Lean](2026-10-31-rust-handle-source-refinement.md)，Charon/Aeneas 自动提取、生成物新鲜度、5 条一般定理与真实 Rust mutation；范围限构造/后继值，翻译器为可信边界。 主分支整合复核见该报告末节。
 
 形式化后继：[有限能力槽表组合证明](2026-10-31-kernel-handle-table-proof.md)，10 条一般 Lean 定理、整表任意序列无复活、真实 Rust 三槽六步回归；不宣称 Rust 源码细化证明。

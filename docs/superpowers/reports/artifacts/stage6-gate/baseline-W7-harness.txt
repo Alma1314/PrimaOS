@@ -1,8 +1,0 @@
-   Compiling kernel v0.1.0 (/home/alma/projects/PrimaOS/kernel)
-   Compiling xtask v0.1.0 (/home/alma/projects/PrimaOS/xtask)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.33s
-     Running `target/debug/xtask test-process W7`
-PASS linux exec-linux stdout/exit references
-PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
-PASS qemu bios W7 run=1
-PASS qemu bios W7 run=2

@@ -4,7 +4,7 @@ kind: agent-instructions
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # Repository Guidelines
@@ -32,6 +32,8 @@ Authority depends on the question:
 Before changing behavior, read the relevant spec, plan and report chain, including failures and limitations. If implementation and contract differ, record the deviation rather than silently making implementation normative. Changes to phase status or evidence must update the stage tracker and relevant evidence indexes.
 
 New documents belong under `specs/`, `plans/`, `reports/`, `compat/`, or `architecture/`; keep the docs root for navigation and generated machine catalogs. Follow `docs/superpowers/specs/2026-10-23-documentation-system-design.md` and the templates in `docs/architecture/templates/`. Preserve contracts, decisions, failures and scoped evidence. Remove redundant or obsolete process/explanatory documents only through docs/lifecycle.json with retained replacements, reserved identities and verifiable Git recovery; use portable relative Markdown links, not wiki links. New documents require explicit lifecycle metadata; document lifecycle never implies implementation or approval status.
+
+Do not commit runtime logs, complete command output, or separate log/hash attachments. Keep raw output in ignored `target/` or `/tmp/`; embed only the commands, exit status, necessary output excerpts, relevant hashes, failures and limitations in the owning Markdown report. Do not paste entire logs into Markdown. For historical attachment cleanup, retain a verifiable Git revision and recovery paths in the cleanup report.
 
 For documentation changes, run:
 

@@ -91,7 +91,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（197）
+## report（198）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -281,6 +281,7 @@
 | [S6-M2 机械项：冻结台账、单一 `auxv` 键源与映像长度窗口](../superpowers/reports/2026-10-30-stage6-freeze-ledgers.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-freeze-ledgers.md` |
 | [S6-M1 内核私有等待：登记、信号隔离与代次完成](../superpowers/reports/2026-10-30-stage6-private-completion-waits.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md` |
 | [S6-M1 接线前置：真实页表输出预检与 COW 事务](../superpowers/reports/2026-10-30-stage6-user-copy-transactions.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md` |
+| [文档日志附件整理：关键证据内嵌 Markdown](../superpowers/reports/2026-10-31-documentation-log-inline.md) | historical | `docs/superpowers/reports/2026-10-31-documentation-log-inline.md` |
 | [内核有限能力槽表的 Lean 组合证明](../superpowers/reports/2026-10-31-kernel-handle-table-proof.md) | historical | `docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md` |
 | [Rust 句柄源码到 Lean 模型的细化证明](../superpowers/reports/2026-10-31-rust-handle-source-refinement.md) | historical | `docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md` |
 | [阶段 1～5 复核与整改](../superpowers/reports/2026-10-31-stage1-5-regression-remediation.md) | historical | `docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md` |

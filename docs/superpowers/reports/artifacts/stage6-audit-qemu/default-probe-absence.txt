@@ -1,6 +1,0 @@
-CARGO_NET_OFFLINE=true cargo xtask lint built the default standalone kernel.
-artifact: target/x86_64-unknown-none/debug/prima-kernel
-sha256: 290e32c52550ea9cb5ea48129790ccf08638ea826aebca04d1b6f3b765ee388f
-PASS byte search: S6AUDIT| absent
-PASS byte search: audit-stop guard returned after exhaustion absent
-Scope: default standalone bare-metal ELF, not a Gate or whole-image proof.

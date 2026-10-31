@@ -62,11 +62,11 @@ Prima 的源缓冲只映射五个物理页，文件空洞未映射。新程序�
 ## 失败与整改链
 
 - 首版探针把源缓冲放在 `0x00000c0000000000`，与现有 C_HEAP_VA 重叠。
-  内核以 EACCES 拒绝，子进程退出 111，`stream=0`，严格验收失败（[原始日志](artifacts/stage6-streamed-elf/initial-failure.txt)）。
+  内核以 EACCES 拒绝，子进程退出 111，`stream=0`，严格验收失败（[原始输出摘录](#关键输出摘录)）。
   临时错误序号诊断确认 `MemsegError::Overlap`，随后撤销；最终源区为 `0x00000e0000000000`。
-- 修正地址后，两个 QEMU 轮次退出 0，被要求退出 33 的校验拒绝（[复位日志](artifacts/stage6-streamed-elf/reset-failure.txt)）。
+- 修正地址后，两个 QEMU 轮次退出 0，被要求退出 33 的校验拒绝（[复位输出摘录](#关键输出摘录)）。
   开启既有 CPU 日志并定位到 guard 内的 supervisor 写故障，随后 double/triple fault
-  （[CPU 日志末尾摘录](artifacts/stage6-streamed-elf/guard-tail.txt)）。诊断时对该临时产物
+  （[CPU 输出摘录末尾摘录](#关键输出摘录)）。诊断时对该临时产物
   `addr2line` 定位为 `Arena<SegmentObject,48,1>::set` 的 closure；该构建产物未入库。
   暂存回收嵌套在大构造栈帧之下；将回收移到退栈后，并保留 parser 边界后，W7 双轮通过。
 - 临时分段输出也使 Linux 严格 stdout 比较失败，随后全部移除。没有把临时诊断构建
@@ -76,17 +76,17 @@ Prima 的源缓冲只映射五个物理页，文件空洞未映射。新程序�
 
 | 命令 | 结果与证据范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1053 passed、0 failed、1 个既有外部 ELF 样本 ignored；[最终日志](artifacts/stage6-streamed-elf/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译，kernel/src 35 文件零 unsafe；[最终日志](artifacts/stage6-streamed-elf/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test-process W7` | PASS：Linux 同源与 QEMU 双轮；[命令日志](artifacts/stage6-streamed-elf/W7.txt)；[完整套件 W7 末轮串口](artifacts/stage6-streamed-elf/W7-serial.txt)（原日志逐轮覆盖，非两轮原始串口合集） |
-| `CARGO_NET_OFFLINE=true PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib exec::tests::plan_accepts_operator_supplied_static_linux_elf -- --ignored` | PASS：完整字节解析与文件 seek/read 的逐条解析结果一致，每次元数据读取≤64 B；[日志](artifacts/stage6-streamed-elf/sample.txt)及[制品 SHA-256](artifacts/stage6-streamed-elf/sample-sha.txt)、[程序头](artifacts/stage6-streamed-elf/sample-elf.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部 Linux 参考；[完整日志](artifacts/stage6-streamed-elf/full-suite.txt) |
-| 文档四项与 Git 空白检查 | PASS：self-test、build、check、check --base b0d78cf，337 文档/3310 章节；[文档日志](artifacts/stage6-streamed-elf/docs.txt)；Git 空白检查通过 |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1053 passed、0 failed、1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译，kernel/src 35 文件零 unsafe |
+| `CARGO_NET_OFFLINE=true cargo xtask test-process W7` | PASS：Linux 同源与 QEMU 双轮（原日志逐轮覆盖，非两轮原始串口合集） |
+| `CARGO_NET_OFFLINE=true PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib exec::tests::plan_accepts_operator_supplied_static_linux_elf -- --ignored` | PASS：完整字节解析与文件 seek/read 的逐条解析结果一致，每次元数据读取≤64 B |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部 Linux 参考 |
+| 文档四项与 Git 空白检查 | PASS：self-test、build、check、check --base b0d78cf，337 文档/3310 章节；Git 空白检查通过 |
 
 可选样本 SHA-256 与[D12 白名单](../compat/stage6-static-whitelist.md)冻结值相同；不携带
 二进制。样本测试只解析头部，不分配其 526 页、不运行其代码。
-全套件在沙箱外执行，因为既有 N1/R3 Linux 参考需要主机套接字。文本工件仅统一换行、移除行尾空白与
-末尾额外空行；CPU 工件明确是末尾摘录，非完整执行日志。
+全套件在沙箱外执行，因为既有 N1/R3 Linux 参考需要主机套接字。下文只内嵌关键输出；
+CPU 故障只列用于定位的字段，不作为完整执行日志。
 
 ## 阶段影响与后继
 
@@ -101,3 +101,54 @@ Prima 的源缓冲只映射五个物理页，文件空洞未映射。新程序�
 [526页映像与再次exec](2026-10-31-stage6-exec-frame-capacity.md)扩展私有映像与相关预算，
 并保留压力探针先撞段表、旧回收超时的失败证据；本文原有输入/退栈修复证据仍有效。
 不从该后继推断完整VFS来源、冻结busybox运行、LibOS或阶段退出。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `initial-failure.txt` 的关键行：
+
+```text
+ERROR BIOS W7 run 1 failed: W7 stage5 capacity trace mismatch: [Record { id: 7, args: [17, 90, 1, 1, 1] }]
+EXEC|exec=1;wait=1;bad=1;stream=0|ok=0;err=28416
+```
+
+原 `reset-failure.txt` 的关键行：
+
+```text
+ERROR BIOS W7 run 1 failed: unexpected QEMU exit code: expected 33, got 0; panic exit code is 35
+BIOS W7 run 2 failed: unexpected QEMU exit code: expected 33, got 0; panic exit code is 35
+```
+
+原 `guard-tail.txt` 的关键行：
+
+```text
+   156: v=0e e=0002 i=0 cpl=0 IP=0008:000001000006eca7 pc=000001000006eca7 SP=0010:000001000016bf10 CR2=000001000016bf18
+Triple fault
+```
+
+原 `W7.txt` 的关键行：
+
+```text
+PASS qemu bios W7 run=1
+PASS qemu bios W7 run=2
+```
+
+完整套件 W7 末轮实际输出；旧串口文件逐轮覆盖，不是双轮合集：
+
+```text
+EXEC|exec=1;wait=1;bad=1;stream=1|ok=1;err=0
+```
+
+只作解析的冻结输入身份：
+
+```text
+dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14  /usr/bin/busybox
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```

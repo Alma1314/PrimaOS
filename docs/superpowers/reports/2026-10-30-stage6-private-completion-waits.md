@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-evidence
 status: verified-scoped
 lifecycle: historical
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 内核私有等待：登记、信号隔离与代次完成
@@ -68,7 +68,7 @@ BlockedWait 及精确请求形态。这是有界 host 检查器，未证明所�
 7 组 host 测试覆盖：真实表中的预留/完成及不铸 token、默认/自定义通知保留 pending、
 普通三种 wake 和双时钟不能越权、重复/迟到完成、公开能力误装的防御、全部审计失败边界、
 generation 耗尽、等待者销毁/Task 槽复用、双向登记损坏及 32/80 独立容量。
-快照读取实际 arena 内容，避免仅比较 arena 句柄而漏掉对象变更。归档命令日志仅去掉末尾多余空行。
+快照读取实际 arena 内容，避免仅比较 arena 句柄而漏掉对象变更。关键输出内嵌于文末。
 
 首次销毁/复用测试出现 `DuplicateTask`：测试在保留 Dead 记录时直接创建同编号任务；
 按真实分配路径补上先移除 Dead 记录、再用单调 Task generation 创建的步骤后通过。
@@ -76,10 +76,10 @@ generation 耗尽、等待者销毁/Task 槽复用、双向登记损坏及 32/80
 
 | 命令 | 本次结果与证据范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib bootstrap::completion` | PASS：7 组；[日志](artifacts/stage6-completion/focused.txt)，真实内核状态表的 host 测试 |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1046 passed，0 failed，1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-completion/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译、kernel/src 33 文件零 unsafe；[日志](artifacts/stage6-completion/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：单次命令 exit=0，36 程序/72 轮，全部主机参考通过；[日志](artifacts/stage6-completion/full-suite.txt)。既有回归，非 Gate G1–G3 |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib bootstrap::completion` | PASS：7 组，真实内核状态表的 host 测试 |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1046 passed，0 failed，1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译、kernel/src 33 文件零 unsafe |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：单次命令 exit=0，36 程序/72 轮，全部主机参考通过。既有回归，非 Gate G1–G3 |
 | 文档四项及 `git diff --check` | PASS：`self-test`、`build`、`check`、`check --base 01d44a6`，333 文档；无空白错误 |
 
 ## 后继、未覆盖项与阶段影响
@@ -100,3 +100,20 @@ generation 耗尽、等待者销毁/Task 槽复用、双向登记损坏及 32/80
 [阶段跟踪](../../../Prima%20OS%20实现阶段.md)维护。
 
 后继：[审计停止控制器](2026-10-30-stage6-audit-fail-stop.md)将私有等待 AuditFull 收紧为持久停止，并接入全局执行入口；不替代本报告的其余范围或取得 G1–G3。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `focused.txt` 的关键行：
+
+```text
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 497 filtered out; finished in 0.01s
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```

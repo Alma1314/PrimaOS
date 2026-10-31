@@ -4,7 +4,7 @@ kind: template
 authority: template
 status: template
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # 实现/验证/整改报告模板
@@ -31,7 +31,7 @@ updated: 2026-10-24
 |---|---|---|---|
 | 填写精确命令 | 本次/报告路径 | PASS/FAIL/未运行；保留关键输出 | host/QEMU/Lean/差分/文档 |
 
-原始日志如纳入仓库，应放在 reports 下有归属的子目录并说明版本；不要提交 boot images 或依赖快照。
+原始日志及完整命令输出不入库，留在 ignored `target/` 或 `/tmp/`。只把支撑结论的关键输出内嵌为短代码块，注明对应命令、版本、轮次和退出状态；必要的源码／输入哈希也直接写在正文。不粘贴整份日志，不另建日志或哈希附件，不提交 boot images 或依赖快照。
 
 ## 失败、反例与限制
 

@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-evidence
 status: verified-scoped
 lifecycle: historical
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 审计停止控制器：裸机耗尽与停止边界验收
@@ -58,38 +58,37 @@ operation=Complete、完整 owner cookie、required=2、used/reserved 的首次�
 另做实际源码变异：临时将 `enforce_diagnostic(diagnostic)` 替换为空操作，运行 resume 配置。
 探针在停止检查返回后发出 `escaped`，终止于 probe 的断言；QEMU 即使同样 exit=35，
 runner 仍返回 1。随后恢复原调用并重跑最终七种配置。该变异未提交，
-[变异命令输出](artifacts/stage6-audit-qemu/mutation.txt)与
-[串口](artifacts/stage6-audit-qemu/mutation-serial.txt)保留为预期失败证据。
+变异的命令错误与 `armed/escaped` 串口记录见[关键输出摘录](#关键输出摘录)，保留为预期失败证据。
 
 ## 命令与结果
 
 七种专用构建均双轮 PASS（共 14 轮），每轮实际 exit=35。两轮的诊断计数一致：
 
-| site | used / reserved | 第 1 / 2 轮串口 |
+| site | used / reserved | 第 1 / 2 轮结果 |
 |---|---|---|
-| [int80-entry](artifacts/stage6-audit-qemu/int80-entry-command.txt) | 61 / 16322 | [round1](artifacts/stage6-audit-qemu/int80-entry-round1.txt) / [round2](artifacts/stage6-audit-qemu/int80-entry-round2.txt) |
-| [dispatch](artifacts/stage6-audit-qemu/dispatch-command.txt) | 61 / 16322 | [round1](artifacts/stage6-audit-qemu/dispatch-round1.txt) / [round2](artifacts/stage6-audit-qemu/dispatch-round2.txt) |
-| [int80-return](artifacts/stage6-audit-qemu/int80-return-command.txt) | 61 / 16322 | [round1](artifacts/stage6-audit-qemu/int80-return-round1.txt) / [round2](artifacts/stage6-audit-qemu/int80-return-round2.txt) |
-| [fast-return](artifacts/stage6-audit-qemu/fast-return-command.txt) | 64 / 16319 | [round1](artifacts/stage6-audit-qemu/fast-return-round1.txt) / [round2](artifacts/stage6-audit-qemu/fast-return-round2.txt) |
-| [pick-next](artifacts/stage6-audit-qemu/pick-next-command.txt) | 64 / 16319 | [round1](artifacts/stage6-audit-qemu/pick-next-round1.txt) / [round2](artifacts/stage6-audit-qemu/pick-next-round2.txt) |
-| [resume](artifacts/stage6-audit-qemu/resume-command.txt) | 61 / 16322 | [round1](artifacts/stage6-audit-qemu/resume-round1.txt) / [round2](artifacts/stage6-audit-qemu/resume-round2.txt) |
-| [irq](artifacts/stage6-audit-qemu/irq-command.txt) | 1153 / 15230 | [round1](artifacts/stage6-audit-qemu/irq-round1.txt) / [round2](artifacts/stage6-audit-qemu/irq-round2.txt) |
+| `int80-entry` | 61 / 16322 | 双轮PASS：exit=35，unchanged=1 |
+| `dispatch` | 61 / 16322 | 双轮PASS：exit=35，unchanged=1 |
+| `int80-return` | 61 / 16322 | 双轮PASS：exit=35，unchanged=1 |
+| `fast-return` | 64 / 16319 | 双轮PASS：exit=35，unchanged=1 |
+| `pick-next` | 64 / 16319 | 双轮PASS：exit=35，unchanged=1 |
+| `resume` | 61 / 16322 | 双轮PASS：exit=35，unchanged=1 |
+| `irq` | 1153 / 15230 | 双轮PASS：exit=35，unchanged=1 |
 
-所有 owner 均为完整 cookie `4294967297`，required=2、unchanged=1；命令日志与各串口
-同目录保存，归档只统一 CRLF 为 LF 并去掉末尾额外空行。日志 used 为注入前已有事件数，
+所有 owner 均为完整 cookie `4294967297`，required=2、unchanged=1；两轮的协议记录逐字相同，
+下文内嵌正向和变异样例。日志 used 为注入前已有事件数，
 不是普通日志填满后的条数。原生 syscall/IRQ 到达指定位置；resume 是首次启动恢复。
 
 | 命令 | 本次结果与范围 |
 |---|---|
 | 上述七种 `test-gate-audit` 配置 | PASS：14/14；退出值及严格记录校验均通过 |
 | 停止调用变异 / resume | 预期失败：runner exit=1；有 escaped、无有效 stopped，未计作成功轮次 |
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1050 passed、0 failed、1 个既有外部 ELF 样本 ignored；[日志](artifacts/stage6-audit-qemu/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo clippy -p kernel --features gate-audit-probe --target x86_64-unknown-none -- -D warnings` | PASS：探针 lib/bin 裸机检查；[日志](artifacts/stage6-audit-qemu/feature-lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy、裸机编译；kernel/src 35 文件零 unsafe，13 KiB 守卫保留；[日志](artifacts/stage6-audit-qemu/lint.txt) |
-| 默认 runner 误用 `test-gate-audit` | 预期拒绝：exit=1，要求显式特性，不构建镜像；[输出](artifacts/stage6-audit-qemu/default-rejected.txt) |
-| 默认 standalone ELF 字节检查 | PASS：不含探针标记或逃逸断言；[hash 与范围](artifacts/stage6-audit-qemu/default-probe-absence.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部 Linux 主机参考；[日志](artifacts/stage6-audit-qemu/full-suite.txt) |
-| 文档四项 / Git 空白检查 | PASS：self-test、build、check、check --base 38ca35f；335 文档；[日志](artifacts/stage6-audit-qemu/docs.txt) |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1050 passed、0 failed、1 个既有外部 ELF 样本 ignored |
+| `CARGO_NET_OFFLINE=true cargo clippy -p kernel --features gate-audit-probe --target x86_64-unknown-none -- -D warnings` | PASS：探针 lib/bin 裸机检查 |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy、裸机编译；kernel/src 35 文件零 unsafe，13 KiB 守卫保留 |
+| 默认 runner 误用 `test-gate-audit` | 预期拒绝：exit=1，要求显式特性，不构建镜像 |
+| 默认 standalone ELF 字节检查 | PASS：不含探针标记或逃逸断言 |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令 exit=0，36 程序/72 轮及全部 Linux 主机参考 |
+| 文档四项 / Git 空白检查 | PASS：self-test、build、check、check --base 38ca35f；335 文档 |
 
 完整默认回归在获准的沙箱外环境运行，因为既有 Linux N1/R3 参考需要主机套接字。
 没有修改断言、预期、超时或跳过用例；14 轮专用故障注入与默认 72 轮分别归账。
@@ -102,3 +101,51 @@ resume 配置在首次进入用户态前停止；其它配置来自原生 ring3/
 门控 ring3 服务或 Linux LibOS。未测试服务丢失时的 Gate 批量事务、copy/reply 授权、
 SMP、KVM、真实硬件停止、日志回收或恢复。仍须实际 Gate 接线及 G1–G3。
 当前阶段与阻塞见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)，不勾选交付或退出条件。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+resume 正向样例；其它六个位置的双轮结果及实际 used/reserved 见上表：
+
+```text
+S6AUDIT|armed site=resume;owner=4294967297;required=2;used=61;reserved=16322;unchanged=1
+S6AUDIT|stopped site=resume;owner=4294967297;required=2;used=61;reserved=16322;unchanged=1
+```
+
+移除停止调用后的反向样例：escaped 不能冒充有效 stopped：
+
+```text
+S6AUDIT|armed site=resume;owner=4294967297;required=2;used=61;reserved=16322;unchanged=1
+S6AUDIT|escaped site=resume;owner=4294967297;required=2;used=61;reserved=16322;unchanged=1
+```
+
+原 `mutation.txt` 的关键行：
+
+```text
+ERROR audit-stop diagnostic changed or boundary escaped
+```
+
+原 `default-rejected.txt` 的关键行：
+
+```text
+ERROR use cargo run -p xtask --features gate-audit-probe -- test-gate-audit
+```
+
+默认 standalone ELF 的身份和检查范围：
+
+```text
+CARGO_NET_OFFLINE=true cargo xtask lint built the default standalone kernel.
+artifact: target/x86_64-unknown-none/debug/prima-kernel
+sha256: 290e32c52550ea9cb5ea48129790ccf08638ea826aebca04d1b6f3b765ee388f
+PASS byte search: S6AUDIT| absent
+PASS byte search: audit-stop guard returned after exhaustion absent
+Scope: default standalone bare-metal ELF, not a Gate or whole-image proof.
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```

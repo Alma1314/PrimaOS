@@ -47,7 +47,7 @@ BIOS/TCG/qemu64/单CPU/128 MiB 与30秒门限，没有 KVM、SMP、硬件或性�
 注册表副本引用同一存储，与既有 owner arena 一致，不能充当深拷贝事务快照。
 
 实际大小为 BootstrapState=13,312 B、SegmentFrames=1,208 B、FrameRegistry=25,184 B、
-FreeFrameAllocator=22,560 B（[实测](artifacts/stage6-exec-capacity/sizes.txt)）。未扩大13 KiB
+FreeFrameAllocator=22,560 B（[实测](#关键输出摘录)）。未扩大13 KiB
 State、32 KiB注册表的守卫，也未改变32 KiB syscall栈及其guard；这不是所有路径峰值栈证明。
 
 全局归属表是集合，可用末项补空位；Segment 的有序向量独立保存。整段释放改为一次扫描，
@@ -83,12 +83,12 @@ Linux执行，不把这些输出位当成 Linux errno/进程语义差分。新�
 ## 失败与整改链
 
 - 首版合成入口的条件跳转偏移错误，Linux子进程SIGSEGV，严格对照拒绝 `large=0`
-  （[日志](artifacts/stage6-exec-capacity/fixture-jump-failure.txt)）。修正字节偏移后主机对照通过。
+  （[输出摘录](#关键输出摘录)）。修正字节偏移后主机对照通过。
 - 初版压力探针首先耗尽48个 Segment 槽，退出124，`large=0`，未触达要求的帧耗尽
-  （[日志](artifacts/stage6-exec-capacity/segment-quota-failure.txt)）。同步补齐段表及标签预算到64；
+  （[输出摘录](#关键输出摘录)）。同步补齐段表及标签预算到64；
   validator仍严格检查配置值，未接受缺失、任意值或放宽其它断言。
 - 段表补齐后，原逐页删除归属表的实现使两个QEMU轮次都触发30秒超时
-  （[日志](artifacts/stage6-exec-capacity/timeout-before-reclaim.txt)）。没有增加超时或降低
+  （[输出摘录](#关键输出摘录)）。没有增加超时或降低
   页数/失败次数；改为有界批量扫描、末项补位并统一失败回收后，W7双轮通过。
 - 测试诊断打印一度缺少 `super::BootstrapState` 类型限定，编译检查拒绝；修正后重新
   完整运行workspace和lint。最终通过结果不混用上述失败构建。
@@ -97,18 +97,18 @@ Linux执行，不把这些输出位当成 Linux errno/进程语义差分。新�
 
 | 命令 | 本次结果与范围 |
 |---|---|
-| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1055 passed、0 failed、1项外部ELF样本ignored；[日志](artifacts/stage6-exec-capacity/workspace.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译、35个内核文件零unsafe；[日志](artifacts/stage6-exec-capacity/lint.txt) |
-| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib stays_within -- --nocapture` | PASS：2个现有值大小守卫；[日志](artifacts/stage6-exec-capacity/sizes.txt) |
-| `CARGO_NET_OFFLINE=true cargo xtask test-process W7` | PASS：Linux参考与QEMU双轮，原30秒门限；[命令](artifacts/stage6-exec-capacity/W7.txt)及[末轮串口](artifacts/stage6-exec-capacity/W7-serial.txt)，串口文件逐轮覆盖，非两轮合集 |
-| `CARGO_NET_OFFLINE=true PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib exec::tests::plan_accepts_operator_supplied_static_linux_elf -- --ignored` | PASS：1个解析测试；[日志](artifacts/stage6-exec-capacity/sample.txt)、[SHA-256](artifacts/stage6-exec-capacity/sample-sha.txt)、[程序头](artifacts/stage6-exec-capacity/sample-elf.txt)与冻结台账一致；不执行该制品 |
-| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令exit=0，36程序/72轮及全部Linux参考；[完整日志](artifacts/stage6-exec-capacity/full-suite.txt) |
-| 文档四项与Git空白检查 | PASS：self-test/build/check/check --base 06f40dc，339文档/3324章节；[日志](artifacts/stage6-exec-capacity/docs.txt) |
+| `CARGO_NET_OFFLINE=true cargo test --workspace` | PASS：1055 passed、0 failed、1项外部ELF样本ignored |
+| `CARGO_NET_OFFLINE=true cargo xtask lint` | PASS：fmt、Clippy -D warnings、裸机编译、35个内核文件零unsafe |
+| `CARGO_NET_OFFLINE=true cargo test -p kernel --lib stays_within -- --nocapture` | PASS：2个现有值大小守卫 |
+| `CARGO_NET_OFFLINE=true cargo xtask test-process W7` | PASS：Linux参考与QEMU双轮，原30秒门限，串口文件逐轮覆盖，非两轮合集 |
+| `CARGO_NET_OFFLINE=true PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib exec::tests::plan_accepts_operator_supplied_static_linux_elf -- --ignored` | PASS：1个解析测试；样本SHA-256及程序头与冻结台账一致；不执行该制品 |
+| `CARGO_NET_OFFLINE=true cargo xtask test` | PASS：最终单次命令exit=0，36程序/72轮及全部Linux参考 |
+| 文档四项与Git空白检查 | PASS：self-test/build/check/check --base 06f40dc，339文档/3324章节 |
 
 host补强了外部 run 的非连续物理帧顺序、零帧、实例隔离/复用/耗尽、原有用户边界与
 不变的值尺寸；帧注册表测试覆盖交错归属销毁、精确额度、2048数据帧和256页表帧全量归还
 并重新分配。上述host范围与QEMU执行分别记录，不推导任意可达状态的证明。
-原始日志仅统一换行、移除行尾空白及末尾多余空行；不提交镜像/第三方二进制。
+关键输出内嵌于下文；不提交镜像/第三方二进制。
 
 ## 阶段影响与限制
 
@@ -116,3 +116,60 @@ host补强了外部 run 的非连续物理帧顺序、零帧、实例隔离/复�
 冻结busybox的4段/非对齐/BSS几何、libc/TLS/信号与8页初始栈仍须取得实际装载/运行证据；
 完整VFS大文件来源和可信停车入口仍待实现。Gate能力/陷阱/rax答复、G1–G3与Linux LibOS
 不因本轮而完成；没有修改白名单、profile或73–78候选号。当前状态只见[阶段跟踪](../../../Prima%20OS%20实现阶段.md)。
+
+## 关键输出摘录
+
+以下片段来自本报告原验证记录，仅内嵌支撑结论的输出；本次文档整理未重跑这些验证。
+完整旧附件的恢复版本及目录见[日志整理记录](2026-10-31-documentation-log-inline.md)。
+
+原 `sizes.txt` 的关键行：
+
+```text
+BootstrapState=13312 B; SegmentFrames=1208 B
+FrameRegistry=25184 B; FreeFrameAllocator=22560 B
+```
+
+原 `fixture-jump-failure.txt` 的关键行：
+
+```text
+ERROR exec-linux mismatch: exit Some(1), stdout "EXEC|exec=1;wait=1;bad=1;stream=1;large=0|ok=0;err=11\n", stderr ""
+```
+
+原 `segment-quota-failure.txt` 的关键行：
+
+```text
+EXEC|exec=1;wait=1;bad=1;stream=1;large=0|ok=0;err=31744
+```
+
+原 `timeout-before-reclaim.txt` 的关键行：
+
+```text
+ERROR BIOS W7 run 1 failed: QEMU timed out after 30s; QEMU child terminated
+EXEC|exec=1;wait=1;bad=1;stream=1
+BIOS W7 run 2 failed: QEMU timed out after 30s; QEMU child terminated
+```
+
+原 `W7.txt` 的关键行：
+
+```text
+PASS qemu bios W7 run=1
+PASS qemu bios W7 run=2
+```
+
+完整套件 W7 末轮实际输出；旧串口文件逐轮覆盖，不是双轮合集：
+
+```text
+EXEC|exec=1;wait=1;bad=1;stream=1;large=1|ok=1;err=0
+```
+
+只作解析的冻结输入身份：
+
+```text
+dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14  /usr/bin/busybox
+```
+
+原 `full-suite.txt` 的关键行：
+
+```text
+PASS full BIOS suite: 36 programs, 72 runs
+```
