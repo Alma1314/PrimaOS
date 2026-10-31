@@ -1,0 +1,26 @@
+Final source/test checks and documentation checks for baseline d0608de.
+$ python3 scripts/docs.py self-test
+PASS docs self-test: Markdown, metadata, search, determinism, lifecycle, Git recovery, change guards
+exit=0
+$ python3 scripts/docs.py build
+Built 352 documents, 3431 sections
+exit=0
+$ python3 scripts/docs.py check
+PASS docs: 352 documents; catalog, IDs, topics, local links and Markdown anchors
+exit=0
+$ python3 scripts/docs.py check --base d0608de
+PASS docs: 352 documents; catalog, IDs, topics, local links and Markdown anchors
+exit=0
+$ git diff --check
+exit=0
+$ sha256sum -c docs/superpowers/reports/artifacts/stage6-gate-control-rejections/source-sha256.txt
+kernel/src/bootstrap.rs: OK
+kernel/src/gate.rs: OK
+kernel/src/gate_audit.rs: OK
+kernel/src/syscall.rs: OK
+kernel/src/gate_probe.rs: OK
+kernel/src/main.rs: OK
+xtask/src/qemu.rs: OK
+exit=0
+PASS S6 delivery/exit checkbox states unchanged: 9 unchecked.
+PASS whitespace checks for all 12 new files.

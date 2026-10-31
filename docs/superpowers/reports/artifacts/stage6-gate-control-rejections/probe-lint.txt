@@ -1,0 +1,3 @@
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+    Checking xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.69s

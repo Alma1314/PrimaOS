@@ -18,6 +18,8 @@ pub enum Operation {
     Deliver,
     /// S6-M1/M1b：请求终结（答复、中止或孤儿化）。
     Terminate,
+    /// Native Gate control attempt, including malformed arguments/handles.
+    Control,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

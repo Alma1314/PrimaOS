@@ -325,6 +325,38 @@ pub struct ReplyOutcome {
 }
 
 impl BootstrapState {
+    /// Every native control needs room for a rejection before validation or
+    /// output/COW work. Success paths separately preflight their full cost.
+    /// No reservation is retained across a blocked service wait.
+    pub(crate) fn preflight_gate_control(&mut self, caller: u32) -> Result<(), Error> {
+        self.preflight_gate_audit(
+            1,
+            self.task_cookie(caller).unwrap_or(0),
+            gate_audit::Operation::Control,
+        )
+        .map_err(|_| Error::AuditFull)
+    }
+
+    /// Adapter-only failure evidence; object operations themselves keep their
+    /// read-only rejection semantics. Call before returning the native error.
+    pub(crate) fn gate_control_rejected(
+        &mut self,
+        caller: u32,
+        number: u64,
+        args: [u64; 6],
+        result: u64,
+    ) -> Result<(), Error> {
+        self.preflight_gate_control(caller)?;
+        self.audit.append(AuditEvent::GateControlRejected {
+            caller,
+            caller_cookie: self.task_cookie(caller).unwrap_or(0),
+            number,
+            args,
+            result,
+        });
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // 实例表
     // ------------------------------------------------------------------
@@ -1402,6 +1434,94 @@ mod tests {
         state
             .gate_attach(2, task_cap(state, client), Handle::ZERO, orphan)
             .unwrap()
+    }
+
+    #[test]
+    fn rejected_controls_record_last_available_event_then_fail_stop_without_mutation() {
+        let _serial = serial();
+        let mut state = state();
+        // Avoid the scheduler's separate host tests, which write Task 3.
+        let client = 16;
+        state.create_task(client).unwrap();
+        state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::TaskManageVSpace]),
+                ObjectRef::Task(client),
+            )
+            .unwrap();
+        let out = attach(&mut state, client, 0xdead);
+        state.yield_task(2).unwrap();
+        state.schedule_task(client).unwrap();
+        let mut frozen = crate::exc::SretFrame::ZERO;
+        frozen.rax = 0xfeed;
+        frozen.rip = 0x4002;
+        crate::sched::set_frame(client, frozen);
+        state
+            .gate_trap(client, 0xfeed, [1, 2, 3, 4, 5, 6], 1)
+            .unwrap();
+        state.schedule_task(2).unwrap();
+        let tasks = state.tasks;
+        let slots = state.slots;
+        let positions = state.positions;
+        let tables = (
+            state.gate_tables(),
+            state.gate_tables().find(out.gate),
+            state.gate_tables().slot_request(out.slot),
+        );
+        let waits = state.wait_objects.iter().collect::<Vec<_>>();
+        let count = state.audit.count;
+        let reserved = MAX_AUDIT_EVENTS - count - 1;
+        assert!(state.audit.reserve(reserved));
+        state.preflight_gate_control(2).unwrap();
+        assert_eq!(state.audit.count, count);
+        assert_eq!(state.audit.reserved, reserved);
+        // Malformed local handle and reserved arguments are evidence as given,
+        // not resolved to a token or interpreted as client syscall semantics.
+        let args = [0, u64::MAX, 96, 1, 2, 3];
+        let result = crate::syscall::encode_errno(crate::syscall::Errno::Invalid);
+        state
+            .gate_control_rejected(2, prima_abi::syscall::SYS_GATE_WAIT, args, result)
+            .unwrap();
+        assert_eq!(state.audit.count, count + 1);
+        assert_eq!(
+            state.audit.entry(count),
+            Some(AuditEvent::GateControlRejected {
+                caller: 2,
+                caller_cookie: state.task_cookie(2).unwrap(),
+                number: prima_abi::syscall::SYS_GATE_WAIT,
+                args,
+                result,
+            })
+        );
+        assert_eq!(state.preflight_gate_control(2), Err(Error::AuditFull));
+        let diagnostic = state.gate_audit_diagnostic().unwrap();
+        assert_eq!(diagnostic.operation, gate_audit::Operation::Control);
+        assert_eq!(diagnostic.owner, state.task_cookie(2).unwrap());
+        assert_eq!(diagnostic.required, 1);
+        assert_eq!(diagnostic.used, count + 1);
+        assert_eq!(diagnostic.reserved, reserved);
+        state.audit.release_reservation(reserved);
+        assert_eq!(
+            state.gate_control_rejected(2, prima_abi::syscall::SYS_GATE_ABORT, args, result),
+            Err(Error::AuditFull)
+        );
+        assert_eq!(state.gate_audit_diagnostic(), Some(diagnostic));
+        assert_eq!(state.audit.count, count + 1);
+        assert_eq!(state.tasks, tasks);
+        assert_eq!(state.slots, slots);
+        assert_eq!(state.positions, positions);
+        assert_eq!(
+            (
+                state.gate_tables(),
+                state.gate_tables().find(out.gate),
+                state.gate_tables().slot_request(out.slot),
+            ),
+            tables
+        );
+        assert_eq!(state.wait_objects.iter().collect::<Vec<_>>(), waits);
+        assert_eq!(crate::sched::frame(client), Some(frozen));
+        assert!(state.gate_well_formed());
     }
 
     #[test]

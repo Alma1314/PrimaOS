@@ -10,7 +10,7 @@ const ORPHAN: u64 = 0xaabb_ccdd_eeff_1122;
 const ARGS: [u64; 6] = [11, 22, 33, 44, 55, 66];
 const NUMBERS: [u64; 2] = [SYS_TASK_ID, SYS_GATE_ATTACH];
 static EXPECTED: StaticCell<[[u64; 17]; 2]> = StaticCell::new([[0; 17]; 2]);
-static ADMISSION: StaticCell<Option<(u64, [usize; 3], extern "C" fn() -> !)>> =
+static ADMISSION: StaticCell<Option<(u64, u64, [usize; 3], extern "C" fn() -> !)>> =
     StaticCell::new(None);
 
 // Tiny byte emitter, matching user.rs's existing platform witnesses. No toolchain
@@ -121,6 +121,16 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
     service.mov(3, user::USER_Y_VA);
     service.call(SYS_GATE_ATTACH, [task_cap, 0, ORPHAN, 1, 0, 0]);
     service.store(0, 512);
+    service.call(
+        SYS_GATE_WAIT,
+        [0, user::USER_Y_VA, gate::OUTPUT_BYTES, 0, 0, 0],
+    );
+    service.store(0, 624); // malformed local handle, before capability lookup
+    service.call(
+        SYS_GATE_WAIT,
+        [task_cap, user::USER_Y_VA, gate::OUTPUT_BYTES, 0, 0, 0],
+    );
+    service.store(0, 616); // wrong object/right, despite a valid held handle
     // A Ready target with an exception-resume continuation must be rejected.
     service.call(SYS_GATE_ATTACH, [task_cap, 0, ORPHAN, 0, 0, 0]);
     service.store(0, 600);
@@ -145,6 +155,10 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
     service.store(0, 568);
     service.finish_request(SYS_GATE_ABORT, 128, ABORT);
     service.store(0, 576);
+    service.finish_request(SYS_GATE_ABORT, 128, ABORT);
+    service.len -= 2;
+    service.emit(&[0x0f, 0x05]); // native fast entry rejection shares auditing
+    service.store(0, 608);
     service.call(SYS_CAP_DROP, [0; 6]);
     service.len -= 2;
     service.emit(&[0x4c, 0x89, 0xe7, 0xcd, 0x80]);
@@ -198,7 +212,7 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
             state.wait_objects.count,
         ]
     });
-    ADMISSION.with_mut(|slot| *slot = Some((continuation, counts, terminal)));
+    ADMISSION.with_mut(|slot| *slot = Some((continuation, task_cap, counts, terminal)));
     sched::set_kernel_resume_frame(2, user::task2_frame());
     crate::idt::set_user_trap_handler(admission_checkpoint);
     crate::signal::set_pending(2, 10);
@@ -212,7 +226,7 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
 /// continuation, then resume the service at the next known program location.
 extern "C" fn admission_checkpoint() -> ! {
     assert_eq!(sched::current(), 1);
-    let (rip, counts, terminal) = ADMISSION.with_mut(|slot| slot.take().unwrap());
+    let (rip, task_cap, counts, terminal) = ADMISSION.with_mut(|slot| slot.take().unwrap());
     assert_eq!(
         read_word(1, user::USER_Y_VA + 600),
         syscall::encode_errno(syscall::Errno::Again)
@@ -222,13 +236,49 @@ extern "C" fn admission_checkpoint() -> ! {
     BOOTSTRAP_STATE.with(|slot| {
         let state = slot.as_ref().unwrap();
         assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Ready));
+        for (index, (number, args, error)) in [
+            (
+                SYS_GATE_ATTACH,
+                [task_cap, 0, ORPHAN, 1, 0, 0],
+                syscall::Errno::Invalid,
+            ),
+            (
+                SYS_GATE_WAIT,
+                [0, user::USER_Y_VA, gate::OUTPUT_BYTES, 0, 0, 0],
+                syscall::Errno::Invalid,
+            ),
+            (
+                SYS_GATE_WAIT,
+                [task_cap, user::USER_Y_VA, gate::OUTPUT_BYTES, 0, 0, 0],
+                syscall::Errno::Access,
+            ),
+            (
+                SYS_GATE_ATTACH,
+                [task_cap, 0, ORPHAN, 0, 0, 0],
+                syscall::Errno::Again,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                state.audit.entry(counts[0] + index),
+                Some(AuditEvent::GateControlRejected {
+                    caller: 1,
+                    caller_cookie: state.task_cookie(1).unwrap(),
+                    number,
+                    args,
+                    result: syscall::encode_errno(error),
+                })
+            );
+        }
         assert_eq!(
             [
                 state.audit.count,
                 state.slots.live_count(),
                 state.wait_objects.count
             ],
-            counts
+            [counts[0] + 4, counts[1], counts[2]]
         );
         assert_eq!(state.gate_tables().gate_count, 0);
         assert_eq!(state.gate_tables().binding_count, 0);
@@ -269,6 +319,18 @@ pub fn verify() {
         }
     }
     assert_eq!(read(2, user::USER2_Y_VA + 320), ORPHAN);
+    assert_eq!(
+        read(1, user::USER_Y_VA + 624),
+        syscall::encode_errno(syscall::Errno::Invalid)
+    );
+    assert_eq!(
+        read(1, user::USER_Y_VA + 608),
+        syscall::encode_errno(syscall::Errno::NoEnt)
+    );
+    assert_eq!(
+        read(1, user::USER_Y_VA + 616),
+        syscall::encode_errno(syscall::Errno::Access)
+    );
     for (index, expected) in [
         syscall::encode_errno(syscall::Errno::Invalid),
         0,
@@ -313,12 +375,65 @@ pub fn verify() {
         let mut delivered = 0;
         let mut terminal = 0;
         let mut blocked_service = 0;
+        let mut rejected = 0;
+        let gate_cap = state.gate_tables().find(1).unwrap().root_cap.encode();
+        let expected_rejections = [
+            (
+                SYS_GATE_REPLY,
+                [read(1, user::USER_Y_VA + 16), REPLY, 0, 0, 0, 0],
+                syscall::Errno::NoEnt,
+            ),
+            (
+                SYS_GATE_WAIT,
+                [gate_cap, 0x4000, gate::OUTPUT_BYTES, 0, 0, 0],
+                syscall::Errno::Fault,
+            ),
+            (
+                SYS_GATE_WAIT,
+                [
+                    gate_cap,
+                    user::USER_Y_VA + 4096 - 48,
+                    gate::OUTPUT_BYTES,
+                    0,
+                    0,
+                    0,
+                ],
+                syscall::Errno::Fault,
+            ),
+            (
+                SYS_GATE_WAIT,
+                [gate_cap, user::USER_CODE_VA, gate::OUTPUT_BYTES, 0, 0, 0],
+                syscall::Errno::Fault,
+            ),
+            (
+                SYS_GATE_ABORT,
+                [read(1, user::USER_Y_VA + 128 + 16), ABORT, 0, 0, 0, 0],
+                syscall::Errno::NoEnt,
+            ),
+        ];
         for index in 0..state.audit.count {
             let event = state.audit.entry(index).unwrap();
             match event {
                 AuditEvent::GateTrapped { .. } => trapped += 1,
                 AuditEvent::GateDelivered { .. } => delivered += 1,
                 AuditEvent::GateTerminated { .. } => terminal += 1,
+                AuditEvent::GateControlRejected { .. } => {
+                    // The first four were checked at the admission checkpoint.
+                    if rejected >= 4 {
+                        let (number, args, error) = expected_rejections[rejected - 4];
+                        assert_eq!(
+                            event,
+                            AuditEvent::GateControlRejected {
+                                caller: 1,
+                                caller_cookie: state.task_cookie(1).unwrap(),
+                                number,
+                                args,
+                                result: syscall::encode_errno(error),
+                            }
+                        );
+                    }
+                    rejected += 1;
+                }
                 AuditEvent::TaskStateChanged {
                     task_id: 1,
                     status: TaskStatus::BlockedWait,
@@ -329,6 +444,7 @@ pub fn verify() {
         }
         assert_eq!((trapped, delivered, terminal), (2, 2, 3));
         assert_eq!(blocked_service, 1);
+        assert_eq!(rejected, 9);
         assert!(state.task_is_gated(2));
         assert_eq!(state.gate_tables().request(1), None);
         assert_eq!(state.gate_tables().request(2), None);

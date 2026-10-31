@@ -1,0 +1,10 @@
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/kernel)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/05b3/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.22s
+     Running `target/debug/xtask test-gate`
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS build kernel
+PASS image bios
+PASS image uefi
+PASS S6GATE round=1 int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1
+PASS S6GATE round=2 int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1

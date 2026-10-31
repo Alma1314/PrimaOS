@@ -3946,8 +3946,13 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
 }
 
 /// Native Gate controls. Every unused argument is required to be zero.
+#[inline(never)]
 fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     use bootstrap::gate::{self, WaitOutcome};
+    let task = sched::current();
+    let budget = gate::with_state(|state| state.preflight_gate_control(task));
+    bootstrap::gate_audit::enforce_stop("gate-control-entry");
+    budget.expect("native Gate control has an active bootstrap state");
     let result = (|| -> Result<u64, Errno> {
         let used = match num {
             SYS_GATE_ATTACH | SYS_GATE_WAIT => 3,
@@ -3956,7 +3961,6 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         if args[used..].iter().any(|&arg| arg != 0) {
             return Err(Errno::Invalid);
         }
-        let task = sched::current();
         let cap = decode_caller_handle(args[0]).map_err(auth_errno)?;
         match num {
             SYS_GATE_ATTACH => {
@@ -4026,6 +4030,13 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     })();
     // AuditFull is terminal, never an errno returned to either participant.
     bootstrap::gate_audit::enforce_stop("gate-control");
+    if let Err(error) = result {
+        let recorded = gate::with_state(|state| {
+            state.gate_control_rejected(task, num, *args, encode_errno(error))
+        });
+        bootstrap::gate_audit::enforce_stop("gate-control-rejected");
+        recorded.expect("preflighted native Gate rejection audit");
+    }
     result.unwrap_or_else(encode_errno)
 }
 

@@ -462,6 +462,15 @@ pub enum AuditEvent {
         gate: u32,
         request: u32,
     },
+    /// Native control rejection. Args retain the caller's raw local handles;
+    /// an invalid handle is not asserted to identify a Gate or Request.
+    GateControlRejected {
+        caller: u32,
+        caller_cookie: u64,
+        number: u64,
+        args: [u64; 6],
+        result: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
