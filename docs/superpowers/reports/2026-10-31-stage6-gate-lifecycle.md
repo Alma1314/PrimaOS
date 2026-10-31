@@ -117,7 +117,8 @@ updated: 2026-10-31
 
 **没有放宽 30 秒门限、没有重试到通过、也没有把该套件记为 PASS**；其余 11 组只记录为超时，
 未逐组重新取证。套件日志只保留 PASS/ERROR 汇总行，失败运行的完整串口另存
-[失败日志](artifacts/stage6-gate/full-suite-errors.txt)。前序[主分支整合](2026-10-31-stage6-main-merge.md)的整套 PASS 仍只属于其基线，
+[失败日志](artifacts/stage6-gate/full-suite-errors.txt)。上述三次手工运行、基线 30.8 秒与
+V1 19.8 秒的原始计时输出合并保留在[计时日志](artifacts/stage6-gate/W7-timing.txt)。前序[主分支整合](2026-10-31-stage6-main-merge.md)的整套 PASS 仍只属于其基线，
 本报告不把它外推到本次改动。
 
 ## 命令与结果

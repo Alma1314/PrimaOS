@@ -29127,16 +29127,16 @@
       "authority": "scoped-implementation-evidence",
       "status": "verified-scoped",
       "date": "2026-10-31",
-      "sha256": "b34b615055510f5bc46196cc39c4c5c947752c9214f9d343ec20b7706248971a",
+      "sha256": "ea1cdc58d36a918dbe8231fa051ed0f354de298dfea7dc6291bc266a686c5513",
       "topic_ids": [],
-      "lines": 148,
+      "lines": 149,
       "sections": [
         {
           "level": 1,
           "title": "S6-M1/M1b 内核门控对象与请求生命周期",
           "line": 10,
           "anchor": "s6-m1m1b-内核门控对象与请求生命周期",
-          "end_line": 148
+          "end_line": 149
         },
         {
           "level": 2,
@@ -29171,21 +29171,21 @@
           "title": "全量 BIOS 套件的环境性超时（本轮未通过）",
           "line": 105,
           "anchor": "全量-bios-套件的环境性超时本轮未通过",
-          "end_line": 122
+          "end_line": 123
         },
         {
           "level": 2,
           "title": "命令与结果",
-          "line": 123,
+          "line": 124,
           "anchor": "命令与结果",
-          "end_line": 132
+          "end_line": 133
         },
         {
           "level": 2,
           "title": "阶段影响与后续",
-          "line": 133,
+          "line": 134,
           "anchor": "阶段影响与后续",
-          "end_line": 148
+          "end_line": 149
         }
       ],
       "mentioned_ids": [
@@ -29247,43 +29247,47 @@
           "target": "artifacts/stage6-gate/full-suite-errors.txt"
         },
         {
-          "line": 120,
+          "line": 121,
+          "target": "artifacts/stage6-gate/W7-timing.txt"
+        },
+        {
+          "line": 121,
           "target": "2026-10-31-stage6-main-merge.md"
         },
         {
-          "line": 127,
+          "line": 128,
           "target": "artifacts/stage6-gate/focused.txt"
         },
         {
-          "line": 128,
+          "line": 129,
           "target": "artifacts/stage6-gate/workspace.txt"
         },
         {
-          "line": 129,
+          "line": 130,
           "target": "artifacts/stage6-gate/lint.txt"
         },
         {
-          "line": 130,
+          "line": 131,
           "target": "artifacts/stage6-gate/full-suite-errors.txt"
         },
         {
-          "line": 130,
+          "line": 131,
           "target": "artifacts/stage6-gate/W7-rerun.txt"
         },
         {
-          "line": 130,
+          "line": 131,
           "target": "artifacts/stage6-gate/W7-manual-serial.txt"
         },
         {
-          "line": 130,
+          "line": 131,
           "target": "artifacts/stage6-gate/V1-harness.txt"
         },
         {
-          "line": 130,
+          "line": 131,
           "target": "artifacts/stage6-gate/baseline-W7-harness.txt"
         },
         {
-          "line": 148,
+          "line": 149,
           "target": "../../../Prima%20OS%20实现阶段.md"
         }
       ]
