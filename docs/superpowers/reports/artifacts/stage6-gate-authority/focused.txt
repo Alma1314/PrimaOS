@@ -1,0 +1,24 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/kernel-0632b9c2ccf45562)
+
+running 17 tests
+test bootstrap::gate::tests::attach_rejects_a_non_ready_target_without_partial_state ... ok
+test bootstrap::gate::tests::attach_reserves_waits_and_a_request_slot_atomically ... ok
+test bootstrap::gate::tests::audit_exhaustion_fails_stop_before_any_gate_mutation ... ok
+test bootstrap::gate::tests::authority_loss_audit_failure_preserves_tokens_waits_frames_and_gate ... ok
+test bootstrap::gate::tests::authority_loss_wakes_and_releases_an_empty_service_wait ... ok
+test bootstrap::gate::tests::client_destruction_cancels_without_restoring_the_frame ... ok
+test bootstrap::gate::tests::dropped_roots_preserve_service_aliases_and_terminal_cleanup_finds_all_aliases ... ok
+test bootstrap::gate::tests::empty_queue_blocks_the_service_and_an_enqueue_wakes_it_once ... ok
+test bootstrap::gate::tests::full_queue_blocks_capacity_then_promotes_in_fifo_order ... ok
+test bootstrap::gate::tests::last_gate_authority_loss_covers_drop_move_revoke_namespace_and_ipc ... ok
+test bootstrap::gate::tests::last_request_authority_loss_orphans_the_whole_gate ... ok
+test bootstrap::gate::tests::reply_rejects_foreign_holders_and_accepted_aliases_fail_together ... ok
+test bootstrap::gate::tests::same_holder_move_preserves_authority_but_external_subtree_revocation_orphans ... ok
+test bootstrap::gate::tests::service_death_orphans_requests_with_the_configured_value ... ok
+test bootstrap::gate::tests::transferring_the_last_request_token_preserves_container_delivery ... ok
+test bootstrap::gate::tests::trap_delivers_the_opaque_words_and_reply_writes_only_rax ... ok
+test bootstrap::gate::tests::well_formed_projection_detects_a_broken_binding ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 513 filtered out; finished in 0.02s
+

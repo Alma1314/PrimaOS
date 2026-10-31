@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-mechanism-design
 status: model-reviewed
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # S6-M1 协议收口：候选 A、单服务者与不可警报等待
@@ -169,3 +169,12 @@ terminal panic 停止整个系统。Gate 能力/请求/复制事务尚未接入�
 提供独立编译启用的审计压力注入及严格终止记录校验；移除停止调用的变异必须被拒绝。
 证据使用真实私有等待与 AuditLog 容量预检，仍无 Gate/Request 能力或门控 trap，
 不能替代 Gate 全事务的审计接线与 G1–G3。普通镜像不包含探针。
+
+## 11. 服务授权丢失实现检查点（2026-10-31）
+
+[内核后继报告](../reports/2026-10-31-stage6-gate-authority-loss.md)将 drop、批量 drop、move、
+revoke、Namespace 绑定和 IPC 转移接入总审计预检与孤儿化提交。根句柄消失后依然按
+实际服务别名判断授权，请求终结按对象身份回收别名。已退役请求句柄在容器中只保留原
+身份供 recv/unbind 返回，不重建位置或权限；这不是 COSIR §4.3 中仍活动的 stale token。
+服务空队列等待被清理后，未来 wait 适配器仍须重新验证并返回 stale。本检查点只记录
+对象层 host 证据，不发布 ABI 或覆盖 trap、输出事务和 G1–G3。

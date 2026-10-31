@@ -677,7 +677,7 @@ impl BootstrapState {
     /// 返回 `Blocked` 时丢弃该计划、让控制调用以「重试」返回。孤儿化且队列为空返回
     /// [`Error::Stale`]，输出保持不变。
     pub fn gate_wait(&mut self, service: u32, gate_cap: Handle) -> Result<WaitOutcome, Error> {
-        if self.slots.check(gate_cap) != SlotState::Live {
+        if self.slots.check(gate_cap) != SlotState::Live || !self.cap_target_live(gate_cap) {
             return Err(Error::Stale);
         }
         let service_cookie = self.task_cookie(service).ok_or(Error::Denied)?;
@@ -818,8 +818,8 @@ impl BootstrapState {
             return Err(Error::Denied);
         }
         let ticket = request.ticket.ok_or(Error::Stale)?;
-        let root = request.root_cap.ok_or(Error::Stale)?;
-        let (revoked, revoked_count) = self.records.revoke_subtree(root);
+        request.root_cap.ok_or(Error::Stale)?;
+        let (revoked, revoked_count) = self.gate_request_caps(request.id);
         // Completed + Ready 迁移 + GateTerminated + 每个请求能力别名的撤销事件。
         let events = 3 + revoked_count;
         self.preflight_gate_audit(events, service_cookie, gate_audit::Operation::Terminate)
@@ -909,8 +909,8 @@ impl BootstrapState {
                 && request.phase != Phase::Idle
             {
                 events += 1; // GateCancelled
-                if let Some(root) = request.root_cap {
-                    events += self.records.revoke_subtree(root).1;
+                if request.root_cap.is_some() {
+                    events += self.gate_request_caps(request.id).1;
                 }
             }
             if let Some(gate) = tables.find(binding.gate)
@@ -924,7 +924,7 @@ impl BootstrapState {
             let Some(gate) = tables.find(id) else {
                 continue;
             };
-            if gate.service != task {
+            if gate.service != task || !gate.live {
                 continue;
             }
             events += 1; // GateOrphaned
@@ -937,8 +937,8 @@ impl BootstrapState {
                 }
                 // Completed + Ready 迁移 + GateTerminated，以及可能存在的请求能力别名。
                 events += 3;
-                if let Some(root) = request.root_cap {
-                    events += self.records.revoke_subtree(root).1;
+                if request.root_cap.is_some() {
+                    events += self.gate_request_caps(request.id).1;
                 }
             }
         }
@@ -957,8 +957,8 @@ impl BootstrapState {
             if let Some(request) = tables.slot_request(binding.slot) {
                 if request.phase != Phase::Idle {
                     cancelled = request.id;
-                    if let Some(root) = request.root_cap {
-                        let (revoked, count) = self.records.revoke_subtree(root);
+                    if request.root_cap.is_some() {
+                        let (revoked, count) = self.gate_request_caps(request.id);
                         for cap in revoked[..count].iter().copied() {
                             self.retire_capability(cap);
                             self.audit.append(AuditEvent::CapabilityRevoked { cap });
@@ -1007,62 +1007,204 @@ impl BootstrapState {
             });
         }
 
-        // 2) 作为固定服务者：孤儿化，并以配置值终结全部未决请求。
+        // 2) 固定服务者销毁；等待对象由 destroy_completion_waits 回收。
         for id in 1..=tables.gate_count {
-            let Some(gate) = tables.find(id) else {
-                continue;
-            };
-            if gate.service != task || !gate.live {
-                continue;
+            if let Some(gate) = tables
+                .find(id)
+                .filter(|gate| gate.live && gate.service == task)
+            {
+                self.orphan_gate(&mut tables, gate, true);
             }
-            let mut terminated = 0u32;
-            for slot in 0..MAX_BINDINGS as u32 {
-                let Some(request) = tables.slot_request(slot) else {
-                    continue;
-                };
-                if request.gate != gate.id || request.phase == Phase::Idle {
-                    continue;
-                }
-                let orphan = tables.binding(slot).map_or(0, |binding| binding.orphan);
-                if let Some(ticket) = request.ticket {
-                    // 请求者恢复时从保存帧返回配置值（只改 rax）。
-                    crate::sched::set_frame_rax(request.client, orphan);
-                    self.complete_completion_wait(ticket)
-                        .expect("cleanup preflighted the client wake");
-                }
-                if let Some(root) = request.root_cap {
-                    let (revoked, count) = self.records.revoke_subtree(root);
-                    for cap in revoked[..count].iter().copied() {
-                        self.retire_capability(cap);
-                        self.audit.append(AuditEvent::CapabilityRevoked { cap });
-                    }
-                }
-                self.audit.append(AuditEvent::GateTerminated {
-                    gate: gate.id,
-                    request: request.id,
-                    value: orphan,
-                    reason: Reason::Orphaned,
-                });
-                tables.clear_request(slot);
-                terminated += 1;
-            }
-            let mut gate = gate;
-            gate.live = false;
-            gate.service_ticket = None;
-            gate.service_wait = None;
-            gate.queue = [0; QUEUE_DEPTH];
-            gate.queue_head = 0;
-            gate.queue_len = 0;
-            gate.capacity = [0; MAX_BINDINGS];
-            gate.capacity_head = 0;
-            gate.capacity_len = 0;
-            tables.write(gate);
-            self.audit.append(AuditEvent::GateOrphaned {
-                gate: gate.id,
-                requests: terminated,
-            });
         }
         self.save_gate_tables(tables);
+    }
+
+    /// Only the Gate request lifecycle may leave retired identities in containers.
+    pub(super) fn retired_gate_request_cap(&self, cap: Handle) -> bool {
+        self.slots.check(cap) != SlotState::Live
+            && self
+                .capability_history_record(cap)
+                .is_some_and(|record| matches!(record.target, ObjectRef::GateRequest(_)))
+    }
+
+    /// 请求根可以先被 drop；按对象身份回收所有活动别名，不依赖仍存在的父链。
+    fn gate_request_caps(&self, request: u32) -> ([Handle; MAX_CAPABILITY_SLOTS], usize) {
+        let mut caps = [Handle::ZERO; MAX_CAPABILITY_SLOTS];
+        let mut count = 0;
+        for index in 1..MAX_CAPABILITY_SLOTS {
+            if let Some(record) = self.records.get_index(index)
+                && record.target == ObjectRef::GateRequest(request)
+            {
+                caps[count] = record.handle;
+                count += 1;
+            }
+        }
+        (caps, count)
+    }
+
+    fn gate_authority_survives(&self, target: ObjectRef, service: u32, lost: &[Handle]) -> bool {
+        (1..MAX_CAPABILITY_SLOTS).any(|index| {
+            self.records.get_index(index).is_some_and(|record| {
+                record.target == target
+                    && record.rights.contains(Right::GateServe)
+                    && self.holder_of(record.handle) == Some(self.space_of(service))
+                    && !lost.contains(&record.handle)
+            })
+        })
+    }
+
+    /// 只读投影：批量失去 token 后哪些门控将无服务授权。相同能力空间内移动不构成丢失。
+    pub(super) fn gate_cap_loss_plan(&self, lost: &[Handle], destination: Option<u32>) -> u32 {
+        if !lost.iter().any(|cap| {
+            matches!(
+                self.target_of(*cap),
+                Some(ObjectRef::Gate(_) | ObjectRef::GateRequest(_))
+            )
+        }) {
+            return 0;
+        }
+        let tables = self.gate_tables();
+        let mut mask = 0;
+        for id in 1..=tables.gate_count {
+            let Some(gate) = tables.find(id).filter(|gate| gate.live) else {
+                continue;
+            };
+            if destination == Some(self.space_of(gate.service)) {
+                continue;
+            }
+            let gate_lost =
+                !self.gate_authority_survives(ObjectRef::Gate(gate.id), gate.service, lost);
+            let request_lost = (0..MAX_BINDINGS as u32).any(|slot| {
+                tables.slot_request(slot).is_some_and(|request| {
+                    request.gate == gate.id
+                        && request.phase == Phase::Delivered
+                        && !self.gate_authority_survives(
+                            ObjectRef::GateRequest(request.id),
+                            gate.service,
+                            lost,
+                        )
+                })
+            });
+            if gate_lost || request_lost {
+                mask |= 1 << (id - 1);
+            }
+        }
+        mask
+    }
+
+    /// 包含原操作和孤儿化的总预算，在任何 token/位置/队列变更之前检查。
+    pub(super) fn preflight_gate_cap_loss(&mut self, mask: u32, base: usize, owner: u32) -> bool {
+        if mask == 0 {
+            return self.audit.can_append(base);
+        }
+        let tables = self.gate_tables();
+        let mut events = base;
+        for id in 1..=tables.gate_count {
+            if mask & (1 << (id - 1)) == 0 {
+                continue;
+            }
+            let gate = tables.find(id).expect("planned gate");
+            events += 1; // GateOrphaned
+            events += usize::from(gate.service_wait.is_some()); // Released
+            events += if gate.service_ticket.is_some() { 2 } else { 0 }; // Completed + Ready
+            for slot in 0..MAX_BINDINGS as u32 {
+                if let Some(request) = tables.slot_request(slot)
+                    && request.gate == id
+                    && request.phase != Phase::Idle
+                {
+                    events += 3 + self.gate_request_caps(request.id).1;
+                }
+            }
+        }
+        self.preflight_gate_audit(
+            events,
+            self.task_cookie(owner).unwrap_or(0),
+            gate_audit::Operation::Terminate,
+        )
+        .is_ok()
+    }
+
+    pub(super) fn commit_gate_cap_loss(&mut self, mask: u32) {
+        if mask == 0 {
+            return;
+        }
+        let mut tables = self.gate_tables();
+        for id in 1..=tables.gate_count {
+            if mask & (1 << (id - 1)) != 0 {
+                let gate = tables.find(id).expect("planned gate");
+                self.orphan_gate(&mut tables, gate, false);
+            }
+        }
+        self.save_gate_tables(tables);
+    }
+
+    fn orphan_gate(&mut self, tables: &mut Tables, gate: GateRecord, destroying: bool) {
+        if !destroying {
+            if let Some(ticket) = gate.service_ticket {
+                self.complete_completion_wait(ticket)
+                    .expect("preflighted service wake");
+            }
+            if let Some(wait) = gate.service_wait {
+                self.release_completion_wait(wait)
+                    .expect("preflighted service release");
+            }
+        }
+        let mut terminated = 0u32;
+        for slot in 0..MAX_BINDINGS as u32 {
+            let Some(request) = tables.slot_request(slot) else {
+                continue;
+            };
+            if request.gate != gate.id || request.phase == Phase::Idle {
+                continue;
+            }
+            let orphan = tables.binding(slot).map_or(0, |binding| binding.orphan);
+            if let Some(ticket) = request.ticket {
+                // 请求者恢复时从保存帧返回配置值（只改 rax）。
+                crate::sched::set_frame_rax(request.client, orphan);
+                self.complete_completion_wait(ticket)
+                    .expect("cleanup preflighted the client wake");
+            }
+            if request.root_cap.is_some() {
+                let (revoked, count) = self.gate_request_caps(request.id);
+                for cap in revoked[..count].iter().copied() {
+                    self.retire_capability(cap);
+                    self.audit.append(AuditEvent::CapabilityRevoked { cap });
+                }
+            }
+            self.audit.append(AuditEvent::GateTerminated {
+                gate: gate.id,
+                request: request.id,
+                value: orphan,
+                reason: Reason::Orphaned,
+            });
+            tables.set_request(
+                slot,
+                RequestRecord {
+                    id: 0,
+                    phase: Phase::Idle,
+                    ticket: None,
+                    root_cap: None,
+                    terminal: orphan,
+                    ..request
+                },
+            );
+            terminated += 1;
+        }
+        let mut gate = gate;
+        gate.live = false;
+        gate.service_ticket = None;
+        gate.service_wait = None;
+        gate.queue = [0; QUEUE_DEPTH];
+        gate.queue_head = 0;
+        gate.queue_len = 0;
+        gate.capacity = [0; MAX_BINDINGS];
+        gate.capacity_head = 0;
+        gate.capacity_len = 0;
+        tables.write(gate);
+        self.audit.append(AuditEvent::GateOrphaned {
+            gate: gate.id,
+            requests: terminated,
+        });
     }
 
     /// W17 风格投影：绑定/请求/队列/等待登记的双向一致性（host 单测使用）。
@@ -1138,7 +1280,7 @@ impl BootstrapState {
                 if self.task_cookie(gate.service) != Some(gate.service_cookie) {
                     return false;
                 }
-                if !self.cap_target_live(gate.root_cap) {
+                if !self.gate_authority_survives(ObjectRef::Gate(id), gate.service, &[]) {
                     return false;
                 }
                 if gate.queue_len as usize > QUEUE_DEPTH
@@ -1523,6 +1665,235 @@ mod tests {
         assert_eq!(state.gate_tables().binding_count, 0);
         assert!(state.gate_audit_diagnostic().is_some());
         assert_eq!(state.wait_objects.count, 0);
+    }
+
+    fn delivered_pair() -> (BootstrapState, AttachOutcome, Handle) {
+        let mut state = pair();
+        let out = attach(&mut state, 3, 0xdead);
+        state.yield_task(2).unwrap();
+        state.schedule_task(3).unwrap();
+        state.gate_trap(3, 1, [0; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, out.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        (state, out, request_cap)
+    }
+
+    #[test]
+    fn last_gate_authority_loss_covers_drop_move_revoke_namespace_and_ipc() {
+        let _serial = serial();
+        for action in 0..6 {
+            let (mut state, out, request) = delivered_pair();
+            state.create_task(4).unwrap();
+            match action {
+                0 => state.drop_capability(2, out.gate_cap).unwrap(),
+                1 => state.move_capability(out.gate_cap, 2, 4).unwrap(),
+                2 => state.revoke_capability(out.gate_cap, 2).unwrap(),
+                3 => {
+                    let ns = state.ns_create(2).unwrap();
+                    state
+                        .ns_bind(2, ns, Path::parse(b"gate").unwrap(), out.gate_cap)
+                        .unwrap();
+                }
+                4 | 5 => {
+                    let send = state
+                        .mint_root_capability(
+                            2,
+                            Rights::from_rights(&[Right::TaskSend]),
+                            ObjectRef::Task(4),
+                        )
+                        .unwrap();
+                    if action == 5 {
+                        state.block_recv_task(4).unwrap();
+                    }
+                    state
+                        .send_message_with_capabilities(2, 4, send, 0, &[out.gate_cap])
+                        .unwrap();
+                    let message = state.receive_message(4).unwrap();
+                    assert_eq!(message.capabilities[0], out.gate_cap);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                !state.gate_tables().find(out.gate).unwrap().live,
+                "action {action}"
+            );
+            assert_eq!(state.tasks.status_of(3), Some(TaskStatus::Ready));
+            assert_eq!(crate::sched::frame(3).unwrap().rax, 0xdead);
+            assert_eq!(state.gate_reply(2, request, 0, false), Err(Error::Stale));
+            assert_eq!(state.completion_wait_count(2), 0);
+            assert!(state.gate_well_formed(), "action {action}");
+        }
+    }
+
+    #[test]
+    fn dropped_roots_preserve_service_aliases_and_terminal_cleanup_finds_all_aliases() {
+        let _serial = serial();
+        let (mut state, out, request) = delivered_pair();
+        let gate_alias = state
+            .derive_capability(2, out.gate_cap, GATE_ROOT_RIGHTS)
+            .unwrap();
+        let req_alias = state
+            .derive_capability(2, request, REQUEST_ROOT_RIGHTS)
+            .unwrap();
+        let grandchild = state
+            .derive_capability(2, req_alias, REQUEST_ROOT_RIGHTS)
+            .unwrap();
+        state.drop_capability(2, out.gate_cap).unwrap();
+        state.drop_capability(2, request).unwrap();
+        state.drop_capability(2, req_alias).unwrap();
+        assert!(state.gate_tables().find(out.gate).unwrap().live);
+        assert!(state.gate_well_formed());
+        state.gate_reply(2, grandchild, 42, false).unwrap();
+        assert_ne!(state.slots.check(grandchild), SlotState::Live);
+        assert_eq!(crate::sched::frame(3).unwrap().rax, 42);
+        assert!(state.gate_tables().find(out.gate).unwrap().live);
+        state.drop_capability(2, gate_alias).unwrap();
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn same_holder_move_preserves_authority_but_external_subtree_revocation_orphans() {
+        let _serial = serial();
+        let (mut state, out, _) = delivered_pair();
+        state.move_capability(out.gate_cap, 2, 2).unwrap();
+        state
+            .derive_capability(2, out.gate_cap, Rights::from_rights(&[Right::GateAttach]))
+            .unwrap();
+        let alias = state
+            .derive_capability(2, out.gate_cap, GATE_ROOT_RIGHTS)
+            .unwrap();
+        state.create_task(4).unwrap();
+        state.move_capability(out.gate_cap, 2, 4).unwrap();
+        assert!(state.gate_tables().find(out.gate).unwrap().live);
+        state.revoke_capability(out.gate_cap, 4).unwrap();
+        assert_ne!(state.slots.check(alias), SlotState::Live);
+        assert!(!state.gate_tables().find(out.gate).unwrap().live);
+        assert_eq!(crate::sched::frame(3).unwrap().rax, 0xdead);
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn last_request_authority_loss_orphans_the_whole_gate() {
+        let _serial = serial();
+        for revoke in [false, true] {
+            let (mut state, out, request) = delivered_pair();
+            if revoke {
+                state.revoke_capability(request, 2).unwrap();
+            } else {
+                state.drop_capability(2, request).unwrap();
+            }
+            assert!(!state.gate_tables().find(out.gate).unwrap().live);
+            assert_eq!(crate::sched::frame(3).unwrap().rax, 0xdead);
+            assert_eq!(state.gate_wait(2, out.gate_cap), Err(Error::Stale));
+            assert!(state.gate_well_formed());
+        }
+    }
+
+    #[test]
+    fn transferring_the_last_request_token_preserves_container_delivery() {
+        let _serial = serial();
+        for namespace in [false, true] {
+            let (mut state, out, request) = delivered_pair();
+            if namespace {
+                let ns = state.ns_create(2).unwrap();
+                let path = Path::parse(b"request").unwrap();
+                state.ns_bind(2, ns, path, request).unwrap();
+                assert_eq!(state.ns_unbind(2, ns, path).unwrap(), request);
+            } else {
+                state.create_task(4).unwrap();
+                let send = state
+                    .mint_root_capability(
+                        2,
+                        Rights::from_rights(&[Right::TaskSend]),
+                        ObjectRef::Task(4),
+                    )
+                    .unwrap();
+                state
+                    .send_message_with_capabilities(2, 4, send, 123, &[request])
+                    .unwrap();
+                let message = state.receive_message(4).unwrap();
+                assert_eq!(message.payload, 123);
+                assert_eq!(message.capabilities[0], request);
+            }
+            assert!(!state.gate_tables().find(out.gate).unwrap().live);
+            assert_ne!(state.slots.check(request), SlotState::Live);
+            assert!(state.positions.find(request).is_none());
+            assert_eq!(crate::sched::frame(3).unwrap().rax, 0xdead);
+            assert!(state.gate_well_formed());
+        }
+    }
+
+    #[test]
+    fn authority_loss_wakes_and_releases_an_empty_service_wait() {
+        let _serial = serial();
+        let mut state = pair();
+        let out = attach(&mut state, 3, 7);
+        assert_eq!(
+            state.gate_wait(2, out.gate_cap).unwrap(),
+            WaitOutcome::Blocked
+        );
+        // An external ancestor holder may revoke while the service is blocked.
+        state.revoke_capability(out.gate_cap, 2).unwrap();
+        assert_eq!(state.tasks.status_of(2), Some(TaskStatus::Ready));
+        assert_eq!(state.completion_wait_count(2), 0);
+        assert_eq!(state.gate_wait(2, out.gate_cap), Err(Error::Stale));
+        assert!(state.gate_well_formed());
+        state.destroy_task(2).unwrap(); // no second orphan event or stale completion
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn authority_loss_audit_failure_preserves_tokens_waits_frames_and_gate() {
+        let _serial = serial();
+        for action in 0..3 {
+            let (mut state, out, request) = delivered_pair();
+            state.create_task(4).unwrap();
+            // The original operation alone fits, the orphan transaction does not.
+            assert!(
+                state
+                    .audit
+                    .reserve(MAX_AUDIT_EVENTS - state.audit.count - 1)
+            );
+            let before = (
+                state.audit.count,
+                state.slots,
+                state.gate_tables(),
+                state.holder_of(out.gate_cap),
+                crate::sched::frame(3).unwrap().rax,
+            );
+            match action {
+                0 => assert_eq!(
+                    state.drop_capability(2, out.gate_cap),
+                    Err(DropError::AuditFull)
+                ),
+                1 => assert_eq!(
+                    state.move_capability(out.gate_cap, 2, 4),
+                    Err(CapabilityPositionError::AuditFull)
+                ),
+                2 => assert_eq!(
+                    state.revoke_capability(out.gate_cap, 2),
+                    Err(CapabilityPositionError::AuditFull)
+                ),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                before,
+                (
+                    state.audit.count,
+                    state.slots,
+                    state.gate_tables(),
+                    state.holder_of(out.gate_cap),
+                    crate::sched::frame(3).unwrap().rax
+                )
+            );
+            assert_eq!(state.slots.check(request), SlotState::Live);
+            assert_eq!(state.tasks.status_of(3), Some(TaskStatus::BlockedWait));
+            assert!(state.gate_audit_diagnostic().is_some());
+            assert!(state.gate_well_formed());
+        }
     }
 
     #[test]

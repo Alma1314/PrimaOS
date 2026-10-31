@@ -1,0 +1,4 @@
+PASS docs self-test: Markdown, metadata, search, determinism, lifecycle, Git recovery, change guards
+Built 348 documents, 3402 sections
+PASS docs: 348 documents; catalog, IDs, topics, local links and Markdown anchors
+PASS docs: 348 documents; catalog, IDs, topics, local links and Markdown anchors

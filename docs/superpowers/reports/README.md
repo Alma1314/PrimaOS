@@ -104,6 +104,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+2026-10-31：[最后服务授权丢失钩子](2026-10-31-stage6-gate-authority-loss.md)，drop/move/revoke、Namespace/IPC 转移共用总预算与孤儿化提交；请求根丢弃后的别名回收，host 证据，非 G1–G3。
+
 2026-10-31：[S6-M1/M1b 内核门控对象与请求生命周期](2026-10-31-stage6-gate-lifecycle.md)，attach 预留、trap 入队/容量等待、出队交付、一次性答复、客户端销毁与服务者孤儿化在真实内核状态表上落地并有 10 组 host 反例；未分配 73–78、未接管 trap 入口、无 QEMU G1–G3。
 
 主分支整合：[按需输入、私有容量与冻结台账](2026-10-31-stage6-main-merge.md)，明确长度窗口冲突的取舍与整合验证范围。

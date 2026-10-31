@@ -4741,12 +4741,14 @@ impl BootstrapState {
                 .get(self.prepared_forks, id)
                 .is_some_and(|tx| tx.ticket == cap)
         });
-        if !prepared_ticket && !self.audit.can_append(1) {
+        let gate_loss = self.gate_cap_loss_plan(&[cap], None);
+        if !prepared_ticket && !self.preflight_gate_cap_loss(gate_loss, 1, caller) {
             return Err(DropError::AuditFull);
         }
         if self.retire_capability(cap) {
             self.audit.append(AuditEvent::CapabilityDropped { cap });
         }
+        self.commit_gate_cap_loss(gate_loss);
         Ok(())
     }
 
@@ -5716,7 +5718,8 @@ impl BootstrapState {
             .ns_entries
             .free_slot()
             .ok_or(NsError::CapacityExceeded)?;
-        if !self.audit.can_append(2) {
+        let gate_loss = self.gate_cap_loss_plan(&[cap], None);
+        if !self.preflight_gate_cap_loss(gate_loss, 2, caller) {
             return Err(NsError::AuditFull);
         }
         let from = self
@@ -5746,6 +5749,7 @@ impl BootstrapState {
             to: CapabilityLocation::InNamespace(ns),
         });
         self.audit.append(AuditEvent::NsBound { ns, path, cap });
+        self.commit_gate_cap_loss(gate_loss);
         Ok(())
     }
 
@@ -5772,14 +5776,18 @@ impl BootstrapState {
         self.ns_entries.clear(slot);
         let entries = self.ns_entries.count();
         self.set_namespace_entry_count(ns, entries);
-        self.positions
-            .move_from_namespace(entry.cap, ns, caller)
-            .map_err(|_| NsError::NotFound)?;
-        self.audit.append(AuditEvent::CapabilityMoved {
-            cap: entry.cap,
-            from: CapabilityLocation::InNamespace(ns),
-            to: CapabilityLocation::HeldByTask(caller),
-        });
+        // Gate termination may revoke a request token while its container persists.
+        // Return the original invalid identity without recreating authority or position.
+        if !self.retired_gate_request_cap(entry.cap) {
+            self.positions
+                .move_from_namespace(entry.cap, ns, caller)
+                .map_err(|_| NsError::NotFound)?;
+            self.audit.append(AuditEvent::CapabilityMoved {
+                cap: entry.cap,
+                from: CapabilityLocation::InNamespace(ns),
+                to: CapabilityLocation::HeldByTask(caller),
+            });
+        }
         self.audit.append(AuditEvent::NsUnbound {
             ns,
             path,
@@ -6795,7 +6803,8 @@ impl BootstrapState {
             return Err(CapabilityPositionError::StructuralCap);
         }
         let (revoked, revoked_count) = self.records.revoke_subtree(cap);
-        if !self.audit.can_append(revoked_count) {
+        let gate_loss = self.gate_cap_loss_plan(&revoked[..revoked_count], None);
+        if !self.preflight_gate_cap_loss(gate_loss, revoked_count, holder) {
             return Err(CapabilityPositionError::AuditFull);
         }
         for revoked_cap in revoked[..revoked_count].iter().copied() {
@@ -6803,6 +6812,7 @@ impl BootstrapState {
             self.audit
                 .append(AuditEvent::CapabilityRevoked { cap: revoked_cap });
         }
+        self.commit_gate_cap_loss(gate_loss);
         Ok(())
     }
 
@@ -6829,7 +6839,16 @@ impl BootstrapState {
         // M15b-2：holder 以能力空间（Process leader）表示；单线程 Task 退化为自身 id。
         let from_task = self.space_of(from_task);
         let to_task = self.space_of(to_task);
-        if !self.audit.can_append(1) {
+        // Validate source before preflighting a possible global stop.
+        if !self
+            .positions
+            .find(cap)
+            .is_some_and(|pos| pos.location.is_held_by(from_task))
+        {
+            return Err(CapabilityPositionError::HolderMismatch);
+        }
+        let gate_loss = self.gate_cap_loss_plan(&[cap], Some(to_task));
+        if !self.preflight_gate_cap_loss(gate_loss, 1, from_task) {
             return Err(CapabilityPositionError::AuditFull);
         }
         // 审计记录**实际**的源位置（内核持有的 cap 移交时 `from` 是 `HeldByKernel`）。
@@ -6844,6 +6863,7 @@ impl BootstrapState {
             from,
             to: CapabilityLocation::HeldByTask(to_task),
         });
+        self.commit_gate_cap_loss(gate_loss);
         Ok(())
     }
 
@@ -6872,13 +6892,15 @@ impl BootstrapState {
         {
             return Err(CapabilityPositionError::StructuralCap);
         }
-        if !self.audit.can_append(count) {
+        let gate_loss = self.gate_cap_loss_plan(&handles[..count], None);
+        if !self.preflight_gate_cap_loss(gate_loss, count, task_id) {
             return Err(CapabilityPositionError::AuditFull);
         }
         for cap in handles[..count].iter().copied() {
             self.retire_capability(cap);
             self.audit.append(AuditEvent::CapabilityDropped { cap });
         }
+        self.commit_gate_cap_loss(gate_loss);
         Ok(count)
     }
 
@@ -7807,11 +7829,17 @@ impl BootstrapState {
         // §13.1：每个携带的 Capability 都发生一次位置变化（→ `InMessage` 或 `HeldBy(receiver)`），
         // 各追加一条 `CapabilityMoved`。
         let audit_events = (if direct_delivery { 2 } else { 1 }) + capability_ids.len();
-        if !self.audit.can_append(audit_events) {
-            return Err(IpcError::AuditFull);
-        }
         if !self.ipc.can_allocate_ids(1) {
             return Err(IpcError::QueueFull);
+        }
+        let destination = if direct_delivery {
+            Some(self.space_of(receiver))
+        } else {
+            None
+        };
+        let gate_loss = self.gate_cap_loss_plan(capability_ids, destination);
+        if !self.preflight_gate_cap_loss(gate_loss, audit_events, sender) {
+            return Err(IpcError::AuditFull);
         }
         let message = IpcMessage {
             id: self.ipc.allocate_id(),
@@ -7870,6 +7898,7 @@ impl BootstrapState {
                 receiver,
             });
         }
+        self.commit_gate_cap_loss(gate_loss);
         Ok(())
     }
 
@@ -7890,9 +7919,12 @@ impl BootstrapState {
                     .copied()
                 {
                     let from = self.positions.find(cap).map(|position| position.location);
-                    self.positions
-                        .move_from_message(cap, message.id, receiver)
-                        .map_err(|_| IpcError::InvalidCapability)?;
+                    // Revocation does not discard the enclosing message or revive its token.
+                    if !self.retired_gate_request_cap(cap) {
+                        self.positions
+                            .move_from_message(cap, message.id, receiver)
+                            .map_err(|_| IpcError::InvalidCapability)?;
+                    }
                     // §13.1：位置变化必须追加 `CapabilityMoved`（接收：`InMessage` → `HeldBy(receiver)`）。
                     if let Some(from) = from {
                         self.audit.append(AuditEvent::CapabilityMoved {
