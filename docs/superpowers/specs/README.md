@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-27
+updated: 2026-10-31
 ---
 
 # Specs 索引
@@ -36,6 +36,8 @@ updated: 2026-10-27
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
 ## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
+
+2026-10-31：[S6-M2 按需 ELF 输入与故障回滚](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；149 页上限和 Gate/LibOS 仍未完成。
 
 2026-10-28 裁决：[阶段 6–7 前置裁决（D11–D16）](2026-10-28-stage6-7-release-decisions.md)——白名单冻结、`AT_RANDOM` 兼容字段、多 LibOS 升 7-A 并先做探索原型、SMP 前状态分区、阶段 7 拆九条子轨。裁决不启动阶段 6，也不签署任何阶段。
 

@@ -1404,15 +1404,17 @@ fn exec_handoff_call(pointer: u64) -> u64 {
     }
 }
 
-// These input scratch frames must unwind before allocating image Segments.
-// Inlining them into exec_call makes its construction path exceed the 32KiB
-// syscall stack in the unoptimized kernel; preserve the frame boundary.
+// Retire parser scratch before building the replacement image.
 #[inline(never)]
 fn load_exec_plan(image: u64, length: u64) -> Result<crate::exec::ExecPlan, Errno> {
-    let mut header = [0; 4096];
-    let bytes = (length as usize).min(header.len());
-    copy_user_bytes(image, &mut header[..bytes])?;
-    crate::exec::plan_len(&header[..bytes], length).map_err(|_| Errno::Exec)
+    image.checked_add(length).ok_or(Errno::Fault)?;
+    crate::exec::plan_read(length, |offset, output| {
+        copy_user_bytes(image.checked_add(offset).ok_or(Errno::Fault)?, output)
+    })
+    .map_err(|error| match error {
+        crate::exec::PlanReadError::Image(_) => Errno::Exec,
+        crate::exec::PlanReadError::Read(error) => error,
+    })
 }
 
 #[inline(never)]
@@ -1468,7 +1470,7 @@ fn prepare_exec_image(
     input: [u64; 5],
     pages: usize,
     retained_count: usize,
-) -> Result<(u64, u32, u64), Errno> {
+) -> Result<(u64, u32, u64), (Errno, bool)> {
     let [image, argv_ptr, argv_count, env_ptr, env_count] = input;
     let mut stack = [0u8; 4096];
     let layout = prepare_exec_stack(
@@ -1478,9 +1480,10 @@ fn prepare_exec_image(
         env_ptr,
         env_count as usize,
         &mut stack,
-    )?;
+    )
+    .map_err(|error| (error, false))?;
     let Ok(new_root) = crate::frames::allocate_table_frame() else {
-        return Err(Errno::NoSpace);
+        return Err((Errno::NoSpace, false));
     };
     let map = |phys| phys_to_virt(phys, offset);
     vspace::clone_supervisor_root(root, new_root, map);
@@ -1488,7 +1491,7 @@ fn prepare_exec_image(
         Ok(value) => value,
         Err(error) => {
             let _ = crate::frames::release_table_frame(new_root);
-            return Err(memseg_errno(error));
+            return Err((memseg_errno(error), false));
         }
     };
     // Track every table reservation, including map_4k's unlinked partial batch.
@@ -1610,8 +1613,9 @@ fn prepare_exec_image(
             let _ = crate::frames::release_table_frame(*frame);
         }
         let _ = crate::frames::release_table_frame(new_root);
-        bootstrap::reclaim_exec_segments().expect("exec rollback audit reserved");
-        return Err(error);
+        // Reclaim the staged Segment only after this large construction frame
+        // has unwound; nested memseg_destroy otherwise crosses the stack guard.
+        return Err((error, true));
     }
     Ok((new_root, segment, layout.rsp))
 }
@@ -1634,9 +1638,6 @@ fn exec_call(
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
-    if !(120..=(1 << 20)).contains(&image_len) {
-        return encode_errno(Errno::Exec);
-    }
     if argv_count > 16 || env_count > 16 {
         return encode_errno(Errno::NoSpace);
     }
@@ -1730,7 +1731,12 @@ fn exec_call(
         retained_count,
     ) {
         Ok(image) => image,
-        Err(error) => return encode_errno(error),
+        Err((error, reclaim)) => {
+            if reclaim {
+                bootstrap::reclaim_exec_segments().expect("exec rollback audit reserved");
+            }
+            return encode_errno(error);
+        }
     };
     if let Some(cap) = transfer.and_then(|t| t.adopt) {
         bootstrap::adopt_exec_segment(cur, cap);

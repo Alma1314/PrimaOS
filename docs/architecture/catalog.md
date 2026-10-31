@@ -89,7 +89,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（185）
+## report（186）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -278,6 +278,7 @@
 | [S6-M1 审计停止控制器：裸机耗尽与停止边界验收](../superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md` |
 | [S6-M1 内核私有等待：登记、信号隔离与代次完成](../superpowers/reports/2026-10-30-stage6-private-completion-waits.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md` |
 | [S6-M1 接线前置：真实页表输出预检与 COW 事务](../superpowers/reports/2026-10-30-stage6-user-copy-transactions.md) | historical | `docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md` |
+| [S6-M2：按需 ELF 输入与 exec 失败退栈回收](../superpowers/reports/2026-10-31-stage6-streamed-elf-input.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md` |
 
 ## spec（4）
 
@@ -288,7 +289,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（85）
+## specification（86）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -377,6 +378,7 @@
 | [S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）](../superpowers/specs/2026-10-29-stage6-m1-delivery-design.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md` |
 | [S6-M1 递送机制的六项裁决（D17–D22）](../superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md` |
 | [S6-M1 协议收口：候选 A、单服务者与不可警报等待](../superpowers/specs/2026-10-29-stage6-m1-protocol.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md` |
+| [S6-M2：按需读取原生 exec 的 ELF 输入](../superpowers/specs/2026-10-31-stage6-streamed-elf-input.md) | current | `docs/superpowers/specs/2026-10-31-stage6-streamed-elf-input.md` |
 
 ## template（4）
 

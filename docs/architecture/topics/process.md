@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-25
+updated: 2026-10-31
 ---
 
 # 进程、线程、fork、exec 与信号
@@ -24,6 +24,11 @@ Process 与 Task/Thread 如何关联？pthread join、fork/wait、exec_replace �
 先确认阶段跟踪与契约，再按下面链读取设计、计划和报告。历史工件中未开始/未实现的表述只属于其当时基线。
 
 M16b-1/2 的 clone/join 阻塞 → M16b-3 clear_child_tid 与 W4/W5。M17b-2/3 的 COW/wait 不完整 → M17b-4 W6。M17c-1 解析 → c-2 契约 → c-3 内存 exec → c-4 父预读 VFS 镜像后子 exec。M18a 默认终止 → M18b handler/sigreturn；后者只补强 handler 范围。
+
+S6-M2 的[按需 ELF 输入契约](../../superpowers/specs/2026-10-31-stage6-streamed-elf-input.md)
+与[修复/失败证据](../../superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)关闭
+原生 exec 的 1 MiB 输入及首个 4 KiB 程序头限制；稀疏输入仅载入两页段数据，
+不能替代 busybox 的 526 页装载、Gate 或 Linux LibOS。
 
 ## 契约、计划与证据入口
 

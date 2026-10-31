@@ -453,12 +453,17 @@
       "ISSUE-FORK-CONTINUATION-001",
       "clone_root_cow",
       "wait_status_bytes",
-      "test-process"
+      "test-process",
+      "plan_read",
+      "streamed ELF",
+      "稀疏 ELF"
     ],
     "sources": [
       "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
       "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md",
       "docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md",
+      "docs/superpowers/specs/2026-10-31-stage6-streamed-elf-input.md",
+      "docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md",
       "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
       "docs/superpowers/reports/2026-10-23-stage5-m16b1-clone-basis.md",
       "docs/superpowers/reports/2026-10-23-stage5-m16b2-musl-clone.md",

@@ -148,46 +148,74 @@ fn u64_at(data: &[u8], offset: usize) -> Result<u64, ExecError> {
     Ok(u64::from_le_bytes(value))
 }
 
-/// 解析静态 ELF64（`image_len` 用于校验段边界；`image` 可只含头部）。
-pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
-    if image.len() < ELF_HEADER_LEN {
-        return Err(ExecError::Truncated);
+/// A malformed image and an inaccessible source are different syscall errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanReadError<E> {
+    Image(ExecError),
+    Read(E),
+}
+
+impl<E> From<ExecError> for PlanReadError<E> {
+    fn from(error: ExecError) -> Self {
+        Self::Image(error)
     }
+}
+
+/// Read only the ELF header and one program header at a time. File offsets need
+/// not fit a fixed prefix or a contiguous caller buffer; payload is copied later.
+/// The reader owns address/root validation. No source bytes are read outside the
+/// declared file length, and a read error is preserved independently of ELF errors.
+pub fn plan_read<E>(
+    image_len: u64,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), E>,
+) -> Result<ExecPlan, PlanReadError<E>> {
+    if image_len < ELF_HEADER_LEN as u64 {
+        return Err(ExecError::Truncated.into());
+    }
+    let mut elf = [0u8; ELF_HEADER_LEN];
+    read(0, &mut elf).map_err(PlanReadError::Read)?;
+    let image = &elf[..];
     if image.get(0..4) != Some(b"\x7fELF") || image.get(4) != Some(&2) || image.get(5) != Some(&1) {
-        return Err(ExecError::BadMagic);
+        return Err(ExecError::BadMagic.into());
     }
     if u16_at(image, 16)? != ET_EXEC {
-        return Err(ExecError::NotExecutable);
+        return Err(ExecError::NotExecutable.into());
     }
     if u16_at(image, 18)? != EM_X86_64 {
-        return Err(ExecError::NotX86_64);
+        return Err(ExecError::NotX86_64.into());
     }
     let entry = u64_at(image, 24)?;
-    let phoff = u64_at(image, 32)? as usize;
+    let phoff = u64_at(image, 32)?;
     let phentsize = u16_at(image, 54)? as usize;
     let phnum = u16_at(image, 56)? as usize;
     if phentsize != PROGRAM_HEADER_LEN || phnum == 0 {
-        return Err(ExecError::BadProgramHeaders);
+        return Err(ExecError::BadProgramHeaders.into());
+    }
+    let header_end = phoff
+        .checked_add((phnum * PROGRAM_HEADER_LEN) as u64)
+        .ok_or(ExecError::BadProgramHeaders)?;
+    if header_end > image_len {
+        return Err(ExecError::Truncated.into());
     }
     let mut segments = [None; MAX_EXEC_SEGMENTS];
     let mut count = 0usize;
     for index in 0..phnum {
-        let header = phoff
-            .checked_add(index * PROGRAM_HEADER_LEN)
-            .ok_or(ExecError::Truncated)?;
-        let p_type = u32_at(image, header)?;
-        let offset = u64_at(image, header + 8)?;
-        let vaddr = u64_at(image, header + 16)?;
-        let filesz = u64_at(image, header + 32)?;
-        let memsz = u64_at(image, header + 40)?;
-        let flags = u32_at(image, header + 4)?;
+        let offset_in_image = phoff + (index * PROGRAM_HEADER_LEN) as u64;
+        let mut header = [0u8; PROGRAM_HEADER_LEN];
+        read(offset_in_image, &mut header).map_err(PlanReadError::Read)?;
+        let p_type = u32_at(&header, 0)?;
+        let offset = u64_at(&header, 8)?;
+        let vaddr = u64_at(&header, 16)?;
+        let filesz = u64_at(&header, 32)?;
+        let memsz = u64_at(&header, 40)?;
+        let flags = u32_at(&header, 4)?;
         match p_type {
-            PT_INTERP => return Err(ExecError::Dynamic),
+            PT_INTERP => return Err(ExecError::Dynamic.into()),
             // 可执行栈是显式的危险声明：确定性拒绝，而不是静默降级成可执行数据页。
             // 缺少 `PT_GNU_STACK` 的旧映像按"数据栈"处理，不拒绝。
             PT_GNU_STACK => {
                 if flags & PF_X != 0 {
-                    return Err(ExecError::ExecutableStack);
+                    return Err(ExecError::ExecutableStack.into());
                 }
                 continue;
             }
@@ -198,25 +226,25 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
             _ => continue,
         }
         if memsz < filesz || memsz == 0 {
-            return Err(ExecError::BadProgramHeaders);
+            return Err(ExecError::BadProgramHeaders.into());
         }
         if filesz > 0 {
             let end = offset.checked_add(filesz).ok_or(ExecError::Truncated)?;
             if end > image_len {
-                return Err(ExecError::SegmentOutsideImage);
+                return Err(ExecError::SegmentOutsideImage.into());
             }
         }
         // 文件字节与 VA 必须同余（模页大小）：这是 Linux 装载器的唯一对齐前提。
         if vaddr & 0xfff != offset & 0xfff {
-            return Err(ExecError::Misaligned);
+            return Err(ExecError::Misaligned.into());
         }
         if flags & PF_W != 0 && flags & PF_X != 0 {
-            return Err(ExecError::WritableExecutable);
+            return Err(ExecError::WritableExecutable.into());
         }
         let map_start = vaddr & !0xfff;
         let end = vaddr.checked_add(memsz).ok_or(ExecError::InvalidAddress)?;
         if map_start < 4096 || end > 0x0000_7f00_0000_0000 {
-            return Err(ExecError::InvalidAddress);
+            return Err(ExecError::InvalidAddress.into());
         }
         let page_end = end.checked_add(4095).ok_or(ExecError::InvalidAddress)? & !4095;
         if segments[..count]
@@ -224,10 +252,10 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
             .flatten()
             .any(|part: &ExecSegment| map_start < part.map_end() && part.map_start < page_end)
         {
-            return Err(ExecError::OverlappingSegments);
+            return Err(ExecError::OverlappingSegments.into());
         }
         if count == MAX_EXEC_SEGMENTS {
-            return Err(ExecError::TooManySegments);
+            return Err(ExecError::TooManySegments.into());
         }
         segments[count] = Some(ExecSegment {
             vaddr,
@@ -242,24 +270,21 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
         count += 1;
     }
     if count == 0 {
-        return Err(ExecError::NotExecutable);
+        return Err(ExecError::NotExecutable.into());
     }
     if !segments
         .iter()
         .flatten()
         .any(|part| part.executable && entry >= part.vaddr && entry < part.vaddr + part.memsz)
     {
-        return Err(ExecError::InvalidEntry);
+        return Err(ExecError::InvalidEntry.into());
     }
-    let header_end = (phoff as u64)
-        .checked_add((phnum * PROGRAM_HEADER_LEN) as u64)
-        .ok_or(ExecError::BadProgramHeaders)?;
     let phdr = segments
         .iter()
         .flatten()
         .find_map(|part| {
-            (part.offset <= phoff as u64 && header_end <= part.offset + part.filesz)
-                .then(|| part.vaddr + phoff as u64 - part.offset)
+            (part.offset <= phoff && header_end <= part.offset + part.filesz)
+                .then(|| part.vaddr + phoff - part.offset)
         })
         .unwrap_or(0);
     Ok(ExecPlan {
@@ -268,6 +293,21 @@ pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
         entry,
         segments,
         count,
+    })
+}
+
+/// Parse a byte prefix containing all headers, with full-file segment bounds.
+pub fn plan_len(image: &[u8], image_len: u64) -> Result<ExecPlan, ExecError> {
+    plan_read(image_len, |offset, output| {
+        let start = usize::try_from(offset).map_err(|_| ExecError::Truncated)?;
+        let end = start
+            .checked_add(output.len())
+            .ok_or(ExecError::Truncated)?;
+        output.copy_from_slice(image.get(start..end).ok_or(ExecError::Truncated)?);
+        Ok(())
+    })
+    .map_err(|error| match error {
+        PlanReadError::Image(error) | PlanReadError::Read(error) => error,
     })
 }
 
@@ -515,6 +555,81 @@ mod tests {
         let plan = plan_len(prefix, image.len() as u64).expect("plan_len");
         assert_eq!(plan.entry, 0x400000);
         assert_eq!(plan.count, 1);
+    }
+
+    #[test]
+    fn stream_reads_only_headers_even_with_large_sparse_offsets() {
+        let phoff = 0x2ff0u64;
+        let file_offset = 0x201000;
+        let mut image = synthetic_elf_with(&[(file_offset, 0x400000, 8192, 8192, PF_X)], &[]);
+        let header = image.split_off(ELF_HEADER_LEN);
+        image[32..40].copy_from_slice(&phoff.to_le_bytes());
+        let mut reads = vec![];
+        let plan = plan_read(file_offset + 8192, |offset, output: &mut [u8]| {
+            reads.push((offset, output.len()));
+            match offset {
+                0 => output.copy_from_slice(&image),
+                n if n == phoff => output.copy_from_slice(&header),
+                _ => return Err("read a file hole or payload during planning"),
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(reads, [(0, ELF_HEADER_LEN), (phoff, PROGRAM_HEADER_LEN)]);
+        assert_eq!(plan.segments[0].unwrap().offset, file_offset);
+        assert_eq!(plan.segments[0].unwrap().pages(), 2);
+        assert_eq!(plan.phdr, 0, "headers need not be in a loadable segment");
+    }
+
+    #[test]
+    fn stream_rejects_header_bounds_before_reading_outside_file() {
+        let mut image = synthetic_elf(&[(0x400000, 8, 8, PF_X)]);
+        for (phoff, length, expected) in [
+            (u64::MAX - 10, u64::MAX, ExecError::BadProgramHeaders),
+            (
+                0x3000,
+                0x3000 + PROGRAM_HEADER_LEN as u64 - 1,
+                ExecError::Truncated,
+            ),
+        ] {
+            image[32..40].copy_from_slice(&phoff.to_le_bytes());
+            let mut reads = 0;
+            let result = plan_read(length, |offset, output: &mut [u8]| {
+                assert_eq!(offset, 0, "out-of-bounds headers must never be read");
+                reads += 1;
+                output.copy_from_slice(&image[..ELF_HEADER_LEN]);
+                Ok::<(), ()>(())
+            });
+            assert_eq!(result, Err(PlanReadError::Image(expected)));
+            assert_eq!(reads, 1);
+        }
+        assert_eq!(
+            plan_read(63, |_, _: &mut [u8]| -> Result<(), ()> {
+                panic!("short ELF")
+            }),
+            Err(PlanReadError::Image(ExecError::Truncated))
+        );
+    }
+
+    #[test]
+    fn stream_preserves_source_errors_and_stops_on_the_first_failure() {
+        let image = synthetic_elf(&[(0x400000, 8, 8, PF_X), (0x600000, 8, 8, PF_W)]);
+        for failed_offset in [0, 64, 120] {
+            let mut reads = vec![];
+            assert_eq!(
+                plan_read(image.len() as u64, |offset, output: &mut [u8]| {
+                    reads.push(offset);
+                    if offset == failed_offset {
+                        return Err(17u32);
+                    }
+                    let start = offset as usize;
+                    output.copy_from_slice(&image[start..start + output.len()]);
+                    Ok(())
+                }),
+                Err(PlanReadError::Read(17))
+            );
+            assert_eq!(reads.last(), Some(&failed_offset));
+        }
     }
 
     #[test]
@@ -809,6 +924,21 @@ mod tests {
         let path = std::env::var("PRIMA_ELF_SAMPLE").expect("PRIMA_ELF_SAMPLE");
         let bytes = std::fs::read(&path).expect("read sample");
         let plan = plan(&bytes).expect("static ELF must plan");
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(&path).expect("open sample");
+        let mut read_bytes = 0;
+        let streamed = plan_read(bytes.len() as u64, |offset, output: &mut [u8]| {
+            assert!(output.len() <= ELF_HEADER_LEN);
+            read_bytes += output.len();
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(output)
+        })
+        .expect("streamed static ELF must plan");
+        assert_eq!(streamed, plan);
+        assert_eq!(
+            read_bytes,
+            ELF_HEADER_LEN + plan.phnum as usize * PROGRAM_HEADER_LEN
+        );
         assert!(plan.count > 0);
         assert_ne!(plan.phdr, 0, "AT_PHDR must resolve into a mapped segment");
         let exec = plan

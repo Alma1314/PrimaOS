@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-10-31
 ---
 
 # Reports 索引
@@ -97,6 +97,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
 ## 阶段 6（进行中，2026-10-29 启动）
+
+2026-10-31：[S6-M2 ELF 输入流式读取、源页故障与退栈回收](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；149 页上限和 Gate/LibOS 仍未完成。
 
 阶段 6 于 2026-10-29 由作者指令启动，状态为**进行中**；退出条件与交付检查仍全部未勾选。
 本节收录阶段 6 的实现证据与准备性证据。

@@ -4,7 +4,7 @@ kind: report
 authority: scoped-evidence
 status: validated-with-limits
 lifecycle: current
-updated: 2026-10-29
+updated: 2026-10-31
 ---
 
 # 阶段 6 启动与首个 S6-M2 增量：确定性 `AT_RANDOM`
@@ -96,3 +96,11 @@ updated: 2026-10-29
   [装载切片](2026-10-28-stage6-loader-slice.md)、[白名单台账](../compat/stage6-static-whitelist.md)
 - 下一步：S6-M1 递送架构文档（设计与评审）→ 装载容量（`MAX_SEGMENT_FRAMES`/`image_len`/
   初始栈）→ 白名单镜像入库 → S6-M3 profile 行
+
+## ELF 输入读取后继（2026-10-31）
+
+[按需读取与故障回滚](2026-10-31-stage6-streamed-elf-input.md)关闭原生 exec 的 1 MiB
+文件长度与首个 4 KiB 程序头限制，并验证超过 2 MiB 的稀疏合成输入。段数据在该后继的
+基线 `b0d78cf` 中已经逐页复制；本文早期“整块 copy-in/流式装载未实现”的描述不再作为
+当前实现结论。149 页映像帧容量、8 页初始栈验证、VFS 大文件来源与 Gate/LibOS 的缺口
+仍保留；后继不代表白名单成员运行或 S6-D1 完成。

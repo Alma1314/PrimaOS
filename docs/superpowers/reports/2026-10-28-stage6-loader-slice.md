@@ -4,7 +4,7 @@ kind: report
 authority: scoped-evidence
 status: validated-with-limits
 lifecycle: current
-updated: 2026-10-28
+updated: 2026-10-31
 ---
 
 # 阶段 6 准备性切片：静态 ELF 装载一致性与初始 auxv
@@ -253,3 +253,11 @@ exec 路径与阶段 5 M12 冻结的 C 探针路径（[8 对](../reports/2026-10
 - 后继：S6-M1 的递送机制单独成文并需架构评审；本次切片在 S6-M1 有结论后应按其
   请求/回复语义重新检查初始栈交接（`AT_EXECFN`/`AT_PHDR` 是否仍由内核构造，还是
   移交 LibOS）。若届时结论要求改由 LibOS 构造，本文第 3 节将被后继设计取代。
+
+## ELF 输入读取后继（2026-10-31）
+
+[按需读取与故障回滚](2026-10-31-stage6-streamed-elf-input.md)关闭原生 exec 的 1 MiB
+文件长度与首个 4 KiB 程序头限制，并验证超过 2 MiB 的稀疏合成输入。段数据在该后继的
+基线 `b0d78cf` 中已经逐页复制；本文早期“整块 copy-in/流式装载未实现”的描述不再作为
+当前实现结论。149 页映像帧容量、8 页初始栈验证、VFS 大文件来源与 Gate/LibOS 的缺口
+仍保留；后继不代表白名单成员运行或 S6-D1 完成。
