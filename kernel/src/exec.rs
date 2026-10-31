@@ -22,30 +22,17 @@ pub const ELF_HEADER_LEN: usize = 64;
 /// ELF64 程序头长度。
 pub const PROGRAM_HEADER_LEN: usize = 56;
 
-/// `auxv` 里本内核会提供的键（取值见 [`static_auxv`] 与 [`build_initial_stack`]）。
-pub const AT_PHDR: u64 = 3;
-pub const AT_PHENT: u64 = 4;
-pub const AT_PHNUM: u64 = 5;
-pub const AT_PAGESZ: u64 = 6;
-pub const AT_BASE: u64 = 7;
-pub const AT_FLAGS: u64 = 8;
-pub const AT_ENTRY: u64 = 9;
-pub const AT_UID: u64 = 11;
-pub const AT_EUID: u64 = 12;
-pub const AT_GID: u64 = 13;
-pub const AT_EGID: u64 = 14;
-pub const AT_HWCAP: u64 = 16;
-pub const AT_CLKTCK: u64 = 17;
-pub const AT_SECURE: u64 = 23;
-pub const AT_RANDOM: u64 = 25;
-pub const AT_EXECFN: u64 = 31;
+/// `auxv` 键号与取值口径的唯一来源是 [`prima_abi::auxv`]（S6-M2 ⑤）：内核 exec 路径与
+/// `prima-servicemgr` 的 C 装载路径此前各写一份字面量，漂移只能人工核对。这里只保留
+/// 本路径实际用到的别名，不再重复定义号。
+use prima_abi::auxv::{EXECFN as AT_EXECFN, HWCAP as AT_HWCAP, RANDOM as AT_RANDOM};
 
 /// 初始栈上 `AT_RANDOM` 指向的 16 字节块。
 ///
 /// **公开、确定、非机密**：本项目没有可信熵源，这里提供该字段只为让 SSP 构建的
 /// 未修改二进制能完成 libc 启动（其 canary 初值可能来自这里），不是安全机制。
 /// 任何"抗利用"论证都不得引用它（D13 裁决）。改内容＝重新裁决。
-pub const AT_RANDOM_BYTES: [u8; 16] = *b"PRIMA-RND-16BYTE";
+pub const AT_RANDOM_BYTES: [u8; 16] = prima_abi::auxv::RANDOM_BYTES;
 
 const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
@@ -323,8 +310,9 @@ pub struct StackLayout {
     pub argc: u64,
 }
 
-/// exec 时提供的静态 `auxv` 条目（`AT_EXECFN` 之外的全部键）。
+/// exec 时提供的静态 `auxv` 条目（`AT_HWCAP`/`AT_RANDOM`/`AT_EXECFN` 之外的全部键）。
 ///
+/// 键号、键序与取值口径都来自 [`prima_abi::auxv`]（S6-M2 ⑤），本函数只填装载相关的值。
 /// 与[静态程序契约](../../docs/superpowers/specs/2026-10-26-static-program-contract-design.md)
 /// 及 M12 冻结集合一致：`AT_PAGESZ`/`AT_PHDR`/`AT_PHENT`/`AT_PHNUM`/`AT_ENTRY`/
 /// `AT_BASE`/`AT_EXECFN`，另加取值恒定的身份与时钟项，使未修改的 libc 启动路径
@@ -335,21 +323,19 @@ pub struct StackLayout {
 /// 读成"特性缺失"的证明。`AT_RANDOM` 由 [`build_initial_stack`] 单独追加：它指向栈上的
 /// [`AT_RANDOM_BYTES`]，是公开常量而非熵（D13 裁决：兼容字段，不构成机密性主张）。
 pub fn static_auxv(plan: &ExecPlan) -> [(u64, u64); 13] {
-    [
-        (AT_PAGESZ, 4096),
-        (AT_PHDR, plan.phdr),
-        (AT_PHENT, PROGRAM_HEADER_LEN as u64),
-        (AT_PHNUM, plan.phnum),
-        (AT_BASE, 0),
-        (AT_ENTRY, plan.entry),
-        (AT_FLAGS, 0),
-        (AT_SECURE, 0),
-        (AT_UID, 0),
-        (AT_EUID, 0),
-        (AT_GID, 0),
-        (AT_EGID, 0),
-        (AT_CLKTCK, 100),
-    ]
+    let values = prima_abi::auxv::Values::new(
+        4096,
+        plan.phdr,
+        PROGRAM_HEADER_LEN as u64,
+        plan.phnum,
+        plan.entry,
+    );
+    let mut pairs = [(0u64, 0u64); 13];
+    for (slot, key) in pairs.iter_mut().zip(prima_abi::auxv::STATIC_KEYS) {
+        let value = prima_abi::auxv::value(&values, key).expect("static auxv key resolves");
+        *slot = (key, value);
+    }
+    pairs
 }
 
 /// 构造 exec 的完整初始栈：`static_auxv` 加 `AT_HWCAP` 与 `AT_EXECFN`
@@ -499,6 +485,12 @@ fn build_stack_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 键号只在 `prima_abi::auxv` 定义一次；测试按同名读取，避免另写一份字面量。
+    use prima_abi::auxv::{
+        BASE as AT_BASE, CLKTCK as AT_CLKTCK, EGID as AT_EGID, ENTRY as AT_ENTRY, EUID as AT_EUID,
+        FLAGS as AT_FLAGS, GID as AT_GID, PAGESZ as AT_PAGESZ, PHDR as AT_PHDR, PHENT as AT_PHENT,
+        PHNUM as AT_PHNUM, SECURE as AT_SECURE, UID as AT_UID,
+    };
 
     const PF_R: u32 = 4;
 
@@ -916,8 +908,12 @@ mod tests {
     /// 运维提供的未修改静态 ELF 的装载演练（默认跳过，仓库不携带二进制）。
     ///
     /// 运行：`PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib -- --ignored`。
-    /// 断言的是**解析结果**，不是运行结果：本切片没有 Linux LibOS，见
-    /// `docs/superpowers/reports/2026-10-28-stage6-simple-slice.md`。
+    /// 断言的是**解析结果**，不是运行结果：本项目还没有 Linux LibOS，见
+    /// `docs/superpowers/reports/2026-10-28-stage6-loader-slice.md`。
+    ///
+    /// 用 D12 白名单的 `busybox-static 1:1.36.1-6ubuntu3.1`（`sha256=dbac288c…`、
+    /// 2 124 608 字节）跑这份演练时，核对 526 页载入需求及当前私有 exec 预算。
+    /// 按需读取与完整文件解析必须一致；这不等于该制品已经实际装载或运行。
     #[test]
     #[ignore = "needs PRIMA_ELF_SAMPLE pointing at an unmodified static Linux ELF"]
     fn plan_accepts_operator_supplied_static_linux_elf() {
@@ -952,6 +948,20 @@ mod tests {
             assert_eq!(part.vaddr & 0xfff, part.offset & 0xfff);
             assert!(!(part.writable && part.executable));
             assert!(part.map_start >= 4096);
+        }
+        // D12 白名单二进制：解析结果与装载容量都按这个具体映像核对。
+        if bytes.len() == 2_124_608 {
+            let pages: u64 = plan
+                .segments
+                .iter()
+                .flatten()
+                .map(|part| part.pages())
+                .sum();
+            assert_eq!(pages, 526, "1 + 424 + 83 + 18 页（S6-M2 ③ 的输入）");
+            assert!(
+                pages + 8 <= crate::bootstrap::MAX_EXEC_IMAGE_FRAMES as u64,
+                "526 页载入需求加当前 8 页栈应在私有 exec 预算内"
+            );
         }
     }
 }

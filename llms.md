@@ -23,6 +23,7 @@ updated: 2026-10-24
 - [Abstract semantics](COSIR%20原语规范.md): states, operations, failures, invariants.
 - [Subsystem topics](docs/architecture/topics/README.md): contract → report chain → code → tests → limits.
 - [Evidence rules](docs/architecture/evidence.md): host, Lean, QEMU, compatibility, sign-off scopes.
+- [License](LICENSE): GPL-3.0-or-later; MPL-2.0 exceptions and third-party notices in [licensing](docs/architecture/licensing.md).
 - [Lean mapping](lean/README.md): exact model mapping and unmodeled fields.
 - [Compatibility ledger](docs/superpowers/compat/compat-state.md): scoped API status.
 - [Symbol trace](docs/superpowers/compat/symbol-trace.md): public symbols to service/syscall routes.

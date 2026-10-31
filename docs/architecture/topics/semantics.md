@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # 抽象语义与形式化
@@ -65,3 +65,9 @@ updated: 2026-10-24
 SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 也存在明确未建模项；CDT 定理不能推广为 Rust 内核细化证明。修改全局不变量必须检查所有受影响原语，不只改一个成功路径。
 
 内核句柄的有界 generation/永久退役模型独立于 CDT：`freed_handle_never_live` 覆盖单槽任意后续迁移序列；不证明完整 Rust 内核、整表分配、权限或硬件。范围以 [Lean 映照契约](../../../lean/README.md)为准。
+
+
+2026-10-31 [有限槽表后继](../../superpowers/reports/2026-10-31-kernel-handle-table-proof.md)将单槽结论组合为任意整表序列的无复活/退役保持，并证明跨槽隔离与良构保持。新模块为 [KernelHandleTable.lean](../../../lean/Formal/KernelHandleTable.lean)，[公理审计](../../../lean/Checks/KernelHandleTable.lean)和[真实表的有界回归](../../../kernel/src/handle_table_tests.rs)可独立重跑。采用任意可用槽的过近似，仍未证明最低槽/预留区间策略或 Rust 源码 refinement。
+
+
+[同日源码细化后继](../../superpowers/reports/2026-10-31-rust-handle-source-refinement.md)以 Charon/Aeneas 从生产 Rust 提取句柄构造/后继方法；[细化定理](../../../lean/refinement/Refinement/Handle.lean)通过普适证明连接单槽模型，[重放脚本](../../../scripts/check_handle_refinement.py)拒绝陈旧/手改生成物并提供真实源码 mutation。只覆盖所列两个方法与 generation 核心，尚非整张 Rust 槽表或完整内核细化。

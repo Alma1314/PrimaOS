@@ -1,0 +1,205 @@
+$ CARGO_NET_OFFLINE=true cargo test --workspace
+exit: 0
+test result: ok. 167 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 512 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.50s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+$ CARGO_NET_OFFLINE=true cargo xtask lint
+exit: 0
+   Compiling prima-abi v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-abi)
+   Compiling prima-runtime v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-runtime)
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+   Compiling prima-initgen v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-initgen)
+   Compiling prima-user v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-user)
+   Compiling xtask v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.88s
+     Running `target/debug/xtask lint`
+PASS fmt --all --check
+    Checking prima-abi v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-abi)
+   Compiling prima-runtime v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-runtime)
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+    Checking prima-initgen v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-initgen)
+    Checking prima-user v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/prima-user)
+    Checking xtask v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/xtask)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.67s
+PASS clippy -D warnings
+   Compiling kernel v0.1.0 (/home/alma/.codex/worktrees/b3a7/PrimaOS/kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.71s
+PASS kernel builds under deny(unsafe_code) for x86_64-unknown-none
+PASS kernel kernel/src has zero `unsafe` (36 files scanned)
+
+$ python3 prima-user/musl/test_port.py
+exit: 0
+.......
+----------------------------------------------------------------------
+Ran 7 tests in 4.070s
+
+OK
+
+$ PRIMA_ELF_SAMPLE=/usr/bin/busybox CARGO_NET_OFFLINE=true cargo test -p kernel --lib plan_accepts_operator_supplied_static_linux_elf -- --ignored
+exit: 0
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.64s
+     Running unittests src/lib.rs (target/debug/deps/kernel-0632b9c2ccf45562)
+
+running 1 test
+test exec::tests::plan_accepts_operator_supplied_static_linux_elf ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 512 filtered out; finished in 0.01s
+
+
+$ CARGO_NET_OFFLINE=true cargo xtask test
+exit: 0
+PASS linux stage5 fd dup/getpid references
+PASS linux stage5 C main exits 37/2/3, streams h/i plus xyz, passes file API and stdio probes
+PASS linux sbase echo E1-E6 stdout/exit references
+PASS linux sbase cat/ls references
+PASS linux stage5 startup references
+PASS linux stage5 time clock/nanosleep references
+PASS linux stage5 fd dup/getpid references
+PASS linux stage5 vfs multi-level path and directory references
+PASS linux stage5 symlink/rename/fchdir references
+PASS linux stage5 vfs3 references
+PASS linux stage5 file_ext references
+PASS linux stage5 loopback UDP references
+PASS linux stage5 fork/wait references
+PASS linux exec-linux stdout/exit references
+PASS linux execve-linux stdout/exit references
+PASS linux stage5 signal references
+PASS linux stage5 sigaction references
+PASS linux stage5 pthread references
+PASS linux stage5 tty input references
+PASS linux stage5 statx/chdir/getcwd references
+PASS linux stage5 mkdir/rmdir/unlink references
+PASS linux stage5 mmap/munmap/mprotect references
+PASS musl static sysroot (jobs=2)
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS build kernel
+PASS image bios
+PASS image uefi
+PASS qemu bios run=1
+PASS qemu bios run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E1 run=1
+PASS qemu bios E1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E2 run=1
+PASS qemu bios E2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E3 run=1
+PASS qemu bios E3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E4 run=1
+PASS qemu bios E4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E5 run=1
+PASS qemu bios E5 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios E6 run=1
+PASS qemu bios E6 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios A2 run=1
+PASS qemu bios A2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios T1 run=1
+PASS qemu bios T1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios F1 run=1
+PASS qemu bios F1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V1 run=1
+PASS qemu bios V1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V2 run=1
+PASS qemu bios V2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V3 run=1
+PASS qemu bios V3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios V4 run=1
+PASS qemu bios V4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios N1 run=1
+PASS qemu bios N1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W1 run=1
+PASS qemu bios W1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W2 run=1
+PASS qemu bios W2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W3 run=1
+PASS qemu bios W3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W6 run=1
+PASS qemu bios W6 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W8 run=1
+PASS qemu bios W8 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W9 run=1
+PASS qemu bios W9 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W7 run=1
+PASS qemu bios W7 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W7b run=1
+PASS qemu bios W7b run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W4 run=1
+PASS qemu bios W4 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios W5 run=1
+PASS qemu bios W5 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios I1 run=1
+PASS qemu bios I1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios M1 run=1
+PASS qemu bios M1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios D1 run=1
+PASS qemu bios D1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios A1 run=1
+PASS qemu bios A1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios C1 run=1
+PASS qemu bios C1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L1 run=1
+PASS qemu bios L1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L2 run=1
+PASS qemu bios L2 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios L3 run=1
+PASS qemu bios L3 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios R1 run=1
+PASS qemu bios R1 run=2
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios R2 run=1
+PASS qemu bios R2 run=2
+PASS R3 Linux reference
+PASS stage5 C probe is static PIE with R_X86_64_RELATIVE only
+PASS qemu bios R3 run=1
+PASS qemu bios R3 run=2
+PASS full BIOS suite: 36 programs, 72 runs
+PASS stage1 boot slice

@@ -25,6 +25,12 @@ updated: 2026-10-31
 
 ## 跨阶段 / 文档体系
 
+源码细化：[生产 Rust 句柄方法→Lean](2026-10-31-rust-handle-source-refinement.md)，Charon/Aeneas 自动提取、生成物新鲜度、5 条一般定理与真实 Rust mutation；范围限构造/后继值，翻译器为可信边界。 主分支整合复核见该报告末节。
+
+形式化后继：[有限能力槽表组合证明](2026-10-31-kernel-handle-table-proof.md)，10 条一般 Lean 定理、整表任意序列无复活、真实 Rust 三槽六步回归；不宣称 Rust 源码细化证明。
+
+阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
+
 独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
 
 | 日期 | 文档 | 标题 |
@@ -98,15 +104,18 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+主分支整合：[按需输入、私有容量与冻结台账](2026-10-31-stage6-main-merge.md)，明确长度窗口冲突的取舍与整合验证范围。
+
 2026-10-31：[S6-M2 大映像帧容量与预算](2026-10-31-stage6-exec-frame-capacity.md)，私有exec≤640页、526页合成文件与失败回收验证；不代表冻结busybox或LibOS运行。
 
-2026-10-31：[S6-M2 ELF 输入流式读取、源页故障与退栈回收](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；149 页上限和 Gate/LibOS 仍未完成。
+2026-10-31：[S6-M2 ELF 输入流式读取、源页故障与退栈回收](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；私有149页上限由容量后继推进，Gate/LibOS 仍未完成。
 
 阶段 6 于 2026-10-29 由作者指令启动，状态为**进行中**；退出条件与交付检查仍全部未勾选。
 本节收录阶段 6 的实现证据与准备性证据。
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-10-30 | [2026-10-30-stage6-freeze-ledgers.md](2026-10-30-stage6-freeze-ledgers.md) | S6-M2 机械项：D17 调用号/权限位序冻结台账、单一 `auxv` 键源、映像长度窗口；更正"整块 copy-in"旧判断，非 Gate 接线 |
 | 2026-10-30 | [2026-10-30-stage6-audit-stop-qemu.md](2026-10-30-stage6-audit-stop-qemu.md) | 审计停止裸机验证：七个执行边界的专用 QEMU 注入与停止调用变异拒绝；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-audit-fail-stop.md](2026-10-30-stage6-audit-fail-stop.md) | M1b 审计停止控制器：首次诊断、不可恢复标记、分派/调度/IRQ 接线；非 G1–G3 |
 | 2026-10-30 | [2026-10-30-stage6-private-completion-waits.md](2026-10-30-stage6-private-completion-waits.md) | M1b 私有等待基础：真实对象登记、不可警报、代次完成、销毁与独立预算；Gate 尚未接入，非 G1/G2 |

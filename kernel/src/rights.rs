@@ -503,4 +503,55 @@ mod tests {
         assert_eq!(Rights::EMPTY.count(), 0);
         assert!(Rights::EMPTY.well_typed(ObjectKind::Segment));
     }
+
+    /// D17/S6-M1：`Right` 的位序是**对外契约**——派生授权的位集、渲染顺序和已归账的
+    /// QEMU 权限列表都按 [`ALL_RIGHTS`] 排列。M1b 追加 `GateAttach`/`GateServe` 时只能
+    /// 加在末尾（位 31、32）；重排、插入或删除会静默改变既有证据的语义，因此逐项钉死。
+    #[test]
+    fn right_bit_order_is_frozen_and_only_appendable() {
+        const FROZEN: [&str; 31] = [
+            "Derive",
+            "SegMapR",
+            "SegMapW",
+            "SegMapX",
+            "SegDestroy",
+            "TaskSend",
+            "TaskManageVSpace",
+            "TaskDestroy",
+            "NsResolve",
+            "NsBind",
+            "NsUnbind",
+            "NsMount",
+            "NsUnmount",
+            "NsDestroy",
+            "TimerCancel",
+            "TimerDestroy",
+            "ExcSubscribe",
+            "ExcSourceDestroy",
+            "NodeConnect",
+            "NodeDestroy",
+            "DevIORead",
+            "DevIOWrite",
+            "DevDestroy",
+            "WaitWait",
+            "WaitSignal",
+            "WaitDestroy",
+            "DevMMIOR",
+            "DevMMIOW",
+            "DevDMAR",
+            "DevDMAW",
+            "DevInterruptSubscribe",
+        ];
+        assert_eq!(ALL_RIGHTS.len(), FROZEN.len());
+        for (index, (right, name)) in ALL_RIGHTS.iter().zip(FROZEN).enumerate() {
+            assert_eq!(right.name(), name, "第 {index} 个 Right 的位置被改动");
+            assert_eq!(right.bit(), 1u64 << index, "{name} 的位号被改动");
+            assert_eq!(*right as u32, index as u32, "{name} 的枚举序被改动");
+        }
+        assert_eq!(
+            Rights::from_rights(&ALL_RIGHTS).count(),
+            FROZEN.len() as u32,
+            "ALL_RIGHTS 里出现了重复项"
+        );
+    }
 }

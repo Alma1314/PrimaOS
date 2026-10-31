@@ -24,6 +24,15 @@ fn run() -> Result<(), String> {
         return Err("gate-audit-probe images are only for test-gate-audit".to_owned());
     }
 
+    // 聚焦测试先编译 Linux 参考程序，不能依赖此前构建镜像创建输出目录。
+    if command == "test" || command.starts_with("test-") {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask must be directly under the workspace root");
+        fs::create_dir_all(workspace.join("target/prima-os"))
+            .map_err(|error| format!("failed to create test output directory: {error}"))?;
+    }
+
     match command.as_str() {
         "test-gate-audit" => {
             require_no_args(&rest)?;

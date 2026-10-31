@@ -109,9 +109,10 @@ def build(check=False):
         stamp = cache_key(ROOT, lock, tools)
         prefix = ROOT / lock["sysroot_dir"]
         if check:
-            if cache_valid(prefix, stamp):
-                audit_archive(prefix)
-            print(f"PASS musl locked snapshot; cache={'hit' if cache_valid(prefix, stamp) else 'miss'}")
+            if not cache_valid(prefix, stamp):
+                raise ValueError("musl cache missing, stale or incomplete; run build.sh without --check")
+            audit_archive(prefix)
+            print("PASS musl locked snapshot and archive; cache=hit")
             return
         if cache_valid(prefix, stamp):
             return

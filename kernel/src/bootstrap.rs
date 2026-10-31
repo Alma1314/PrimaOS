@@ -17277,3 +17277,7 @@ mod tests {
         assert_eq!(state.audit.count, audit_before);
     }
 }
+
+#[cfg(test)]
+#[path = "handle_table_tests.rs"]
+mod handle_table_tests;

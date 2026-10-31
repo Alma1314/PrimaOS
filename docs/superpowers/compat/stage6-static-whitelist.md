@@ -77,7 +77,7 @@ LC_ALL=C objdump -d /usr/bin/busybox | grep -c 'fs:0x28'
 | 项 | 状态 |
 |---|---|
 | 白名单定义（D12） | **已冻结** |
-| 装载器解析该制品 | 已成立（2026-10-28 装载切片，`PRIMA_ELF_SAMPLE` 演练，见[装载切片报告](../reports/2026-10-28-stage6-loader-slice.md)） |
+| 装载器解析该制品 | 已成立（2026-10-28 装载切片；2026-10-30 用同一 `sha256` 的二进制重跑 `PRIMA_ELF_SAMPLE` 演练，解析与 526 页页数均按断言复核，原长度窗口已由[按需输入](../reports/2026-10-31-stage6-streamed-elf-input.md)取代，见[本轮机械项报告](../reports/2026-10-30-stage6-freeze-ledgers.md)） |
 | 任何成员在本系统运行 | **未发生**（缺 S6-M1 递送与 S6-M3 profile） |
 | 容量/验证缺口 | [输入](../reports/2026-10-31-stage6-streamed-elf-input.md)与[容量后继](../reports/2026-10-31-stage6-exec-frame-capacity.md)已移除原生exec的1 MiB/首个4 KiB程序头/149页私有映像限制，并补齐有界全局预算；VFS大文件来源、本制品真实几何/8页初始栈与完整Linux启动仍待验证 |
 

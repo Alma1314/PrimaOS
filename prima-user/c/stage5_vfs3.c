@@ -247,6 +247,29 @@ int main(void) {
         close(sparse);
     field("sparse", sparse_ok, 0);
 
+    /* 空文件旧位置落入后来增长的邻居时，两文件仍须保持独立。 */
+    int neighbor = open(PATH("v3_neighbor"), O_RDWR | O_CREAT | O_TRUNC, 0666);
+    int empty = -1;
+    int independent = neighbor >= 0 && write(neighbor, "a", 1) == 1;
+    if (independent)
+        empty = open(PATH("v3_empty"), O_RDWR | O_CREAT | O_TRUNC, 0666);
+    char grown[64];
+    memset(grown, 'A', sizeof grown);
+    independent = independent && empty >= 0 &&
+                  write(neighbor, grown, sizeof grown) == sizeof grown &&
+                  write(empty, "B", 1) == 1 && lseek(neighbor, 1, SEEK_SET) == 1;
+    char actual[64] = {0};
+    independent = independent && read(neighbor, actual, sizeof actual) == sizeof actual &&
+                  same_bytes(actual, grown, sizeof grown) &&
+                  lseek(empty, 0, SEEK_SET) == 0 && read(empty, actual, 1) == 1 && actual[0] == 'B';
+    if (neighbor >= 0)
+        close(neighbor);
+    if (empty >= 0)
+        close(empty);
+    field("independent", independent, 0);
+    unlink(PATH("v3_neighbor"));
+    unlink(PATH("v3_empty"));
+
     emit("|ok=");
     emit_dec(failures ? 0 : 1);
     emit(";err=");

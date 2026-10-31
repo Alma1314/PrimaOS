@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "toolchain_lock_sha256": "9f2cee44463c3d244350afaae057cdc1c1a27ce6918f336743fc9a765cc9214a",
+  "inputs": {
+    "kernel/src/handle.rs": "abf5a27ec89d1320f48a3601fd95b2a2250b3b33e56a02cdee25e98d464be0c5",
+    "lean/refinement/source.rs": "a55120205f1e089cbcc1a8a3cfa30944882fbca37e411dccf15308f9b68a9f4a"
+  },
+  "generated": {
+    "Funs.lean": "59621128b4ba10187ebefbba35698c4f0925b6c6b354b136031c7b763db2811a",
+    "Types.lean": "e0cf40c612613b40d140af727b31f3c893396d58b32aefe9f8dff567bd65738b"
+  }
+}

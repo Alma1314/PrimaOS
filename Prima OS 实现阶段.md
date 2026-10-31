@@ -27,8 +27,8 @@ updated: 2026-10-31
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 2026-10-31：workspace 1055 passed（1 项外部 ELF 样本 ignored，另已定向实跑）、lint/文档 PASS；单次完整 BIOS 36 程序/72 轮及 W7 定向双轮 PASS | [本轮帧容量与回收](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)；专用审计停止 14 轮只引用[前轮报告](docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md)，本次未重跑该配置；W9 跨页 COW 的新增实现见[前轮内存事务](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)；D14 ring3 原型双轮见[前轮 M1a 证据](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)，本轮未重跑该 opt-in 配置；历史签署版本 TCB 6.42% 及验证见[签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)；[质量审查](docs/superpowers/reports/2026-10-27-implementation-quality-review.md)的环境失败与[locale 后继修复](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md#4-验证环境musl-归档审计的-locale-依赖构建工具不碰-os-语义)保留 |
-| 阶段 6 | **进行中（2026-10-29 启动）**；前置裁决 D11–D16 已关闭，装载器/初始栈已硬化并补齐 `AT_RANDOM`；退出条件 0/4 达成；M1a 当前评审阻塞已按有界范围收口 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[D11–D16裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；白名单与 `AT_RANDOM` 已定，[M1a 整改评审](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)闭合 R1–R6 定义与 D14 探索；[内核输出/COW 前置](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)与[私有等待基础](docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md)已落地；M1b Gate 接线/G1–G3 待完成；exec_replace 不等于未修改 Linux ELF 完成 |
+| 最近验证记录 | 2026-10-31 主分支整合：workspace 1066 passed（1项外部ELF ignored，另已定向实跑）、lint、7项musl工具测试及文档 PASS；单次完整BIOS 36程序/72轮 PASS | [整合取舍与验证](docs/superpowers/reports/2026-10-31-stage6-main-merge.md)；本轮同时覆盖共享auxv、VFS隔离和私有640页exec；容量实现与前序失败见[容量报告](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)。审计停止14轮和D14 opt-in原型未重跑，仍限[前轮审计报告](docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md)与[M1a证据](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)。历史签署和环境失败保留原报告范围 |
+| 阶段 6 | **进行中（2026-10-29 启动）**；前置裁决 D11–D16 已关闭，装载器/初始栈已硬化并补齐 `AT_RANDOM`；退出条件 0/4 达成；M1a 当前评审阻塞已按有界范围收口；S6-M2 按需输入、私有容量与共享 auxv 键源已取得有界证据；D17 现有调用号/权限位序台账已冻结 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[D11–D16裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；白名单与 `AT_RANDOM` 已定，[M1a 整改评审](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)闭合 R1–R6 定义与 D14 探索；[内核输出/COW 前置](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)与[私有等待基础](docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md)已落地；[冻结台账与装载机械项](docs/superpowers/reports/2026-10-30-stage6-freeze-ledgers.md)固定 D17 与 `auxv` 键源；[按需输入](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)与[私有容量后继](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)替代旧字节窗口和149页私有上限；M1b Gate 接线/G1–G3 待完成；exec_replace 不等于未修改 Linux ELF 完成 |
 | 阶段 7 | 未开始；范围未冻结，但结构已裁决为 7-0/7-A…7-H 九条子轨 | [D16 裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；7-A（多 LibOS）为研究核心 P0，S6-M1 前的有界探索原型已完成（[D14 证据](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)，人格桩，非 7-A 退出）；SMP 前先做状态分区（D15） |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
@@ -54,6 +54,7 @@ updated: 2026-10-31
 | S6-M1 六项决定复审 | [R1–R6 静态预审](docs/superpowers/reports/2026-10-29-stage6-m1-decision-review.md) | 当时六条路线保留，取消/复制/权限/容量协议需修订；静态报告无运行证据；当前收口见上行 |
 | 阶段6–7前置裁决 | [D11–D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md) | 范围裁决：白名单/`AT_RANDOM`/多 LibOS 顺序/SMP 前置/阶段 7 子轨；不是实现证据，不签署阶段，不启动阶段 6 |
 | 阶段6准备性证据 | [装载一致性切片](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md) | host 单测 + 本地静态 busybox 装载演练 + lint/全套件；只证明装载计划与初始栈，不证明任何 Linux 二进制可运行，阶段状态不变 |
+| 阶段6机械项与冻结台账 | [冻结台账与装载机械项](docs/superpowers/reports/2026-10-30-stage6-freeze-ledgers.md) | D17 调用号/权限位序冻结、`auxv` 单一键源、当时映像字节窗口、白名单 526 页复核；输入/容量由后继推进；host + lint + BIOS 套件，非 Gate 接线，不勾选退出条件 |
 | 历史切片与反例 | [全量目录](docs/architecture/catalog.md)、[主题阅读链](docs/architecture/topics/README.md) | 文件不因未进入精选表而失效；必须保留失败与后继 |
 
 2026-10-18 压缩前记录保存在[历史版本](https://github.com/Alma1314/PrimaOS/blob/a434a2f0c515ac3421e999be3c436b7d7c6c5313/Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md)。本次重构前版本可用 `git show d48d5ef:Prima\ OS\ 实现阶段.md` 查看；[整理报告](docs/superpowers/reports/2026-10-23-documentation-restructure-report.md)记录陈旧摘要的修正依据。
@@ -63,6 +64,10 @@ VFS 后继实现与验证见[LibOS 基础重构报告](docs/superpowers/reports/
 musl 后继实现见[调用边界与 fd/stdio 报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)：fcntl、fdopen/已有 append、向量 I/O、汇编边界与锁定构建；不改变阶段出口勾选。
 
 内核句柄与 Lean 后继补强见[验证报告](docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md)：generation 耗尽永久退役、权限未知位拒绝、分配失败不推进逻辑 CapId，以及单槽任意后续迁移中的旧句柄不复活证明；证据分层及未覆盖项以报告/Lean 映照为准，不改变阶段签署。
+
+2026-10-31 后继见[有限槽表组合证明](docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md)：逐槽投影、跨槽隔离、整表良构及任意后续序列旧句柄不复活；10 条一般 Lean 定理与真实 Rust 有界遍历，不构成 Rust 源码 refinement proof，阶段勾选不变。
+
+同日[源码细化后继](docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md)直接提取生产 Handle::new/next_generation，完成 5 条条件性源码细化定理及 Rust 语义 mutation 拒绝；限构造器和 generation 更新核心，不等于整张 Rust 槽表或完整内核证明。 与主分支阶段6冻结台账的整合验证见同报告末节。
 
 原生运行时与服务后继见[握手/路径重构报告](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)：Hello 一致性验证、顺序分片、双路径事务重置与单次消费；仍限单客户端/单在途，未改变阶段签署。
 
@@ -88,6 +93,8 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 [本次报告](docs/superpowers/reports/2026-10-27-posix-std-backend-report.md)：独立Prima Unix/musl目标与完整std模块接入；
 原A子集和组织级签署边界保留，具体支持范围以R3及台账为准。
 [文件I/O与接收归账续做](docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md)已通过单次完整36组72/72轮、workspace1020、lint、三种Rust模式Clippy与compat；V4扩展和I1新归账按契约范围解释。
+
+阶段 1～5 后继复核见[2026-10-31 整改报告](docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md)：VFS 空文件内容别名、musl 检查假 PASS 与干净工作树聚焦验收修复；验证结果与限制以报告为准，阶段签署范围不变。
 
 ## 已知问题与当前阻塞
 

@@ -167,3 +167,6 @@ updated: 2026-10-31
 - [POSIX std 后端：目标、ABI、标准入口及验证](2026-10-27-posix-std-backend-design.md)
 
 同日当前收口：[S6-M1 协议](2026-10-29-stage6-m1-protocol.md)定义真实等待、固定服务授权、不可警报等待、全地址空间代理复制、预留及全局 fail-stop；[整改证据](../reports/2026-10-29-stage6-m1-blocker-closure.md)记录候选 A 技术设计评审与 D14 有界探索。模型可执行，机器 ABI 仍未冻结、未接线。
+
+
+Rust 源码细化入口：[句柄构造与 generation 核心](2026-10-31-rust-handle-refinement-design.md)，限两个实际方法的自动提取/细化，不等于完整内核证明。
