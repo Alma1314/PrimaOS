@@ -435,7 +435,13 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
 #[cfg(feature = "gate-probe")]
 extern "C" fn gate_probe_exit() -> ! {
     kernel::bootstrap::gate_probe::verify();
-    serial::write_bytes(b"S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;admission=1;rejected=9;audit=1\n");
+    if let Some(case) = option_env!("PRIMA_GATE_CASE") {
+        serial::write_bytes(b"S6MATRIX|case=");
+        serial::write_bytes(case.as_bytes());
+        serial::write_bytes(b";verified=1;state=1;audit=1\n");
+    } else {
+        serial::write_bytes(b"S6GATE|int80=1;fast=1;registers=1;signals=1;retry=1;output_failures=3;duplicate=1;orphan=1;admission=1;rejected=9;audit=1\n");
+    }
     serial::flush();
     qemu::exit(qemu::SUCCESS)
 }

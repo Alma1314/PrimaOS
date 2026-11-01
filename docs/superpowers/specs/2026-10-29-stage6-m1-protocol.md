@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-mechanism-design
 status: model-reviewed
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # S6-M1 协议收口：候选 A、单服务者与不可警报等待
@@ -47,7 +47,7 @@ M1b 必须按本文落实真实 trap/能力/页表/审计事务，再取得 G1�
 
 状态为 `Idle → Queued | WaitingCapacity → Queued → Delivered → Terminal → Idle`。
 WaitingCapacity、Queued、Delivered 全都使用 attach 已预留的槽；容量等待 FIFO 最多 64 项。
-服务 dequeue 后立即按 FIFO 晋级一个容量等待者；任一阶段任务销毁均删除登记并重新晋级。
+服务 dequeue 后立即按 FIFO 晋级一个容量等待者；任一阶段任务销毁均删除登记，且仅在删除后队列有空位时按FIFO晋级。
 同一 request id 不复用，所有能力别名引用相同的终结状态，不靠释放某一个句柄实现一次性。
 
 候选 A 使用真实的私有 WaitObject 和现有 `WaitRequest`：entries 只有该对象，mode=Any，
@@ -68,8 +68,8 @@ reply 的受控提交直接清理 wait_request/waiters、写保存帧 rax、置 
 
 ## 3. 输出与候选调用布局
 
-73/74/77/78 已按[接线检查点](#12-trap-与机器入口实现检查点2026-10-31)在 `prima-abi`
-追加并接入分派，仍为实验性 ABI；75/76 尚未分配。下表中 copy 为 M1c 适配目标，不更改 1–72。
+73/74/77/78按[接线检查点](#12-trap-与机器入口实现检查点2026-10-31)追加，75/76由
+[代理复制后继](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)追加并接入分派。六个入口仍为实验性ABI，不更改1–72。
 
 | 候选号 | 调用 | 寄存器参数与结果 |
 |---|---|---|
@@ -207,3 +207,16 @@ G1 逐寄存器核对及部分重复/孤儿/输出失败路径不代表完整 G2
 检查失败日志容量；耗尽封存首次 Control 诊断并停止，成功事务仍各自预检全成本。
 对象层拒绝本身仍只读；原生适配器失败只追加尝试审计。host 极限反例与 G1 九条拒绝逐字段验证
 补齐 §12–13 的此项缺口，非 75/76 复制审计、完整 G2/G3 或全部原生 syscall 的失败审计。
+
+## 15. 代理复制与G2/G3实现检查点（2026-11-01）
+
+[代理复制与生命周期后继](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)落实75/76、双端显式root、
+Task/root代次和Segment权限/普通RAM归属、完整输入scratch与COW输出事务。绑定期间冻结管理者的
+map/unmap/protect/access-enable，并拒绝exec/fork/新增共享线程；映射身份由该冻结与单核不可调度事务保持。
+copy成功/失败审计共用既有全局fail-stop规则。销毁容量等待或Delivered请求不再在队列仍满时错误晋级。
+G2/G2-death/G3矩阵的最终实跑、普通回归和限制见报告；这是M1c–M1d有界技术证据，
+不扩成共享root、可中断门控等待、Linux兼容、M1e计量或阶段签署。前面检查点的待办描述保留当时范围。
+
+孤儿绑定后续trap使用request=0的`GateTrapped`保存客户端cookie、原始number/六参数/flags，
+紧邻`GateTerminated`保存配置返回值及Orphaned原因；变更前预检两条日志，不能只记录不可归属的结果。
+request=0不分配请求、不进入队列、不产生服务能力。最后审计补强及反例见同一后继报告。

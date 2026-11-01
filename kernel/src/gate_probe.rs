@@ -3,6 +3,8 @@
 use super::*;
 use crate::{sched, syscall, user, vspace};
 use prima_abi::syscall::*;
+#[path = "gate_matrix_probe.rs"]
+mod matrix;
 
 const REPLY: u64 = 0x1234_5678_9abc_def0;
 const ABORT: u64 = 0xfedc_ba98_7654_3210;
@@ -102,6 +104,9 @@ fn install(task: u32, va: u64, code: &Code, offset: u64) {
 
 /// Called after ordinary bring-up, before either Task executes user code.
 pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
+    if option_env!("PRIMA_GATE_CASE").is_some() {
+        matrix::enter(offset, terminal)
+    }
     let task_cap = BOOTSTRAP_STATE.with_mut(|slot| {
         let state = slot.as_mut().unwrap();
         assert!(state.audit.can_append(1));
@@ -305,6 +310,10 @@ fn read_word(task: u32, pointer: u64) -> u64 {
 /// Verify the real user receipts, saved frames, queues/waits and audit chain.
 /// Any mismatch panics instead of emitting the success record.
 pub fn verify() {
+    if option_env!("PRIMA_GATE_CASE").is_some() {
+        matrix::verify();
+        return;
+    }
     assert_eq!(sched::current(), 2);
     assert_eq!(crate::signal::pending(2), 1 << 9, "Gate v1 retains signals");
     let read = read_word;
@@ -414,6 +423,20 @@ pub fn verify() {
         for index in 0..state.audit.count {
             let event = state.audit.entry(index).unwrap();
             match event {
+                AuditEvent::GateTrapped {
+                    request: 0,
+                    client_cookie,
+                    number,
+                    args,
+                    flags,
+                    ..
+                } => {
+                    assert_eq!(client_cookie, cookie);
+                    assert_eq!(number, SYS_TASK_ID);
+                    assert_eq!(args, [0; 6]);
+                    assert_eq!(flags, 1);
+                    trapped += 1;
+                }
                 AuditEvent::GateTrapped { .. } => trapped += 1,
                 AuditEvent::GateDelivered { .. } => delivered += 1,
                 AuditEvent::GateTerminated { .. } => terminal += 1,
@@ -442,7 +465,7 @@ pub fn verify() {
                 _ => {}
             }
         }
-        assert_eq!((trapped, delivered, terminal), (2, 2, 3));
+        assert_eq!((trapped, delivered, terminal), (3, 2, 3));
         assert_eq!(blocked_service, 1);
         assert_eq!(rejected, 9);
         assert!(state.task_is_gated(2));

@@ -4,7 +4,7 @@ kind: specification
 authority: proposed-mechanism-design
 status: design-proposal
 lifecycle: current
-updated: 2026-10-30
+updated: 2026-11-01
 ---
 
 # S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）
@@ -31,6 +31,9 @@ profile、不改白皮书阶段定义。上位契约：[白皮书 §15](../../..
 
 **非目标**：动态链接（D11/7-E）、Linux 号到语义的映射、`fork`/`exec` 的门控语义（S6-M4）、
 SMP 下的门控表分片（D15/7-B）、性能出口门槛（见[验证](#验证与反例)）。
+
+2026-11-01实现后继：[代理复制与G2/G3验收](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)补齐75/76与生命周期矩阵。
+本文提案基线与历史待办不作为当前状态；现行接口见协议与原生台账，当前进度只查阶段跟踪。
 
 ## 状态与决定
 

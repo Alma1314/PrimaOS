@@ -42,17 +42,17 @@ pub use prima_abi::syscall::{
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT,
     SYS_DEV_IRQ_CREATE, SYS_DEV_IRQ_MASK, SYS_ECHO, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE,
     SYS_EXC_WAIT, SYS_EXEC_HANDOFF, SYS_EXEC_REPLACE, SYS_EXEC_REPLACE_ENV, SYS_FORK,
-    SYS_FORK_TRANSACTION, SYS_GATE_ABORT, SYS_GATE_ATTACH, SYS_GATE_REPLY, SYS_GATE_WAIT,
-    SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP,
-    SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND,
-    SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID, SYS_PROCESS_TERMINATE, SYS_RECV,
-    SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE,
-    SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO, SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE,
-    SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP,
-    SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL, SYS_TIMER_DESTROY,
-    SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL, SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE,
-    SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD,
-    SYS_WAIT4, SYS_YIELD,
+    SYS_FORK_TRANSACTION, SYS_GATE_ABORT, SYS_GATE_ATTACH, SYS_GATE_COPY_IN, SYS_GATE_COPY_OUT,
+    SYS_GATE_REPLY, SYS_GATE_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
+    SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
+    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID,
+    SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL,
+    SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
+    SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE,
+    SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL,
+    SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS,
+    SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -3954,6 +3954,7 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
     budget.expect("native Gate control has an active bootstrap state");
     let result = (|| -> Result<u64, Errno> {
         let used = match num {
+            SYS_GATE_COPY_IN | SYS_GATE_COPY_OUT => 4,
             SYS_GATE_ATTACH | SYS_GATE_WAIT => 3,
             _ => 2,
         };
@@ -4020,6 +4021,9 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
                     }
                 }
             }
+            SYS_GATE_COPY_IN | SYS_GATE_COPY_OUT => {
+                gate_copy_call(task, cap, args, num == SYS_GATE_COPY_OUT)
+            }
             _ => gate::with_state(|state| {
                 state.gate_reply(task, cap, args[1], num == SYS_GATE_ABORT)
             })
@@ -4037,6 +4041,78 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
         recorded.expect("preflighted native Gate rejection audit");
     }
     result.unwrap_or_else(encode_errno)
+}
+
+/// Stack-heavy scratch lives only on proxy calls, never ordinary exec dispatch.
+#[inline(never)]
+fn gate_copy_call(
+    service: u32,
+    cap: Handle,
+    args: &[u64; MAX_ARGS],
+    out: bool,
+) -> Result<u64, Errno> {
+    use bootstrap::gate;
+    let (request, client_root) =
+        gate::with_state(|s| s.gate_copy_preflight(service, cap)).map_err(gate_errno)?;
+    let service_root = sched::root_identity(service).ok_or(Errno::Fault)?;
+    let len = usize::try_from(args[2]).map_err(|_| Errno::Invalid)?;
+    if len > vspace::USER_COPY_LIMIT {
+        return Err(Errno::Invalid);
+    }
+    args[1].checked_add(args[2]).ok_or(Errno::Fault)?;
+    args[3].checked_add(args[2]).ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let map = |phys| phys_to_virt(phys, offset);
+    // Reject device/hidden/kernel pages on both ends before COW or byte writes.
+    for (task, root, ptr, write) in [
+        (request.client, client_root.0, args[1], out),
+        (service, service_root.0, args[3], !out),
+    ] {
+        if len == 0 {
+            continue;
+        }
+        let end = ptr.checked_add(len as u64).ok_or(Errno::Fault)?;
+        if ptr == 0 || end > 1 << 47 {
+            return Err(Errno::Fault);
+        }
+        for page in [ptr & !4095, (end - 1) & !4095] {
+            let leaf = vspace::read_user_leaf(root, page, map).map_err(user_copy_errno)?;
+            let physical = leaf & 0x000f_ffff_ffff_f000;
+            match crate::frames::owner_of(physical).map_err(|_| Errno::Fault)? {
+                crate::frames::FrameOwner::Segment(id) => {
+                    let entry = bootstrap::task_mapping(task, page).ok_or(Errno::Fault)?;
+                    if entry.seg_id != id
+                        || !entry.access.contains(if write {
+                            Right::SegMapW
+                        } else {
+                            Right::SegMapR
+                        })
+                    {
+                        return Err(Errno::Fault);
+                    }
+                }
+                _ => return Err(Errno::Fault),
+            }
+        }
+    }
+    let (src_root, src, dst_task, dst) = if out {
+        (service_root.0, args[3], request.client, args[1])
+    } else {
+        (client_root.0, args[1], service, args[3])
+    };
+    let mut scratch = [0; vspace::USER_COPY_LIMIT];
+    vspace::read_user_bytes(src_root, src, &mut scratch[..len], map).map_err(user_copy_errno)?;
+    let output = prepare_task_output(dst_task, dst, len)?;
+    // Single CPU, non-preemptible; roots/mappings cannot change in this interval.
+    assert_eq!(sched::root_identity(request.client), Some(client_root));
+    assert_eq!(sched::root_identity(service), Some(service_root));
+    output.write(&scratch[..len], map);
+    gate::with_state(|s| {
+        s.gate_copy_committed(service, request, args[1], args[3], args[2], out);
+        Ok(())
+    })
+    .expect("copy has a bootstrap state");
+    Ok(len as u64)
 }
 
 const fn gate_errno(error: bootstrap::gate::Error) -> Errno {
@@ -4080,7 +4156,12 @@ fn serve(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
     crate::irq::retry_pending();
     if matches!(
         num,
-        SYS_GATE_ATTACH | SYS_GATE_WAIT | SYS_GATE_REPLY | SYS_GATE_ABORT
+        SYS_GATE_ATTACH
+            | SYS_GATE_WAIT
+            | SYS_GATE_COPY_IN
+            | SYS_GATE_COPY_OUT
+            | SYS_GATE_REPLY
+            | SYS_GATE_ABORT
     ) {
         gate_control_call(num, args)
     } else if num == SYS_COPY_IN {

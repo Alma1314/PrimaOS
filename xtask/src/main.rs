@@ -40,6 +40,11 @@ fn run() -> Result<(), String> {
     match command.as_str() {
         "test-gate" => {
             require_no_args(&rest)?;
+            if env::var("PRIMA_GATE_CASE").ok().as_deref() != option_env!("PRIMA_GATE_CASE") {
+                return Err(
+                    "runtime Gate case differs from compiled image; rebuild with cargo".into(),
+                );
+            }
             if !cfg!(feature = "gate-probe") {
                 return Err("use --features gate-probe".into());
             }

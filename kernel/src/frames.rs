@@ -75,8 +75,10 @@ pub const MAX_FRAME_OWNERS: usize = 2048;
 /// image 帧数随内核镜像体积增长（实测 663→778 帧），远超任何内联进 `BootstrapState`
 /// 的定长数组所能承受的规模。S6-M2 把物化向量移到 IMAGE_VECTORS，复用每个注册表的
 /// owner region 身份，释放按值预算给回收栈。超出即 `CapacityExceeded`——内核镜像
-/// 超过 8 MiB 时启动失败，显式报错而非静默截断。
-pub const MAX_IMAGE_FRAMES: usize = 2048;
+/// 超过 9 MiB 时启动失败，显式报错而非静默截断。
+// G2/G3's opt-in machine matrix grows the debug ELF to ~8.6 MB. Keep
+// materialized image ownership bounded at 9 MiB; user data quotas are separate.
+pub const MAX_IMAGE_FRAMES: usize = 2304;
 
 /// 归属表 arena 的区段数：内核 1 段，host 单测并行构造多个注册表。
 #[cfg(not(test))]

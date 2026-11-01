@@ -296,6 +296,10 @@ pub mod syscall {
         SYS_GATE_ATTACH = 73,
         /// Deliver a request into a 96-byte, 8-byte-aligned output record.
         SYS_GATE_WAIT = 74,
+        /// Copy up to 4096 bytes from a Delivered client into the service buffer.
+        SYS_GATE_COPY_IN = 75,
+        /// Copy up to 4096 bytes from the service buffer into a Delivered client.
+        SYS_GATE_COPY_OUT = 76,
         /// Complete a Delivered request, changing only the client's rax.
         SYS_GATE_REPLY = 77,
         /// Complete as aborted; the value remains an opaque u64.
@@ -536,13 +540,15 @@ mod tests {
             &[
                 (73, "SYS_GATE_ATTACH"),
                 (74, "SYS_GATE_WAIT"),
+                (75, "SYS_GATE_COPY_IN"),
+                (76, "SYS_GATE_COPY_OUT"),
                 (77, "SYS_GATE_REPLY"),
                 (78, "SYS_GATE_ABORT"),
             ]
         );
     }
 
-    /// `0`/`52` 保留、`75/76` 的复制入口尚未实现（D17：不预留）。
+    /// `0`/`52` 保留；只登记实际实现的追加号。
     #[test]
     fn zero_reserved_and_unimplemented_numbers_are_absent() {
         assert!(syscall::name(0).is_none());
@@ -551,12 +557,6 @@ mod tests {
             assert!(
                 syscall::name(reserved).is_none(),
                 "保留号 {reserved} 不得实现"
-            );
-        }
-        for pending in [75, 76] {
-            assert!(
-                syscall::name(pending).is_none(),
-                "追加号 {pending} 只能在实现时分配（D17）"
             );
         }
         assert!(syscall::name(u64::MAX).is_none());

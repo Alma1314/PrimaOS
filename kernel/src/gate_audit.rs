@@ -20,6 +20,8 @@ pub enum Operation {
     Terminate,
     /// Native Gate control attempt, including malformed arguments/handles.
     Control,
+    /// Explicit-root, all-or-nothing proxy copy.
+    Copy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

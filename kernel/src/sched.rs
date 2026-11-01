@@ -28,6 +28,7 @@ static RECV_EXTENDED: StaticCell<[bool; MAX_TASKS]> = StaticCell::new([false; MA
 
 /// 每个 Task 的 PML4 物理地址（0 = 未设置，例如 boot 早期）。索引即 Task id。
 static ROOTS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
+static ROOT_GENERATIONS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
 /// 每个 Task 的内核栈顶虚拟地址（0 = 未设置）。索引即 Task id。
 static KSTACK_TOPS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
@@ -263,6 +264,11 @@ pub fn set_frame_rax(task_id: u32, value: u64) {
 /// 记录某 Task 的 PML4 物理地址（切片 O：per-task 地址空间）。
 pub fn set_root(task_id: u32, root_phys: u64) {
     if (task_id as usize) < MAX_TASKS {
+        ROOT_GENERATIONS.with_mut(|generations| {
+            generations[task_id as usize] = generations[task_id as usize]
+                .checked_add(1)
+                .expect("root incarnation exhausted");
+        });
         ROOTS.with_mut(|roots| roots[task_id as usize] = root_phys);
     }
 }
@@ -276,6 +282,11 @@ pub fn root(task_id: u32) -> Option<u64> {
         }
     }
     None
+}
+
+/// Detect root replacement even when the same physical address is reused.
+pub fn root_identity(task: u32) -> Option<(u64, u64)> {
+    root(task).map(|root| (root, ROOT_GENERATIONS.with(|g| g[task as usize])))
 }
 
 /// 当前任务的 PML4 物理地址（未设置返回 `None`，例如 boot 早期尚未建立任务根）。
@@ -384,7 +395,7 @@ pub fn clear_task(task_id: u32) {
     crate::signal::clear_task(task_id);
     crate::syscall::clear_blocked_call(task_id);
     if (task_id as usize) < MAX_TASKS {
-        ROOTS.with_mut(|roots| roots[task_id as usize] = 0);
+        set_root(task_id, 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
         FS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
         FPU_AREAS.with_mut(|areas| areas[task_id as usize] = FpuArea::DEFAULT);

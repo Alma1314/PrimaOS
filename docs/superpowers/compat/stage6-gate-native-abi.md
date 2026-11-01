@@ -4,7 +4,7 @@ kind: compatibility
 authority: scoped-native-abi-ledger
 status: experimental
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # 阶段 6 Gate 原生机器入口台账
@@ -20,18 +20,22 @@ updated: 2026-10-31
 |---|---|---|---|
 | 73 | `SYS_GATE_ATTACH` | task_cap, gate_or_zero, orphan_value, 0, 0, 0 | 本地 Gate 句柄 |
 | 74 | `SYS_GATE_WAIT` | gate_cap, output_ptr, 96, 0, 0, 0 | 0；输出 12 个小端 u64 |
+| 75 | `SYS_GATE_COPY_IN` | request_cap, client_va, len, service_dst, 0, 0 | len；≤4096字节，全范围预检后提交 |
+| 76 | `SYS_GATE_COPY_OUT` | request_cap, client_va, len, service_src, 0, 0 | len；≤4096字节，全范围预检后提交 |
 | 77 | `SYS_GATE_REPLY` | request_cap, value, 0, 0, 0, 0 | 0；只改客户端 rax |
 | 78 | `SYS_GATE_ABORT` | request_cap, value, 0, 0, 0, 0 | 0；与 reply 同提交，审计原因不同 |
 
-75/76 尚未分配，调用仍为原生 ENOSYS；代理复制留 M1c。后续增加入口、共享 root 或整帧答复
+75/76已由[代理复制与G2/G3后继](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)接入。后续增加入口、共享 root 或整帧答复
 必须同步更新本表、源码号表、协议与证据，不能修改既有号。
 
-控制调用的普通错误为 EINVAL（编码/保留参数/输出形状）、ENOENT（失效）、EACCES（授权/身份）、
+控制调用的普通错误为 EINVAL（编码/保留参数/输出形状/复制长度超过4096）、ENOENT（失效）、EACCES（授权/身份）、
 EAGAIN（准入状态/未消费原生返回或恢复续体/共享 root）、ENOSPC（能力/等待/绑定容量）和 EFAULT（输出页权限/范围）。
 COW 帧不足为 ENOSPC；审计耗尽先封存诊断并全局 fail-stop，绝不向用户返回 ENOSPC。
 [失败尝试后继](../reports/2026-10-31-stage6-gate-control-rejections.md)在这四个入口补齐逐次拒绝事件：
 尝试者 id/cookie、原始控制号/六参数和返回错误编码。非法句柄只作为原始参数，不断言其对象身份；
-入口先预检一条失败日志容量，耗尽先停止；成功事务仍预检全成本。该范围不含未实现的75/76或其它原生调用。
+入口先预检一条失败日志容量，耗尽先停止；成功事务仍预检全成本。
+[复制后继](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)将同一拒绝审计接入75/76，范围不扩至其它原生调用；
+成功复制另记`GateCopied`（Gate/Request、双端cookie、地址、长度、方向）。
 这些是原生控制错误；客户端收到的 value/orphan_value 是不透明 u64，不按 errno 解释。
 
 [Ready 准入后继](../reports/2026-10-31-stage6-gate-admission.md)补齐旧 IPC、等待、异常／信号恢复、
@@ -43,3 +47,11 @@ request_cap 使用服务者本地句柄视图，cookie 含 Task 代次，flags b
 空队列登记不可警报的私有等待，唤醒后重新执行原生 wait、重新验证当前输出映射；
 不跨阻塞保留物理写计划。客户端的全部 syscall/int80 号（包括原生号和控制号）先递送 Gate，
 孤儿绑定继续使用配置值，不退回原生分派；信号保持排队，Linux 信号语义留 M4。
+
+copy的服务缓冲使用服务root，客户端使用attach保存的root及代次；同物理地址重装也拒绝。
+绑定期间管理者不能改客户端映射，复制事务不跨阻塞/调度保存。两端逐页检查Segment普通RAM归属、
+逻辑读写权限和硬件用户权限，先完整读入scratch，再全目标COW预留并提交。
+零长不解引用指针，但仍验证请求、root及两端地址加法；失败保持目标字节，COW预留失败也保持PTE及帧归属。
+
+孤儿绑定的后续trap保持fail-closed，并原子追加request=0的原始`GateTrapped`与结果`GateTerminated`；
+request=0不是可交付请求。两条审计空间不足先停止，不能用只有结果的事件丢失客户端身份。

@@ -4,7 +4,7 @@ kind: specification
 authority: mechanism-scope-decision
 status: accepted-scoped
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # S6-M1 递送机制的六项裁决（D17–D22）
@@ -26,6 +26,9 @@ client VA 代理复制（支持嵌套指针）；D22 v1 所有门控等待不可
 73/74/77/78追加到源码台账，75/76与完整G2/G3仍待完成；四个控制入口的普通失败尝试审计随后由[独立后继](../reports/2026-10-31-stage6-gate-control-rejections.md)补齐。上段“仍待M1b”
 保留M1a时点含义，不再作为本日接线状态摘要；阶段状态只查实现阶段。
 [Ready准入后继](../reports/2026-10-31-stage6-gate-admission.md)另补齐未消费原生返回／恢复续体拒绝；不扩大 G1/G2/G3 范围。
+
+2026-11-01后继：[代理复制与生命周期验收](../reports/2026-11-01-stage6-gate-copy-lifecycle.md)落实75/76与G2/G3矩阵；
+上段“仍待”保留2026-10-31时点。完整回归、W7和M1e范围见报告与阶段跟踪，不自动签署阶段。
 
 ## 后继复审（2026-10-29）
 

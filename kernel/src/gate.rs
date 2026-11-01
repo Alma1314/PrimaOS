@@ -6,9 +6,9 @@
 //! `u64`，不比较调用号、不选择 Linux errno（S6-X3）。
 //!
 //! **本切片的边界**：这里只落地对象、预留、队列、一次性答复与清理事务，并用 host 单测钉住；
-//! 原生 73/74/77/78 与 syscall/int80 入口由 syscall 适配层接线；75/76 留 M1c。适配层在同一个不可调度区间内调用
+//! 原生 73–78 与 syscall/int80 入口由 syscall 适配层接线。适配层在同一个不可调度区间内调用
 //! [`BootstrapState::gate_reply`]（它已写入客户端保存帧的 `rax`），随后才允许调度；
-//! `gate_copy_in/out` 属 M1c。
+//! `gate_copy_in/out` 复用显式 root 的页表/COW 事务。
 //!
 //! 失败关闭：所有门控事务在任何变更前预检审计容量；不足时记录首次诊断并返回
 //! [`Error::AuditFull`]，由 [`gate_audit`](super::gate_audit) 的全局停止控制器接管。
@@ -108,6 +108,8 @@ pub struct GateRecord {
 pub struct BindingRecord {
     pub task: u32,
     pub cookie: u64,
+    /// Root incarnation captured at attach; mappings are frozen while bound.
+    pub root: Option<(u64, u64)>,
     pub gate: u32,
     /// 服务授权消失后该客户端 trap 的返回值（`attach` 配置）。
     pub orphan: u64,
@@ -585,6 +587,7 @@ impl BootstrapState {
             Some(BindingRecord {
                 task: client,
                 cookie: client_cookie,
+                root: crate::sched::root_identity(client),
                 gate,
                 orphan,
                 slot,
@@ -638,8 +641,18 @@ impl BootstrapState {
             return Err(Error::Stale);
         };
         if !gate.live {
-            self.preflight_gate_audit(1, binding.cookie, gate_audit::Operation::Trap)
+            // Request zero denotes a fail-closed trap without an allocated
+            // request. Preserve its caller and raw arguments before the result.
+            self.preflight_gate_audit(2, binding.cookie, gate_audit::Operation::Trap)
                 .map_err(|_| Error::AuditFull)?;
+            self.audit.append(AuditEvent::GateTrapped {
+                gate: gate.id,
+                request: 0,
+                client_cookie: binding.cookie,
+                number,
+                args,
+                flags,
+            });
             self.audit.append(AuditEvent::GateTerminated {
                 gate: gate.id,
                 request: 0,
@@ -858,17 +871,13 @@ impl BootstrapState {
     // reply / abort
     // ------------------------------------------------------------------
 
-    /// 答复一次已交付请求：完成客户端私有等待、只写客户端保存帧的 `rax`、撤销全部请求
-    /// 能力别名并记录终结。`abort` 与 `reply` 搬运同一个不透明 `u64`，只有审计原因不同。
-    ///
-    /// 整个提交在同一个不可调度区间内完成；重复答复/迟到答复得到 [`Error::Stale`]。
-    pub fn gate_reply(
-        &mut self,
+    /// Shared authorization for reply and both copy directions. Alias location,
+    /// fixed service identity and Delivered state are checked on every use.
+    fn gate_delivered(
+        &self,
         service: u32,
         request_cap: Handle,
-        value: u64,
-        abort: bool,
-    ) -> Result<ReplyOutcome, Error> {
+    ) -> Result<(RequestRecord, GateRecord), Error> {
         if self.slots.check(request_cap) != SlotState::Live {
             return Err(Error::Stale);
         }
@@ -897,6 +906,75 @@ impl BootstrapState {
         if gate.service != service || gate.service_cookie != service_cookie {
             return Err(Error::Denied);
         }
+        Ok((request, gate))
+    }
+
+    pub(crate) fn gate_copy_preflight(
+        &mut self,
+        service: u32,
+        cap: Handle,
+    ) -> Result<(RequestRecord, (u64, u64)), Error> {
+        let (request, gate) = self.gate_delivered(service, cap)?;
+        let binding = self
+            .gate_tables()
+            .binding(request.binding)
+            .ok_or(Error::Stale)?;
+        let root = binding.root.ok_or(Error::Stale)?;
+        if crate::sched::root_identity(request.client) != Some(root) {
+            return Err(Error::Stale);
+        }
+        if !self.gate_client_root_is_exclusive(request.client)
+            || (1..crate::sched::MAX_TASKS as u32).any(|id| {
+                id != request.client
+                    && self.tasks.is_live(id)
+                    && crate::sched::root(id) == Some(root.0)
+            })
+        {
+            return Err(Error::Busy);
+        }
+        self.preflight_gate_audit(1, gate.service_cookie, gate_audit::Operation::Copy)
+            .map_err(|_| Error::AuditFull)?;
+        Ok((request, root))
+    }
+
+    /// No scheduling/VM mutation is permitted between preflight and this commit.
+    pub(crate) fn gate_copy_committed(
+        &mut self,
+        service: u32,
+        request: RequestRecord,
+        client_va: u64,
+        service_va: u64,
+        len: u64,
+        out: bool,
+    ) {
+        self.audit.append(AuditEvent::GateCopied {
+            gate: request.gate,
+            request: request.id,
+            client_cookie: request.client_cookie,
+            service_cookie: self.task_cookie(service).expect("copy service"),
+            client_va,
+            service_va,
+            len,
+            out,
+        });
+    }
+
+    /// 答复一次已交付请求：完成客户端私有等待、只写客户端保存帧的 `rax`、撤销全部请求
+    /// 能力别名并记录终结。`abort` 与 `reply` 搬运同一个不透明 `u64`，只有审计原因不同。
+    ///
+    /// 整个提交在同一个不可调度区间内完成；重复答复/迟到答复得到 [`Error::Stale`]。
+    pub fn gate_reply(
+        &mut self,
+        service: u32,
+        request_cap: Handle,
+        value: u64,
+        abort: bool,
+    ) -> Result<ReplyOutcome, Error> {
+        let (request, gate) = self.gate_delivered(service, request_cap)?;
+        let service_cookie = gate.service_cookie;
+        let id = request.id;
+        let slot = request.binding;
+        let tables = self.gate_tables();
         let ticket = request.ticket.ok_or(Error::Stale)?;
         request.root_cap.ok_or(Error::Stale)?;
         let (revoked, revoked_count) = self.gate_request_caps(request.id);
@@ -996,6 +1074,10 @@ impl BootstrapState {
             if let Some(gate) = tables.find(binding.gate)
                 && gate.live
                 && gate.capacity_len > 0
+                && (gate.queue_len < QUEUE_DEPTH as u32
+                    || tables
+                        .slot_request(binding.slot)
+                        .is_some_and(|r| r.phase == Phase::Queued))
             {
                 events += 1; // GatePromoted
             }
@@ -1061,7 +1143,7 @@ impl BootstrapState {
                 if cancelled != 0 {
                     Self::remove_from_pending(&mut gate, cancelled);
                 }
-                if gate.live && gate.capacity_len > 0 {
+                if gate.live && gate.capacity_len > 0 && gate.queue_len < QUEUE_DEPTH as u32 {
                     let promoted = gate.capacity[gate.capacity_head as usize];
                     gate.capacity_head = (gate.capacity_head + 1) % MAX_BINDINGS as u32;
                     gate.capacity_len -= 1;
@@ -1434,6 +1516,200 @@ mod tests {
         state
             .gate_attach(2, task_cap(state, client), Handle::ZERO, orphan)
             .unwrap()
+    }
+
+    #[test]
+    fn orphan_traps_audit_raw_identity_and_require_both_records_before_returning() {
+        let _serial = serial();
+        let mut state = pair();
+        let out = attach(&mut state, 3, 0xdead);
+        state.drop_capability(2, out.gate_cap).unwrap();
+        state.yield_task(2).unwrap();
+        state.schedule_task(3).unwrap();
+        let args = [u64::MAX, 2, 3, 4, 5, 6];
+        let number = 0xfedc_ba98_7654_3210;
+        let count = state.audit.count;
+        assert_eq!(
+            state.gate_trap(3, number, args, 1),
+            Ok(TrapOutcome::Orphaned { value: 0xdead })
+        );
+        assert_eq!(
+            state.audit.entry(count),
+            Some(AuditEvent::GateTrapped {
+                gate: out.gate,
+                request: 0,
+                client_cookie: state.task_cookie(3).unwrap(),
+                number,
+                args,
+                flags: 1,
+            })
+        );
+        assert_eq!(
+            state.audit.entry(count + 1),
+            Some(AuditEvent::GateTerminated {
+                gate: out.gate,
+                request: 0,
+                value: 0xdead,
+                reason: Reason::Orphaned,
+            })
+        );
+        assert_eq!(state.audit.count, count + 2);
+        assert_eq!(state.gate_tables().next_request, 1);
+        let tables = state.gate_tables();
+        let tasks = state.tasks;
+        let count = state.audit.count;
+        assert!(state.audit.reserve(MAX_AUDIT_EVENTS - count - 1));
+        assert_eq!(state.gate_trap(3, number, args, 1), Err(Error::AuditFull));
+        assert_eq!(state.audit.count, count);
+        assert_eq!(state.gate_tables(), tables);
+        assert_eq!(state.tasks, tasks);
+        let d = state.gate_audit_diagnostic().unwrap();
+        assert_eq!(d.operation, gate_audit::Operation::Trap);
+        assert_eq!(d.required, 2);
+        assert_eq!(d.owner, state.task_cookie(3).unwrap());
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn copy_checks_holder_delivered_root_incarnation_and_audit_before_mutation() {
+        let _serial = serial();
+        let mut state = state();
+        let client = 16;
+        state.create_task(client).unwrap();
+        state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::TaskManageVSpace]),
+                ObjectRef::Task(client),
+            )
+            .unwrap();
+        crate::sched::set_root(client, 0x9876_5400_0000);
+        let out = attach(&mut state, client, 0xdead);
+        // Bound tasks reject all public mapping changes, even by their manager.
+        let access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
+        assert_eq!(
+            state.memseg_unmap(2, task_cap(&state, client), 0x4000, 1, 0, 0),
+            Err(MemsegError::StillMapped)
+        );
+        assert_eq!(
+            state.memseg_protect(2, task_cap(&state, client), 0x4000, 1, access, 0, 0),
+            Err(MemsegError::StillMapped)
+        );
+        assert_eq!(
+            state.vspace_access_enable(2, task_cap(&state, client), 0x4000, 1, false, 0, 0),
+            Err(MemsegError::StillMapped)
+        );
+        assert_eq!(
+            state.thread_create(client, 0x4000, 0x8000),
+            Err(ThreadError::Busy)
+        );
+        assert_eq!(state.check_fork(client), Err(ThreadError::Busy));
+        assert_eq!(state.check_exec(client, 1), Err(TaskError::HasLiveThreads));
+        state.yield_task(2).unwrap();
+        state.schedule_task(client).unwrap();
+        state.gate_trap(client, 0xfeed, [0; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, out.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(
+            state.gate_copy_preflight(1, request_cap),
+            Err(Error::Denied)
+        );
+        let before = (
+            state.audit.count,
+            state.gate_tables().request(1),
+            state.slots,
+            state.tasks,
+        );
+        let (request, root) = state.gate_copy_preflight(2, request_cap).unwrap();
+        assert_eq!(root, crate::sched::root_identity(client).unwrap());
+        assert_eq!(
+            before,
+            (
+                state.audit.count,
+                state.gate_tables().request(1),
+                state.slots,
+                state.tasks
+            )
+        );
+        // Reuse the same root physical address: incarnation still rejects it.
+        crate::sched::set_root(client, root.0);
+        assert_eq!(state.gate_copy_preflight(2, request_cap), Err(Error::Stale));
+        let tables = state.gate_tables();
+        let mut binding = tables.binding(out.slot).unwrap();
+        binding.root = crate::sched::root_identity(client);
+        tables.set_binding(out.slot, Some(binding));
+        state.save_gate_tables(tables);
+        let count = state.audit.count;
+        let reserved = MAX_AUDIT_EVENTS - count;
+        assert!(state.audit.reserve(reserved));
+        assert_eq!(
+            state.gate_copy_preflight(2, request_cap),
+            Err(Error::AuditFull)
+        );
+        assert_eq!(
+            state.gate_audit_diagnostic().unwrap().operation,
+            gate_audit::Operation::Copy
+        );
+        assert_eq!(state.audit.count, count);
+        assert_eq!(state.gate_tables().request(1), Some(request));
+        assert!(state.gate_well_formed());
+        crate::sched::set_root(client, 0);
+    }
+
+    #[test]
+    fn cancelling_capacity_or_delivered_requests_never_overfills_the_queue() {
+        let _serial = serial();
+        let mut state = pair();
+        let first = attach(&mut state, 3, 0);
+        for client in 4..=13 {
+            state.create_task_record(client, 0).unwrap();
+            state
+                .mint_root_capability(
+                    2,
+                    Rights::from_rights(&[Right::TaskManageVSpace]),
+                    ObjectRef::Task(client),
+                )
+                .unwrap();
+            state
+                .gate_attach(2, task_cap(&state, client), first.gate_cap, 0)
+                .unwrap();
+        }
+        state.yield_task(2).unwrap();
+        for client in 3..=13 {
+            state.schedule_task(client).unwrap();
+            state.gate_trap(client, 1, [0; 6], 0).unwrap();
+        }
+        state.schedule_task(2).unwrap();
+        // Cancelling a capacity waiter leaves the full queue and next waiter intact.
+        state.destroy_task(11).unwrap();
+        let g = state.gate_tables().find(first.gate).unwrap();
+        assert_eq!((g.queue_len, g.capacity_len), (8, 2));
+        assert!(state.gate_well_formed());
+        let WaitOutcome::Delivered { request_cap, .. } =
+            state.gate_wait(2, first.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        state.destroy_task(3).unwrap();
+        let g = state.gate_tables().find(first.gate).unwrap();
+        assert_eq!((g.queue_len, g.capacity_len), (8, 1));
+        assert!(state.gate_well_formed());
+        assert_eq!(
+            state.gate_reply(2, request_cap, 7, false),
+            Err(Error::Stale)
+        );
+        // Cancelling a queued request does create room, so exactly one advances.
+        state.destroy_task(4).unwrap();
+        let g = state.gate_tables().find(first.gate).unwrap();
+        assert_eq!((g.queue_len, g.capacity_len), (8, 0));
+        assert_eq!(
+            state.gate_tables().request(11).unwrap().phase,
+            Phase::Queued
+        );
+        assert!(state.gate_well_formed());
     }
 
     #[test]

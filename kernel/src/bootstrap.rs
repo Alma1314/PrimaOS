@@ -462,6 +462,17 @@ pub enum AuditEvent {
         gate: u32,
         request: u32,
     },
+    /// Successful proxy copy; raw addresses and direction have no OS semantics.
+    GateCopied {
+        gate: u32,
+        request: u32,
+        client_cookie: u64,
+        service_cookie: u64,
+        client_va: u64,
+        service_va: u64,
+        len: u64,
+        out: bool,
+    },
     /// Native control rejection. Args retain the caller's raw local handles;
     /// an invalid handle is not asserted to identify a Gate or Request.
     GateControlRejected {
@@ -8660,7 +8671,8 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.has_prepared_child(task_id)
+        if self.task_is_gated(task_id)
+            || self.has_prepared_child(task_id)
             || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
         {
             return Err(MemsegError::StillMapped);
@@ -8794,7 +8806,8 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.has_prepared_child(task_id)
+        if self.task_is_gated(task_id)
+            || self.has_prepared_child(task_id)
             || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
         {
             return Err(MemsegError::StillMapped);
@@ -8896,7 +8909,8 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.has_prepared_child(task_id)
+        if self.task_is_gated(task_id)
+            || self.has_prepared_child(task_id)
             || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
         {
             return Err(MemsegError::StillMapped);
@@ -10152,6 +10166,9 @@ impl BootstrapState {
         entry: u64,
         stack_top: u64,
     ) -> Result<u32, ThreadError> {
+        if self.task_is_gated(caller) {
+            return Err(ThreadError::Busy);
+        }
         if !self.tasks.is_live(caller) {
             return Err(ThreadError::InvalidCaller);
         }
@@ -10271,6 +10288,12 @@ impl BootstrapState {
     /// M15b：把一个 Task 挂到 Process；同一 Process 至多 MAX_TASKS 个线程。
     pub fn attach_thread(&mut self, process_id: u32, task_id: u32) -> bool {
         if self.tasks.find(task_id).is_none() {
+            return false;
+        }
+        if self.processes.find(process_id).is_some_and(|process| {
+            (1..MAX_TASKS as u32)
+                .any(|id| process.threads & (1 << id) != 0 && self.task_is_gated(id))
+        }) {
             return false;
         }
         let Some(process) = self.processes.find_mut(process_id) else {
@@ -10512,7 +10535,7 @@ impl BootstrapState {
         {
             return Err(TaskError::HasLiveThreads);
         }
-        if self.has_prepared_child(caller) {
+        if self.task_is_gated(caller) || self.has_prepared_child(caller) {
             return Err(TaskError::HasLiveThreads);
         }
         let mut old = 0;
@@ -10623,7 +10646,7 @@ impl BootstrapState {
         if self.tasks.next_generation > u64::from(u32::MAX) {
             return Err(ThreadError::CapacityExceeded);
         }
-        if self.has_prepared_child(caller) {
+        if self.task_is_gated(caller) || self.has_prepared_child(caller) {
             return Err(ThreadError::Busy);
         }
         let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;

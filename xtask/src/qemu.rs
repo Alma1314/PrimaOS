@@ -104,6 +104,11 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
+    if let Some(case) = option_env!("PRIMA_GATE_CASE") {
+        validate_gate_matrix(&output.stdout, case).map_err(|e| with_output(e, &output))?;
+        println!("PASS S6MATRIX round={round} case={case} verified=1 state=1 audit=1");
+        return Ok(());
+    }
     validate_gate_output(&output.stdout).map_err(|e| with_output(e, &output))?;
     println!(
         "PASS S6GATE round={round} int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1"
@@ -145,6 +150,39 @@ fn validate_gate_output(output: &str) -> Result<(), String> {
         return Err("missing or invalid G1 gate witness".into());
     }
     Ok(())
+}
+
+fn validate_gate_matrix(output: &str, case: &str) -> Result<(), String> {
+    let expected = format!("S6MATRIX|case={case};verified=1;state=1;audit=1");
+    if !["G2", "G2-death", "G3"].contains(&case)
+        || output
+            .lines()
+            .filter(|line| line.starts_with("S6MATRIX|"))
+            .collect::<Vec<_>>()
+            != [expected]
+        || output.contains("|event=panic|")
+    {
+        return Err("missing or invalid G2/G3 gate witness".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn matrix_requires_the_selected_complete_unique_success_record() {
+    for case in ["G2", "G2-death", "G3"] {
+        let good = format!("S6MATRIX|case={case};verified=1;state=1;audit=1\n");
+        assert!(validate_gate_matrix(&good, case).is_ok());
+        for bad in [
+            good.repeat(2),
+            good.replace("verified=1", "verified=0"),
+            good.replace(";audit=1", ""),
+            good.clone() + "PRIMA|event=panic|status=error",
+        ] {
+            assert!(validate_gate_matrix(&bad, case).is_err());
+        }
+        assert!(validate_gate_matrix(&good, "other").is_err());
+    }
 }
 
 /// Expected terminal failure, distinct from every ordinary success suite. The

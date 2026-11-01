@@ -106,6 +106,9 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+2026-11-01：[Gate代理复制与生命周期](2026-11-01-stage6-gate-copy-lifecycle.md)实现75/76，补齐G2/G3矩阵并修正满队列错误晋级、补齐孤儿trap原始审计；workspace1095、lint与G1/G2/G3各双轮PASS，最终完整72/72，首次71/72的I1差异保留；
+[W7分段诊断](2026-11-01-stage6-w7-timing-diagnosis.md)记录BIOS读盘/执行阶段与临时strip失败。最终统一回归及限制以报告为准，不改写前序失败。
+
 2026-11-01：[RAM复制、四段几何与八页栈](2026-11-01-stage6-loader-geometry.md)，S6-M2后继；workspace1091、lint和Linux参考通过，完整BIOS60/72；单次QEMU诊断26.63秒完成geometry=1，隔离W7双轮仍超时；合成入口，不代表冻结busybox运行。
 
 2026-10-31：[原生 Gate 控制失败尝试审计](2026-10-31-stage6-gate-control-rejections.md)，73/74/77/78 的拒绝共用记录身份、原始参数和错误；workspace1090、lint、G1双轮9条拒绝PASS，完整BIOS68/72（默认/V1各首轮及W7双轮30秒超时）；不扩大至75/76或完整G2/G3。
@@ -129,6 +132,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-11-01 | [2026-11-01-stage6-gate-copy-lifecycle.md](2026-11-01-stage6-gate-copy-lifecycle.md) | 75/76代理复制、队列清理与G2/G3验收 |
+| 2026-11-01 | [2026-11-01-stage6-w7-timing-diagnosis.md](2026-11-01-stage6-w7-timing-diagnosis.md) | W7总预算分段、BIOS输入成本及临时strip反例 |
 | 2026-10-31 | [2026-10-31-stage6-gate-control-rejections.md](2026-10-31-stage6-gate-control-rejections.md) | S6-M1 原生控制拒绝与容量极限审计 |
 | 2026-10-31 | [2026-10-31-stage6-gate-admission.md](2026-10-31-stage6-gate-admission.md) | S6-M1 Ready 目标未决返回与恢复续体准入整改 |
 | 2026-10-31 | [2026-10-31-stage6-gate-dispatch.md](2026-10-31-stage6-gate-dispatch.md) | S6-M1/M1b trap、四个控制入口与 G1 有界见证 |

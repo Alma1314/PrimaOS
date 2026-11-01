@@ -92,7 +92,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（199）
+## report（201）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -294,7 +294,9 @@
 | [S6-M1/M1b 内核门控对象与请求生命周期](../superpowers/reports/2026-10-31-stage6-gate-lifecycle.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md` |
 | [阶段6主分支整合：输入、容量与冻结台账](../superpowers/reports/2026-10-31-stage6-main-merge.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-main-merge.md` |
 | [S6-M2：按需 ELF 输入与 exec 失败退栈回收](../superpowers/reports/2026-10-31-stage6-streamed-elf-input.md) | historical | `docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md` |
+| [S6-M1 / M1c–M1d：代理复制与 G2/G3 生命周期验收](../superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md` |
 | [S6-M2：RAM 复制、四段装载几何与八页栈](../superpowers/reports/2026-11-01-stage6-loader-geometry.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md` |
+| [W7：30秒预算的分段定位](../superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md` |
 
 ## spec（4）
 
