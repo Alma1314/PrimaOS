@@ -78,6 +78,16 @@ pub fn fill_zero(va: u64, len: usize) {
     unsafe { ptr::write_bytes(va as *mut u8, 0, len) }
 }
 
+/// Copy bytes into exclusively owned ordinary RAM (not MMIO).
+///
+/// Contract: the destination is mapped and writable for the entire slice, and
+/// does not overlap the source. The caller keeps both mappings valid.
+#[inline]
+pub fn write_bytes(va: u64, bytes: &[u8]) {
+    // SAFETY: the caller guarantees valid, disjoint RAM ranges and exclusive output.
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), va as *mut u8, bytes.len()) }
+}
+
 // Preserve the existing path, with an enforced type boundary instead of a
 // caller-only assertion that arbitrary T happens to have initialized bytes.
 pub use crate::pod::bytes_of;
@@ -94,6 +104,18 @@ pub fn bytes_at(va: u64, len: usize) -> &'static [u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_bytes_preserves_unaligned_range_boundaries() {
+        let mut destination = [0xa5; 4112];
+        let source = core::array::from_fn::<_, 4097, _>(|i| (i % 251) as u8);
+        let address = destination.as_mut_ptr() as u64 + 3;
+        write_bytes(address, &source);
+        write_bytes(address, &[]);
+        assert_eq!(&destination[..3], &[0xa5; 3]);
+        assert_eq!(&destination[3..4100], &source);
+        assert_eq!(&destination[4100..], &[0xa5; 12]);
+    }
 
     #[test]
     fn fill_zero_writes_requested_bytes() {

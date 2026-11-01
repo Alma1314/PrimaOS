@@ -106,6 +106,8 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 6（进行中，2026-10-29 启动）
 
+2026-11-01：[RAM复制、四段几何与八页栈](2026-11-01-stage6-loader-geometry.md)，S6-M2后继；workspace1091、lint和Linux参考通过，完整BIOS60/72；单次QEMU诊断26.63秒完成geometry=1，隔离W7双轮仍超时；合成入口，不代表冻结busybox运行。
+
 2026-10-31：[原生 Gate 控制失败尝试审计](2026-10-31-stage6-gate-control-rejections.md)，73/74/77/78 的拒绝共用记录身份、原始参数和错误；workspace1090、lint、G1双轮9条拒绝PASS，完整BIOS68/72（默认/V1各首轮及W7双轮30秒超时）；不扩大至75/76或完整G2/G3。
 
 2026-10-31：[Ready 挂接准入整改](2026-10-31-stage6-gate-admission.md)，拒绝待领取原生返回及恢复续体，24 个 host 拒绝组合与 ring3 注入反例双轮通过；workspace1089、lint PASS，完整BIOS70/72（W7双轮30秒超时）；完整 G2/G3、代理复制与失败尝试审计仍待完成。

@@ -895,6 +895,7 @@ impl PreparedUserWrite {
 /// Explicit-root copy-in. Validate the entire range before modifying the kernel
 /// buffer, including user access on intermediate levels. The caller owns the
 /// root for the whole operation; no implicit current-root lookup occurs here.
+/// User frames must be ordinary RAM and disjoint from the kernel output buffer.
 pub fn read_user_bytes(
     root: u64,
     ptr: u64,
@@ -910,8 +911,11 @@ pub fn read_user_bytes(
     }
     let mut copied = 0;
     for chunk in chunks {
-        for index in 0..chunk.len {
-            output[copied + index] = prima_ostd::mm::read_u8_at(map(chunk.physical), index as u64);
+        if chunk.len != 0 {
+            // Validated user pages are ordinary RAM; keep full-range preflight
+            // above, then copy each physical chunk without per-byte MMIO reads.
+            output[copied..copied + chunk.len]
+                .copy_from_slice(prima_ostd::mm::bytes_at(map(chunk.physical), chunk.len));
         }
         copied += chunk.len;
     }

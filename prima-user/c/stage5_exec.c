@@ -209,6 +209,8 @@ static void large_child(void) {
     _exit(130);
 }
 
+#include "stage6_geometry_fixture.h"
+
 int main(void) {
     emit("EXEC");
     long pid = fork();
@@ -243,6 +245,11 @@ int main(void) {
     long large_waited = large > 0 ? syscall(61L, large, (long)&large_status, 0L, 0L) : -1;
     field("large", large > 0 && large_waited == large && (large_status & 0x7f) == 0 &&
           ((large_status >> 8) & 0xff) == 42, large_status);
+    long geometry = fork();
+    if (geometry == 0) geometry_child();
+    int geometry_status = 0;
+    long geometry_waited = geometry > 0 ? syscall(61L, geometry, (long)&geometry_status, 0L, 0L) : -1;
+    field("geometry", geometry > 0 && geometry_waited == geometry && geometry_status == (42 << 8), geometry_status);
     emit("|ok=");emit_dec(failures?0:1);emit(";err=");emit_dec(first_error);emit("\n");
     return failures?1:0;
 }

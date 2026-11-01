@@ -1448,9 +1448,8 @@ fn load_exec_plan(image: u64, length: u64) -> Result<crate::exec::ExecPlan, Errn
 fn copy_exec_page(source: u64, target: u64, count: usize) -> Result<(), Errno> {
     let mut bytes = [0; 4096];
     copy_user_bytes(source, &mut bytes[..count])?;
-    for (index, &byte) in bytes[..count].iter().enumerate() {
-        prima_ostd::mm::write_u8_at(target, index as u64, byte);
-    }
+    // The new private frame is disjoint from the kernel scratch buffer.
+    prima_ostd::mm::write_bytes(target, &bytes[..count]);
     Ok(())
 }
 
