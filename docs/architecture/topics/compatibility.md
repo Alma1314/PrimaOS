@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # POSIX profile、musl、网络与 Linux 路线
@@ -15,7 +15,7 @@ updated: 2026-10-24
 
 源码兼容与未修改 ELF 兼容有什么区别？哪个 profile 已冻结？逐 API 和符号怎么追溯？哪些测试有 Linux 参考？
 
-检索别名：POSIX, Linux, musl, libc, profile, ABI, sbase, UDP, socket, compat。
+检索别名：POSIX, Linux, musl, libc, profile, ABI, sbase, UDP, socket, compat, Windows, Win32, PE64。
 
 ## 权威章节与阅读顺序
 
@@ -26,6 +26,9 @@ updated: 2026-10-24
 阶段5准入/修订计划 → profile v0 → musl M0–M4 → sbase 与各子系统里程碑 → M20 两表汇总 → M21 技术出口评审（未签署）。profile v1 是 delta 提案；M21 记录 profile v2 未编写与 Rust target 缺口。阶段6不能由 exec_replace 探针直接宣告启动。
 
 ## 契约、计划与证据入口
+
+- [阶段7范围裁决](../../superpowers/specs/2026-10-31-stage7-scope-decisions.md)：Linux + Prima原生/POSIX及双路径动态链接等范围已确认；具体契约待冻结，不是实现证据。
+- [Windows LibOS 独立候选计划](../../superpowers/plans/2026-10-31-windows-libos-roadmap.md)：控制台与服务优先，PE64/Win32导入路径；未启动，不替换阶段7组合，不承诺完整NT syscall或GUI兼容。计划追溯早期双人格缺口、holder评审与阶段5后继实现。
 
 - [musl 调用边界与可重放构建设计](../../superpowers/specs/2026-10-24-musl-port-boundary-design.md)
 - [musl fd/stdio 验证报告](../../superpowers/reports/2026-10-24-musl-port-boundary-report.md)

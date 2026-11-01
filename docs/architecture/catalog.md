@@ -52,7 +52,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（20）
+## plan（21）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -76,6 +76,7 @@
 | [阶段 5 收尾与阶段 6 入口实施路线图](../superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | current | `docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md` |
 | [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 | [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
+| [Windows LibOS 计划书：PE64 控制台与服务兼容路径](../superpowers/plans/2026-10-31-windows-libos-roadmap.md) | current | `docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md` |
 
 ## reference（9）
 
@@ -303,7 +304,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（88）
+## specification（89）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -395,6 +396,7 @@
 | [Rust 句柄源码到 Lean 的首个细化切片](../superpowers/specs/2026-10-31-rust-handle-refinement-design.md) | current | `docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md` |
 | [S6-M2：大映像帧向量与有界资源预算](../superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md) | current | `docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md` |
 | [S6-M2：按需读取原生 exec 的 ELF 输入](../superpowers/specs/2026-10-31-stage6-streamed-elf-input.md) | current | `docs/superpowers/specs/2026-10-31-stage6-streamed-elf-input.md` |
+| [阶段 7 范围裁决：双 personality、系统硬化与 AArch64 机制验证](../superpowers/specs/2026-10-31-stage7-scope-decisions.md) | current | `docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md` |
 
 ## template（4）
 

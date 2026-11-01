@@ -29,7 +29,7 @@ updated: 2026-10-31
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
 | 最近验证记录 | 2026-10-31 普通控制失败审计：workspace1090 passed（1项外部ELF ignored）、lint及探针特性Clippy PASS，G1双轮逐字段核对9条拒绝事件；完整BIOS68/72（默认启动第1轮、V1第1轮、W7双轮30秒超时），命令退出1。准入轮70/72与接线轮71/72保留，不据聚焦验证解释超时因果 | [失败尝试审计证据](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)、[准入轮](docs/superpowers/reports/2026-10-31-stage6-gate-admission.md)、[接线与栈整改](docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md)；审计停止14轮和D14原型未在本轮重跑 |
 | 阶段 6 | **进行中（2026-10-29 启动）**；前置裁决 D11–D16 已关闭，装载器/初始栈已硬化并补齐 `AT_RANDOM`；退出条件 0/4 达成；M1a 当前评审阻塞已按有界范围收口；S6-M2 按需输入、私有容量与共享 auxv 键源已取得有界证据；D17 现有调用号/权限位序台账已冻结 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[D11–D16裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；白名单与 `AT_RANDOM` 已定，[M1a 整改评审](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)闭合 R1–R6 定义与 D14 探索；[内核输出/COW 前置](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)与[私有等待基础](docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md)已落地；[冻结台账与装载机械项](docs/superpowers/reports/2026-10-30-stage6-freeze-ledgers.md)固定 D17 与 `auxv` 键源；[按需输入](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)与[私有容量后继](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)替代旧字节窗口和149页私有上限；M1b Gate 对象/绑定/请求生命周期已在真实内核状态表落地（[门控切片](docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md)，host 反例）；[最后服务授权丢失钩子](docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md)已在对象层接入；[trap 与四个控制入口](docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md)已接线并取得 G1 有界证据；[Ready 未决返回准入](docs/superpowers/reports/2026-10-31-stage6-gate-admission.md)已补齐；[四个控制入口失败尝试审计](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)已接入；75/76代理复制、完整G2/G3与W7限时余项待完成；exec_replace 不等于未修改 Linux ELF 完成 |
-| 阶段 7 | 未开始；范围未冻结，但结构已裁决为 7-0/7-A…7-H 九条子轨 | [D16 裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；7-A（多 LibOS）为研究核心 P0，S6-M1 前的有界探索原型已完成（[D14 证据](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)，人格桩，非 7-A 退出）；SMP 前先做状态分区（D15） |
+| 阶段 7 | **未开始；综合交付范围已由作者确认，技术规格、白名单与量化门槛待冻结**；7-0/7-A…7-H 九轨必交付，退出仍未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
@@ -141,6 +141,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 
 | 日期 | 决定与当前影响 | 来源 |
 |---|---|---|
+| 2026-10-31（阶段7范围） | 作者逐项确认综合交付：Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、设备与持久化、冻结端到端协议内的用户态组件透明恢复；AArch64单核机制验证，QEMU正式验收；关键性质须证明，性能先基线后门槛。范围已确认，详细契约待冻结；不启动阶段7，不勾选退出条件 | [16项回答与范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md) |
 | 2026-10-23 | M21 技术出口评审未签署；阶段6 D10 不启动 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) |
 | 2026-10-27（签署） | **阶段5签署（SPEC-152）**：冻结 profile v2；确认 D1–D10 处置；BLK-003 按阶段5范围关闭；阶段6具备入口但按 D10 不启动。范围限有界 partial profile，不代表完整 POSIX/Linux 兼容 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md) |
 | 2026-10-31（帧容量） | **S6-M2 有界推进**：私有exec149→640页，补齐全局预算及批量归属回收；526页内容/部分分配失败/四次回滚/大映像再次exec；不勾选阶段条件 | [契约](docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md)、[实测与失败](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md) |
@@ -358,21 +359,33 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：未开始；范围未冻结。** 结构已由 D16 裁决为 9 条子轨（[前置裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)）：子轨是排序假设而非交付承诺，每轨需自身退出签署，顺序可被前序实证推翻。
+**状态：未开始；综合交付范围已确认，技术规格与量化门槛待冻结。** 作者在
+[2026-10-31 范围讨论](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)中逐项确认下列范围，
+承接 D16 的九条子轨结构。九轨均为必交付，排序仍是假设，各轨需自身退出签署；本次范围确认不启动阶段7。
 
 | ID | 子轨 | 优先级 | 退出条件（摘要） | 勾选 |
 |---|---|---|---|---|
-| 7-0 | 工程底座（CI、验收并行化、基准、发布工件） | P0 | `test/lint/tcb/docs check` 在 CI 上绿；5 项基准入库 | [ ] |
-| 7-A | 多 personality 并存（研究核心） | P0 | 两 personality 各自运行、共享日志、跨域请求 `EACCES`、单侧崩溃不影响另一侧 | [ ] |
-| 7-B | SMP（先做状态按 CPU 分区） | P0 | 2/4 vCPU 启动；并行 fork/exec 无丢唤醒；TLB shootdown 正确；扩展性曲线 | [ ] |
-| 7-C | 资源计量与配额 | P1 | 单 LibOS 耗尽自身配额不影响他人 | [ ] |
-| 7-D | 选择性撤销 | P1 | 服务重启后旧句柄全部 `Stale`，无关域不受影响 | [ ] |
-| 7-E | 动态链接（D11 归此） | P2 | 未修改动态 ELF 白名单运行 | [ ] |
-| 7-F | IOMMU 与用户态驱动/持久化 | P2 | 从盘启动；文件跨重启持久化；网卡收发 | [ ] |
-| 7-G | 故障恢复与监督 | P2 | 注入崩溃后服务自愈，配额与审计一致 | [ ] |
-| 7-H | 第二硬件架构 | P2（最后） | 同一 POSIR 规范在第二架构通过 `COMPAT-TEST` | [ ] |
+| 7-0 | 工程底座（CI、验收分组、基准、发布工件） | P0 | `test/lint/tcb/docs check` 在 CI 通过；5项基准及制品可复核；基线后冻结的性能门槛通过 | [ ] |
+| 7-A | Linux + Prima 原生/POSIX 并存 | P0 | 真实白名单、独立语义状态/根/能力视图、显式共享服务；未授权跨域拒绝；单侧故障和耗尽后另一域持续进展 | [ ] |
+| 7-B | x86_64 SMP（先做状态按 CPU 分区） | P0 | 2/4 vCPU；并行 fork/exec 无丢唤醒；TLB shootdown 正确；扩展性曲线 | [ ] |
+| 7-C | 核心资源及I/O配额 | P1 | CPU/内存/Task/句柄/队列/审计及磁盘空间/I/O请求/网络带宽逐项计量；超限隔离与生命周期对账 | [ ] |
+| 7-D | 完整选择性撤销 | P1 | 能力、会话、映射、DMA及未决请求分别定义完成点；旧授权不能再访问或因重启复活，无关域不受影响 | [ ] |
+| 7-E | 双 personality 动态链接 | P2 | Linux未修改动态ELF与Prima原生/POSIX动态应用分别通过冻结程序/库白名单 | [ ] |
+| 7-F | IOMMU、用户态驱动与持久化 | P2 | 块设备与网络驱动、DMA隔离、从盘启动、跨重启文件持久化分别验收 | [ ] |
+| 7-G | 用户态组件透明恢复 | P2 | 冻结端到端协议内，LibOS/服务/驱动崩溃后应用继续执行，请求不丢失、不重复产生副作用；配额/审计一致 | [ ] |
+| 7-H | AArch64 单核机制验证 | P2（后期） | 同一POSIR契约下能力隔离、内存、调度、IPC的对应 `COMPAT-TEST`；不要求完整应用或设备对等 | [ ] |
 
 顺序：`7-0 → 7-A → 7-B → 7-C/D → 7-G → 7-E/F → 7-H`。D14 按启动记录调整为在 S6-M1 正式架构评审前完成一次 7-A 的**有界探索原型**（单核、≤2 人周、不勾选任何条件）；本轮[ring3 人格桩探索](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)已双轮通过，未否定该有界假设；仍不构成完整多 LibOS 或 7-A 退出。若后继原型否定，暂停阶段 6 并回到架构假设评审。SMP 不在白皮书成功标准内，但它是可信度门槛（D15）。
+
+上述顺序是起步假设，非新确认的严格串行计划：7-A耗尽隔离需最小配额先到位，7-G完整恢复
+验收需对应7-E/F功能。正式验收平台为QEMU，实机不作退出条件；应用范围为命令行与服务白名单。
+关键配额、撤销和恢复性质必须建模并证明，并附实现映照与故障注入证据；量化门槛、白名单、
+平台配置和故障协议须按[冻结门](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md#8-实现前和签署前的冻结门)进一步确定。
+整机重启后的应用续执行不在透明恢复范围，文件持久化义务独立保留。本次只更新范围，不新增运行或证明结果。
+
+独立候选扩展：[Windows LibOS 计划书](docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md)。
+作者已选择控制台与服务优先（PE64、DLL、文件、进程/线程、同步与异常）；技术路线及profile仍为提案，
+实现未启动，不替换上述Linux + Prima原生/POSIX组合，也不自动增加第三个阶段7必交付personality。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 

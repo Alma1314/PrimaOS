@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-10-31
 ---
 
 # Plans 索引
@@ -15,11 +15,19 @@ updated: 2026-10-24
 
 ## 阶段 6–7（提案）
 
+当前阶段7范围见[作者确认的综合交付裁决](../specs/2026-10-31-stage7-scope-decisions.md)。执行计划不替代范围、实现或签署。
+
 | 日期 | 文档 | 标题 |
 |---|---|---|
 | 2026-10-27 | [2026-10-27-stage6-7-refinement.md](2026-10-27-stage6-7-refinement.md) | 阶段 6–7 细化提案：Linux 静态 ELF 子阶段（S6-M1–M6）与多 LibOS 并存的阶段 7 子轨（7-0…7-H） |
 
-> 提案，不是阶段定义；阶段 7 的排序与是否新增 7-A 待 D11–D16 裁决。
+> 原计划的 D11–D16 已有[后继裁决](../specs/2026-10-28-stage6-7-release-decisions.md)；2026-10-31 已进一步确认阶段7范围。旧计划的估算和当时摘要按其历史基线解释。
+
+## Windows personality 独立候选扩展
+
+| 日期 | 文档 | 范围与状态 |
+|---|---|---|
+| 2026-10-31 | [Windows LibOS 计划书](2026-10-31-windows-libos-roadmap.md) | 作者选择控制台与服务优先；PE64、DLL、文件、进程/线程、同步与异常。技术路线及profile为提案，未启动，不改变阶段7的双personality必交付组合 |
 
 ## 阶段 5
 
