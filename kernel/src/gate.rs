@@ -90,6 +90,7 @@ pub struct GateRecord {
     pub id: u32,
     pub service: u32,
     pub service_cookie: u64,
+    pub shared_root: bool,
     pub root_cap: Handle,
     pub live: bool,
     pub bindings: u32,
@@ -327,6 +328,76 @@ pub struct ReplyOutcome {
 }
 
 impl BootstrapState {
+    pub(crate) fn gate_audit_read(
+        &self,
+        service: u32,
+        cap: Handle,
+        cursor: u64,
+    ) -> Result<Option<[u64; 16]>, Error> {
+        self.authorize(service, cap, Right::GateServe)
+            .map_err(|_| Error::Denied)?;
+        let Some(ObjectRef::Gate(id)) = self.target_of(cap) else {
+            return Err(Error::Denied);
+        };
+        let gate = self.gate_tables().find(id).ok_or(Error::Stale)?;
+        if gate.service != service || self.task_cookie(service) != Some(gate.service_cookie) {
+            return Err(Error::Denied);
+        }
+        for index in usize::try_from(cursor).unwrap_or(usize::MAX)..self.audit.count {
+            let mut words = [0; 16];
+            words[0] = 1;
+            words[1] = 128;
+            words[2] = index as u64 + 1;
+            words[4] = u64::from(id);
+            match self.audit.entry(index).unwrap() {
+                AuditEvent::GateTrapped {
+                    gate,
+                    request,
+                    client_cookie,
+                    number,
+                    args,
+                    flags,
+                } if gate == id => {
+                    words[3] = 1;
+                    words[5] = u64::from(request);
+                    words[6] = client_cookie;
+                    words[7] = number;
+                    words[9] = flags;
+                    words[10..].copy_from_slice(&args);
+                }
+                AuditEvent::GateDelivered { gate, request, .. } if gate == id => {
+                    words[3] = 2;
+                    words[5] = u64::from(request);
+                    words[6] = self.task_cookie(service).unwrap();
+                }
+                AuditEvent::GateTerminated {
+                    gate,
+                    request,
+                    value,
+                    reason,
+                } if gate == id => {
+                    words[3] = 3;
+                    words[5] = u64::from(request);
+                    words[8] = value;
+                    words[9] = match reason {
+                        Reason::Replied => 0,
+                        Reason::Aborted => 1,
+                        Reason::Orphaned => 2,
+                        Reason::Cancelled => 3,
+                    };
+                }
+                AuditEvent::GateCancelled { gate, request } if gate == id => {
+                    words[3] = 3;
+                    words[5] = u64::from(request);
+                    words[9] = 3;
+                }
+                _ => continue,
+            }
+            return Ok(Some(words));
+        }
+        Ok(None)
+    }
+
     /// Every native control needs room for a rejection before validation or
     /// output/COW work. Success paths separately preflight their full cost.
     /// No reservation is retained across a blocked service wait.
@@ -405,6 +476,43 @@ impl BootstrapState {
             .and_then(|slot| tables.binding(slot))
     }
 
+    /// VM changes and proxy copies are separate, non-scheduling transactions.
+    /// Only the fixed service with a Delivered request can edit a bound root.
+    pub fn gate_vm_mutation_permitted(&self, caller: u32, task: u32) -> bool {
+        if !self.task_is_gated(task) {
+            return true;
+        }
+        if !self.gate_root_access_permitted(task) {
+            return false;
+        }
+        let owner = self.vspace_owner(task);
+        let tables = self.gate_tables();
+        (0..gate::MAX_BINDINGS as u32).any(|slot| {
+            let Some(binding) = tables.binding(slot) else {
+                return false;
+            };
+            if !binding.active
+                || self.vspace_owner(binding.task) != owner
+                || self.task_cookie(binding.task) != Some(binding.cookie)
+                || crate::sched::root_identity(binding.task) != binding.root
+            {
+                return false;
+            }
+            let Some(request) = tables.slot_request(slot) else {
+                return false;
+            };
+            let Some(gate) = tables.find(binding.gate) else {
+                return false;
+            };
+            request.phase == gate::Phase::Delivered
+                && request.client == binding.task
+                && request.client_cookie == binding.cookie
+                && gate.live
+                && gate.service == caller
+                && self.task_cookie(caller) == Some(gate.service_cookie)
+        })
+    }
+
     /// 该 Task 作为固定服务者拥有的第一个活动门控。
     fn gate_served_by(&self, tables: &Tables, task: u32) -> Option<GateRecord> {
         (1..=tables.gate_count).find_map(|id| {
@@ -430,6 +538,281 @@ impl BootstrapState {
             .is_none_or(|process| self.process_threads(process) <= 1)
     }
 
+    /// Shared roots are admitted only by explicit managed spawning. Scan the
+    /// entire live hardware root group on each transaction; never cache peers.
+    fn gate_root_access_permitted(&self, client: u32) -> bool {
+        let tables = self.gate_tables();
+        let Some(binding) = self.gate_binding_of(&tables, client) else {
+            return false;
+        };
+        let Some(gate) = tables.find(binding.gate).filter(|g| g.live) else {
+            return false;
+        };
+        let root = crate::sched::root(client);
+        if !gate.shared_root && !self.gate_client_root_is_exclusive(client) {
+            return false;
+        }
+        (1..crate::sched::MAX_TASKS as u32).all(|id| {
+            if id == client
+                || !self.tasks.is_live(id)
+                || root.is_none()
+                || crate::sched::root(id) != root
+            {
+                return true;
+            }
+            gate.shared_root
+                && self.process_of(client).is_some()
+                && self.process_of(id) == self.process_of(client)
+                && self.gate_binding_of(&tables, id).is_some_and(|b| {
+                    b.active
+                        && b.gate == gate.id
+                        && self.task_cookie(id) == Some(b.cookie)
+                        && crate::sched::root_identity(id) == b.root
+                })
+        })
+    }
+
+    /// A live Delivered request plus TaskContext authorizes a same-Gate thread.
+    /// Source VM/frame validation is the native adapter's responsibility.
+    pub(crate) fn gate_spawn_thread(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        frame: crate::exc::SretFrame,
+        fs: u64,
+        gate_cap: Handle,
+    ) -> Result<Handle, Error> {
+        let (request, root) = self.gate_context_preflight(service, cap, context)?;
+        if !crate::exc::valid_gate_user_frame(&frame)
+            || crate::syscall::validate_fs_base(fs).is_err()
+        {
+            return Err(Error::Denied);
+        }
+        let tables = self.gate_tables();
+        let gate = tables.find(request.gate).unwrap();
+        let binding = tables.binding(request.binding).unwrap();
+        self.authorize(service, gate_cap, Right::GateAttach)
+            .map_err(|_| Error::Denied)?;
+        if self.target_of(gate_cap) != Some(ObjectRef::Gate(gate.id)) {
+            return Err(Error::Denied);
+        }
+        // Enough for mint, attach, source/child membership, success or rollback.
+        self.preflight_gate_audit(32, gate.service_cookie, gate_audit::Operation::Control)
+            .map_err(|_| Error::AuditFull)?;
+        if !self.can_mint_gate_capability(service)
+            || tables.free_binding_slot().is_none()
+            || !self.gate_completion_quota(1)
+        {
+            return Err(Error::Capacity);
+        }
+        let parent_process = self.process_of(request.client);
+        let child = match self.thread_create_inner(request.client, frame.rip, frame.rsp, true) {
+            Ok(child) => child,
+            Err(_) => {
+                if parent_process.is_none() {
+                    self.detach_thread(request.client);
+                }
+                return Err(Error::Capacity);
+            }
+        };
+        let made = (|| {
+            crate::user::register_clone_task(child, root.0, frame, frame.rsp, fs)
+                .map_err(|_| Error::Capacity)?;
+            crate::sched::set_frame(child, frame);
+            crate::sched::set_saved_fpu(child, crate::sched::saved_fpu(request.client).unwrap());
+            let manager = self
+                .mint_root_capability(
+                    service,
+                    MANAGER_TASK_RIGHTS.union(Rights::from_rights(&[Right::TaskContext])),
+                    ObjectRef::Task(child),
+                )
+                .map_err(|_| Error::Capacity)?;
+            self.audit.append(AuditEvent::CapabilityMinted {
+                cap: manager,
+                holder: service,
+            });
+            if let Err(error) =
+                self.gate_attach_inner(service, manager, gate_cap, binding.orphan, true)
+            {
+                self.drop_capability(service, manager)
+                    .expect("spawn rollback budget");
+                return Err(error);
+            }
+            self.audit.append(AuditEvent::GateThreadSpawned {
+                gate: gate.id,
+                request: request.id,
+                service_cookie: gate.service_cookie,
+                parent_cookie: request.client_cookie,
+                child_cookie: self.task_cookie(child).unwrap(),
+            });
+            Ok(manager)
+        })();
+        if made.is_err() {
+            self.thread_abort(child);
+            crate::sched::clear_task(child);
+            if parent_process.is_none() {
+                self.detach_thread(request.client);
+            }
+        }
+        made
+    }
+
+    pub(crate) fn gate_process_preflight(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        manager: Handle,
+    ) -> Result<(RequestRecord, (u64, u64)), Error> {
+        let (request, root) = self.gate_context_preflight(service, cap, context)?;
+        if self.managed_task(service, manager)? != request.client {
+            return Err(Error::Denied);
+        }
+        if self
+            .process_of(request.client)
+            .is_some_and(|p| self.process_threads(p) != 1)
+        {
+            return Err(Error::Busy);
+        }
+        Ok((request, root))
+    }
+
+    pub(crate) fn gate_fork_preflight(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        manager: Handle,
+        gate_cap: Handle,
+    ) -> Result<(RequestRecord, (u64, u64)), Error> {
+        let (request, root) = self.gate_process_preflight(service, cap, context, manager)?;
+        self.authorize(service, gate_cap, Right::GateAttach)
+            .map_err(|_| Error::Denied)?;
+        if self.target_of(gate_cap) != Some(ObjectRef::Gate(request.gate)) {
+            return Err(Error::Denied);
+        }
+        let tables = self.gate_tables();
+        if !self.can_mint_gate_capability(service)
+            || tables.free_binding_slot().is_none()
+            || !self.gate_completion_quota(1)
+        {
+            return Err(Error::Capacity);
+        }
+        self.check_fork_inner(request.client, true)
+            .map_err(|e| match e {
+                ThreadError::Busy => Error::Busy,
+                ThreadError::AuditFull => Error::AuditFull,
+                _ => Error::Capacity,
+            })?;
+        Ok((request, root))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn gate_fork_commit(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        manager: Handle,
+        gate_cap: Handle,
+        root: u64,
+    ) -> Result<Handle, Error> {
+        let (request, _) = self.gate_fork_preflight(service, cap, context, manager, gate_cap)?;
+        let binding = self.gate_tables().binding(request.binding).unwrap();
+        let frame = crate::sched::frame(request.client).ok_or(Error::Stale)?;
+        let child = self
+            .fork_create_inner(request.client, frame.rip, true)
+            .map_err(|_| Error::Capacity)?;
+        let result = (|| {
+            crate::user::register_clone_task(
+                child,
+                root,
+                frame,
+                frame.rsp,
+                crate::sched::fs_base(request.client).unwrap_or(0),
+            )
+            .map_err(|_| Error::Capacity)?;
+            crate::sched::set_saved_fpu(child, crate::sched::saved_fpu(request.client).unwrap());
+            let manager = self
+                .mint_root_capability(
+                    service,
+                    MANAGER_TASK_RIGHTS.union(Rights::from_rights(&[Right::TaskContext])),
+                    ObjectRef::Task(child),
+                )
+                .map_err(|_| Error::Capacity)?;
+            self.audit.append(AuditEvent::CapabilityMinted {
+                cap: manager,
+                holder: service,
+            });
+            if let Err(error) = self.gate_attach(service, manager, gate_cap, binding.orphan) {
+                self.drop_capability(service, manager)
+                    .expect("fork rollback budget");
+                return Err(error);
+            }
+            self.audit.append(AuditEvent::GateTaskForked {
+                request: request.id,
+                service_cookie: self.task_cookie(service).unwrap(),
+                parent_cookie: request.client_cookie,
+                child_cookie: self.task_cookie(child).unwrap(),
+            });
+            Ok(manager)
+        })();
+        if result.is_err() {
+            self.fork_abort(child);
+            crate::sched::clear_task(child);
+        }
+        result
+    }
+
+    pub(crate) fn gate_exec_preflight(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        manager: Handle,
+        pages: usize,
+    ) -> Result<u32, Error> {
+        let (request, _) = self.gate_process_preflight(service, cap, context, manager)?;
+        self.check_exec_inner(request.client, pages, true)
+            .map_err(|_| Error::Capacity)?;
+        let (_, aliases) = self.gate_request_caps(request.id);
+        self.preflight_gate_audit(
+            32 + aliases + 3 * self.private_exec_segments.count_ones() as usize,
+            self.task_cookie(service).unwrap(),
+            gate_audit::Operation::Control,
+        )
+        .map_err(|_| Error::AuditFull)?;
+        Ok(request.client)
+    }
+
+    pub(crate) fn gate_exec_finish(
+        &mut self,
+        service: u32,
+        cap: Handle,
+        context: Handle,
+        root: u64,
+        frame: crate::exc::SretFrame,
+    ) -> Result<ReplyOutcome, Error> {
+        let (request, old_root) = self.gate_context_preflight(service, cap, context)?;
+        crate::sched::set_root(request.client, root);
+        crate::sched::set_fs_base(request.client, 0);
+        crate::sched::reset_fpu(request.client);
+        let tables = self.gate_tables();
+        let mut binding = tables.binding(request.binding).unwrap();
+        binding.root = crate::sched::root_identity(request.client);
+        tables.set_binding(request.binding, Some(binding));
+        self.audit.append(AuditEvent::GateImageReplaced {
+            request: request.id,
+            service_cookie: self.task_cookie(service).unwrap(),
+            task_cookie: request.client_cookie,
+            old_root,
+            new_root: binding.root.unwrap(),
+            entry: frame.rip,
+        });
+        self.gate_finish(service, cap, 0, false, Some((context, frame, None)))
+    }
+
     fn can_mint_gate_capability(&self, service: u32) -> bool {
         self.fork_views
             .can_expose(self.space_of(service), |handle| {
@@ -438,6 +821,43 @@ impl BootstrapState {
             && self.slots.normal_free_count() > 0
             && self.positions.count < MAX_CAPABILITY_POSITIONS
             && self.can_record_capability()
+    }
+
+    /// Explicitly grant a separate root; ordinary Task management capabilities
+    /// retain their frozen rights. The new root has an independent lifetime.
+    pub(crate) fn task_context_authority(
+        &mut self,
+        caller: u32,
+        manager: Handle,
+    ) -> Result<Handle, Error> {
+        let target = self.managed_task(caller, manager)?;
+        if !self.can_mint_gate_capability(caller) {
+            return Err(Error::Capacity);
+        }
+        self.preflight_gate_audit(
+            2,
+            self.task_cookie(caller).ok_or(Error::Stale)?,
+            gate_audit::Operation::Control,
+        )
+        .map_err(|_| Error::AuditFull)?;
+        let context = self
+            .mint_root_capability(
+                caller,
+                Rights::from_rights(&[Right::Derive, Right::TaskContext]),
+                ObjectRef::Task(target),
+            )
+            .expect("context authority capacity preflighted");
+        self.audit.append(AuditEvent::CapabilityMinted {
+            cap: context,
+            holder: caller,
+        });
+        self.audit.append(AuditEvent::TaskContextGranted {
+            caller,
+            manager,
+            context,
+            task_cookie: self.task_cookie(target).unwrap(),
+        });
+        Ok(context)
     }
 
     // ------------------------------------------------------------------
@@ -455,6 +875,17 @@ impl BootstrapState {
         task_cap: Handle,
         gate_cap: Handle,
         orphan: u64,
+    ) -> Result<AttachOutcome, Error> {
+        self.gate_attach_inner(caller, task_cap, gate_cap, orphan, false)
+    }
+
+    fn gate_attach_inner(
+        &mut self,
+        caller: u32,
+        task_cap: Handle,
+        gate_cap: Handle,
+        orphan: u64,
+        shared: bool,
     ) -> Result<AttachOutcome, Error> {
         let caller_cookie = self.task_cookie(caller).ok_or(Error::Denied)?;
         if self.tasks.status_of(caller) != Some(TaskStatus::Running) {
@@ -493,7 +924,7 @@ impl BootstrapState {
         if self.gate_served_by(&tables, client).is_some() {
             return Err(Error::Busy);
         }
-        if !self.gate_client_root_is_exclusive(client) {
+        if !shared && !self.gate_client_root_is_exclusive(client) {
             return Err(Error::Busy);
         }
 
@@ -559,6 +990,7 @@ impl BootstrapState {
                 id: gate,
                 service: caller,
                 service_cookie: caller_cookie,
+                shared_root: false,
                 root_cap: cap,
                 live: true,
                 bindings: 0,
@@ -599,6 +1031,7 @@ impl BootstrapState {
         tables.binding_count += 1;
         let mut record = tables.find(gate).expect("gate inserted");
         record.bindings += 1;
+        record.shared_root |= shared;
         tables.write(record);
         self.save_gate_tables(tables);
         self.audit.append(AuditEvent::GateAttached {
@@ -923,13 +1356,7 @@ impl BootstrapState {
         if crate::sched::root_identity(request.client) != Some(root) {
             return Err(Error::Stale);
         }
-        if !self.gate_client_root_is_exclusive(request.client)
-            || (1..crate::sched::MAX_TASKS as u32).any(|id| {
-                id != request.client
-                    && self.tasks.is_live(id)
-                    && crate::sched::root(id) == Some(root.0)
-            })
-        {
+        if !self.gate_root_access_permitted(request.client) {
             return Err(Error::Busy);
         }
         self.preflight_gate_audit(1, gate.service_cookie, gate_audit::Operation::Copy)
@@ -959,6 +1386,67 @@ impl BootstrapState {
         });
     }
 
+    pub(crate) fn gate_context_preflight(
+        &mut self,
+        service: u32,
+        request_cap: Handle,
+        context: Handle,
+    ) -> Result<(RequestRecord, (u64, u64)), Error> {
+        let (request, _) = self.gate_delivered(service, request_cap)?;
+        self.authorize(service, context, Right::TaskContext)
+            .map_err(|_| Error::Denied)?;
+        if self.target_of(context) != Some(ObjectRef::Task(request.client)) {
+            return Err(Error::Denied);
+        }
+        self.gate_copy_preflight(service, request_cap)
+    }
+
+    pub(crate) fn gate_context_accessed(
+        &mut self,
+        service: u32,
+        request: RequestRecord,
+        context: Handle,
+        frame: &crate::exc::SretFrame,
+        fpu: bool,
+        write: bool,
+    ) {
+        self.audit.append(AuditEvent::GateContextAccessed {
+            gate: request.gate,
+            request: request.id,
+            client_cookie: request.client_cookie,
+            service_cookie: self.task_cookie(service).unwrap(),
+            context,
+            rip: frame.rip,
+            rsp: frame.rsp,
+            rflags: frame.rflags,
+            fpu,
+            write,
+        });
+    }
+
+    /// Adapter must validate the live executable/writable PTEs before entering
+    /// this transaction. Recheck identity and the ring3 frame before commit.
+    pub(crate) fn gate_reply_frame(
+        &mut self,
+        service: u32,
+        request_cap: Handle,
+        context: Handle,
+        frame: crate::exc::SretFrame,
+        fpu: Option<crate::sched::FpuArea>,
+    ) -> Result<ReplyOutcome, Error> {
+        self.gate_context_preflight(service, request_cap, context)?;
+        if !crate::exc::valid_gate_user_frame(&frame) {
+            return Err(Error::Denied);
+        }
+        self.gate_finish(
+            service,
+            request_cap,
+            frame.rax,
+            false,
+            Some((context, frame, fpu)),
+        )
+    }
+
     /// 答复一次已交付请求：完成客户端私有等待、只写客户端保存帧的 `rax`、撤销全部请求
     /// 能力别名并记录终结。`abort` 与 `reply` 搬运同一个不透明 `u64`，只有审计原因不同。
     ///
@@ -970,6 +1458,17 @@ impl BootstrapState {
         value: u64,
         abort: bool,
     ) -> Result<ReplyOutcome, Error> {
+        self.gate_finish(service, request_cap, value, abort, None)
+    }
+
+    fn gate_finish(
+        &mut self,
+        service: u32,
+        request_cap: Handle,
+        value: u64,
+        abort: bool,
+        frame: Option<(Handle, crate::exc::SretFrame, Option<crate::sched::FpuArea>)>,
+    ) -> Result<ReplyOutcome, Error> {
         let (request, gate) = self.gate_delivered(service, request_cap)?;
         let service_cookie = gate.service_cookie;
         let id = request.id;
@@ -979,14 +1478,22 @@ impl BootstrapState {
         request.root_cap.ok_or(Error::Stale)?;
         let (revoked, revoked_count) = self.gate_request_caps(request.id);
         // Completed + Ready 迁移 + GateTerminated + 每个请求能力别名的撤销事件。
-        let events = 3 + revoked_count;
+        let events = 3 + revoked_count + usize::from(frame.is_some());
         self.preflight_gate_audit(events, service_cookie, gate_audit::Operation::Terminate)
             .map_err(|_| Error::AuditFull)?;
 
         self.complete_completion_wait(ticket)
             .expect("delivered client holds the reserved wait");
-        // 只改写客户端保存帧的 rax；其余寄存器保持。
-        crate::sched::set_frame_rax(request.client, value);
+        if let Some((context, frame, fpu)) = frame {
+            crate::sched::set_frame(request.client, frame);
+            if let Some(area) = fpu {
+                crate::sched::set_saved_fpu(request.client, area);
+            }
+            self.gate_context_accessed(service, request, context, &frame, fpu.is_some(), true);
+        } else {
+            // v1 still changes only rax.
+            crate::sched::set_frame_rax(request.client, value);
+        }
         self.audit.append(AuditEvent::GateTerminated {
             gate: gate.id,
             request: id,
@@ -1518,6 +2025,417 @@ mod tests {
             .unwrap()
     }
 
+    fn hold(state: &mut BootstrapState, task: u32) {
+        let t = state.tasks.find_mut(task).unwrap();
+        t.status = TaskStatus::Prepared;
+        t.launch_held = true;
+    }
+
+    #[test]
+    fn managed_process_controls_require_both_authorities_single_thread_and_live_root() {
+        let _serial = serial();
+        let mut state = state();
+        let client = 16;
+        state.create_task(client).unwrap();
+        let process = state.create_process(client).unwrap();
+        assert!(state.attach_thread(process, client));
+        crate::sched::set_root(client, 0x9940_0000);
+        let manager = state
+            .mint_root_capability(2, MANAGER_TASK_RIGHTS, ObjectRef::Task(client))
+            .unwrap();
+        let context = state.task_context_authority(2, manager).unwrap();
+        let gate = state.gate_attach(2, manager, Handle::ZERO, 99).unwrap();
+        state.yield_task(2).unwrap();
+        state.schedule_task(client).unwrap();
+        state.gate_trap(client, 123, [0; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, gate.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(state.check_fork(client), Err(ThreadError::Busy));
+        assert_eq!(state.check_exec(client, 1), Err(TaskError::HasLiveThreads));
+        assert_eq!(
+            state.gate_exec_preflight(2, request_cap, manager, manager, 1),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.gate_exec_preflight(2, request_cap, context, context, 1),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.gate_fork_preflight(2, request_cap, context, manager, manager),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.gate_exec_preflight(2, request_cap, context, manager, 1),
+            Ok(client)
+        );
+        assert!(
+            state
+                .gate_fork_preflight(2, request_cap, context, manager, gate.gate_cap)
+                .is_ok()
+        );
+        let sibling = state
+            .thread_create_inner(client, 0x400000, 0x70000000, true)
+            .unwrap();
+        assert_eq!(
+            state.gate_exec_preflight(2, request_cap, context, manager, 1),
+            Err(Error::Busy)
+        );
+        state.thread_abort(sibling);
+        crate::sched::set_root(client, 0x9940_0000); // same physical root, new incarnation
+        assert_eq!(
+            state.gate_exec_preflight(2, request_cap, context, manager, 1),
+            Err(Error::Stale)
+        );
+        crate::sched::set_root(client, 0);
+    }
+
+    #[test]
+    fn shared_root_requires_explicit_spawn_mode_and_every_peer_in_the_same_gate() {
+        let _serial = serial();
+        let mut state = state();
+        let client = 16;
+        state.create_task(client).unwrap();
+        crate::sched::set_root(client, 0x9930_0000);
+        let rights = MANAGER_TASK_RIGHTS.union(Rights::from_rights(&[Right::TaskContext]));
+        let manager = state
+            .mint_root_capability(2, rights, ObjectRef::Task(client))
+            .unwrap();
+        let gate = state.gate_attach(2, manager, Handle::ZERO, 99).unwrap();
+        let child = state
+            .thread_create_inner(client, 0x400000, 0x70000000, true)
+            .unwrap();
+        crate::sched::set_root(child, 0x9930_0000);
+        let child_manager = state
+            .mint_root_capability(2, rights, ObjectRef::Task(child))
+            .unwrap();
+        assert!(!state.gate_root_access_permitted(client));
+        assert_eq!(
+            state.gate_attach(2, child_manager, gate.gate_cap, 99),
+            Err(Error::Busy)
+        );
+        state
+            .gate_attach_inner(2, child_manager, gate.gate_cap, 99, true)
+            .unwrap();
+        assert!(state.gate_root_access_permitted(client));
+        assert!(state.gate_root_access_permitted(child));
+        state.yield_task(2).unwrap();
+        state.schedule_task(child).unwrap();
+        state.gate_trap(child, 123, [0; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, gate.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        assert!(state.gate_copy_preflight(2, request_cap).is_ok());
+        assert!(state.gate_vm_mutation_permitted(2, client));
+        assert!(!state.gate_vm_mutation_permitted(1, client));
+        // Scheduler slots are indexed below MAX_TASKS (18 is out of range).
+        state.create_task(17).unwrap();
+        crate::sched::set_root(17, 0x9930_0000);
+        assert_eq!(state.gate_copy_preflight(2, request_cap), Err(Error::Busy));
+        assert!(!state.gate_vm_mutation_permitted(2, client));
+        crate::sched::set_root(17, 0);
+        assert!(state.gate_copy_preflight(2, request_cap).is_ok());
+        state.gate_reply(2, request_cap, 0, false).unwrap();
+        assert!(!state.gate_vm_mutation_permitted(2, client));
+        for task in [client, child] {
+            crate::sched::set_root(task, 0);
+        }
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn full_context_requires_independent_live_authority_and_commits_exactly_once() {
+        let _serial = serial();
+        let mut state = state();
+        let client = 16;
+        state.create_task(client).unwrap();
+        crate::sched::set_root(client, 0x9910_0000);
+        let manager = state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::Derive, Right::TaskManageVSpace]),
+                ObjectRef::Task(client),
+            )
+            .unwrap();
+        assert_eq!(state.task_context_authority(1, manager), Err(Error::Denied));
+        assert!(
+            !state
+                .rights_of(manager)
+                .unwrap()
+                .contains(Right::TaskContext)
+        );
+        let context = state.task_context_authority(2, manager).unwrap();
+        assert_eq!(
+            state.rights_of(context),
+            Some(Rights::from_rights(&[Right::Derive, Right::TaskContext]))
+        );
+        let alias = state
+            .derive_capability(2, context, Rights::from_rights(&[Right::TaskContext]))
+            .unwrap();
+        let out = state.gate_attach(2, manager, Handle::ZERO, 99).unwrap();
+        state.yield_task(2).unwrap();
+        state.schedule_task(client).unwrap();
+        state.gate_trap(client, 123, [4; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, out.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        let original = crate::exc::SretFrame::ZERO;
+        crate::sched::set_frame(client, original);
+        let frame = crate::exc::SretFrame {
+            rax: 77,
+            rbx: 88,
+            rip: 0x400080,
+            rsp: 0x70000007,
+            cs: u64::from(crate::gdt::USER_CS),
+            ss: u64::from(crate::gdt::USER_DS),
+            rflags: 0x602,
+            ..original
+        };
+        assert_eq!(
+            state.gate_reply_frame(2, request_cap, manager, frame, None),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.gate_reply_frame(1, request_cap, context, frame, None),
+            Err(Error::Denied)
+        );
+        let wrong = state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::TaskContext]),
+                ObjectRef::Task(2),
+            )
+            .unwrap();
+        assert_eq!(
+            state.gate_reply_frame(2, request_cap, wrong, frame, None),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.gate_reply_frame(
+                2,
+                request_cap,
+                context,
+                crate::exc::SretFrame { cs: 8, ..frame },
+                None
+            ),
+            Err(Error::Denied)
+        );
+        assert_eq!(crate::sched::frame(client), Some(original));
+        assert_eq!(state.tasks.status_of(client), Some(TaskStatus::BlockedWait));
+        state.drop_capability(2, context).unwrap();
+        assert_eq!(
+            state.gate_reply_frame(2, request_cap, context, frame, None),
+            Err(Error::Denied)
+        );
+        assert!(state.gate_tables().find(out.gate).unwrap().live);
+        let count = state.audit.count;
+        assert_eq!(
+            state
+                .gate_reply_frame(2, request_cap, alias, frame, None)
+                .unwrap()
+                .value,
+            77
+        );
+        assert_eq!(crate::sched::frame(client), Some(frame));
+        assert_eq!(state.tasks.status_of(client), Some(TaskStatus::Ready));
+        assert_eq!(state.audit.count - count, 5);
+        assert!(matches!(
+            state.audit.entry(count + 2),
+            Some(AuditEvent::GateContextAccessed {
+                write: true,
+                rip: 0x400080,
+                ..
+            })
+        ));
+        assert_eq!(
+            state.gate_reply_frame(2, request_cap, alias, frame, None),
+            Err(Error::Stale)
+        );
+        assert_eq!(
+            state.gate_reply(2, request_cap, 9, false),
+            Err(Error::Stale)
+        );
+        assert!(state.gate_well_formed());
+        crate::sched::set_root(client, 0);
+    }
+
+    #[test]
+    fn full_context_audit_exhaustion_keeps_frame_request_and_wait_unchanged() {
+        let _serial = serial();
+        let mut state = state();
+        let client = 16;
+        state.create_task(client).unwrap();
+        crate::sched::set_root(client, 0x9920_0000);
+        let manager = state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::TaskManageVSpace]),
+                ObjectRef::Task(client),
+            )
+            .unwrap();
+        let context = state.task_context_authority(2, manager).unwrap();
+        let gate = state.gate_attach(2, manager, Handle::ZERO, 99).unwrap();
+        state.yield_task(2).unwrap();
+        state.schedule_task(client).unwrap();
+        state.gate_trap(client, 123, [4; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, gate.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        let original = crate::exc::SretFrame::ZERO;
+        crate::sched::set_frame(client, original);
+        let frame = crate::exc::SretFrame {
+            rip: 0x400000,
+            rsp: 0x70000000,
+            cs: u64::from(crate::gdt::USER_CS),
+            ss: u64::from(crate::gdt::USER_DS),
+            rflags: 0x202,
+            ..original
+        };
+        assert!(
+            state
+                .audit
+                .reserve(MAX_AUDIT_EVENTS - state.audit.count - 4)
+        );
+        let count = state.audit.count;
+        let tables = state.gate_tables();
+        assert_eq!(
+            state.gate_reply_frame(2, request_cap, context, frame, None),
+            Err(Error::AuditFull)
+        );
+        assert_eq!(state.audit.count, count);
+        assert_eq!(state.gate_tables(), tables);
+        assert_eq!(crate::sched::frame(client), Some(original));
+        assert_eq!(state.tasks.status_of(client), Some(TaskStatus::BlockedWait));
+        assert!(state.gate_audit_diagnostic().is_some());
+        crate::sched::set_root(client, 0);
+    }
+
+    #[test]
+    fn held_launch_is_not_schedulable_and_failed_attach_never_publishes_it() {
+        let _serial = serial();
+        let mut state = pair();
+        let cap = task_cap(&state, 3);
+        hold(&mut state, 3);
+        state.yield_task(2).unwrap();
+        assert_eq!(state.schedule_task(3), Err(TaskError::NotReady));
+        state.schedule_task(2).unwrap();
+        let count = state.audit.count;
+        assert_eq!(
+            state.start_held_task(1, cap, Handle::ZERO, 9, true),
+            Err(Error::Denied)
+        );
+        assert_eq!(
+            state.start_held_task(2, cap, cap, 9, true),
+            Err(Error::Denied)
+        );
+        assert!(state.task_launch_held(3));
+        assert_eq!(state.audit.count, count);
+        assert_eq!(state.gate_tables().binding_count, 0);
+        assert_eq!(state.wait_objects.count, 0);
+        state.tasks.find_mut(3).unwrap().launch_held = false;
+        assert_eq!(
+            state.start_held_task(2, cap, Handle::ZERO, 9, true),
+            Err(Error::Busy)
+        );
+        hold(&mut state, 3);
+        let gate = state
+            .start_held_task(2, cap, Handle::ZERO, 9, true)
+            .unwrap();
+        assert!(!gate.is_zero());
+        assert_eq!(state.tasks.status_of(3), Some(TaskStatus::Ready));
+        assert!(!state.tasks.find(3).unwrap().launch_held);
+        assert!(state.task_is_gated(3));
+        assert_eq!(
+            state.start_held_task(2, cap, gate, 9, true),
+            Err(Error::Busy)
+        );
+        assert!(state.gate_well_formed());
+        assert!(state.completion_waits_well_formed());
+    }
+
+    #[test]
+    fn managed_vm_requires_live_delivered_request_and_its_fixed_service() {
+        let _serial = serial();
+        let mut state = pair();
+        let out = attach(&mut state, 3, 99);
+        assert!(!state.gate_vm_mutation_permitted(2, 3));
+        state.yield_task(2).unwrap();
+        state.schedule_task(3).unwrap();
+        state.gate_trap(3, 777, [0; 6], 0).unwrap();
+        assert!(!state.gate_vm_mutation_permitted(2, 3));
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, out.gate_cap).unwrap()
+        else {
+            panic!("request must be Delivered");
+        };
+        assert!(state.gate_vm_mutation_permitted(2, 3));
+        assert!(!state.gate_vm_mutation_permitted(1, 3));
+        state.gate_reply(2, request_cap, 0, false).unwrap();
+        assert!(!state.gate_vm_mutation_permitted(2, 3));
+        state.drop_capability(2, out.gate_cap).unwrap();
+        assert!(!state.gate_vm_mutation_permitted(2, 3));
+    }
+
+    #[test]
+    fn held_tls_requires_manager_canonical_base_and_initial_launch_kind() {
+        let _serial = serial();
+        let mut state = state();
+        state.create_task(16).unwrap();
+        let cap = state
+            .mint_root_capability(
+                2,
+                Rights::from_rights(&[Right::TaskManageVSpace]),
+                ObjectRef::Task(16),
+            )
+            .unwrap();
+        hold(&mut state, 16);
+        assert_eq!(state.set_managed_tls(1, cap, 0x6000), Err(Error::Denied));
+        assert_eq!(state.set_managed_tls(2, cap, 1 << 47), Err(Error::Busy));
+        let count = state.audit.count;
+        state.set_managed_tls(2, cap, 0x6000).unwrap();
+        assert_eq!(crate::sched::fs_base(16), Some(0x6000));
+        assert_eq!(
+            state.audit.entry(count),
+            Some(AuditEvent::TaskTlsSet {
+                caller: 2,
+                task_cookie: state.task_cookie(16).unwrap(),
+                base: 0x6000,
+            })
+        );
+        state.tasks.find_mut(16).unwrap().launch_held = false;
+        assert_eq!(state.set_managed_tls(2, cap, 0), Err(Error::Busy));
+        assert_eq!(crate::sched::fs_base(16), Some(0x6000));
+        crate::sched::set_fs_base(16, 0);
+    }
+
+    #[test]
+    fn held_start_reserves_attach_and_publication_audit_before_changing_status() {
+        let _serial = serial();
+        let mut state = pair();
+        let cap = task_cap(&state, 3);
+        hold(&mut state, 3);
+        state.audit.count = MAX_AUDIT_EVENTS - 5;
+        let tasks = state.tasks;
+        assert_eq!(
+            state.start_held_task(2, cap, Handle::ZERO, 99, true),
+            Err(Error::AuditFull)
+        );
+        assert_eq!(state.tasks, tasks);
+        assert_eq!(state.gate_tables().binding_count, 0);
+        assert_eq!(state.wait_objects.count, 0);
+        let diagnostic = state.gate_audit_diagnostic().unwrap();
+        assert_eq!(diagnostic.operation, gate_audit::Operation::Attach);
+        assert_eq!(diagnostic.required, 6);
+    }
+
     #[test]
     fn orphan_traps_audit_raw_identity_and_require_both_records_before_returning() {
         let _serial = serial();
@@ -1585,7 +2503,7 @@ mod tests {
             .unwrap();
         crate::sched::set_root(client, 0x9876_5400_0000);
         let out = attach(&mut state, client, 0xdead);
-        // Bound tasks reject all public mapping changes, even by their manager.
+        // Outside a Delivered request, even the bound Task's manager is denied.
         let access = Rights::from_rights(&[Right::SegMapR, Right::SegMapW]);
         assert_eq!(
             state.memseg_unmap(2, task_cap(&state, client), 0x4000, 1, 0, 0),
@@ -2311,6 +3229,62 @@ mod tests {
             panic!()
         };
         (state, out, request_cap)
+    }
+
+    #[test]
+    fn audit_read_is_scoped_and_preserves_raw_request_and_terminal_value() {
+        let _serial = serial();
+        let (mut state, out, request) = delivered_pair();
+        assert_eq!(
+            state.gate_audit_read(1, out.gate_cap, 0),
+            Err(Error::Denied)
+        );
+        let trap = state.gate_audit_read(2, out.gate_cap, 0).unwrap().unwrap();
+        assert_eq!(
+            (trap[0], trap[1], trap[3], trap[4], trap[7]),
+            (1, 128, 1, u64::from(out.gate), 1)
+        );
+        assert_eq!(&trap[10..], &[0; 6]);
+        let delivered = state
+            .gate_audit_read(2, out.gate_cap, trap[2])
+            .unwrap()
+            .unwrap();
+        assert_eq!((delivered[3], delivered[5]), (2, trap[5]));
+        assert_eq!(
+            state.gate_audit_read(2, out.gate_cap, delivered[2]),
+            Ok(None)
+        );
+        state
+            .gate_reply(2, request, 0xfedcba9876543210, true)
+            .unwrap();
+        let terminal = state
+            .gate_audit_read(2, out.gate_cap, delivered[2])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (terminal[3], terminal[5], terminal[8], terminal[9]),
+            (3, trap[5], 0xfedcba9876543210, 1)
+        );
+        assert_eq!(state.gate_audit_read(2, out.gate_cap, u64::MAX), Ok(None));
+        let (mut state, out, _) = delivered_pair();
+        let trap = state.gate_audit_read(2, out.gate_cap, 0).unwrap().unwrap();
+        let delivered = state
+            .gate_audit_read(2, out.gate_cap, trap[2])
+            .unwrap()
+            .unwrap();
+        state.destroy_task(3).unwrap();
+        let terminal = state
+            .gate_audit_read(2, out.gate_cap, delivered[2])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (terminal[3], terminal[5], terminal[8], terminal[9]),
+            (3, trap[5], 0, 3)
+        );
+        assert_eq!(
+            state.gate_audit_read(2, out.gate_cap, terminal[2]),
+            Ok(None)
+        );
     }
 
     #[test]

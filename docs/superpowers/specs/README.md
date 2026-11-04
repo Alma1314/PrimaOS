@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # Specs 索引
@@ -36,6 +36,15 @@ updated: 2026-10-31
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
 ## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
+
+2026-11-02：[受管COW进程、映像替换及原始审计读取](2026-11-02-stage6-gate-process.md)，87–89；用户态亲缘/wait与M3/M4矩阵，不代替运行证据。
+
+2026-11-01继续：[Gate独立上下文](2026-11-01-stage6-gate-context.md)、
+[Linux信号续体](2026-11-01-stage6-linux-signals.md)、[同Gate共享线程](2026-11-01-stage6-gate-threads.md)、
+[Linux clone/futex](2026-11-01-stage6-linux-futex.md)。83–86与P1/P2实现契约，不代替运行或退出评审。
+
+2026-11-01：[受管理的停车、装载与TLS](2026-11-01-stage6-managed-launch.md)，
+79–82、Prepared初始停车、串行VM事务和boot manifest v3；实现契约，不代替运行验收或阶段签署。
 
 2026-10-31 作者逐项确认：[阶段 7 综合交付范围裁决](2026-10-31-stage7-scope-decisions.md)——Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、限定端到端协议的透明恢复、用户态驱动/IOMMU/持久化；AArch64仅单核机制验证。范围已确认，技术规格和量化门槛待冻结；不启动阶段7，不新增运行或证明证据。
 

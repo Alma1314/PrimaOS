@@ -32,6 +32,53 @@ const PROVENANCE_PATH: &str = "xtask/tests/fixtures/linux-trace/PROVENANCE.toml"
 /// 参考 guest 的独立超时：TCG 下 6.8 内核启动远慢于 30s 的 BIOS 切片阈值。
 const GUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Same frozen executable in the pinned Linux guest; no host-execution fallback.
+#[cfg(feature = "linux-probe")]
+pub(crate) fn stage6_reference(busybox: &Path, probes: &[PathBuf; 6]) -> Result<String, String> {
+    let cache = PathBuf::from(CACHE_DIR);
+    fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+    let deb = download_kernel(&cache)?;
+    let unpack = cache.join("unpack");
+    if !unpack.join(KERNEL_VMLINUZ).is_file() {
+        fs::create_dir_all(&unpack).map_err(|e| e.to_string())?;
+        run(Command::new("dpkg-deb").arg("-x").arg(deb).arg(&unpack))?;
+    }
+    let root = cache.join(format!("stage6-rootfs-{}", std::process::id()));
+    fs::create_dir_all(root.join("bin")).map_err(|e| e.to_string())?;
+    fs::copy(busybox, root.join("bin/busybox")).map_err(|e| e.to_string())?;
+    for (name, probe) in ["P1", "P2", "M4", "M4-fork", "M4-child", "M3"]
+        .into_iter()
+        .zip(probes)
+    {
+        let path = root.join("bin").join(name);
+        fs::copy(probe, &path).map_err(|e| e.to_string())?;
+        set_executable(&path)?;
+    }
+    fs::write(
+        root.join("init"),
+        include_bytes!("../assets/linux/stage6-init"),
+    )
+    .map_err(|e| e.to_string())?;
+    set_executable(&root.join("init"))?;
+    set_executable(&root.join("bin/busybox"))?;
+    let initramfs = cache.join("stage6-initramfs.cpio.gz");
+    let archive = fs::File::create(&initramfs).map_err(|e| e.to_string())?;
+    run_with_stdout(
+        Command::new("sh")
+            .arg("-c")
+            .arg("find . | busybox cpio -o -H newc 2>/dev/null | gzip -9")
+            .current_dir(root),
+        archive,
+    )?;
+    let serial = run_guest(
+        &unpack.join(KERNEL_VMLINUZ),
+        &initramfs,
+        "tcg,thread=single",
+    )?;
+    fs::write(cache.join("stage6-reference.log"), &serial).map_err(|e| e.to_string())?;
+    Ok(serial)
+}
+
 /// 已提交基线的原文。
 pub(crate) fn load_baseline() -> Result<String, String> {
     fs::read_to_string(FIXTURE_PATH)

@@ -908,8 +908,8 @@ mod tests {
     /// 运维提供的未修改静态 ELF 的装载演练（默认跳过，仓库不携带二进制）。
     ///
     /// 运行：`PRIMA_ELF_SAMPLE=/usr/bin/busybox cargo test -p kernel --lib -- --ignored`。
-    /// 断言的是**解析结果**，不是运行结果：本项目还没有 Linux LibOS，见
-    /// `docs/superpowers/reports/2026-10-28-stage6-loader-slice.md`。
+    /// 断言的是**解析结果**；Linux LibOS 的独立运行证据见
+    /// `docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md`。
     ///
     /// 用 D12 白名单的 `busybox-static 1:1.36.1-6ubuntu3.1`（`sha256=dbac288c…`、
     /// 2 124 608 字节）跑这份演练时，核对 526 页载入需求及当前私有 exec 预算。

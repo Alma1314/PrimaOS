@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-11-01
+updated: 2026-11-04
 ---
 
 # Prima OS 实现阶段
@@ -27,8 +27,8 @@ updated: 2026-11-01
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 2026-11-01 Gate复制/生命周期后继：workspace1095 passed（1项外部ELF ignored）、lint及探针特性Clippy PASS，G1/G2/G2-death/G3各双轮PASS，隔离W7双轮PASS；首次完整普通回归71/72（I1跨轮总消息数偏差），最终审计补强版完整72/72 PASS（36程序各两轮），W7与I1双轮通过。前序60/72、68/72、70/72、71/72及超时保留 | [实现与统一验证](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[W7分段诊断](docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md)；审计停止14轮和D14原型未在本轮重跑 |
-| 阶段 6 | **进行中（2026-10-29 启动）**；前置裁决 D11–D16 已关闭，装载器/初始栈已硬化并补齐 `AT_RANDOM`；退出条件 0/4 达成；M1a 当前评审阻塞已按有界范围收口；S6-M2 按需输入、私有容量与共享 auxv 键源已取得有界证据；RAM复制及四段/BSS/八页栈后继见本轮报告；D17 现有调用号/权限位序台账已冻结 | [阶段6–7细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)、[D11–D16裁决](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)、[准备性切片与未完成清单](docs/superpowers/reports/2026-10-28-stage6-loader-slice.md)；白名单与 `AT_RANDOM` 已定，[M1a 整改评审](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)闭合 R1–R6 定义与 D14 探索；[内核输出/COW 前置](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)与[私有等待基础](docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md)已落地；[冻结台账与装载机械项](docs/superpowers/reports/2026-10-30-stage6-freeze-ledgers.md)固定 D17 与 `auxv` 键源；[按需输入](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)与[私有容量后继](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)替代旧字节窗口和149页私有上限；M1b Gate 对象/绑定/请求生命周期已在真实内核状态表落地（[门控切片](docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md)，host 反例）；[最后服务授权丢失钩子](docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md)已在对象层接入；[trap 与四个控制入口](docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md)已接线并取得 G1 有界证据；[Ready 未决返回准入](docs/superpowers/reports/2026-10-31-stage6-gate-admission.md)已补齐；[四个控制入口失败尝试审计](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)已接入；[75/76代理复制与G2/G3](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)已取得有界双轮证据；M1e计量、S6-D2整体验收与W7历史超时因果仍待；exec_replace 不等于未修改 Linux ELF 完成 |
+| 最近验证记录 | 最终源码完整BIOS72/72；Linux11项双轮；Gate/七审计边界/D14双轮；host1118/1119、lint/特性Clippy、Lean通过 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；保留全部前序失败与整改 |
+| 阶段 6 | **已满足退出条件，技术复核4/4**；有界Linux profile v1与D12八成员运行冻结 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不自动构成组织级签署，不启动阶段7 |
 | 阶段 7 | **未开始；综合交付范围已由作者确认，技术规格、白名单与量化门槛待冻结**；7-0/7-A…7-H 九轨必交付，退出仍未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
@@ -44,6 +44,9 @@ updated: 2026-11-01
 | 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
+| S6-M3/M4 进程与差分后继 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md) | 87–89、pthread/进程/M3与原始审计双轮通过；完整72/72及有界出口复核通过 |
+| S6-M4 上下文/信号/线程 | [P1/P2与专用镜像构建](docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md) | 83–86、TaskContext、GPR/FXSAVE、Linux信号和共享线程/futex；仅编译/构建，未执行任何测试，非阶段退出 |
+| S6-M2/M3 停车装载与LibOS | [受管理装载与真实制品镜像构建](docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md) | 79–82、manifest v3、用户态profile草案、六applet差分工程；仅编译/构建，无运行证据，非阶段退出 |
 | S6-M2 私有映像容量 | [526页、额度失败与再次exec](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md) | 私有640页及相关全局预算，普通段仍149页；host/QEMU范围分开，非冻结busybox运行 |
 | S6-M2 按需 ELF 输入 | [元数据逐条读取与失败退栈回收](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md) | 原生 exec 移除 1 MiB/首个 4 KiB 程序头限制；W7 稀疏输入仅需两页段数据，非 526 页 busybox 或 Linux 运行 |
 | S6-M1 审计停止裸机验证 | [七个边界与停止调用变异](docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md) | 专用配置 14 轮 QEMU 验证耗尽后停止与保存状态；非 Gate/Request 接线或 G1–G3 |
@@ -106,16 +109,16 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
-| S6-M1 R1–R6 / D14（当前评审范围） | **已按 M1a 范围收口**：无自动取消/重放；固定服务者及真实等待；请求/队列预留；显式跨任务根/COW；原子审计与全局 fail-stop；候选 A 零 Linux 语义技术评审；D14 单核 ring3 人格桩探索双轮通过 | [协议](docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md)、[整改与限制](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)；对象/授权丢失与trap/G1已由后继推进（见下行）；四个已接线控制入口的[失败尝试审计已补齐](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)；[75/76与G2/G3](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)已取得本轮有界证据；M1e计量/整体验收仍待，不等于S6-D2完成 |
+| S6-M1 R1–R6 / D14（当前评审范围） | **有界技术范围收口**：G1–G4、七审计边界与D14原探针双轮通过；S6-D2整体复核完成 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；历史协议/失败及TCG/单CPU限制保留 |
 | S6-M2 / 原生W7时限 | **本轮时限验收通过，历史超时因果未闭合**：前序完整60/72等失败及隔离W7双轮30秒超时保留；本轮隔离W7和首次完整回归中的W7均双轮PASS；首次完整71/72仅I1统计不一致，最终源码完整72/72 PASS。初次诊断21.473秒退出33，其中14.542秒才到内核入口；不能将总时限直接归因于exec复制，也不推断全部失败的唯一根因 | [分段采样与strip失败反例](docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md)、[本轮统一结果](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[前序失败](docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md)；不放宽门限，不用单次诊断覆盖完整回归 |
-| 本轮普通启动/V1时限 | **未解释**：普通失败审计后继整套68/72，默认启动和V1各第1轮30秒超时、各第2轮通过；分别止于cow_ready/authority_ready，未定位原因，不以另一轮通过覆盖失败 | [原始日志与限制](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)；保持门限和验收输入 |
-| S6-M2 装载资源 | **部分推进**：输入限制已移除；私有exec容量640页及全局预算已配套；526页容量/失败回收/再次exec保留；RAM批量复制已实现，冻结四段/BSS几何与八页栈取得Linux及单次QEMU诊断证据，非双轮验收 | [容量与失败链](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)；[四段/BSS几何与八页栈后继](docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md)使用合成入口推进，实际结果与限制见报告；仍需VFS大文件来源、冻结制品实际执行、可信停车入口与完整Linux启动；不替代S6-M1 |
-| S6-M1 M1b–M1d 接线 | **已按本轮技术范围收口**：私有等待、Gate/Request生命周期、最后服务授权丢失、trap和73–78六入口接通；75/76双端root/Segment权限与COW事务、复制审计及满队列清理落地；G1/G2/G2-death/G3各双轮PASS。M1e计量与S6-D2整体验收仍待 | [本轮实现、矩阵与失败链](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[现行协议](docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md)；[七边界审计停止](docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md)仍是其独立范围；不扩至共享root、可中断门控等待、Linux LibOS或阶段退出 |
+| 历史普通启动/V1时限 | **历史因果未解释，当前验收已通过**：2026-11-04完整72/72含默认/V1双轮PASS；以下旧失败保留，非当前验收阻塞。普通失败审计后继整套68/72，默认启动和V1各第1轮30秒超时、各第2轮通过；分别止于cow_ready/authority_ready，未定位原因，不以另一轮通过覆盖失败 | [原始日志与限制](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)；保持门限和验收输入 |
+| S6-M2 装载资源 | **冻结制品范围收口**：640页预算、实际PT_LOAD/BSS/8页栈和D12双轮运行；任意VFS执行不在范围 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不外推任意应用 |
+| S6-M1 M1b–M1d 接线 | **有界技术范围收口**：G1–G4、七审计边界与D14原探针双轮通过；S6-D2整体复核完成 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；历史协议/失败及TCG/单CPU限制保留 |
 | QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留该版本验证缺口；本轮fork后继分段覆盖62/62，完整命令在35轮后W8 run2超时，根因仍未定位；2026-10-25前批及2026-10-27本轮均分别取得单次68轮PASS；本轮另保留I1/N1计数失败和显式验收修订，见后继报告 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[本批完整验收](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；保留门限/断言/失败证据，不以栈保护或退出整改自动解释全部历史超时 |
 | I1接收归账验收（本轮发现跨轮偏差） | 前序有界技术收口及完整72轮PASS保留；本轮首次完整71/72，I1第2轮用户消息总数423→420变化，单轮各自归账成立、非UART出口不变。最终版本完整72/72，I1双轮PASS且消息总数均423；未放宽跨轮判据，首次差异根因仍未唯一确认 | [本轮原始数据与范围](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[历史归账修订](docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md)；不据新失败改写旧签署，不据后继单次PASS倒推因果 |
 | 系统调用栈保护边界 | syscall和全部Task中断栈下界guard通过host与本轮启动页表检查；32KiB可用容量、哨兵保留；exec准备缓冲在提交前退栈 | [本轮报告](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)；stack_guard=1，不构成所有路径峰值证明 |
 | BLK-003 | **已按阶段 5 范围关闭（2026-10-27，SPEC-152）**：原生号段 1–72 以 `prima-abi` 为源、52 保留；Prima 命名；错误码只登记实际实现；静态链接；线程共享能力视图；静态 persona/符号护栏。动态装载、Linux 号在用户态 LibOS 的完整映射、第二 personality 转入阶段 6/7 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[D1–D10评审工件](docs/superpowers/specs/2026-10-26-stage5-release-decisions.md) |
-| S5-D1 / S5-D6 / S5-X3 | **已签署（SPEC-152）**：profile v2 冻结；D6 A 完成 R1/R2/R3 与 Clippy；S5-X3 限 sbase echo/cat/ls 冻结集 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[D6裁决](docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md)；阶段 6 已于 2026-10-29 启动，进入进行中 |
+| S5-D1 / S5-D6 / S5-X3 | **已签署（SPEC-152）**：profile v2 冻结；D6 A 完成 R1/R2/R3 与 Clippy；S5-X3 限 sbase echo/cat/ls 冻结集 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[D6裁决](docs/superpowers/specs/2026-10-26-rust-d6-scope-decision.md)；阶段6于2026-10-29启动；当前状态见阶段6节 |
 | fork 子任务 VFS 授权 | 认证会话/直接IPC/OFD holder、libc execve/envp/CLOEXEC、新C crt与连续exec本轮W6/W7/W7b双轮通过 | [本轮报告](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)；有界静态映像及RAM VFS，不宣称完整execve |
 | ISSUE-FORK-CAPS-001 | 用户选定A的独立视图、受控继承、认证服务交接/发布、OFD/socket holder在本轮host及W6/N1中通过；有界技术范围收口 | [本轮报告](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)；多线程fork、每LibOS根视图不在范围；共享线程视图待最终语义确认 |
 | ISSUE-PTHREAD-CAPS-001（工作决定） | 同 Process 线程共享 leader 能力空间，组织级语义确认仍待完成 | [M15设计](docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md)、[M15b-2a](docs/superpowers/reports/2026-10-23-stage5-m15b2a-thread-create.md) |
@@ -143,6 +146,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 
 | 日期 | 决定与当前影响 | 来源 |
 |---|---|---|
+| 2026-11-04（技术退出） | 阶段6全部余项统一验收完成，冻结有界profile v1，D1–D5及X1–X4勾选；保留历史失败；不启动阶段7、不冒称组织级签署 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md) |
 | 2026-10-31（阶段7范围） | 作者逐项确认综合交付：Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、设备与持久化、冻结端到端协议内的用户态组件透明恢复；AArch64单核机制验证，QEMU正式验收；关键性质须证明，性能先基线后门槛。范围已确认，详细契约待冻结；不启动阶段7，不勾选退出条件 | [16项回答与范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md) |
 | 2026-10-23 | M21 技术出口评审未签署；阶段6 D10 不启动 | [M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md) |
 | 2026-10-27（签署） | **阶段5签署（SPEC-152）**：冻结 profile v2；确认 D1–D10 处置；BLK-003 按阶段5范围关闭；阶段6具备入口但按 D10 不启动。范围限有界 partial profile，不代表完整 POSIX/Linux 兼容 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md) |
@@ -337,30 +341,31 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 
 ## 阶段 6 — Linux x86_64 静态 ELF
 
-2026-11-01 Gate后继：[代理复制与生命周期验收](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)完成75/76和G2/G3，修复满队列销毁后的错误晋级；G1/G2/G2-death/G3及隔离W7各双轮PASS，workspace1095、lint PASS，最终完整72/72 PASS；首次71/72仅I1统计差异保留；[W7诊断](docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md)保留引导输入成本与strip失败，阶段退出仍0/4。
+**状态：已满足退出条件（2026-11-04，技术复核4/4）。** 按作者完成全部余项的指令实施并统一验收，
+[统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)记录完整源码、输入身份、逐调用矩阵、失败/整改和最终运行范围。
+普通完整BIOS36组72/72、Linux同ELF11项双轮、G1–G4及七审计停止边界双轮、D14原探针双轮均通过；
+普通/Linux特性host1118/1119、lint/特性Clippy、Lean及文档工具通过。技术复核不自动构成组织级签署，阶段7仍未开始。
 
-2026-11-01：[复制与装载几何后继](docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md)完成三项实现并统一验证；workspace1091、lint及Linux参考通过，完整BIOS60/72，W7时限仍未关闭；单次26.63秒QEMU诊断验证合成四段/BSS与八页栈，不代表冻结busybox运行。
-
-**状态：进行中（2026-10-29 启动，作者指令）。** 阶段 5 已于 2026-10-27 签署（SPEC-152），前置裁决 D11–D16 已关闭；启动不等于任何退出条件达成，下方交付检查与退出条件仍全部未勾选。拆分见[阶段 6–7 细化](docs/superpowers/plans/2026-10-27-stage6-7-refinement.md)，首个增量见[启动与 `AT_RANDOM` 报告](docs/superpowers/reports/2026-10-29-stage6-start.md)。
-
-前置裁决已于 2026-10-28 关闭（[D11–D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)）：D11 动态链接维持阶段 7；D12 白名单冻结为 Ubuntu `busybox-static 1.36.1` 的 6 个 applet + 2 个自写探针（`sha256=dbac288c…`，附 ELF 属性）；D13 初始栈**提供** `AT_RANDOM` 作为公开确定常量（非机密、无 ASLR/canary 安全主张），因此 S6-M2/S6-M3 不再是"缺裁决"，只有 S6-M1 的递送语义仍需架构评审。**裁决不启动本阶段**：启动仍是作者决定。
-
-准备性硬化（2026-10-28，实现先于启动决定，不勾选下方任何条件）：内核静态 ELF 装载器按 ELF 规范接受同余而非页对齐的 `PT_LOAD`（真实静态 busybox 此前会被判 `Misaligned`）、`PT_LOAD` 上限 4→8、W+X 段与可执行栈确定性拒绝、exec 初始栈统一由 `static_auxv`/`build_initial_stack` 构造并补齐 `AT_EXECFN` 等条目。`AT_RANDOM` 后由启动增量实现；[2026-10-31 按需输入](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)已移除原生 exec 的 1 MiB/首个 4 KiB 程序头限制。[帧容量后继](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)已将私有exec扩至640页并补齐相关预算，普通段仍≤149页；当前仍需VFS大文件来源、冻结制品真实4段/BSS几何、8页初始栈及完整Linux启动验证，与Gate/LibOS递送。合成输入不等于白名单运行。
+[D12白名单](docs/superpowers/compat/stage6-static-whitelist.md)八成员及[Linux profile v1](docs/superpowers/compat/stage6-linux-profile-v1.md)有界冻结；
+每行Linux入口为partial，未实现项明确unsupported。D11动态链接留阶段7；D13公开确定AT_RANDOM无机密/ASLR主张。
+D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构建切片和历史超时/失败按报告链保留；
+本轮明确后继其“未执行”状态，不改写历史结果。普通VFS任意大文件exec、实时信号/备用栈、XSAVE/AVX、
+完整pid命名空间及完整POSIX/Linux不在本冻结范围。
 
 ### 交付检查
 
-- [ ] S6-D1：静态 ELF 加载器与 Linux 初始栈。[按需输入与失败回收](docs/superpowers/reports/2026-10-31-stage6-streamed-elf-input.md)与[帧容量](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md)已完成有界检查点，大文件来源、冻结制品实际装载及完整Linux启动仍待完成。
-- [ ] S6-D2：OS 中立的 syscall / exception 递送机制（[S6-M1 递送设计](docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md)：六入口已按实现逐项追加，仍为实验性；计量与整体验收待完成）；[M1a 整改](docs/superpowers/reports/2026-10-29-stage6-m1-blocker-closure.md)已确定协议、完成候选 A 技术设计评审与 D14 有界探索；[内存前置](docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md)已实现输出/COW 内核原语；[私有等待](docs/superpowers/reports/2026-10-30-stage6-private-completion-waits.md)已实现真实登记与代次完成；[门控对象与请求生命周期](docs/superpowers/reports/2026-10-31-stage6-gate-lifecycle.md)已在真实内核表落地 attach/trap/wait/reply/abort 与清理事务（host）；[审计停止控制器](docs/superpowers/reports/2026-10-30-stage6-audit-fail-stop.md)已接入分派/调度/IRQ，Gate对象与控制事务已接入预检，复制事务仍待；[裸机后继](docs/superpowers/reports/2026-10-30-stage6-audit-stop-qemu.md)已验证七个边界双轮停止，非 Gate 验收。[接线后继](docs/superpowers/reports/2026-10-31-stage6-gate-dispatch.md)已接 trap、只写rax、73/74/77/78与G1有界探针；[挂接准入后继](docs/superpowers/reports/2026-10-31-stage6-gate-admission.md)补齐 Ready 未决返回检查；[普通失败审计后继](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)接入四个控制入口；[75/76（M1c）与G2/G3后继](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)已补齐有界技术验收；M1e计量与S6-D2整体验收仍待；[能力丢失后继](docs/superpowers/reports/2026-10-31-stage6-gate-authority-loss.md)已补齐对象层 drop/move/revoke/容器转移与最后别名清理（host）
-- [ ] S6-D3：版本化的 Linux LibOS syscall profile。
-- [ ] S6-D4：所选 profile 必需的 futex、TLS 和进程环境。
-- [ ] S6-D5：未修改静态 ELF 白名单与测试镜像。
+- [x] S6-D1：静态 ELF 加载器与 Linux 初始栈。冻结制品真实PT_LOAD/BSS和8页栈双轮运行，argv/env/auxv与失败回收按契约验证。
+- [x] S6-D2：OS 中立的 syscall / exception 递送机制。实验性73–89、代理复制/上下文/生命周期、G1–G4及审计停止双轮通过；TCG分段计量不承诺硬件延迟。
+- [x] S6-D3：版本化的 Linux LibOS syscall profile。v1按命名观察和partial/unsupported范围冻结。
+- [x] S6-D4：所选 profile 必需的 futex、TLS 和进程环境。P1/P2、静态pthread及fork/exec/wait矩阵双轮通过。
+- [x] S6-D5：未修改静态 ELF 白名单与测试镜像。D12八成员原始字节在pinned Linux/Prima各项通过，额外M3/M4不扩白名单。
 
 ### 退出条件
 
-- [ ] S6-X1：白名单中的静态 ELF 无需修改即可运行。
-- [ ] S6-X2：支持的 syscall 与参考 Linux 通过差分测试。
-- [ ] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。
-- [ ] S6-X4：未支持 syscall 得到确定且可审计的失败。
+- [x] S6-X1：白名单中的静态 ELF 无需修改即可运行。D12八成员双轮通过。
+- [x] S6-X2：支持的 syscall 与参考 Linux 通过差分测试。v1命名变体与M3/M4矩阵双轮通过。
+- [x] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。源码与TCB耦合复核，政策保持在用户态。
+- [x] S6-X4：未支持 syscall 得到确定且可审计的失败。ENOSYS原号/参数/cookie/结果与一次性终结核对通过。
 
 > 注：候选规格（DOC-002）把 `ld.so` 最小动态链接闭环列为 P0、随阶段 5 交付，而白皮书把“动态链接”列为阶段 7 候选。**已裁决（D11/D4，SPEC-152）**：动态链接留阶段 7 的 7-E，阶段 6 的输入必须无 `PT_INTERP`；不得两处各写一套。
 
@@ -396,7 +401,7 @@ WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 
-[2026-10-31 日志附件整理](docs/superpowers/reports/2026-10-31-documentation-log-inline.md)将必要输出内嵌到原证据报告，移除独立日志附件并保留Git恢复路径；不新增运行证据，当前阶段、退出0/4和历史失败保持。
+[2026-10-31 日志附件整理](docs/superpowers/reports/2026-10-31-documentation-log-inline.md)将必要输出内嵌到原证据报告，移除独立日志附件并保留Git恢复路径；不新增运行证据，整理时的退出0/4保持；2026-11-04的技术退出后继见阶段6节，历史失败保留。
 
 ## 阶段晋级规则
 

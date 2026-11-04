@@ -252,7 +252,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         pml4_phys,
                                         offset,
                                         boot_info.kernel_image_offset,
-                                        inventory.image_frames,
+                                        mem::kernel_virtual_pages(
+                                            boot_info.kernel_len,
+                                            |at, bytes| {
+                                                for (index, byte) in bytes.iter_mut().enumerate() {
+                                                    *byte =
+                                                        prima_ostd::mm::read_u8(mem::phys_to_virt(
+                                                            boot_info.kernel_addr
+                                                                + at
+                                                                + index as u64,
+                                                            offset,
+                                                        ));
+                                                }
+                                            },
+                                        )
+                                        .expect("bootloader kernel PT_LOAD span"),
                                         max_phys,
                                         boot_info.kernel_stack_bottom,
                                         (boot_info.kernel_stack_len / kernel::mem::FRAME_SIZE)
@@ -435,7 +449,9 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
 #[cfg(feature = "gate-probe")]
 extern "C" fn gate_probe_exit() -> ! {
     kernel::bootstrap::gate_probe::verify();
-    if let Some(case) = option_env!("PRIMA_GATE_CASE") {
+    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+        kernel::bootstrap::gate_probe::bench::emit(serial::write_bytes);
+    } else if let Some(case) = option_env!("PRIMA_GATE_CASE") {
         serial::write_bytes(b"S6MATRIX|case=");
         serial::write_bytes(case.as_bytes());
         serial::write_bytes(b";verified=1;state=1;audit=1\n");

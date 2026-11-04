@@ -16,6 +16,7 @@ mod syscall;
 pub mod capability;
 pub mod device;
 pub mod error;
+pub mod gate;
 pub mod ipc;
 pub mod memory;
 pub mod namespace;

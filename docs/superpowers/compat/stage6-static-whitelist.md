@@ -4,7 +4,7 @@ kind: ledger
 authority: frozen-whitelist
 status: frozen-by-decision-d12
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-04
 ---
 
 # 阶段 6 静态 ELF 白名单（D12 冻结）
@@ -14,7 +14,7 @@ updated: 2026-10-31
 
 **冻结含义**：成员、制品版本或 `sha256` 任一变化都算新裁决；`S6-X1` 只对本台账的
 集合成立，不得用"换一个能跑起来的二进制"关闭它。本台账是**契约**，不是实现状态——
-当前没有任何成员在本系统运行过（LibOS 递送未实现）。
+全部八个成员已在本系统双轮执行，并与pinned Linux guest对比通过；运行和失败修复见[统一报告](../reports/2026-11-02-stage6-process-and-differential.md)。整体阶段退出仍以阶段跟踪为准。
 
 ## 制品
 
@@ -74,12 +74,30 @@ LC_ALL=C objdump -d /usr/bin/busybox | grep -c 'fs:0x28'
 
 ## 当前状态
 
+[2026-11-02后继](../reports/2026-11-02-stage6-process-and-differential.md)加入额外M3/M4验收见证；不扩大D12八个成员。11项全部双轮通过，最终普通完整回归通过。
+
 | 项 | 状态 |
 |---|---|
 | 白名单定义（D12） | **已冻结** |
 | 装载器解析该制品 | 已成立（2026-10-28 装载切片；2026-10-30 用同一 `sha256` 的二进制重跑 `PRIMA_ELF_SAMPLE` 演练，解析与 526 页页数均按断言复核，原长度窗口已由[按需输入](../reports/2026-10-31-stage6-streamed-elf-input.md)取代，见[本轮机械项报告](../reports/2026-10-30-stage6-freeze-ledgers.md)） |
-| 任何成员在本系统运行 | **未发生**（缺 S6-M1 递送与 S6-M3 profile） |
-| 容量/验证缺口 | [输入](../reports/2026-10-31-stage6-streamed-elf-input.md)与[容量后继](../reports/2026-10-31-stage6-exec-frame-capacity.md)已移除原生exec的1 MiB/首个4 KiB程序头/149页私有映像限制，并补齐有界全局预算；VFS大文件来源、本制品真实几何/8页初始栈与完整Linux启动仍待验证 |
+| 八个成员在本系统运行 | **全部双轮通过**：同一原始ELF在Prima与pinned Linux 6.8.0-31 guest；stdout/stderr/status及审计闭合均核对。首次失败与修复见[统一报告](../reports/2026-11-02-stage6-process-and-differential.md)，不以编译或host执行替代 |
+| 容量/验证缺口 | [输入](../reports/2026-10-31-stage6-streamed-elf-input.md)与[容量后继](../reports/2026-10-31-stage6-exec-frame-capacity.md)已移除原生exec的1 MiB/首个4 KiB程序头/149页私有映像限制，并补齐有界全局预算；只读原生映像大制品载体、停车装载与镜像打包已由[后继](../reports/2026-11-01-stage6-managed-linux-loader.md)推进；普通VFS大文件execve未实现，本制品真实几何/8页初始栈及已冻结八案例实际启动通过；不证明任意Linux应用或VFS大文件执行 |
+
+## 本次实际观察
+
+| 成员 | Prima与pinned guest的共同观察（各双轮） |
+|---|---|
+| true | stdout/stderr空，status=0 |
+| echo hello | stdout=`hello\n`，stderr空，status=0 |
+| cat /fixture.txt | stdout=`hello from prima\n`，stderr空，status=0 |
+| ls /fixturedir | stdout=`alpha\nbeta\n`，stderr空，status=0（比原成员集合要求更强的固定fixture逐字观察） |
+| uname | stdout=`Linux\n`，stderr空，status=0；其它版本字段不参与此命令的等价主张 |
+| sort | stdin=`z\nb\na\nb\n`，stdout=`a\nb\nb\nz\n`，stderr空，status=0 |
+| P1 | stdout=`P1 ok\n`，stderr空，status=0；errno/信号续体负例均由程序内断言 |
+| P2 | stdout=`P2 ok\n`，stderr空，status=0；两个真实Task的TLS/等待/唤醒/clear_tid均由程序内断言 |
+
+P1/P2的本次原始ELF哈希见统一报告；busybox仍为上文固定原字节，不重链接、改写或剥离。
+每次启动30秒；不是任何输入、机器或调度条件的性能上界。
 
 ## 后继关系
 

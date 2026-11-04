@@ -1,0 +1,27 @@
+#!/bin/busybox sh
+export PATH=/bin LC_ALL=C LANG=C
+/bin/busybox mkdir -p /proc
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mkdir -p /fixturedir
+printf 'hello from prima\n' > /fixture.txt
+printf 'a\n' > /fixturedir/alpha
+printf 'b\n' > /fixturedir/beta
+printf 'z\nb\na\nb\n' > /input
+for applet in true echo cat ls uname sort P1 P2 M4 M4-fork M3; do
+    case "$applet" in
+        echo) set -- echo hello ;;
+        cat) set -- cat /fixture.txt ;;
+        ls) set -- ls /fixturedir ;;
+        *) set -- "$applet" ;;
+    esac
+    if [ "$applet" = P1 ] || [ "$applet" = P2 ] || [ "$applet" = M4 ] || [ "$applet" = M4-fork ] || [ "$applet" = M3 ]; then
+        (ulimit -s 32; /bin/"$applet") < /input > /stdout 2> /stderr
+    else
+        (ulimit -s 32; /bin/busybox "$@") < /input > /stdout 2> /stderr
+    fi
+    status=$?
+    stdout=$(/bin/busybox od -An -tx1 -v /stdout | /bin/busybox tr -d ' \n')
+    stderr=$(/bin/busybox od -An -tx1 -v /stderr | /bin/busybox tr -d ' \n')
+    printf 'S6REF|case=%s;status=%s;stdout=%s;stderr=%s\n' "$applet" "$status" "$stdout" "$stderr"
+done
+/bin/busybox poweroff -f

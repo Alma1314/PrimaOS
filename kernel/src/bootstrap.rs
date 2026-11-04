@@ -19,6 +19,8 @@ pub mod gate_audit_probe;
 #[cfg(feature = "gate-probe")]
 #[path = "gate_probe.rs"]
 pub mod gate_probe;
+#[path = "launch.rs"]
+pub mod launch;
 
 pub const INIT_TASK_ID: u32 = 1;
 /// 初始根 Capability 的**物理槽索引**（S2-D1：句柄 = 槽索引 + generation）。
@@ -325,6 +327,56 @@ pub enum AuditEvent {
     TaskCreated {
         task_id: u32,
         generation: u32,
+    },
+    TaskTlsSet {
+        caller: u32,
+        task_cookie: u64,
+        base: u64,
+    },
+    GateThreadSpawned {
+        gate: u32,
+        request: u32,
+        service_cookie: u64,
+        parent_cookie: u64,
+        child_cookie: u64,
+    },
+    GateTaskForked {
+        request: u32,
+        service_cookie: u64,
+        parent_cookie: u64,
+        child_cookie: u64,
+    },
+    GateImageReplaced {
+        request: u32,
+        service_cookie: u64,
+        task_cookie: u64,
+        old_root: (u64, u64),
+        new_root: (u64, u64),
+        entry: u64,
+    },
+
+    TaskContextGranted {
+        caller: u32,
+        manager: Handle,
+        context: Handle,
+        task_cookie: u64,
+    },
+    GateContextAccessed {
+        gate: u32,
+        request: u32,
+        client_cookie: u64,
+        service_cookie: u64,
+        context: Handle,
+        rip: u64,
+        rsp: u64,
+        rflags: u64,
+        fpu: bool,
+        write: bool,
+    },
+    TaskImageLoaded {
+        caller: u32,
+        task_cookie: u64,
+        entry: u64,
     },
     /// SPEC-081 / §13.1 `CapMinted`：铸造根 Capability（`parent = None`）。
     ///
@@ -644,7 +696,7 @@ pub enum AuditError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskStatus {
     Ready,
-    /// A fork image exists but service handoff has not committed.
+    /// An image exists but its explicit publication has not committed.
     Prepared,
     Running,
     BlockedRecv,
@@ -714,6 +766,8 @@ pub struct TaskRecord {
     pub id: u32,
     pub generation: u32,
     pub status: TaskStatus,
+    /// Distinguishes managed initial launch from a ticket-controlled fork.
+    pub launch_held: bool,
     /// §5.2/§14 步骤 4：创建者（`KERNEL_ACTOR` = 0）。
     pub creator: u32,
     /// §5.2/§14 步骤 4：Task 种类。
@@ -869,6 +923,7 @@ impl TaskTable {
             generation: 1,
             // §14 步骤 8：init 初始状态必须为 Ready，首次调度时迁 Running。
             status: TaskStatus::Ready,
+            launch_held: false,
             // §14 步骤 4：init 由 KernelActor 创建，CPU Task，本节点。
             creator: KERNEL_ACTOR,
             kind: TaskKind::Cpu,
@@ -950,6 +1005,7 @@ impl TaskTable {
             id: task_id,
             generation,
             status: TaskStatus::Ready,
+            launch_held: false,
             // 平台/KernelActor 内部创建的 Task；`task_create` 会随后覆写为调用者。
             creator: KERNEL_ACTOR,
             kind: TaskKind::Cpu,
@@ -1577,7 +1633,9 @@ pub struct CapabilityHistoryRecord {
 }
 
 /// ISSUE-AUDIT-007：历史表容量（每个 `BootstrapState` 实例的累计铸造/派生次数上限）。
-pub const MAX_CAPABILITY_HISTORY: usize = 512;
+// A 1000-call Gate measurement mints one request identity per call. Retain
+// every identity; exhaustion remains deterministic rather than recycling history.
+pub const MAX_CAPABILITY_HISTORY: usize = 1280;
 #[cfg(not(test))]
 const CAPABILITY_HISTORY_REGIONS: usize = 1;
 #[cfg(test)]
@@ -2571,7 +2629,7 @@ pub struct PlatformSegmentsRecord {
 pub const MAX_SEGMENT_FRAMES: usize = 149;
 /// The aggregate boot service image uses external vector storage. This budget
 /// is independent of per-user Segment size and does not enlarge stack values.
-pub const MAX_BOOT_SERVICE_FRAMES: usize = 192;
+pub const MAX_BOOT_SERVICE_FRAMES: usize = 1024;
 /// Private replacement image, including its stack. The frozen 526-page ELF
 /// needs 534 pages with the current eight-page stack. Public memseg stays 149.
 pub const MAX_EXEC_IMAGE_FRAMES: usize = 640;
@@ -4359,6 +4417,17 @@ impl BootstrapState {
     /// 不参与前置**——被销毁的对象只要 Capability 仍在 caller 手中就仍可查询（§4.3 的
     /// `live(target)` 以 `target_live` 字段表达，而非拒绝查询）。
     pub fn audit_trace(&self, caller: u32, cap: Handle) -> Result<AuditTrace, AuditError> {
+        let mut trace = AuditTrace::EMPTY;
+        self.audit_trace_into(caller, cap, &mut trace)?;
+        Ok(trace)
+    }
+
+    fn audit_trace_into(
+        &self,
+        caller: u32,
+        cap: Handle,
+        trace: &mut AuditTrace,
+    ) -> Result<(), AuditError> {
         if !self.tasks.is_live(caller) {
             return Err(AuditError::InvalidCaller);
         }
@@ -4369,17 +4438,15 @@ impl BootstrapState {
         if self.holder_of(cap) != Some(self.space_of(caller)) {
             return Err(AuditError::NotHeld);
         }
-        let mut trace = AuditTrace {
-            chain: [Handle::ZERO; MAX_TRACE_CHAIN],
-            chain_len: 0,
-            minted: 0,
-            derived: 0,
-            moves: 0,
-            created: 0,
-            destroyed: 0,
-            target_live: self.cap_target_live(cap),
-            origin_none: true,
-        };
+        trace.chain.fill(Handle::ZERO);
+        trace.chain_len = 0;
+        trace.minted = 0;
+        trace.derived = 0;
+        trace.moves = 0;
+        trace.created = 0;
+        trace.destroyed = 0;
+        trace.target_live = self.cap_target_live(cap);
+        trace.origin_none = true;
         let mut current = cap;
         loop {
             // 每个 parent 都先于其 child 存在；历史表容量也是有效链的上界。
@@ -4465,7 +4532,7 @@ impl BootstrapState {
             }
             _ => {}
         });
-        Ok(trace)
+        Ok(())
     }
 
     pub fn audit_len(&self) -> usize {
@@ -7338,7 +7405,9 @@ impl BootstrapState {
         root_phys: Option<u64>,
         phys_offset: u64,
     ) -> Result<(), TaskError> {
-        if self.tasks.status_of(task_id) == Some(TaskStatus::Prepared) {
+        if self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+            && !self.task_launch_held(task_id)
+        {
             return Err(TaskError::NotReady);
         }
         if self
@@ -7426,7 +7495,9 @@ impl BootstrapState {
         if !self.tasks.is_live(leader) {
             return Err(TaskError::NoSuchTask);
         }
-        if self.tasks.status_of(leader) == Some(TaskStatus::Prepared) {
+        if self.tasks.status_of(leader) == Some(TaskStatus::Prepared)
+            && !self.task_launch_held(leader)
+        {
             return Err(TaskError::NotReady);
         }
         let process_id = self.process_of(leader);
@@ -8671,9 +8742,10 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.task_is_gated(task_id)
+        if !self.gate_vm_mutation_permitted(caller, task_id)
             || self.has_prepared_child(task_id)
-            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+            || (self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+                && !self.task_launch_held(task_id))
         {
             return Err(MemsegError::StillMapped);
         }
@@ -8746,6 +8818,8 @@ impl BootstrapState {
                 |_| {},
             )
             .expect("complete map table reservation");
+            crate::vspace::set_executable(root_phys, va, access.contains(Right::SegMapX), map)
+                .expect("mapped leaf execution permission");
             if flush_local {
                 prima_ostd::arch::invlpg(va);
             }
@@ -8806,9 +8880,10 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.task_is_gated(task_id)
+        if !self.gate_vm_mutation_permitted(caller, task_id)
             || self.has_prepared_child(task_id)
-            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+            || (self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+                && !self.task_launch_held(task_id))
         {
             return Err(MemsegError::StillMapped);
         }
@@ -8879,7 +8954,7 @@ impl BootstrapState {
     ///
     /// 前置按规范逐条验证后才改动任何状态（失败原子）：区间全部已映射、访问集非空且
     /// 不超过每页 Segment 的 `allowed_access`、新增权限有对应映射授权、入口页保持 `X`。
-    /// 成功动作只改每页的 `access` 与叶 PTE 的可写位，Segment/offset 不变，并追加一条
+    /// 成功动作只改每页的 `access` 与叶 PTE 的可写/执行位，Segment/offset 不变，并追加一条
     /// [`AuditEvent::VspaceProtChanged`]。
     #[allow(clippy::too_many_arguments)]
     pub fn memseg_protect(
@@ -8909,9 +8984,10 @@ impl BootstrapState {
             Err(error) => return Err(map_auth_error(error)),
         };
         let task_id = self.vspace_owner(task_id);
-        if self.task_is_gated(task_id)
+        if !self.gate_vm_mutation_permitted(caller, task_id)
             || self.has_prepared_child(task_id)
-            || self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+            || (self.tasks.status_of(task_id) == Some(TaskStatus::Prepared)
+                && !self.task_launch_held(task_id))
         {
             return Err(MemsegError::StillMapped);
         }
@@ -8980,6 +9056,7 @@ impl BootstrapState {
             }
             let shared = pte & (crate::vspace::PT_SHARED | crate::vspace::PT_COW) != 0;
             let mut next = pte & !(crate::vspace::PT_WRITABLE | crate::vspace::PT_COW);
+            next = crate::vspace::executable_leaf(next, new_access.contains(Right::SegMapX));
             if writable {
                 next |= if shared {
                     crate::vspace::PT_COW
@@ -9388,11 +9465,51 @@ pub fn authority_record() -> Result<BootstrapRecord, BootstrapError> {
     )
 }
 
-/// SPEC-083：用户态 `audit(cap)` syscall 的只读全局入口。
-pub fn audit_trace(caller: u32, cap: Handle) -> Result<AuditTrace, AuditError> {
-    BOOTSTRAP_STATE.with(|slot| match slot.as_ref() {
-        Some(state) => state.audit_trace(caller, cap),
-        None => Err(AuditError::InvalidCaller),
+/// Compact syscall projection; the full immutable ancestry remains available
+/// from BootstrapState::audit_trace without copying it through syscall frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditSummary {
+    pub chain_len: usize,
+    pub minted: u32,
+    pub derived: u32,
+    pub moves: u32,
+    pub created: u32,
+    pub destroyed: u32,
+    pub target_live: bool,
+}
+
+impl AuditTrace {
+    const EMPTY: Self = Self {
+        chain: [Handle::ZERO; MAX_TRACE_CHAIN],
+        chain_len: 0,
+        minted: 0,
+        derived: 0,
+        moves: 0,
+        created: 0,
+        destroyed: 0,
+        target_live: false,
+        origin_none: true,
+    };
+}
+static AUDIT_TRACE_SCRATCH: StaticCell<AuditTrace> = StaticCell::new(AuditTrace::EMPTY);
+
+/// Single CPU, IRQ-masked read-only query; no scheduling or callback can escape
+/// this scratch borrow. Only the small summary crosses the syscall stack.
+pub fn audit_summary(caller: u32, cap: Handle) -> Result<AuditSummary, AuditError> {
+    BOOTSTRAP_STATE.with(|slot| {
+        let state = slot.as_ref().ok_or(AuditError::InvalidCaller)?;
+        AUDIT_TRACE_SCRATCH.with_mut(|trace| {
+            state.audit_trace_into(caller, cap, trace)?;
+            Ok(AuditSummary {
+                chain_len: trace.chain_len,
+                minted: trace.minted,
+                derived: trace.derived,
+                moves: trace.moves,
+                created: trace.created,
+                destroyed: trace.destroyed,
+                target_live: trace.target_live,
+            })
+        })
     })
 }
 
@@ -9709,6 +9826,18 @@ pub fn task_create(
 ) -> Result<TaskCreateOutcome, TaskCreateError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.task_create(caller, req, boot_root, phys_offset),
+        None => Err(TaskCreateError::NoSuchCapability),
+    })
+}
+
+pub fn task_create_held(
+    caller: u32,
+    req: &TaskCreateRequest,
+    root: u64,
+    offset: u64,
+) -> Result<TaskCreateOutcome, TaskCreateError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.task_create_held(caller, req, root, offset),
         None => Err(TaskCreateError::NoSuchCapability),
     })
 }
@@ -10166,7 +10295,17 @@ impl BootstrapState {
         entry: u64,
         stack_top: u64,
     ) -> Result<u32, ThreadError> {
-        if self.task_is_gated(caller) {
+        self.thread_create_inner(caller, entry, stack_top, false)
+    }
+
+    fn thread_create_inner(
+        &mut self,
+        caller: u32,
+        entry: u64,
+        stack_top: u64,
+        gated: bool,
+    ) -> Result<u32, ThreadError> {
+        if self.task_is_gated(caller) && !gated {
             return Err(ThreadError::Busy);
         }
         if !self.tasks.is_live(caller) {
@@ -10194,7 +10333,7 @@ impl BootstrapState {
                 let process = self
                     .create_process(caller)
                     .ok_or(ThreadError::CapacityExceeded)?;
-                let _ = self.attach_thread(process, caller);
+                let _ = self.attach_thread_inner(process, caller, gated);
                 process
             }
         };
@@ -10210,7 +10349,7 @@ impl BootstrapState {
             task.creator = caller;
             task.root_ns_cap = root_ns;
         }
-        if !self.attach_thread(process, new_id) {
+        if !self.attach_thread_inner(process, new_id, gated) {
             let _ = self.tasks.remove(new_id);
             return Err(ThreadError::CapacityExceeded);
         }
@@ -10287,13 +10426,19 @@ impl BootstrapState {
 
     /// M15b：把一个 Task 挂到 Process；同一 Process 至多 MAX_TASKS 个线程。
     pub fn attach_thread(&mut self, process_id: u32, task_id: u32) -> bool {
+        self.attach_thread_inner(process_id, task_id, false)
+    }
+
+    fn attach_thread_inner(&mut self, process_id: u32, task_id: u32, gated: bool) -> bool {
         if self.tasks.find(task_id).is_none() {
             return false;
         }
-        if self.processes.find(process_id).is_some_and(|process| {
-            (1..MAX_TASKS as u32)
-                .any(|id| process.threads & (1 << id) != 0 && self.task_is_gated(id))
-        }) {
+        if !gated
+            && self.processes.find(process_id).is_some_and(|process| {
+                (1..MAX_TASKS as u32)
+                    .any(|id| process.threads & (1 << id) != 0 && self.task_is_gated(id))
+            })
+        {
             return false;
         }
         let Some(process) = self.processes.find_mut(process_id) else {
@@ -10526,6 +10671,9 @@ impl BootstrapState {
     }
 
     pub fn check_exec(&self, caller: u32, pages: usize) -> Result<(), TaskError> {
+        self.check_exec_inner(caller, pages, false)
+    }
+    fn check_exec_inner(&self, caller: u32, pages: usize, managed: bool) -> Result<(), TaskError> {
         if !self.tasks.is_live(caller) {
             return Err(TaskError::NoSuchTask);
         }
@@ -10535,7 +10683,7 @@ impl BootstrapState {
         {
             return Err(TaskError::HasLiveThreads);
         }
-        if self.task_is_gated(caller) || self.has_prepared_child(caller) {
+        if (!managed && self.task_is_gated(caller)) || self.has_prepared_child(caller) {
             return Err(TaskError::HasLiveThreads);
         }
         let mut old = 0;
@@ -10640,13 +10788,16 @@ impl BootstrapState {
 
     /// Read-only admission check before any hardware page-table allocation/change.
     pub fn check_fork(&self, caller: u32) -> Result<(), ThreadError> {
+        self.check_fork_inner(caller, false)
+    }
+    fn check_fork_inner(&self, caller: u32, managed: bool) -> Result<(), ThreadError> {
         if !self.tasks.is_live(caller) {
             return Err(ThreadError::InvalidCaller);
         }
         if self.tasks.next_generation > u64::from(u32::MAX) {
             return Err(ThreadError::CapacityExceeded);
         }
-        if self.task_is_gated(caller) || self.has_prepared_child(caller) {
+        if (!managed && self.task_is_gated(caller)) || self.has_prepared_child(caller) {
             return Err(ThreadError::Busy);
         }
         let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;
@@ -10654,19 +10805,23 @@ impl BootstrapState {
             return Err(ThreadError::Busy);
         }
         let (caps, self_caps) = self.fork_cap_count(caller);
-        if !self.audit.can_append(2 * caps + self_caps + 4) {
+        if !self
+            .audit
+            .can_append(2 * caps + self_caps + if managed { 40 } else { 4 })
+        {
             return Err(ThreadError::AuditFull);
         }
-        if caps + 1 > self.slots.normal_free_count()
-            || caps + 1 > MAX_CAPABILITY_HISTORY - self.cap_history_count
-            || self.next_cap_id.checked_add((caps + 1) as u32).is_none()
+        let tokens = caps + 1 + usize::from(managed);
+        if tokens > self.slots.normal_free_count()
+            || tokens > MAX_CAPABILITY_HISTORY - self.cap_history_count
+            || self.next_cap_id.checked_add(tokens as u32).is_none()
             || self
                 .positions
                 .entries
                 .iter()
                 .filter(|entry| entry.is_none())
                 .count()
-                < caps + 1
+                < tokens
         {
             return Err(ThreadError::CapacityExceeded);
         }
@@ -10842,7 +10997,15 @@ impl BootstrapState {
 
     /// M17b：fork 的模型部分（新 Process + 新 Task；地址空间由 syscall 层 COW 克隆）。
     pub fn fork_create(&mut self, caller: u32, entry: u64) -> Result<u32, ThreadError> {
-        self.check_fork(caller)?;
+        self.fork_create_inner(caller, entry, false)
+    }
+    fn fork_create_inner(
+        &mut self,
+        caller: u32,
+        entry: u64,
+        managed: bool,
+    ) -> Result<u32, ThreadError> {
+        self.check_fork_inner(caller, managed)?;
         let parent_process = self.process_of(caller).ok_or(ThreadError::InvalidCaller)?;
         let new_id = self
             .ensure_thread_slot()
@@ -10857,8 +11020,10 @@ impl BootstrapState {
             .upcall_group;
         let child_process = self.processes.find_mut(process).expect("new process");
         child_process.upcall_group = group;
-        child_process.parent = Some(parent_process);
-        child_process.forked = true;
+        // Managed Gate clients keep personality ancestry outside the kernel;
+        // they do not enter native wait4/zombie ownership.
+        child_process.parent = (!managed).then_some(parent_process);
+        child_process.forked = !managed;
         if self.create_task_record(new_id, entry).is_err() {
             let _ = self.processes.remove(process);
             return Err(ThreadError::CapacityExceeded);
@@ -12624,12 +12789,42 @@ mod tests {
             .expect("unbind");
         let before = state.audit_len();
         let trace = state.audit_trace(INIT_TASK_ID, child).expect("query");
+        let mut scratch = super::AuditTrace::EMPTY;
+        state
+            .audit_trace_into(INIT_TASK_ID, IMAGE_CAP_HANDLE, &mut scratch)
+            .unwrap();
+        state
+            .audit_trace_into(INIT_TASK_ID, child, &mut scratch)
+            .unwrap();
+        assert_eq!(scratch, trace);
         assert_eq!(&trace.chain[..trace.chain_len], &[IMAGE_CAP_HANDLE, child]);
         // IMAGE_CAP 的初始铸造事件现在也入审计（§14 步骤 9），故根链上 minted = 1。
         assert_eq!((trace.minted, trace.derived, trace.moves), (1, 1, 2));
         assert_eq!((trace.created, trace.destroyed), (1, 0));
         assert!(trace.target_live && trace.origin_none);
         assert_eq!(state.audit_len(), before);
+    }
+
+    #[test]
+    fn capability_history_retains_a_thousand_retired_identities_and_fails_at_capacity() {
+        let mut state = fresh_state();
+        let initial = state.cap_history_count;
+        let mut first = None;
+        while state.cap_history_count < super::MAX_CAPABILITY_HISTORY {
+            let cap = state
+                .derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("SegMapR"))
+                .unwrap();
+            first.get_or_insert(cap);
+            state.drop_capability(INIT_TASK_ID, cap).unwrap();
+        }
+        assert!(state.cap_history_count - initial >= 1000);
+        assert!(state.capability_history_record(first.unwrap()).is_some());
+        let before = state;
+        assert_eq!(
+            state.derive_capability(INIT_TASK_ID, IMAGE_CAP_HANDLE, rights("SegMapR")),
+            Err(DeriveError::CapacityExceeded)
+        );
+        assert_eq!(state, before);
     }
 
     #[test]

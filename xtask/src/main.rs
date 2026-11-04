@@ -5,6 +5,8 @@ mod lint;
 mod linux;
 mod protocol;
 mod qemu;
+#[cfg(feature = "linux-probe")]
+mod stage6;
 
 use std::{env, fs, process};
 
@@ -38,6 +40,28 @@ fn run() -> Result<(), String> {
     }
 
     match command.as_str() {
+        "build-linux" => {
+            require_no_args(&rest)?;
+            #[cfg(feature = "linux-probe")]
+            {
+                stage6::build().map(|_| image::report_build_success())
+            }
+            #[cfg(not(feature = "linux-probe"))]
+            {
+                Err("set PRIMA_LINUX_ELF and use --features linux-probe".into())
+            }
+        }
+        "test-linux" => {
+            require_no_args(&rest)?;
+            #[cfg(feature = "linux-probe")]
+            {
+                stage6::test()
+            }
+            #[cfg(not(feature = "linux-probe"))]
+            {
+                Err("set PRIMA_LINUX_ELF and use --features linux-probe".into())
+            }
+        }
         "test-gate" => {
             require_no_args(&rest)?;
             if env::var("PRIMA_GATE_CASE").ok().as_deref() != option_env!("PRIMA_GATE_CASE") {
@@ -654,6 +678,7 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 fn usage() -> String {
     "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features linux-probe -- <build-linux|test-linux>\n\
      \x20      cargo run -p xtask --features gate-probe -- test-gate\n\
      \x20      PRIMA_GATE_AUDIT_SITE=<site> cargo run -p xtask --features gate-audit-probe -- test-gate-audit\n\
      \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\

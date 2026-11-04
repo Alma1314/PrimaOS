@@ -268,7 +268,18 @@
       "docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md",
       "docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md",
       "docs/superpowers/compat/stage6-gate-native-abi.md",
-      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md"
+      "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md",
+      "docs/superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md",
+      "docs/superpowers/specs/2026-11-01-stage6-managed-launch.md",
+      "docs/superpowers/compat/stage6-linux-profile-v1.md",
+      "docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-context.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-signals.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-threads.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
+      "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
+      "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -289,7 +300,17 @@
       "lean/Formal/Location.lean",
       "cosir/src/gate.rs",
       "cosir/src/gate_memory.rs",
-      "prima-user/src/domain_probe.rs"
+      "prima-user/src/domain_probe.rs",
+      "prima-runtime/src/gate.rs",
+      "kernel/src/launch.rs",
+      "prima-user/src/linux_signal.rs",
+      "prima-user/src/linux_thread.rs",
+      "prima-user/linux-probes/p1.S",
+      "prima-user/linux-probes/p2.S",
+      "prima-user/src/linux_process.rs",
+      "prima-user/linux-probes/pthread.c",
+      "prima-user/linux-probes/process.S",
+      "prima-user/linux-probes/matrix.c"
     ],
     "tests": [
       "kernel/src/gate_probe.rs",
@@ -299,7 +320,8 @@
       "cosir/src/authority/tests.rs",
       "cosir/src/authority/event_tests.rs",
       "cosir/tests/stage6_gate.rs",
-      "cosir/examples/stage6_domains.rs"
+      "cosir/examples/stage6_domains.rs",
+      "kernel/src/gate_bench.rs"
     ],
     "guide": "docs/architecture/topics/capability-ipc.md"
   },
@@ -373,7 +395,17 @@
       "docs/superpowers/specs/2026-10-24-native-runtime-service-design.md",
       "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md",
       "docs/superpowers/specs/2026-10-25-stage5-gap-closure-design.md",
-      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md"
+      "docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md",
+      "docs/superpowers/specs/2026-11-01-stage6-managed-launch.md",
+      "docs/superpowers/compat/stage6-linux-profile-v1.md",
+      "docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-context.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-signals.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-threads.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
+      "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
+      "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
     ],
     "code": [
       "prima-runtime/src/lib.rs",
@@ -387,7 +419,15 @@
       "prima-user/src/driver.rs",
       "prima-user/src/tty.rs",
       "prima-user/src/staging.rs",
-      "prima-user/src/startup.rs"
+      "prima-user/src/startup.rs",
+      "prima-user/src/linux_signal.rs",
+      "prima-user/src/linux_thread.rs",
+      "prima-user/linux-probes/p1.S",
+      "prima-user/linux-probes/p2.S",
+      "prima-user/src/linux_process.rs",
+      "prima-user/linux-probes/pthread.c",
+      "prima-user/linux-probes/process.S",
+      "prima-user/linux-probes/matrix.c"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -516,7 +556,18 @@
       "docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md",
       "docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md",
       "docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md",
-      "docs/superpowers/reports/2026-10-31-stage6-main-merge.md"
+      "docs/superpowers/reports/2026-10-31-stage6-main-merge.md",
+      "docs/superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md",
+      "docs/superpowers/specs/2026-11-01-stage6-managed-launch.md",
+      "docs/superpowers/compat/stage6-linux-profile-v1.md",
+      "docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-context.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-signals.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-threads.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
+      "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
+      "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",
@@ -528,7 +579,15 @@
       "prima-user/c/prima_syscall.c",
       "prima-user/musl/patches/clone.s",
       "kernel/src/vspace.rs",
-      "prima-user/src/startup.rs"
+      "prima-user/src/startup.rs",
+      "prima-user/src/linux_signal.rs",
+      "prima-user/src/linux_thread.rs",
+      "prima-user/linux-probes/p1.S",
+      "prima-user/linux-probes/p2.S",
+      "prima-user/src/linux_process.rs",
+      "prima-user/linux-probes/pthread.c",
+      "prima-user/linux-probes/process.S",
+      "prima-user/linux-probes/matrix.c"
     ],
     "tests": [
       "prima-user/c/stage5_pthread.c",
@@ -696,7 +755,17 @@
       "docs/superpowers/specs/2026-10-27-posix-std-backend-design.md",
       "docs/superpowers/reports/2026-10-27-posix-std-backend-report.md",
       "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md",
-      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md"
+      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md",
+      "docs/superpowers/specs/2026-11-01-stage6-managed-launch.md",
+      "docs/superpowers/compat/stage6-linux-profile-v1.md",
+      "docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-context.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-signals.md",
+      "docs/superpowers/specs/2026-11-01-stage6-gate-threads.md",
+      "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
+      "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
+      "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",
@@ -726,7 +795,18 @@
       "prima-user/c/prima_libc.map",
       "scripts/build_posix_std.py",
       "targets/x86_64-prima-posix.json",
-      "prima-user/src/file_ops.rs"
+      "prima-user/src/file_ops.rs",
+      "prima-user/src/linux.rs",
+      "prima-user/src/linux_main.rs",
+      "xtask/src/stage6.rs",
+      "prima-user/src/linux_signal.rs",
+      "prima-user/src/linux_thread.rs",
+      "prima-user/linux-probes/p1.S",
+      "prima-user/linux-probes/p2.S",
+      "prima-user/src/linux_process.rs",
+      "prima-user/linux-probes/pthread.c",
+      "prima-user/linux-probes/process.S",
+      "prima-user/linux-probes/matrix.c"
     ],
     "tests": [
       "prima-user/c/stage5_probe.c",

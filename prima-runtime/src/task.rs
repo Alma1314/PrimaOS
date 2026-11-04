@@ -101,6 +101,81 @@ impl<T: SyscallTransport> Runtime<T> {
         Capability::from_raw(self.call(syscall::TASK_INFO, [5, 0, 0, 0, 0, 0])?)
     }
 
+    pub fn root_namespace(&self) -> Result<Capability> {
+        Capability::from_raw(self.call(syscall::TASK_INFO, [8, 0, 0, 0, 0, 0])?)
+    }
+
+    /// Construct an unpublished Task. It cannot run until task_start commits.
+    pub fn task_create_held(&self, spec: &TaskSpec) -> Result<Capability> {
+        if spec.initial_capabilities != [None; 2] {
+            return Err(crate::Error::InvalidInput);
+        }
+        let words = task_create_words(spec);
+        Capability::from_raw(self.call(
+            prima_abi::syscall::SYS_TASK_CREATE_HELD,
+            [words.as_ptr() as u64, 0, 0, 0, 0, 0],
+        )?)
+    }
+
+    /// Build a private ELF image from this service's memory. The target remains
+    /// held on both success and failure; argv/env pointers must address C strings.
+    pub fn task_load_image(
+        &self,
+        task: Capability,
+        image: &[u8],
+        argv: &[u64],
+        env: &[u64],
+    ) -> Result<()> {
+        let descriptor = [
+            image.as_ptr() as u64,
+            image.len() as u64,
+            argv.as_ptr() as u64,
+            argv.len() as u64,
+            env.as_ptr() as u64,
+            env.len() as u64,
+        ];
+        self.call_unit(
+            prima_abi::syscall::SYS_TASK_LOAD_IMAGE,
+            [task.as_raw(), descriptor.as_ptr() as u64, 0, 0, 0, 0],
+        )
+    }
+
+    /// Start a held native Task without a Gate.
+    pub fn task_start_native(&self, task: Capability) -> Result<()> {
+        self.call_unit(
+            prima_abi::syscall::SYS_TASK_START,
+            [task.as_raw(), 0, 0, 0, 0, 0],
+        )
+    }
+
+    /// Install a Gate before publishing a held Task as Ready. None creates a
+    /// new Gate; Some(gate) joins this service's existing Gate.
+    pub fn task_start_gated(
+        &self,
+        task: Capability,
+        gate: Option<Capability>,
+        orphan: u64,
+    ) -> Result<Capability> {
+        Capability::from_raw(self.call(
+            prima_abi::syscall::SYS_TASK_START,
+            [
+                task.as_raw(),
+                gate.map_or(0, Capability::as_raw),
+                orphan,
+                1,
+                0,
+                0,
+            ],
+        )?)
+    }
+
+    pub fn task_set_tls(&self, task: Capability, base: u64) -> Result<()> {
+        self.call_unit(
+            prima_abi::syscall::SYS_TASK_SET_TLS,
+            [task.as_raw(), base, 0, 0, 0, 0],
+        )
+    }
+
     /// 创建 Task，返回管理该 Task 的 Capability。
     ///
     /// 成功时 `initial_capabilities` 中的 token 转移给新 Task；调用失败时不发生部分转移。

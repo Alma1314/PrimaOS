@@ -269,6 +269,12 @@ pub(crate) fn build_images_for_ls(args: &[&str]) -> Result<Images, String> {
 }
 
 fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, String> {
+    package_images(|path| build_ramdisk(path, program))
+}
+
+pub(crate) fn package_images(
+    build_ramdisk: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<Images, String> {
     let kernel = PathBuf::from(KERNEL_BINARY);
     ensure_non_empty(&kernel, "kernel ELF")?;
 
@@ -276,12 +282,28 @@ fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, Strin
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let output = workspace.join("target").join("prima-os");
+    let mut output = workspace.join("target").join("prima-os");
+    // Keep probe images separate from a personality image waiting for its
+    // reference guest. Both acceptance groups may run independently.
+    if cfg!(feature = "gate-probe") {
+        output = output.join("gate-probe");
+    } else if cfg!(feature = "gate-audit-probe") {
+        output = output.join("gate-audit-probe");
+    } else if cfg!(feature = "linux-probe") {
+        output = output.join("linux-probe");
+    }
     fs::create_dir_all(&output)
         .map_err(|error| format!("failed to create {}: {error}", output.display()))?;
 
+    // BIOS reads the entire ELF file before entering the kernel. Keep symbols
+    // in Cargo's original for diagnostics, package only the debug-free copy.
+    // The kernel mirrors PT_LOAD memory spans, independent of this file size.
+    let boot_kernel = output.join("prima-kernel-boot.elf");
+    strip_debug(&kernel, &boot_kernel)?;
+    let kernel = boot_kernel;
+
     let ramdisk = output.join(RAMDISK_IMAGE_NAME);
-    build_ramdisk(&ramdisk, program)?;
+    build_ramdisk(&ramdisk)?;
 
     let bios = output.join(BIOS_IMAGE_NAME);
     let uefi = output.join(UEFI_IMAGE_NAME);
@@ -301,6 +323,28 @@ fn build_images_with_program(program: Stage5Program<'_>) -> Result<Images, Strin
     ensure_non_empty(&uefi, "UEFI image")?;
 
     Ok(Images { bios })
+}
+
+pub(crate) fn strip_debug(source: &Path, destination: &Path) -> Result<(), String> {
+    let tools = llvm_tools::LlvmTools::new()
+        .map_err(|e| format!("pinned llvm-tools-preview unavailable: {e:?}"))?;
+    let tool = tools
+        .tool(&llvm_tools::exe("llvm-objcopy"))
+        .ok_or("pinned llvm-objcopy unavailable")?;
+    let result = Command::new(&tool)
+        .arg("--strip-debug")
+        .arg(source)
+        .arg(destination)
+        .output()
+        .map_err(|e| format!("{}: {e}; install pinned llvm-tools-preview", tool.display()))?;
+    if !result.status.success() {
+        return Err(format!(
+            "kernel debug stripping failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+    ensure_non_empty(destination, "stripped boot ELF")?;
+    Ok(())
 }
 
 /// EXO-1：把用户态服务 ELF 打包成 bootloader `ramdisk` 文件。
@@ -670,6 +714,26 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     )?;
     manifest[0].1 = build_init_elf(alpha_index, servicemgr_index)?;
 
+    write_manifest(path, manifest)
+}
+
+pub(crate) fn write_manifest(path: &Path, manifest: Vec<(u64, Vec<u8>)>) -> Result<(), String> {
+    write_manifest_format(path, manifest, None)
+}
+
+#[cfg(feature = "linux-probe")]
+pub(crate) fn write_manifest_plain(
+    path: &Path,
+    manifest: Vec<(u64, Vec<u8>)>,
+) -> Result<(), String> {
+    write_manifest_format(path, manifest, Some(0))
+}
+
+fn write_manifest_format(
+    path: &Path,
+    manifest: Vec<(u64, Vec<u8>)>,
+    flags: Option<u64>,
+) -> Result<(), String> {
     let count = manifest.len() as u64;
     if count as usize > prima_abi::boot_image::MAX_ENTRIES {
         return Err(format!(
@@ -678,9 +742,12 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         ));
     }
 
-    let mut next_offset = (prima_abi::boot_image::HEADER_QWORDS
-        + manifest.len() * prima_abi::boot_image::ENTRY_QWORDS)
-        * 8;
+    let header_words = if flags.is_some() {
+        prima_abi::boot_image::HEADER_V3_QWORDS
+    } else {
+        prima_abi::boot_image::HEADER_QWORDS
+    };
+    let mut next_offset = (header_words + manifest.len() * prima_abi::boot_image::ENTRY_QWORDS) * 8;
     let mut entries = Vec::with_capacity(manifest.len());
     for (kind, blob) in &manifest {
         next_offset = align_up(next_offset, 8)?;
@@ -692,8 +759,18 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
 
     let mut ramdisk = Vec::with_capacity(next_offset);
     push_u64(&mut ramdisk, prima_abi::boot_image::MAGIC);
-    push_u64(&mut ramdisk, prima_abi::boot_image::VERSION);
+    push_u64(
+        &mut ramdisk,
+        if flags.is_some() {
+            prima_abi::boot_image::VERSION_WITH_FLAGS
+        } else {
+            prima_abi::boot_image::VERSION
+        },
+    );
     push_u64(&mut ramdisk, count);
+    if let Some(flags) = flags {
+        push_u64(&mut ramdisk, flags);
+    }
     for (kind, offset, len) in &entries {
         push_u64(&mut ramdisk, *kind);
         push_u64(&mut ramdisk, *offset as u64);
@@ -2205,7 +2282,7 @@ const INIT_CODE_OFFSET: usize = ELF_HEADER_LEN + 2 * ELF_PHDR_LEN;
 const INIT_CODE_PAGE: usize = 0x1000;
 
 /// 构造仅供内核通用 ELF 解析器读取的最小 ELF64：两个连续页的 `PT_LOAD`。
-fn encode_init_elf(code: &[u8; prima_initgen::USER_CODE_LEN]) -> Vec<u8> {
+pub(crate) fn encode_init_elf(code: &[u8; prima_initgen::USER_CODE_LEN]) -> Vec<u8> {
     let mut elf = vec![0u8; INIT_CODE_OFFSET + code.len()];
     elf[0..4].copy_from_slice(b"\x7fELF");
     elf[4] = 2; // ELFCLASS64
@@ -2295,7 +2372,7 @@ fn remove_stale_image(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_non_empty(path: &PathBuf, label: &str) -> Result<(), String> {
+fn ensure_non_empty(path: &Path, label: &str) -> Result<(), String> {
     let metadata = fs::metadata(path)
         .map_err(|error| format!("{label} missing at {}: {error}", path.display()))?;
     if metadata.len() == 0 {

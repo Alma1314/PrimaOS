@@ -23,6 +23,26 @@ pub const PT_COW: u64 = 1 << 9;
 pub const PT_HIDDEN: u64 = 1 << 10;
 /// A fork-shared data frame, including a read-only or hidden leaf.
 pub const PT_SHARED: u64 = 1 << 11;
+pub const PT_NO_EXECUTE: u64 = 1 << 63;
+
+pub const fn executable_leaf(pte: u64, executable: bool) -> u64 {
+    if executable {
+        pte & !PT_NO_EXECUTE
+    } else {
+        pte | PT_NO_EXECUTE
+    }
+}
+
+/// Change only the leaf execute bit; caller owns authorization and TLB flush.
+pub fn set_executable(
+    root: u64,
+    va: u64,
+    executable: bool,
+    map: impl Fn(u64) -> u64 + Copy,
+) -> Result<(), VspaceError> {
+    let leaf = read_leaf(root, va, map)?;
+    write_leaf_raw(root, va, executable_leaf(leaf, executable), map)
+}
 
 /// PTE 物理地址掩码（bits 12..51）。
 pub const PT_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -1043,6 +1063,19 @@ pub fn write_user_u32(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn execute_bit_changes_preserve_frame_cow_and_hidden_permissions() {
+        let pte =
+            0x12345000 | super::PT_PRESENT | super::PT_COW | super::PT_SHARED | super::PT_HIDDEN;
+        assert_eq!(
+            super::executable_leaf(pte, false),
+            pte | super::PT_NO_EXECUTE
+        );
+        assert_eq!(
+            super::executable_leaf(pte | super::PT_NO_EXECUTE, true),
+            pte
+        );
+    }
     use super::*;
     use crate::test_support::PagePool;
 

@@ -50,6 +50,8 @@ pub enum Right {
     GateAttach,
     /// 等待/答复请求与代理复制（`Gate` 与 `GateRequest` 对象）。
     GateServe,
+    /// Read or replace a Task's user frame through a Delivered Gate request.
+    TaskContext,
 }
 
 /// §15.2 的设备种类；`ObjectRef::Device(dev, kind)` 随引用携带，供 W2 类型检查。
@@ -62,7 +64,7 @@ pub enum DeviceKind {
 }
 
 /// 全部 Right 的规范枚举顺序（同时是渲染顺序与解析顺序）。
-pub const ALL_RIGHTS: [Right; 33] = [
+pub const ALL_RIGHTS: [Right; 34] = [
     Right::Derive,
     Right::SegMapR,
     Right::SegMapW,
@@ -96,6 +98,7 @@ pub const ALL_RIGHTS: [Right; 33] = [
     Right::DevInterruptSubscribe,
     Right::GateAttach,
     Right::GateServe,
+    Right::TaskContext,
 ];
 
 impl Right {
@@ -134,6 +137,7 @@ impl Right {
             Right::DevInterruptSubscribe => "DevInterruptSubscribe",
             Right::GateAttach => "GateAttach",
             Right::GateServe => "GateServe",
+            Right::TaskContext => "TaskContext",
         }
     }
 
@@ -175,7 +179,12 @@ impl ObjectKind {
                 Right::SegMapX,
                 Right::SegDestroy,
             ],
-            ObjectKind::Task => &[Right::TaskSend, Right::TaskManageVSpace, Right::TaskDestroy],
+            ObjectKind::Task => &[
+                Right::TaskSend,
+                Right::TaskManageVSpace,
+                Right::TaskDestroy,
+                Right::TaskContext,
+            ],
             ObjectKind::Namespace => &[
                 Right::NsResolve,
                 Right::NsBind,
@@ -525,7 +534,7 @@ mod tests {
     /// 加在末尾（位 31、32）；重排、插入或删除会静默改变既有证据的语义，因此逐项钉死。
     #[test]
     fn right_bit_order_is_frozen_and_only_appendable() {
-        const FROZEN: [&str; 33] = [
+        const FROZEN: [&str; 34] = [
             "Derive",
             "SegMapR",
             "SegMapW",
@@ -560,6 +569,7 @@ mod tests {
             // M1b 追加位 31/32（D17 只允许末尾追加）。
             "GateAttach",
             "GateServe",
+            "TaskContext",
         ];
         assert_eq!(ALL_RIGHTS.len(), FROZEN.len());
         for (index, (right, name)) in ALL_RIGHTS.iter().zip(FROZEN).enumerate() {

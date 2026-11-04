@@ -347,6 +347,10 @@ pub(crate) fn snapshot_current_fpu() -> FpuArea {
     save_fpu(task);
     FPU_AREAS.with(|areas| areas[task as usize])
 }
+pub(crate) fn saved_fpu(task: u32) -> Option<FpuArea> {
+    FPU_AREAS.with(|areas| areas.get(task as usize).copied())
+}
+
 pub(crate) fn set_saved_fpu(task: u32, area: FpuArea) {
     FPU_AREAS.with_mut(|areas| {
         if let Some(slot) = areas.get_mut(task as usize) {
@@ -560,6 +564,8 @@ pub fn resume(task_id: u32) -> ! {
     flush_deferred_frames();
     // 跳板在 iretq 换栈前读完所有帧字段，当前栈上的 frame 在此期间仍有效。
     // 不跨不返回的控制转移持有 StaticCell 锁，避免锁 guard 被永久遗留。
+    #[cfg(feature = "gate-probe")]
+    bootstrap::gate_probe::bench::stamp(4, task_id);
     crate::exc::resume(&frame)
 }
 

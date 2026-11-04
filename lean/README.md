@@ -4,7 +4,7 @@ kind: reference
 authority: model-mapping
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-01
 ---
 
 # 形式化模型与内核映照（Lean）
@@ -89,6 +89,15 @@ elan run leanprover/lean4:v4.35.0 lake build
 - **CDT 覆盖边界**：`WellFormed` 现表达 §4.2 的「父 `<` 子、父存在/活动、父子同对象」三条，且**无环性已由 `ancestry_lt` 独立证成**（不止于不变量中的局部「父 `<` 子」）；**未**表达「子权限 ⊆ 父权限」（该性质作为 `derive` 的前置条件，在保持性定理中携带，见 `Formal/Derive.lean` 注释），亦未表达 §4.6 `HeldBy` 位置与 W3 唯一位置。§4.5 `cap_drop` 与 §4.7 撤销边界（**规范第一版无 `cap_revoke`**）留待后续切片。
 
 ## 已知不覆盖（后续切片）
+
+- **上下文与共享线程（2026-11-01）**：83–89、受管COW进程/映像替换/审计读取、TaskContext、整帧/FXSAVE答复与同Gate共享root
+  未纳入Lean/COSIR Gate模型；[协议与构建报告](../docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md)
+  不从既有W17/句柄/CDT证明推出该新协议正确。Linux信号、futex与探针属于用户态；新增Rust检查已在[统一验收](../docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)中执行，不扩大Lean证明范围。
+
+- **受管理的初始装载（2026-11-01）**：内核`TaskRecord.launch_held`、`Prepared`初始停车、
+  79–82机器入口、原子Gate挂接/发布、目标TLS与boot manifest v3未纳入Lean或COSIR Gate可执行模型。
+  该细化与既有prepared fork分开标记，契约见[受管理装载](../docs/superpowers/specs/2026-11-01-stage6-managed-launch.md)。
+  新增Rust检查已在[统一验收](../docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)中执行；不从现有句柄/CDT/位置定理推导该完整协议正确。
 
 - `tlb_refine`：非一致刷新 / 显式 `invalidate_va` / `flush_all`（见 cosir `tlb_refine.rs`，Lean 建模留待后续切片）。
 - `memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图（见 cosir `memseg_refine.rs`，Lean 建模留待后续切片）。

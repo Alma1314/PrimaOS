@@ -12,7 +12,7 @@ mod code;
 pub mod rights;
 mod syscall;
 
-pub use code::{USER_CODE_LEN, USER_CODE_VA, USER_CODE2_VA, generate};
+pub use code::{USER_CODE_LEN, USER_CODE_VA, USER_CODE2_VA, USER_Y_VA, generate};
 
 /// Manifest indices consumed by the generated init image.
 ///
@@ -110,7 +110,8 @@ mod tests {
         // 阶段 2 复核：阻塞接收者的直投见证携带 page-fault-source Capability。
         // 阶段 5 PT_LOAD/W^X：`TASK4_CODE_OFFSET` 0x100 → 0x800（避开首个服务页的 ELF
         // program header），生成码立即数改变，指纹随之更新。
+        // 平台见证 0x800→0x1800，避开实际只读数据；内核拒绝与任一PT_LOAD相交。
         // Socket事务增加管理器帧：其用户栈从4页扩至8页，映射基址同步下移。
-        assert_eq!(hash, 0x7aba_ddd7_99c8_c0db);
+        assert_eq!(hash, 0xbd0a_8870_c238_9d8b);
     }
 }

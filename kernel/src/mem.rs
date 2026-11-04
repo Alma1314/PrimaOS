@@ -2,6 +2,47 @@ use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
 use prima_ostd::align::AlignExt;
 
 pub const FRAME_SIZE: u64 = 4096;
+
+/// Virtual span of the bootloader's ELF64 PT_LOAD mappings, including BSS.
+/// File ownership (`FrameInventory::image_frames`) is a separate quantity:
+/// stripping debug sections must not remove the kernel's live data mappings.
+pub fn kernel_virtual_pages(len: u64, mut read: impl FnMut(u64, &mut [u8])) -> Option<usize> {
+    if len < 64 {
+        return None;
+    }
+    let mut header = [0; 64];
+    read(0, &mut header);
+    if &header[..7] != b"\x7fELF\x02\x01\x01" {
+        return None;
+    }
+    let word = |bytes: &[u8], at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+    let phoff = word(&header, 32);
+    let entsize = u16::from_le_bytes([header[54], header[55]]) as u64;
+    let count = u16::from_le_bytes([header[56], header[57]]) as u64;
+    if entsize != 56 || count == 0 || phoff.checked_add(entsize * count)? > len {
+        return None;
+    }
+    let mut end = 0;
+    for index in 0..count {
+        let mut ph = [0; 56];
+        read(phoff + index * entsize, &mut ph);
+        if u32::from_le_bytes(ph[..4].try_into().unwrap()) != 1 {
+            continue;
+        }
+        let filesz = word(&ph, 32);
+        let memsz = word(&ph, 40);
+        if filesz > memsz || word(&ph, 8).checked_add(filesz)? > len {
+            return None;
+        }
+        end = end.max(word(&ph, 16).checked_add(memsz)?);
+    }
+    // Current PIE kernel occupies the first 512 MiB of its dedicated PML4 slot.
+    // Reject corrupt headers instead of scanning an unbounded virtual span.
+    if end == 0 || end > 512 * 1024 * 1024 {
+        return None;
+    }
+    usize::try_from(end.div_ceil(FRAME_SIZE)).ok()
+}
 const MAX_FREE_RANGES: usize = 128;
 // FrameRegistry 最多同时持有 `MAX_FRAME_OWNERS` 个 Segment 帧和 `MAX_TABLE_FRAMES` 个页表帧；
 // 全部归还也必须有位置。
@@ -390,6 +431,37 @@ pub fn build_inventory(
 mod tests {
     use super::*;
     use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+
+    #[test]
+    fn kernel_virtual_span_covers_bss_in_a_short_file_and_rejects_bad_headers() {
+        let mut elf = [0u8; 120];
+        elf[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        elf[64..68].copy_from_slice(&1u32.to_le_bytes());
+        elf[96..104].copy_from_slice(&120u64.to_le_bytes());
+        elf[104..112].copy_from_slice(&0x528060u64.to_le_bytes());
+        let pages = |elf: &[u8]| {
+            kernel_virtual_pages(elf.len() as u64, |at, bytes| {
+                bytes.copy_from_slice(&elf[at as usize..at as usize + bytes.len()]);
+            })
+        };
+        assert_eq!(pages(&elf), Some(0x529));
+        let mut bad = elf;
+        bad[104..112].copy_from_slice(&119u64.to_le_bytes());
+        assert_eq!(pages(&bad), None);
+        bad = elf;
+        bad[80..88].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(pages(&bad), None);
+        assert_eq!(pages(&elf[..119]), None);
+        bad = elf;
+        bad[104..112].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(pages(&bad), None);
+        bad = elf;
+        bad[64..68].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(pages(&bad), None);
+    }
 
     fn usable(start: u64, end: u64) -> MemoryRegion {
         MemoryRegion {

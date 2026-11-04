@@ -66,6 +66,23 @@ pub const fn valid_kernel_rflags(flags: u64) -> bool {
     flags & KERNEL_RFLAGS_FIXED != 0 && flags & !KERNEL_RFLAGS_ALLOWED == 0
 }
 
+/// The independent Gate context mechanism accepts only ring3 frames. IF must
+/// stay enabled; arithmetic flags, DF and CPUID's ID flag belong to the user.
+/// This checks the machine frame only; its live mappings need separate checks.
+pub fn valid_gate_user_frame(frame: &SretFrame) -> bool {
+    const FIXED: u64 = 2 | (1 << 9);
+    const ALLOWED: u64 =
+        FIXED | 1 | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 10) | (1 << 11) | (1 << 21);
+    frame.rip > 0
+        && frame.rip < 1 << 47
+        && frame.rsp > 0
+        && frame.rsp < 1 << 47
+        && frame.cs == u64::from(crate::gdt::USER_CS)
+        && frame.ss == u64::from(crate::gdt::USER_DS)
+        && frame.rflags & FIXED == FIXED
+        && frame.rflags & !ALLOWED == 0
+}
+
 /// 内核恢复帧校验失败的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelResumeError {
@@ -142,6 +159,54 @@ pub fn resume(frame: &SretFrame) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gate_context_requires_ring3_addresses_selectors_and_safe_interrupt_flags() {
+        let good = SretFrame {
+            rip: 0x400000,
+            rsp: 0x70000003,
+            cs: u64::from(crate::gdt::USER_CS),
+            ss: u64::from(crate::gdt::USER_DS),
+            rflags: 0x602, // IF + DF + fixed bit; unaligned user stack is legal.
+            ..SretFrame::ZERO
+        };
+        assert!(valid_gate_user_frame(&good));
+        for flags in [
+            0,
+            2,
+            0x202 | (1 << 8),
+            0x202 | (3 << 12),
+            0x202 | (1 << 14),
+            0x202 | (1 << 16),
+            0x202 | (1 << 17),
+            0x202 | (1 << 18),
+            u64::MAX,
+        ] {
+            assert!(!valid_gate_user_frame(&SretFrame {
+                rflags: flags,
+                ..good
+            }));
+        }
+        for address in [0, 1 << 47, u64::MAX] {
+            assert!(!valid_gate_user_frame(&SretFrame {
+                rip: address,
+                ..good
+            }));
+            assert!(!valid_gate_user_frame(&SretFrame {
+                rsp: address,
+                ..good
+            }));
+        }
+        assert!(!valid_gate_user_frame(&SretFrame {
+            cs: KERNEL_CS,
+            ..good
+        }));
+        assert!(!valid_gate_user_frame(&SretFrame {
+            ss: KERNEL_SS,
+            ..good
+        }));
+        assert!(!valid_kernel_rflags(good.rflags));
+    }
 
     /// 便于构造测试帧：字段序与 `SretFrame` 一致。
     fn frame() -> SretFrame {

@@ -72,6 +72,7 @@ pub struct BootLayout {
     pub entries: [ImageEntry; prima_abi::boot_image::MAX_ENTRIES],
     pub pages_off: [usize; prima_abi::boot_image::MAX_ENTRIES],
     pub total_pages: usize,
+    pub platform_witness: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +81,7 @@ pub enum BootImageError {
     TooSmall,
     BadMagic,
     BadVersion,
+    BadFlags,
     BadEntryCount,
     BadEntryRange,
     InvalidElf,
@@ -101,6 +103,37 @@ fn boot_u64(bytes: &[u8], index: usize) -> Option<u64> {
     Some(u64::from_le_bytes(raw.try_into().ok()?))
 }
 
+fn boot_header(bytes: &[u8]) -> Result<(usize, usize, bool), BootImageError> {
+    use prima_abi::boot_image as format;
+    if boot_u64(bytes, 0).ok_or(BootImageError::TooSmall)? != format::MAGIC {
+        return Err(BootImageError::BadMagic);
+    }
+    let version = boot_u64(bytes, 1).ok_or(BootImageError::TooSmall)?;
+    let count = usize::try_from(boot_u64(bytes, 2).ok_or(BootImageError::TooSmall)?)
+        .map_err(|_| BootImageError::BadEntryCount)?;
+    let (header, witness) = match version {
+        format::VERSION => (format::HEADER_QWORDS, true),
+        format::VERSION_WITH_FLAGS => {
+            let flags = boot_u64(bytes, 3).ok_or(BootImageError::TooSmall)?;
+            if flags & !format::FLAG_PLATFORM_WITNESS != 0 {
+                return Err(BootImageError::BadFlags);
+            }
+            (
+                format::HEADER_V3_QWORDS,
+                flags & format::FLAG_PLATFORM_WITNESS != 0,
+            )
+        }
+        _ => return Err(BootImageError::BadVersion),
+    };
+    if count == 0 {
+        return Err(BootImageError::BadEntryCount);
+    }
+    if count > format::MAX_ENTRIES {
+        return Err(BootImageError::TooManyEntries);
+    }
+    Ok((header, count, witness))
+}
+
 /// EXO-1：安装 bootloader 传入的通用 ramdisk，解析 opaque ELF 块并计算映像段布局。
 ///
 /// 内核只解释格式头部（magic/version/count/offset/len）和 ELF program header；不读取
@@ -111,26 +144,7 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
     }
     let len = usize::try_from(ramdisk_len).map_err(|_| BootImageError::TooSmall)?;
     let bytes = prima_ostd::mm::bytes_at(ramdisk_va, len);
-    let header_qwords = prima_abi::boot_image::HEADER_QWORDS;
-    if bytes.len() < header_qwords * 8 {
-        return Err(BootImageError::TooSmall);
-    }
-    let magic = boot_u64(bytes, 0).ok_or(BootImageError::TooSmall)?;
-    let version = boot_u64(bytes, 1).ok_or(BootImageError::TooSmall)?;
-    let count = boot_u64(bytes, 2).ok_or(BootImageError::TooSmall)?;
-    if magic != prima_abi::boot_image::MAGIC {
-        return Err(BootImageError::BadMagic);
-    }
-    if version != prima_abi::boot_image::VERSION {
-        return Err(BootImageError::BadVersion);
-    }
-    let count = usize::try_from(count).map_err(|_| BootImageError::BadEntryCount)?;
-    if count == 0 {
-        return Err(BootImageError::BadEntryCount);
-    }
-    if count > prima_abi::boot_image::MAX_ENTRIES {
-        return Err(BootImageError::TooManyEntries);
-    }
+    let (header_qwords, count, platform_witness) = boot_header(bytes)?;
 
     let entry_qwords = prima_abi::boot_image::ENTRY_QWORDS;
     let table_qwords = header_qwords + count * entry_qwords;
@@ -146,6 +160,9 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
         let entry_len = boot_u64(bytes, base + 2).ok_or(BootImageError::TooSmall)?;
         let offset = usize::try_from(offset).map_err(|_| BootImageError::BadEntryRange)?;
         let entry_len = usize::try_from(entry_len).map_err(|_| BootImageError::BadEntryRange)?;
+        if offset < table_qwords * 8 {
+            return Err(BootImageError::BadEntryRange);
+        }
         let end = offset
             .checked_add(entry_len)
             .ok_or(BootImageError::BadEntryRange)?;
@@ -186,6 +203,7 @@ pub fn install_boot_image(ramdisk_va: u64, ramdisk_len: u64) -> Result<(), BootI
         entries,
         pages_off,
         total_pages,
+        platform_witness,
     };
     BOOT_LAYOUT.with_mut(|slot| *slot = Some(layout));
     Ok(())
@@ -354,15 +372,9 @@ pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 /// 用户代码字节长度。
 /// S2-D4：`task_create` 创建的任务的代码长度（`task3_code()`）。
 pub const TASK3_CODE_LEN: usize = 134;
-/// 切片 V：`task4_code()` 在**同一代码页内**的偏移。
-///
-/// 复用切片 T 的代码段（1 页 4 KiB，`task3_code()` 仅占 134 字节），故不新增代码段帧——
-/// `frames_ready.segment` 不变。第二次 `SYS_TASK_CREATE` 的 `entry` 指向
-/// `USER3_CODE_VA + TASK4_CODE_OFFSET`（§8.1 只要求 `entry ∈ [load_base, load_base + pages*4KiB)`）。
-/// 阶段 5 PT_LOAD 装载后改到页内 0x800：原 0x100 落在 ELF program header 区，
-/// 覆盖 `p_paddr/p_filesz/p_memsz`，使 ring3 的 PT_LOAD 解析在首个服务（alpha）上失败。
-/// 0x800 位于 `.rela.dyn`，内核的相对重定位在写入本覆盖层**之前**已消费完毕。
-pub const TASK4_CODE_OFFSET: u64 = 0x800;
+/// Platform self-destruction fixture in a validated hole of the first service
+/// image. Never overwrite a PT_LOAD range, including read-only data or BSS.
+pub const TASK4_CODE_OFFSET: u64 = 0x1800;
 /// 切片 V：task 4 的代码长度（自报 id → 让出 → 自毁 → 不该到达）。
 ///
 /// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一
@@ -1184,6 +1196,14 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
             continue;
         }
         let page_base = layout.pages_off[index];
+        if scratch_pages_off.is_none() && layout.platform_witness {
+            if entry.pages
+                < (TASK4_CODE_OFFSET + TASK4_CODE_LEN as u64).div_ceil(FRAME_SIZE) as usize
+            {
+                return Err(VspaceError::NoBootImage);
+            }
+            validate_platform_witness_hole(entry.bytes)?;
+        }
         scratch_pages_off.get_or_insert(page_base);
         load_runtime_elf(
             entry.bytes,
@@ -1197,12 +1217,65 @@ pub fn prepare_task_create(offset: u64) -> Result<(), VspaceError> {
     }
     // 段首页写入通用目录（kind / page offset / page count）。
     write_image_directory(&layout, &images.image, offset)?;
-    let frame = images
-        .image
-        .frame_at(scratch_pages_off.ok_or(VspaceError::NoFrame)?)
-        .ok_or(VspaceError::NoFrame)?;
-    // 切片 V：task 4 的旧机器码见证复用首个服务 ELF 首页的空闲数据区，不改变阶段 2 的动态 task 流程。
-    write_code(frame, offset, TASK4_CODE_OFFSET, &task4_code());
+    if layout.platform_witness {
+        let frame = images
+            .image
+            .frame_at(
+                scratch_pages_off.ok_or(VspaceError::NoFrame)?
+                    + (TASK4_CODE_OFFSET / FRAME_SIZE) as usize,
+            )
+            .ok_or(VspaceError::NoFrame)?;
+        // Legacy platform fixtures explicitly reserve this region. General
+        // service images must retain every loaded byte, including relocation data.
+        write_code(frame, offset, TASK4_CODE_OFFSET % FRAME_SIZE, &task4_code());
+    }
+    Ok(())
+}
+
+/// A platform fixture may only occupy an ELF hole, never loaded bytes/BSS.
+fn validate_platform_witness_hole(bytes: &[u8]) -> Result<(), VspaceError> {
+    let phoff = u64::from_le_bytes(
+        bytes
+            .get(32..40)
+            .ok_or(VspaceError::NoBootImage)?
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let entsize = u16::from_le_bytes(
+        bytes
+            .get(54..56)
+            .ok_or(VspaceError::NoBootImage)?
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let count = u16::from_le_bytes(
+        bytes
+            .get(56..58)
+            .ok_or(VspaceError::NoBootImage)?
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    if entsize < 56 {
+        return Err(VspaceError::NoBootImage);
+    }
+    for i in 0..count {
+        let at = phoff
+            .checked_add(i.checked_mul(entsize).ok_or(VspaceError::NoBootImage)?)
+            .ok_or(VspaceError::NoBootImage)?;
+        let ph = bytes
+            .get(at..at.checked_add(56).ok_or(VspaceError::NoBootImage)?)
+            .ok_or(VspaceError::NoBootImage)?;
+        if u32::from_le_bytes(ph[..4].try_into().unwrap()) != 1 {
+            continue;
+        }
+        let start = u64::from_le_bytes(ph[16..24].try_into().unwrap());
+        let end = start
+            .checked_add(u64::from_le_bytes(ph[40..48].try_into().unwrap()))
+            .ok_or(VspaceError::NoBootImage)?;
+        if start < TASK4_CODE_OFFSET + TASK4_CODE_LEN as u64 && TASK4_CODE_OFFSET < end {
+            return Err(VspaceError::NoBootImage);
+        }
+    }
     Ok(())
 }
 
@@ -1469,26 +1542,29 @@ fn load_runtime_elf(
         let frame = frames
             .frame_at(page_base + index)
             .ok_or(VspaceError::NoFrame)?;
-        for byte in 0..FRAME_SIZE {
-            prima_ostd::mm::write_u8_at(map(frame), byte, 0);
-        }
+        prima_ostd::mm::fill_zero(map(frame), FRAME_SIZE as usize);
     }
 
     let mut dynamic = None;
     for index in 0..layout.phnum {
         let segment = elf_segment(bytes, layout.phoff, index)?;
         if segment.kind == PT_LOAD {
-            for index in 0..segment.filesz {
+            let mut index = 0;
+            while index < segment.filesz {
                 let source = usize::try_from(segment.offset + index)
                     .map_err(|_| VspaceError::InvalidImage)?;
                 let address = segment.vaddr + index;
-                write_image_byte(
-                    frames,
-                    page_base,
-                    map,
-                    address,
-                    *bytes.get(source).ok_or(VspaceError::InvalidImage)?,
-                )?;
+                let within = address % FRAME_SIZE;
+                let length = (segment.filesz - index).min(FRAME_SIZE - within) as usize;
+                let page = page_base + (address / FRAME_SIZE) as usize;
+                let frame = frames.frame_at(page).ok_or(VspaceError::InvalidImage)?;
+                let source = bytes
+                    .get(source..source + length)
+                    .ok_or(VspaceError::InvalidImage)?;
+                // Owned, ordinary boot-image RAM; resolve the frame once per
+                // page rather than once per byte (large embedded ELF carrier).
+                prima_ostd::mm::write_bytes(map(frame) + within, source);
+                index += length as u64;
             }
         } else if segment.kind == PT_DYNAMIC {
             dynamic = Some(segment);
@@ -1800,6 +1876,22 @@ pub fn witness(err: u64) -> UserWitness {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn platform_fixture_rejects_loaded_readonly_bytes_and_bss() {
+        let mut elf = [0u8; 120];
+        elf[32..40].copy_from_slice(&64u64.to_le_bytes());
+        elf[54..56].copy_from_slice(&56u16.to_le_bytes());
+        elf[56..58].copy_from_slice(&1u16.to_le_bytes());
+        elf[64..68].copy_from_slice(&1u32.to_le_bytes());
+        elf[80..88].copy_from_slice(&super::TASK4_CODE_OFFSET.to_le_bytes());
+        elf[104..112].copy_from_slice(&1u64.to_le_bytes());
+        assert!(super::validate_platform_witness_hole(&elf).is_err());
+        elf[80..88].copy_from_slice(&0u64.to_le_bytes());
+        elf[104..112].copy_from_slice(&super::TASK4_CODE_OFFSET.to_le_bytes());
+        assert!(super::validate_platform_witness_hole(&elf).is_ok());
+        assert!(super::validate_platform_witness_hole(&elf[..100]).is_err());
+    }
+
     use super::*;
 
     /// 便于构造成功证据。
@@ -1838,6 +1930,37 @@ mod tests {
     }
 
     #[test]
+    fn manifest_version_declares_legacy_fixture_reservation_and_rejects_unknown_flags() {
+        use prima_abi::boot_image as format;
+        let bytes = |words: &[u64]| {
+            words
+                .iter()
+                .flat_map(|n| n.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            boot_header(&bytes(&[format::MAGIC, format::VERSION, 2])),
+            Ok((3, 2, true))
+        );
+        assert_eq!(
+            boot_header(&bytes(&[format::MAGIC, format::VERSION_WITH_FLAGS, 2, 0])),
+            Ok((4, 2, false))
+        );
+        assert_eq!(
+            boot_header(&bytes(&[format::MAGIC, format::VERSION_WITH_FLAGS, 2, 1])),
+            Ok((4, 2, true))
+        );
+        assert_eq!(
+            boot_header(&bytes(&[format::MAGIC, format::VERSION_WITH_FLAGS, 2, 2])),
+            Err(BootImageError::BadFlags)
+        );
+        assert_eq!(
+            boot_header(&bytes(&[format::MAGIC, format::VERSION_WITH_FLAGS, 2])),
+            Err(BootImageError::TooSmall)
+        );
+    }
+
+    #[test]
     fn every_task_stack_has_a_distinct_page_aligned_lower_guard() {
         assert_eq!(core::mem::align_of::<KStack>(), 4096);
         assert_eq!(
@@ -1868,6 +1991,32 @@ mod tests {
         let layout = elf_layout(&bytes).unwrap();
         assert_eq!(layout.entry, 0x10);
         assert_eq!(layout.pages, 3);
+    }
+
+    #[test]
+    fn boot_elf_copy_spans_noncontiguous_frames_and_zeroes_bss_without_touching_prefix() {
+        let mut bytes = minimal_elf(4093, 8192);
+        bytes[80..88].copy_from_slice(&4093u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&4102u64.to_le_bytes());
+        bytes.resize(120 + 4102, 0);
+        for (index, byte) in bytes[120..].iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        let mut pages: Vec<_> = (0..4).map(|_| vec![0xa5u8; 4096]).collect();
+        let mut vector = [0; crate::bootstrap::MAX_SEGMENT_FRAMES];
+        for (frame, page) in vector.iter_mut().zip(&mut pages) {
+            *frame = page.as_mut_ptr() as u64;
+        }
+        let frames = SegmentFrames::Vector {
+            frames: vector,
+            count: 4,
+        };
+        load_runtime_elf(&bytes, &frames, 1, 0, 0x400000, 3, 4093).unwrap();
+        assert!(pages[0].iter().all(|byte| *byte == 0xa5));
+        let image: Vec<_> = pages[1..].iter().flatten().copied().collect();
+        assert!(image[..4093].iter().all(|byte| *byte == 0));
+        assert_eq!(&image[4093..8195], &bytes[120..]);
+        assert!(image[8195..].iter().all(|byte| *byte == 0));
     }
 
     #[test]

@@ -104,6 +104,11 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
+    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+        let summary = validate_gate_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
+        println!("PASS S6BENCH round={round} {summary}");
+        return Ok(());
+    }
     if let Some(case) = option_env!("PRIMA_GATE_CASE") {
         validate_gate_matrix(&output.stdout, case).map_err(|e| with_output(e, &output))?;
         println!("PASS S6MATRIX round={round} case={case} verified=1 state=1 audit=1");
@@ -114,6 +119,105 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
         "PASS S6GATE round={round} int80=1 fast=1 registers=1 signals=1 retry=1 output_failures=3 duplicate=1 orphan=1 admission=1 rejected=9 audit=1"
     );
     Ok(())
+}
+
+fn validate_gate_bench(output: &str) -> Result<String, String> {
+    if output.contains("|event=panic|") {
+        return Err("benchmark panicked".into());
+    }
+    let headers: Vec<_> = output
+        .lines()
+        .filter(|s| s.starts_with("S6BENCH|"))
+        .collect();
+    let Some(header) = headers.first().filter(|_| headers.len() == 1) else {
+        return Err("benchmark needs one calibration record".into());
+    };
+    let hz = header
+        .strip_prefix("S6BENCH|samples=1000;hz=")
+        .and_then(|s| s.strip_suffix(";boundary=pre-iret;verified=1"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|hz| *hz > 0)
+        .ok_or("invalid benchmark calibration")?;
+    let mut durations = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let mut previous = 0;
+    for (index, line) in output
+        .lines()
+        .filter_map(|s| s.strip_prefix("S6TIME|"))
+        .enumerate()
+    {
+        let values: Vec<u64> = line
+            .split(';')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| "invalid benchmark timestamp")?;
+        if values.len() != 6
+            || values[0] != index as u64
+            || values[1] == 0
+            || values[1] < previous
+            || !values[1..].windows(2).all(|w| w[0] <= w[1])
+        {
+            return Err("unordered or incomplete benchmark sample".into());
+        }
+        for phase in 0..4 {
+            durations[phase].push(values[phase + 2] - values[phase + 1]);
+        }
+        durations[4].push(values[5] - values[1]);
+        previous = values[5];
+    }
+    if durations[0].len() != 1000 {
+        return Err("benchmark requires exactly 1000 samples".into());
+    }
+    let mut summary = format!("samples=1000 hz={hz} boundary=pre-iret");
+    for (name, samples) in [
+        "trap-queue",
+        "queue-deliver",
+        "deliver-reply",
+        "reply-resume",
+        "total",
+    ]
+    .into_iter()
+    .zip(&mut durations)
+    {
+        samples.sort_unstable();
+        // Nearest-rank median/p99; integer nanoseconds from the measured PIT/TSC ratio.
+        let ns = |cycles: u64| u128::from(cycles) * 1_000_000_000 / u128::from(hz);
+        summary.push_str(&format!(
+            " {name}_ns={}/{}",
+            ns(samples[499]),
+            ns(samples[989])
+        ));
+    }
+    Ok(summary)
+}
+
+#[cfg(test)]
+#[test]
+fn benchmark_rejects_missing_reordered_regressed_and_duplicate_samples() {
+    let header = "S6BENCH|samples=1000;hz=1000000000;boundary=pre-iret;verified=1\n";
+    let mut good = header.to_owned();
+    for i in 0..1000 {
+        let t = i * 10 + 1;
+        good.push_str(&format!(
+            "S6TIME|{i};{t};{};{};{};{}\n",
+            t + 1,
+            t + 3,
+            t + 6,
+            t + 9
+        ));
+    }
+    assert!(validate_gate_bench(&good).unwrap().contains("total_ns=9/9"));
+    for bad in [
+        good.replace(header, ""),
+        good.clone() + header,
+        good.replace("hz=1000000000", "hz=0"),
+        good.replace("S6TIME|0;1;2;4;7;10\n", ""),
+        good.replace("S6TIME|1;11", "S6TIME|2;11"),
+        good.replace("S6TIME|0;1;2", "S6TIME|0;3;2"),
+        good.clone() + "S6TIME|1000;10001;10002;10004;10007;10010\n",
+        good + "PRIMA|event=panic|status=error\n",
+    ] {
+        assert!(validate_gate_bench(&bad).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -416,6 +520,16 @@ pub(crate) fn run_bios_capture(image: &Path) -> Result<String, String> {
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, &output))?;
     protocol::validate_user_fault_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    Ok(output.stdout)
+}
+
+/// The Linux image has its own strict protocol in stage6, rather than the
+/// ordinary native-service acceptance traces checked by run_bios_capture.
+#[cfg(feature = "linux-probe")]
+pub(crate) fn run_bios_linux_capture(image: &Path) -> Result<String, String> {
+    let output = run_captured(image)?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
     Ok(output.stdout)
 }

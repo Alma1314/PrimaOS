@@ -18,6 +18,11 @@ pub mod boot_image {
     pub const MAGIC: u64 = 0x444d_5241_4d49_5250;
     /// EXO-2D：带 opaque `kind` 的 manifest 版本。
     pub const VERSION: u64 = 2;
+    /// Generic opt-out of legacy platform witness injection. Version 2 keeps
+    /// its historical reserved-page contract; version 3 declares that contract.
+    pub const VERSION_WITH_FLAGS: u64 = 3;
+    pub const FLAG_PLATFORM_WITNESS: u64 = 1;
+    pub const HEADER_V3_QWORDS: usize = 4;
     /// manifest 条目容量。内核只检验实际 `count <= MAX_ENTRIES`，不假定固定服务数量。
     pub const MAX_ENTRIES: usize = 16;
     /// `kind` 保留值：init 映像（内核据此定位启动镜像，不解释其余 kind）。
@@ -304,6 +309,28 @@ pub mod syscall {
         SYS_GATE_REPLY = 77,
         /// Complete as aborted; the value remains an opaque u64.
         SYS_GATE_ABORT = 78,
+        /// Create a Prepared initial Task; no initial capability transfers.
+        SYS_TASK_CREATE_HELD = 79,
+        /// Replace a held initial Task from the caller's ELF/argv/env descriptor.
+        SYS_TASK_LOAD_IMAGE = 80,
+        /// Publish a held Task, optionally installing its Gate atomically.
+        SYS_TASK_START = 81,
+        /// Set an authorized inactive Task's saved FS base.
+        SYS_TASK_SET_TLS = 82,
+        /// Explicitly grant independent user-context authority over a managed Task.
+        SYS_TASK_CONTEXT_AUTHORITY = 83,
+        /// Read a Delivered client's 160-byte saved user frame with TaskContext.
+        SYS_GATE_READ_FRAME = 84,
+        /// Complete once, restoring a validated user frame with TaskContext.
+        SYS_GATE_REPLY_FRAME = 85,
+        /// Spawn a same-Gate thread sharing the Delivered client's root.
+        SYS_GATE_SPAWN_THREAD = 86,
+        /// Clone a Delivered client's private process into the same Gate.
+        SYS_GATE_FORK = 87,
+        /// Replace a Delivered client's image and complete at its new entry.
+        SYS_GATE_EXEC_IMAGE = 88,
+        /// Read the next authorized Gate audit record into 128 service bytes.
+        SYS_GATE_AUDIT_READ = 89,
     }
 
     /// 按号查名称；未实现、保留号或越界号返回 `None`。
@@ -544,6 +571,17 @@ mod tests {
                 (76, "SYS_GATE_COPY_OUT"),
                 (77, "SYS_GATE_REPLY"),
                 (78, "SYS_GATE_ABORT"),
+                (79, "SYS_TASK_CREATE_HELD"),
+                (80, "SYS_TASK_LOAD_IMAGE"),
+                (81, "SYS_TASK_START"),
+                (82, "SYS_TASK_SET_TLS"),
+                (83, "SYS_TASK_CONTEXT_AUTHORITY"),
+                (84, "SYS_GATE_READ_FRAME"),
+                (85, "SYS_GATE_REPLY_FRAME"),
+                (86, "SYS_GATE_SPAWN_THREAD"),
+                (87, "SYS_GATE_FORK"),
+                (88, "SYS_GATE_EXEC_IMAGE"),
+                (89, "SYS_GATE_AUDIT_READ"),
             ]
         );
     }

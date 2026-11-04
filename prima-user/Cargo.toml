@@ -5,6 +5,16 @@ edition = "2024"
 publish = false
 license = "GPL-3.0-or-later"
 
+[features]
+linux-probe = []
+
+[[bin]]
+name = "prima-linux"
+path = "src/linux_main.rs"
+required-features = ["linux-probe"]
+test = false
+bench = false
+
 [[bin]]
 name = "prima-smoke"
 path = "src/main.rs"

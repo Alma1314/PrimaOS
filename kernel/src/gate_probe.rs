@@ -3,6 +3,8 @@
 use super::*;
 use crate::{sched, syscall, user, vspace};
 use prima_abi::syscall::*;
+#[path = "gate_bench.rs"]
+pub mod bench;
 #[path = "gate_matrix_probe.rs"]
 mod matrix;
 
@@ -104,6 +106,9 @@ fn install(task: u32, va: u64, code: &Code, offset: u64) {
 
 /// Called after ordinary bring-up, before either Task executes user code.
 pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
+    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+        bench::enter(offset, terminal)
+    }
     if option_env!("PRIMA_GATE_CASE").is_some() {
         matrix::enter(offset, terminal)
     }
@@ -310,6 +315,10 @@ fn read_word(task: u32, pointer: u64) -> u64 {
 /// Verify the real user receipts, saved frames, queues/waits and audit chain.
 /// Any mismatch panics instead of emitting the success record.
 pub fn verify() {
+    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+        bench::verify();
+        return;
+    }
     if option_env!("PRIMA_GATE_CASE").is_some() {
         matrix::verify();
         return;

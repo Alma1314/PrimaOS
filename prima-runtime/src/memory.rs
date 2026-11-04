@@ -43,9 +43,37 @@ impl<T: SyscallTransport> Runtime<T> {
         )
     }
 
+    /// Change existing mappings after the kernel's ownership and rights checks.
+    pub fn memseg_protect(
+        &self,
+        task: Capability,
+        address: u64,
+        pages: u64,
+        access: Rights,
+    ) -> Result<()> {
+        self.call_unit(
+            prima_abi::syscall::SYS_MEMSEG_PROTECT,
+            [task.as_raw(), address, pages, access.bits(), 0, 0],
+        )
+    }
+
     /// 销毁 Segment 对象。
     pub fn memseg_destroy(&self, segment: Capability) -> Result<()> {
         self.call_unit(syscall::MEMSEG_DESTROY, [segment.as_raw(), 0, 0, 0, 0, 0])
+    }
+
+    /// Disable or restore hardware user access while retaining mappings and COW.
+    pub fn vspace_access_enable(
+        &self,
+        task: Capability,
+        address: u64,
+        pages: u64,
+        enabled: bool,
+    ) -> Result<()> {
+        self.call_unit(
+            prima_abi::syscall::SYS_VSPACE_ACCESS_ENABLE,
+            [task.as_raw(), address, pages, u64::from(enabled), 0, 0],
+        )
     }
 
     /// 将字节写入当前 Task 已映射且可写的用户地址区间。

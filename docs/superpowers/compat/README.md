@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-03
 ---
 
 # 兼容性台账索引
@@ -13,7 +13,8 @@ updated: 2026-10-31
 
 | 文档 | 标题 |
 |---|---|
-| [stage6-gate-native-abi.md](stage6-gate-native-abi.md) | 阶段6实验性Gate原生入口（73/74/77/78，75/76未分配） |
+| [stage6-linux-profile-v1.md](stage6-linux-profile-v1.md) | Linux LibOS有界profile v1：逐行partial及命名差分观察，冻结状态见正文 |
+| [stage6-gate-native-abi.md](stage6-gate-native-abi.md) | 阶段6实验性Gate与管理入口（73–89；运行范围见各后继报告） |
 | [stage6-static-whitelist.md](stage6-static-whitelist.md) | 阶段 6 静态 ELF 白名单（D12 冻结；契约非实现状态） |
 | [compat-state.md](compat-state.md) | 阶段5当前子集状态与历史基线（按章节区分） |
 | [stage5-working-api.md](stage5-working-api.md) | 当前工作逐入口表；运行范围见本轮报告，不升级为完整POSIX支持 |
@@ -30,6 +31,8 @@ updated: 2026-10-31
 - 新增或改变兼容状态时，先更新冻结 profile 或发布新版本，再更新本目录与测试报告。
 
 ## 按范围读取
+
+[Linux LibOS profile v1](stage6-linux-profile-v1.md)记录用户态变体、partial/unsupported边界及实际双轮差分；冻结门见正文，不替代阶段5台账。
 
 两表的开头保留早期盘点，不能按首个表格概括整个当前实现。compat-state §5–7 / symbol-trace §5–6记录后继汇总；组织级签署与未满足条件仍查阶段跟踪/M21。源码号段以prima-abi为准，历史候选号不得直接用于调用。
 

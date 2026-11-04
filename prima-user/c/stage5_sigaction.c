@@ -45,7 +45,14 @@ static int check_wait_interrupt(int restart) {
     if (sigaction(SIGUSR1, &action, 0)) return 0;
     got = 0;
     pid_t child = fork();
-    if (!child) { (void)kill(getppid(), SIGUSR1); _exit(7); }
+    if (!child) {
+        /* Give the parent a scheduling window to enter waitpid. An immediate
+         * signal can be handled before waitpid starts on the Linux reference. */
+        struct timespec delay = {0, 20000000};
+        (void)nanosleep(&delay, 0);
+        (void)kill(getppid(), SIGUSR1);
+        _exit(7);
+    }
     if (child < 0) return 0;
     int status = 0;
     errno = 0;

@@ -227,14 +227,9 @@ pub const USER_STORE_VALUE: u64 = 0x5A5A_1234_DEAD_BEEF;
 /// 用户代码字节长度。
 /// S2-D4：`task_create` 创建的任务的代码长度（`task3_code()`）。
 pub const TASK3_CODE_LEN: usize = 134;
-/// 切片 V：`task4_code()` 在**同一代码页内**的偏移。
-///
-/// 复用切片 T 的代码段（1 页 4 KiB，`task3_code()` 仅占 134 字节），故不新增代码段帧——
-/// `frames_ready.segment` 不变。第二次 `SYS_TASK_CREATE` 的 `entry` 指向
-/// `USER3_CODE_VA + TASK4_CODE_OFFSET`（§8.1 只要求 `entry ∈ [load_base, load_base + pages*4KiB)`）。
-/// 页内 0x800：避开 ELF header/program header（首个服务页的 0..0x200 必须保持完整，
-/// 供 ring3 解析可写 `PT_LOAD`）；该处原属 `.rela.dyn`，重定位已在装载期消费。
-pub const TASK4_CODE_OFFSET: u64 = 0x800;
+/// Platform self-destruction fixture in a validated hole of the first service
+/// image. Never overwrite a PT_LOAD range, including read-only data or BSS.
+pub const TASK4_CODE_OFFSET: u64 = 0x1800;
 /// 切片 V：task 4 的代码长度（自报 id → 让出 → 自毁 → 不该到达）。
 ///
 /// **必须先让出再自毁**：§8.2 的 `task_destroy` 会丢弃 sender 为该 Task 的消息，若在同一

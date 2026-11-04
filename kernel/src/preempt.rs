@@ -47,6 +47,16 @@ struct TimeCounter {
     cycles_per_tick: u64,
     last_tick: u64,
 }
+
+/// Calibration used only to interpret single-CPU timestamp samples.
+pub fn timestamp_hz() -> Option<u64> {
+    TIME_COUNTER.with(|slot| {
+        slot.as_ref()?
+            .cycles_per_tick
+            .checked_mul(1_193_182)?
+            .checked_div(u64::from(PIT_DIVISOR))
+    })
+}
 /// 各任务被时钟抢占的次数（索引即 Task id）。
 static PREEMPTS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 /// 各任务在时钟入口观测到的 CR3 根物理地址。

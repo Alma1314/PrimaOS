@@ -22,7 +22,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::bootstrap::{
-    self, AuditError, AuditTrace, AuthError, DropError, ExcAuditCounts, ExcError, ExcKind,
+    self, AuditError, AuditSummary, AuthError, DropError, ExcAuditCounts, ExcError, ExcKind,
     IMAGE_CAP_HANDLE, INIT_TASK_ID,
 };
 use crate::exc::SretFrame;
@@ -42,17 +42,20 @@ pub use prima_abi::syscall::{
     SYS_DEV_DESTROY, SYS_DEV_IOPORT_CREATE, SYS_DEV_IOPORT_IN, SYS_DEV_IOPORT_OUT,
     SYS_DEV_IRQ_CREATE, SYS_DEV_IRQ_MASK, SYS_ECHO, SYS_EXC_SUBSCRIBE, SYS_EXC_UNSUBSCRIBE,
     SYS_EXC_WAIT, SYS_EXEC_HANDOFF, SYS_EXEC_REPLACE, SYS_EXEC_REPLACE_ENV, SYS_FORK,
-    SYS_FORK_TRANSACTION, SYS_GATE_ABORT, SYS_GATE_ATTACH, SYS_GATE_COPY_IN, SYS_GATE_COPY_OUT,
-    SYS_GATE_REPLY, SYS_GATE_WAIT, SYS_MEMSEG_CREATE, SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP,
-    SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND, SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT,
-    SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT, SYS_PROCESS_EXIT, SYS_PROCESS_ID,
-    SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND, SYS_SIGACTION, SYS_SIGNAL,
-    SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CREATE, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
-    SYS_TASK_SET_FS_BASE, SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE,
-    SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
-    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL,
-    SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS,
-    SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
+    SYS_FORK_TRANSACTION, SYS_GATE_ABORT, SYS_GATE_ATTACH, SYS_GATE_AUDIT_READ, SYS_GATE_COPY_IN,
+    SYS_GATE_COPY_OUT, SYS_GATE_EXEC_IMAGE, SYS_GATE_FORK, SYS_GATE_READ_FRAME, SYS_GATE_REPLY,
+    SYS_GATE_REPLY_FRAME, SYS_GATE_SPAWN_THREAD, SYS_GATE_WAIT, SYS_MEMSEG_CREATE,
+    SYS_MEMSEG_DESTROY, SYS_MEMSEG_MAP, SYS_MEMSEG_PROTECT, SYS_MEMSEG_UNMAP, SYS_NS_BIND,
+    SYS_NS_CREATE, SYS_NS_DESTROY, SYS_NS_MOUNT, SYS_NS_RESOLVE, SYS_NS_UNBIND, SYS_NS_UNMOUNT,
+    SYS_PROCESS_EXIT, SYS_PROCESS_ID, SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND,
+    SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CONTEXT_AUTHORITY,
+    SYS_TASK_CREATE, SYS_TASK_CREATE_HELD, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
+    SYS_TASK_LOAD_IMAGE, SYS_TASK_SET_FS_BASE, SYS_TASK_SET_TLS, SYS_TASK_START,
+    SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
+    SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL,
+    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL, SYS_VSPACE_ACCESS_ENABLE,
+    SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL,
+    SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -1106,6 +1109,44 @@ fn gate_admission_detects_native_restart_and_interruption_without_consuming_them
     assert!(!has_pending_native_call(task));
 }
 
+/// Snapshot and clone one inactive or current private root. Caller owns rollback.
+fn prepare_fork_root(parent: u32, offset: u64) -> Result<u64, Errno> {
+    let parent_root = sched::root(parent).ok_or(Errno::Fault)?;
+    crate::fork_tx::capture(parent, parent_root, offset).map_err(|_| Errno::NoSpace)?;
+    let root = match crate::frames::allocate_table_frame() {
+        Ok(root) => root,
+        Err(_) => {
+            crate::fork_tx::forget(parent);
+            return Err(Errno::NoSpace);
+        }
+    };
+    let map = |phys| crate::mem::phys_to_virt(phys, offset);
+    for index in 0..512 {
+        prima_ostd::mm::write_u64_at(map(root), index, 0);
+    }
+    if crate::vspace::clone_root_cow(
+        parent_root,
+        root,
+        map,
+        || crate::frames::allocate_table_frame().ok(),
+        |frame| {
+            let _ = crate::frames::release_table_frame(frame);
+        },
+        || {
+            if sched::current_root() == Some(parent_root) {
+                crate::cpu::write_cr3(crate::cpu::cr3().0);
+            }
+        },
+    )
+    .is_err()
+    {
+        let _ = crate::frames::release_table_frame(root);
+        crate::fork_tx::restore(parent, offset);
+        return Err(Errno::NoSpace);
+    }
+    Ok(root)
+}
+
 /// M17b：fork（COW 地址空间；子进程独立用户栈）。
 fn fork_call(prepared: bool) -> u64 {
     let caller = sched::current();
@@ -1121,39 +1162,14 @@ fn fork_call(prepared: bool) -> u64 {
             _ => Errno::NoSpace,
         });
     }
-    let Some(parent_root) = sched::root(caller) else {
-        return encode_errno(Errno::Fault);
-    };
     let Some((_, offset)) = crate::cow::root_and_offset() else {
         return encode_errno(Errno::Fault);
     };
-    if crate::fork_tx::capture(caller, parent_root, offset).is_err() {
-        return encode_errno(Errno::NoSpace);
-    }
-    let Ok(new_root) = crate::frames::allocate_table_frame() else {
-        crate::fork_tx::forget(caller);
-        return encode_errno(Errno::NoSpace);
+    let new_root = match prepare_fork_root(caller, offset) {
+        Ok(root) => root,
+        Err(error) => return encode_errno(error),
     };
     let map = |phys| crate::mem::phys_to_virt(phys, offset);
-    for index in 0..512 {
-        prima_ostd::mm::write_u64_at(map(new_root), index, 0);
-    }
-    if crate::vspace::clone_root_cow(
-        parent_root,
-        new_root,
-        map,
-        || crate::frames::allocate_table_frame().ok(),
-        |frame| {
-            let _ = crate::frames::release_table_frame(frame);
-        },
-        || crate::cpu::write_cr3(crate::cpu::cr3().0),
-    )
-    .is_err()
-    {
-        let _ = crate::frames::release_table_frame(new_root);
-        crate::fork_tx::forget(caller);
-        return encode_errno(Errno::NoSpace);
-    }
     let frame = current_context();
     let outcome = if prepared {
         bootstrap::prepare_fork(caller, frame.rip)
@@ -1371,6 +1387,9 @@ const EXEC_STACK_PAGES: usize = 8;
 static EXEC_RETAINED: StaticCell<
     [Option<crate::exec::RetainedPage>; crate::exec::MAX_RETAINED_PAGES],
 > = StaticCell::new([None; crate::exec::MAX_RETAINED_PAGES]);
+// Single-CPU loader transactions cannot schedule and run with IRQs masked.
+// Like EXEC_RETAINED, keep this page off the nested allocation's kernel stack.
+static EXEC_STACK_SCRATCH: StaticCell<[u8; 4096]> = StaticCell::new([0; 4096]);
 #[derive(Clone, Copy)]
 struct ExecTransfer {
     regions: [(u64, usize); 4],
@@ -1498,16 +1517,19 @@ fn prepare_exec_image(
     retained_count: usize,
 ) -> Result<(u64, u32, u64), (Errno, bool)> {
     let [image, argv_ptr, argv_count, env_ptr, env_count] = input;
-    let mut stack = [0u8; 4096];
-    let layout = prepare_exec_stack(
-        plan,
-        argv_ptr,
-        argv_count as usize,
-        env_ptr,
-        env_count as usize,
-        &mut stack,
-    )
-    .map_err(|error| (error, false))?;
+    let layout = EXEC_STACK_SCRATCH
+        .with_mut(|stack| {
+            stack.fill(0);
+            prepare_exec_stack(
+                plan,
+                argv_ptr,
+                argv_count as usize,
+                env_ptr,
+                env_count as usize,
+                stack,
+            )
+        })
+        .map_err(|error| (error, false))?;
     let Ok(new_root) = crate::frames::allocate_table_frame() else {
         return Err((Errno::NoSpace, false));
     };
@@ -1559,6 +1581,8 @@ fn prepare_exec_image(
                     |_| {},
                 )
                 .map_err(|_| Errno::NoSpace)?;
+                vspace::set_executable(new_root, va, part.executable, map)
+                    .map_err(|_| Errno::Fault)?;
                 // 文件数据从 `file_base` 起覆盖 `file_bytes()` 字节：首页可能包含段首
                 // 之前的同页字节（Linux 也映射整页），其余页按 4096 切分。
                 let begin = 4096 * page;
@@ -1599,13 +1623,13 @@ fn prepare_exec_image(
                 |_| {},
             )
             .map_err(|_| Errno::NoSpace)?;
-            for (byte, &stack_value) in stack.iter().enumerate() {
-                let value = if index + 1 == EXEC_STACK_PAGES {
-                    stack_value
-                } else {
-                    0
-                };
-                prima_ostd::mm::write_u8_at(map(stack_frame), byte as u64, value);
+            vspace::set_executable(new_root, EXEC_STACK_VA + index as u64 * 4096, false, map)
+                .map_err(|_| Errno::Fault)?;
+            if index + 1 == EXEC_STACK_PAGES {
+                EXEC_STACK_SCRATCH
+                    .with(|stack| prima_ostd::mm::write_bytes(map(stack_frame), stack));
+            } else {
+                prima_ostd::mm::fill_zero(map(stack_frame), 4096);
             }
         }
         for index in 0..retained_count {
@@ -1806,6 +1830,17 @@ fn exec_call(
 /// M18a：默认信号终止，保留与普通 exit 不同的 wait 原因。
 fn task_info_call(selector: u64, argument: u64) -> u64 {
     let caller = sched::current();
+    if selector == 8 {
+        if argument != 0 {
+            return encode_errno(Errno::Invalid);
+        }
+        return bootstrap::gate::with_state(|s| {
+            s.current_namespace(caller)
+                .ok_or(bootstrap::gate::Error::Denied)
+        })
+        .map(encode_caller_handle)
+        .unwrap_or_else(|_| encode_errno(Errno::Access));
+    }
     if selector == 7 {
         return bootstrap::process_of(caller).map_or(1, bootstrap::process_threads) as u64;
     }
@@ -2541,7 +2576,7 @@ fn task_wait_deadline_call(deadline: u64) -> u64 {
 ///
 /// 字段布局：`chain_len`(8) | `minted`(8…15) | `derived`(16…23) | `moves`(24…31) |
 /// `created`(32…39) | `destroyed`(40…47)。
-fn pack_audit(trace: &AuditTrace) -> u64 {
+fn pack_audit(trace: &AuditSummary) -> u64 {
     (trace.chain_len as u64)
         | ((trace.minted as u64) << 8)
         | ((trace.derived as u64) << 16)
@@ -2555,7 +2590,7 @@ fn audit_call(raw_cap: u64) -> u64 {
     let Ok(cap) = decode_caller_handle(raw_cap) else {
         return encode_errno(Errno::NoEnt);
     };
-    match bootstrap::audit_trace(sched::current(), cap) {
+    match bootstrap::audit_summary(sched::current(), cap) {
         Ok(trace) => pack_audit(&trace),
         Err(AuditError::InvalidCap) => encode_errno(Errno::NoEnt),
         Err(AuditError::InvalidCaller | AuditError::NotHeld) => encode_errno(Errno::Access),
@@ -2616,10 +2651,10 @@ pub fn audit_witness() -> AuditWitness {
     let before = bootstrap::audit_len();
     let live = Handle::decode(receipts[2])
         .ok()
-        .and_then(|cap| bootstrap::audit_trace(INIT_TASK_ID, cap).ok());
+        .and_then(|cap| bootstrap::audit_summary(INIT_TASK_ID, cap).ok());
     let stale = Handle::decode(receipts[3])
         .ok()
-        .and_then(|cap| bootstrap::audit_trace(INIT_TASK_ID, cap).ok());
+        .and_then(|cap| bootstrap::audit_summary(INIT_TASK_ID, cap).ok());
     let purity_ok = before == bootstrap::audit_len();
     let Some(live) = live else {
         return AuditWitness {
@@ -3535,48 +3570,41 @@ fn task_state() -> TaskState {
 
 /// `SYS_TASK_CREATE`：§8.1 完整成功动作 + 调度登记。
 fn task_create_call(req_ptr: u64) -> u64 {
+    create_task_call(req_ptr, false).unwrap_or_else(encode_errno)
+}
+
+fn create_task_call(req_ptr: u64, held: bool) -> Result<u64, Errno> {
     let caller = sched::current();
-    let req = match read_task_req(req_ptr) {
-        Ok(req) => req,
-        Err(errno) => return encode_errno(errno),
-    };
-    let Some((boot_root, offset)) = crate::cow::root_and_offset() else {
-        return encode_errno(Errno::Fault);
-    };
-    match bootstrap::task_create(caller, &req, boot_root, offset) {
-        Ok(outcome) => {
-            // 防御分支：`next_free_id` 返回 `2..MAX_TASKS(=12)`，而内核栈数组只覆盖 id 3..8
-            // （`user::USER_TASK_KSTACK_COUNT`）。保留为防御分支，不静默吞掉——若将来分配
-            // id ≥ 9，这里报错而不是让新任务带着空内核栈被调度。
-            if crate::user::register_created_task(
-                outcome.task_id,
-                outcome.root_phys,
-                req.entry,
-                req.stack_top,
-                outcome.self_cap.encode(),
-                req.initial_caps.map(Handle::encode),
-                req.name,
-            )
-            .is_err()
-            {
-                return encode_errno(Errno::NoSpace);
-            }
-            TASK_STATE.with_mut(|state| {
-                // 只记前两次 create：`child`（task 3）与 `grandchild`（task 4，自毁载体）。
-                // SPEC-087 之后 init 还会 create 一个存活的 Rust 客户端（第 3 次），若继续
-                // 覆盖 `grandchild`，`task4_recv`/`root4_cleared` 会去核验错误的 task。
-                if state.create_count == 0 {
-                    state.child = outcome.task_id;
-                } else if state.create_count == 1 {
-                    state.grandchild = outcome.task_id;
-                }
-                state.create_count += 1;
-                state.stack_top = req.stack_top;
-            });
-            encode_caller_handle(outcome.manager_cap)
-        }
-        Err(error) => encode_errno(task_create_errno(error)),
+    let req = read_task_req(req_ptr)?;
+    let (boot_root, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let outcome = if held {
+        bootstrap::task_create_held(caller, &req, boot_root, offset)
+    } else {
+        bootstrap::task_create(caller, &req, boot_root, offset)
     }
+    .map_err(task_create_errno)?;
+    crate::user::register_created_task(
+        outcome.task_id,
+        outcome.root_phys,
+        req.entry,
+        req.stack_top,
+        outcome.self_cap.encode(),
+        req.initial_caps.map(Handle::encode),
+        req.name,
+    )
+    .map_err(|_| Errno::NoSpace)?;
+    if !held {
+        TASK_STATE.with_mut(|state| {
+            if state.create_count == 0 {
+                state.child = outcome.task_id;
+            } else if state.create_count == 1 {
+                state.grandchild = outcome.task_id;
+            }
+            state.create_count += 1;
+            state.stack_top = req.stack_top;
+        });
+    }
+    Ok(encode_caller_handle(outcome.manager_cap))
 }
 
 /// `SYS_TASK_DESTROY`：§8.2 完整清理（含地址空间拆除），成功后清调度登记。
@@ -3944,25 +3972,275 @@ pub extern "C" fn handle(frame: AbiFrame) -> u64 {
     ret
 }
 
-/// Native Gate controls. Every unused argument is required to be zero.
+/// Load into a managed, unpublished Task; source pointers belong to the service.
+/// Keep the large construction frame out of both commit and rollback cleanup.
+#[inline(never)]
+fn load_managed_image(
+    caller: u32,
+    cap: Handle,
+    descriptor: u64,
+    delivered: Option<(Handle, Handle)>,
+) -> Result<u64, Errno> {
+    use bootstrap::gate;
+    let target = gate::with_state(|s| match delivered {
+        Some((request, context)) => s
+            .gate_process_preflight(caller, request, context, cap)
+            .map(|(r, _)| r.client),
+        None => s.held_task(caller, cap),
+    })
+    .map_err(gate_errno)?;
+    if descriptor & 7 != 0 {
+        return Err(Errno::Invalid);
+    }
+    let mut words = [0; 6];
+    for (index, word) in words.iter_mut().enumerate() {
+        *word = copy_in(
+            descriptor
+                .checked_add(index as u64 * 8)
+                .ok_or(Errno::Fault)?,
+            8,
+        )?;
+    }
+    let [image, len, argv, argc, env, envc] = words;
+    if argc > 16 || envc > 16 {
+        return Err(Errno::NoSpace);
+    }
+    let plan = load_exec_plan(image, len)?;
+    let pages = EXEC_STACK_PAGES
+        + plan
+            .segments
+            .iter()
+            .flatten()
+            .map(|s| s.pages() as usize)
+            .sum::<usize>();
+    gate::with_state(|s| match delivered {
+        Some((request, context)) => s.gate_exec_preflight(caller, request, context, cap, pages),
+        None => s.preflight_held_image(caller, cap, pages),
+    })
+    .map_err(gate_errno)?;
+    let source_root = sched::root(caller).ok_or(Errno::Fault)?;
+    let old_root = sched::root(target).ok_or(Errno::Fault)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    EXEC_RETAINED.with_mut(|rows| rows.fill(None));
+    let (root, segment, rsp) = match prepare_exec_image(
+        source_root,
+        offset,
+        &plan,
+        [image, argv, argc, env, envc],
+        pages,
+        0,
+    ) {
+        Ok(image) => image,
+        Err((error, reclaim)) => {
+            if reclaim {
+                bootstrap::reclaim_exec_segments().expect("held image rollback audit preflight");
+            }
+            return Err(error);
+        }
+    };
+    bootstrap::commit_exec(
+        target,
+        old_root,
+        offset,
+        segment,
+        &plan,
+        EXEC_STACK_VA,
+        EXEC_STACK_PAGES,
+        &[],
+    )
+    .expect("held image commit preflight");
+    let mut frame = SretFrame::ZERO;
+    frame.rip = plan.entry;
+    frame.rsp = rsp;
+    frame.cs = crate::gdt::USER_CS as u64;
+    frame.ss = crate::gdt::USER_DS as u64;
+    frame.rflags = 2 | (1 << 9);
+    if let Some((request, context)) = delivered {
+        gate::with_state(|s| s.gate_exec_finish(caller, request, context, root, frame))
+            .expect("managed exec commit preflight");
+    } else {
+        sched::set_root(target, root);
+        sched::set_frame(target, frame);
+        sched::set_fs_base(target, 0);
+        sched::reset_fpu(target);
+    }
+    gate::with_state(|s| {
+        s.record_held_image(caller, target, plan.entry);
+        Ok(())
+    })
+    .expect("held image state");
+    Ok(0)
+}
+
+/// Native Gate and managed launch controls. Unused arguments must be zero.
 #[inline(never)]
 fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
-    use bootstrap::gate::{self, WaitOutcome};
+    use bootstrap::gate;
     let task = sched::current();
     let budget = gate::with_state(|state| state.preflight_gate_control(task));
     bootstrap::gate_audit::enforce_stop("gate-control-entry");
     budget.expect("native Gate control has an active bootstrap state");
-    let result = (|| -> Result<u64, Errno> {
+    // Loader allocation is deep. Do not keep the other controls' output
+    // scratch frame alive on the guarded 32 KiB syscall stack during it.
+    let result = if matches!(num, SYS_TASK_LOAD_IMAGE | SYS_GATE_EXEC_IMAGE) {
+        gate_load_image_call(task, num, args)
+    } else {
+        gate_control_operation(task, num, args)
+    };
+    bootstrap::gate_audit::enforce_stop("gate-control");
+    if let Err(error) = result {
+        let recorded = gate::with_state(|state| {
+            state.gate_control_rejected(task, num, *args, encode_errno(error))
+        });
+        bootstrap::gate_audit::enforce_stop("gate-control-rejected");
+        recorded.expect("preflighted native Gate rejection audit");
+    }
+    result.unwrap_or_else(encode_errno)
+}
+
+#[inline(never)]
+fn gate_load_image_call(task: u32, num: u64, args: &[u64; MAX_ARGS]) -> Result<u64, Errno> {
+    let used = if num == SYS_TASK_LOAD_IMAGE { 2 } else { 4 };
+    if args[used..].iter().any(|&arg| arg != 0) {
+        return Err(Errno::Invalid);
+    }
+    let cap = decode_caller_handle(args[0]).map_err(auth_errno)?;
+    if num == SYS_TASK_LOAD_IMAGE {
+        load_managed_image(task, cap, args[1], None)
+    } else {
+        let context = decode_caller_handle(args[1]).map_err(auth_errno)?;
+        let manager = decode_caller_handle(args[2]).map_err(auth_errno)?;
+        load_managed_image(task, manager, args[3], Some((cap, context)))
+    }
+}
+
+#[inline(never)]
+fn gate_control_operation(task: u32, num: u64, args: &[u64; MAX_ARGS]) -> Result<u64, Errno> {
+    use bootstrap::gate::{self, WaitOutcome};
+    // Frame replies already carry saved GPR/FXSAVE scratch. Do not retain the
+    // unrelated fork/audit controls' scratch across their deep commit path.
+    if matches!(
+        num,
+        SYS_GATE_READ_FRAME | SYS_GATE_REPLY_FRAME | SYS_GATE_COPY_IN | SYS_GATE_COPY_OUT
+    ) {
+        if args[4..].iter().any(|&arg| arg != 0) {
+            return Err(Errno::Invalid);
+        }
+        let cap = decode_caller_handle(args[0]).map_err(auth_errno)?;
+        return if matches!(num, SYS_GATE_READ_FRAME | SYS_GATE_REPLY_FRAME) {
+            gate_frame_call(task, cap, args, num == SYS_GATE_REPLY_FRAME)
+        } else {
+            gate_copy_call(task, cap, args, num == SYS_GATE_COPY_OUT)
+        };
+    }
+    (|| -> Result<u64, Errno> {
         let used = match num {
-            SYS_GATE_COPY_IN | SYS_GATE_COPY_OUT => 4,
+            SYS_TASK_CREATE_HELD | SYS_TASK_CONTEXT_AUTHORITY => 1,
+            SYS_GATE_SPAWN_THREAD => 6,
+            SYS_GATE_FORK | SYS_GATE_EXEC_IMAGE | SYS_GATE_AUDIT_READ => 4,
+            SYS_TASK_START => 4,
+            SYS_GATE_COPY_IN | SYS_GATE_COPY_OUT | SYS_GATE_READ_FRAME | SYS_GATE_REPLY_FRAME => 4,
             SYS_GATE_ATTACH | SYS_GATE_WAIT => 3,
             _ => 2,
         };
         if args[used..].iter().any(|&arg| arg != 0) {
             return Err(Errno::Invalid);
         }
+        if num == SYS_TASK_CREATE_HELD {
+            // Reuse the normal constructor's error mapping; the held variant
+            // publishes Prepared before returning from this native entry.
+            return create_task_call(args[0], true);
+        }
         let cap = decode_caller_handle(args[0]).map_err(auth_errno)?;
         match num {
+            SYS_TASK_CONTEXT_AUTHORITY => gate::with_state(|s| s.task_context_authority(task, cap))
+                .map(encode_caller_handle)
+                .map_err(gate_errno),
+            SYS_GATE_READ_FRAME | SYS_GATE_REPLY_FRAME => {
+                gate_frame_call(task, cap, args, num == SYS_GATE_REPLY_FRAME)
+            }
+            SYS_GATE_SPAWN_THREAD => gate_spawn_call(task, cap, args),
+            SYS_GATE_AUDIT_READ => {
+                if args[3] != 128 || args[2] & 7 != 0 {
+                    return Err(Errno::Invalid);
+                }
+                let record = gate::with_state(|s| s.gate_audit_read(task, cap, args[1]))
+                    .map_err(gate_errno)?;
+                let Some(words) = record else {
+                    return Ok(0);
+                };
+                gate_validate_range(
+                    task,
+                    sched::root(task).ok_or(Errno::Fault)?,
+                    args[2],
+                    128,
+                    Right::SegMapW,
+                )?;
+                let output = prepare_task_output(task, args[2], 128)?;
+                let mut bytes = [0; 128];
+                for (chunk, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+                    chunk.copy_from_slice(&word.to_le_bytes());
+                }
+                let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+                output.write(&bytes, |p| phys_to_virt(p, offset));
+                Ok(1)
+            }
+            SYS_GATE_FORK => gate_fork_call(task, cap, args),
+            SYS_TASK_START => {
+                if args[3] > 1 || (args[3] == 0 && (args[1] != 0 || args[2] != 0)) {
+                    return Err(Errno::Invalid);
+                }
+                let target = gate::with_state(|s| s.held_task(task, cap)).map_err(gate_errno)?;
+                let root = sched::root(target).ok_or(Errno::Fault)?;
+                let frame = sched::frame(target).ok_or(Errno::Fault)?;
+                let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+                let map = |p| phys_to_virt(p, offset);
+                let code = vspace::read_user_leaf(root, frame.rip, map).map_err(user_copy_errno)?;
+                if frame.rip == 0
+                    || frame.rsp == 0
+                    || frame.rip >= 1 << 47
+                    || frame.rsp >= 1 << 47
+                    || code & (1 << 63) != 0
+                {
+                    return Err(Errno::Fault);
+                }
+                let stack =
+                    vspace::read_user_leaf(root, frame.rsp - 1, map).map_err(user_copy_errno)?;
+                if stack & (PT_WRITABLE | vspace::PT_COW) == 0
+                    || !bootstrap::task_mapping(target, (frame.rsp - 1) & !4095)
+                        .is_some_and(|e| e.access.contains(Right::SegMapW))
+                {
+                    return Err(Errno::Fault);
+                }
+                if (1..sched::MAX_TASKS as u32).any(|id| {
+                    id != target
+                        && bootstrap::task_status(id)
+                            .is_some_and(|s| s != bootstrap::TaskStatus::Dead)
+                        && sched::root(id) == Some(root)
+                }) {
+                    return Err(Errno::Again);
+                }
+                let other = if args[1] == 0 {
+                    Handle::ZERO
+                } else {
+                    decode_caller_handle(args[1]).map_err(auth_errno)?
+                };
+                gate::with_state(|s| s.start_held_task(task, cap, other, args[2], args[3] == 1))
+                    .map(|cap| {
+                        if cap.is_zero() {
+                            0
+                        } else {
+                            encode_caller_handle(cap)
+                        }
+                    })
+                    .map_err(gate_errno)
+            }
+            SYS_TASK_SET_TLS => {
+                validate_fs_base(args[1])?;
+                gate::with_state(|s| s.set_managed_tls(task, cap, args[1]))
+                    .map(|_| 0)
+                    .map_err(gate_errno)
+            }
             SYS_GATE_ATTACH => {
                 let other = if args[1] == 0 {
                     Handle::ZERO
@@ -4008,6 +4286,8 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
                         let (_, offset) =
                             crate::cow::root_and_offset().expect("prepared output root");
                         output.write(&bytes, |phys| phys_to_virt(phys, offset));
+                        #[cfg(feature = "gate-probe")]
+                        bootstrap::gate_probe::bench::stamp(2, task);
                         Ok(0)
                     }
                     WaitOutcome::Blocked => {
@@ -4027,20 +4307,14 @@ fn gate_control_call(num: u64, args: &[u64; MAX_ARGS]) -> u64 {
             _ => gate::with_state(|state| {
                 state.gate_reply(task, cap, args[1], num == SYS_GATE_ABORT)
             })
-            .map(|_| 0)
+            .map(|_| {
+                #[cfg(feature = "gate-probe")]
+                bootstrap::gate_probe::bench::stamp(3, task);
+                0
+            })
             .map_err(gate_errno),
         }
-    })();
-    // AuditFull is terminal, never an errno returned to either participant.
-    bootstrap::gate_audit::enforce_stop("gate-control");
-    if let Err(error) = result {
-        let recorded = gate::with_state(|state| {
-            state.gate_control_rejected(task, num, *args, encode_errno(error))
-        });
-        bootstrap::gate_audit::enforce_stop("gate-control-rejected");
-        recorded.expect("preflighted native Gate rejection audit");
-    }
-    result.unwrap_or_else(encode_errno)
+    })()
 }
 
 /// Stack-heavy scratch lives only on proxy calls, never ordinary exec dispatch.
@@ -4068,32 +4342,17 @@ fn gate_copy_call(
         (request.client, client_root.0, args[1], out),
         (service, service_root.0, args[3], !out),
     ] {
-        if len == 0 {
-            continue;
-        }
-        let end = ptr.checked_add(len as u64).ok_or(Errno::Fault)?;
-        if ptr == 0 || end > 1 << 47 {
-            return Err(Errno::Fault);
-        }
-        for page in [ptr & !4095, (end - 1) & !4095] {
-            let leaf = vspace::read_user_leaf(root, page, map).map_err(user_copy_errno)?;
-            let physical = leaf & 0x000f_ffff_ffff_f000;
-            match crate::frames::owner_of(physical).map_err(|_| Errno::Fault)? {
-                crate::frames::FrameOwner::Segment(id) => {
-                    let entry = bootstrap::task_mapping(task, page).ok_or(Errno::Fault)?;
-                    if entry.seg_id != id
-                        || !entry.access.contains(if write {
-                            Right::SegMapW
-                        } else {
-                            Right::SegMapR
-                        })
-                    {
-                        return Err(Errno::Fault);
-                    }
-                }
-                _ => return Err(Errno::Fault),
-            }
-        }
+        gate_validate_range(
+            task,
+            root,
+            ptr,
+            len,
+            if write {
+                Right::SegMapW
+            } else {
+                Right::SegMapR
+            },
+        )?;
     }
     let (src_root, src, dst_task, dst) = if out {
         (service_root.0, args[3], request.client, args[1])
@@ -4115,6 +4374,204 @@ fn gate_copy_call(
     Ok(len as u64)
 }
 
+/// Validate logical Segment ownership as well as hardware permissions. A Gate
+/// buffer is at most 4096 bytes, so its first and last pages cover the range.
+fn gate_validate_range(
+    task: u32,
+    root: u64,
+    ptr: u64,
+    len: usize,
+    right: Right,
+) -> Result<(), Errno> {
+    if len > vspace::USER_COPY_LIMIT {
+        return Err(Errno::Invalid);
+    }
+    let end = ptr.checked_add(len as u64).ok_or(Errno::Fault)?;
+    if len == 0 {
+        return Ok(());
+    }
+    if ptr == 0 || end > 1 << 47 {
+        return Err(Errno::Fault);
+    }
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    for page in [ptr & !4095, (end - 1) & !4095] {
+        let leaf = vspace::read_user_leaf(root, page, |p| phys_to_virt(p, offset))
+            .map_err(user_copy_errno)?;
+        if (right == Right::SegMapX && leaf & (1 << 63) != 0)
+            || (right == Right::SegMapW && leaf & (PT_WRITABLE | vspace::PT_COW) == 0)
+        {
+            return Err(Errno::Fault);
+        }
+        let crate::frames::FrameOwner::Segment(id) =
+            crate::frames::owner_of(leaf & PT_ADDR_MASK).map_err(|_| Errno::Fault)?
+        else {
+            return Err(Errno::Fault);
+        };
+        let entry = bootstrap::task_mapping(task, page).ok_or(Errno::Fault)?;
+        if entry.seg_id != id || !entry.access.contains(right) {
+            return Err(Errno::Fault);
+        }
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn gate_frame_call(
+    service: u32,
+    cap: Handle,
+    args: &[u64; MAX_ARGS],
+    reply: bool,
+) -> Result<u64, Errno> {
+    use bootstrap::gate;
+    if args[2] & 7 != 0 || ![160, 672].contains(&args[3]) {
+        return Err(Errno::Invalid);
+    }
+    let len = args[3] as usize;
+    let full = len == 672;
+    let context = decode_caller_handle(args[1]).map_err(auth_errno)?;
+    let (request, client_root) =
+        gate::with_state(|s| s.gate_context_preflight(service, cap, context))
+            .map_err(gate_errno)?;
+    let service_root = sched::root(service).ok_or(Errno::Fault)?;
+    gate_validate_range(
+        service,
+        service_root,
+        args[2],
+        len,
+        if reply {
+            Right::SegMapR
+        } else {
+            Right::SegMapW
+        },
+    )?;
+    if reply {
+        let mut bytes = [0; 672];
+        copy_user_bytes(args[2], &mut bytes[..len])?;
+        let frame = SretFrame::decode(bytes[..160].try_into().unwrap());
+        gate_validate_frame(request.client, client_root.0, &frame)?;
+        let fpu = if full {
+            Some(
+                sched::FpuArea::from_user(
+                    bytes[160..].try_into().unwrap(),
+                    sched::saved_fpu(request.client).ok_or(Errno::Fault)?,
+                )
+                .ok_or(Errno::Invalid)?,
+            )
+        } else {
+            None
+        };
+        gate::with_state(|s| s.gate_reply_frame(service, cap, context, frame, fpu))
+            .map_err(gate_errno)?;
+    } else {
+        let frame = sched::frame(request.client).ok_or(Errno::Fault)?;
+        let mut bytes = [0; 672];
+        bytes[..160].copy_from_slice(&frame.encode());
+        if full {
+            bytes[160..].copy_from_slice(
+                &sched::saved_fpu(request.client)
+                    .ok_or(Errno::Fault)?
+                    .bytes(),
+            );
+        }
+        let output = prepare_task_output(service, args[2], len)?;
+        let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+        output.write(&bytes[..len], |p| phys_to_virt(p, offset));
+        gate::with_state(|s| {
+            s.gate_context_accessed(service, request, context, &frame, full, false);
+            Ok(())
+        })
+        .expect("frame output preflighted");
+    }
+    Ok(0)
+}
+
+fn gate_validate_frame(client: u32, root: u64, frame: &SretFrame) -> Result<(), Errno> {
+    if !crate::exc::valid_gate_user_frame(frame) {
+        return Err(Errno::Invalid);
+    }
+    gate_validate_range(client, root, frame.rip, 1, Right::SegMapX)?;
+    gate_validate_range(client, root, frame.rsp - 1, 1, Right::SegMapW)
+}
+
+#[inline(never)]
+fn gate_spawn_call(service: u32, cap: Handle, args: &[u64; MAX_ARGS]) -> Result<u64, Errno> {
+    use bootstrap::gate;
+    if args[2] & 7 != 0 || args[3] != 176 {
+        return Err(Errno::Invalid);
+    }
+    let context = decode_caller_handle(args[1]).map_err(auth_errno)?;
+    let gate_cap = decode_caller_handle(args[5]).map_err(auth_errno)?;
+    let (request, root) = gate::with_state(|s| s.gate_context_preflight(service, cap, context))
+        .map_err(gate_errno)?;
+    validate_fs_base(args[4])?;
+    gate_validate_range(
+        service,
+        sched::root(service).ok_or(Errno::Fault)?,
+        args[2],
+        176,
+        Right::SegMapR,
+    )?;
+    let mut bytes = [0; 176];
+    copy_user_bytes(args[2], &mut bytes)?;
+    let frame = SretFrame::decode(bytes[..160].try_into().unwrap());
+    if frame.rsp & 7 != 0 {
+        return Err(Errno::Invalid);
+    }
+    gate_validate_frame(request.client, root.0, &frame)?;
+    let addresses = [
+        u64::from_le_bytes(bytes[160..168].try_into().unwrap()),
+        u64::from_le_bytes(bytes[168..176].try_into().unwrap()),
+    ];
+    let mut outputs = [None, None];
+    for (output, address) in outputs.iter_mut().zip(addresses) {
+        if address != 0 {
+            gate_validate_range(request.client, root.0, address, 4, Right::SegMapW)?;
+            *output = Some(prepare_task_output(request.client, address, 4)?);
+        }
+    }
+    let manager =
+        gate::with_state(|s| s.gate_spawn_thread(service, cap, context, frame, args[4], gate_cap))
+            .map_err(gate_errno)?;
+    let child = bootstrap::task_of_cap(manager).expect("spawn manager target");
+    let (_, offset) = crate::cow::root_and_offset().expect("spawn output root");
+    for output in outputs.into_iter().flatten() {
+        output.write(&child.to_le_bytes(), |p| phys_to_virt(p, offset));
+    }
+    Ok(encode_caller_handle(manager))
+}
+
+fn gate_fork_call(service: u32, cap: Handle, args: &[u64; MAX_ARGS]) -> Result<u64, Errno> {
+    use bootstrap::gate;
+    let context = decode_caller_handle(args[1]).map_err(auth_errno)?;
+    let manager = decode_caller_handle(args[2]).map_err(auth_errno)?;
+    let gate_cap = decode_caller_handle(args[3]).map_err(auth_errno)?;
+    let (request, _) =
+        gate::with_state(|s| s.gate_fork_preflight(service, cap, context, manager, gate_cap))
+            .map_err(gate_errno)?;
+    let (_, offset) = crate::cow::root_and_offset().ok_or(Errno::Fault)?;
+    let root = prepare_fork_root(request.client, offset)?;
+    let result =
+        gate::with_state(|s| s.gate_fork_commit(service, cap, context, manager, gate_cap, root));
+    match result {
+        Ok(manager) => {
+            crate::fork_tx::forget(request.client);
+            Ok(encode_caller_handle(manager))
+        }
+        Err(error) => {
+            crate::vspace::discard_cow_root(
+                root,
+                |p| phys_to_virt(p, offset),
+                |f| {
+                    let _ = crate::frames::release_table_frame(f);
+                },
+            );
+            let _ = crate::frames::release_table_frame(root);
+            crate::fork_tx::restore(request.client, offset);
+            Err(gate_errno(error))
+        }
+    }
+}
+
 const fn gate_errno(error: bootstrap::gate::Error) -> Errno {
     use bootstrap::gate::Error;
     match error {
@@ -4131,11 +4588,15 @@ const fn gate_errno(error: bootstrap::gate::Error) -> Errno {
 #[inline(never)]
 fn gate_client_call(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
     let task = sched::current();
+    #[cfg(feature = "gate-probe")]
+    bootstrap::gate_probe::bench::stamp(0, task);
     let frame = current_context();
     let outcome = bootstrap::gate::with_state(|state| state.gate_trap(task, num, *args, flags));
     bootstrap::gate_audit::enforce_stop("gate-trap");
     match outcome {
         Ok(bootstrap::gate::TrapOutcome::Queued { .. }) => {
+            #[cfg(feature = "gate-probe")]
+            bootstrap::gate_probe::bench::stamp(1, task);
             sched::set_frame(task, frame);
             sched::block_current()
         }
@@ -4162,6 +4623,17 @@ fn serve(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
             | SYS_GATE_COPY_OUT
             | SYS_GATE_REPLY
             | SYS_GATE_ABORT
+            | SYS_TASK_CREATE_HELD
+            | SYS_TASK_LOAD_IMAGE
+            | SYS_TASK_START
+            | SYS_TASK_SET_TLS
+            | SYS_TASK_CONTEXT_AUTHORITY
+            | SYS_GATE_READ_FRAME
+            | SYS_GATE_REPLY_FRAME
+            | SYS_GATE_SPAWN_THREAD
+            | SYS_GATE_FORK
+            | SYS_GATE_EXEC_IMAGE
+            | SYS_GATE_AUDIT_READ
     ) {
         gate_control_call(num, args)
     } else if num == SYS_COPY_IN {

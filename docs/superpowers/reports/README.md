@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-02
 ---
 
 # Reports 索引
@@ -104,7 +104,22 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-start-stack.md](2026-10-18-stage5-c-start-stack.md) | 阶段 5：C Task 初始栈见证 |
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
-## 阶段 6（进行中，2026-10-29 启动）
+## 阶段 6（有界技术退出复核通过）
+
+2026-11-02：[进程、线程信号及逐调用差分后继](2026-11-02-stage6-process-and-differential.md)：
+87–89、pthread/进程/逐调用见证及原始审计已双轮差分通过；host、lint、G1–G4与七边界通过；最终完整72/72及有界出口复核通过，profile v1冻结。下列切片保留各自当时范围。
+
+2026-11-01继续：[独立上下文、Linux信号和共享线程/futex](2026-11-01-stage6-context-signals-threads.md)：
+83–86、TaskContext、GPR/FXSAVE答复、P1/P2原始ELF与八项差分工程，专用BIOS/UEFI构建成功；
+编译通过，未执行任何测试/QEMU，剩余M4和整体验收不变。
+
+2026-11-01续做：[受管理装载与Linux专用镜像](2026-11-01-stage6-managed-linux-loader.md)：
+79–82、用户态personality、六applet差分harness与manifest v3，已编译并构建BIOS/UEFI，
+未执行任何测试，不宣称Linux白名单已经运行或profile冻结。
+
+2026-11-01：[计量探针、内核映射跨度与运行时 Gate 封装](2026-11-01-stage6-measurement-and-boot-span.md)：
+本轮仅完成部分代码与编译检查；按“全部完成后统一测试”要求尚未执行测试。整阶段目标未完成，
+未关闭 M1e/S6-D2 或任何退出条件；当前进度不以此报告替代阶段跟踪。
 
 2026-11-01：[Gate代理复制与生命周期](2026-11-01-stage6-gate-copy-lifecycle.md)实现75/76，补齐G2/G3矩阵并修正满队列错误晋级、补齐孤儿trap原始审计；workspace1095、lint与G1/G2/G3各双轮PASS，最终完整72/72，首次71/72的I1差异保留；
 [W7分段诊断](2026-11-01-stage6-w7-timing-diagnosis.md)记录BIOS读盘/执行阶段与临时strip失败。最终统一回归及限制以报告为准，不改写前序失败。
@@ -127,7 +142,7 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 2026-10-31：[S6-M2 ELF 输入流式读取、源页故障与退栈回收](2026-10-31-stage6-streamed-elf-input.md)。范围限原生 exec 输入与有界 W7 见证；私有149页上限由容量后继推进，Gate/LibOS 仍未完成。
 
-阶段 6 于 2026-10-29 由作者指令启动，状态为**进行中**；退出条件与交付检查仍全部未勾选。
+阶段6于2026-11-04满足有界技术退出条件4/4；交付5/5完成。历史切片的未完成结论按当时范围保留，当前状态只查阶段跟踪。
 本节收录阶段 6 的实现证据与准备性证据。
 
 | 日期 | 文档 | 标题 |

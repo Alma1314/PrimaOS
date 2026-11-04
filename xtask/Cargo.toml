@@ -8,11 +8,13 @@ license = "GPL-3.0-or-later"
 [features]
 gate-audit-probe = ["kernel/gate-audit-probe"]
 gate-probe = ["kernel/gate-probe"]
+linux-probe = ["prima-user/linux-probe"]
 
 [dependencies]
 prima-abi = { path = "../prima-abi" }
 prima-initgen = { path = "../prima-initgen" }
 prima-runtime = { path = "../prima-runtime" }
 bootloader = "=0.11.17"
-prima-user = { path = "../prima-user", artifact = "bin", target = "x86_64-unknown-none" }
+llvm-tools = "=0.1.1"
+prima-user = { path = "../prima-user", artifact = "bin", lib = true, target = "x86_64-unknown-none" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }
