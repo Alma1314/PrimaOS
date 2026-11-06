@@ -75,7 +75,10 @@
       "Once",
       "get_or_try_init",
       "KernelRootInfo",
-      "published_once"
+      "published_once",
+      "CI",
+      "artifact lock",
+      "验收身份"
     ],
     "sources": [
       "COSIR 原语规范.md",
@@ -95,7 +98,13 @@
       "docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md",
       "docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md",
       "docs/superpowers/specs/2026-10-25-process-boundary-followup-design.md",
-      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md"
+      "docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md",
+      "docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md",
+      "docs/superpowers/specs/2026-11-06-stage7-artifact-exclusion.md",
+      "docs/superpowers/plans/2026-11-06-stage7-execution.md",
+      "docs/superpowers/reports/2026-11-06-stage7-start.md",
+      "docs/superpowers/specs/2026-11-06-stage7-ci-evidence.md",
+      "docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -111,7 +120,11 @@
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
       "prima-ostd/src/pod.rs",
-      "kernel/src/user.rs"
+      "kernel/src/user.rs",
+      "xtask/src/artifact_lock.rs",
+      "scripts/ci.py",
+      "scripts/ci-inputs.lock.json",
+      ".github/workflows/ci.yml"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -121,7 +134,9 @@
       "prima-ostd/src/sync.rs",
       "prima-ostd/src/sync/lock.rs",
       "prima-ostd/src/entry.rs",
-      "prima-ostd/src/pod.rs"
+      "prima-ostd/src/pod.rs",
+      "xtask/src/artifact_lock.rs",
+      "scripts/test_ci.py"
     ],
     "guide": "docs/architecture/topics/boot.md"
   },

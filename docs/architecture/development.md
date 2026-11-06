@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-06
 ---
 
 # 开发、构建与验证手册
@@ -30,8 +30,8 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask test-musl --host-only` | C 适配层、取消点汇编、构建护栏与 Linux F1 参考 | 不运行 QEMU、不重建 sysroot，适合快速迭代 |
 | `cargo xtask test-musl` | 上述检查 + F1/W4 各双轮 BIOS | 共享原有 30 秒门限、trace、容量和清理断言 |
 | `sh prima-user/musl/build.sh --check` | 锁定输入与归档审查；缓存缺失/过期/不完整时失败 | 不构建、不下载；不是运行时兼容证据 |
-| `cargo xtask test-vfs [V1|V2|V3]` | V1/V2/V3 的 Linux 参考与 BIOS 双轮 | 与全量 test 共用同一实现、30 秒门限和断言；便于文件服务迭代 |
-| `cargo xtask test-process [W6|W7|W7b|W8]` | fork/exec/信号相关探针的聚焦双轮 | 同一 validator、30 秒门限、stdout 和 IPC 基线，无自动重试 |
+| `cargo xtask test-vfs [V1|V2|V3|V4]` | V1/V2/V3/V4 的 Linux 参考与 BIOS 双轮 | 与全量 test 共用同一实现、30 秒门限和断言；便于文件服务迭代 |
+| `cargo xtask test-process [W4|W5|W6|W7|W7b|W8|W9]` | fork/exec/信号相关探针的聚焦双轮 | 同一 validator、30 秒门限、stdout 和 IPC 基线，无自动重试 |
 | `cargo xtask test` | BIOS 双轮与各冻结 C/开源程序探针 | 实现定义的 trace、字节流、退出码、输入注入与 Linux 参考 |
 | `cargo xtask compat` | 兼容差分入口 | 当前 cow-write-fault 有界场景；不是全部阶段5 API 验收 |
 | `cargo xtask linux-trace` | Linux 参考 trace 工作流 | 参数与再生成语义见 xtask main/linux |
@@ -39,6 +39,38 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cd lean && elan run leanprover/lean4:v4.35.0 lake build` | 编译 Lean 工件与定理 | lean/README 声明的模型范围 |
 | `python3 scripts/check_handle_refinement.py [--mutation-test]` | 重新提取实际 Rust 并检查生成物/源码细化/公理 | 独立安装锁定 Charon/Aeneas/Rust 及其 Lean 依赖；范围见 [源码细化报告](../superpowers/reports/2026-10-31-rust-handle-source-refinement.md)，不证明整表或机器码 |
 | `python3 scripts/docs.py check` | 文档目录、ID、主题、路径与 Markdown 锚点 | 本地链接；不探测远端网页，不判定技术结论 |
+
+## 共享镜像工件与并发
+
+镜像命令（build/build-linux/run/test、全部test-*、compat、linux-trace）在业务输出或QEMU启动前，
+持有工作区`target/prima-os-artifacts.lock`的操作系统独占锁，直到整个命令返回。
+`workspace artifacts busy`表示已有合作xtask正在使用此资源；等待其结束后再执行。
+锁文件释放后仍保留，不要通过删除它解锁，也没有强制绕过选项。lint/tcb不占此锁；
+`test-musl --host-only`保守归入test组。
+
+该锁不监督直接启动的QEMU或异常终止后残留的子进程，也不限制Cargo先行编译、跨工作区CPU/RAM/端口预算。
+若QEMU仍占镜像，核对其归属并结束本轮残留进程，再重新验收；不要改断言或延长门限。
+契约与验证见[7-0首片设计](../superpowers/specs/2026-11-06-stage7-artifact-exclusion.md)和
+[启动报告](../superpowers/reports/2026-11-06-stage7-start.md)。
+
+## CI分组与验收身份
+
+`python3 scripts/ci.py GROUP --plan`查看命令；正式组为host、lint、docs、bios、linux、gate、
+gate-audit、domains、formal，本地另有smoke（W5与compat）。直接运行要求已有锁定输入，
+Cargo离线且locked；`--prepare`先准备工具与输入，需要网络及Rust/Lean缓存写入权限。
+CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要编辑源码或文档。
+
+同工作区一次只运行一个组；每组内部串行，Cargo/musl各2 worker，组预算不替代原QEMU门限。
+继承的Gate/审计/人格桩/Linux ELF选择器与Rust覆盖会被清理，每条命令使用自己的配置；
+形式化正式步骤禁用自动缓存下载，并要求锁定Git依赖已准备且干净。
+文档PR基线可设`PRIMA_CI_BASE=<commit>`，它会增加docs的基线变更检查。
+
+结果和原始输出保存在ignored `target/ci/GROUP/运行ID/`，失败保留并停止后续命令，
+成功才列出本组新建/改写制品的哈希；缺工具不能算通过。Actions仅上传证据目录，
+不是发布镜像包。工作流最多2独立作业并行，host工具/runner实际版本会记录，
+不声称跨宿主逐字节相同。具体契约、输入和本地实跑见
+[CI契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md)与
+[CI报告](../superpowers/reports/2026-11-06-stage7-ci-evidence.md)。
 
 ## 变更对应验证
 

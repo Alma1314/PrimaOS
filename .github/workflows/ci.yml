@@ -1,0 +1,53 @@
+name: Bounded acceptance
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: ${{ matrix.group }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        group: [host, lint, docs, bios, linux, gate, gate-audit, domains, formal]
+    env:
+      CARGO_BUILD_JOBS: '2'
+      PRIMA_MUSL_JOBS: '2'
+      LC_ALL: C
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang llvm lld make gcc libc6-dev binutils python3 qemu-system-x86 busybox-static elan git ca-certificates
+      - name: Resolve documentation comparison base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: echo "PRIMA_CI_BASE=$BASE_SHA" >> "$GITHUB_ENV"
+      - name: Prepare locked inputs and run group
+        run: python3 scripts/ci.py '${{ matrix.group }}' --prepare --require-clean
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: evidence-${{ matrix.group }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/ci/
+          if-no-files-found: warn
+          retention-days: 7

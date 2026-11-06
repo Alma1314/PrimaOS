@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-06
 ---
 
 # Plans 索引
@@ -13,7 +13,11 @@ updated: 2026-10-31
 
 > 本索引按阶段/主题分组，文件日期用于历史定位。新增文档同步更新本页和相关主题路由，再运行 `python3 scripts/docs.py build` / `check`。统一入口见[文档中心](../../README.md)。
 
-## 阶段 6–7（提案）
+## 阶段 6–7（执行计划与历史提案）
+
+当前阶段7执行后继：[工程底座与九轨冻结顺序](2026-11-06-stage7-execution.md)，首片为共享镜像互斥，
+按现有验收入口分组规划CI/资源预算；[CI接线与本地验证后继](../reports/2026-11-06-stage7-ci-evidence.md)
+已记录；远端九组、后续机制及性能门槛仍须逐片验证/冻结。
 
 当前阶段7范围见[作者确认的综合交付裁决](../specs/2026-10-31-stage7-scope-decisions.md)。执行计划不替代范围、实现或签署。
 

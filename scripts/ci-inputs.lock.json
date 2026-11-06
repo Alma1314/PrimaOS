@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "sbase": {
+    "url": "https://git.suckless.org/sbase",
+    "commit": "c546c3a5724c81cee9a11d816a38ccdf17472129",
+    "license_sha256": "eb0b719b3327af6c4b480cd21f7944e944a5ddf571c04572eb8d025f52e056c6"
+  },
+  "busybox": {
+    "url": "https://archive.ubuntu.com/ubuntu/pool/main/b/busybox/busybox-static_1.36.1-6ubuntu3.1_amd64.deb",
+    "package_sha256": "944b2728f53ceb3916cec2c962873c9951e612408099601751db2a0a5d81e0ed",
+    "elf_sha256": "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14"
+  },
+  "linux": {
+    "url": "https://archive.ubuntu.com/ubuntu/pool/main/l/linux-signed/linux-image-6.8.0-31-generic_6.8.0-31.31_amd64.deb",
+    "filename": "linux-image-6.8.0-31-generic_6.8.0-31.31_amd64.deb",
+    "sha512": "aac8e72ff30d9b077bb3cf1f9bda5a1afc72c75bdd93e1eb2554c2c8fbcdad61747ad13d01870e24ca995d72a164bd8748edea09e5bb350360cab05595029097",
+    "vmlinuz_sha256": "cee36e261749483e951c8229eb1aeeb768af6c28f493421a52b3916885ce913f"
+  }
+}

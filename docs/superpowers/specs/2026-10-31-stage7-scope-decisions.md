@@ -4,10 +4,14 @@ kind: specification
 authority: stage-scope-decision
 status: scope-confirmed-design-pending
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-06
 ---
 
 # 阶段 7 范围裁决：双 personality、系统硬化与 AArch64 机制验证
+
+> 2026-11-06后继：作者另行指示启动阶段7，见[启动报告](../reports/2026-11-06-stage7-start.md)与
+> [执行计划](../plans/2026-11-06-stage7-execution.md)。本文“不启动”与阶段6当时状态保留为范围讨论时的历史描述；
+> 当前状态以[阶段跟踪器](../../../Prima%20OS%20实现阶段.md)为准，G1–G8仍按适用切片冻结。
 
 ## 1. 身份、来源与效力
 

@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-06
 ---
 
 # 启动、硬件与可信边界
@@ -85,3 +85,11 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 检索：Once、get_or_try_init、KernelRootInfo、published_once；实现见
 [sync.rs](../../../prima-ostd/src/sync.rs)、[user.rs](../../../kernel/src/user.rs)、
 [trace 校验](../../../xtask/src/protocol.rs)。该机制未替换所有 boot 标志或证明 SMP。
+
+## 阶段7工程底座后继
+
+[工件互斥](../../superpowers/specs/2026-11-06-stage7-artifact-exclusion.md)、
+[CI分组契约](../../superpowers/specs/2026-11-06-stage7-ci-evidence.md)及
+[本地验收身份报告](../../superpowers/reports/2026-11-06-stage7-ci-evidence.md)限定宿主工具范围。
+入口为[scripts/ci.py](../../../scripts/ci.py)，用法见[开发手册](../development.md#ci分组与验收身份)。
+九轨退出、远端CI和性能基准以阶段跟踪器为准；这些工具不实现OS配额、SMP或透明恢复。

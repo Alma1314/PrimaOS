@@ -35,7 +35,12 @@ updated: 2026-11-06
 |---|---|---|
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
-## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
+## 阶段 6–7（阶段6有界技术退出，阶段7启动）
+
+2026-11-06阶段7首片：[共享镜像工件互斥契约](2026-11-06-stage7-artifact-exclusion.md)，仅限7-0宿主工具；
+[启动报告](../reports/2026-11-06-stage7-start.md)记录实际验证，九轨退出不因启动勾选。
+后继[CI分组与验收身份契约](2026-11-06-stage7-ci-evidence.md)及[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)
+覆盖九组接线、输入准备和本地证据；不声称远端CI已通过。
 
 2026-11-06：[Gate请求根的审计承载历史](2026-11-06-gate-request-audit-history.md)：解除每次交付对1280项通用历史槽的重复占用，保留不可变溯源及原审计fail-stop；不扩大profile或启动阶段7。
 

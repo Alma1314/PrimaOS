@@ -53,7 +53,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（21）
+## plan（22）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -78,6 +78,7 @@
 | [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 | [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
 | [Windows LibOS 计划书：PE64 控制台与服务兼容路径](../superpowers/plans/2026-10-31-windows-libos-roadmap.md) | current | `docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md` |
+| [阶段7执行计划：工程底座与九轨冻结顺序](../superpowers/plans/2026-11-06-stage7-execution.md) | current | `docs/superpowers/plans/2026-11-06-stage7-execution.md` |
 
 ## reference（9）
 
@@ -93,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（209）
+## report（211）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -306,6 +307,8 @@
 | [阶段0–6实现审查与跨阶段整改](../superpowers/reports/2026-11-06-stage0-6-review-remediation.md) | historical | `docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md` |
 | [阶段 6 实现复核（2026-11-06）](../superpowers/reports/2026-11-06-stage6-implementation-review.md) | current | `docs/superpowers/reports/2026-11-06-stage6-implementation-review.md` |
 | [阶段6实现复核整改（RV-1–RV-7）](../superpowers/reports/2026-11-06-stage6-review-remediation.md) | historical | `docs/superpowers/reports/2026-11-06-stage6-review-remediation.md` |
+| [7-0 CI分组、锁定输入与验收身份](../superpowers/reports/2026-11-06-stage7-ci-evidence.md) | historical | `docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md` |
+| [阶段7启动与首个7-0工程增量](../superpowers/reports/2026-11-06-stage7-start.md) | historical | `docs/superpowers/reports/2026-11-06-stage7-start.md` |
 
 ## spec（4）
 
@@ -316,7 +319,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（96）
+## specification（98）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -416,6 +419,8 @@
 | [S6-M2/M3：受管理的停车、装载与 TLS](../superpowers/specs/2026-11-01-stage6-managed-launch.md) | current | `docs/superpowers/specs/2026-11-01-stage6-managed-launch.md` |
 | [S6-M4：受管进程复制和映像替换](../superpowers/specs/2026-11-02-stage6-gate-process.md) | current | `docs/superpowers/specs/2026-11-02-stage6-gate-process.md` |
 | [Gate请求根的审计承载历史](../superpowers/specs/2026-11-06-gate-request-audit-history.md) | current | `docs/superpowers/specs/2026-11-06-gate-request-audit-history.md` |
+| [阶段7首片：共享镜像工件互斥契约](../superpowers/specs/2026-11-06-stage7-artifact-exclusion.md) | current | `docs/superpowers/specs/2026-11-06-stage7-artifact-exclusion.md` |
+| [7-0 CI分组、锁定输入与验收身份契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md) | current | `docs/superpowers/specs/2026-11-06-stage7-ci-evidence.md` |
 
 ## template（4）
 
