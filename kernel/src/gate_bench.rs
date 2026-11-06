@@ -107,10 +107,22 @@ pub fn verify() {
         assert!(s.gate_well_formed());
         assert!(s.completion_waits_well_formed());
         let mut counts = [0; 3];
+        let mut first = None;
+        let mut last = None;
         for i in 0..s.audit.count {
             match s.audit.entry(i).unwrap() {
                 AuditEvent::GateTrapped { .. } => counts[0] += 1,
-                AuditEvent::GateDelivered { .. } => counts[1] += 1,
+                AuditEvent::GateDelivered { request, root, .. } => {
+                    counts[1] += 1;
+                    assert_eq!(root.target, ObjectRef::GateRequest(request));
+                    assert_eq!(root.parent, None);
+                    assert_eq!(root.rights, gate::REQUEST_ROOT_RIGHTS);
+                    assert!(matches!(s.audit.entry(root.created_at as usize),
+                        Some(AuditEvent::CapabilityMinted { cap, holder })
+                            if cap == root.handle && holder == root.holder));
+                    first.get_or_insert(root);
+                    last = Some(root);
+                }
                 AuditEvent::GateTerminated {
                     reason: gate::Reason::Replied,
                     ..
@@ -120,6 +132,17 @@ pub fn verify() {
             }
         }
         assert_eq!(counts, [SAMPLES; 3]);
+        // G4 never derives request aliases: no delivery root may also occupy
+        // the general arena, even if a faulty length query double-counts it.
+        for index in 0..s.cap_history_count {
+            let record = CAPABILITY_HISTORY_ARENA.get(s.cap_history, index).unwrap();
+            assert!(!matches!(record.target, ObjectRef::GateRequest(_)));
+        }
+        assert_eq!(s.capability_history_len(), s.cap_history_count + SAMPLES);
+        for root in [first.unwrap(), last.unwrap()] {
+            assert_eq!(s.capability_history_record(root.handle), Some(root));
+            assert!(s.retired_gate_request_cap(root.handle));
+        }
     });
 }
 
@@ -138,6 +161,7 @@ pub fn emit(mut write: impl FnMut(&[u8])) {
         }
         write(&bytes[at..]);
     }
+    write(b"S6HISTORY|deliveries=1000;audit_roots=1000;dedicated_slots_saved=1000;verified=1\n");
     write(b"S6BENCH|samples=1000;hz=");
     decimal(crate::preempt::timestamp_hz().unwrap(), &mut write);
     write(b";boundary=pre-iret;verified=1\n");

@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-mechanism-design
 status: model-reviewed
 lifecycle: current
-updated: 2026-11-01
+updated: 2026-11-06
 ---
 
 # S6-M1 协议收口：候选 A、单服务者与不可警报等待
@@ -19,6 +19,9 @@ updated: 2026-11-01
 M1b 必须按本文落实真实 trap/能力/页表/审计事务，再取得 G1–G3；不能把 host 模型接线成内核实现。
 
 ## 1. 拓扑、授权与准入
+
+请求根的不可变历史存储由[2026-11-06细化](2026-11-06-gate-request-audit-history.md)补充：
+完整根记录嵌入既有交付审计，不再消耗通用能力历史槽；身份、授权、别名与审计耗尽规则保持。
 
 - 一个 Gate 有一个固定服务 Task；多个客户端共享它。服务者必须保持原生分派且不能被门控，
   客户端不能同时是另一个活动 Gate 的服务者，排除自调用及服务环。

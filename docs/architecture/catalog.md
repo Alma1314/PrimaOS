@@ -93,7 +93,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（207）
+## report（208）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -302,6 +302,7 @@
 | [阶段 6：计量、内核映射跨度与原生 Gate 封装（未完成整阶段）](../superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md` |
 | [W7：30秒预算的分段定位](../superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md` |
 | [阶段6：进程、线程信号、逐调用差分与统一验收](../superpowers/reports/2026-11-02-stage6-process-and-differential.md) | current | `docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md` |
+| [RV-1后继：解除Gate交付的通用能力历史上限](../superpowers/reports/2026-11-06-gate-request-audit-history.md) | historical | `docs/superpowers/reports/2026-11-06-gate-request-audit-history.md` |
 | [阶段 6 实现复核（2026-11-06）](../superpowers/reports/2026-11-06-stage6-implementation-review.md) | current | `docs/superpowers/reports/2026-11-06-stage6-implementation-review.md` |
 | [阶段6实现复核整改（RV-1–RV-7）](../superpowers/reports/2026-11-06-stage6-review-remediation.md) | historical | `docs/superpowers/reports/2026-11-06-stage6-review-remediation.md` |
 
@@ -314,7 +315,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（95）
+## specification（96）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -413,6 +414,7 @@
 | [S6-M4：用户态 Linux 信号与 P1 续体](../superpowers/specs/2026-11-01-stage6-linux-signals.md) | current | `docs/superpowers/specs/2026-11-01-stage6-linux-signals.md` |
 | [S6-M2/M3：受管理的停车、装载与 TLS](../superpowers/specs/2026-11-01-stage6-managed-launch.md) | current | `docs/superpowers/specs/2026-11-01-stage6-managed-launch.md` |
 | [S6-M4：受管进程复制和映像替换](../superpowers/specs/2026-11-02-stage6-gate-process.md) | current | `docs/superpowers/specs/2026-11-02-stage6-gate-process.md` |
+| [Gate请求根的审计承载历史](../superpowers/specs/2026-11-06-gate-request-audit-history.md) | current | `docs/superpowers/specs/2026-11-06-gate-request-audit-history.md` |
 
 ## template（4）
 

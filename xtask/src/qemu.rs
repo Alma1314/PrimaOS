@@ -125,6 +125,15 @@ fn validate_gate_bench(output: &str) -> Result<String, String> {
     if output.contains("|event=panic|") {
         return Err("benchmark panicked".into());
     }
+    let history: Vec<_> = output
+        .lines()
+        .filter(|s| s.starts_with("S6HISTORY|"))
+        .collect();
+    if history
+        != ["S6HISTORY|deliveries=1000;audit_roots=1000;dedicated_slots_saved=1000;verified=1"]
+    {
+        return Err("benchmark requires one verified audit-backed history record".into());
+    }
     let headers: Vec<_> = output
         .lines()
         .filter(|s| s.starts_with("S6BENCH|"))
@@ -194,7 +203,9 @@ fn validate_gate_bench(output: &str) -> Result<String, String> {
 #[test]
 fn benchmark_rejects_missing_reordered_regressed_and_duplicate_samples() {
     let header = "S6BENCH|samples=1000;hz=1000000000;boundary=pre-iret;verified=1\n";
-    let mut good = header.to_owned();
+    let history =
+        "S6HISTORY|deliveries=1000;audit_roots=1000;dedicated_slots_saved=1000;verified=1\n";
+    let mut good = history.to_owned() + header;
     for i in 0..1000 {
         let t = i * 10 + 1;
         good.push_str(&format!(
@@ -207,6 +218,9 @@ fn benchmark_rejects_missing_reordered_regressed_and_duplicate_samples() {
     }
     assert!(validate_gate_bench(&good).unwrap().contains("total_ns=9/9"));
     for bad in [
+        good.replace(history, ""),
+        good.clone() + history,
+        good.replace("dedicated_slots_saved=1000", "dedicated_slots_saved=0"),
         good.replace(header, ""),
         good.clone() + header,
         good.replace("hz=1000000000", "hz=0"),

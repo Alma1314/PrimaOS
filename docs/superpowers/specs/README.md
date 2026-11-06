@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-02
+updated: 2026-11-06
 ---
 
 # Specs 索引
@@ -36,6 +36,8 @@ updated: 2026-11-02
 | 2026-10-23 | [2026-10-23-documentation-system-design.md](2026-10-23-documentation-system-design.md) | 文档系统设计与维护契约 |
 
 ## 阶段 6–7（阶段 6 进行中，阶段 7 未开始）
+
+2026-11-06：[Gate请求根的审计承载历史](2026-11-06-gate-request-audit-history.md)：解除每次交付对1280项通用历史槽的重复占用，保留不可变溯源及原审计fail-stop；不扩大profile或启动阶段7。
 
 2026-11-02：[受管COW进程、映像替换及原始审计读取](2026-11-02-stage6-gate-process.md)，87–89；用户态亲缘/wait与M3/M4矩阵，不代替运行证据。
 

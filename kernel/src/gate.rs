@@ -814,13 +814,16 @@ impl BootstrapState {
     }
 
     fn can_mint_gate_capability(&self, service: u32) -> bool {
+        self.can_install_gate_capability(service) && self.can_record_capability()
+    }
+
+    fn can_install_gate_capability(&self, service: u32) -> bool {
         self.fork_views
             .can_expose(self.space_of(service), |handle| {
                 self.slots.check(handle) == SlotState::Live
             })
             && self.slots.normal_free_count() > 0
             && self.positions.count < MAX_CAPABILITY_POSITIONS
-            && self.can_record_capability()
     }
 
     /// Explicitly grant a separate root; ordinary Task management capabilities
@@ -1205,7 +1208,7 @@ impl BootstrapState {
             if request.phase != Phase::Queued {
                 return Err(Error::Stale);
             }
-            if !self.can_mint_gate_capability(service) {
+            if !self.can_install_gate_capability(service) {
                 return Err(Error::Capacity);
             }
             2 + usize::from(gate.capacity_len > 0)
@@ -1250,9 +1253,14 @@ impl BootstrapState {
         let request = tables.slot_request(slot).unwrap();
         let promote = gate.capacity_len > 0;
 
-        let request_cap = self
-            .mint_root_capability(service, REQUEST_ROOT_RIGHTS, ObjectRef::GateRequest(id))
+        let root = self
+            .install_root_capability(
+                self.space_of(service),
+                REQUEST_ROOT_RIGHTS,
+                ObjectRef::GateRequest(id),
+            )
             .expect("wait preflighted capability capacity");
+        let request_cap = root.handle;
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: request_cap,
             holder: service,
@@ -1288,6 +1296,7 @@ impl BootstrapState {
             gate: gate.id,
             request: id,
             service,
+            root: root.into(),
         });
         Ok(WaitOutcome::Delivered {
             request: id,
@@ -3229,6 +3238,106 @@ mod tests {
             panic!()
         };
         (state, out, request_cap)
+    }
+
+    #[test]
+    fn repeated_deliveries_exceed_the_general_history_limit_without_losing_roots() {
+        let _serial = serial();
+        let mut state = pair();
+        let out = attach(&mut state, 3, 0xdead);
+        let general = state.cap_history_count;
+        let history = state.capability_history_len();
+        let mut first = None;
+        let mut previous_id = 0;
+        for value in 0..1300 {
+            state.yield_task(2).unwrap();
+            state.schedule_task(3).unwrap();
+            state.gate_trap(3, value, [value; 6], 0).unwrap();
+            state.schedule_task(2).unwrap();
+            let WaitOutcome::Delivered { request_cap, .. } =
+                state.gate_wait(2, out.gate_cap).unwrap()
+            else {
+                panic!()
+            };
+            let record: CapabilityHistoryRecord = state.records.find(request_cap).unwrap().into();
+            assert!(record.cap_id > previous_id);
+            previous_id = record.cap_id;
+            first.get_or_insert(record);
+            state.gate_reply(2, request_cap, value, false).unwrap();
+            assert_eq!(state.slots.check(request_cap), SlotState::Free);
+        }
+        let first = first.unwrap();
+        assert_eq!(state.cap_history_count, general);
+        assert_eq!(state.capability_history_len(), history + 1300);
+        assert_eq!(state.capability_history_record(first.handle), Some(first));
+        assert!(state.retired_gate_request_cap(first.handle));
+        assert_eq!(
+            state.gate_reply(2, first.handle, 0, false),
+            Err(Error::Stale)
+        );
+        assert!(state.gate_well_formed());
+        state.validate_authority().unwrap();
+    }
+
+    #[test]
+    fn request_delivery_survives_full_general_history_and_retains_its_identity() {
+        let _serial = serial();
+        let (mut state, out, first) = delivered_pair();
+        while state.cap_history_count < MAX_CAPABILITY_HISTORY {
+            let cap = state
+                .derive_capability(
+                    INIT_TASK_ID,
+                    IMAGE_CAP_HANDLE,
+                    Rights::from_rights(&[Right::SegMapR]),
+                )
+                .unwrap();
+            state.drop_capability(INIT_TASK_ID, cap).unwrap();
+        }
+        assert_eq!(
+            state.derive_capability(2, first, REQUEST_ROOT_RIGHTS),
+            Err(DeriveError::CapacityExceeded)
+        );
+        state.gate_reply(2, first, 0, false).unwrap();
+        state.yield_task(2).unwrap();
+        state.schedule_task(3).unwrap();
+        state.gate_trap(3, 7, [0; 6], 0).unwrap();
+        state.schedule_task(2).unwrap();
+        let WaitOutcome::Delivered { request_cap, .. } = state.gate_wait(2, out.gate_cap).unwrap()
+        else {
+            panic!()
+        };
+        assert_ne!(request_cap, first);
+        assert_eq!(state.cap_history_count, MAX_CAPABILITY_HISTORY);
+        assert!(state.capability_history_record(first).is_some());
+        assert!(state.capability_history_record(request_cap).is_some());
+        state.validate_authority().unwrap();
+        state.gate_reply(2, request_cap, 7, false).unwrap();
+        assert!(state.gate_well_formed());
+    }
+
+    #[test]
+    fn dropped_audit_backed_root_keeps_alias_ancestry_until_one_shot_completion() {
+        let _serial = serial();
+        let (mut state, _, root) = delivered_pair();
+        let original = state.capability_history_record(root).unwrap();
+        let alias = state
+            .derive_capability(2, root, REQUEST_ROOT_RIGHTS)
+            .unwrap();
+        state.drop_capability(2, root).unwrap();
+        let child = state
+            .derive_capability(2, alias, REQUEST_ROOT_RIGHTS)
+            .unwrap();
+        state.validate_authority().unwrap();
+        let trace = state.audit_trace(2, child).unwrap();
+        assert_eq!(&trace.chain[..trace.chain_len], &[root, alias, child]);
+        assert_eq!((trace.minted, trace.derived), (1, 2));
+        state.gate_reply(2, child, 11, false).unwrap();
+        assert_eq!(state.capability_history_record(root), Some(original));
+        for cap in [root, alias, child] {
+            assert!(state.retired_gate_request_cap(cap));
+            assert_eq!(state.gate_reply(2, cap, 22, false), Err(Error::Stale));
+        }
+        state.validate_authority().unwrap();
     }
 
     #[test]

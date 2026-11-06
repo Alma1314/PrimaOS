@@ -279,7 +279,9 @@
       "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
       "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
-      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
+      "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
+      "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -348,7 +350,9 @@
       "docs/superpowers/reports/2026-10-10-stage3-audit-trace-restore-report.md",
       "docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md",
       "docs/superpowers/reports/2026-10-18-stage3-review-remediation.md",
-      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md"
+      "docs/superpowers/specs/2026-10-26-event-authority-model-design.md",
+      "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
+      "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md"
     ],
     "code": [
       "kernel/src/namespace.rs",
@@ -767,7 +771,9 @@
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
       "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
       "docs/superpowers/reports/2026-11-06-stage6-implementation-review.md",
-      "docs/superpowers/reports/2026-11-06-stage6-review-remediation.md"
+      "docs/superpowers/reports/2026-11-06-stage6-review-remediation.md",
+      "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
+      "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",

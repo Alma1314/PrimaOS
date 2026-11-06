@@ -486,6 +486,8 @@ pub enum AuditEvent {
         gate: u32,
         request: u32,
         service: u32,
+        /// Immutable request-root history; retained after every alias retires.
+        root: CapabilityHistoryRecord,
     },
     /// S6-M1/M1b：容量等待者按 FIFO 晋级到可递送队列。
     GatePromoted {
@@ -669,7 +671,7 @@ impl AuditLog {
 }
 
 /// §13.2：父 Cap 可在派生后丢弃并复用槽位，链长由追加式历史容量约束。
-pub const MAX_TRACE_CHAIN: usize = MAX_CAPABILITY_HISTORY;
+pub const MAX_TRACE_CHAIN: usize = MAX_CAPABILITY_HISTORY + 1;
 
 /// §13.2：一条 Capability 的不可变祖先链与相关事件摘要（`audit(cap)` 的返回值）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1632,9 +1634,23 @@ pub struct CapabilityHistoryRecord {
     pub created_at: u32,
 }
 
-/// ISSUE-AUDIT-007：历史表容量（每个 `BootstrapState` 实例的累计铸造/派生次数上限）。
-// A 1000-call Gate measurement mints one request identity per call. Retain
-// every identity; exhaustion remains deterministic rather than recycling history.
+impl From<CapabilityRecord> for CapabilityHistoryRecord {
+    fn from(record: CapabilityRecord) -> Self {
+        Self {
+            handle: record.handle,
+            cap_id: record.cap_id,
+            parent: record.parent,
+            holder: record.holder,
+            rights: record.rights,
+            target: record.target,
+            target_generation: record.target_generation,
+            created_at: record.created_at,
+        }
+    }
+}
+
+/// General capability-history capacity. Gate delivery roots retain their
+/// immutable records in GateDelivered instead; derived aliases still use this arena.
 pub const MAX_CAPABILITY_HISTORY: usize = 1280;
 #[cfg(not(test))]
 const CAPABILITY_HISTORY_REGIONS: usize = 1;
@@ -4295,33 +4311,38 @@ impl BootstrapState {
     /// 把一条已提交的 `CapRecord` 追加到不可变历史表。
     fn append_capability_history(&mut self, record: CapabilityRecord) {
         let index = self.cap_history_count;
-        CAPABILITY_HISTORY_ARENA.set(
-            self.cap_history,
-            index,
-            Some(CapabilityHistoryRecord {
-                handle: record.handle,
-                cap_id: record.cap_id,
-                parent: record.parent,
-                holder: record.holder,
-                rights: record.rights,
-                target: record.target,
-                target_generation: record.target_generation,
-                created_at: record.created_at,
-            }),
-        );
+        CAPABILITY_HISTORY_ARENA.set(self.cap_history, index, Some(record.into()));
         self.cap_history_count += 1;
     }
 
     /// ISSUE-AUDIT-007：历史表中的累计 `CapRecord` 数（含已 drop/撤销的条目）。
     pub fn capability_history_len(&self) -> usize {
-        self.cap_history_count
+        let mut count = self.cap_history_count;
+        self.audit.for_each(|event| {
+            if matches!(event, AuditEvent::GateDelivered { .. }) {
+                count += 1;
+            }
+        });
+        count
     }
 
     /// 按句柄查不可变历史记录。句柄含 generation，故跨槽位复用仍唯一。
     pub fn capability_history_record(&self, handle: Handle) -> Option<CapabilityHistoryRecord> {
-        (0..self.cap_history_count)
+        let record = (0..self.cap_history_count)
             .filter_map(|index| CAPABILITY_HISTORY_ARENA.get(self.cap_history, index))
-            .find(|record| record.handle == handle)
+            .find(|record| record.handle == handle);
+        if record.is_some() {
+            return record;
+        }
+        let mut found = None;
+        self.audit.for_each(|event| {
+            if let AuditEvent::GateDelivered { root, .. } = *event
+                && root.handle == handle
+            {
+                found = Some(root);
+            }
+        });
+        found
     }
 
     /// 句柄 → 单调 `CapId`（初始根或活动 `CapRecord`）。
@@ -4449,7 +4470,7 @@ impl BootstrapState {
         trace.origin_none = true;
         let mut current = cap;
         loop {
-            // 每个 parent 都先于其 child 存在；历史表容量也是有效链的上界。
+            // General derived records plus at most one audit-backed request root.
             if trace.chain_len == MAX_TRACE_CHAIN {
                 return Err(AuditError::InvalidCap);
             }
@@ -4876,6 +4897,20 @@ impl BootstrapState {
         if !self.can_record_capability() {
             return Err(DeriveError::CapacityExceeded);
         }
+        let record = self.install_root_capability(holder, rights, target)?;
+        self.append_capability_history(record);
+        Ok(record.handle)
+    }
+
+    /// Caller preflights rights, live slots, positions and audit capacity, then
+    /// commits immutable history to the general arena or the delivery event in
+    /// the same non-schedulable transaction. This helper only installs live state.
+    fn install_root_capability(
+        &mut self,
+        holder: u32,
+        rights: Rights,
+        target: ObjectRef,
+    ) -> Result<CapabilityRecord, DeriveError> {
         let (cap_id, handle) = self
             .allocate_capability_slot(None)
             .ok_or(DeriveError::CapacityExceeded)?;
@@ -4893,8 +4928,7 @@ impl BootstrapState {
         self.positions
             .register(handle, holder)
             .map_err(|_| DeriveError::CapacityExceeded)?;
-        self.append_capability_history(record);
-        Ok(handle)
+        Ok(record)
     }
 
     /// 在**显式槽位**铸造一条根 Capability（切片 R：平台 actor 的固定槽区间）。

@@ -83,6 +83,9 @@ Linux专用号名、含linux的syscall/errno/dispatch标识符，以及中立层
 
 ## 阶段/profile影响与重审触发
 
+RV-1的后继实现见[审计承载请求根历史](2026-11-06-gate-request-audit-history.md)：
+原1279次限制及留待后继的表述属于本报告基线；后继解除重复历史槽占用，保留完整历史与审计fail-stop。
+
 更新[当前阶段与证据索引](../../../Prima%20OS%20实现阶段.md)及[报告索引](README.md)，
 不改变阶段退出勾选或扩大profile。重审触发：家族/线程上限变化、审计事件顺序或同步请求模型变化、
 超过登记交付预算的工作负载、外部arena再次变化、新Linux号/errno/clone策略进入中立层，或阶段7共享root/SMP改动。

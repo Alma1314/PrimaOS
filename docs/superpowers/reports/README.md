@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-02
+updated: 2026-11-06
 ---
 
 # Reports 索引
@@ -105,6 +105,10 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
 ## 阶段 6（有界技术退出复核通过）
+
+2026-11-06继续：[Gate请求根的审计承载历史](2026-11-06-gate-request-audit-history.md)承接RV-1，
+将请求根完整历史放入原交付审计、解除1279次累计交付上限；通用能力预算与审计fail-stop保持。
+本次运行证据和限制以该报告为准，首轮边界登记保留。
 
 2026-11-06：[阶段 6 实现复核](2026-11-06-stage6-implementation-review.md)：
 独立复现 host 1118/1119、lint 41 文件零 unsafe、TCB 5.15%、Linux 同源 11 项双轮差分与完整
