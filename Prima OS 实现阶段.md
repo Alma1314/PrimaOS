@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-11-04
+updated: 2026-11-06
 ---
 
 # Prima OS 实现阶段
@@ -45,6 +45,7 @@ updated: 2026-11-04
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
 | 阶段5余项/阶段6入口 | [收尾路线图](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | 计划；其中旧基线的“未实现”由后继报告限定，不当成当前摘要 |
 | S6-M3/M4 进程与差分后继 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md) | 87–89、pthread/进程/M3与原始审计双轮通过；完整72/72及有界出口复核通过 |
+| 阶段6实现复核 | [独立复核](docs/superpowers/reports/2026-11-06-stage6-implementation-review.md) | 独立复现 host 1118/1119、lint、TCB、Linux同源差分与完整BIOS 72/72；2项中等、4项低风险与1项契约漂移；不改变阶段状态与勾选 |
 | S6-M4 上下文/信号/线程 | [P1/P2与专用镜像构建](docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md) | 83–86、TaskContext、GPR/FXSAVE、Linux信号和共享线程/futex；仅编译/构建，未执行任何测试，非阶段退出 |
 | S6-M2/M3 停车装载与LibOS | [受管理装载与真实制品镜像构建](docs/superpowers/reports/2026-11-01-stage6-managed-linux-loader.md) | 79–82、manifest v3、用户态profile草案、六applet差分工程；仅编译/构建，无运行证据，非阶段退出 |
 | S6-M2 私有映像容量 | [526页、额度失败与再次exec](docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md) | 私有640页及相关全局预算，普通段仍149页；host/QEMU范围分开，非冻结busybox运行 |

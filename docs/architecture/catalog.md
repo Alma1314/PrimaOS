@@ -93,7 +93,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（205）
+## report（206）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -302,6 +302,7 @@
 | [阶段 6：计量、内核映射跨度与原生 Gate 封装（未完成整阶段）](../superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-measurement-and-boot-span.md` |
 | [W7：30秒预算的分段定位](../superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md` |
 | [阶段6：进程、线程信号、逐调用差分与统一验收](../superpowers/reports/2026-11-02-stage6-process-and-differential.md) | current | `docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md` |
+| [阶段 6 实现复核（2026-11-06）](../superpowers/reports/2026-11-06-stage6-implementation-review.md) | current | `docs/superpowers/reports/2026-11-06-stage6-implementation-review.md` |
 
 ## spec（4）
 
