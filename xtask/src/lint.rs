@@ -64,6 +64,100 @@ pub fn lint_command(args: &[String]) -> Result<(), String> {
         "PASS kernel {MECHANISM_DIR} has zero `unsafe` ({} files scanned)",
         scanned.files
     );
+    check_personality_boundary(&root)?;
+    println!("PASS S6-X3 personality boundary (legacy native clone flags scoped)");
+    Ok(())
+}
+
+/// Narrow source guard, not a proof about arbitrary numeric dispatch tables.
+/// Stage 5's native clone adapter remains scoped to its existing function;
+/// it is not used to interpret gated clients' Linux calls.
+fn personality_hits(source: &str, native_clone_adapter: bool) -> Vec<(usize, String)> {
+    const LEGACY_CLONE_FLAGS: &[&str] = &[
+        "CLONE_VM",
+        "CLONE_FS",
+        "CLONE_FILES",
+        "CLONE_SIGHAND",
+        "CLONE_THREAD",
+        "CLONE_SYSVSEM",
+        "CLONE_SETTLS",
+        "CLONE_PARENT_SETTID",
+        "CLONE_CHILD_CLEARTID",
+        "CLONE_CHILD_SETTID",
+        "CLONE_DETACHED",
+    ];
+    const LINUX_CALLS: &[&str] = &[
+        "SYS_READ",
+        "SYS_WRITE",
+        "SYS_OPEN",
+        "SYS_CLOSE",
+        "SYS_OPENAT",
+        "SYS_MMAP",
+        "SYS_MUNMAP",
+        "SYS_BRK",
+        "SYS_FUTEX",
+        "SYS_ARCH_PRCTL",
+        "SYS_RT_SIGACTION",
+        "SYS_RT_SIGPROCMASK",
+        "SYS_RT_SIGRETURN",
+        "SYS_EXIT_GROUP",
+    ];
+    let mut hits = Vec::new();
+    let mut in_native_clone = false;
+    for (index, line) in strip_comments(source).lines().enumerate() {
+        if native_clone_adapter && line.starts_with("fn clone_call(") {
+            in_native_clone = true;
+        }
+        for token in line
+            .split(|c: char| !is_identifier_char(c))
+            .filter(|s| !s.is_empty())
+        {
+            let lower = token.to_ascii_lowercase();
+            let linux_mapping = lower.contains("linux")
+                && ["syscall", "errno", "dispatch"]
+                    .iter()
+                    .any(|s| lower.contains(s));
+            if token.starts_with("__NR_")
+                || token.starts_with("LINUX_")
+                || token.starts_with("FUTEX_")
+                || LINUX_CALLS.contains(&token)
+                || linux_mapping
+                || token.starts_with("CLONE_")
+                    && !(in_native_clone && LEGACY_CLONE_FLAGS.contains(&token))
+            {
+                hits.push((index + 1, token.to_owned()));
+            }
+        }
+        if line == "}" {
+            in_native_clone = false;
+        }
+    }
+    hits
+}
+
+fn check_personality_boundary(root: &Path) -> Result<(), String> {
+    for directory in [
+        MECHANISM_DIR,
+        "cosir/src",
+        TRUSTED_DIR,
+        "prima-runtime/src",
+        "prima-abi/src",
+    ] {
+        let mut files = Vec::new();
+        collect_rust_files(&root.join(directory), &mut files)?;
+        files.sort();
+        for file in files {
+            let source = fs::read_to_string(&file)
+                .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+            let hits = personality_hits(&source, file == root.join("kernel/src/syscall.rs"));
+            if !hits.is_empty() {
+                return Err(format!(
+                    "S6-X3 personality policy in {}: {hits:?}",
+                    file.display()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -418,6 +512,41 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personality_guard_rejects_policy_markers_but_allows_neutral_mechanisms() {
+        for source in [
+            "const __NR_read: u64 = 0;",
+            "const LINUX_SYS_READ: u64 = 0;",
+            "fn linux_errno() {}",
+            "fn errno_to_linux() {}",
+            "fn linux_syscall() {}",
+            "match nr { SYS_READ => read(), _ => 0 }",
+            "const FUTEX_WAIT: u64 = 0;",
+            "const CLONE_NEWPID: u64 = 0x20000000;",
+            "const CLONE_VM: u64 = 0x100;",
+        ] {
+            assert!(
+                !personality_hits(source, false).is_empty(),
+                "missed {source}"
+            );
+        }
+        assert!(personality_hits(
+            "// Linux __NR_read\nlet text = \"LINUX_ERRNO\";\nfn gate_reply(value: u64) {}\nconst SYS_CLONE: u64 = 48;\nconst RANDOM: u64 = 25;",
+            false,
+        ).is_empty());
+        let legacy = "fn clone_call(flags: u64) {\n    const CLONE_VM: u64 = 0x100;\n}\n";
+        assert!(personality_hits(legacy, true).is_empty());
+        assert!(
+            !personality_hits(&format!("{legacy}const CLONE_VM: u64 = 0x100;"), true).is_empty()
+        );
+        assert!(!personality_hits(&legacy.replace("CLONE_VM", "CLONE_NEWPID"), true).is_empty());
+    }
+
+    #[test]
+    fn repository_keeps_personality_policy_out_of_neutral_layers() {
+        check_personality_boundary(&workspace_root().unwrap()).unwrap();
+    }
 
     #[test]
     fn strip_comments_removes_line_and_nested_block_comments() {

@@ -4,7 +4,7 @@
 
 use prima_runtime::{Capability, Error, Rights, Runtime, TaskId, TaskSpec, X86_64Transport};
 use prima_user::linux::{
-    CASES, P1, P2, PTHREAD, Process,
+    CASES, MAX_FAMILY_TASKS, P1, P2, PTHREAD, PendingTraps, Process,
     process::Family,
     signal::{Completion, Signals},
     thread::{Call, ThreadGroup},
@@ -43,34 +43,20 @@ fn number(rt: &Native, serial: Capability, mut value: u64) {
     emit(rt, serial, &digits[start..]);
 }
 fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64) {
-    let mut pending = [None::<prima_runtime::gate::GateAudit>; 18];
+    let mut pending = PendingTraps::default();
     let mut counts = [0u64; 6];
     while let Some(record) = rt.gate_audit_read(gate, *cursor).unwrap() {
         *cursor = record.cursor;
         match record.kind {
             1 => {
                 counts[0] += 1;
-                assert!(
-                    !pending
-                        .iter()
-                        .flatten()
-                        .any(|trap| trap.request == record.request)
-                );
-                *pending
-                    .iter_mut()
-                    .find(|slot| slot.is_none())
-                    .expect("bounded live Tasks") = Some(record);
+                pending.insert(record);
             }
             2 => counts[1] += 1,
             3 => {
                 assert!(record.flags < 4);
                 counts[2 + record.flags as usize] += 1;
-                let original = pending
-                    .iter_mut()
-                    .find(|slot| slot.is_some_and(|trap| trap.request == record.request))
-                    .expect("terminal request has raw trap audit")
-                    .take()
-                    .unwrap();
+                let original = pending.remove(record.request);
                 if record.flags != 1 {
                     continue;
                 }
@@ -93,7 +79,7 @@ fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64) {
             _ => unreachable!(),
         }
     }
-    assert!(pending.iter().all(Option::is_none));
+    assert!(pending.is_empty());
     emit(rt, serial, b"S6COUNTS|");
     for (index, label) in [
         b"trapped=".as_slice(),
@@ -222,7 +208,7 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             .unwrap();
         shared_gate = Some(gate);
         let mut requests = 0;
-        let mut seen_tasks = [0; 32];
+        let mut seen_tasks = [0; MAX_FAMILY_TASKS];
         let mut family = Family::new(process).unwrap();
         let mut unsupported = 0;
         loop {

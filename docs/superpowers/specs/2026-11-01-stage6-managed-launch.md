@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-mechanism-design
 status: implementation-contract-not-exit-signoff
 lifecycle: current
-updated: 2026-11-01
+updated: 2026-11-06
 ---
 
 # S6-M2/M3：受管理的停车、装载与 TLS
@@ -43,6 +43,13 @@ Linux装载服务使用v3 flags=0，通用加载器不得在其首个服务页�
 这不按kind解释服务或personality，不改变v2输入，也不让只读制品数据承担隐含探针空间。
 聚合boot服务的外部帧向量预算192→768以容纳原始2MiB级制品载体；普通Segment149页、
 私有exec640页、全局数据2048帧和页表256帧不变，不扩内核栈值的内联帧向量。
+
+**后继容量修订（RV-3，2026-11-06）**：上段768页是本切片初始预算。
+[统一验收](../reports/2026-11-02-stage6-process-and-differential.md)所用服务制品已达3 159 672 B，
+需772页，超过768页（3 145 728 B）；实现已将boot服务外部帧arena扩到1024页。
+当前契约以1024为该项预算，保留192→768的历史与此次契约滞后记录；普通段149页、私有exec640页、
+全局物理预算及内核栈内联向量均不变。这不是扩大单个ELF装载额度，后续再变更须更新本契约并重验。
+发现与整改见[审查](../reports/2026-11-06-stage6-implementation-review.md)、[整改报告](../reports/2026-11-06-stage6-review-remediation.md)。
 
 
 - `task_set_tls(task_cap, fs_base)`追加82；其余参数0。调用者需TaskManageVSpace。

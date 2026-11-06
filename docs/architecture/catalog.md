@@ -93,7 +93,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（206）
+## report（207）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -303,6 +303,7 @@
 | [W7：30秒预算的分段定位](../superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md) | historical | `docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md` |
 | [阶段6：进程、线程信号、逐调用差分与统一验收](../superpowers/reports/2026-11-02-stage6-process-and-differential.md) | current | `docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md` |
 | [阶段 6 实现复核（2026-11-06）](../superpowers/reports/2026-11-06-stage6-implementation-review.md) | current | `docs/superpowers/reports/2026-11-06-stage6-implementation-review.md` |
+| [阶段6实现复核整改（RV-1–RV-7）](../superpowers/reports/2026-11-06-stage6-review-remediation.md) | historical | `docs/superpowers/reports/2026-11-06-stage6-review-remediation.md` |
 
 ## spec（4）
 

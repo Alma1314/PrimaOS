@@ -5,6 +5,8 @@ use super::{
 };
 use prima_runtime::{Capability, gate::GateRequest};
 
+pub const MAX_THREADS: usize = 8;
+
 #[derive(Clone, Copy)]
 pub struct Thread {
     pub cookie: u64,
@@ -23,8 +25,8 @@ struct Waiter {
 }
 #[derive(Default)]
 pub struct ThreadGroup {
-    tasks: [Option<Thread>; 8],
-    waiters: [Option<Waiter>; 8],
+    tasks: [Option<Thread>; MAX_THREADS],
+    waiters: [Option<Waiter>; MAX_THREADS],
     leader_exit: Option<GateRequest>,
     actions: Actions,
     process_signals: Signals,

@@ -27,7 +27,7 @@ updated: 2026-11-06
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 当前阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 最终源码完整BIOS72/72；Linux11项双轮；Gate/七审计边界/D14双轮；host1118/1119、lint/特性Clippy、Lean通过 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；保留全部前序失败与整改 |
+| 最近验证记录 | 2026-11-06整改host1122/1123、lint/特性Clippy、Linux11项双轮及文档检查通过；普通BIOS72/72、Gate/七审计边界/D14与Lean仍引用前序版本，未在整改中重跑 | [本次整改](docs/superpowers/reports/2026-11-06-stage6-review-remediation.md)、[前序统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；保留全部前序失败与整改 |
 | 阶段 6 | **已满足退出条件，技术复核4/4**；有界Linux profile v1与D12八成员运行冻结 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不自动构成组织级签署，不启动阶段7 |
 | 阶段 7 | **未开始；综合交付范围已由作者确认，技术规格、白名单与量化门槛待冻结**；7-0/7-A…7-H 九轨必交付，退出仍未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
@@ -40,6 +40,7 @@ updated: 2026-11-06
 | 阶段0–4签署 | 上方 SPEC-145–149 | 以各自退出条件及证据范围为限 |
 | 阶段5签署 | [SPEC-152](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md) | 有界 profile v2 冻结；D1–D10 范围确认；BLK-003 按阶段5范围关闭；不表示完整 POSIX/Linux 兼容 |
 | 签署后整改 | [SPEC-150](docs/superpowers/reports/2026-10-17-stage1-review-remediation-spec150.md)、[151](docs/superpowers/reports/2026-10-18-stage1-open-issues-spec151.md)、[阶段2 IPC](docs/superpowers/reports/2026-10-18-stage2-ipc-review-remediation.md)、[阶段3](docs/superpowers/reports/2026-10-18-stage3-review-remediation.md)、[1–4复核](docs/superpowers/reports/2026-10-18-stage1-4-implementation-review.md) | 旧签署后的局部修订，不抹去旧报告 |
+| 阶段6复核整改 | [RV-1–RV-7审查](docs/superpowers/reports/2026-11-06-stage6-implementation-review.md)、[整改](docs/superpowers/reports/2026-11-06-stage6-review-remediation.md) | 登记累计交付≤1279的资源边界（实际受其它能力消耗影响）和1024帧预算；修复审计容量/游标、合并D17表并加personality门禁；既有原生clone边界按后继纠偏解释 |
 | OSTD 跨项目复用 | [契约](docs/superpowers/specs/2026-10-24-asterinas-reuse-design.md)、[验证](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[来源与许可](docs/architecture/asterinas-provenance.md) | 对齐/临界区、[POD/缓冲](docs/superpowers/specs/2026-10-24-asterinas-pod-buffer-design.md)及[一次发布](docs/superpowers/specs/2026-10-24-asterinas-once-publication-design.md)后继；不等于完整框架 soundness 或 SMP |
 | 原生运行时/服务 | [SPEC-130](docs/superpowers/reports/2026-10-16-stage4-closure-report.md)、[握手/路径后继](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[主题包](docs/architecture/topics/runtime.md) | 原生应用/服务收口不等于 POSIX 完整实现 |
 | 阶段5当前子集 | [M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md)、[M21](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、下方里程碑表 | 分别记录已覆盖、限制与未签署条件 |
@@ -105,6 +106,10 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 阶段 1～5 后继复核见[2026-10-31 整改报告](docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md)：VFS 空文件内容别名、musl 检查假 PASS 与干净工作树聚焦验收修复；验证结果与限制以报告为准，阶段签署范围不变。
 
 ## 已知问题与当前阻塞
+
+2026-11-06复核整改：[RV-1–RV-7后继](docs/superpowers/reports/2026-11-06-stage6-review-remediation.md)。
+单次启动能力历史1280项不可回收，Gate累计交付至多1279、实际可用数更低；耗尽后服务终止，
+不构成长时运行保证。可回收历史设计留阶段7后继，阶段7仍未启动。
 
 2026-11-01 装载后继：[RAM复制、四段/BSS与八页栈](docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md)。前序W7时限失败保留，本轮最终结果不外推为一般性能保证。
 
@@ -353,6 +358,10 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 本轮明确后继其“未执行”状态，不改写历史结果。普通VFS任意大文件exec、实时信号/备用栈、XSAVE/AVX、
 完整pid命名空间及完整POSIX/Linux不在本冻结范围。
 
+2026-11-06[复核整改](docs/superpowers/reports/2026-11-06-stage6-review-remediation.md)补齐既有容量边界与实现硬化，
+不扩大profile或改变退出勾选。S6-X3的窄口径守卫已接入lint；阶段5原生`clone_call`仍含既有`CLONE_*`
+标志适配，不能把“Gate不解释Linux调用”外推为全仓库没有任何Linux形状的适配。此审查遗漏与门禁限制见整改报告。
+
 ### 交付检查
 
 - [x] S6-D1：静态 ELF 加载器与 Linux 初始栈。冻结制品真实PT_LOAD/BSS和8页栈双轮运行，argv/env/auxv与失败回收按契约验证。
@@ -365,7 +374,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 - [x] S6-X1：白名单中的静态 ELF 无需修改即可运行。D12八成员双轮通过。
 - [x] S6-X2：支持的 syscall 与参考 Linux 通过差分测试。v1命名变体与M3/M4矩阵双轮通过。
-- [x] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。源码与TCB耦合复核，政策保持在用户态。
+- [x] S6-X3：HexArc / COSIR 不包含 Linux 专属对象或 syscall 语义。Gate递送路径与COSIR按有界范围复核；既有原生clone适配偏差及本次源码守卫的限定范围见[RV整改](docs/superpowers/reports/2026-11-06-stage6-review-remediation.md#审查纠偏与门禁边界)，不外推为全内核无Linux形状适配的证明。
 - [x] S6-X4：未支持 syscall 得到确定且可审计的失败。ENOSYS原号/参数/cookie/结果与一次性终结核对通过。
 
 > 注：候选规格（DOC-002）把 `ld.so` 最小动态链接闭环列为 P0、随阶段 5 交付，而白皮书把“动态链接”列为阶段 7 候选。**已裁决（D11/D4，SPEC-152）**：动态链接留阶段 7 的 7-E，阶段 6 的输入必须无 `PT_INTERP`；不得两处各写一套。

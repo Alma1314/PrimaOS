@@ -468,12 +468,12 @@ pub mod auxv {
 mod tests {
     use super::syscall;
 
-    /// D17 冻结台账：`1..=72` 已实现号的逐号映射。
+    /// D17 冻结台账：`1..=89` 已实现号的逐号映射（52 保留）。
     ///
     /// 这张表**故意与实现分开写**：宏生成的 [`syscall::NUMBERS`] 若被重编号（例如把
     /// `SYS_WAIT4` 从 53 挪到 73），实现内部仍然自洽，只有本表会失败。改号必须同时改
     /// 这里，并按 D17 留下裁决与迁移记录。
-    const FROZEN: [(u64, &str); 71] = [
+    const FROZEN: [(u64, &str); 88] = [
         (1, "SYS_ECHO"),
         (2, "SYS_SUM4"),
         (3, "SYS_COPY_IN"),
@@ -545,6 +545,23 @@ mod tests {
         (70, "SYS_DEV_IRQ_CREATE"),
         (71, "SYS_DEV_IRQ_MASK"),
         (72, "SYS_TASK_WAIT_DEADLINE"),
+        (73, "SYS_GATE_ATTACH"),
+        (74, "SYS_GATE_WAIT"),
+        (75, "SYS_GATE_COPY_IN"),
+        (76, "SYS_GATE_COPY_OUT"),
+        (77, "SYS_GATE_REPLY"),
+        (78, "SYS_GATE_ABORT"),
+        (79, "SYS_TASK_CREATE_HELD"),
+        (80, "SYS_TASK_LOAD_IMAGE"),
+        (81, "SYS_TASK_START"),
+        (82, "SYS_TASK_SET_TLS"),
+        (83, "SYS_TASK_CONTEXT_AUTHORITY"),
+        (84, "SYS_GATE_READ_FRAME"),
+        (85, "SYS_GATE_REPLY_FRAME"),
+        (86, "SYS_GATE_SPAWN_THREAD"),
+        (87, "SYS_GATE_FORK"),
+        (88, "SYS_GATE_EXEC_IMAGE"),
+        (89, "SYS_GATE_AUDIT_READ"),
     ];
 
     /// 台账本身必须是严格升序且无重复，否则 [`syscall::name`] 的线性查找与证据工具
@@ -561,29 +578,7 @@ mod tests {
     /// 逐号钉死：任何重编号、漏登记或提前预留都会在这里失败。
     #[test]
     fn numbers_match_the_frozen_d17_ledger() {
-        assert_eq!(&syscall::NUMBERS[..FROZEN.len()], &FROZEN[..]);
-        assert_eq!(
-            &syscall::NUMBERS[FROZEN.len()..],
-            &[
-                (73, "SYS_GATE_ATTACH"),
-                (74, "SYS_GATE_WAIT"),
-                (75, "SYS_GATE_COPY_IN"),
-                (76, "SYS_GATE_COPY_OUT"),
-                (77, "SYS_GATE_REPLY"),
-                (78, "SYS_GATE_ABORT"),
-                (79, "SYS_TASK_CREATE_HELD"),
-                (80, "SYS_TASK_LOAD_IMAGE"),
-                (81, "SYS_TASK_START"),
-                (82, "SYS_TASK_SET_TLS"),
-                (83, "SYS_TASK_CONTEXT_AUTHORITY"),
-                (84, "SYS_GATE_READ_FRAME"),
-                (85, "SYS_GATE_REPLY_FRAME"),
-                (86, "SYS_GATE_SPAWN_THREAD"),
-                (87, "SYS_GATE_FORK"),
-                (88, "SYS_GATE_EXEC_IMAGE"),
-                (89, "SYS_GATE_AUDIT_READ"),
-            ]
-        );
+        assert_eq!(syscall::NUMBERS, &FROZEN);
     }
 
     /// `0`/`52` 保留；只登记实际实现的追加号。

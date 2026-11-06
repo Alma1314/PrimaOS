@@ -4,7 +4,7 @@ kind: ledger
 authority: frozen-whitelist
 status: frozen-by-decision-d12
 lifecycle: current
-updated: 2026-11-04
+updated: 2026-11-06
 ---
 
 # 阶段 6 静态 ELF 白名单（D12 冻结）
@@ -55,7 +55,7 @@ LC_ALL=C objdump -d /usr/bin/busybox | grep -c 'fs:0x28'
 | `true` | `exit_group` | 退出码 0，无额外输出 |
 | `echo hello` | `write` | stdout 逐字节等于 `hello\n` |
 | `cat <file>` | `openat`/`read`/`close`/`write` | 输出等于输入文件字节 |
-| `ls <dir>` | `getdents64`/`newfstatat`/`ioctl(TIOCGWINSZ)` | 条目集合与参考 guest 一致（排序后比对） |
+| `ls <dir>` | `getdents64`/`newfstatat`/`ioctl(TIOCGWINSZ)` | 固定`ls /fixturedir`的stdout/stderr逐字节、退出码与参考guest一致；不做排序归一化 |
 | `uname` | `uname` | 字段值与参考 guest 一致（内核版本字段按本项目声明） |
 | `sort`（stdin→stdout） | `read`/`write`/`brk`/`mmap` | 输出为输入行的字典序 |
 | 探针 P1（自写） | 裸 `syscall` 指令 + errno/EINTR | 证明是"递送"而不是"重定向 libc"；负例得到确定性 errno |

@@ -4,7 +4,7 @@ kind: compatibility
 authority: frozen-bounded-syscall-profile
 status: frozen-with-partial-coverage
 lifecycle: current
-updated: 2026-11-04
+updated: 2026-11-06
 ---
 
 # Linux LibOS profile v1（有界冻结）
@@ -20,6 +20,16 @@ v1冻结范围以上表边界与命名差分观察为准。当前阶段与退出
 运行模型：一个原生ring3装载/LibOS服务；Process间独立root，同组至多8个显式受管线程共享root，全部陷入先交给Gate。
 服务端按完整Task cookie选择状态。Linux号、errno、flags、fd、utsname、stat与dirent布局只在用户态解释。
 大ELF以原生只读映像内的原字节载体提供，普通RAM VFS的2920字节内容区不扩容；execve只登记/busybox、/bin/busybox与/bin/M4-child，非任意大文件VFS执行。
+
+## 单次启动的资源边界
+
+[RV-1复核](../reports/2026-11-06-stage6-implementation-review.md)发现：每次Gate交付均铸造请求根能力，
+消耗内核共享的1280项只追加能力历史；答复、销毁或drop不回收历史。至少一个Gate根也占历史，
+因此单次启动累计交付至多1279次；其它能力创建会进一步减少可用次数，**1279不是保证可完成的调用数**。
+该限制跨Gate、家族与案例累计，不因新建Process或Gate而重置；并发上限仍是每家族4进程×8线程。
+历史耗尽时`gate_wait`返回原生ENOSPC；当前服务的`unwrap`终止服务，客户端按挂接时的孤儿值终结，
+不提供无限运行或耗尽后继续服务保证。现有命名差分每案例独立启动，不证明长时运行。
+可回收历史/独立计数器的设计留待阶段7后继，不扩大v1范围；本次[整改](../reports/2026-11-06-stage6-review-remediation.md)只登记此既有边界。
 
 ## 有界变体与状态裁定
 

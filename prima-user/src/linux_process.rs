@@ -2,6 +2,8 @@
 use super::{HEAP, MMAP, Native, Process, Result, Shared, fs_error, native_error};
 use prima_runtime::{Capability, gate::GateRequest};
 
+pub const MAX_PROCESSES: usize = 4;
+
 struct Entry {
     cookie: u64,
     parent: Option<u64>,
@@ -10,14 +12,14 @@ struct Entry {
     wait: Option<GateRequest>,
 }
 pub struct Family {
-    entries: [Option<Entry>; 4],
+    entries: [Option<Entry>; MAX_PROCESSES],
     pub shared: Shared,
 }
 
 impl Family {
     pub fn new(process: Process) -> Result<Self> {
         let cookie = process.cookie;
-        let mut entries = [const { None }; 4];
+        let mut entries = [const { None }; MAX_PROCESSES];
         entries[0] = Some(Entry {
             cookie,
             parent: None,
@@ -262,7 +264,7 @@ impl Family {
         entry.status = Some(status);
         // Native Task destruction has no personality zombie; the user table
         // owns both this status and the parent's deferred request.
-        let waits: [Option<GateRequest>; 4] =
+        let waits: [Option<GateRequest>; MAX_PROCESSES] =
             core::array::from_fn(|i| self.entries[i].as_mut().and_then(|e| e.wait.take()));
         for wait in waits.into_iter().flatten() {
             if let Some(value) = self.wait(rt, &wait)? {

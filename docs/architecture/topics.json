@@ -765,7 +765,9 @@
       "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
       "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
-      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
+      "docs/superpowers/reports/2026-11-06-stage6-implementation-review.md",
+      "docs/superpowers/reports/2026-11-06-stage6-review-remediation.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",

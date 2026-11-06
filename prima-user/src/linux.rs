@@ -3,7 +3,7 @@
 //! remain independent of the personality. Profile publication needs runtime evidence.
 use prima_runtime::{
     Capability, Error, Rights, Runtime, X86_64Transport,
-    gate::GateRequest,
+    gate::{GateAudit, GateRequest},
     vfs::{self, FileInfo, HandleId, NodeKind, OpenFiles, Storage, VfsError},
 };
 
@@ -13,6 +13,47 @@ pub mod process;
 pub mod signal;
 #[path = "linux_thread.rs"]
 pub mod thread;
+
+pub const MAX_FAMILY_TASKS: usize = process::MAX_PROCESSES * thread::MAX_THREADS;
+
+/// A Task has at most one synchronous trap, including capacity waiters.
+pub struct PendingTraps([Option<GateAudit>; MAX_FAMILY_TASKS]);
+
+impl Default for PendingTraps {
+    fn default() -> Self {
+        Self([None; MAX_FAMILY_TASKS])
+    }
+}
+
+impl PendingTraps {
+    pub fn insert(&mut self, record: GateAudit) {
+        assert!(
+            !self
+                .0
+                .iter()
+                .flatten()
+                .any(|trap| trap.request == record.request)
+        );
+        *self
+            .0
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("one pending trap per family Task") = Some(record);
+    }
+
+    pub fn remove(&mut self, request: u64) -> GateAudit {
+        self.0
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|trap| trap.request == request))
+            .expect("terminal request has raw trap audit")
+            .take()
+            .unwrap()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(Option::is_none)
+    }
+}
 
 type Native = Runtime<X86_64Transport>;
 type Result<T> = core::result::Result<T, i64>;
@@ -299,13 +340,10 @@ impl Process {
             if !self.standard_open[0] {
                 return Err(-9);
             }
-            let size = limit.min(INPUT.len() - shared.input_position);
-            rt.gate_copy_out(
-                req,
-                pointer,
-                &INPUT[shared.input_position..shared.input_position + size],
-            )
-            .map_err(native_error)?;
+            let input = INPUT.get(shared.input_position..).ok_or(-5)?;
+            let size = limit.min(input.len());
+            rt.gate_copy_out(req, pointer, &input[..size])
+                .map_err(native_error)?;
             shared.input_position += size;
             return Ok(size as u64);
         }
@@ -800,6 +838,48 @@ pub fn stat_bytes(info: FileInfo) -> [u8; 144] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_tracks_every_family_task_and_reuses_completed_slots() {
+        let mut pending = PendingTraps::default();
+        for generation in 0..2 {
+            for task in 0..MAX_FAMILY_TASKS {
+                let request = (generation * MAX_FAMILY_TASKS + task + 1) as u64;
+                pending.insert(GateAudit {
+                    cursor: request,
+                    kind: 1,
+                    request,
+                    cookie: request,
+                    number: 202,
+                    value: 0,
+                    flags: 0,
+                    args: [request; 6],
+                });
+            }
+            assert!(!pending.is_empty());
+            for task in (0..MAX_FAMILY_TASKS).rev() {
+                let request = (generation * MAX_FAMILY_TASKS + task + 1) as u64;
+                let original = pending.remove(request);
+                assert_eq!((original.cookie, original.args), (request, [request; 6]));
+            }
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn stdin_invalid_cursor_returns_io_error_before_copy_and_preserves_cursor() {
+        let cap = Capability::from_raw(0x100000002).unwrap();
+        let mut process = Process::new(cap, 0x100000003).unwrap();
+        let mut shared = Shared::new().unwrap();
+        for position in [INPUT.len() + 1, usize::MAX] {
+            shared.input_position = position;
+            assert_eq!(
+                process.read(&mut shared, &Runtime::x86_64(), cap, 0, 0, 1),
+                Err(-5)
+            );
+            assert_eq!(shared.input_position, position);
+        }
+    }
 
     #[test]
     fn unsupported_raw_numbers_and_foreign_cookie_never_touch_parameters() {
