@@ -16,6 +16,38 @@ static pthread_t parent;
 static atomic_int stop;
 static volatile sig_atomic_t handled;
 static volatile sig_atomic_t restart_phase, restarted, wait_word;
+static atomic_int ignore_phase;
+static volatile sig_atomic_t ignored_delivered;
+
+static void publish_phase(int phase) {
+    atomic_store_explicit(&ignore_phase, phase, memory_order_release);
+    (void)syscall(SYS_futex, &ignore_phase, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
+}
+static int wait_phase(int phase) {
+    while (atomic_load_explicit(&ignore_phase, memory_order_acquire) == phase) {
+        if (syscall(SYS_futex, &ignore_phase, FUTEX_WAIT_PRIVATE, phase, NULL, NULL, 0) == -1
+            && errno != EAGAIN && errno != EINTR) return 1;
+    }
+    return 0;
+}
+static void ignore_handler(int signal) {
+    if (signal == SIGUSR2) ignored_delivered = 1;
+}
+static void *ignore_worker(void *unused) {
+    (void)unused;
+    if (pthread_kill(pthread_self(), SIGUSR2) != 0) {
+        publish_phase(-1);
+        return (void *)1;
+    }
+    publish_phase(1);
+    if (wait_phase(1) != 0 || atomic_load_explicit(&ignore_phase, memory_order_acquire) != 2)
+        return (void *)1;
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR2);
+    if (pthread_sigmask(SIG_UNBLOCK, &set, NULL) != 0) return (void *)1;
+    return NULL;
+}
 
 static void handler(int signal, siginfo_t *info, void *context) {
     (void)info;
@@ -72,6 +104,22 @@ int main(void) {
     if (rc != -1 || errno != EAGAIN || !restarted || wait_word != 1) return 7;
     atomic_store_explicit(&stop, 1, memory_order_release);
     if (pthread_join(child, &value) != 0 || value != (void *)(uintptr_t)0x1234) return 8;
+    /* Changing the shared disposition to IGN must purge a sibling's blocked
+       pending signal, even if a handler is installed again before unblocking. */
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGUSR2);
+    struct sigaction ignored = { .sa_handler = SIG_IGN };
+    struct sigaction caught = { .sa_handler = ignore_handler };
+    if (sigaction(SIGUSR2, &caught, NULL) != 0
+        || pthread_sigmask(SIG_BLOCK, &blocked, NULL) != 0
+        || pthread_attr_init(&attr) != 0 || pthread_attr_setstacksize(&attr, 65536) != 0
+        || pthread_create(&child, &attr, ignore_worker, NULL) != 0) return 9;
+    pthread_attr_destroy(&attr);
+    if (wait_phase(0) != 0 || atomic_load_explicit(&ignore_phase, memory_order_acquire) != 1) return 12;
+    if (sigaction(SIGUSR2, &ignored, NULL) != 0 || sigaction(SIGUSR2, &caught, NULL) != 0) return 10;
+    publish_phase(2);
+    if (pthread_join(child, &value) != 0 || value != NULL || ignored_delivered) return 11;
     puts("M4 pthread ok");
     return 0;
 }

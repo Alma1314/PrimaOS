@@ -212,6 +212,12 @@ impl Path {
         if component.len() > MAX_COMPONENT_LEN {
             return Err(PathError::ComponentTooLong);
         }
+        if component.contains(&b'/') {
+            return Err(PathError::EmptyComponent);
+        }
+        if !component.is_ascii() {
+            return Err(PathError::NonAsciiComponent);
+        }
         let mut path = *self;
         let parsed = Component::from_bytes(component);
         if parsed.is_reserved() {
@@ -433,6 +439,14 @@ mod tests {
         assert_eq!(Path::ROOT.extend(b"x").map(|p| p.len()), Ok(1));
         assert_eq!(a.extend(b""), Err(PathError::EmptyComponent));
         assert_eq!(a.extend(b".."), Err(PathError::ReservedComponent));
+        assert_eq!(a.extend(b"b/c"), Err(PathError::EmptyComponent));
+        assert_eq!(a.extend(b"\xff"), Err(PathError::NonAsciiComponent));
+        for byte in 0..=127 {
+            if byte != b'/' && byte != b'.' {
+                let path = a.extend(&[byte]).unwrap();
+                assert_eq!(Path::parse(path.render().as_bytes()), Ok(path));
+            }
+        }
         let long = "z".repeat(MAX_COMPONENT_LEN + 1);
         assert_eq!(a.extend(long.as_bytes()), Err(PathError::ComponentTooLong));
 

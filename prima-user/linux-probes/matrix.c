@@ -26,6 +26,7 @@ static uint64_t statbuf[18], limits[2], tls[4] = { 0x12345678 }, fs, mask, actio
 static char buffer[4096];
 static unsigned word;
 static uint64_t zero_time[2];
+struct vector { const void *base; uint64_t size; };
 
 long matrix_main(void) {
     CHECK("0.read.zero", S(0,0,0,0,0,0,0), 0);
@@ -70,6 +71,16 @@ long matrix_main(void) {
     CHECK("9.mmap.address", mapping > 0, 1);
     volatile unsigned char *memory = (void *)(uintptr_t)mapping;
     CHECK("9.mmap.zero", memory[0]==0 && memory[8191]==0, 1);
+    struct vector *edge = (void *)(uintptr_t)(mapping + 4096 - sizeof(struct vector));
+    *edge = (struct vector){"unwanted output", 15};
+    CHECK("10.mprotect.vector.guard", S(10,mapping+4096,4096,0,0,0,0), 0);
+    CHECK("20.writev.descriptors.efault", S(20,1,edge,2,0,0,0), -14);
+    CHECK("10.mprotect.vector.restore", S(10,mapping+4096,4096,3,0,0,0), 0);
+    struct vector partial[2] = {{"v",1},{(void *)1,1}};
+    text("M3|20.writev.partial.bytes=");
+    long written = S(20,1,partial,2,0,0,0);
+    text("\n");
+    CHECK("20.writev.partial", written, 1);
     memory[0] = 0xa5;
     CHECK("10.mprotect.r", S(10,mapping,8192,1,0,0,0), 0);
     CHECK("10.mprotect.none", S(10,mapping,8192,0,0,0,0), 0);

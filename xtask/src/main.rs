@@ -139,7 +139,12 @@ fn run() -> Result<(), String> {
         "test-process" => {
             let case = match rest.as_slice() {
                 [] => None,
-                [name] if matches!(name.as_str(), "W4" | "W6" | "W7" | "W7b" | "W8" | "W9") => {
+                [name]
+                    if matches!(
+                        name.as_str(),
+                        "W4" | "W5" | "W6" | "W7" | "W7b" | "W8" | "W9"
+                    ) =>
+                {
                     Some(name.as_str())
                 }
                 _ => return Err(usage()),
@@ -218,6 +223,13 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
             image::build_images_for_pthread()?,
             "W4",
             image::PTHREAD_EXPECTED_STDOUT,
+        )?;
+    }
+    if case.is_none() || case == Some("W5") {
+        test_program_twice(
+            image::build_images_for_share()?,
+            "W5",
+            image::SHARE_EXPECTED_STDOUT,
         )?;
     }
     if case.is_none() || case == Some("W6") {
@@ -681,7 +693,7 @@ fn usage() -> String {
      \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features linux-probe -- <build-linux|test-linux>\n\
      \x20      cargo run -p xtask --features gate-probe -- test-gate\n\
      \x20      PRIMA_GATE_AUDIT_SITE=<site> cargo run -p xtask --features gate-audit-probe -- test-gate-audit\n\
-     \x20      cargo xtask test-process [W4|W6|W7|W7b|W8|W9]\n\
+     \x20      cargo xtask test-process [W4|W5|W6|W7|W7b|W8|W9]\n\
      \x20      cargo xtask test-rust [R1|R2|R3]\n\
      \x20      cargo xtask test-musl [--host-only]\n\
      \x20      cargo xtask compat [--baseline <path>]\n\

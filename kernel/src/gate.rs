@@ -630,7 +630,7 @@ impl BootstrapState {
                 .map_err(|_| Error::Capacity)?;
             self.audit.append(AuditEvent::CapabilityMinted {
                 cap: manager,
-                holder: service,
+                holder: self.space_of(service),
             });
             if let Err(error) =
                 self.gate_attach_inner(service, manager, gate_cap, binding.orphan, true)
@@ -743,7 +743,7 @@ impl BootstrapState {
                 .map_err(|_| Error::Capacity)?;
             self.audit.append(AuditEvent::CapabilityMinted {
                 cap: manager,
-                holder: service,
+                holder: self.space_of(service),
             });
             if let Err(error) = self.gate_attach(service, manager, gate_cap, binding.orphan) {
                 self.drop_capability(service, manager)
@@ -852,7 +852,7 @@ impl BootstrapState {
             .expect("context authority capacity preflighted");
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: context,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         self.audit.append(AuditEvent::TaskContextGranted {
             caller,
@@ -986,7 +986,7 @@ impl BootstrapState {
                 .expect("attach preflighted capability capacity");
             self.audit.append(AuditEvent::CapabilityMinted {
                 cap,
-                holder: caller,
+                holder: self.space_of(caller),
             });
             root_cap = cap;
             tables.write(GateRecord {
@@ -1263,7 +1263,7 @@ impl BootstrapState {
         let request_cap = root.handle;
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: request_cap,
-            holder: service,
+            holder: self.space_of(service),
         });
         let mut gate = gate;
         gate.queue_head = (gate.queue_head + 1) % QUEUE_DEPTH as u32;
@@ -3505,6 +3505,39 @@ mod tests {
             assert_eq!(state.gate_wait(2, out.gate_cap), Err(Error::Stale));
             assert!(state.gate_well_formed());
         }
+    }
+
+    #[test]
+    fn namespace_cleanup_of_a_retired_request_preserves_reused_slots() {
+        let _serial = serial();
+        let (mut state, out, request) = delivered_pair();
+        let ns = state.ns_create(2).unwrap();
+        let alias = state
+            .derive_capability(2, request, REQUEST_ROOT_RIGHTS)
+            .unwrap();
+        state
+            .ns_bind(2, ns, Path::parse(b"request").unwrap(), alias)
+            .unwrap();
+        state.gate_reply(2, request, 42, false).unwrap();
+        let replacement = loop {
+            let cap = state
+                .derive_capability(2, out.gate_cap, GATE_ROOT_RIGHTS)
+                .unwrap();
+            if cap.index() == alias.index() {
+                break cap;
+            }
+        };
+        assert_ne!(replacement, alias);
+        assert!(state.positions.find(alias).is_none());
+        assert_eq!(
+            state.positions.move_to_task(alias, 2, 3),
+            Err(super::super::CapabilityPositionError::NoSuchCapability)
+        );
+        assert!(!state.records.remove(alias));
+        state.ns_destroy(2, ns).unwrap();
+        assert_eq!(state.holder_of(replacement), Some(2));
+        assert!(state.records.find(replacement).is_some());
+        assert_eq!(state.validate_authority(), Ok(()));
     }
 
     #[test]

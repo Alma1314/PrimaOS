@@ -1737,8 +1737,7 @@ impl CapabilityRecordTable {
 
     fn remove(&mut self, handle: Handle) -> bool {
         let index = handle.index() as usize;
-        if index >= MAX_CAPABILITY_SLOTS || CAPABILITY_RECORD_ARENA.get(self.slice, index).is_none()
-        {
+        if self.find(handle).is_none() {
             return false;
         }
         CAPABILITY_RECORD_ARENA.set(self.slice, index, None);
@@ -2212,17 +2211,19 @@ impl CapabilityPositionTable {
         table
     }
 
-    /// 按槽索引查找。**越界索引返回 `None` 而非 panic**（见 [`CapabilityRecordTable::find`]）。
+    /// 按槽索引定位，再校验完整句柄；越界或旧代次返回 `None`。
     pub fn find(&self, handle: Handle) -> Option<&CapabilityPosition> {
         self.entries
             .get(handle.index() as usize)
             .and_then(Option::as_ref)
+            .filter(|entry| entry.handle == handle)
     }
 
     fn find_mut(&mut self, handle: Handle) -> Option<&mut CapabilityPosition> {
         self.entries
             .get_mut(handle.index() as usize)
             .and_then(Option::as_mut)
+            .filter(|entry| entry.handle == handle)
     }
 
     pub fn register(&mut self, handle: Handle, holder: u32) -> Result<(), CapabilityPositionError> {
@@ -2295,7 +2296,7 @@ impl CapabilityPositionTable {
             return false;
         }
         let slot = &mut self.entries[index];
-        if slot.is_some() {
+        if slot.is_some_and(|entry| entry.handle == handle) {
             *slot = None;
             self.count -= 1;
             true
@@ -5441,6 +5442,7 @@ impl BootstrapState {
         parent: Handle,
         rights: Rights,
     ) -> Result<Handle, DeriveError> {
+        let caller = self.space_of(caller);
         match self.slots.check(parent) {
             SlotState::Free => return Err(DeriveError::NoSuchParent),
             SlotState::Stale => return Err(DeriveError::StaleHandle),
@@ -5532,6 +5534,7 @@ impl BootstrapState {
         holder: u32,
         slot: Option<u32>,
     ) -> Result<Handle, DeriveError> {
+        let holder = self.space_of(holder);
         match self.slots.check(parent) {
             SlotState::Free => return Err(DeriveError::NoSuchParent),
             SlotState::Stale => return Err(DeriveError::StaleHandle),
@@ -5705,6 +5708,7 @@ impl BootstrapState {
         rights: Rights,
         location: CapabilityLocation,
     ) -> Result<Handle, NsError> {
+        let holder = location.holder_id().unwrap_or(caller);
         match self.slots.check(parent) {
             SlotState::Free => return Err(NsError::InvalidCap),
             SlotState::Stale => return Err(NsError::MountTargetDead),
@@ -5740,7 +5744,7 @@ impl BootstrapState {
                 handle,
                 cap_id,
                 parent: Some(parent),
-                holder: caller,
+                holder,
                 rights,
                 target,
                 target_generation: self.target_generation(target),
@@ -5754,7 +5758,7 @@ impl BootstrapState {
         self.audit.append(AuditEvent::CapabilityDerived {
             cap: handle,
             parent,
-            holder: caller,
+            holder,
         });
         Ok(handle)
     }
@@ -5784,7 +5788,7 @@ impl BootstrapState {
         let ns_id = self.next_namespace_id();
         let handle = self
             .mint_root_capability_at(
-                CapabilityLocation::HeldByTask(caller),
+                CapabilityLocation::HeldByTask(self.space_of(caller)),
                 cap_slot,
                 NAMESPACE_RIGHTS,
                 ObjectRef::Namespace(ns_id),
@@ -5803,7 +5807,7 @@ impl BootstrapState {
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         Ok(handle)
     }
@@ -5852,7 +5856,7 @@ impl BootstrapState {
             .map(|position| position.location)
             .ok_or(NsError::NotHeld)?;
         self.positions
-            .move_to_namespace(cap, caller, ns)
+            .move_to_namespace(cap, self.space_of(caller), ns)
             .map_err(|_| NsError::NotHeld)?;
         self.ns_entries.store(
             slot,
@@ -5865,7 +5869,7 @@ impl BootstrapState {
                 target_ns: 0,
             },
         );
-        let entries = self.ns_entries.count();
+        let entries = self.ns_entries.count_in(ns);
         self.set_namespace_entry_count(ns, entries);
         self.audit.append(AuditEvent::CapabilityMoved {
             cap,
@@ -5898,18 +5902,18 @@ impl BootstrapState {
             return Err(NsError::AuditFull);
         }
         self.ns_entries.clear(slot);
-        let entries = self.ns_entries.count();
+        let entries = self.ns_entries.count_in(ns);
         self.set_namespace_entry_count(ns, entries);
         // Gate termination may revoke a request token while its container persists.
         // Return the original invalid identity without recreating authority or position.
         if !self.retired_gate_request_cap(entry.cap) {
             self.positions
-                .move_from_namespace(entry.cap, ns, caller)
+                .move_from_namespace(entry.cap, ns, self.space_of(caller))
                 .map_err(|_| NsError::NotFound)?;
             self.audit.append(AuditEvent::CapabilityMoved {
                 cap: entry.cap,
                 from: CapabilityLocation::InNamespace(ns),
-                to: CapabilityLocation::HeldByTask(caller),
+                to: CapabilityLocation::HeldByTask(self.space_of(caller)),
             });
         }
         self.audit.append(AuditEvent::NsUnbound {
@@ -5941,7 +5945,7 @@ impl BootstrapState {
         if !self.target_live(target) {
             return Err(NsError::InvalidNamespace);
         }
-        if self.holder_of(source_cap) != Some(caller) {
+        if self.holder_of(source_cap) != Some(self.space_of(caller)) {
             return Err(NsError::NotHeld);
         }
         let source_rights = self.rights_of(source_cap).ok_or(NsError::InvalidCap)?;
@@ -5987,7 +5991,7 @@ impl BootstrapState {
                 target_ns: source,
             },
         );
-        let entries = self.ns_entries.count();
+        let entries = self.ns_entries.count_in(destination);
         self.set_namespace_entry_count(destination, entries);
         self.audit.append(AuditEvent::NsMounted {
             ns: destination,
@@ -6014,7 +6018,7 @@ impl BootstrapState {
             return Err(NsError::AuditFull);
         }
         self.ns_entries.clear(slot);
-        let entries = self.ns_entries.count();
+        let entries = self.ns_entries.count_in(ns);
         self.set_namespace_entry_count(ns, entries);
         // §11.6 / §4.6：**只删除位置**（`CapRecord` 不变）；已经解析出去的子 Capability 不受影响。
         self.positions.remove(entry.cap);
@@ -6103,7 +6107,7 @@ impl BootstrapState {
             caller,
             parent,
             requested_rights,
-            CapabilityLocation::HeldByTask(caller),
+            CapabilityLocation::HeldByTask(self.space_of(caller)),
         )?;
         let mut mount_list = [Handle::ZERO; MAX_PATH_COMPONENTS];
         let mut i = 0;
@@ -6315,7 +6319,7 @@ impl BootstrapState {
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         Ok(handle)
     }
@@ -6660,7 +6664,7 @@ impl BootstrapState {
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         if immediate {
             // §10.2 成功动作 5：同一原子操作内追 `TimerFired` → 投递通知 → 以该 `MsgId` 进入 `Fired`。
@@ -7154,7 +7158,7 @@ impl BootstrapState {
         if self.slots.check(req.code_seg_cap) != SlotState::Live {
             return Err(TaskCreateError::NoSuchCapability);
         }
-        if self.holder_of(req.code_seg_cap) != Some(caller) {
+        if self.holder_of(req.code_seg_cap) != Some(self.space_of(caller)) {
             return Err(TaskCreateError::NotHolder);
         }
         let code_seg_id = match self.target_of(req.code_seg_cap) {
@@ -7194,7 +7198,7 @@ impl BootstrapState {
         if self.slots.check(req.parent_ns_cap) != SlotState::Live {
             return Err(TaskCreateError::InvalidNamespace);
         }
-        if self.holder_of(req.parent_ns_cap) != Some(caller) {
+        if self.holder_of(req.parent_ns_cap) != Some(self.space_of(caller)) {
             return Err(TaskCreateError::NotHolder);
         }
         let parent_is_live_ns = matches!(
@@ -7251,15 +7255,21 @@ impl BootstrapState {
             }
             initial_count += 1;
         }
-        // ---- 前置 7：任务表 / cap 槽位 / 审计容量 ----
+        // ---- 前置 7：任务表 / 三条新能力及其完整提交预算 ----
         let new_id = self
             .tasks
             .next_free_id()
             .ok_or(TaskCreateError::CapacityExceeded)?;
-        if self.slots.live_count() + 3 + initial_count > MAX_CAPABILITY_SLOTS {
+        if self.slots.normal_free_count() < 3
+            || self.cap_history_count + 3 > MAX_CAPABILITY_HISTORY
+            || self.next_cap_id.checked_add(3).is_none()
+        {
             return Err(TaskCreateError::CapacityExceeded);
         }
-        if !self.audit.can_append(2 + initial_count) {
+        let gate_loss = self.gate_cap_loss_plan(&req.initial_caps, Some(new_id));
+        // Manager mint, self/root derivations, TaskCreated, transfers and any
+        // resulting Gate orphaning must all fit before allocating page tables.
+        if !self.preflight_gate_cap_loss(gate_loss, 4 + initial_count, caller) {
             return Err(TaskCreateError::AuditFull);
         }
         if self.processes.count == MAX_PROCESSES {
@@ -7363,7 +7373,7 @@ impl BootstrapState {
         // `can_append(1)` 预留额度、由调用者补发——与 `ns_create` 同模式）。
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: manager_cap,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         // §8.1 动作 4：self Cap 从 manager Cap **派生**（`parent = manager_cap`、权限相同），
         // 非独立铸造；`derive_capability_to_holder` 内部追加 `CapabilityDerived`（W2 溯源链）。
@@ -7399,15 +7409,15 @@ impl BootstrapState {
             if cap.is_zero() {
                 continue;
             }
-            if self.move_capability(cap, caller, new_id).is_err() {
-                // 预检保证不可达；仍回滚本次创建，不留半成品。
-                self.retire_capability(root_ns_cap);
-                self.retire_capability(self_cap);
-                self.retire_capability(manager_cap);
-                self.tasks.remove(new_id);
-                rollback(&fresh_tables, fresh_count);
-                return Err(TaskCreateError::CapacityExceeded);
-            }
+            let from = CapabilityLocation::HeldByTask(self.space_of(caller));
+            self.positions
+                .move_to_task(cap, self.space_of(caller), new_id)
+                .expect("initial capabilities validated before Task creation");
+            self.audit.append(AuditEvent::CapabilityMoved {
+                cap,
+                from,
+                to: CapabilityLocation::HeldByTask(new_id),
+            });
         }
         // ---- 成功动作 8：TaskCreated（M15b：新 Task 建立单线程 Process，leader 为新 Task） ----
         if let Some(process) = self.create_process(new_id) {
@@ -7417,6 +7427,9 @@ impl BootstrapState {
             task_id: new_id,
             generation: self.tasks.find(new_id).expect("created task").generation,
         });
+        // Apply loss once after all initial tokens have moved; orphaning one
+        // request must not invalidate a later transfer halfway through creation.
+        self.commit_gate_cap_loss(gate_loss);
         Ok(TaskCreateOutcome {
             manager_cap,
             self_cap,
@@ -7956,7 +7969,7 @@ impl BootstrapState {
         }
         // §13.1：每个携带的 Capability 都发生一次位置变化（→ `InMessage` 或 `HeldBy(receiver)`），
         // 各追加一条 `CapabilityMoved`。
-        let audit_events = (if direct_delivery { 2 } else { 1 }) + capability_ids.len();
+        let audit_events = (if direct_delivery { 3 } else { 1 }) + capability_ids.len();
         if !self.ipc.can_allocate_ids(1) {
             return Err(IpcError::QueueFull);
         }
@@ -7982,14 +7995,14 @@ impl BootstrapState {
             for cap in capabilities[..capability_ids.len()].iter().copied() {
                 let from = self.positions.find(cap).map(|position| position.location);
                 self.positions
-                    .move_to_task(cap, sender, receiver)
+                    .move_to_task(cap, self.space_of(sender), self.space_of(receiver))
                     .map_err(|_| IpcError::CapabilityHolderMismatch)?;
                 // §13.1：位置变化必须追加 `CapabilityMoved`（直投：`HeldBy(sender)` → `HeldBy(receiver)`）。
                 if let Some(from) = from {
                     self.audit.append(AuditEvent::CapabilityMoved {
                         cap,
                         from,
-                        to: CapabilityLocation::HeldByTask(receiver),
+                        to: CapabilityLocation::HeldByTask(self.space_of(receiver)),
                     });
                 }
             }
@@ -8008,7 +8021,7 @@ impl BootstrapState {
             for cap in capabilities[..capability_ids.len()].iter().copied() {
                 let from = self.positions.find(cap).map(|position| position.location);
                 self.positions
-                    .move_to_message(cap, sender, message.id)
+                    .move_to_message(cap, self.space_of(sender), message.id)
                     .map_err(|_| IpcError::CapabilityHolderMismatch)?;
                 // §13.1：位置变化必须追加 `CapabilityMoved`（排队：`HeldBy(sender)` → `InMessage`）。
                 if let Some(from) = from {
@@ -8050,7 +8063,7 @@ impl BootstrapState {
                     // Revocation does not discard the enclosing message or revive its token.
                     if !self.retired_gate_request_cap(cap) {
                         self.positions
-                            .move_from_message(cap, message.id, receiver)
+                            .move_from_message(cap, message.id, self.space_of(receiver))
                             .map_err(|_| IpcError::InvalidCapability)?;
                     }
                     // §13.1：位置变化必须追加 `CapabilityMoved`（接收：`InMessage` → `HeldBy(receiver)`）。
@@ -8058,7 +8071,7 @@ impl BootstrapState {
                         self.audit.append(AuditEvent::CapabilityMoved {
                             cap,
                             from,
-                            to: CapabilityLocation::HeldByTask(receiver),
+                            to: CapabilityLocation::HeldByTask(self.space_of(receiver)),
                         });
                     }
                 }
@@ -11380,7 +11393,7 @@ impl BootstrapState {
         });
         self.audit.append(AuditEvent::CapabilityMinted {
             cap: handle,
-            holder: caller,
+            holder: self.space_of(caller),
         });
         Ok(handle)
     }
@@ -12662,6 +12675,7 @@ mod tests {
         create_state, entry_in_image, platform_segment_cap_handle, platform_segment_cap_slot,
         platform_segment_is_direct,
     };
+    use super::{MANAGER_TASK_RIGHTS, WAIT_RIGHTS};
     use crate::mem::FrameInventory;
     use crate::rights::{DeviceKind, ObjectKind, Right, Rights};
 
@@ -13454,6 +13468,120 @@ mod tests {
         state.detach_thread(INIT_TASK_ID);
         assert_eq!(state.process_of(INIT_TASK_ID), None);
         assert!(state.processes.find(process).is_none());
+    }
+
+    #[test]
+    fn nonleader_derivation_and_namespace_operations_keep_shared_authority() {
+        let mut state = fresh_state();
+        let thread = state.thread_create(INIT_TASK_ID, 0x1000, 0x2000).unwrap();
+        let root = state.wait_object_create(INIT_TASK_ID).unwrap();
+        let child = state.derive_capability(thread, root, WAIT_RIGHTS).unwrap();
+        assert_eq!(state.authorize(thread, child, Right::WaitSignal), Ok(child));
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, child, Right::WaitSignal),
+            Ok(child)
+        );
+        let ns = state.ns_create(thread).unwrap();
+        assert_eq!(state.authorize(thread, ns, Right::NsBind), Ok(ns));
+        let source = state.ns_create(INIT_TASK_ID).unwrap();
+        let path = Path::parse(b"object").unwrap();
+        state.ns_bind(thread, source, path, child).unwrap();
+        state
+            .ns_mount(thread, ns, Path::parse(b"mount").unwrap(), source)
+            .unwrap();
+        assert_eq!(
+            state
+                .namespaces
+                .iter()
+                .flatten()
+                .find(|object| object.id == ns_of(&state, source))
+                .unwrap()
+                .entries,
+            1
+        );
+        assert_eq!(
+            state
+                .namespaces
+                .iter()
+                .flatten()
+                .find(|object| object.id == ns_of(&state, ns))
+                .unwrap()
+                .entries,
+            1
+        );
+        let resolved = state
+            .ns_resolve(
+                thread,
+                ns,
+                Path::parse(b"mount/object").unwrap(),
+                WAIT_RIGHTS,
+            )
+            .unwrap();
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, resolved, Right::WaitSignal),
+            Ok(resolved)
+        );
+        assert_eq!(state.ns_unbind(thread, source, path), Ok(child));
+        assert_eq!(state.authorize(thread, child, Right::WaitSignal), Ok(child));
+        for cap in [child, ns, resolved] {
+            assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
+        }
+        state.validate_authority().unwrap();
+    }
+
+    #[test]
+    fn threaded_ipc_keeps_task_endpoints_and_process_capability_holders() {
+        let mut state = fresh_state();
+        let thread = state.thread_create(INIT_TASK_ID, 0x1000, 0x2000).unwrap();
+        state.create_task(10).unwrap();
+        let to_peer = state
+            .mint_root_capability(INIT_TASK_ID, MANAGER_TASK_RIGHTS, ObjectRef::Task(10))
+            .unwrap();
+        let to_thread = state
+            .mint_root_capability(10, MANAGER_TASK_RIGHTS, ObjectRef::Task(thread))
+            .unwrap();
+        let cap = state.wait_object_create(INIT_TASK_ID).unwrap();
+        state
+            .send_message_with_capabilities(thread, 10, to_peer, 11, &[cap])
+            .unwrap();
+        let message = state.receive_message(10).unwrap();
+        assert_eq!((message.sender, message.receiver), (thread, 10));
+        assert_eq!(state.authorize(10, cap, Right::WaitSignal), Ok(cap));
+        state.block_recv_task(thread).unwrap();
+        state
+            .send_message_with_capabilities(10, thread, to_thread, 12, &[cap])
+            .unwrap();
+        let message = state.receive_message(thread).unwrap();
+        assert_eq!((message.sender, message.receiver), (10, thread));
+        assert_eq!(state.authorize(thread, cap, Right::WaitSignal), Ok(cap));
+        assert_eq!(
+            state.authorize(INIT_TASK_ID, cap, Right::WaitSignal),
+            Ok(cap)
+        );
+        state.validate_authority().unwrap();
+    }
+
+    #[test]
+    fn direct_ipc_reserves_the_wake_audit_before_moving_capabilities() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        let send = state
+            .mint_root_capability(INIT_TASK_ID, MANAGER_TASK_RIGHTS, ObjectRef::Task(2))
+            .unwrap();
+        let cap = state.wait_object_create(INIT_TASK_ID).unwrap();
+        state.block_recv_task(2).unwrap();
+        while state.audit.can_append(4) {
+            state
+                .audit
+                .append(AuditEvent::CapabilityDropped { cap: Handle::ZERO });
+        }
+        let before = state;
+        assert_eq!(
+            state.send_message_with_capabilities(INIT_TASK_ID, 2, send, 12, &[cap]),
+            Err(IpcError::AuditFull)
+        );
+        assert_eq!(state, before);
+        assert_eq!(state.holder_of(cap), Some(INIT_TASK_ID));
     }
 
     #[test]
@@ -16587,6 +16715,46 @@ mod tests {
             state.task_create(INIT_TASK_ID, &create_request(unset), 0x2000, 0),
             Err(super::TaskCreateError::NoSuchCapability)
         );
+    }
+
+    #[test]
+    fn task_create_preflights_all_three_capabilities_and_four_audit_events() {
+        for resource in 0..4 {
+            let (mut state, code, _) = task_state();
+            match resource {
+                0 => state.audit.count = super::MAX_AUDIT_EVENTS - 3,
+                1 => state.cap_history_count = super::MAX_CAPABILITY_HISTORY - 2,
+                2 => state.next_cap_id = u32::MAX - 2,
+                _ => {
+                    // Free internal reserved slots cannot serve normal mints.
+                    for slot in 1..MAX_CAPABILITY_SLOTS as u32 {
+                        if state.slots.slot_free(slot) {
+                            state.slots.entries[slot as usize].generation = 0;
+                        }
+                    }
+                }
+            }
+            let before = state;
+            assert_eq!(
+                state.task_create(INIT_TASK_ID, &create_request(code), 0x2000, 0),
+                Err(if resource == 0 {
+                    super::TaskCreateError::AuditFull
+                } else {
+                    super::TaskCreateError::CapacityExceeded
+                })
+            );
+            assert_eq!(state, before);
+        }
+        let (mut state, code, _) = task_state();
+        let thread = state.thread_create(INIT_TASK_ID, 0x1000, 0x2000).unwrap();
+        let before = state;
+        // Host has no frame registry: shared capabilities pass authorization,
+        // then root allocation fails cleanly without touching the fake boot root.
+        assert_eq!(
+            state.task_create(thread, &create_request(code), 0x2000, 0),
+            Err(super::TaskCreateError::NoMemory)
+        );
+        assert_eq!(state, before);
     }
 
     /// 切片 V：§8.2「删除自身是合法的」——自毁路径必须先于 `CannotDestroyRunning` 判定生效；

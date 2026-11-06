@@ -9,7 +9,7 @@ updated: 2026-11-06
 
 # Reports 索引
 
-本次统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
+历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
 
@@ -24,6 +24,8 @@ updated: 2026-11-06
 | 2026-10-24 | [2026-10-24-asterinas-reuse-report.md](2026-10-24-asterinas-reuse-report.md) | Asterinas 复用与 OSTD 临界区验证 |
 
 ## 跨阶段 / 文档体系
+
+阶段0–6本轮后继：[跨阶段实现审查与整改](2026-11-06-stage0-6-review-remediation.md)，线程共享能力、旧代次容器清理、IPC/Task事务预算及Linux信号/向量I/O边界；实际验证与限制见报告。
 
 文档维护：[日志附件内嵌整理](2026-10-31-documentation-log-inline.md)，131个日志／命令输出附件的关键证据迁入13份原报告，完整旧附件保留Git恢复路径；不新增OS验证或改变阶段结论。
 

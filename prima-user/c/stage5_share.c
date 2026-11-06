@@ -3,6 +3,8 @@
 #include <unistd.h>
 extern long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long a5);
 #define SYS_TASK_DESTROY 20
+#define SYS_CAP_DERIVE 11
+#define SYS_CAP_DROP 12
 #define SYS_WAIT_CREATE 42
 #define SYS_WAIT_OBJECTS 44
 #define SYS_WAIT_SIGNAL 45
@@ -15,11 +17,19 @@ static void emit_dec(long v){char d[20];int i=20;unsigned long m=v<0?(unsigned l
 static void field(const char *n,int p,long e){emit(first_field?"|":";");first_field=0;emit(n);emit("=");emit_dec(p?1:0);if(!p){failures=1;if(!first_error)first_error=(int)e;}}
 static volatile int g_word;
 static long g_cap;
+static volatile int g_authority;
 static unsigned char g_stack[16384] __attribute__((aligned(16)));
 static void worker(unsigned long self) {
+    /* Derivation and use must agree on the shared Process capability space. */
+    const long rights = 1 | (1L << 23) | (1L << 24) | (1L << 25);
+    long child = prima_native(SYS_CAP_DERIVE, g_cap, rights, 0, 0, 0, 0);
+    g_authority = child > 0;
     g_word = 0x5a;
-    if (g_cap > 0)
-        (void)prima_native(SYS_WAIT_SIGNAL, g_cap, 0, 0, 0, 0, 0);
+    if (g_cap > 0) {
+        long signal = prima_native(SYS_WAIT_SIGNAL, child > 0 ? child : g_cap, 0, 0, 0, 0, 0);
+        if (signal < 0) g_authority = 0;
+    }
+    if (child > 0) (void)prima_native(SYS_CAP_DROP, child, 0, 0, 0, 0, 0);
     (void)prima_native(SYS_TASK_DESTROY, (long)self, 0, 0, 0, 0, 0);
     for (;;) { }
 }
@@ -37,6 +47,7 @@ int main(void) {
                                          (long)0x7fffffffffffffffL) : -1;
     field("wake", waited == 0, waited);
     field("word", g_word == 0x5a, g_word);
+    field("authority", g_authority == 1, g_authority);
     long destroyed = cap > 0 ? prima_native(SYS_WAIT_DESTROY, cap, 0, 0, 0, 0, 0) : -1;
     field("destroy", destroyed == 0, destroyed);
     emit("|ok="); emit_dec(failures ? 0 : 1); emit(";err="); emit_dec(first_error); emit("\n");

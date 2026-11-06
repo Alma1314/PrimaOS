@@ -122,6 +122,53 @@ fn fs_error(error: VfsError) -> i64 {
     }
 }
 
+/// Import the complete bounded iovec before output, then retain byte progress
+/// if a later payload or output fails. Descriptor faults have no I/O effects.
+fn write_vectors(
+    pointer: u64,
+    count: u64,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<()>,
+    mut write: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<u64> {
+    if count > 16 {
+        return Err(-22);
+    }
+    if count == 0 {
+        return Ok(0);
+    }
+    let mut vectors = [0; 16 * 16];
+    read(pointer, &mut vectors[..count as usize * 16])?;
+    let vectors = vectors[..count as usize * 16].as_chunks::<16>().0;
+    let word = |bytes: &[u8]| u64::from_le_bytes(bytes.try_into().unwrap());
+    vectors.iter().try_fold(0u64, |total, vector| {
+        total
+            .checked_add(word(&vector[8..]))
+            .filter(|total| *total <= i64::MAX as u64)
+            .ok_or(-22)
+    })?;
+    let mut total = 0;
+    for vector in vectors {
+        let base = word(&vector[..8]);
+        let count = word(&vector[8..]);
+        if count == 0 {
+            continue;
+        }
+        let result = (|| {
+            if count > 4096 {
+                return Err(-38);
+            }
+            let mut bytes = [0; 4096];
+            read(base, &mut bytes[..count as usize])?;
+            write(&bytes[..count as usize])
+        })();
+        if let Err(error) = result {
+            return if total > 0 { Ok(total) } else { Err(error) };
+        }
+        total += count;
+    }
+    Ok(total)
+}
+
 pub struct Ram([u8; 4096]);
 impl Storage for Ram {
     fn read(&mut self, at: usize, bytes: &mut [u8]) -> bool {
@@ -650,31 +697,12 @@ impl Process {
                     if (a[0] != 1 && a[0] != 2) || !self.standard_open[a[0] as usize] {
                         return Err(-9);
                     }
-                    if a[2] > 16 {
-                        return Err(-22);
-                    }
-                    let mut total = 0u64;
-                    for index in 0..a[2] {
-                        let mut vector = [0; 16];
-                        rt.gate_copy_in(req, a[1].checked_add(index * 16).ok_or(-14)?, &mut vector)
-                            .map_err(native_error)?;
-                        let base = u64::from_le_bytes(vector[..8].try_into().unwrap());
-                        let count = u64::from_le_bytes(vector[8..].try_into().unwrap());
-                        if count > 4096 {
-                            return if total > 0 { Ok(total) } else { Err(-38) };
-                        }
-                        let mut bytes = [0; 4096];
-                        if let Err(e) = rt.gate_copy_in(req, base, &mut bytes[..count as usize]) {
-                            return if total > 0 {
-                                Ok(total)
-                            } else {
-                                Err(native_error(e))
-                            };
-                        }
-                        write(a[0], &bytes[..count as usize])?;
-                        total += count;
-                    }
-                    Ok(total)
+                    write_vectors(
+                        a[1],
+                        a[2],
+                        |pointer, bytes| rt.gate_copy_in(req, pointer, bytes).map_err(native_error),
+                        |bytes| write(a[0], bytes),
+                    )
                 }
                 39 => Ok(self.cookie as u32 as u64),
                 186 => Ok(request.task_cookie as u32 as u64),
@@ -838,6 +866,86 @@ pub fn stat_bytes(info: FileInfo) -> [u8; 144] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writev_imports_all_descriptors_before_output_and_retains_payload_progress() {
+        let mut descriptors = [0; 32];
+        for vector in descriptors.as_chunks_mut::<16>().0 {
+            vector[..8].copy_from_slice(&1000u64.to_le_bytes());
+            vector[8..].copy_from_slice(&1u64.to_le_bytes());
+        }
+        let mut output = 0;
+        assert_eq!(
+            write_vectors(
+                4096 - 16,
+                2,
+                |at, out| {
+                    if at == 4096 - 16 && out.len() <= 16 {
+                        out.copy_from_slice(&descriptors[..out.len()]);
+                    } else if at == 1000 {
+                        out.fill(b'x');
+                    } else {
+                        return Err(-14);
+                    }
+                    Ok(())
+                },
+                |_| {
+                    output += 1;
+                    Ok(())
+                }
+            ),
+            Err(-14)
+        );
+        assert_eq!(output, 0);
+        for output_failure in [false, true] {
+            let mut reads = 0;
+            let mut writes = 0;
+            let result = write_vectors(
+                100,
+                2,
+                |at, out| {
+                    if at == 100 {
+                        assert_eq!(out.len(), descriptors.len());
+                        out.copy_from_slice(&descriptors);
+                    } else {
+                        reads += 1;
+                        if reads == 2 && !output_failure {
+                            return Err(-14);
+                        }
+                        out.fill(b'x');
+                    }
+                    Ok(())
+                },
+                |_| {
+                    writes += 1;
+                    if writes == 2 { Err(-5) } else { Ok(()) }
+                },
+            );
+            assert_eq!(result, Ok(1));
+        }
+        descriptors[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(
+            write_vectors(
+                100,
+                2,
+                |_, out| {
+                    out.copy_from_slice(&descriptors);
+                    Ok(())
+                },
+                |_| panic!("invalid length must not write")
+            ),
+            Err(-22)
+        );
+        assert_eq!(
+            write_vectors(
+                u64::MAX,
+                0,
+                |_, _| panic!("zero vectors"),
+                |_| panic!("zero vectors")
+            ),
+            Ok(0)
+        );
+    }
 
     #[test]
     fn audit_tracks_every_family_task_and_reuses_completed_slots() {

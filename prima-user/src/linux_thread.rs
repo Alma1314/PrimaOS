@@ -292,6 +292,12 @@ impl ThreadGroup {
             &mut self.process_signals,
             ordinary,
         )?;
+        // Dispositions are shared: SIG_IGN also removes signals already queued
+        // for other members, so a later handler cannot resurrect old pending.
+        self.process_signals.discard_ignored(&self.actions);
+        for thread in self.tasks.iter_mut().flatten() {
+            thread.signals.discard_ignored(&self.actions);
+        }
         self.route_signals();
         Ok(result)
     }

@@ -228,6 +228,13 @@ impl Signals {
     pub fn dequeue(&mut self, signal: u8) {
         self.pending &= !(1 << (signal - 1));
     }
+    pub fn discard_ignored(&mut self, actions: &Actions) {
+        for signal in 1..=31 {
+            if actions.0[signal - 1].handler == 1 {
+                self.dequeue(signal as u8);
+            }
+        }
+    }
     pub fn deliverable(&self, actions: &Actions) -> bool {
         (1..=31).any(|signal| {
             self.queued(signal).is_some()
@@ -447,6 +454,26 @@ impl Actions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ignoring_a_shared_action_discards_all_old_thread_and_group_pending() {
+        let mut actions = Actions::default();
+        let mut pending = [Signals::default(); 3];
+        for signals in &mut pending {
+            signals.enqueue(&actions, 10, -6, 17);
+            signals.enqueue(&actions, 12, -6, 17);
+        }
+        actions.0[9].handler = 1;
+        for signals in &mut pending {
+            signals.discard_ignored(&actions);
+        }
+        actions.0[9].handler = 0x401000;
+        for mut signals in pending {
+            assert_eq!(signals.queued(10), None);
+            assert_eq!(signals.queued(12), Some((-6, 17)));
+            signals.enqueue(&actions, 10, -6, 19);
+            assert_eq!(signals.queued(10), Some((-6, 19)));
+        }
+    }
     #[test]
     fn thread_masks_pending_and_fork_frames_have_distinct_inheritance() {
         let mut actions = Actions::default();

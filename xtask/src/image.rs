@@ -1908,7 +1908,7 @@ pub(crate) fn check_stage5_linux_pthread() -> Result<(), String> {
 }
 
 pub(crate) const SHARE_EXPECTED_STDOUT: &[u8] =
-    b"SHARE|create=1;thread=1;wake=1;word=1;destroy=1|ok=1;err=0\n";
+    b"SHARE|create=1;thread=1;wake=1;word=1;authority=1;destroy=1|ok=1;err=0\n";
 
 /// 一个 sbase 冻结用例：argv（含程序名）与逐字节冻结的 stdout。
 pub(crate) struct SbaseCase {
