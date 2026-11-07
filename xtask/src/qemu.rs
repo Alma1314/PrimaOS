@@ -104,6 +104,11 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
+    if option_env!("PRIMA_GATE_CASE") == Some("I1") {
+        let summary = validate_ipc_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
+        println!("PASS S7IPC round={round} {summary}");
+        return Ok(());
+    }
     if option_env!("PRIMA_GATE_CASE") == Some("N1") {
         let summary = validate_native_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
         println!("PASS S7NATIVE round={round} {summary}");
@@ -299,6 +304,171 @@ fn validate_native_bench(output: &str) -> Result<String, String> {
         &["user-total"],
         &mut [durations],
     ))
+}
+
+fn validate_ipc_bench(output: &str) -> Result<String, String> {
+    if output.contains("|event=panic|") {
+        return Err("IPC benchmark panicked".into());
+    }
+    let headers: Vec<_> = output.lines().filter(|s| s.starts_with("S7IPC|")).collect();
+    let Some(header) = headers.first().filter(|_| headers.len() == 1) else {
+        return Err("IPC benchmark requires one verified header".into());
+    };
+    let (hz, identities) = header
+        .strip_prefix("S7IPC|samples=64;hz=")
+        .and_then(|s| s.strip_suffix(";direct=128;queued=0;blocks=128;verified=1"))
+        .and_then(|s| s.split_once(";boundary=user-wrapper;client="))
+        .ok_or("invalid IPC benchmark calibration or paths")?;
+    let hz = hz
+        .parse::<u64>()
+        .ok()
+        .filter(|hz| *hz > 0)
+        .ok_or("invalid IPC frequency")?;
+    let (client, service) = identities
+        .split_once(";service=")
+        .ok_or("missing IPC identities")?;
+    let identity = |text: &str, id: u32| {
+        text.parse::<u64>()
+            .ok()
+            .filter(|value| *value as u32 == id && *value >> 32 != 0)
+    };
+    let client = identity(client, 2).ok_or("invalid IPC client identity")?;
+    let service = identity(service, 1).ok_or("invalid IPC service identity")?;
+    let mut durations = Vec::new();
+    let mut previous_time = 0;
+    let mut previous_message = 0;
+    for (index, line) in output
+        .lines()
+        .filter_map(|s| s.strip_prefix("S7ITIME|"))
+        .enumerate()
+    {
+        let v: Vec<u64> = line
+            .split(';')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| "invalid IPC benchmark receipt")?;
+        if index >= 64
+            || v.len() != 15
+            || v[0] != index as u64
+            || v[1] == 0
+            || v[1] < previous_time
+            || v[2] < v[1]
+            || v[3] != 65536 + (64 - index) as u64
+            || v[9] != (64 - index) as u64
+            || v[4..7] != [0; 3]
+            || v[10..13] != [0; 3]
+            || v[7] != service
+            || v[13] != client
+            || v[14] <= previous_message
+            || v[8] <= v[14]
+            || v[8] > u32::MAX as u64
+        {
+            return Err("unordered, incomplete or incorrect IPC benchmark receipt".into());
+        }
+        durations.push(v[2] - v[1]);
+        previous_time = v[2];
+        previous_message = v[8];
+    }
+    if durations.len() != 64 {
+        return Err("IPC benchmark requires exactly 64 samples".into());
+    }
+    Ok(benchmark_summary(
+        64,
+        hz,
+        "user-wrapper",
+        &["user-total"],
+        &mut [durations],
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn ipc_benchmark_requires_sequenced_authenticated_roundtrips() {
+    let header = "S7IPC|samples=64;hz=1000000000;boundary=user-wrapper;client=8589934594;service=4294967297;direct=128;queued=0;blocks=128;verified=1\n";
+    let rows: Vec<_> = (0..64)
+        .map(|i| {
+            format!(
+                "S7ITIME|{i};{};{};{};0;0;0;4294967297;{};{};0;0;0;8589934594;{}\n",
+                i * 1000 + 1,
+                i * 1000 + 13 + i,
+                65600 - i,
+                2 * i + 2,
+                64 - i,
+                2 * i + 1
+            )
+        })
+        .collect();
+    let good = header.to_owned() + &rows.concat();
+    assert!(
+        validate_ipc_bench(&good)
+            .unwrap()
+            .ends_with("user-total_ns=43/75")
+    );
+    assert!(validate_native_bench(&good).is_err());
+    assert!(validate_gate_bench(&good, true).is_err());
+    for (old, new) in [
+        ("samples=64", "samples=63"),
+        ("hz=1000000000", "hz=0"),
+        ("boundary=user-wrapper", "boundary=pre-iret"),
+        ("client=8589934594", "client=8589934595"),
+        ("client=8589934594", "client=2"),
+        ("service=4294967297", "service=4294967298"),
+        ("service=4294967297", "service=1"),
+        ("direct=128", "direct=127"),
+        ("queued=0", "queued=1"),
+        ("blocks=128", "blocks=127"),
+        ("verified=1", "verified=0"),
+    ] {
+        assert!(validate_ipc_bench(&good.replace(old, new)).is_err());
+    }
+    let values: Vec<_> = rows[0]
+        .trim()
+        .strip_prefix("S7ITIME|")
+        .unwrap()
+        .split(';')
+        .collect();
+    for (field, bad_value) in [
+        (0, "1"),
+        (1, "0"),
+        (1, "14"),
+        (2, "0"),
+        (3, "65601"),
+        (4, "1"),
+        (5, "1"),
+        (6, "1"),
+        (7, "8589934593"),
+        (8, "1"),
+        (8, "4294967296"),
+        (9, "63"),
+        (10, "1"),
+        (11, "1"),
+        (12, "1"),
+        (13, "4294967298"),
+        (14, "0"),
+        (14, "bad"),
+    ] {
+        let mut bad = values.clone();
+        bad[field] = bad_value;
+        let bad_row = format!("S7ITIME|{}\n", bad.join(";"));
+        assert!(validate_ipc_bench(&good.replace(&rows[0], &bad_row)).is_err());
+    }
+    for bad in [
+        good.replace(header, ""),
+        good.clone() + header,
+        good.replace(&rows[0], ""),
+        good.clone() + &rows[0],
+        good.replace("S7ITIME|1;1001", "S7ITIME|1;12"),
+        good.replace(
+            "S7ITIME|1;1001;1014;65599;0;0;0;4294967297;4;63;0;0;0;8589934594;3",
+            "S7ITIME|1;1001;1014;65599;0;0;0;4294967297;4;63;0;0;0;8589934594;2",
+        ),
+        good.replace(&rows[0], "S7ITIME|0;1\n"),
+        good.replace(&rows[0], &(rows[0].trim().to_owned() + ";0\n")),
+        good + "PRIMA|event=panic|status=error\n",
+        "S7NATIVE|samples=128;hz=1;boundary=user-wrapper;number=7;task=2;gate=0;verified=1".into(),
+    ] {
+        assert!(validate_ipc_bench(&bad).is_err());
+    }
 }
 
 #[cfg(test)]

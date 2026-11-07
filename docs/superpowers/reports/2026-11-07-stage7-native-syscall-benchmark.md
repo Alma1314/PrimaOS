@@ -24,6 +24,9 @@ updated: 2026-11-07
 原生syscall与Gate两类各有有界单核基线；IPC、页故障/COW、端到端LibOS、
 2/4核、数值门槛和发布检查仍待独立完成。九轨退出均不改变，不新增形式化或兼容profile主张。
 
+N1提交自身的干净远端九组、90份归档及分位数重算见
+[IPC推进报告](2026-11-07-stage7-ipc-benchmark.md)；本报告原有本地源身份和历史结论保留。
+
 ## G5干净远端证据
 
 本次读取[Actions 42345719829](https://github.com/Alma1314/PrimaOS/actions/runs/42345719829)，

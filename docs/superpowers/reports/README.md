@@ -108,6 +108,9 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 7（进行中）
 
+2026-11-07后继：[I1授权IPC往返与N1远端核验](2026-11-07-stage7-ipc-benchmark.md)，
+N1提交38f92bb远端九组/90份归档通过，I1方法与本地验证按该报告范围解释。
+
 2026-11-07继续：[N1原生syscall基线与G5远端后继](2026-11-07-stage7-native-syscall-benchmark.md)，
 fe83e59干净远端九组及88份归档核验通过；N1本地七配置14轮、host1137、lint与普通72轮通过。
 原生syscall与Gate已有有界单核基线，其余三类、多核、门槛与发布检查仍待完成。

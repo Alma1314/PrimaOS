@@ -83,7 +83,7 @@ def commands(group, root=ROOT):
             'PRIMA_LINUX_ELF': str(root / 'target/ci-inputs/busybox/usr/bin/busybox')})]
     if group == 'gate':
         return [probe('gate-probe', 'test-gate', {} if case is None else {'PRIMA_GATE_CASE': case})
-                for case in (None, 'G2', 'G2-death', 'G3', 'G4', 'G5', 'N1')]
+                for case in (None, 'G2', 'G2-death', 'G3', 'G4', 'G5', 'N1', 'I1')]
     if group == 'gate-audit':
         return [probe('gate-audit-probe', 'test-gate-audit', {'PRIMA_GATE_AUDIT_SITE': site})
                 for site in ('int80-entry', 'dispatch', 'int80-return', 'fast-return', 'pick-next', 'resume', 'irq')]

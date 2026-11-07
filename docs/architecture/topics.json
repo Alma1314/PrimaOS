@@ -111,7 +111,9 @@
       "docs/superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md",
       "docs/superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md",
+      "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -134,7 +136,8 @@
       "xtask/src/artifact_lock.rs",
       "scripts/ci.py",
       "scripts/ci-inputs.lock.json",
-      ".github/workflows/ci.yml"
+      ".github/workflows/ci.yml",
+      "kernel/src/ipc_bench.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -307,7 +310,9 @@
       "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
       "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
       "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md",
-      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md"
+      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
+      "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -338,7 +343,8 @@
       "prima-user/src/linux_process.rs",
       "prima-user/linux-probes/pthread.c",
       "prima-user/linux-probes/process.S",
-      "prima-user/linux-probes/matrix.c"
+      "prima-user/linux-probes/matrix.c",
+      "kernel/src/ipc_bench.rs"
     ],
     "tests": [
       "kernel/src/gate_probe.rs",
