@@ -4,7 +4,7 @@ kind: report
 authority: scoped-remediation-and-validation
 status: locally-validated
 lifecycle: historical
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # 7-0 IPC 审计排序整改与 I1 远端后继
@@ -142,3 +142,6 @@ BIOS：12026880字节，578ac620a224e5d4d0fa93619a487d32f16b90b73285554fc9aea362
 本文在事件排序及I1自身远端证据范围补强[I1首片报告](2026-11-07-stage7-ipc-benchmark.md)，
 取代其“排序仍待整改/新I1尚无自身远端”的当前结论，保留当时观察、方法与数据。
 [阶段跟踪](../../../Prima%20OS%20实现阶段.md)继续维护7-0其余两类基准、多核、性能门槛与发布检查。
+
+后继：[C1基准与a40c487自身远端核验](2026-11-07-stage7-cow-benchmark.md)补充九组/92份归档，
+在自身干净远端范围关闭本文“整改仍待远端”的当前待办，保留本文原本地数据及失败记录。

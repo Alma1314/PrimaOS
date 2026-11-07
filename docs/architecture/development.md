@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # 开发、构建与验证手册
@@ -59,13 +59,16 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 gate-audit、domains、formal，本地另有smoke（W5与compat）。直接运行要求已有锁定输入，
 Cargo离线且locked；`--prepare`先准备工具与输入，需要网络及Rust/Lean缓存写入权限。
 CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要编辑源码或文档。
-Gate组现有八配置各双轮（六种Gate探针、N1原生及I1 IPC测量）；G4为1000样本pre-iret内核路径，G5为128样本user-wrapper。
+Gate组现有九配置各双轮（六种Gate探针、N1原生、I1 IPC及C1 COW测量）；G4为1000样本pre-iret内核路径，G5为128样本user-wrapper。
 N1沿同一构建通道测128次未绑定Gate的SYS_TASK_ID int80，方法与基线见
 [N1契约](../superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md)及
 [报告](../superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md)；下述命令把G5替换成N1即可复现原生测量。
 替换成I1可复现两Task各64条认证请求/答复的IPC往返，方法与验证见
 [I1契约](../superpowers/specs/2026-11-07-stage7-ipc-benchmark.md)及
 [报告](../superpowers/reports/2026-11-07-stage7-ipc-benchmark.md)。
+替换成C1可复现64个新共享页的真实用户写保护故障与COW，计时含可选观察器；
+[C1方法](../superpowers/specs/2026-11-07-stage7-cow-benchmark.md)及
+[验证报告](../superpowers/reports/2026-11-07-stage7-cow-benchmark.md)限定其现有内核复制路径范围。
 单独复现G5可用`CARGO_NET_OFFLINE=true PRIMA_GATE_CASE=G5 cargo run -p xtask --features gate-probe -- test-gate`；
 测量边界与实际数据见[G5方法](../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md)及
 [基线报告](../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md)，两种边界/样本数的数据不混算。

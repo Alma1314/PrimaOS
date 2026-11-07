@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: executing-foundation
 lifecycle: current
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # 阶段7执行计划：工程底座与九轨冻结顺序
@@ -71,9 +71,12 @@ faf551a后继已取得干净远端九组及86份归档/探针身份核对，见[
 [推进报告](../reports/2026-11-07-stage7-native-syscall-benchmark.md)补齐fe83e59自身远端九组/88份归档与N1本地基线。
 后继[I1 IPC方法](../specs/2026-11-07-stage7-ipc-benchmark.md)与
 [推进报告](../reports/2026-11-07-stage7-ipc-benchmark.md)补充38f92bb自身远端九组/90份归档、
-N1分位数重算及I1本地有界单核往返。其余两类方法/探针、多核、数值门槛与发布许可检查仍待完成；
+N1分位数重算及I1本地有界单核往返。该片完成时其余两类方法/探针、多核、数值门槛与发布许可检查仍待完成；
 I1的2e3b95f自身远端九组/92份归档及IPC审计排序整改见
-[后继报告](../reports/2026-11-07-stage7-ipc-audit-order.md)；新整改仍待自身远端证据。
+[后继报告](../reports/2026-11-07-stage7-ipc-audit-order.md)；
+[C1方法](../specs/2026-11-07-stage7-cow-benchmark.md)及[报告](../reports/2026-11-07-stage7-cow-benchmark.md)
+补充a40c487自身远端九组/92份归档与第四类本地单核基线；C1新提交仍待自身远端，
+端到端LibOS操作、多核、数值门槛与发布许可检查继续待完成。
 
 ## 验证与停止条件
 

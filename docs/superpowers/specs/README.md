@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # Specs 索引
@@ -47,6 +47,9 @@ updated: 2026-11-07
 同日后继：[逐步串口归档与Gate内核路径基线契约](2026-11-07-stage7-gate-baseline.md)，
 复用G4的1000样本双轮，明确pre-iret边界；[实跑报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)
 区分1921757远端九组通过与新增归档器的本地证据，仍不关闭G6或7-0。
+COW测量后继：[C1用户写保护故障与复制](2026-11-07-stage7-cow-benchmark.md)，64个新页双轮；
+[实现与验证](../reports/2026-11-07-stage7-cow-benchmark.md)说明观察器成本及抽象用户态协议边界。
+
 IPC测量后继：[I1授权IPC用户往返](2026-11-07-stage7-ipc-benchmark.md)，64样本双轮、认证身份与逐消息审计；
 [实现及N1远端核验](../reports/2026-11-07-stage7-ipc-benchmark.md)限定为单核无cap直投。
 

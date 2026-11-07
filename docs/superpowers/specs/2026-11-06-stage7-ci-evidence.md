@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-tooling-contract
 status: reviewed-for-ci-slice
 lifecycle: current
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # 7-0 CI分组、锁定输入与验收身份契约
@@ -17,7 +17,7 @@ profile、参考ELF、双轮断言和单轮30秒门限；不新增性能门槛�
 
 CI使用GitHub Actions的独立Ubuntu 24.04工作区，host/lint/docs/普通BIOS/Linux/Gate/审计停止/
 D14/formal分为九组。每组内部串行；矩阵最多两个作业并行，Cargo与musl构建各限2个worker。
-Gate组按无selector的G1、G2、G2-death、G3、G4、G5、N1及I1八配置串行双轮；
+Gate组按无selector的G1、G2、G2-death、G3、G4、G5、N1、I1及C1九配置串行双轮；
 [G5](2026-11-07-stage7-gate-user-benchmark.md)使用独立用户端点记录，G4仍保留原内核路径格式；
 [N1](2026-11-07-stage7-native-syscall-benchmark.md)沿此构建通道测未绑定Gate的原生syscall；
 [I1](2026-11-07-stage7-ipc-benchmark.md)测两Task授权IPC往返。两者不算Gate请求。

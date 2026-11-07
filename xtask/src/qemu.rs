@@ -104,6 +104,11 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
+    if option_env!("PRIMA_GATE_CASE") == Some("C1") {
+        let summary = validate_cow_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
+        println!("PASS S7COW round={round} {summary}");
+        return Ok(());
+    }
     if option_env!("PRIMA_GATE_CASE") == Some("I1") {
         let summary = validate_ipc_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
         println!("PASS S7IPC round={round} {summary}");
@@ -304,6 +309,148 @@ fn validate_native_bench(output: &str) -> Result<String, String> {
         &["user-total"],
         &mut [durations],
     ))
+}
+
+fn validate_cow_bench(output: &str) -> Result<String, String> {
+    if output.contains("|event=panic|") {
+        return Err("COW benchmark panicked".into());
+    }
+    let headers: Vec<_> = output.lines().filter(|s| s.starts_with("S7COW|")).collect();
+    let Some(header) = headers.first().filter(|_| headers.len() == 1) else {
+        return Err("COW benchmark requires one verified header".into());
+    };
+    let hz = header
+        .strip_prefix("S7COW|samples=64;hz=")
+        .and_then(|s| {
+            s.strip_suffix(";boundary=user-store;task=2;faults=64;observer=checked;verified=1")
+        })
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|hz| *hz > 0)
+        .ok_or("invalid COW benchmark calibration or boundary")?;
+    let mut durations = Vec::new();
+    let mut frames = Vec::new();
+    let mut previous = 0;
+    for (index, line) in output
+        .lines()
+        .filter_map(|s| s.strip_prefix("S7CTIME|"))
+        .enumerate()
+    {
+        let v: Vec<u64> = line
+            .split(';')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| "invalid COW benchmark receipt")?;
+        if index >= 64
+            || v.len() != 8
+            || v[0] != index as u64
+            || v[1] == 0
+            || v[1] < previous
+            || v[2] < v[1]
+            || v[3] != 65536 + index as u64
+            || v[4] != 0x0000_0b00_0040_0000 + index as u64 * 4096
+            || v[5] != 7
+        {
+            return Err("unordered, incomplete or incorrect COW benchmark receipt".into());
+        }
+        for frame in &v[6..8] {
+            if *frame == 0 || *frame & !0x000f_ffff_ffff_f000 != 0 || frames.contains(frame) {
+                return Err("invalid or aliased COW benchmark frame".into());
+            }
+            frames.push(*frame);
+        }
+        durations.push(v[2] - v[1]);
+        previous = v[2];
+    }
+    if durations.len() != 64 {
+        return Err("COW benchmark requires exactly 64 samples".into());
+    }
+    Ok(benchmark_summary(
+        64,
+        hz,
+        "user-store",
+        &["user-total"],
+        &mut [durations],
+    ))
+}
+
+#[test]
+fn cow_benchmark_requires_fresh_frames_and_user_write_fault_receipts() {
+    let header = "S7COW|samples=64;hz=1000000000;boundary=user-store;task=2;faults=64;observer=checked;verified=1\n";
+    let rows: Vec<_> = (0..64u64)
+        .map(|i| {
+            format!(
+                "S7CTIME|{i};{};{};{};{};7;{};{}\n",
+                1000 + i * 100,
+                1012 + i * 101,
+                65536 + i,
+                0x0000_0b00_0040_0000 + i * 4096,
+                4096 + i * 8192,
+                8192 + i * 8192
+            )
+        })
+        .collect();
+    let good = format!("{header}{}", rows.concat());
+    assert!(
+        validate_cow_bench(&good)
+            .unwrap()
+            .contains("user-total_ns=43/75")
+    );
+    assert!(validate_native_bench(&good).is_err());
+    assert!(validate_ipc_bench(&good).is_err());
+    assert!(validate_gate_bench(&good, true).is_err());
+    for (old, new) in [
+        ("samples=64", "samples=63"),
+        ("hz=1000000000", "hz=0"),
+        ("user-store", "user-wrapper"),
+        ("task=2", "task=1"),
+        ("faults=64", "faults=63"),
+        ("observer=checked", "observer=none"),
+        ("verified=1", "verified=0"),
+    ] {
+        assert!(validate_cow_bench(&good.replace(old, new)).is_err());
+    }
+    let fields: Vec<_> = rows[1]
+        .trim()
+        .strip_prefix("S7CTIME|")
+        .unwrap()
+        .split(';')
+        .collect();
+    for (field, bad) in [
+        (0, "0"),
+        (1, "0"),
+        (1, "999"),
+        (2, "1099"),
+        (3, "65536"),
+        (4, "0"),
+        (5, "3"),
+        (5, "0"),
+        (6, "0"),
+        (6, "4097"),
+        (6, "4503599627370496"),
+        (6, "4096"),
+        (6, "8192"),
+        (7, "12288"),
+        (7, "8192"),
+        (7, "no-number"),
+    ] {
+        let mut f = fields.clone();
+        f[field] = bad;
+        assert!(
+            validate_cow_bench(&good.replace(&rows[1], &format!("S7CTIME|{}\n", f.join(";"))))
+                .is_err()
+        );
+    }
+    for bad in [
+        good.replace(header, ""),
+        format!("{header}{good}"),
+        good.replace(&rows[1], ""),
+        format!("{good}{}", rows[0]),
+        good.replace(&rows[1], &rows[0]),
+        good.replace(&rows[1], "S7CTIME|1;2\n"),
+        format!("{good}|event=panic|\n"),
+    ] {
+        assert!(validate_cow_bench(&bad).is_err());
+    }
 }
 
 fn validate_ipc_bench(output: &str) -> Result<String, String> {

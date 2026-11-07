@@ -75,10 +75,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(observed['MATHLIB_NO_CACHE_ON_UPDATE'], '1')
         gate = ci.commands('gate')
         self.assertEqual(gate[0]['env'], {})
-        self.assertEqual(gate[-4]['env'], {'PRIMA_GATE_CASE': 'G4'})
-        self.assertEqual(gate[-3]['env'], {'PRIMA_GATE_CASE': 'G5'})
-        self.assertEqual(gate[-2]['env'], {'PRIMA_GATE_CASE': 'N1'})
-        self.assertEqual(gate[-1]['env'], {'PRIMA_GATE_CASE': 'I1'})
+        self.assertEqual(len(gate), 9)
+        self.assertEqual([g['env'] for g in gate[-5:]],
+                         [{'PRIMA_GATE_CASE': c} for c in ('G4', 'G5', 'N1', 'I1', 'C1')])
 
     def test_guest_logs_survive_overwrite_and_failure_without_collecting_stale_logs(self):
         directory = self.root / 'target/prima-os'

@@ -1,6 +1,8 @@
 //! Opt-in measurements through the production Gate path: G4 stops before iret;
 //! G5 adds user endpoints; N1/I1 reuse the emitter for ungated native wrappers.
 use super::*;
+#[path = "cow_bench.rs"]
+mod cow;
 #[path = "ipc_bench.rs"]
 mod ipc;
 #[path = "native_bench.rs"]
@@ -15,12 +17,16 @@ static PROGRESS: StaticCell<Option<(usize, usize)>> = StaticCell::new(None);
 pub fn selected() -> bool {
     matches!(
         option_env!("PRIMA_GATE_CASE"),
-        Some("G4" | "G5" | "N1" | "I1")
+        Some("G4" | "G5" | "N1" | "I1" | "C1")
     )
 }
 
 fn ipc_mode() -> bool {
     option_env!("PRIMA_GATE_CASE") == Some("I1")
+}
+
+fn cow_mode() -> bool {
+    option_env!("PRIMA_GATE_CASE") == Some("C1")
 }
 
 fn native_mode() -> bool {
@@ -39,7 +45,7 @@ fn sample_count() -> usize {
 /// This feature contains no sampling in ordinary images. Phase assertions also
 /// reject a benchmark that silently skips a call or measures an empty wait.
 pub fn stamp(phase: usize, task: u32) {
-    if !selected() || native_mode() || ipc_mode() {
+    if !selected() || native_mode() || ipc_mode() || cow_mode() {
         return;
     }
     PROGRESS.with_mut(|progress| {
@@ -78,6 +84,9 @@ fn user_timestamp(code: &mut Code, at: u32) {
 }
 
 pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
+    if cow_mode() {
+        cow::enter(offset, terminal)
+    }
     if ipc_mode() {
         ipc::enter(offset, terminal)
     }
@@ -151,6 +160,10 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
 }
 
 pub fn verify() {
+    if cow_mode() {
+        cow::verify();
+        return;
+    }
     if ipc_mode() {
         ipc::verify();
         return;
@@ -222,6 +235,10 @@ pub fn verify() {
 
 /// Stream raw, ordered timestamps for independent host-side quantiles and sums.
 pub fn emit(mut write: impl FnMut(&[u8])) {
+    if cow_mode() {
+        cow::emit(write);
+        return;
+    }
     if ipc_mode() {
         ipc::emit(write);
         return;

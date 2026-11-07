@@ -114,7 +114,9 @@
       "docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md",
       "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md"
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md",
+      "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -138,7 +140,8 @@
       "scripts/ci.py",
       "scripts/ci-inputs.lock.json",
       ".github/workflows/ci.yml",
-      "kernel/src/ipc_bench.rs"
+      "kernel/src/ipc_bench.rs",
+      "kernel/src/cow_bench.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -213,7 +216,9 @@
       "docs/superpowers/reports/2026-10-24-fork-continuation-report.md",
       "docs/superpowers/reports/2026-10-30-stage6-user-copy-transactions.md",
       "docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md",
-      "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md"
+      "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md",
+      "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -231,7 +236,8 @@
       "prima-ostd/src/sync/lock.rs",
       "prima-ostd/src/pod.rs",
       "kernel/src/user.rs",
-      "kernel/src/sched.rs"
+      "kernel/src/sched.rs",
+      "kernel/src/cow_bench.rs"
     ],
     "tests": [
       "cosir/src/memseg_refine_tests.rs",

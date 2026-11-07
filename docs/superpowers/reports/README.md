@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-07
+updated: 2026-11-08
 ---
 
 # Reports 索引
@@ -107,6 +107,9 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
 ## 阶段 7（进行中）
+
+2026-11-08后继：[C1 COW基准与整改自身远端核验](2026-11-07-stage7-cow-benchmark.md)，
+a40c487干净远端九组/92份归档、本地C1九配置18轮与完整回归；五类基准已有四类有界单核基线，阶段7仍进行中。
 
 2026-11-07后继：[IPC审计排序整改与I1远端核验](2026-11-07-stage7-ipc-audit-order.md)，
 Task/异常/Timer投递排序及精确预算反例本地通过；I1加强逐条三事件检查，2e3b95f远端九组/92份归档通过。

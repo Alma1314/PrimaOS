@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（217）
+## report（218）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -311,6 +311,7 @@
 | [阶段7启动与首个7-0工程增量](../superpowers/reports/2026-11-06-stage7-start.md) | historical | `docs/superpowers/reports/2026-11-06-stage7-start.md` |
 | [7-0九组CI通过与可复核Gate内核路径基线](../superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md` |
 | [7-0首次远端CI：嵌套bootloader输入准备整改](../superpowers/reports/2026-11-07-stage7-ci-remediation.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md` |
+| [7-0 C1 COW 基准与 IPC 整改自身远端后继](../superpowers/reports/2026-11-07-stage7-cow-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md` |
 | [7-0 G5用户态Gate往返基线与普通回归](../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md` |
 | [7-0 IPC 审计排序整改与 I1 远端后继](../superpowers/reports/2026-11-07-stage7-ipc-audit-order.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md` |
 | [7-0 I1授权IPC往返基线与N1远端后继](../superpowers/reports/2026-11-07-stage7-ipc-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md` |
@@ -325,7 +326,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（102）
+## specification（103）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -427,6 +428,7 @@
 | [Gate请求根的审计承载历史](../superpowers/specs/2026-11-06-gate-request-audit-history.md) | current | `docs/superpowers/specs/2026-11-06-gate-request-audit-history.md` |
 | [阶段7首片：共享镜像工件互斥契约](../superpowers/specs/2026-11-06-stage7-artifact-exclusion.md) | current | `docs/superpowers/specs/2026-11-06-stage7-artifact-exclusion.md` |
 | [7-0 CI分组、锁定输入与验收身份契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md) | current | `docs/superpowers/specs/2026-11-06-stage7-ci-evidence.md` |
+| [7-0 C1 用户写保护故障与 COW 测量](../superpowers/specs/2026-11-07-stage7-cow-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md` |
 | [7-0原始串口证据与Gate内核路径基线](../superpowers/specs/2026-11-07-stage7-gate-baseline.md) | current | `docs/superpowers/specs/2026-11-07-stage7-gate-baseline.md` |
 | [7-0 G5用户态Gate调用往返测量](../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md` |
 | [7-0 I1 授权 IPC 用户往返测量](../superpowers/specs/2026-11-07-stage7-ipc-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md` |
