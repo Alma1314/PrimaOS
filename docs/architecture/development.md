@@ -68,12 +68,15 @@ CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要�
 文档PR基线可设`PRIMA_CI_BASE=<commit>`，它会增加docs的基线变更检查。
 
 结果和原始输出保存在ignored `target/ci/GROUP/运行ID/`，失败保留并停止后续命令，
-成功才列出本组新建/改写制品的哈希；缺工具不能算通过。Actions仅上传证据目录，
-不是发布镜像包。工作流最多2独立作业并行，host工具/runner实际版本会记录，
+成功才列出本组新建/改写制品的哈希；缺工具不能算通过。Actions按现有保留期上传证据目录。
+每条命令结束后，新增/改写的直接guest *.log另存traces/步骤编号/并记录哈希，避免后续配置覆盖。
+旧日志和符号链接排除，归档失败不能PASS；成功制品扫描包含Gate/审计/Linux探针的一层子目录。
+发布镜像包另按7-0工件要求制作。工作流最多2独立作业并行，host工具/runner实际版本会记录，
 不声称跨宿主逐字节相同。具体契约、输入和本地实跑见
 [CI契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md)与
 [CI报告](../superpowers/reports/2026-11-06-stage7-ci-evidence.md)；首次远端结果与准备修复见
-[CI整改](../superpowers/reports/2026-11-07-stage7-ci-remediation.md)。
+[CI整改](../superpowers/reports/2026-11-07-stage7-ci-remediation.md)，干净远端九组后继及原始证据修复见
+[九组CI与Gate基线](../superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md)。
 
 ## 变更对应验证
 

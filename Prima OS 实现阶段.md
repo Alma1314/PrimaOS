@@ -27,14 +27,15 @@ updated: 2026-11-07
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 2026-11-07：首次远端CI九组中docs/formal通过，七组因嵌套bootloader输入未准备而编译失败；补充准备后本地host1135、运行器9项、独立目录离线bootloader重建及lint/TCB通过；修复版远端重跑待完成 | [远端结果与整改](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)；[前序本地CI证据](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、[首片锁验证](docs/superpowers/reports/2026-11-06-stage7-start.md)和[阶段0–6历史全量](docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md)各按原范围保留 |
+| 最近验证记录 | 2026-11-07：1921757干净远端九组全部通过，含BIOS72轮、Linux11案例双轮、Gate五配置双轮、审计14轮与既有形式化链；后继原始串口/探针制品身份修复本地Gate、host1135、运行器11项、lint/TCB通过，G4两轮独立重算通过 | [九组CI与Gate基线](docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md)；[首次远端失败整改](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、[前序本地CI](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、[首片锁验证](docs/superpowers/reports/2026-11-06-stage7-start.md)和[阶段0–6历史全量](docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md)各按原范围保留 |
 | 阶段 6 | **已满足退出条件，技术复核4/4**；有界Linux profile v1与D12八成员运行冻结 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不自动构成组织级签署；阶段7由下行启动记录另行授权 |
-| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已有工件互斥、CI接线及首次远端失败整改；五类基准名称于11-07获作者确认，方法/基线/门槛与修复版远端CI待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
+| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已取得1921757远端九组通过与本地逐步串口/探针制品身份后继；五类基准名称已确认，G4提供单核内核路径基线；完整用户态测量、其余基准/门槛/发布检查待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
 
-阶段7工程后继：[首次远端CI与准备整改](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)，
+阶段7工程后继：[九组CI通过与Gate内核路径基线](docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md)，
+承接[首次远端CI与准备整改](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)，
 承接[CI分组与验收身份](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)。
 阶段7启动：[7-0首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)与[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)。首片不关闭任何子轨退出条件。
 
@@ -389,10 +390,11 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得首次远端CI的2组通过/7组失败并修复共同输入准备缺口，修复版远端九组仍待验证；五类基准名称已确认，具体方法/基线/门槛待完成。**
+**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得1921757干净远端九组通过；原始串口/探针制品身份后继已在本地验证，G4取得单核内核路径基线；五类基准的完整用户态测量/其余方法、门槛与发布检查继续待完成。**
 [启动与首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、
 [CI后继报告](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、
 [远端CI整改报告](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、
+[九组CI与Gate基线](docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md)、
 [执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)和
 [共享工件互斥契约](docs/superpowers/specs/2026-11-06-stage7-artifact-exclusion.md)记录实际范围。
 技术规格、应用/设备白名单和量化门槛继续逐片冻结。作者在
@@ -418,7 +420,8 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 关键配额、撤销和恢复性质必须建模并证明，并附实现映照与故障注入证据；量化门槛、白名单、
 平台配置和故障协议须按[冻结门](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md#8-实现前和签署前的冻结门)进一步确定。
 整机重启后的应用续执行不在透明恢复范围，文件持久化义务独立保留。7-0已有宿主工件互斥、
-CI分组接线、本地验收身份及首次远端CI整改；修复后的远端九组、五项基准、真实双personality及其它机制的证据仍须独立提供。
+CI分组接线、1921757远端九组通过及本地逐步原始串口/探针制品身份后继；新增归档器自身的远端结果、
+完整五项基准、真实双personality及其它机制的证据仍须独立提供。
 
 独立候选扩展：[Windows LibOS 计划书](docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md)。
 作者已选择控制台与服务优先（PE64、DLL、文件、进程/线程、同步与异常）；技术路线及profile仍为提案，

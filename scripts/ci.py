@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -134,9 +135,9 @@ def tool_identity(env):
                 runner_image=os.environ.get('ImageVersion'), cpu_count=os.cpu_count())
 
 
-def outputs(root):
+def outputs(root, patterns=('*.img', '*.elf', '*/*.img', '*/*.elf')):
     return {path: (path.stat().st_size, path.stat().st_mtime_ns)
-            for pattern in ('*.img', '*.elf') for path in (root / 'target/prima-os').glob(pattern)
+            for pattern in patterns for path in (root / 'target/prima-os').glob(pattern)
             if path.is_file()}
 
 
@@ -187,6 +188,7 @@ def run_group(group, items, root=ROOT, budget=None, require_clean=False, version
                 if not item.get('prepare') and 'inputs' not in data:
                     data['inputs'] = input_identity(group, root)
                 record = dict(item, status='running', exit_code=None, log=f'{index:02}.log')
+                trace_before = outputs(root, ('*.log',))
                 data['steps'].append(record)
                 write_result(path, data)
                 print(f'RUN {group} {index + 1}/{len(items)}: {item["argv"]}', flush=True)
@@ -194,6 +196,7 @@ def run_group(group, items, root=ROOT, budget=None, require_clean=False, version
                 try:
                     remaining = data['budget_seconds'] - (elapsed - started)
                     code = run_step(item, root, env, directory / record['log'], remaining)
+                    record.update(exit_code=code, status='passed' if code == 0 else 'failed')
                 except subprocess.TimeoutExpired:
                     record.update(status='timed_out', exit_code=124)
                     raise
@@ -205,7 +208,17 @@ def run_group(group, items, root=ROOT, budget=None, require_clean=False, version
                     raise
                 finally:
                     record['seconds'] = round(time.monotonic() - elapsed, 3)
-                record.update(exit_code=code, status='passed' if code == 0 else 'failed')
+                    # Preserve each configuration before later steps overwrite its guest logs.
+                    record['traces'] = []
+                    for source, state in sorted(outputs(root, ('*.log',)).items()):
+                        if trace_before.get(source) == state or source.is_symlink():
+                            continue
+                        saved = directory / 'traces' / f'{index:02}' / source.name
+                        saved.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(source, saved)
+                        record['traces'].append(dict(source=str(source.relative_to(root)),
+                                                     path=str(saved.relative_to(directory)),
+                                                     size=saved.stat().st_size, sha256=digest(saved)))
                 write_result(path, data)
                 if code != 0:
                     raise ValueError(f'command failed with exit {code}; see {record["log"]}')

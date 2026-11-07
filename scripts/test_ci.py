@@ -46,13 +46,18 @@ class EvidenceTests(unittest.TestCase):
         directory = self.root / 'target/prima-os'
         directory.mkdir(parents=True)
         (directory / 'old.img').write_bytes(b'old')
-        result, new_path = self.execute(['from pathlib import Path; Path("target/prima-os/new.img").write_bytes(b"new")'])
+        (directory / 'gate-probe').mkdir()
+        (directory / 'gate-probe/old.img').write_bytes(b'old probe')
+        result, new_path = self.execute([
+            'from pathlib import Path; Path("target/prima-os/new.img").write_bytes(b"new"); '
+            'Path("target/prima-os/gate-probe/new.img").write_bytes(b"probe")'])
         self.assertEqual(failed['status'], 'failed')
         self.assertNotEqual(old_path, new_path)
         self.assertEqual(json.loads(old_path.read_text())['status'], 'failed')
         self.assertEqual(result['status'], 'passed')
-        self.assertEqual(result['artifacts'], [dict(path='target/prima-os/new.img', size=3,
-                                                  sha256=hashlib.sha256(b'new').hexdigest())])
+        self.assertEqual(result['artifacts'], [
+            dict(path='target/prima-os/gate-probe/new.img', size=5, sha256=hashlib.sha256(b'probe').hexdigest()),
+            dict(path='target/prima-os/new.img', size=3, sha256=hashlib.sha256(b'new').hexdigest())])
 
     def test_environment_pollution_is_removed_for_each_command(self):
         with patch.dict(os.environ, PRIMA_GATE_CASE='G4', PRIMA_STAGE6_DOMAINS='1',
@@ -71,6 +76,36 @@ class EvidenceTests(unittest.TestCase):
         gate = ci.commands('gate')
         self.assertEqual(gate[0]['env'], {})
         self.assertEqual(gate[-1]['env'], {'PRIMA_GATE_CASE': 'G4'})
+
+    def test_guest_logs_survive_overwrite_and_failure_without_collecting_stale_logs(self):
+        directory = self.root / 'target/prima-os'
+        directory.mkdir(parents=True)
+        (directory / 'stale.log').write_bytes(b'old')
+        scripts = ['from pathlib import Path; Path("target/prima-os/guest.log").write_bytes(b"first"); '
+                   'Path("target/prima-os/link.log").symlink_to("../../source.txt")',
+                   'from pathlib import Path; Path("target/prima-os/guest.log").write_bytes(b"failure"); raise SystemExit(7)']
+        result, path = self.execute(scripts)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['artifacts'], [])
+        for record, expected in zip(result['steps'], (b'first', b'failure')):
+            self.assertEqual(len(record['traces']), 1)
+            trace = record['traces'][0]
+            self.assertEqual(trace['source'], 'target/prima-os/guest.log')
+            self.assertEqual((path.parent / trace['path']).read_bytes(), expected)
+            self.assertEqual(trace['sha256'], hashlib.sha256(expected).hexdigest())
+            self.assertEqual(trace['size'], len(expected))
+        self.assertEqual([s['status'] for s in result['steps']], ['passed', 'failed'])
+
+    def test_guest_log_archive_error_cannot_pass(self):
+        (self.root / 'target/prima-os').mkdir(parents=True)
+        with patch('ci.shutil.copyfile', side_effect=OSError('archive write denied')):
+            result, _ = self.execute([
+                'from pathlib import Path; Path("target/prima-os/guest.log").write_bytes(b"new")'])
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('archive write denied', result['error'])
+        self.assertEqual(result['steps'][0]['traces'], [])
+        self.assertEqual(result['steps'][0]['status'], 'passed')
+        self.assertEqual(result['steps'][0]['exit_code'], 0)
 
     def test_source_change_and_dirty_ci_checkout_cannot_pass(self):
         result, _ = self.execute(['open("source.txt", "w").write("changed")'])

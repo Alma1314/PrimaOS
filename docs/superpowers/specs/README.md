@@ -44,6 +44,9 @@ updated: 2026-11-07
 2026-11-07[远端整改](../reports/2026-11-07-stage7-ci-remediation.md)补充bootloader嵌套输入准备契约，
 并在[范围裁决§7.2](2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)登记作者确认的五类基准名称；
 具体采样方法、基线与数值门槛仍待冻结。
+同日后继：[逐步串口归档与Gate内核路径基线契约](2026-11-07-stage7-gate-baseline.md)，
+复用G4的1000样本双轮，明确pre-iret边界；[实跑报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)
+区分1921757远端九组通过与新增归档器的本地证据，仍不关闭G6或7-0。
 
 2026-11-06：[Gate请求根的审计承载历史](2026-11-06-gate-request-audit-history.md)：解除每次交付对1280项通用历史槽的重复占用，保留不可变溯源及原审计fail-stop；不扩大profile或启动阶段7。
 

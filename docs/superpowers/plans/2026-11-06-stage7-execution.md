@@ -45,7 +45,9 @@ updated: 2026-11-07
 
 以下保留首片的作业拆分依据。后继[CI契约](../specs/2026-11-06-stage7-ci-evidence.md)已具体化九组矩阵、
 预算与输入准备，[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)记录本地实跑；
-[远端整改后继](../reports/2026-11-07-stage7-ci-remediation.md)记录首次九组结果，修复版本仍待远端执行。
+[远端整改后继](../reports/2026-11-07-stage7-ci-remediation.md)记录首次九组结果；
+[九组通过与Gate基线](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)记录1921757干净远端全部通过，
+以及逐步原始串口/探针子目录制品身份修复的本地验证。
 
 | 组 | 现有入口 | 资源/边界 |
 |---|---|---|
@@ -58,10 +60,12 @@ updated: 2026-11-07
 
 0.2后继已定义独立工作区、最多2作业及Cargo/musl各2 worker、组预算与验收manifest；
 没有主张跨宿主RAM/端口统一保留或完整发布包；首次干净托管runner的2组通过/7组失败与共同根因
-见[2026-11-07整改](../reports/2026-11-07-stage7-ci-remediation.md)，修复版本的远端九组仍待验证。
+见[2026-11-07整改](../reports/2026-11-07-stage7-ci-remediation.md)；1921757的九组远端功能结果已通过，
+新增归档器仍需其自身提交的远端证据。既有G4的单核内核路径基线方法和原始样本后继见
+[测量契约](../specs/2026-11-07-stage7-gate-baseline.md)及[报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)。
 作者2026-11-07已确认原生syscall、IPC往返、Gate往返、页故障/COW、端到端LibOS操作五类基准，
 详见[范围裁决§7.2](../specs/2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)；
-0.3的具体测量方法、基线、数值门槛与发布许可检查仍待完成。
+0.3完整用户态测量边界、其余基准方法/探针、数值门槛与发布许可检查仍待完成。
 
 ## 验证与停止条件
 
