@@ -5349,14 +5349,15 @@ impl BootstrapState {
                 capabilities: [Handle::ZERO; MAX_MESSAGE_CAPABILITIES],
                 capability_count: 0,
             };
+            // §6.3: all delivery capacity was preflighted; send precedes wake/receive.
+            self.audit.append(AuditEvent::MessageSent {
+                message_id,
+                sender: KERNEL_ACTOR,
+                receiver: task,
+            });
             if self.tasks.is_blocked_recv(task) {
                 self.set_pending_task(task, message)
                     .map_err(|_| ExcError::NoSuchTask)?;
-                self.audit.append(AuditEvent::MessageSent {
-                    message_id,
-                    sender: KERNEL_ACTOR,
-                    receiver: task,
-                });
                 self.audit.append(AuditEvent::MessageReceived {
                     message_id,
                     receiver: task,
@@ -5368,11 +5369,6 @@ impl BootstrapState {
                 }
             } else {
                 self.ipc.send(message).map_err(|_| ExcError::Full)?;
-                self.audit.append(AuditEvent::MessageSent {
-                    message_id,
-                    sender: KERNEL_ACTOR,
-                    receiver: task,
-                });
             }
             delivered += 1;
         }
@@ -6586,25 +6582,21 @@ impl BootstrapState {
             capability_count: 0,
         };
         let message_id = message.id;
+        // timer_set/advance_time preflight the complete delivery before mutation.
+        self.audit.append(AuditEvent::MessageSent {
+            message_id,
+            sender: KERNEL_ACTOR,
+            receiver,
+        });
         if self.tasks.is_blocked_recv(receiver) {
             // 直投：写 pending 并把接收者从 `BlockedRecv` 迁到 `Ready`（§6.3 步骤 3）。
             let _ = self.set_pending_task(receiver, message);
-            self.audit.append(AuditEvent::MessageSent {
-                message_id,
-                sender: KERNEL_ACTOR,
-                receiver,
-            });
             self.audit.append(AuditEvent::MessageReceived {
                 message_id,
                 receiver,
             });
         } else {
             let _ = self.ipc.send(message);
-            self.audit.append(AuditEvent::MessageSent {
-                message_id,
-                sender: KERNEL_ACTOR,
-                receiver,
-            });
         }
         message_id
     }
@@ -7991,6 +7983,13 @@ impl BootstrapState {
             capabilities,
             capability_count: capability_ids.len(),
         };
+        // §6.3: the send linearization event precedes cap moves and receiver wake.
+        // Authorization, positions, IDs, queue and the full audit budget are checked above.
+        self.audit.append(AuditEvent::MessageSent {
+            message_id: message.id,
+            sender,
+            receiver,
+        });
         if direct_delivery {
             for cap in capabilities[..capability_ids.len()].iter().copied() {
                 let from = self.positions.find(cap).map(|position| position.location);
@@ -8008,11 +8007,6 @@ impl BootstrapState {
             }
             self.set_pending_task(receiver, message)
                 .map_err(|_| IpcError::NoSuchTask)?;
-            self.audit.append(AuditEvent::MessageSent {
-                message_id: message.id,
-                sender,
-                receiver,
-            });
             self.audit.append(AuditEvent::MessageReceived {
                 message_id: message.id,
                 receiver,
@@ -8033,11 +8027,6 @@ impl BootstrapState {
                 }
             }
             self.ipc.send(message)?;
-            self.audit.append(AuditEvent::MessageSent {
-                message_id: message.id,
-                sender,
-                receiver,
-            });
         }
         self.commit_gate_cap_loss(gate_loss);
         Ok(())
@@ -13562,6 +13551,226 @@ mod tests {
     }
 
     #[test]
+    fn ipc_audit_order_matches_send_move_wake_receive_at_exact_capacity() {
+        for direct in [false, true] {
+            for cap_count in 0..=super::MAX_MESSAGE_CAPABILITIES {
+                let mut state = fresh_state();
+                state.create_task(2).unwrap();
+                state.prepare_user_ipc_caps().unwrap();
+                let caps = [
+                    IMAGE_CAP_HANDLE,
+                    state.wait_object_create(INIT_TASK_ID).unwrap(),
+                ];
+                if direct {
+                    state.block_recv_task(2).unwrap();
+                }
+                let needed = cap_count + if direct { 3 } else { 1 };
+                while state.audit.can_append(needed) {
+                    state
+                        .audit
+                        .append(AuditEvent::CapabilityDropped { cap: Handle::ZERO });
+                }
+                let before = state;
+                assert_eq!(
+                    state.send_message_with_capabilities(
+                        INIT_TASK_ID,
+                        2,
+                        TASK2_SEND_CAP_HANDLE,
+                        55,
+                        &caps[..cap_count]
+                    ),
+                    Err(IpcError::AuditFull)
+                );
+                assert_eq!(state, before);
+                state.audit.count -= 1; // Exactly enough space, including the wake event.
+                let start = state.audit.len();
+                let id = state.ipc.next_id as u32;
+                state
+                    .send_message_with_capabilities(
+                        INIT_TASK_ID,
+                        2,
+                        TASK2_SEND_CAP_HANDLE,
+                        55,
+                        &caps[..cap_count],
+                    )
+                    .unwrap();
+                assert_eq!(state.audit.len(), super::MAX_AUDIT_EVENTS);
+                assert_eq!(
+                    state.audit.entry(start),
+                    Some(AuditEvent::MessageSent {
+                        message_id: id,
+                        sender: INIT_TASK_ID,
+                        receiver: 2,
+                    })
+                );
+                for (index, cap) in caps[..cap_count].iter().copied().enumerate() {
+                    assert_eq!(
+                        state.audit.entry(start + 1 + index),
+                        Some(AuditEvent::CapabilityMoved {
+                            cap,
+                            from: CapabilityLocation::HeldByTask(INIT_TASK_ID),
+                            to: if direct {
+                                CapabilityLocation::HeldByTask(2)
+                            } else {
+                                CapabilityLocation::InMessage(id)
+                            },
+                        })
+                    );
+                }
+                let message = if direct {
+                    assert_eq!(
+                        state.audit.entry(start + 1 + cap_count),
+                        Some(AuditEvent::TaskStateChanged {
+                            task_id: 2,
+                            status: TaskStatus::Ready,
+                        })
+                    );
+                    assert_eq!(
+                        state.audit.entry(start + 2 + cap_count),
+                        Some(AuditEvent::MessageReceived {
+                            message_id: id,
+                            receiver: 2,
+                        })
+                    );
+                    assert_eq!(state.ipc.count, 0);
+                    state.tasks.find(2).unwrap().pending.unwrap()
+                } else {
+                    assert!(state.tasks.find(2).unwrap().pending.is_none());
+                    assert_eq!(state.ipc.count, 1);
+                    state.ipc.entries[0].unwrap()
+                };
+                assert_eq!(
+                    (message.id, message.payload, message.capability_count),
+                    (id, 55, cap_count)
+                );
+                assert_eq!(&message.capabilities[..cap_count], &caps[..cap_count]);
+            }
+        }
+    }
+
+    #[test]
+    fn exception_audit_order_and_capacity_cover_direct_and_queued_delivery() {
+        for direct in [false, true] {
+            let mut state = exc_state();
+            state.create_task(2).unwrap();
+            state
+                .exc_source_add_subscriber(PAGE_FAULT_SOURCE_ID, 2)
+                .unwrap();
+            if direct {
+                state.block_recv_task(2).unwrap();
+            }
+            let needed = if direct { 4 } else { 2 };
+            state.audit.count = super::MAX_AUDIT_EVENTS - needed + 1;
+            let before = state;
+            assert_eq!(
+                state.exc_raise(PAGE_FAULT_SOURCE_ID, ExcKind::PageFault),
+                Err(ExcError::AuditFull)
+            );
+            assert_eq!(state, before);
+            state.audit.count -= 1;
+            let start = state.audit.len();
+            let result = state
+                .exc_raise(PAGE_FAULT_SOURCE_ID, ExcKind::PageFault)
+                .unwrap();
+            assert_eq!(state.audit.len(), super::MAX_AUDIT_EVENTS);
+            assert_eq!(
+                state.audit.entry(start + 1),
+                Some(AuditEvent::MessageSent {
+                    message_id: result.message_id,
+                    sender: KERNEL_ACTOR,
+                    receiver: 2,
+                })
+            );
+            if direct {
+                assert_eq!(
+                    state.audit.entry(start + 2),
+                    Some(AuditEvent::TaskStateChanged {
+                        task_id: 2,
+                        status: TaskStatus::Ready,
+                    })
+                );
+                assert_eq!(
+                    state.audit.entry(start + 3),
+                    Some(AuditEvent::MessageReceived {
+                        message_id: result.message_id,
+                        receiver: 2,
+                    })
+                );
+            }
+            assert_eq!(result.pending, usize::from(direct));
+            assert_eq!(state.ipc.count, usize::from(!direct));
+        }
+    }
+
+    #[test]
+    fn timer_audit_order_and_capacity_cover_immediate_and_deferred_delivery() {
+        for immediate in [false, true] {
+            for direct in [false, true] {
+                let mut state = fresh_state();
+                if !immediate {
+                    state.timer_set(INIT_TASK_ID, 1).unwrap();
+                }
+                if direct {
+                    state.block_recv_task(INIT_TASK_ID).unwrap();
+                }
+                // timer_set conservatively reserves six entries even for queued delivery.
+                let needed = if immediate {
+                    6
+                } else if direct {
+                    4
+                } else {
+                    2
+                };
+                state.audit.count = super::MAX_AUDIT_EVENTS - needed + 1;
+                let before = state;
+                if immediate {
+                    assert_eq!(state.timer_set(INIT_TASK_ID, 0), Err(TimerError::AuditFull));
+                } else {
+                    assert_eq!(state.advance_time(1), Err(TimerError::AuditFull));
+                }
+                assert_eq!(state, before);
+                state.audit.count -= 1;
+                let start = state.audit.len() + if immediate { 3 } else { 1 };
+                if immediate {
+                    state.timer_set(INIT_TASK_ID, 0).unwrap();
+                } else {
+                    state.advance_time(1).unwrap();
+                }
+                let TimerState::Fired { notification, .. } = state.timers.find(1).unwrap().state
+                else {
+                    panic!("timer must fire");
+                };
+                assert_eq!(
+                    state.audit.entry(start),
+                    Some(AuditEvent::MessageSent {
+                        message_id: notification,
+                        sender: KERNEL_ACTOR,
+                        receiver: INIT_TASK_ID,
+                    })
+                );
+                if direct {
+                    assert_eq!(
+                        state.audit.entry(start + 1),
+                        Some(AuditEvent::TaskStateChanged {
+                            task_id: INIT_TASK_ID,
+                            status: TaskStatus::Ready,
+                        })
+                    );
+                    assert_eq!(
+                        state.audit.entry(start + 2),
+                        Some(AuditEvent::MessageReceived {
+                            message_id: notification,
+                            receiver: INIT_TASK_ID,
+                        })
+                    );
+                }
+                assert_eq!(state.audit.len(), start + if direct { 3 } else { 1 });
+                assert_eq!(state.ipc.count, usize::from(!direct));
+            }
+        }
+    }
+
+    #[test]
     fn direct_ipc_reserves_the_wake_audit_before_moving_capabilities() {
         let mut state = fresh_state();
         state.create_task(2).unwrap();
@@ -15685,7 +15894,7 @@ mod tests {
         // 与消息事件。
         assert_eq!(state.audit.count, 14);
         assert_eq!(
-            state.audit.entry(state.audit.len() - 4),
+            state.audit.entry(state.audit.len() - 3),
             Some(AuditEvent::CapabilityMoved {
                 cap: IMAGE_CAP_HANDLE,
                 from: CapabilityLocation::HeldByTask(INIT_TASK_ID),
@@ -15693,9 +15902,16 @@ mod tests {
             })
         );
         assert!(matches!(
-            state.audit.entry(state.audit.len() - 2),
+            state.audit.entry(state.audit.len() - 4),
             Some(AuditEvent::MessageSent { message_id: 1, .. })
         ));
+        assert_eq!(
+            state.audit.entry(state.audit.len() - 2),
+            Some(AuditEvent::TaskStateChanged {
+                task_id: 2,
+                status: TaskStatus::Ready
+            })
+        );
         assert!(matches!(
             state.audit.entry(state.audit.len() - 1),
             Some(AuditEvent::MessageReceived { message_id: 1, .. })

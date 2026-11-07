@@ -113,7 +113,8 @@
       "docs/superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md",
       "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -312,7 +313,8 @@
       "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md",
       "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
       "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md"
     ],
     "code": [
       "kernel/src/handle.rs",

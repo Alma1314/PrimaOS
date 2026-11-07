@@ -173,7 +173,16 @@ pub(super) fn verify() {
                         _ => {}
                     }
                 }
-                assert!(sent.unwrap() < received.unwrap());
+                let sent = sent.unwrap();
+                // No carried capabilities: §6.3 requires precisely Sent → Ready → Received.
+                assert_eq!(received.unwrap(), sent + 2);
+                assert_eq!(
+                    s.audit.entry(sent + 1),
+                    Some(AuditEvent::TaskStateChanged {
+                        task_id: receiver,
+                        status: crate::bootstrap::TaskStatus::Ready,
+                    })
+                );
             }
         }
         let mut counts = [0; 2];

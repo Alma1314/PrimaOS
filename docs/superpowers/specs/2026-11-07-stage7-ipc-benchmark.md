@@ -17,9 +17,10 @@ updated: 2026-11-07
 [IPC用户化设计](2026-09-16-stage2-ipc-user-surface-design.md)、
 [直投整改](../reports/2026-10-18-stage2-ipc-review-remediation.md)、
 [直投唤醒审计预算后继R3](../reports/2026-11-06-stage0-6-review-remediation.md#r3--p1阻塞ipc直投少预留唤醒审计)、现行send/recv_meta、调度与审计路径。
-旧设计中携cap直投限制已经由该整改关闭；本片不改生产语义、ABI或发送授权。
+旧设计中携cap直投限制已经由该整改关闭；首片不改生产语义、ABI或发送授权。
+[审计排序后继](../reports/2026-11-07-stage7-ipc-audit-order.md)按既有§6.3修正事件顺序，并加强测后检查；ABI与发送授权保持。
 
-## 测量方法v0.1
+## 测量方法v0.1与审计验收v0.2
 
 复用gate-probe工程通道，PRIMA_GATE_CASE=I1。Task 2客户端与Task 1服务端均未绑定Gate，
 各持指向对方且仅含TaskSend的授权，消息不携cap。服务先阻塞接收；客户端每次发送
@@ -32,8 +33,10 @@ payload=64-index的请求，再阻塞接收；服务核对序号后发送payload
 非零msg-id；服务端同样保留Task 2身份及请求msg-id。全部消息ID严格递增，
 每条均须有且只有一对匹配的MessageSent/MessageReceived审计，发送先于接收。
 身份代次从实际Task记录捕获，不把Task ID当作incarnation。结束无未决接收，Gate/完成等待良构。
-既有直投Ready审计先于MessageSent，与抽象§6.3列序不同；偏差ISSUE-IPC-AUDIT-ORDER-001
-按[报告](../reports/2026-11-07-stage7-ipc-benchmark.md)登记，本片不验证完整抽象审计序列等价。
+v0.1只检查Sent先于Received，曾按[首片报告](../reports/2026-11-07-stage7-ipc-benchmark.md)登记
+ISSUE-IPC-AUDIT-ORDER-001。v0.2在每对Sent/Received间要求恰一条相邻且接收者匹配的Ready事件，
+对应无cap直投Sent→Ready→Received；历史v0.1样本不升级为加强校验后的结果。
+测量端点、用户协议、样本数及输出格式仍为v0.1，不宣称完整抽象审计序列等价。
 
 客户端每条64字节：begin/end/答复payload/五qword元数据，共4096字节；
 服务端每条48字节：请求payload/五qword元数据，共3072字节，均放现有各自RW页，编译期检查页容量。
