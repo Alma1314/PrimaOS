@@ -47,6 +47,9 @@ updated: 2026-11-07
 同日后继：[逐步串口归档与Gate内核路径基线契约](2026-11-07-stage7-gate-baseline.md)，
 复用G4的1000样本双轮，明确pre-iret边界；[实跑报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)
 区分1921757远端九组通过与新增归档器的本地证据，仍不关闭G6或7-0。
+原生测量后继：[N1原生syscall用户往返](2026-11-07-stage7-native-syscall-benchmark.md)，
+128样本双轮、SYS_TASK_ID int80、未绑定Gate；[本地基线与G5远端结果](../reports/2026-11-07-stage7-native-syscall-benchmark.md)。
+
 用户端点后继：[G5用户态Gate调用往返测量](2026-11-07-stage7-gate-user-benchmark.md)，
 128样本双轮，用户区间必须覆盖五个内核点，独立S7记录；[实际基线及回归](../reports/2026-11-07-stage7-gate-user-benchmark.md)
 不构成其它四类、多核或数值门槛交付。

@@ -108,6 +108,10 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 7（进行中）
 
+2026-11-07继续：[N1原生syscall基线与G5远端后继](2026-11-07-stage7-native-syscall-benchmark.md)，
+fe83e59干净远端九组及88份归档核验通过；N1本地七配置14轮、host1137、lint与普通72轮通过。
+原生syscall与Gate已有有界单核基线，其余三类、多核、门槛与发布检查仍待完成。
+
 2026-11-07继续：[G5用户态Gate往返基线与普通回归](2026-11-07-stage7-gate-user-benchmark.md)，
 faf551a合入master后远端九组通过，86份归档及探针身份核对通过；G5本地六配置双轮、host1136、
 lint/特性Clippy与普通36组72轮通过。Gate一类取得有界单核user-wrapper基线，其余四类/多核/门槛待完成。

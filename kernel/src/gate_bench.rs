@@ -1,6 +1,8 @@
 //! Opt-in measurements through the production Gate path: G4 stops before iret;
-//! G5 also records the complete user wrapper's endpoints in its private data page.
+//! G5 adds user endpoints; N1 reuses the emitter for an ungated native wrapper.
 use super::*;
+#[path = "native_bench.rs"]
+mod native;
 
 pub const SAMPLES: usize = 1000;
 const USER_SAMPLES: usize = 128;
@@ -9,7 +11,11 @@ static TIMES: StaticCell<[[u64; 5]; SAMPLES]> = StaticCell::new([[0; 5]; SAMPLES
 static PROGRESS: StaticCell<Option<(usize, usize)>> = StaticCell::new(None);
 
 pub fn selected() -> bool {
-    matches!(option_env!("PRIMA_GATE_CASE"), Some("G4" | "G5"))
+    matches!(option_env!("PRIMA_GATE_CASE"), Some("G4" | "G5" | "N1"))
+}
+
+fn native_mode() -> bool {
+    option_env!("PRIMA_GATE_CASE") == Some("N1")
 }
 
 fn user_mode() -> bool {
@@ -24,7 +30,7 @@ fn sample_count() -> usize {
 /// This feature contains no sampling in ordinary images. Phase assertions also
 /// reject a benchmark that silently skips a call or measures an empty wait.
 pub fn stamp(phase: usize, task: u32) {
-    if !selected() {
+    if !selected() || native_mode() {
         return;
     }
     PROGRESS.with_mut(|progress| {
@@ -63,6 +69,9 @@ fn user_timestamp(code: &mut Code, at: u32) {
 }
 
 pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
+    if native_mode() {
+        native::enter(offset, terminal)
+    }
     // Bring-up's exc_resume witness leaves a continuation in Task 2. G1 tests
     // its rejection explicitly; the measurement starts after that fixture.
     sched::clear_kernel_resume_frame(2);
@@ -130,6 +139,10 @@ pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
 }
 
 pub fn verify() {
+    if native_mode() {
+        native::verify();
+        return;
+    }
     assert_eq!(sched::current(), 2);
     let count = sample_count();
     assert_eq!(PROGRESS.with(|p| *p), Some((count, 0)));
@@ -193,18 +206,9 @@ pub fn verify() {
 
 /// Stream raw, ordered timestamps for independent host-side quantiles and sums.
 pub fn emit(mut write: impl FnMut(&[u8])) {
-    fn decimal(mut n: u64, write: &mut impl FnMut(&[u8])) {
-        let mut bytes = [0; 20];
-        let mut at = bytes.len();
-        loop {
-            at -= 1;
-            bytes[at] = b'0' + (n % 10) as u8;
-            n /= 10;
-            if n == 0 {
-                break;
-            }
-        }
-        write(&bytes[at..]);
+    if native_mode() {
+        native::emit(write);
+        return;
     }
     let prefix: &[u8] = if user_mode() { b"S7" } else { b"S6" };
     let count = sample_count();
@@ -252,4 +256,18 @@ pub fn emit(mut write: impl FnMut(&[u8])) {
             write(b"\n");
         }
     });
+}
+
+fn decimal(mut n: u64, write: &mut impl FnMut(&[u8])) {
+    let mut bytes = [0; 20];
+    let mut at = bytes.len();
+    loop {
+        at -= 1;
+        bytes[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    write(&bytes[at..]);
 }

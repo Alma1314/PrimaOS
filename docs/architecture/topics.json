@@ -109,7 +109,9 @@
       "docs/superpowers/specs/2026-11-07-stage7-gate-baseline.md",
       "docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md",
       "docs/superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md",
+      "docs/superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md",
+      "docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -127,6 +129,7 @@
       "prima-ostd/src/pod.rs",
       "kernel/src/user.rs",
       "kernel/src/gate_bench.rs",
+      "kernel/src/native_bench.rs",
       "kernel/src/gate_probe.rs",
       "xtask/src/artifact_lock.rs",
       "scripts/ci.py",

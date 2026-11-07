@@ -104,6 +104,11 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
+    if option_env!("PRIMA_GATE_CASE") == Some("N1") {
+        let summary = validate_native_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
+        println!("PASS S7NATIVE round={round} {summary}");
+        return Ok(());
+    }
     if matches!(option_env!("PRIMA_GATE_CASE"), Some("G4" | "G5")) {
         let user_mode = option_env!("PRIMA_GATE_CASE") == Some("G5");
         let summary =
@@ -213,8 +218,24 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
     if durations[0].len() != count {
         return Err(format!("benchmark requires exactly {count} samples"));
     }
+    Ok(benchmark_summary(
+        count,
+        hz,
+        boundary,
+        names,
+        &mut durations,
+    ))
+}
+
+fn benchmark_summary(
+    count: usize,
+    hz: u64,
+    boundary: &str,
+    names: &[&str],
+    durations: &mut [Vec<u64>],
+) -> String {
     let mut summary = format!("samples={count} hz={hz} boundary={boundary}");
-    for (name, samples) in names.iter().zip(&mut durations) {
+    for (name, samples) in names.iter().zip(durations) {
         samples.sort_unstable();
         // Nearest-rank median/p99; integer nanoseconds from the measured PIT/TSC ratio.
         let ns = |cycles: u64| u128::from(cycles) * 1_000_000_000 / u128::from(hz);
@@ -224,7 +245,104 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
             ns(samples[(count * 99).div_ceil(100) - 1])
         ));
     }
-    Ok(summary)
+    summary
+}
+
+fn validate_native_bench(output: &str) -> Result<String, String> {
+    if output.contains("|event=panic|") {
+        return Err("native benchmark panicked".into());
+    }
+    let headers: Vec<_> = output
+        .lines()
+        .filter(|s| s.starts_with("S7NATIVE|"))
+        .collect();
+    let Some(header) = headers.first().filter(|_| headers.len() == 1) else {
+        return Err("native benchmark requires one verified header".into());
+    };
+    let hz = header
+        .strip_prefix("S7NATIVE|samples=128;hz=")
+        .and_then(|s| s.strip_suffix(";boundary=user-wrapper;number=7;task=2;gate=0;verified=1"))
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|hz| *hz > 0)
+        .ok_or("invalid native benchmark calibration or identity")?;
+    let mut durations = Vec::new();
+    let mut previous = 0;
+    for (index, line) in output
+        .lines()
+        .filter_map(|s| s.strip_prefix("S7NTIME|"))
+        .enumerate()
+    {
+        let values: Vec<u64> = line
+            .split(';')
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| "invalid native benchmark receipt")?;
+        if values.len() != 4
+            || values[0] != index as u64
+            || values[1] == 0
+            || values[1] < previous
+            || values[2] < values[1]
+            || values[3] != 2
+        {
+            return Err("unordered, incomplete or incorrect native benchmark receipt".into());
+        }
+        durations.push(values[2] - values[1]);
+        previous = values[2];
+    }
+    if durations.len() != 128 {
+        return Err("native benchmark requires exactly 128 samples".into());
+    }
+    Ok(benchmark_summary(
+        128,
+        hz,
+        "user-wrapper",
+        &["user-total"],
+        &mut [durations],
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn native_benchmark_requires_correct_return_values_and_complete_ordered_samples() {
+    let header = "S7NATIVE|samples=128;hz=1000000000;boundary=user-wrapper;number=7;task=2;gate=0;verified=1\n";
+    let mut good = header.to_owned();
+    for i in 0..128 {
+        let t = i * 1000 + 1;
+        good.push_str(&format!("S7NTIME|{i};{t};{};2\n", t + 12 + i));
+    }
+    assert!(
+        validate_native_bench(&good)
+            .unwrap()
+            .ends_with("user-total_ns=75/138")
+    );
+    assert!(validate_gate_bench(&good, true).is_err());
+    assert!(
+        validate_native_bench("S7BENCH|samples=128;hz=1;boundary=user-wrapper;verified=1").is_err()
+    );
+    for bad in [
+        good.replace(header, ""),
+        good.clone() + header,
+        good.replace("samples=128", "samples=127"),
+        good.replace("hz=1000000000", "hz=0"),
+        good.replace("number=7", "number=8"),
+        good.replace("task=2", "task=1"),
+        good.replace("gate=0", "gate=1"),
+        good.replace("verified=1", "verified=0"),
+        good.replace("boundary=user-wrapper", "boundary=pre-iret"),
+        good.replace("S7NTIME|0;1;13;2\n", ""),
+        good.replace("S7NTIME|1;1001", "S7NTIME|2;1001"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;1;13;3"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;1;13"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;1;13;2;2"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;0;13;2"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;14;13;2"),
+        good.replace("S7NTIME|1;1001", "S7NTIME|1;12"),
+        good.replace("S7NTIME|0;1;13;2", "S7NTIME|0;bad;13;2"),
+        good.clone() + "S7NTIME|128;128001;128141;2\n",
+        good + "PRIMA|event=panic|status=error\n",
+    ] {
+        assert!(validate_native_bench(&bad).is_err());
+    }
 }
 
 #[cfg(test)]

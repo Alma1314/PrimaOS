@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（214）
+## report（215）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -312,6 +312,7 @@
 | [7-0九组CI通过与可复核Gate内核路径基线](../superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md` |
 | [7-0首次远端CI：嵌套bootloader输入准备整改](../superpowers/reports/2026-11-07-stage7-ci-remediation.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md` |
 | [7-0 G5用户态Gate往返基线与普通回归](../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md` |
+| [7-0 N1原生syscall基线与G5远端后继](../superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md` |
 
 ## spec（4）
 
@@ -322,7 +323,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（100）
+## specification（101）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -426,6 +427,7 @@
 | [7-0 CI分组、锁定输入与验收身份契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md) | current | `docs/superpowers/specs/2026-11-06-stage7-ci-evidence.md` |
 | [7-0原始串口证据与Gate内核路径基线](../superpowers/specs/2026-11-07-stage7-gate-baseline.md) | current | `docs/superpowers/specs/2026-11-07-stage7-gate-baseline.md` |
 | [7-0 G5用户态Gate调用往返测量](../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md` |
+| [7-0 N1原生syscall用户往返测量](../superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md` |
 
 ## template（4）
 

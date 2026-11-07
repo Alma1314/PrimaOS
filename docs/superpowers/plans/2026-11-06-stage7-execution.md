@@ -67,7 +67,9 @@ faf551a后继已取得干净远端九组及86份归档/探针身份核对，见[
 作者2026-11-07已确认原生syscall、IPC往返、Gate往返、页故障/COW、端到端LibOS操作五类基准，
 详见[范围裁决§7.2](../specs/2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)；
 0.3已提供[Gate G5 user-wrapper方法](../specs/2026-11-07-stage7-gate-user-benchmark.md)及本地有界单核基线；
-其余四类方法/探针、多核基线、数值门槛与发布许可检查仍待完成，G5新代码仍须其自身远端证据。
+后继[N1原生方法](../specs/2026-11-07-stage7-native-syscall-benchmark.md)及
+[推进报告](../reports/2026-11-07-stage7-native-syscall-benchmark.md)补齐fe83e59自身远端九组/88份归档与N1本地基线。
+其余三类方法/探针、多核基线、数值门槛与发布许可检查仍待完成，N1新提交仍须自身远端证据。
 
 ## 验证与停止条件
 
