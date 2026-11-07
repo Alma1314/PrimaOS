@@ -449,7 +449,7 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
 #[cfg(feature = "gate-probe")]
 extern "C" fn gate_probe_exit() -> ! {
     kernel::bootstrap::gate_probe::verify();
-    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+    if kernel::bootstrap::gate_probe::bench::selected() {
         kernel::bootstrap::gate_probe::bench::emit(serial::write_bytes);
     } else if let Some(case) = option_env!("PRIMA_GATE_CASE") {
         serial::write_bytes(b"S6MATRIX|case=");

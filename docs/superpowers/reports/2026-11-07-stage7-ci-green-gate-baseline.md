@@ -9,6 +9,10 @@ updated: 2026-11-07
 
 # 7-0九组CI通过与可复核Gate内核路径基线
 
+> 后继：[G5用户态Gate往返基线](2026-11-07-stage7-gate-user-benchmark.md)记录faf551a合入master后的
+> 干净远端九组、86份原始归档和探针镜像身份，以及独立G5的用户端点、本地六配置双轮和普通72轮。
+> 本文的“新增归档器仅本地/用户态测量待完成”保留为当时状态；G4原始数据与pre-iret范围不扩大。
+
 ## 结论与范围
 
 承接[首次远端失败及bootloader准备整改](2026-11-07-stage7-ci-remediation.md)，提交
@@ -32,7 +36,7 @@ updated: 2026-11-07
 | host | 128293130023 | passed / 164.401 | Rust1135通过、0失败、1默认忽略；musl7、POSIX std3、运行器9项 |
 | lint | 128293129979 | passed / 113.577 | fmt/Clippy、裸机编译、41文件零unsafe、personality守卫；TCB2087/40871=5.11% |
 | docs | 128293130029 | passed / 12.600 | self-test/build/check，380文档；push事件不含PR基线检查 |
-| bios | 128293130035 | passed / 957.815 | 普通启动双轮及36程序72轮，原输出/IPC/容量等判据 |
+| bios | 128293130035 | passed / 957.815 | 36组72轮（含普通启动双轮），原输出/IPC/容量等判据 |
 | linux | 128293130086 | passed / 313.933 | pinned guest同ELF参考、11案例各双轮，stdout/stderr/exit/audit全通过 |
 | gate | 128293130204 | passed / 289.765 | G1/G2/G2-death/G3/G4各双轮，G4各1000样本 |
 | gate-audit | 128293130198 | passed / 310.679 | 七个site各双轮，指定审计停止exit35与unchanged断言 |

@@ -108,6 +108,10 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 
 ## 阶段 7（进行中）
 
+2026-11-07继续：[G5用户态Gate往返基线与普通回归](2026-11-07-stage7-gate-user-benchmark.md)，
+faf551a合入master后远端九组通过，86份归档及探针身份核对通过；G5本地六配置双轮、host1136、
+lint/特性Clippy与普通36组72轮通过。Gate一类取得有界单核user-wrapper基线，其余四类/多核/门槛待完成。
+
 2026-11-07后继：[九组CI通过与可复核Gate基线](2026-11-07-stage7-ci-green-gate-baseline.md)，
 1921757的干净远端九组通过；后继补齐逐步原始串口与探针子目录制品身份，本地Gate五配置双轮及host/lint通过。
 G4为最终iret前的内核路径数据，不能代替五项基准、完整用户态往返或性能门槛。

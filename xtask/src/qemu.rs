@@ -104,9 +104,12 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     .map_err(|e| format!("could not preserve gate witness: {e}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
-    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
-        let summary = validate_gate_bench(&output.stdout).map_err(|e| with_output(e, &output))?;
-        println!("PASS S6BENCH round={round} {summary}");
+    if matches!(option_env!("PRIMA_GATE_CASE"), Some("G4" | "G5")) {
+        let user_mode = option_env!("PRIMA_GATE_CASE") == Some("G5");
+        let summary =
+            validate_gate_bench(&output.stdout, user_mode).map_err(|e| with_output(e, &output))?;
+        let prefix = if user_mode { "S7" } else { "S6" };
+        println!("PASS {prefix}BENCH round={round} {summary}");
         return Ok(());
     }
     if let Some(case) = option_env!("PRIMA_GATE_CASE") {
@@ -121,37 +124,65 @@ pub(crate) fn run_bios_gate(image: &Path, round: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_gate_bench(output: &str) -> Result<String, String> {
+fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> {
+    let count: usize = if user_mode { 128 } else { 1000 };
+    let prefix = if user_mode { "S7" } else { "S6" };
+    let boundary = if user_mode {
+        "user-wrapper"
+    } else {
+        "pre-iret"
+    };
     if output.contains("|event=panic|") {
         return Err("benchmark panicked".into());
     }
     let history: Vec<_> = output
         .lines()
-        .filter(|s| s.starts_with("S6HISTORY|"))
+        .filter(|s| s.starts_with(&format!("{prefix}HISTORY|")))
         .collect();
-    if history
-        != ["S6HISTORY|deliveries=1000;audit_roots=1000;dedicated_slots_saved=1000;verified=1"]
-    {
+    let expected_history = format!(
+        "{prefix}HISTORY|deliveries={count};audit_roots={count};dedicated_slots_saved={count};verified=1"
+    );
+    if history != [expected_history.as_str()] {
         return Err("benchmark requires one verified audit-backed history record".into());
     }
     let headers: Vec<_> = output
         .lines()
-        .filter(|s| s.starts_with("S6BENCH|"))
+        .filter(|s| s.starts_with(&format!("{prefix}BENCH|")))
         .collect();
     let Some(header) = headers.first().filter(|_| headers.len() == 1) else {
         return Err("benchmark needs one calibration record".into());
     };
     let hz = header
-        .strip_prefix("S6BENCH|samples=1000;hz=")
-        .and_then(|s| s.strip_suffix(";boundary=pre-iret;verified=1"))
+        .strip_prefix(&format!("{prefix}BENCH|samples={count};hz="))
+        .and_then(|s| s.strip_suffix(&format!(";boundary={boundary};verified=1")))
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|hz| *hz > 0)
         .ok_or("invalid benchmark calibration")?;
-    let mut durations = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let names: &[&str] = if user_mode {
+        &[
+            "trap-queue",
+            "queue-deliver",
+            "deliver-reply",
+            "reply-resume",
+            "kernel-total",
+            "user-entry",
+            "user-return",
+            "user-total",
+        ]
+    } else {
+        &[
+            "trap-queue",
+            "queue-deliver",
+            "deliver-reply",
+            "reply-resume",
+            "total",
+        ]
+    };
+    let mut durations = vec![Vec::new(); names.len()];
     let mut previous = 0;
     for (index, line) in output
         .lines()
-        .filter_map(|s| s.strip_prefix("S6TIME|"))
+        .filter_map(|s| s.strip_prefix(&format!("{prefix}TIME|")))
         .enumerate()
     {
         let values: Vec<u64> = line
@@ -159,7 +190,7 @@ fn validate_gate_bench(output: &str) -> Result<String, String> {
             .map(str::parse)
             .collect::<Result<_, _>>()
             .map_err(|_| "invalid benchmark timestamp")?;
-        if values.len() != 6
+        if values.len() != if user_mode { 8 } else { 6 }
             || values[0] != index as u64
             || values[1] == 0
             || values[1] < previous
@@ -167,33 +198,30 @@ fn validate_gate_bench(output: &str) -> Result<String, String> {
         {
             return Err("unordered or incomplete benchmark sample".into());
         }
+        let kernel = if user_mode { 2 } else { 1 };
         for phase in 0..4 {
-            durations[phase].push(values[phase + 2] - values[phase + 1]);
+            durations[phase].push(values[kernel + phase + 1] - values[kernel + phase]);
         }
-        durations[4].push(values[5] - values[1]);
-        previous = values[5];
+        durations[4].push(values[kernel + 4] - values[kernel]);
+        if user_mode {
+            durations[5].push(values[2] - values[1]);
+            durations[6].push(values[7] - values[6]);
+            durations[7].push(values[7] - values[1]);
+        }
+        previous = *values.last().unwrap();
     }
-    if durations[0].len() != 1000 {
-        return Err("benchmark requires exactly 1000 samples".into());
+    if durations[0].len() != count {
+        return Err(format!("benchmark requires exactly {count} samples"));
     }
-    let mut summary = format!("samples=1000 hz={hz} boundary=pre-iret");
-    for (name, samples) in [
-        "trap-queue",
-        "queue-deliver",
-        "deliver-reply",
-        "reply-resume",
-        "total",
-    ]
-    .into_iter()
-    .zip(&mut durations)
-    {
+    let mut summary = format!("samples={count} hz={hz} boundary={boundary}");
+    for (name, samples) in names.iter().zip(&mut durations) {
         samples.sort_unstable();
         // Nearest-rank median/p99; integer nanoseconds from the measured PIT/TSC ratio.
         let ns = |cycles: u64| u128::from(cycles) * 1_000_000_000 / u128::from(hz);
         summary.push_str(&format!(
             " {name}_ns={}/{}",
-            ns(samples[499]),
-            ns(samples[989])
+            ns(samples[(count * 50).div_ceil(100) - 1]),
+            ns(samples[(count * 99).div_ceil(100) - 1])
         ));
     }
     Ok(summary)
@@ -216,7 +244,12 @@ fn benchmark_rejects_missing_reordered_regressed_and_duplicate_samples() {
             t + 9
         ));
     }
-    assert!(validate_gate_bench(&good).unwrap().contains("total_ns=9/9"));
+    assert!(
+        validate_gate_bench(&good, false)
+            .unwrap()
+            .contains("total_ns=9/9")
+    );
+    assert!(validate_gate_bench(&good, true).is_err());
     for bad in [
         good.replace(history, ""),
         good.clone() + history,
@@ -230,7 +263,51 @@ fn benchmark_rejects_missing_reordered_regressed_and_duplicate_samples() {
         good.clone() + "S6TIME|1000;10001;10002;10004;10007;10010\n",
         good + "PRIMA|event=panic|status=error\n",
     ] {
-        assert!(validate_gate_bench(&bad).is_err());
+        assert!(validate_gate_bench(&bad, false).is_err());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn user_benchmark_requires_complete_ordered_outer_and_kernel_intervals() {
+    let history = "S7HISTORY|deliveries=128;audit_roots=128;dedicated_slots_saved=128;verified=1\n";
+    let header = "S7BENCH|samples=128;hz=1000000000;boundary=user-wrapper;verified=1\n";
+    let mut good = history.to_owned() + header;
+    for i in 0..128 {
+        let t = i * 1000 + 1;
+        good.push_str(&format!(
+            "S7TIME|{i};{t};{};{};{};{};{};{}\n",
+            t + 1,
+            t + 2,
+            t + 4,
+            t + 7,
+            t + 10,
+            t + 12 + i
+        ));
+    }
+    let summary = validate_gate_bench(&good, true).unwrap();
+    assert!(summary.contains("kernel-total_ns=9/9"));
+    assert!(summary.contains("user-entry_ns=1/1 user-return_ns=65/128 user-total_ns=75/138"));
+    assert!(validate_gate_bench(&good, false).is_err());
+    for bad in [
+        good.replace(history, ""),
+        good.clone() + history,
+        good.replace("audit_roots=128", "audit_roots=127"),
+        good.replace(header, ""),
+        good.clone() + header,
+        good.replace("hz=1000000000", "hz=0"),
+        good.replace("boundary=user-wrapper", "boundary=pre-iret"),
+        good.replace("S7TIME|0;1;2;3;5;8;11;13\n", ""),
+        good.replace("S7TIME|1;1001", "S7TIME|2;1001"),
+        good.replace("S7TIME|0;1;2", "S7TIME|0;3;2"), // begin after kernel entry
+        good.replace(";11;13\n", ";11;10\n"),         // end before kernel resume
+        good.replace("S7TIME|1;1001", "S7TIME|1;12"), // next begin before previous end
+        good.replace("S7TIME|0;1;2", "S7TIME|0;0;2"),
+        good.replace("S7TIME|0;1;2;", "S7TIME|0;1;"),
+        good.clone() + "S7TIME|128;128001;128002;128003;128005;128008;128011;128141\n",
+        good + "PRIMA|event=panic|status=error\n",
+    ] {
+        assert!(validate_gate_bench(&bad, true).is_err());
     }
 }
 

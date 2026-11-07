@@ -59,6 +59,10 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 gate-audit、domains、formal，本地另有smoke（W5与compat）。直接运行要求已有锁定输入，
 Cargo离线且locked；`--prepare`先准备工具与输入，需要网络及Rust/Lean缓存写入权限。
 CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要编辑源码或文档。
+Gate组现有六配置各双轮；G4为1000样本pre-iret内核路径，G5为128样本user-wrapper。
+单独复现G5可用`CARGO_NET_OFFLINE=true PRIMA_GATE_CASE=G5 cargo run -p xtask --features gate-probe -- test-gate`；
+测量边界与实际数据见[G5方法](../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md)及
+[基线报告](../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md)，两种边界/样本数的数据不混算。
 
 同工作区一次只运行一个组；每组内部串行，Cargo/musl各2 worker，组预算不替代原QEMU门限。
 准备步骤会预构建锁定bootloader，以获取其构建脚本额外安装的五个BIOS/UEFI包；

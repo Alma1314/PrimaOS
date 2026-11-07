@@ -106,7 +106,7 @@ fn install(task: u32, va: u64, code: &Code, offset: u64) {
 
 /// Called after ordinary bring-up, before either Task executes user code.
 pub fn enter(offset: u64, terminal: extern "C" fn() -> !) -> ! {
-    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+    if bench::selected() {
         bench::enter(offset, terminal)
     }
     if option_env!("PRIMA_GATE_CASE").is_some() {
@@ -315,7 +315,7 @@ fn read_word(task: u32, pointer: u64) -> u64 {
 /// Verify the real user receipts, saved frames, queues/waits and audit chain.
 /// Any mismatch panics instead of emitting the success record.
 pub fn verify() {
-    if option_env!("PRIMA_GATE_CASE") == Some("G4") {
+    if bench::selected() {
         bench::verify();
         return;
     }

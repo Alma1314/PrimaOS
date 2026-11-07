@@ -61,11 +61,13 @@ updated: 2026-11-07
 0.2后继已定义独立工作区、最多2作业及Cargo/musl各2 worker、组预算与验收manifest；
 没有主张跨宿主RAM/端口统一保留或完整发布包；首次干净托管runner的2组通过/7组失败与共同根因
 见[2026-11-07整改](../reports/2026-11-07-stage7-ci-remediation.md)；1921757的九组远端功能结果已通过，
-新增归档器仍需其自身提交的远端证据。既有G4的单核内核路径基线方法和原始样本后继见
+faf551a后继已取得干净远端九组及86份归档/探针身份核对，见[G5推进报告](../reports/2026-11-07-stage7-gate-user-benchmark.md)。
+既有G4的单核内核路径基线方法和原始样本后继见
 [测量契约](../specs/2026-11-07-stage7-gate-baseline.md)及[报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)。
 作者2026-11-07已确认原生syscall、IPC往返、Gate往返、页故障/COW、端到端LibOS操作五类基准，
 详见[范围裁决§7.2](../specs/2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)；
-0.3完整用户态测量边界、其余基准方法/探针、数值门槛与发布许可检查仍待完成。
+0.3已提供[Gate G5 user-wrapper方法](../specs/2026-11-07-stage7-gate-user-benchmark.md)及本地有界单核基线；
+其余四类方法/探针、多核基线、数值门槛与发布许可检查仍待完成，G5新代码仍须其自身远端证据。
 
 ## 验证与停止条件
 

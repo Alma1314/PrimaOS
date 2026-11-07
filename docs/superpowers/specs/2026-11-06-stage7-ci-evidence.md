@@ -17,6 +17,8 @@ profile、参考ELF、双轮断言和单轮30秒门限；不新增性能门槛�
 
 CI使用GitHub Actions的独立Ubuntu 24.04工作区，host/lint/docs/普通BIOS/Linux/Gate/审计停止/
 D14/formal分为九组。每组内部串行；矩阵最多两个作业并行，Cargo与musl构建各限2个worker。
+Gate组按无selector的G1、G2、G2-death、G3、G4、G5六配置串行双轮；
+[G5](2026-11-07-stage7-gate-user-benchmark.md)使用独立用户端点记录，G4仍保留原内核路径格式。
 每作业90分钟是编排上限，不替代QEMU原门限。托管runner镜像和apt补丁会变化，必须记录实际
 工具版本/平台；本片只承诺锁定构建输入与可重放命令，不声称宿主或输出跨路径逐字节相同。
 
