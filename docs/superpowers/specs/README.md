@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # Specs 索引
@@ -41,6 +41,9 @@ updated: 2026-11-06
 [启动报告](../reports/2026-11-06-stage7-start.md)记录实际验证，九轨退出不因启动勾选。
 后继[CI分组与验收身份契约](2026-11-06-stage7-ci-evidence.md)及[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)
 覆盖九组接线、输入准备和本地证据；不声称远端CI已通过。
+2026-11-07[远端整改](../reports/2026-11-07-stage7-ci-remediation.md)补充bootloader嵌套输入准备契约，
+并在[范围裁决§7.2](2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)登记作者确认的五类基准名称；
+具体采样方法、基线与数值门槛仍待冻结。
 
 2026-11-06：[Gate请求根的审计承载历史](2026-11-06-gate-request-audit-history.md)：解除每次交付对1280项通用历史槽的重复占用，保留不可变溯源及原审计fail-stop；不扩大profile或启动阶段7。
 

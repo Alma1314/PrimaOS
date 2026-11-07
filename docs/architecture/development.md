@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 开发、构建与验证手册
@@ -61,6 +61,8 @@ Cargo离线且locked；`--prepare`先准备工具与输入，需要网络及Rust
 CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要编辑源码或文档。
 
 同工作区一次只运行一个组；每组内部串行，Cargo/musl各2 worker，组预算不替代原QEMU门限。
+准备步骤会预构建锁定bootloader，以获取其构建脚本额外安装的五个BIOS/UEFI包；
+仅`cargo fetch`不足以准备干净runner。上游会并行启动五个Cargo，各2 worker并非宿主全局2 worker上限。
 继承的Gate/审计/人格桩/Linux ELF选择器与Rust覆盖会被清理，每条命令使用自己的配置；
 形式化正式步骤禁用自动缓存下载，并要求锁定Git依赖已准备且干净。
 文档PR基线可设`PRIMA_CI_BASE=<commit>`，它会增加docs的基线变更检查。
@@ -70,7 +72,8 @@ CI附加`--require-clean`；本地脏树会明确标dirty，验证期间不要�
 不是发布镜像包。工作流最多2独立作业并行，host工具/runner实际版本会记录，
 不声称跨宿主逐字节相同。具体契约、输入和本地实跑见
 [CI契约](../superpowers/specs/2026-11-06-stage7-ci-evidence.md)与
-[CI报告](../superpowers/reports/2026-11-06-stage7-ci-evidence.md)。
+[CI报告](../superpowers/reports/2026-11-06-stage7-ci-evidence.md)；首次远端结果与准备修复见
+[CI整改](../superpowers/reports/2026-11-07-stage7-ci-remediation.md)。
 
 ## 变更对应验证
 

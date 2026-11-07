@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-tooling-contract
 status: reviewed-for-ci-slice
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 7-0 CI分组、锁定输入与验收身份契约
@@ -36,6 +36,12 @@ D14/formal分为九组。每组内部串行；矩阵最多两个作业并行，C
 - 每个命令以清理后的环境独立执行，移除旧Gate case/审计site/domains/Linux ELF及Rust覆盖变量，
   再加本条显式配置；locale固定C，Cargo验收离线且locked。准备步骤才允许下载。
 - formal包含主Lean、有限表与生产源码细化/变异，不允许缺Aeneas时静默成功或用生成物哈希代替证明。
+- 2026-11-07干净runner整改：除docs/formal外，准备阶段在`cargo fetch --locked`后执行
+  `cargo build --locked --package bootloader`。锁定的bootloader 0.11.17构建脚本另行调用
+  `cargo install --version 0.11.17 --locked`取得五个BIOS/UEFI包，普通fetch不会获取它们。
+  联网只发生在准备阶段，正式命令继续离线；不使用dummy bootloader或跳过镜像构建。
+  Cargo/musl的2 worker限制不等于宿主全局2 worker：上游bootloader并行启动五个子Cargo，
+  本片不修改上游构建器，组预算和进程组终止仍覆盖这些子进程。
 
 ## 证据契约
 
@@ -59,3 +65,5 @@ host测试必须覆盖：失败后停止与旧制品排除、成功的新制品�
 并检查一次缺失形式化工具的确定失败。完整BIOS/Linux/Gate/formal只在实际执行后登记PASS。
 本片的工作流接线与本地验证不构成7-0退出，远端九组及基准门槛仍须独立完成。
 实际通过、失败/中断及环境偏差见[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)。
+首次远端九组结果、嵌套bootloader准备修复及本地复核见
+[2026-11-07整改报告](../reports/2026-11-07-stage7-ci-remediation.md)。

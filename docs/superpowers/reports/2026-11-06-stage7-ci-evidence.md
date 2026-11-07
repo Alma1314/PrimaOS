@@ -4,10 +4,13 @@ kind: report
 authority: scoped-implementation-and-validation
 status: ci-wiring-locally-verified-with-limits
 lifecycle: historical
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 7-0 CI分组、锁定输入与验收身份
+
+> 2026-11-07后继：[首次远端CI整改](2026-11-07-stage7-ci-remediation.md)记录九组真实结果
+> （docs/formal通过、七组嵌套bootloader依赖缺失）及准备修复。下文“远端尚未执行”保留为本报告当时状态。
 
 ## 结论与范围
 

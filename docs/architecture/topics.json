@@ -104,7 +104,8 @@
       "docs/superpowers/plans/2026-11-06-stage7-execution.md",
       "docs/superpowers/reports/2026-11-06-stage7-start.md",
       "docs/superpowers/specs/2026-11-06-stage7-ci-evidence.md",
-      "docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md"
+      "docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md",
+      "docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md"
     ],
     "code": [
       "kernel/src/main.rs",

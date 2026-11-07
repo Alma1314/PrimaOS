@@ -339,6 +339,10 @@ def prepare(group, root=ROOT):
     run(['rustup', 'toolchain', 'install', toolchain['channel'], '--no-self-update', '--profile', 'minimal',
          '--component', ','.join(toolchain['components']), '--target', ','.join(toolchain['targets'])])
     run(['cargo', 'fetch', '--locked'])
+    if group != 'formal':
+        # bootloader's build.rs installs five BIOS/UEFI crates outside Cargo.lock's graph.
+        # Prepare them online; every acceptance command still runs offline.
+        run(['cargo', 'build', '--locked', '--package', 'bootloader'])
     if group == 'bios':
         sysroot = subprocess.check_output(['rustc', '--print', 'sysroot'], env=env, text=True).strip()
         for manifest in [root / 'prima-user/rust-probe/Cargo.toml', Path(sysroot) / 'lib/rustlib/src/rust/library/Cargo.toml']:

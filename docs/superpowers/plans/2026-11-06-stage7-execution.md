@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: executing-foundation
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # 阶段7执行计划：工程底座与九轨冻结顺序
@@ -44,7 +44,8 @@ updated: 2026-11-06
 ## 验收作业分组
 
 以下保留首片的作业拆分依据。后继[CI契约](../specs/2026-11-06-stage7-ci-evidence.md)已具体化九组矩阵、
-预算与输入准备，[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)记录本地实跑；远端CI仍待实际执行。
+预算与输入准备，[实现报告](../reports/2026-11-06-stage7-ci-evidence.md)记录本地实跑；
+[远端整改后继](../reports/2026-11-07-stage7-ci-remediation.md)记录首次九组结果，修复版本仍待远端执行。
 
 | 组 | 现有入口 | 资源/边界 |
 |---|---|---|
@@ -56,8 +57,11 @@ updated: 2026-11-06
 | docs/formal | docs四项检查；Lean主模型/有限表；锁定源码细化工具 | 缺工具明确失败/登记；模型与源码证明分别记录 |
 
 0.2后继已定义独立工作区、最多2作业及Cargo/musl各2 worker、组预算与验收manifest；
-没有主张跨宿主RAM/端口统一保留或完整发布包，干净托管runner结果与0.3基准/发布许可检查仍待完成。
-五项基准名称继续保留为范围裁决中的待确认建议，不能把它们或任意数字写成已获作者冻结。
+没有主张跨宿主RAM/端口统一保留或完整发布包；首次干净托管runner的2组通过/7组失败与共同根因
+见[2026-11-07整改](../reports/2026-11-07-stage7-ci-remediation.md)，修复版本的远端九组仍待验证。
+作者2026-11-07已确认原生syscall、IPC往返、Gate往返、页故障/COW、端到端LibOS操作五类基准，
+详见[范围裁决§7.2](../specs/2026-10-31-stage7-scope-decisions.md#72-先基线后门槛)；
+0.3的具体测量方法、基线、数值门槛与发布许可检查仍待完成。
 
 ## 验证与停止条件
 

@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-07
 ---
 
 # Reports 索引
@@ -106,7 +106,11 @@ POSIX std最新续做：[文件I/O与接收归账](2026-10-27-posix-std-file-io-
 | 2026-10-18 | [2026-10-18-stage5-c-start-stack.md](2026-10-18-stage5-c-start-stack.md) | 阶段 5：C Task 初始栈见证 |
 | 2026-10-18 | [2026-10-18-stage5-c-elf-qemu.md](2026-10-18-stage5-c-elf-qemu.md) | 阶段 5：首个 C ELF 的服务后 QEMU 见证 |
 
-## 阶段 7（启动）
+## 阶段 7（进行中）
+
+2026-11-07：[首次远端CI与bootloader准备整改](2026-11-07-stage7-ci-remediation.md)，
+首次九组中docs/formal通过，七组在嵌套依赖缺失处失败；本地修复与验证按报告范围解释。
+五类基准名称已获作者确认，具体方法/门槛、修复后远端九组和发布检查继续待完成。
 
 2026-11-06：[启动与7-0共享工件互斥](2026-11-06-stage7-start.md)。作者已指示启动，
 首片提供跨进程镜像资源互斥；验证范围与剩余冻结门见报告，不关闭任何子轨退出条件。

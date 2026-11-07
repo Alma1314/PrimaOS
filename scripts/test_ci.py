@@ -135,6 +135,27 @@ class EvidenceTests(unittest.TestCase):
         (cached / 'Ignored.lean').write_text('import Mathlib\n')
         self.assertEqual(ci.formal_cache_roots(backend), ['Mathlib.Data.Nat.Basic'])
 
+    def test_preparation_builds_nested_bootloader_inputs_before_offline_commands(self):
+        (self.root / 'rust-toolchain.toml').write_text(
+            '[toolchain]\nchannel="nightly-2026-07-30"\ncomponents=["rust-src"]\n'
+            'targets=["x86_64-unknown-none", "x86_64-unknown-uefi"]\n')
+        (self.root / 'scripts').mkdir()
+        (self.root / 'scripts/ci-inputs.lock.json').write_text('{}')
+        for group in ('host', 'lint'):
+            with self.subTest(group=group), patch('subprocess.run') as command:
+                ci.prepare(group, self.root)
+                self.assertEqual([call.args[0] for call in command.call_args_list][1:], [
+                    ['cargo', 'fetch', '--locked'],
+                    ['cargo', 'build', '--locked', '--package', 'bootloader'],
+                ])
+                for call in command.call_args_list:
+                    self.assertEqual(call.kwargs['env']['CARGO_NET_OFFLINE'], 'false')
+                    self.assertEqual(call.kwargs['cwd'], self.root)
+            self.assertEqual(ci.environment(self.root)['CARGO_NET_OFFLINE'], 'true')
+        with patch('subprocess.run') as command:
+            ci.prepare('docs', self.root)
+        command.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
