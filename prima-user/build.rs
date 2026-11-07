@@ -48,27 +48,33 @@ fn main() {
         .status()
         .expect("build static Linux pthread witness with cc");
     assert!(status.success(), "Linux pthread compile/link failed");
-    let status = Command::new("cc")
-        .args([
-            "-m64",
-            "-nostdlib",
-            "-static",
-            "-no-pie",
-            "-O2",
-            "-fno-stack-protector",
-            "-fno-builtin",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-Wl,--build-id=none",
-            "-Wl,--strip-all",
-        ])
-        .arg(
-            PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("linux-probes/matrix.c"),
-        )
-        .arg("-o")
-        .arg(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("stage6-matrix.elf"))
-        .status()
-        .expect("build raw Linux syscall matrix with cc");
-    assert!(status.success(), "Linux matrix compile/link failed");
+    for name in ["matrix", "libos-bench"] {
+        if name == "libos-bench" && env::var_os("CARGO_FEATURE_LIBOS_BENCH").is_none() {
+            continue;
+        }
+        let status = Command::new("cc")
+            .args([
+                "-m64",
+                "-nostdlib",
+                "-static",
+                "-no-pie",
+                "-O2",
+                "-fno-stack-protector",
+                "-fno-builtin",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-Wl,--build-id=none",
+                "-Wl,--strip-all",
+            ])
+            .arg(
+                PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+                    .join(format!("linux-probes/{name}.c")),
+            )
+            .arg("-o")
+            .arg(PathBuf::from(env::var_os("OUT_DIR").unwrap()).join(format!("stage6-{name}.elf")))
+            .status()
+            .expect("build raw Linux syscall matrix with cc");
+        assert!(status.success(), "Linux matrix compile/link failed");
+    }
 }

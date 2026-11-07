@@ -116,7 +116,9 @@
       "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md",
       "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md",
+      "docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md",
+      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -450,7 +452,9 @@
       "docs/superpowers/specs/2026-11-01-stage6-linux-futex.md",
       "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
-      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md"
+      "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
+      "docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md",
+      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
     ],
     "code": [
       "prima-runtime/src/lib.rs",
@@ -816,7 +820,9 @@
       "docs/superpowers/reports/2026-11-06-stage6-review-remediation.md",
       "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
       "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md",
-      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md"
+      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
+      "docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md",
+      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
     ],
     "code": [
       "prima-user/c/prima_crt.c",

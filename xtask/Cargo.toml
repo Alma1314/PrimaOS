@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 gate-audit-probe = ["kernel/gate-audit-probe"]
 gate-probe = ["kernel/gate-probe"]
 linux-probe = ["prima-user/linux-probe"]
+libos-bench = ["linux-probe", "prima-user/libos-bench", "kernel/timestamp-probe"]
 
 [dependencies]
 prima-abi = { path = "../prima-abi" }

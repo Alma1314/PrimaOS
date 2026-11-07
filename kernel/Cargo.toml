@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 # Explicitly opt-in fault injection; absent from ordinary kernel images.
 gate-audit-probe = []
 gate-probe = []
+timestamp-probe = []
 
 [lib]
 name = "kernel"

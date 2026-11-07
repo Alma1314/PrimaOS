@@ -367,7 +367,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     #[cfg(feature = "gate-probe")]
                                     kernel::bootstrap::gate_probe::enter(offset, gate_probe_exit);
                                     #[cfg(not(feature = "gate-probe"))]
-                                    kernel::user::enter();
+                                    {
+                                        #[cfg(feature = "timestamp-probe")]
+                                        {
+                                            assert!(kernel::preempt::start_time_counter());
+                                            protocol::timestamp_ready(
+                                                kernel::preempt::timestamp_hz().unwrap(),
+                                            );
+                                        }
+                                        kernel::user::enter();
+                                    }
                                 }
                                 Err(_) => {
                                     protocol::page_table_error();

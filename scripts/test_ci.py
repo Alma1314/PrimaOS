@@ -78,6 +78,13 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(len(gate), 9)
         self.assertEqual([g['env'] for g in gate[-5:]],
                          [{'PRIMA_GATE_CASE': c} for c in ('G4', 'G5', 'N1', 'I1', 'C1')])
+        linux = ci.commands('linux')
+        self.assertEqual(len(linux), 3)
+        self.assertEqual(linux[0]['argv'][-1], 'test-linux')
+        self.assertIn('libos_benchmark', linux[1]['argv'])
+        self.assertIn('libos-bench', linux[2]['argv'])
+        self.assertEqual(linux[2]['argv'][-1], 'test-libos-bench')
+        self.assertEqual(linux[0]['env'], linux[2]['env'])
 
     def test_guest_logs_survive_overwrite_and_failure_without_collecting_stale_logs(self):
         directory = self.root / 'target/prima-os'

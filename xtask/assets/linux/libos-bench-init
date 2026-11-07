@@ -1,0 +1,7 @@
+#!/bin/busybox sh
+export PATH=/bin LC_ALL=C LANG=C
+printf 'hello from prima\n' > /fixture.txt
+(ulimit -s 32; /bin/L1)
+status=$?
+printf 'S7LREF|status=%s\n' "$status"
+/bin/busybox poweroff -f

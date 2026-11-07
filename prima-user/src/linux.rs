@@ -16,6 +16,9 @@ pub mod thread;
 
 pub const MAX_FAMILY_TASKS: usize = process::MAX_PROCESSES * thread::MAX_THREADS;
 
+#[cfg(feature = "libos-bench")]
+pub const LIBOS_BENCH: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stage6-libos-bench.elf"));
+
 /// A Task has at most one synchronous trap, including capacity waiters.
 pub struct PendingTraps([Option<GateAudit>; MAX_FAMILY_TASKS]);
 

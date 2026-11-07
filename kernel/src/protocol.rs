@@ -1228,6 +1228,13 @@ fn write_u64(mut value: u64) {
     serial::write_bytes(&buffer[index..]);
 }
 
+#[cfg(feature = "timestamp-probe")]
+pub fn timestamp_ready(hz: u64) {
+    serial::write_bytes(b"S7CLOCK|hz=");
+    write_u64(hz);
+    serial::write_bytes(b";source=pit-tsc;verified=1\n");
+}
+
 fn write_hex_u64(value: u64) {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
 

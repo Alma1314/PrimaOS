@@ -42,9 +42,11 @@ fn number(rt: &Native, serial: Capability, mut value: u64) {
     }
     emit(rt, serial, &digits[start..]);
 }
-fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64) {
+fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64, benchmark: bool) {
     let mut pending = PendingTraps::default();
     let mut counts = [0u64; 6];
+    let mut operations = [0u64; 2];
+    let mut identity = None;
     while let Some(record) = rt.gate_audit_read(gate, *cursor).unwrap() {
         *cursor = record.cursor;
         match record.kind {
@@ -57,6 +59,21 @@ fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64) {
                 assert!(record.flags < 4);
                 counts[2 + record.flags as usize] += 1;
                 let original = pending.remove(record.request);
+                if benchmark && matches!(original.number, 0 | 8) {
+                    assert_eq!(*identity.get_or_insert(original.cookie), original.cookie);
+                    assert_eq!(record.flags, 0);
+                    if original.number == 0 {
+                        assert_eq!(original.args[0], 3);
+                        assert!(original.args[1] > 0);
+                        assert_eq!(original.args[2..], [17, 0, 0, 0]);
+                        assert_eq!(record.value, 17);
+                        operations[0] += 1;
+                    } else {
+                        assert_eq!(original.args, [3, 0, 0, 0, 0, 0]);
+                        assert_eq!(record.value, 0);
+                        operations[1] += 1;
+                    }
+                }
                 if record.flags != 1 {
                     continue;
                 }
@@ -99,6 +116,12 @@ fn audit(rt: &Native, serial: Capability, gate: Capability, cursor: &mut u64) {
         number(rt, serial, counts[index]);
     }
     emit(rt, serial, b"\n");
+    if benchmark {
+        assert_eq!(operations, [64, 64]);
+        emit(rt, serial, b"S7LOPS|read=64;seek=64;cookie=");
+        number(rt, serial, identity.unwrap());
+        emit(rt, serial, b";verified=1\n");
+    }
 }
 
 fn quit(rt: &Native, value: u8) -> ! {
@@ -120,6 +143,8 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
     let mut audit_cursor = 0;
     let cases = if selection == 0 {
         &CASES[..]
+    } else if cfg!(feature = "libos-bench") && selection == 12 {
+        &["L1"][..]
     } else {
         let index = selection as usize - 1;
         &CASES[index..index + 1]
@@ -163,6 +188,8 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             "M4" => c"M4",
             "M4-fork" => c"M4-fork",
             "M3" => c"M3",
+            #[cfg(feature = "libos-bench")]
+            "L1" => c"L1",
             _ => unreachable!(),
         };
         let mut argv = [0; 4];
@@ -192,6 +219,8 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
                 "M4" => PTHREAD,
                 "M4-fork" => prima_user::linux::PROCESS,
                 "M3" => prima_user::linux::MATRIX,
+                #[cfg(feature = "libos-bench")]
+                "L1" => prima_user::linux::LIBOS_BENCH,
                 _ => IMAGE,
             },
             &argv[..argc],
@@ -355,7 +384,7 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             let Some(status) = family.exit(&rt, owner, &req, status).unwrap() else {
                 continue;
             };
-            audit(&rt, serial, gate, &mut audit_cursor);
+            audit(&rt, serial, gate, &mut audit_cursor, case == "L1");
             emit(&rt, serial, b"S6EXIT|case=");
             emit(&rt, serial, case.as_bytes());
             emit(&rt, serial, b";status=");

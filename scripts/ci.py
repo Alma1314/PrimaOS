@@ -79,8 +79,10 @@ def commands(group, root=ROOT):
     if group == 'smoke':
         return [step(xtask('test-process', 'W5')), step(xtask('compat'))]
     if group == 'linux':
-        return [probe('linux-probe', 'test-linux', {
-            'PRIMA_LINUX_ELF': str(root / 'target/ci-inputs/busybox/usr/bin/busybox')})]
+        env = {'PRIMA_LINUX_ELF': str(root / 'target/ci-inputs/busybox/usr/bin/busybox')}
+        return [probe('linux-probe', 'test-linux', env),
+                step(cargo('test', '--locked', '-p', 'xtask', '--features', 'libos-bench', 'libos_benchmark'), env),
+                probe('libos-bench', 'test-libos-bench', env)]
     if group == 'gate':
         return [probe('gate-probe', 'test-gate', {} if case is None else {'PRIMA_GATE_CASE': case})
                 for case in (None, 'G2', 'G2-death', 'G3', 'G4', 'G5', 'N1', 'I1', 'C1')]

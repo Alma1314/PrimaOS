@@ -169,7 +169,7 @@ impl Code {
 
 /// Only an ordinary native service is runnable here. Linux clients are created
 /// held by that service and published by the managed Gate-start transaction.
-fn launcher(selection: u64) -> Vec<u8> {
+pub(super) fn launcher(selection: u64) -> Vec<u8> {
     use prima_abi::{boot_abi as boot, syscall::*};
     const Y: u64 = prima_initgen::USER_Y_VA;
     const BASE: u64 = 0x0000_0b00_0000_0000;
@@ -218,10 +218,10 @@ fn launcher(selection: u64) -> Vec<u8> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Observation {
+pub(super) struct Observation {
     case: String,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    pub(super) stdout: Vec<u8>,
+    pub(super) stderr: Vec<u8>,
     status: u32,
 }
 fn unhex(text: &str) -> Result<Vec<u8>, String> {
@@ -242,8 +242,8 @@ fn unhex(text: &str) -> Result<Vec<u8>, String> {
         })
         .collect()
 }
-fn parse_prima_cases(output: &str, cases: &[&str]) -> Result<Vec<Observation>, String> {
-    if output.contains("|event=panic|") {
+pub(super) fn parse_prima_cases(output: &str, cases: &[&str]) -> Result<Vec<Observation>, String> {
+    if output.contains("|event=panic|") || output.contains("S6PANIC|") {
         return Err("Prima panicked".into());
     }
     let mut results = Vec::new();

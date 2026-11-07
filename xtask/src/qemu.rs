@@ -237,7 +237,7 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
     ))
 }
 
-fn benchmark_summary(
+pub(crate) fn benchmark_summary(
     count: usize,
     hz: u64,
     boundary: &str,

@@ -35,6 +35,35 @@ const GUEST_TIMEOUT: Duration = Duration::from_secs(180);
 /// Same frozen executable in the pinned Linux guest; no host-execution fallback.
 #[cfg(feature = "linux-probe")]
 pub(crate) fn stage6_reference(busybox: &Path, probes: &[PathBuf; 6]) -> Result<String, String> {
+    let programs: Vec<_> = ["P1", "P2", "M4", "M4-fork", "M4-child", "M3"]
+        .into_iter()
+        .zip(probes.iter().map(PathBuf::as_path))
+        .collect();
+    reference(
+        busybox,
+        &programs,
+        include_bytes!("../assets/linux/stage6-init"),
+        "stage6",
+    )
+}
+
+#[cfg(feature = "libos-bench")]
+pub(crate) fn libos_reference(busybox: &Path, probe: &Path) -> Result<String, String> {
+    reference(
+        busybox,
+        &[("L1", probe)],
+        include_bytes!("../assets/linux/libos-bench-init"),
+        "libos-bench",
+    )
+}
+
+#[cfg(feature = "linux-probe")]
+fn reference(
+    busybox: &Path,
+    programs: &[(&str, &Path)],
+    init: &[u8],
+    name: &str,
+) -> Result<String, String> {
     let cache = PathBuf::from(CACHE_DIR);
     fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
     let deb = download_kernel(&cache)?;
@@ -43,25 +72,18 @@ pub(crate) fn stage6_reference(busybox: &Path, probes: &[PathBuf; 6]) -> Result<
         fs::create_dir_all(&unpack).map_err(|e| e.to_string())?;
         run(Command::new("dpkg-deb").arg("-x").arg(deb).arg(&unpack))?;
     }
-    let root = cache.join(format!("stage6-rootfs-{}", std::process::id()));
+    let root = cache.join(format!("{name}-rootfs-{}", std::process::id()));
     fs::create_dir_all(root.join("bin")).map_err(|e| e.to_string())?;
     fs::copy(busybox, root.join("bin/busybox")).map_err(|e| e.to_string())?;
-    for (name, probe) in ["P1", "P2", "M4", "M4-fork", "M4-child", "M3"]
-        .into_iter()
-        .zip(probes)
-    {
+    for (name, probe) in programs {
         let path = root.join("bin").join(name);
         fs::copy(probe, &path).map_err(|e| e.to_string())?;
         set_executable(&path)?;
     }
-    fs::write(
-        root.join("init"),
-        include_bytes!("../assets/linux/stage6-init"),
-    )
-    .map_err(|e| e.to_string())?;
+    fs::write(root.join("init"), init).map_err(|e| e.to_string())?;
     set_executable(&root.join("init"))?;
     set_executable(&root.join("bin/busybox"))?;
-    let initramfs = cache.join("stage6-initramfs.cpio.gz");
+    let initramfs = cache.join(format!("{name}-initramfs.cpio.gz"));
     let archive = fs::File::create(&initramfs).map_err(|e| e.to_string())?;
     run_with_stdout(
         Command::new("sh")
@@ -75,7 +97,7 @@ pub(crate) fn stage6_reference(busybox: &Path, probes: &[PathBuf; 6]) -> Result<
         &initramfs,
         "tcg,thread=single",
     )?;
-    fs::write(cache.join("stage6-reference.log"), &serial).map_err(|e| e.to_string())?;
+    fs::write(cache.join(format!("{name}-reference.log")), &serial).map_err(|e| e.to_string())?;
     Ok(serial)
 }
 

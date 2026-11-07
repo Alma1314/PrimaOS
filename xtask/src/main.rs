@@ -2,6 +2,8 @@ mod artifact_lock;
 mod compat;
 mod gate_audit;
 mod image;
+#[cfg(feature = "libos-bench")]
+mod libos_bench;
 mod lint;
 mod linux;
 mod protocol;
@@ -30,6 +32,9 @@ fn run() -> Result<(), String> {
     if cfg!(feature = "gate-probe") && command != "test-gate" {
         return Err("gate-probe images are only for test-gate".to_owned());
     }
+    if cfg!(feature = "libos-bench") && command != "test-libos-bench" {
+        return Err("libos-bench images are only for test-libos-bench".into());
+    }
 
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -43,6 +48,17 @@ fn run() -> Result<(), String> {
     }
 
     match command.as_str() {
+        "test-libos-bench" => {
+            require_no_args(&rest)?;
+            #[cfg(feature = "libos-bench")]
+            {
+                libos_bench::test()
+            }
+            #[cfg(not(feature = "libos-bench"))]
+            {
+                Err("set PRIMA_LINUX_ELF and use --features libos-bench".into())
+            }
+        }
         "build-linux" => {
             require_no_args(&rest)?;
             #[cfg(feature = "linux-probe")]
@@ -694,6 +710,7 @@ fn usage() -> String {
     "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features linux-probe -- <build-linux|test-linux>\n\
+     \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features libos-bench -- test-libos-bench\n\
      \x20      cargo run -p xtask --features gate-probe -- test-gate\n\
      \x20      PRIMA_GATE_AUDIT_SITE=<site> cargo run -p xtask --features gate-audit-probe -- test-gate-audit\n\
      \x20      cargo xtask test-process [W4|W5|W6|W7|W7b|W8|W9]\n\
