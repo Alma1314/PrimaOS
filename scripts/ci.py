@@ -67,7 +67,8 @@ def commands(group, root=ROOT):
                 step(['python3', 'prima-user/musl/test_port.py']),
                 step(['python3', 'scripts/test_posix_std.py']),
                 step(['python3', 'scripts/test_ci.py']),
-                step(['python3', 'scripts/test_package_evidence.py'])]
+                step(['python3', 'scripts/test_package_evidence.py']),
+                step(['python3', 'scripts/test_package_cargo_materials.py'])]
     if group == 'lint':
         return [step(xtask('lint')), step(xtask('tcb'))]
     if group == 'docs':

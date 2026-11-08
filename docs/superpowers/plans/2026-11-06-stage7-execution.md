@@ -86,6 +86,10 @@ S7-0.3发布材料的后继首片见[源码/证据包契约](../specs/2026-11-08
 [实跑报告](../reports/2026-11-08-stage7-evidence-package.md)：以指定Git快照绑定九组清单、原始归档及许可事实。
 这只是源码/证据包，不替代完整二进制组件/NOTICE、外部源码/构建材料、镜像字节绑定和数值门槛。
 
+根Cargo输入材料后继见[契约](../specs/2026-11-08-stage7-cargo-materials.md)与
+[报告](../reports/2026-11-08-stage7-cargo-materials.md)：收集锁定原始注册表归档及文本候选并保留缺口，
+不替代嵌套构建图、工具链/其它外部输入或最终二进制链接清单。
+
 ## 验证与停止条件
 
 首片执行workspace tests、lint、跨进程竞争反例、W5与compat双轮/既有路径，以及docs四项检查。

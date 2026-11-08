@@ -206,6 +206,12 @@ def package(repo, evidence_root, revision, output):
                     binary_images_included=False, image_release_eligible=False, pending_binary_materials=PENDING,
                     licenses=license_facts, groups=groups, members={name: identity(data) for name, data in payload.items()})
     payload['manifest.json'] = encoded(manifest)
+    publish(payload, output)
+    return manifest
+
+
+def publish(payload, output):
+    """Write a deterministic, exclusive bundle after its caller validates input."""
     if len(payload) > MAX_MEMBERS or sum(map(len, payload.values())) > MAX_TOTAL:
         raise ValueError('package exceeds member/size limit')
     if any(len(data) > MAX_FILE for data in payload.values()):
@@ -226,7 +232,6 @@ def package(repo, evidence_root, revision, output):
             os.link(name, output)  # Exclusive publication: never replace an existing bundle.
         finally:
             name.unlink()
-    return manifest
 
 
 def verify(repo, path):

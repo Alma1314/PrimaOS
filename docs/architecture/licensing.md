@@ -90,6 +90,18 @@ GPLv3 不要求每个源文件带许可头；本仓库以 `LICENSE` + `Cargo.tom
 外部对应源码及构建材料，不能作为完整二进制发布许可验收。后继仍须完成这些材料、
 镜像内许可清单及实际镜像身份绑定；不改变本页既有归属、分发义务或阶段退出条件。
 
+## 7-0 根Cargo锁定输入材料
+
+[材料契约](../superpowers/specs/2026-11-08-stage7-cargo-materials.md)及
+[实跑记录](../superpowers/reports/2026-11-08-stage7-cargo-materials.md)补充根工作区68包图：
+60份原始注册表.crate逐个匹配Cargo.lock，110份文本候选与原归档字节一致，并保留声明和VCS线索。
+归档与材料包只落在ignored target，不作为vendor源码入库，不修改原始归档或选择许可分支。
+
+bootloader_api、bootloader-boot-config、r-efi三个逐归档文本缺口仍保留；
+前两个包与bootloader的同一VCS根文本没有被脚本自动继承为适用材料。
+该图包含条件/未链接输入，且未覆盖嵌套bootloader构建图、Rust工具链/标准库、独立探针图、
+musl/sbase/glibc/busybox/Linux等其它材料，不是完整镜像组件/NOTICE或二进制发布许可结论。
+
 ## 重审触发
 
 更换许可或改成 `-only`、新增 vendored 第三方代码、发布包含第三方二进制的镜像、

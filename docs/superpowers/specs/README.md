@@ -47,6 +47,10 @@ updated: 2026-11-08
 同日后继：[逐步串口归档与Gate内核路径基线契约](2026-11-07-stage7-gate-baseline.md)，
 复用G4的1000样本双轮，明确pre-iret边界；[实跑报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)
 区分1921757远端九组通过与新增归档器的本地证据，仍不关闭G6或7-0。
+Cargo输入材料后继：[锁定依赖源码与NOTICE材料](2026-11-08-stage7-cargo-materials.md)，
+原始注册表归档/锁校验、Git manifest绑定、递归文本候选及缺口、解析条件保留；
+[实跑报告](../reports/2026-11-08-stage7-cargo-materials.md)明确根图超集与最终镜像组件的边界。
+
 发布材料首片：[源码与验收证据包契约](2026-11-08-stage7-evidence-package.md)，
 历史Git快照与九组清单内容绑定、原始归档哈希及真实许可文本；
 [本次实跑与边界](../reports/2026-11-08-stage7-evidence-package.md)明确不包含镜像字节或完整二进制发布材料。

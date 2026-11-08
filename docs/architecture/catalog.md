@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（220）
+## report（221）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -316,6 +316,7 @@
 | [7-0 IPC 审计排序整改与 I1 远端后继](../superpowers/reports/2026-11-07-stage7-ipc-audit-order.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md` |
 | [7-0 I1授权IPC往返基线与N1远端后继](../superpowers/reports/2026-11-07-stage7-ipc-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md` |
 | [7-0 N1原生syscall基线与G5远端后继](../superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md) | historical | `docs/superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md` |
+| [7-0 根Cargo图依赖源码与NOTICE材料](../superpowers/reports/2026-11-08-stage7-cargo-materials.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md` |
 | [7-0 源码/验收证据包与73056ba主分支CI后继](../superpowers/reports/2026-11-08-stage7-evidence-package.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS 基准与 C1 自身远端后继](../superpowers/reports/2026-11-08-stage7-libos-benchmark.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md` |
 
@@ -328,7 +329,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（105）
+## specification（106）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -435,6 +436,7 @@
 | [7-0 G5用户态Gate调用往返测量](../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md` |
 | [7-0 I1 授权 IPC 用户往返测量](../superpowers/specs/2026-11-07-stage7-ipc-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md` |
 | [7-0 N1原生syscall用户往返测量](../superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md) | current | `docs/superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md` |
+| [7-0 Cargo 锁定输入源码与 NOTICE 材料](../superpowers/specs/2026-11-08-stage7-cargo-materials.md) | current | `docs/superpowers/specs/2026-11-08-stage7-cargo-materials.md` |
 | [7-0 源码与验收证据包首片](../superpowers/specs/2026-11-08-stage7-evidence-package.md) | current | `docs/superpowers/specs/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS read 基准](../superpowers/specs/2026-11-08-stage7-libos-benchmark.md) | current | `docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md` |
 
