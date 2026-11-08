@@ -118,7 +118,9 @@
       "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md",
       "docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md",
-      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
+      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md",
+      "docs/superpowers/specs/2026-11-08-stage7-evidence-package.md",
+      "docs/superpowers/reports/2026-11-08-stage7-evidence-package.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -143,7 +145,8 @@
       "scripts/ci-inputs.lock.json",
       ".github/workflows/ci.yml",
       "kernel/src/ipc_bench.rs",
-      "kernel/src/cow_bench.rs"
+      "kernel/src/cow_bench.rs",
+      "scripts/package_evidence.py"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -155,7 +158,8 @@
       "prima-ostd/src/entry.rs",
       "prima-ostd/src/pod.rs",
       "xtask/src/artifact_lock.rs",
-      "scripts/test_ci.py"
+      "scripts/test_ci.py",
+      "scripts/test_package_evidence.py"
     ],
     "guide": "docs/architecture/topics/boot.md"
   },

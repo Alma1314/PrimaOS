@@ -4,7 +4,7 @@ kind: reference
 authority: license-policy
 status: maintained
 lifecycle: current
-updated: 2026-10-29
+updated: 2026-11-08
 ---
 
 # 许可证：GPLv3 与本仓库的许可分布
@@ -77,6 +77,18 @@ GPLv3 不要求每个源文件带许可头；本仓库以 `LICENSE` + `Cargo.tom
 - **发行物许可清单**：随 7-0（工程底座）的 release artifact 一并产出（源码 offer、第三方
   NOTICE、镜像内许可清单）。
 - 本文件不构成法律意见；它只把仓库里已经存在的许可事实写清楚。
+
+## 7-0 源码与验收证据包首片
+
+[打包契约](../superpowers/specs/2026-11-08-stage7-evidence-package.md)与
+[实际核验](../superpowers/reports/2026-11-08-stage7-evidence-package.md)记录首片：
+指定Git提交的tracked源码、九组验收清单/日志、根LICENSE、MPL全文和musl COPYRIGHT随包保留，
+并记录Cargo license原值与三个MPL文件的SPDX/内容哈希。独立Rust探针缺少license字段时原样记null，
+不由工具补填；crate字段、逐文件声明与本页政策分别保留，不据字段登记裁决法律归属。
+
+该包是源码/验收材料，未包含镜像字节，也没有纳入全部二进制组件的第三方NOTICE、
+外部对应源码及构建材料，不能作为完整二进制发布许可验收。后继仍须完成这些材料、
+镜像内许可清单及实际镜像身份绑定；不改变本页既有归属、分发义务或阶段退出条件。
 
 ## 重审触发
 
