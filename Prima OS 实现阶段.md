@@ -27,9 +27,9 @@ updated: 2026-11-08
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 2026-11-08：8933a5c干净远端九组、94份归档及C1分位数独立核验；L1本地host1142/特性1144、lint/特性Clippy、Linux原11案例双轮及同ELF参考/Prima基准双轮通过；普通BIOS本地17轮通过、4组7次超时后中断，干净CI待验证 | [L1 LibOS基准与C1自身远端后继](docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md)；[C1及前序整改链](docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md)按各自范围保留；本地中断不计完整回归PASS |
+| 最近验证记录 | 2026-11-08：e6dce41自身干净远端九组、97份归档和L1全部原始样本/分位数核验通过；普通36组72轮、Gate九配置18轮、原Linux11案例双轮及新增基准通过；本地特性host1144及Clippy通过，本机两轮普通BIOS超时中断按失败保留 | [L1 LibOS基准与自身干净CI](docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md)；[C1及前序整改链](docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md)按各自范围保留；不据远端通过倒推本机超时因果 |
 | 阶段 6 | **已满足退出条件，技术复核4/4**；有界Linux profile v1与D12八成员运行冻结 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不自动构成组织级签署；阶段7由下行启动记录另行授权 |
-| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已取得8933a5c远端九组与94份归档；N1/I1/G5/C1/L1五类已有各自有界单核方法/本地基线；L1普通BIOS本地中断及自身干净远端待验证，多核、门槛与发布检查待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
+| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已取得e6dce41自身干净远端九组与97份归档；N1/I1/G5/C1/L1五类已有各自有界单核方法/基线；本机超时限制保留，多核、门槛与发布检查待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
@@ -135,7 +135,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 | S6-M2 装载资源 | **冻结制品范围收口**：640页预算、实际PT_LOAD/BSS/8页栈和D12双轮运行；任意VFS执行不在范围 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不外推任意应用 |
 | S6-M1 M1b–M1d 接线 | **有界技术范围收口**：G1–G4、七审计边界与D14原探针双轮通过；S6-D2整体复核完成 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；历史协议/失败及TCG/单CPU限制保留 |
 | 阶段7 Gate矩阵时限（本轮观察） | 本轮前两次矩阵分别在G5第1轮、G4第2轮启动至cow_ready后30秒超时；带异常日志的G4聚焦双轮通过。最终完整结果与C1基线按后继报告独立记录，早期超时因果仍未定位，不以重跑PASS宣称修复 | [本轮失败与验证范围](docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md)；保持原门限，后续需分段诊断及稳定性证据 |
-| 阶段7 L1普通BIOS时限 | 本机T1/F1/V1/V2共7次30秒超时，17轮通过后中断；实测宿主CPU争用但因果未定位。保持门限，后继干净CI待验证；不计完整回归PASS | [L1失败与验证范围](docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md) |
+| 阶段7 L1普通BIOS时限 | 本机首轮T1/F1/V1/V2共7次30秒超时、次轮E1一次，分别17/6轮通过后中断；宿主CPU争用实测但因果未定位。保持门限，e6dce41干净远端36组72轮通过；本机中断不计完整回归PASS | [L1失败与验证范围](docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md) |
 | QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留该版本验证缺口；本轮fork后继分段覆盖62/62，完整命令在35轮后W8 run2超时，根因仍未定位；2026-10-25前批及2026-10-27本轮均分别取得单次68轮PASS；本轮另保留I1/N1计数失败和显式验收修订，见后继报告 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[本批完整验收](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；保留门限/断言/失败证据，不以栈保护或退出整改自动解释全部历史超时 |
 | I1接收归账验收（本轮发现跨轮偏差） | 前序有界技术收口及完整72轮PASS保留；本轮首次完整71/72，I1第2轮用户消息总数423→420变化，单轮各自归账成立、非UART出口不变。最终版本完整72/72，I1双轮PASS且消息总数均423；未放宽跨轮判据，首次差异根因仍未唯一确认 | [本轮原始数据与范围](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[历史归账修订](docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md)；不据新失败改写旧签署，不据后继单次PASS倒推因果 |
 | 系统调用栈保护边界 | syscall和全部Task中断栈下界guard通过host与本轮启动页表检查；32KiB可用容量、哨兵保留；exec准备缓冲在提交前退栈 | [本轮报告](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)；stack_guard=1，不构成所有路径峰值证明 |
@@ -399,7 +399,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得8933a5c干净远端九组及94份归档核验；N1原生、I1 IPC、G5 Gate、C1 COW及L1端到端LibOS已有五类有界单核方法/本地基线，G4内核路径独立保留；L1普通BIOS本地中断及自身干净远端待验证，多核、门槛与发布检查待完成。**
+**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得e6dce41自身干净远端九组及97份归档核验；N1原生、I1 IPC、G5 Gate、C1 COW及L1端到端LibOS已有五类有界单核方法/基线，G4内核路径独立保留；本机超时限制保留，多核、门槛与发布检查待完成。**
 [启动与首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、
 [CI后继报告](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、
 [远端CI整改报告](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、
@@ -433,8 +433,8 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 关键配额、撤销和恢复性质必须建模并证明，并附实现映照与故障注入证据；量化门槛、白名单、
 平台配置和故障协议须按[冻结门](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md#8-实现前和签署前的冻结门)进一步确定。
 整机重启后的应用续执行不在透明恢复范围，文件持久化义务独立保留。7-0已有宿主工件互斥、
-CI分组接线、8933a5c远端九组及94份原始证据核验，以及N1/I1/G5/C1/L1五类有界单核方法/基线；
-L1普通BIOS本地中断及自身干净远端、多核与门槛、发布许可/镜像包、真实双personality及其它机制的证据仍须独立提供。
+CI分组接线、e6dce41自身干净远端九组及97份原始证据核验，以及N1/I1/G5/C1/L1五类有界单核方法/基线；
+本机超时仍需稳定性后继；多核与门槛、发布许可/镜像包、真实双personality及其它机制的证据仍须独立提供。
 
 独立候选扩展：[Windows LibOS 计划书](docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md)。
 作者已选择控制台与服务优先（PE64、DLL、文件、进程/线程、同步与异常）；技术路线及profile仍为提案，

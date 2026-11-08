@@ -2085,7 +2085,7 @@
       "authority": "current-status",
       "status": "maintained",
       "date": "2026-11-08",
-      "sha256": "63d83620df0334079d672fc4bee16ba69ac7113ce130d49b7dc3f40ed7f8938d",
+      "sha256": "b6b046b657255fcaaae66b4ff5609867c88bf5c70408225a0e91d6f1219c1f62",
       "topic_ids": [
         "compatibility"
       ],
@@ -33491,106 +33491,117 @@
       "lifecycle_reason": null,
       "replacements": [],
       "authority": "scoped-implementation-and-validation",
-      "status": "libos-read-verified-bios-pending",
+      "status": "libos-read-and-clean-ci-verified",
       "date": "2026-11-08",
-      "sha256": "493abe6b48b7e237a4a79884810eda72d045fb2813df63a036a001e975e733ee",
+      "sha256": "4d68b92460784cbbd2bcfa2f5575b95deed0e8c1964239279de60ec094949920",
       "topic_ids": [
         "boot",
         "runtime",
         "compatibility"
       ],
-      "lines": 141,
+      "lines": 190,
       "sections": [
         {
           "level": 1,
           "title": "7-0 L1 端到端 LibOS 基准与 C1 自身远端后继",
           "line": 10,
           "anchor": "7-0-l1-端到端-libos-基准与-c1-自身远端后继",
-          "end_line": 141
+          "end_line": 190
         },
         {
           "level": 2,
           "title": "结论与范围",
           "line": 12,
           "anchor": "结论与范围",
-          "end_line": 23
+          "end_line": 24
         },
         {
           "level": 2,
           "title": "基线与实现",
-          "line": 24,
+          "line": 25,
           "anchor": "基线与实现",
-          "end_line": 48
+          "end_line": 49
         },
         {
           "level": 2,
           "title": "C1 自身干净远端核验",
-          "line": 49,
+          "line": 50,
           "anchor": "c1-自身干净远端核验",
-          "end_line": 83
+          "end_line": 84
         },
         {
           "level": 2,
           "title": "L1 本地命令与结果",
-          "line": 84,
+          "line": 85,
           "anchor": "l1-本地命令与结果",
-          "end_line": 127
+          "end_line": 128
+        },
+        {
+          "level": 2,
+          "title": "L1 实现提交的干净远端后继",
+          "line": 129,
+          "anchor": "l1-实现提交的干净远端后继",
+          "end_line": 172
         },
         {
           "level": 2,
           "title": "失败与限制",
-          "line": 128,
+          "line": 173,
           "anchor": "失败与限制",
-          "end_line": 136
+          "end_line": 182
         },
         {
           "level": 2,
           "title": "后继关系与阶段影响",
-          "line": 137,
+          "line": 183,
           "anchor": "后继关系与阶段影响",
-          "end_line": 141
+          "end_line": 190
         }
       ],
       "mentioned_ids": [],
       "links": [
         {
-          "line": 27,
+          "line": 28,
           "target": "../specs/2026-10-31-stage7-scope-decisions.md#72-先基线后门槛"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "../plans/2026-11-06-stage7-execution.md"
         },
         {
-          "line": 29,
+          "line": 30,
           "target": "../specs/2026-11-08-stage7-libos-benchmark.md"
         },
         {
-          "line": 30,
+          "line": 31,
           "target": "../specs/2026-10-29-stage6-m1-protocol.md"
         },
         {
-          "line": 31,
+          "line": 32,
           "target": "../specs/2026-11-01-stage6-managed-launch.md"
         },
         {
-          "line": 32,
+          "line": 33,
           "target": "../compat/stage6-linux-profile-v1.md"
         },
         {
-          "line": 33,
+          "line": 34,
           "target": "2026-11-02-stage6-process-and-differential.md"
         },
         {
-          "line": 34,
+          "line": 35,
           "target": "2026-11-07-stage7-cow-benchmark.md"
         },
         {
-          "line": 53,
+          "line": 54,
           "target": "https://github.com/Alma1314/PrimaOS/actions/runs/42395901438"
         },
         {
-          "line": 140,
+          "line": 134,
+          "target": "https://github.com/Alma1314/PrimaOS/actions/runs/42405116578"
+        },
+        {
+          "line": 186,
           "target": "../../../Prima%20OS%20实现阶段.md"
         }
       ]
@@ -33606,7 +33617,7 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-11-08",
-      "sha256": "08912a9b5961c0a27c178685904a10dfac31143fbabef6e4523793bd05c072a0",
+      "sha256": "beaebcc536d58237cc28d3096b42d4e7fefcf66ae3fc4738a4e526349c6b59c4",
       "topic_ids": [],
       "lines": 383,
       "sections": [
@@ -47196,7 +47207,7 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-11-08",
-      "sha256": "499bf1c7826af72ac788ef450cc25a07910b6865b151cbdc79b3dc5c38eb2170",
+      "sha256": "8a2e42ee6e887257c6bc7e56466e9d636d4bdc33a5cf9a2b9ffcb1cc563d4a90",
       "topic_ids": [],
       "lines": 211,
       "sections": [

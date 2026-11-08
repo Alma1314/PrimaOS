@@ -48,7 +48,7 @@ updated: 2026-11-08
 复用G4的1000样本双轮，明确pre-iret边界；[实跑报告](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)
 区分1921757远端九组通过与新增归档器的本地证据，仍不关闭G6或7-0。
 端到端LibOS测量后继：[L1真实服务/VFS/授权复制read](2026-11-08-stage7-libos-benchmark.md)，
-64样本双轮、同ELF Linux参考；[本地验证与C1自身远端后继](../reports/2026-11-08-stage7-libos-benchmark.md)保留普通BIOS中断与待补证据。
+64样本双轮、同ELF Linux参考；[本地验证与C1自身远端后继](../reports/2026-11-08-stage7-libos-benchmark.md)记录本机超时中断与实现提交自身干净远端证据。
 
 COW测量后继：[C1用户写保护故障与复制](2026-11-07-stage7-cow-benchmark.md)，64个新页双轮；
 [实现与验证](../reports/2026-11-07-stage7-cow-benchmark.md)说明观察器成本及抽象用户态协议边界。

@@ -2,7 +2,7 @@
 id: report-stage7-libos-benchmark
 kind: report
 authority: scoped-implementation-and-validation
-status: libos-read-verified-bios-pending
+status: libos-read-and-clean-ci-verified
 lifecycle: historical
 updated: 2026-11-08
 ---
@@ -18,7 +18,8 @@ OpenFiles/VFS、请求授权复制与答复恢复，逐次核对全部字节/两
 
 五类已有各自有界单核方法/本地基线：原生N1、IPC I1、Gate G5（G4独立保留）、COW C1、LibOS L1。
 本次还核验8933a5c自身干净远端九组/94份归档，关闭前篇“C1待自身远端”待办。
-新L1仍待自身干净远端证据；多核、基线后数值门槛/稳定性、发布许可与镜像包仍待完成。
+实现提交e6dce41已取得自身干净远端九组/97份归档及完整36组72轮通过证据；本机两轮中断按失败记录保留。
+多核、基线后数值门槛/稳定性、发布许可与镜像包仍待完成。
 阶段7九轨退出均不勾选。这是同一会话的实现/运行复核，不是第三方审查、形式化证明或组织签署。
 
 ## 基线与实现
@@ -123,7 +124,51 @@ BIOS7832576字节，18b2fd102dccb8476fc1e62b221c2153dcce24f6a329b0c81e68bfb9be2a
 
 TCB=2087 trusted / 39657 mechanism / 41744 total，5.00%；unsafe=79/0，
 include_bytes=0、prima_user_dep=false、service_name_lines=0、protocol_lines=56。
-文档self-test/build/check/check --base 8933a5c及git diff --check均退出0，393份文档/3740节；补录结果后重新生成并复核。提交后干净CI仍待运行，不把未运行项算作通过。
+文档self-test/build/check/check --base 8933a5c及git diff --check均退出0，393份文档/3740节；补录结果后重新生成并复核。实现提交的干净远端结果见下一节；其后只补录本文/阶段跟踪/索引和生成目录，代码保持e6dce41。
+
+## L1 实现提交的干净远端后继
+
+实现提交e6dce4176c546f7bc3c466d72c9b5e1e2a9e2f3d推送工作分支后，
+通过gh workflow run ci.yml --ref codex/stage7-libos-benchmark触发既有九组矩阵。
+本次gh run view 42405116578和gh run download 42405116578 --dir /tmp/prima-stage7-l1-remote均退出0。
+[Actions 42405116578](https://github.com/Alma1314/PrimaOS/actions/runs/42405116578)整体及九job均success，
+九份manifest均revision=e6dce4176c546f7bc3c466d72c9b5e1e2a9e2f3d、dirty=false、源摘要
+25b3b14390089e9cd0065f44e953c9f0ba176740eb5554d38e307dd58a45fa72，所有步骤passed/exit0。
+97份原始归档逐份核对长度/SHA-256；L1参考及两轮Prima全部192条时间/返回/字节/哨兵、
+各轮133次请求闭合及read/seek各64的原始审计回执通过，分位数与03.log精确一致。
+
+| 组 | manifest运行ID | 秒数 | 串口归档 / 最终制品身份 |
+|---|---|---|---|
+| bios | 723b1d950bfa4006ad6b9a413cbf869a | 542.405 | 38 / 38 |
+| docs | c7733deac0bb4baabb56514d3876e1cf | 13.404 | 0 / 0 |
+| domains | 8ac691aea34949a983e1b1a437391dff | 112.899 | 2 / 5 |
+| formal | d47e6f4e44a945348013b70354b7c2a9 | 380.953 | 0 / 0 |
+| gate | 902b794b584d4888b093f0cba6e77902 | 238.624 | 18 / 5 |
+| gate-audit | 9653fc42975a45279e0df1e430c5e1a3 | 188.685 | 14 / 5 |
+| host | 5113da350d0446c08d42434f6225d806 | 196.324 | 0 / 0 |
+| lint | 1c936c05c788433889dbb0757e5fea9e | 121.951 | 0 / 0 |
+| linux | 3951d5fc5be54a09a107f40d78fbd058 | 418.666 | 25 / 13 |
+
+BIOS确有36组72个唯一(case,run)，默认双轮已含其中；Gate九配置18轮，审计停止七site双轮。
+普通host1142通过、1默认忽略；linux组另执行L1解析正反例。D14仍仅人格桩，formal重跑既有模型/细化检查，
+没有新增定理或扩张实现映照。此结果补齐本片完整回归的干净远端证据，不证明本机超时已修复。
+
+逐步归档只保留每一步结束时仍存在的串口文件；普通BIOS不宣称72轮各有独立原始文件。
+L1参考和两轮Prima各有独立归档。Actions未上传镜像字节，下面是manifest记录的最终制品身份，
+没有将其当作镜像字节独立重哈希、每一步旧镜像保留或UEFI执行证据。
+
+| L1干净远端轮次 | Hz | p50/p99 ns | 串口SHA-256（各14218字节） |
+|---|---|---|---|
+| 1 | 2433958682 | 6425229 / 6780696 | 0cb6bf9cd592ea42ef67a96661e0074e029808b57b2f031ca14f952def6241c1 |
+| 2 | 2435609957 | 6649133 / 9030540 | 605b7d6f7d3f990457ea1df4247519b3ca4e2e4eb5a79081779e24d61f5f1de9 |
+
+Linux参考5611/154815 cycles，5244字节原始串口SHA-256=
+081909a3b28317412c273a89568d69e0c7fb7162f67ae5e6272f3d34455808e5。
+新探针9120字节及de5fb57055f86dfc7ef7b8f57e4b3f04c62195f68df1749d973b3911b8351478的身份与本地记录相同。
+服务3195616字节，78f44bbb6d911dfce8d3b8006f8f2ed9a1ef5b6ad3383988e1dd245c3987e9a7；
+最终Linux探针kernel ELF2705184字节，0ccfbc84ca7606720649a40ddf576e068727ff1c30c0b9cff22ed1fde7cfe73f；
+BIOS7832576字节，77c12a2deb9344a7adf0e8e4e377358ef0ebf4259433945b3f8bfd95f4ad8189。
+本地与远端的宿主、构建路径及产物分别登记，不主张跨环境位级复现或从耗时差异推导优化收益。
 
 ## 失败与限制
 
@@ -131,6 +176,7 @@ include_bytes=0、prima_user_dep=false、service_name_lines=0、protocol_lines=5
 - 首次聚焦运行因沙箱DNS限制下载Linux参考内核失败，退出1；宿主权限重跑下载后强制固定SHA512，参考及Prima双轮通过。聚焦结果不混入正式基线。
 - 普通BIOS首轮共7次30秒超时：T1第2轮、V1双轮及V2第1轮输出为空；F1第1轮最后到vspace_ready，F1第2轮及V2第2轮最后到cow_ready，无panic证据。原step完整输出保留在ignored target/ci/bios/8c53bbe09d9b47e99ac942c42eaf42bd/00.log。本次只记录已报告的4组，V2后正在构建下一组时主动SIGTERM，由运行器杀子进程、保存8份串口并标interrupted；不是36组完成，也不把17轮拼成完整通过。
 - 诊断时宿主loadavg一度16.29/10.85/7.05（8逻辑CPU），CPU PSI some avg10=51.76%；观察到多项外部CPU密集进程，仅有本工作区一个QEMU，无其它本工作区测试并行。资源争用是实测环境，尚无超时因果证明，未停止他人进程、修改源码或放宽门限。后继改用干净CI验收；其通过也不能宣称已修复本机超时。
+- 宿主压力短时回落（CPU PSI some avg10=1.54%）后，对干净e6dce41执行python3 scripts/ci.py bios --require-clean。运行ID bcd6620dc7a647d68b68d1b5efb15fc3、184.614秒，6轮通过、E1第1轮30秒空串口超时；E3第2轮时再次主动中断。manifest仍为interrupted/step exit130，保存3份串口且长度/哈希核对通过，源身份与远端实现提交完全一致。两次中断不合并成完整通过；后继远端结果独立计量，不能倒推本机超时根因。
 - 仅17字节有限RAM文件read；seek/open/close/输出不在单次区间，不代表完整文件事务、磁盘、网络、动态链接、所有LibOS操作或其它personality。无SMP、KVM、实机或新Lean证明。
 - 五类基线的调用、样本数、平台和计量边界分别定义，不横向比较为同一总体；性能门槛与稳定性仍须后继冻结/验证。容量和全局审计满fail-stop规则保持。
 
@@ -138,4 +184,7 @@ include_bytes=0、prima_user_dep=false、service_name_lines=0、protocol_lines=5
 
 本文只在C1自身远端结果和L1有界单核测量两项上补强前篇；发现、失败及IPC排序整改链均保留。
 [阶段跟踪](../../../Prima%20OS%20实现阶段.md)维护多核、数值门槛、发布许可/镜像包与九轨剩余机制。
-新L1须在合入后取得自身干净远端证据；本文不签署7-0或其它子轨，也不扩大已有profile或证明范围。
+实现提交e6dce41自身干净远端九组及原始证据已取得；本机超时仍是未定位的稳定性限制。
+本文不签署7-0或其它子轨，也不扩大已有profile或证明范围。
+
+本次后继文档的self-test/build/check/check --base 8933a5c/check --base e6dce41及git diff --check均退出0；393份文档/3741节，补录后重新生成并核对。
