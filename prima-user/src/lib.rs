@@ -5,6 +5,7 @@
 pub mod staging;
 pub mod startup;
 
+pub mod bulk;
 pub mod console;
 pub mod file_ops;
 pub mod network;

@@ -357,10 +357,14 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     for (binary, kind) in SERVICE_IMAGES {
         let source = PathBuf::from(binary);
         ensure_non_empty(&source, "boot image binary")?;
+        // DWARF is not loaded by the ELF loader. Keep it in Cargo's original
+        // artifacts, rather than copying megabytes through BIOS on every boot.
+        let packaged = path.with_file_name(format!("boot-service-{kind}.elf"));
+        strip_debug(&source, &packaged)?;
         manifest.push((
             kind,
-            fs::read(&source)
-                .map_err(|error| format!("failed to read {}: {error}", source.display()))?,
+            fs::read(&packaged)
+                .map_err(|error| format!("failed to read {}: {error}", packaged.display()))?,
         ));
     }
     // M3：从锁定快照构建静态 musl 基座（脚本按补丁/快照哈希缓存）。
@@ -600,6 +604,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         flags.push("-mgeneral-regs-only");
     }
     clang.args(&flags);
+    if matches!(program, Stage5Program::FileExt) {
+        clang.arg("-DPRIMA_BULK_PROBE");
+    }
     clang.arg(format!(
         "-Wl,--version-script={}",
         c_dir.join("prima_libc.map").display()

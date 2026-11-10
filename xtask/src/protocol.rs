@@ -283,8 +283,9 @@ const LEGACY_EXPECTED_EVENTS: [(u32, EventKind); 8] = [
 
 pub(crate) fn validate_output(output: &str) -> Result<(), String> {
     // Managed exit now parks once in RECV before the manager destroys it.
-    // Authenticated direct C↔Store sessions replace the previous Manager forwarding hops.
-    validate_output_impl(output, Some((51, 123, 132))).map(|_| ())
+    // Authenticated direct C↔Store sessions replace Manager forwarding hops.
+    // Bulk data removes 8 messages; buffer OPEN/CLOSE adds 4: net -4 direct/blocks.
+    validate_output_impl(output, Some((51, 119, 128))).map(|_| ())
 }
 
 /// M5：echo 用例的 IPC 高水位依赖该程序实际的字节数，不是固定探针基线。
@@ -898,7 +899,7 @@ pub(crate) fn validate_stage5_capacity(output: &str) -> Result<(), String> {
         .collect();
     if capacity.len() != 1
         || capacity[0].trim_end_matches('\r')
-            != "CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384"
+            != "CAPACITY|caps_live=134;caps_peak=148;caps_limit=192;segment_slots=40;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1144;audit_limit=16384"
     {
         return Err(format!("stage5 capacity high-water mismatch: {capacity:?}"));
     }
@@ -4689,7 +4690,7 @@ mod tests {
     fn stage5_capacity_requires_ring3_and_kernel_evidence() {
         let (mut output, _) = service_trace_fixture();
         output.push_str("TASKCAP|id=17;dead=1;root_cleared=1;tasks=12;caps=134\r\n");
-        output.push_str("CAPACITY|caps_live=134;caps_peak=146;caps_limit=192;segment_slots=39;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1158;audit_limit=16384\r\n");
+        output.push_str("CAPACITY|caps_live=134;caps_peak=148;caps_limit=192;segment_slots=40;segment_limit=64;messages_queued=1;messages_peak=14;messages_limit=32;audit_used=1144;audit_limit=16384\r\n");
         assert_eq!(super::validate_stage5_capacity(&output), Ok(()));
         let wrong_status = output.replace("2500000000000000", "0200000000000000");
         assert_ne!(wrong_status, output);
@@ -4697,7 +4698,7 @@ mod tests {
         assert!(super::validate_stage5_capacity(&output.replace("dead=1", "dead=0")).is_err());
         assert!(super::validate_stage5_capacity(&output.replace("TASKCAP|", "MISSING|")).is_err());
         assert!(
-            super::validate_stage5_capacity(&output.replace("caps_peak=146", "caps_peak=160"))
+            super::validate_stage5_capacity(&output.replace("caps_peak=148", "caps_peak=160"))
                 .is_err()
         );
     }
@@ -4816,7 +4817,7 @@ mod tests {
         "PRIMA|v=1|seq=20|event=handle_ready|status=ok|data=index_bits=32;generation_bits=32;image=0x100000001;namespace=0x100000002;task=0x100000003;page_fault=0x100000004;syscall_trap=0x100000005;malformed_rejected=1\n",
         "PRIMA|v=1|seq=21|event=cap_lifecycle_ready|status=ok|data=derive=0x100000006;escalate=0xfffffffffffffff3;drop=0x0;drop_again=0xfffffffffffffffe;reuse=0x200000006;stale=0xfffffffffffffffe;grant=0x200000006;drop_new=0x0;structural=0xfffffffffffffff3\n",
         "PRIMA|v=1|seq=22|event=memseg_ready|status=ok|data=create=0x300000006;map=0x0;zero=0x0;write=0xdec0de0012345678;unmap=0x0;destroy=0x0;stale=0xfffffffffffffff3;create2=0x100000007;map2=0x0;zero2=0x0;unmap2=0x0;destroy2=0x0\n",
-        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=51;direct=123;blocks=132\n",
+        "PRIMA|v=1|seq=23|event=ipc_ready|status=ok|data=create=0x100000008;map1=0x0;send1=0x0;send2=0x0;recv1=0x51a5000000000001;cap0=0x100000008;magic=0x51a5000000000001;map2=0x0;cross=0xfffffffffffffff3;send_denied=0xfffffffffffffff3;recv2=0xd1ec700000000002;cap_count=1;direct_cap0=0x100000004;direct_cap_count=1;queued=51;direct=119;blocks=128\n",
         "PRIMA|v=1|seq=24|event=task_ready|status=ok|data=stack_seg=0x100000009;create=0x10000000a;bad_entry=0xffffffffffffffea;no_x=0xfffffffffffffff3;stack_map=0x0;recv=0x3;deny=0xfffffffffffffff3;destroy=0x0;again=0xfffffffffffffff3;map_dead=0xfffffffffffffffe;map_own=0x0;map_value=0xc0ffee0000000000;map_other=0xfffffffffffffff3;task4_cap=0x20000000b;task4_stack=0x0;task4_recv=0x4;task4_map_dead=0xfffffffffffffffe;child=3;tasks=12;caps=134;root_cleared=1;grandchild=4;tasks_after=12;caps_after=134;root4_cleared=1\n",
         "PRIMA|v=1|seq=30|event=namespace_ready|status=ok|data=namespaces=4;entries=3;binds=4;unbinds=2;mounts=2;unmounts=1;resolves=4;cycles_rejected=1;overlaps_rejected=1;invalid_path_rejected=1;acyclic_ok=2;create_ok=1;resolve_ok=1;overlap_rejected=1;cycle_rejected=1;evidence_ok=1\n",
         "PRIMA|v=1|seq=31|event=preempt_ready|status=ok|data=ticks=4;pre1=2;pre2=2;root1=0x53000;root2=0x5c000;cr31=0x53000;cr32=0x5c000;rsp1=0x10000108a78;rsp2=0x10000110a78;kstack1_top=0x10000108aa0;kstack2_top=0x10000110aa0;data1=0x64000;data2=0x67000;mark1=0x1;mark2=0x2\n",
@@ -5006,9 +5007,9 @@ mod tests {
 
     #[test]
     fn rejects_ipc_ready_without_the_direct_wake_path() {
-        let output = VALID.replace(";direct=123;", ";direct=0;");
+        let output = VALID.replace(";direct=119;", ";direct=0;");
         let error = validate_output(&output).unwrap_err();
-        assert!(error.contains("expected 51/123/132"), "{error}");
+        assert!(error.contains("expected 51/119/128"), "{error}");
     }
 
     #[test]

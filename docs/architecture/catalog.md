@@ -53,7 +53,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（22）
+## plan（23）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -79,6 +79,7 @@
 | [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
 | [Windows LibOS 计划书：PE64 控制台与服务兼容路径](../superpowers/plans/2026-10-31-windows-libos-roadmap.md) | current | `docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md` |
 | [阶段7执行计划：工程底座与九轨冻结顺序](../superpowers/plans/2026-11-06-stage7-execution.md) | current | `docs/superpowers/plans/2026-11-06-stage7-execution.md` |
+| [LibOS 数据通路完整改造计划](../superpowers/plans/2026-11-10-libos-data-path.md) | current | `docs/superpowers/plans/2026-11-10-libos-data-path.md` |
 
 ## reference（9）
 
@@ -94,7 +95,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（221）
+## report（222）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -319,6 +320,7 @@
 | [7-0 根Cargo图依赖源码与NOTICE材料](../superpowers/reports/2026-11-08-stage7-cargo-materials.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md` |
 | [7-0 源码/验收证据包与73056ba主分支CI后继](../superpowers/reports/2026-11-08-stage7-evidence-package.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS 基准与 C1 自身远端后继](../superpowers/reports/2026-11-08-stage7-libos-benchmark.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md` |
+| [LibOS 数据通路改造：共享批量文件首片](../superpowers/reports/2026-11-10-libos-data-path.md) | historical | `docs/superpowers/reports/2026-11-10-libos-data-path.md` |
 
 ## spec（4）
 
@@ -329,7 +331,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（106）
+## specification（107）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -439,6 +441,7 @@
 | [7-0 Cargo 锁定输入源码与 NOTICE 材料](../superpowers/specs/2026-11-08-stage7-cargo-materials.md) | current | `docs/superpowers/specs/2026-11-08-stage7-cargo-materials.md` |
 | [7-0 源码与验收证据包首片](../superpowers/specs/2026-11-08-stage7-evidence-package.md) | current | `docs/superpowers/specs/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS read 基准](../superpowers/specs/2026-11-08-stage7-libos-benchmark.md) | current | `docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md` |
+| [LibOS 数据通路改造与批量文件协议首片](../superpowers/specs/2026-11-10-libos-data-path.md) | current | `docs/superpowers/specs/2026-11-10-libos-data-path.md` |
 
 ## template（4）
 

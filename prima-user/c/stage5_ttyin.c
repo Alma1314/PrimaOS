@@ -149,8 +149,9 @@ int main(void) {
     emit("\nTTYRAW\n");
     long raw_len = 0;
     while (raw_len < 2) {
-        long got = read(0, buffer + raw_len, (unsigned long)(2 - raw_len));
-        if (got <= 0)
+        /* Keep the number of RPCs independent of UART byte coalescing. */
+        long got = read(0, buffer + raw_len, 1);
+        if (got != 1)
             break;
         raw_len += got;
     }

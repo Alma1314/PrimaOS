@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-11-08
+updated: 2026-11-11
 ---
 
 # Prima OS 实现阶段
@@ -33,6 +33,8 @@ updated: 2026-11-08
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
+
+2026-11-10作者要求完整LibOS数据通路改造；[执行计划](docs/superpowers/plans/2026-11-10-libos-data-path.md)覆盖域内前端、共同服务、批量/异步、背压及多核。2026-11-11[共享批量文件首片](docs/superpowers/reports/2026-11-10-libos-data-path.md)通过完整36组72轮BIOS及host/lint；P2–P6尚未实现，完整改造尚未完成，九轨退出不变。
 
 阶段7工程后继：[Cargo输入源码/NOTICE材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)，
 [源码/验收证据包及73056ba自身远端](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)，

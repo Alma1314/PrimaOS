@@ -37,7 +37,7 @@ use prima_user::staging::{
 };
 
 use prima_runtime::{
-    Capability, Rights, Runtime, SyscallTransport, TaskId,
+    Capability, Rights, Runtime, SyscallTransport, TaskId, bulk,
     protocol::{
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_FILE_ARG_MASK,
         SERVICE_FILE_CHUNK, SERVICE_FILE_EACCES, SERVICE_FILE_EAGAIN, SERVICE_FILE_EBADF,
@@ -94,6 +94,169 @@ const SERVICE_FILE_FIRST_FD: u64 = 3;
 /// M8：把持久化段实现为 [`Storage`]。偏移相对 VFS 镜像起点，不包含状态字。
 struct SegmentStorage<'a, T: SyscallTransport> {
     runtime: &'a Runtime<T>,
+}
+
+#[derive(Clone, Copy)]
+struct BulkChannel {
+    cookie: u64,
+    root: Option<Capability>,
+    mapped: bool,
+    active: bool,
+    next: u64,
+}
+
+impl BulkChannel {
+    const EMPTY: Self = Self {
+        cookie: 0,
+        root: None,
+        mapped: false,
+        active: false,
+        next: 1,
+    };
+
+    fn address(slot: usize) -> u64 {
+        bulk::SERVER_VA + slot as u64 * bulk::PAGE_BYTES as u64
+    }
+
+    // Keep the destroy capability when another Process still maps the buffer
+    // (for example after an uncooperative client exits with live workers).
+    fn retire(&mut self, rt: &Runtime<impl SyscallTransport>, task: Capability, slot: usize) {
+        self.active = false;
+        let Some(root) = self.root else {
+            return;
+        };
+        if self.mapped {
+            if rt.memseg_unmap(task, Self::address(slot), 1).is_err() {
+                return;
+            }
+            self.mapped = false;
+        }
+        if rt.memseg_destroy(root).is_ok() {
+            let _ = rt.cap_drop(root);
+            self.root = None;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn bulk_request<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    self_cap: Capability,
+    files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
+    channel: &mut BulkChannel,
+    cookie: u64,
+    reply: Capability,
+    payload: u64,
+    capabilities: [Option<Capability>; 2],
+) {
+    let slot = cookie as u32 as usize;
+    let peer = TaskId::from_raw(cookie as u32);
+    let tag = payload & 0xffff_0000_0000_0000;
+    let sequence = payload as u32 as u64;
+    let send = |tag, status, sequence, caps: &[Capability]| {
+        rt.send(peer, reply, tag | (status << 32) | sequence, caps)
+    };
+    if capabilities.iter().any(Option::is_some) {
+        for cap in capabilities.into_iter().flatten() {
+            let _ = rt.cap_drop(cap);
+        }
+        let _ = send(
+            if tag == bulk::OPEN {
+                bulk::OPEN_REPLY
+            } else {
+                bulk::COMPLETE
+            },
+            SERVICE_FILE_EINVAL,
+            sequence,
+            &[],
+        );
+        return;
+    }
+    if tag == bulk::CLOSE {
+        if payload != bulk::CLOSE {
+            let _ = send(bulk::COMPLETE, SERVICE_FILE_EINVAL, sequence, &[]);
+            return;
+        }
+        if channel.cookie == cookie {
+            channel.retire(rt, self_cap, slot);
+        }
+        let _ = send(bulk::COMPLETE, 0, 0, &[]);
+    } else if tag == bulk::OPEN {
+        if payload != bulk::OPEN
+            || channel.root.is_some()
+            || (channel.cookie == cookie && channel.next > bulk::MAX_SEQUENCE)
+        {
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        }
+        if channel.cookie != cookie {
+            *channel = BulkChannel {
+                cookie,
+                ..BulkChannel::EMPTY
+            };
+        }
+        let Ok(root) = rt.memseg_create(1, RW) else {
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        };
+        channel.root = Some(root);
+        if rt
+            .memseg_map(root, self_cap, 0, BulkChannel::address(slot), 1, RW)
+            .is_err()
+        {
+            channel.retire(rt, self_cap, slot);
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        }
+        channel.mapped = true;
+        let Ok(view) = rt.cap_derive(root, Rights::from_bits(7)) else {
+            channel.retire(rt, self_cap, slot);
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        };
+        if send(bulk::OPEN_REPLY, 0, channel.next, &[view]).is_err() {
+            let _ = rt.cap_drop(view);
+            channel.retire(rt, self_cap, slot);
+        } else {
+            channel.active = true;
+        }
+    } else {
+        let status = if !channel.active || channel.cookie != cookie || !channel.mapped {
+            SERVICE_FILE_EACCES
+        } else if payload != bulk::SUBMIT | sequence || sequence != channel.next {
+            SERVICE_FILE_EINVAL
+        } else {
+            let mut page = [0; bulk::PAGE_BYTES];
+            if rt
+                .read_user_bytes(BulkChannel::address(slot), &mut page)
+                .is_err()
+            {
+                SERVICE_FILE_EFAULT
+            } else {
+                let mut storage = SegmentStorage { runtime: rt };
+                match prima_user::bulk::execute(files, &mut storage, &mut page, sequence, |e| {
+                    vfs_status(e) as u32
+                }) {
+                    Err(_) => SERVICE_FILE_EINVAL,
+                    Ok(()) => {
+                        // Consume before output/notification: never replay a write
+                        // after a later failure. A lost completion is terminal.
+                        channel.next += 1;
+                        if rt
+                            .write_user_bytes(BulkChannel::address(slot), &page)
+                            .is_ok()
+                        {
+                            0
+                        } else {
+                            SERVICE_FILE_EFAULT
+                        }
+                    }
+                }
+            }
+        };
+        let _ = send(bulk::COMPLETE, status, sequence, &[]);
+    }
 }
 
 impl<T: SyscallTransport> Storage for SegmentStorage<'_, T> {
@@ -159,6 +322,7 @@ pub fn run(
     // M4/M8：存储服务的文件/目录句柄表。服务端 fd 3..10 对应下标 0..7；close 立即释放并可复用。
     let mut files = OpenFiles::<SERVICE_FILE_HANDLES>::new();
     let mut sessions = Sessions::new();
+    let mut bulk_channels = [BulkChannel::EMPTY; prima_user::sessions::MAX_CLIENTS];
     let manager_cookie = runtime.task_cookie(peer).unwrap_or(0);
     // M8：rootfs 是否已在该段内成功格式化/挂载。
     let mut vfs_ready = false;
@@ -180,6 +344,17 @@ pub fn run(
         let mut reply_send = send_cap;
         let mut staging_slot = 0usize;
         if kind == SERVICE_BEHAVIOR_STORE && vfs_ready {
+            for (slot, channel) in bulk_channels.iter_mut().enumerate() {
+                if channel.root.is_some()
+                    && (!channel.active
+                        || runtime
+                            .task_cookie(TaskId::from_raw(channel.cookie as u32))
+                            .ok()
+                            != Some(channel.cookie))
+                {
+                    channel.retire(&runtime, self_cap, slot);
+                }
+            }
             // Reclaim dead incarnations, including a killed client that could not
             // send CLOSE. Leader destruction is guarded while workers are live.
             for i in 1..sessions.owners.len() {
@@ -288,6 +463,22 @@ pub fn run(
             reply_send = client.reply;
             staging_slot = client.cookie as u32 as usize;
             let _ = files.set_owner(client.owner);
+            if matches!(
+                message.payload & 0xffff_0000_0000_0000,
+                bulk::OPEN | bulk::SUBMIT | bulk::CLOSE
+            ) {
+                bulk_request(
+                    &runtime,
+                    self_cap,
+                    &mut files,
+                    &mut bulk_channels[staging_slot],
+                    client.cookie,
+                    client.reply,
+                    message.payload,
+                    message.capabilities,
+                );
+                continue;
+            }
             if tag == SERVICE_SESSION_RESERVE_TAG >> 48 {
                 let key = if let Some((owner, key)) = sessions.reserve(client.process) {
                     if files.fork_owner(client.owner, owner).is_ok() {

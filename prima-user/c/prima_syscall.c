@@ -656,7 +656,10 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
 
 #define PRIMA_SESSION_SLOTS 18
 #define PRIMA_SYS_RECV_META 60
-struct prima_session { uint64_t cookie, store_cookie, store_cap, self_cap; };
+struct prima_session {
+    uint64_t cookie, store_cookie, store_cap, self_cap;
+    uint64_t bulk_cap, bulk_next;
+};
 static struct prima_session prima_sessions[PRIMA_SESSION_SLOTS];
 struct prima_fork_record { long pid; uint32_t key; };
 static struct prima_fork_record prima_forks[PRIMA_SESSION_SLOTS];
@@ -693,7 +696,11 @@ static long prima_session_accept(void) {
         }
         if (session->cookie == (uint64_t)cookie && session->store_cap)
             (void)prima_raw(PRIMA_SYS_CAP_DROP, session->store_cap, 0, 0, 0, 0, 0);
+        if (session->cookie != (uint64_t)cookie) {
+            session->bulk_cap = 0; session->bulk_next = 0;
+        }
         session->cookie = cookie; session->store_cookie = out[3]; session->store_cap = out[0];
+        session->self_cap = (uint64_t)prima_raw(PRIMA_SYS_TASK_INFO, 5, 0, 0, 0, 0, 0);
         return 0;
     }
 }
@@ -737,6 +744,8 @@ static long prima_session_receive(uint64_t tag) {
         if (out[3] == session->store_cookie && ((uint64_t)raw >> 48) == (tag >> 48)) return raw;
     }
 }
+#include "prima_bulk.h"
+
 static long prima_session_control(uint64_t payload) {
     long result = prima_session_send(payload);
     return result < 0 ? result : prima_session_receive(PRIMA_SESSION_FORK_ACK);
@@ -753,6 +762,7 @@ static long prima_fork_handoff_receive(void) {
     }
 }
 static void prima_session_thread_cleanup(void) {
+    (void)prima_bulk_close();
     long task = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
     if (task > 0 && task < 18) prima_restart_scopes[task] = 0;
     struct prima_session *session = prima_session_current();
@@ -2244,59 +2254,15 @@ static long prima_tty_ioctl(int fd, unsigned long request, unsigned long arg) {
 }
 
 static long prima_handle_read(int handle, void *buf, unsigned long len) {
-    if (len == 0)
-        return 0;
-    if (!buf)
-        return -PRIMA_ERRNO_EFAULT;
-    unsigned char *out = buf;
-    unsigned long done = 0;
-    while (done < len) {
-        unsigned long chunk = len - done;
-        if (chunk > PRIMA_FILE_CHUNK)
-            chunk = PRIMA_FILE_CHUNK;
-        long reply = prima_file_call(PRIMA_FILE_OP_READ, handle, chunk);
-        if (reply < 0)
-            return done != 0 ? (long)done : reply;
-        uint64_t raw = (uint64_t)reply;
-        long status = prima_reply_status(raw);
-        if (status != 0)
-            return done != 0 ? (long)done : -status;
-        unsigned long count = (raw >> PRIMA_FILE_WRITE_COUNT_SHIFT) & 0xff;
-        uint64_t data = raw & PRIMA_FILE_ARG_MASK;
-        if (count > chunk)
-            count = chunk;
-        for (unsigned long i = 0; i < count; i++)
-            out[done + i] = (unsigned char)(data >> (8 * i));
-        done += count;
-        if (count < chunk)
-            break; /* EOF 或服务端可用字节不足 */
-    }
-    return (long)done;
+    if (len == 0) return 0;
+    if (!buf) return -PRIMA_ERRNO_EFAULT;
+    return prima_bulk_transfer(handle, buf, len, 0, 0, 0);
 }
 
 static long prima_handle_write(int handle, const void *buf, unsigned long len) {
-    if (len == 0)
-        return 0;
-    if (!buf)
-        return -PRIMA_ERRNO_EFAULT;
-    const unsigned char *in = buf;
-    unsigned long done = 0;
-    while (done < len) {
-        unsigned long chunk = len - done;
-        if (chunk > PRIMA_FILE_CHUNK)
-            chunk = PRIMA_FILE_CHUNK;
-        uint64_t arg = (uint64_t)chunk << PRIMA_FILE_WRITE_COUNT_SHIFT;
-        for (unsigned long i = 0; i < chunk; i++)
-            arg |= (uint64_t)in[done + i] << (8 * i);
-        long reply = prima_file_call(PRIMA_FILE_OP_WRITE, handle, arg);
-        if (reply < 0)
-            return done != 0 ? (long)done : reply;
-        long status = prima_reply_status((uint64_t)reply);
-        if (status != 0)
-            return done != 0 ? (long)done : -status;
-        done += chunk;
-    }
-    return (long)len;
+    if (len == 0) return 0;
+    if (!buf) return -PRIMA_ERRNO_EFAULT;
+    return prima_bulk_transfer(handle, (void *)buf, len, 0, 1, 0);
 }
 
 static long prima_handle_lseek(int handle, long offset, int whence) {
@@ -2496,15 +2462,6 @@ static long prima_fd_lseek(int fd, long offset, int whence) {
 /* Native positional ops never mutate the shared OFD cursor. Like POSIX pwrite,
  * WRITE_AT ignores O_APPEND (Linux's pwrite-on-append behavior differs).
  * Do not emulate this with seek/read/restore: fork holders share the cursor. */
-static uint64_t prima_file_at_arg(uint64_t offset, unsigned count, const unsigned char *bytes) {
-    if (offset > PRIMA_FILE_AT_OFFSET_MASK) offset = PRIMA_FILE_AT_OFFSET_MASK;
-    uint64_t arg = offset | ((uint64_t)count << PRIMA_FILE_AT_COUNT_SHIFT);
-    if (bytes)
-        for (unsigned i = 0; i < count; i++)
-            arg |= (uint64_t)bytes[i] << (PRIMA_FILE_AT_DATA_SHIFT + 8 * i);
-    return arg;
-}
-
 static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int writing) {
     struct prima_fd_entry *entry = prima_fd_entry(fd);
     if (!entry) return -PRIMA_ERRNO_EBADF;
@@ -2515,28 +2472,7 @@ static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int w
         return -PRIMA_ERRNO_ESPIPE;
     if (!buf && len) return -PRIMA_ERRNO_EFAULT;
     if (entry->kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
-    unsigned char *bytes = buf;
-    unsigned long done = 0;
-    /* Even a zero-length request reaches the OFD access check. */
-    do {
-        unsigned count = len - done > PRIMA_FILE_AT_CHUNK ? PRIMA_FILE_AT_CHUNK : (unsigned)(len - done);
-        uint64_t arg = prima_file_at_arg((uint64_t)offset + done, count,
-                                          writing && count ? bytes + done : 0);
-        long reply = prima_file_call(writing ? PRIMA_FILE_OP_WRITE_AT : PRIMA_FILE_OP_READ_AT,
-                                     entry->object, arg);
-        if (reply < 0) return done ? (long)done : reply;
-        long status = prima_reply_status((uint64_t)reply);
-        if (status) return done ? (long)done : -status;
-        unsigned received = writing ? (unsigned)((uint64_t)reply & PRIMA_FILE_ARG_MASK)
-                                    : (unsigned)(((uint64_t)reply >> PRIMA_FILE_WRITE_COUNT_SHIFT) & 0xff);
-        if (received > count) return done ? (long)done : -PRIMA_ERRNO_EINVAL;
-        if (!writing)
-            for (unsigned i = 0; i < received; i++)
-                bytes[done + i] = (unsigned char)((uint64_t)reply >> (8 * i));
-        done += received;
-        if (received < count) break;
-    } while (done < len);
-    return (long)done;
+    return prima_bulk_transfer(entry->object, buf, len, (uint64_t)offset, writing, 1);
 }
 
 static long prima_fd_resize(int fd, long size) {
@@ -2549,6 +2485,10 @@ static long prima_fd_resize(int fd, long size) {
     if (reply < 0) return reply;
     return -prima_reply_status((uint64_t)reply);
 }
+
+#ifdef PRIMA_BULK_PROBE
+#include "prima_bulk_probe.h"
+#endif
 
 static long prima_fd_close(int fd) {
     if (!prima_fd_entry(fd))
@@ -2808,6 +2748,9 @@ static void prima_close_all_fds(void) {
 extern const unsigned char __prima_exec_bridge_start[] __attribute__((weak));
 extern const unsigned char __prima_exec_bridge_end[] __attribute__((weak));
 #define PRIMA_EXEC_STATE_MAGIC UINT64_C(0x5052494d45584531)
+/* Frozen EXE1 handoff: buffer mappings are closed before exec and are never
+ * part of this wire state. Keep older v1 adapters' offsets and size. */
+struct prima_exec_session { uint64_t cookie, store_cookie, store_cap, self_cap; };
 struct prima_exec_state {
     uint64_t magic, bytes, cookie, mask, arena, waiter;
     struct prima_entry_ctx context;
@@ -2816,13 +2759,17 @@ struct prima_exec_state {
     unsigned int file_flags[PRIMA_FILE_HANDLES];
     char paths[PRIMA_LOCAL_FD_COUNT][PRIMA_VFS_PATH_MAX+1], cwd[PRIMA_VFS_PATH_MAX+1];
     struct prima_dir_cache dirs[PRIMA_FILE_HANDLES];
-    struct prima_session session;
+    struct prima_exec_session session;
     struct prima_fork_record forks[PRIMA_SESSION_SLOTS];
     struct prima_termios termios;
     long umask_value;
     int fork_child, termios_ready;
 };
 _Static_assert(sizeof(struct prima_exec_state) <= 4096, "one-page exec state");
+_Static_assert(sizeof(struct prima_exec_state) == 2200, "EXE1 handoff size");
+_Static_assert(offsetof(struct prima_exec_state, session) == 1800, "EXE1 session offset");
+_Static_assert(offsetof(struct prima_exec_state, forks) == 1832, "EXE1 fork offset");
+_Static_assert(offsetof(struct prima_exec_state, termios) == 2120, "EXE1 termios offset");
 _Static_assert(offsetof(struct prima_exec_state, waiter) == 40, "exec bridge waiter offset");
 _Static_assert(offsetof(struct prima_exec_state, context) == 48, "exec bridge register offset");
 _Static_assert(offsetof(struct prima_exec_state, fds) == 96, "exec probe fd offset");
@@ -2908,7 +2855,12 @@ prepare_state:
     PRIMA_SAVE(file_flags, prima_file_flags); PRIMA_SAVE(paths, prima_fd_paths); PRIMA_SAVE(cwd, prima_cwd);
     PRIMA_SAVE(dirs, prima_dirs); PRIMA_SAVE(forks, prima_forks); PRIMA_SAVE(present, prima_mmap_present);
 #undef PRIMA_SAVE
-    state->session = *prima_session_current();
+    result = prima_bulk_close();
+    if (result < 0) goto done;
+    struct prima_session *session = prima_session_current();
+    state->session = (struct prima_exec_session){
+        session->cookie, session->store_cookie, session->store_cap, session->self_cap
+    };
     /* Compute the post-exec fd view without changing the old image. The RX
      * bridge commits the corresponding service closes before any ELF entry. */
     uint64_t *control = (void *)(PRIMA_EXEC_STATE_VA+4096);
@@ -2989,7 +2941,10 @@ void prima_exec_restore(void) {
     PRIMA_LOAD(file_flags, prima_file_flags); PRIMA_LOAD(paths, prima_fd_paths); PRIMA_LOAD(cwd, prima_cwd);
     PRIMA_LOAD(dirs, prima_dirs); PRIMA_LOAD(forks, prima_forks);
 #undef PRIMA_LOAD
-    *prima_session_current() = state.session;
+    *prima_session_current() = (struct prima_session){
+        .cookie = state.session.cookie, .store_cookie = state.session.store_cookie,
+        .store_cap = state.session.store_cap, .self_cap = state.session.self_cap
+    };
     if (state.waiter) {
         (void)prima_raw(PRIMA_SYS_WAIT_DESTROY, state.waiter, 0, 0, 0, 0, 0);
         (void)prima_raw(PRIMA_SYS_CAP_DROP, state.waiter, 0, 0, 0, 0, 0);
@@ -3117,11 +3072,13 @@ __attribute__((noreturn, visibility("hidden"))) void __prima_thread_exit(void) {
 __attribute__((noreturn)) static void prima_exit_group(int status) {
     if (prima_fork_child) {
         prima_close_all_fds();
+        (void)prima_bulk_close();
         (void)prima_session_control(PRIMA_SESSION_CLOSE);
         (void)prima_raw(PRIMA_SYS_PROCESS_EXIT, status, 0, 0, 0, 0, 0);
         __builtin_trap();
     }
     prima_close_all_fds();
+    (void)prima_bulk_close();
     long id = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
     uint64_t payload = PRIMA_STAGE5_C_PROBE_TAG |
                        ((uint64_t)(uint8_t)status << 16) |
@@ -3273,6 +3230,8 @@ static long prima_translate_body(long number, long a0, long a1, long a2, long a3
         return prima_futex((int *)a0, (int)a1, (int)a2, (void *)a3);
     case PRIMA_LINUX_SYS_fork: {
         if (prima_tty_active() || prima_net_active()) return -PRIMA_ERRNO_EAGAIN;
+        long bulk_closed = prima_bulk_close();
+        if (bulk_closed < 0) return bulk_closed;
         long reserved = prima_session_control(PRIMA_SESSION_RESERVE);
         if (reserved < 0) return reserved;
         uint32_t key = (uint32_t)reserved;
@@ -3281,6 +3240,8 @@ static long prima_translate_body(long number, long a0, long a1, long a2, long a3
         if (ticket < 0) { (void)prima_session_control(PRIMA_SESSION_RELEASE | key); return ticket; }
         if (!ticket) {
             prima_fork_child = 1;
+            struct prima_session *child_session = prima_session_current();
+            if (child_session) { child_session->bulk_cap = 0; child_session->bulk_next = 0; }
             if (prima_session_accept() < 0) {
                 (void)prima_raw(PRIMA_SYS_PROCESS_EXIT, 127, 0, 0, 0, 0, 0);
                 __builtin_trap();

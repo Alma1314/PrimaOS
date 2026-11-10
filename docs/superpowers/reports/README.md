@@ -4,10 +4,12 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-08
+updated: 2026-11-11
 ---
 
 # Reports 索引
+
+2026-11-11：[LibOS数据通路共享批量首片](2026-11-10-libos-data-path.md)；P1完整36组72轮BIOS通过，P2–P6待实现，未完成项和验证边界见正文。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 

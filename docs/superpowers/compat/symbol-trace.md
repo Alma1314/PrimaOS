@@ -235,3 +235,15 @@ musl八补丁归档/5项host、compat、20项Linux参考和完整单次68轮BIOS
 
 前文原生std A的unsupported文件范围仅适用于R1/R2；R3的实际支持仍逐项读取
 [当前工作API表](stage5-working-api.md)，不能由Unix模块可编译推导完整POSIX支持。
+
+## 共享批量数据路径后继（2026-11-10）
+
+[批量文件契约](../specs/2026-11-10-libos-data-path.md)与
+[验证报告](../reports/2026-11-10-libos-data-path.md)修订前述原生C/POSIX适配层的传输：
+普通文件read/write及pread/pwrite经过prima_bulk_transfer，以一页共享缓冲携带最多3808B数据，
+通过原生SEND/RECV_META提交/完成，Store完整快照预检后调用同一OpenFiles。
+单批可含8项；普通POSIX调用每次提交1项；没有新增syscall或改变errno/OFD契约。
+前述“每RPC≤2B”只描述历史位置I/O协议，当前C数据路径不再适用。
+空间不足时，服务内按原3B/2B量子继续写入并返回既有部分进展，不再按这些量子跨域往返。
+路径、目录解码、元数据及控制协议保留；Linux原样ELF的Gate/RAM fixture路径未迁移。
+本片不升级profile版本或把符号链接成功当作完整兼容/性能验收。

@@ -462,7 +462,10 @@
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
       "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
       "docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md",
-      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
+      "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md",
+      "docs/superpowers/specs/2026-11-10-libos-data-path.md",
+      "docs/superpowers/plans/2026-11-10-libos-data-path.md",
+      "docs/superpowers/reports/2026-11-10-libos-data-path.md"
     ],
     "code": [
       "prima-runtime/src/lib.rs",
@@ -484,7 +487,10 @@
       "prima-user/src/linux_process.rs",
       "prima-user/linux-probes/pthread.c",
       "prima-user/linux-probes/process.S",
-      "prima-user/linux-probes/matrix.c"
+      "prima-user/linux-probes/matrix.c",
+      "prima-runtime/src/bulk.rs",
+      "prima-user/src/bulk.rs",
+      "prima-user/c/prima_bulk.h"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -535,7 +541,10 @@
       "docs/superpowers/specs/2026-10-24-native-runtime-service-design.md",
       "docs/superpowers/reports/2026-10-24-native-runtime-service-report.md",
       "docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md",
-      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md"
+      "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md",
+      "docs/superpowers/specs/2026-11-10-libos-data-path.md",
+      "docs/superpowers/plans/2026-11-10-libos-data-path.md",
+      "docs/superpowers/reports/2026-11-10-libos-data-path.md"
     ],
     "code": [
       "prima-runtime/src/vfs.rs",
@@ -545,7 +554,10 @@
       "prima-user/src/ns.rs",
       "prima-user/src/servicemgr.rs",
       "prima-user/c/prima_syscall.c",
-      "prima-user/src/staging.rs"
+      "prima-user/src/staging.rs",
+      "prima-runtime/src/bulk.rs",
+      "prima-user/src/bulk.rs",
+      "prima-user/c/prima_bulk.h"
     ],
     "tests": [
       "prima-runtime/src/vfs/tests.rs",

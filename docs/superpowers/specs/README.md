@@ -4,10 +4,12 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-08
+updated: 2026-11-10
 ---
 
 # Specs 索引
+
+2026-11-10：[LibOS数据通路工作契约](2026-11-10-libos-data-path.md)；完整范围按依赖分片，未完成项和验证边界见正文。
 
 2026-10-27 待最终范围评审：[静态persona与版本护栏](2026-10-26-static-program-contract-design.md)、[阶段5具体评审工件](2026-10-26-stage5-release-decisions.md)。D6用户已选择A。
 

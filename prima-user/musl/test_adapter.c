@@ -6,8 +6,14 @@
 int main(void) {
     /* All these reject locally or use the null device, without a native trap. */
     char positioned[2] = {'X', 'Y'};
-    assert(prima_file_at_arg(1, 2, (const unsigned char *)positioned) == UINT64_C(0x59582001));
-    assert(prima_file_at_arg(UINT64_MAX, 0, 0) == PRIMA_FILE_AT_OFFSET_MASK);
+    unsigned char wire[10] = {0xa5};
+    wire[9] = 0x5a;
+    prima_bulk_put(wire + 1, UINT64_C(0x0102030405060708), 8);
+    for (unsigned i = 1; i <= 8; i++) assert(wire[i] == 9 - i);
+    assert(prima_bulk_get(wire + 1) == UINT32_C(0x05060708));
+    assert(wire[0] == 0xa5 && wire[9] == 0x5a);
+    assert(PRIMA_BULK_DATA == 32 + 8 * 32);
+    assert(PRIMA_BULK_DATA + PRIMA_BULK_CAPACITY == 4096);
     assert(prima_fd_at(-1, positioned, 1, 0, 0) == -PRIMA_ERRNO_EBADF);
     assert(prima_fd_resize(-1, 0) == -PRIMA_ERRNO_EBADF);
     prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, 3, 0, 0};

@@ -4,10 +4,12 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-10
 ---
 
 # Plans 索引
+
+2026-11-10：[LibOS数据通路完整改造计划](2026-11-10-libos-data-path.md)；完整范围按依赖分片，未完成项和验证边界见正文。
 
 本目录保存**执行计划**：它们记录当时的任务拆分、顺序和验收方式。计划是历史工件，不表示任务已经完成；证据以 `reports/` 中的报告为准。
 

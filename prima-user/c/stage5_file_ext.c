@@ -12,6 +12,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef PRIMA_BULK_PROBE
+extern int prima_bulk_probe(int);
+#endif
+
 #ifdef PRIMA_HOST
 #define EXT_PATH "tmp/file-ext"
 #else
@@ -32,6 +36,9 @@ int main(void) {
     CHECK(fd >= 0);
     linked = 1;
     CHECK(write(fd, "abcdef", 6) == 6);
+#ifdef PRIMA_BULK_PROBE
+    CHECK(prima_bulk_probe(fd) == 0);
+#endif
     CHECK(lseek(fd, 3, SEEK_SET) == 3);
     alias = dup(fd);
     CHECK(alias >= 0);
