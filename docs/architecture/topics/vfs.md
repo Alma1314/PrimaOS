@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-17
 ---
 
 # 用户态 VFS、文件描述符与路径
@@ -33,6 +33,10 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 - [LibOS 基础设计](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)
 - [LibOS 重构计划](../../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md)
 - [LibOS 重构验证报告](../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)
+- [LibOS 数据通路契约](../../superpowers/specs/2026-11-10-libos-data-path.md)
+- [LibOS 数据通路计划](../../superpowers/plans/2026-11-10-libos-data-path.md)
+- [P2a 代理会话与受限根视图报告](../../superpowers/reports/2026-11-16-stage7-proxy-session.md)
+- [P2b 与 holder 模型切片计划](../../superpowers/plans/2026-11-16-p2b-holder-model-slices.md)
 - [2026-10-20-stage5-user-vfs-design.md](../../superpowers/specs/2026-10-20-stage5-user-vfs-design.md)
 - [2026-10-20-stage5-profile-v1.md](../../superpowers/specs/2026-10-20-stage5-profile-v1.md)
 - [2026-10-22-stage5-m11-file-mutation-design.md](../../superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md)
@@ -55,6 +59,8 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 - [store.rs](../../../prima-user/src/store.rs)
 - [ns.rs](../../../prima-user/src/ns.rs)
 - [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
+- [proxy.rs](../../../prima-user/src/proxy.rs) — 代理登记、根策略与 fixture
+- [sessions.rs](../../../prima-user/src/sessions.rs) — 直接客户端与代理 owner 的分配/释放
 - [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
 
 ## 测试与观察入口
@@ -73,4 +79,4 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 
 普通文件 unlink/rename 替换后，旧打开对象保留到最后 close；打开目录仍拒绝删除/替换。v3 镜像只对全零头自动格式化，旧版本须显式处理。
 
-节点、路径、句柄和内容区都有固定容量；无硬链接、跨启动持久化、每 LibOS 独立根视图或跨客户端句柄授权。fork 的 fd/cap 继承仍有 close 隔离偏差，子任务 rootfs 按任务授权限制另见 process 主题。profile v1 是提案，不能因测试通过而自动发布。
+节点、路径、句柄和内容区都有固定容量；无硬链接、跨启动持久化或跨客户端句柄授权。P2a 已在 host 层实现代理会话、Store owner 绑定与受限根视图（`/linux`、`/native`、`/shared`），但 Linux personality 的数据面仍使用域内 RAM，fork 生命周期、镜像接线与代理路径的 QEMU 正反例待 P2b。fork 的 fd/cap 继承仍有 close 隔离偏差，子任务 rootfs 按任务授权限制另见 process 主题。profile v1 是提案，不能因测试通过而自动发布。

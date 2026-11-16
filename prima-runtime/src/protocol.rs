@@ -543,6 +543,9 @@ pub const SERVICE_FILE_EFAULT: u64 = 14;
 pub const SERVICE_FILE_EEXIST: u64 = 17;
 pub const SERVICE_FILE_ENOTDIR: u64 = 20;
 pub const SERVICE_FILE_EINVAL: u64 = 22;
+/// Proxy data-plane handle-table exhaustion. The direct client path keeps
+/// `EAGAIN` so a busy buffer remains distinguishable from fd exhaustion.
+pub const SERVICE_FILE_EMFILE: u64 = 24;
 pub const SERVICE_FILE_ENOSPC: u64 = 28;
 pub const SERVICE_FILE_ENOSYS: u64 = 38;
 /// M13a：`ELOOP`（符号链接展开超过冻结深度）。

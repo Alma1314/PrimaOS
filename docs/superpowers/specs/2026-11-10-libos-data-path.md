@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-implementation-contract
 status: implementation-contract-for-bulk-file-slice
 lifecycle: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # LibOS 数据通路改造与批量文件协议首片
@@ -112,6 +112,128 @@ I1的raw输入用例固定两次单字节read；不让UART合并时机改变调�
 - **边界**：Linux personality 仍使用域内 RAM fixture；P2b 才把 open/stat/read/write/
   getdents/lseek/close、fork 预留/发布/回滚/退出关闭迁移到 Store，并把 Store 与授权
   接入启动镜像。本段没有 QEMU 正反例，不能宣称双 personality 共享已完成。
+
+## P2b-0：Linux 数据面 op 矩阵与冻结规则（2026-11-17）
+
+本节冻结 P2b 的线协议与适配边界。它是 P2b-1 的实现输入，不新增 syscall，
+不改变 P2a 的授权模型，不关闭 P2。Store 保持 OS 中立：只返回中性记录，
+Linux 的 stat/dirent 布局由域内前端生成。
+
+### 范围与 op 矩阵
+
+只迁移 D12 白名单实际触达的 Linux VFS 面；写盘、网络、终端和文件锁仍不在范围。
+`open`（2）与 `openat`（257）共用同一实现。
+
+| Linux 入口 | 线 op | 必需性 | Store 动作 | 结果 |
+|---|---|---|---|---|
+| `open`/`openat` | `OPEN=3` | `cat`/`ls` 必需 | 在登记策略视图内 `OpenFiles::open_in` | wire fd |
+| `read` | `READ=1` | `cat`/`sort` 必需 | `OpenFiles::read`；目录返回 `EBADF` | 字节数 |
+| `write` | `WRITE=2` | `cat`/`sort` 的 stdout 在域内，文件写保留 | `OpenFiles::write` | 字节数 |
+| `close` | `CLOSE=5` | 必需 | `OpenFiles::close` | 0 |
+| `fstat` | `STAT=4` | `newfstatat(AT_EMPTY_PATH)` 必需 | `OpenFiles::info` | 16 B 中性 stat |
+| `newfstatat` | `STAT_PATH=10` | `ls` 必需 | 视图内解析后 `metadata` | 16 B 中性 stat |
+| `lseek` | `LSEEK=9` | 目录回退与通用语义 | `OpenFiles::seek` | 新偏移 |
+| `getdents64` | `GETDENTS=6` | `ls` 必需 | 整记录目录字节流 | 字节数 |
+
+不在矩阵内的入口保持当前确定失败或 `ENOSYS`，不得静默模拟：`dup/dup2/dup3`、
+文件 `readv`/`writev`、`open` 的 create/truncate/append、`rename`/`unlink`/`mkdir`/
+`chmod`/`symlink`/`link`/`ftruncate`/`fsync`、文件 `mmap`、`statfs`、文件 `ioctl`。
+`newfstatat` 只接受 `AT_SYMLINK_NOFOLLOW=0x100` 与 `AT_EMPTY_PATH=0x1000`；
+`lseek` 的 `whence` 只接受 0/1/2；其它 flags/whence 返回 `EINVAL`。
+
+### 线布局
+
+沿用 PBIO v1 头（32 B）、8×32 B 描述符和 288 B 起始的数据区；新增 op 编码
+3、4、5、6、9、10。描述符字段按 op 冻结：
+
+| op | fd | offset | length | data |
+|---|---|---|---|---|
+| `OPEN` | dirfd（`0xff`=视图根） | 中性 open flags | 路径长度 1..64 | 路径起始 |
+| `STAT` | wire fd | 0 | 16 | 输出起始 |
+| `CLOSE` | wire fd | 0 | 0 | 288 |
+| `SEEK` | wire fd | i64 位移的 u64 位型 | whence 0/1/2 | 288 |
+| `GETDENTS` | wire fd | 0 | 请求上限 1..3808 | 输出起始 |
+| `STAT_PATH` | dirfd | 中性 stat flags（bit0=nofollow） | 路径长度 1..64 | 路径起始；输出固定在其后 64 B |
+
+- wire fd = Store handle 索引 + 3；应用 fd 号不进入线协议。`OPEN` 返回 wire fd
+  （handle 索引 + 3），前端再分配应用 fd。Store handle 上限为 `SERVICE_FILE_HANDLES=8`。
+  `OPEN` 的结果不能被同一 batch 的后继描述符使用；客户端必须单独提交 `OPEN` 批次，
+  拿到 wire fd 后再提交读写/stat/getdents/close 批次。
+- 中性 open flags：bit0..1 access（0 读、1 写、2 读写、3 非法），bit2 create，
+  bit3 exclusive，bit4 truncate，bit5 append，bit6 directory；其余位必须为 0。
+  P2b 前端只发送 read + directory；`O_CLOEXEC`/`O_NONBLOCK`/`O_LARGEFILE` 是域内
+  标志，不上线。未知 Linux flag 在域内确定返回 `ENOSYS`，不得原样透传。
+- 中性 stat 16 B：`node:u32 | kind:u8 | mode:u16 | pad:u8 | size:u64`，全部小端；
+  `kind` 使用 VFS 原始编码（0 目录、1 文件、2 null、3 符号链接）。Linux 144 B stat
+  布局由前端生成。
+- `GETDENTS` 返回 VFS 原始整记录：`node:u16 | kind:u8 | name_len:u8 | name`。
+  Store 不得返回半条记录：若请求上限放不下下一条完整记录，返回 0 且不前进；
+  否则只前进并返回完整记录前缀。前端把能放进应用缓冲的整记录格式化为 Linux
+  dirent；未能输出的整记录必须用 `SEEK`（`Current(-n)`）退回，保证下一次不跳过。
+- `SEEK` 结果放描述符 `result:u32`；VFS 内容与目录总量均小于 4096，足够。
+- 状态为**正 errno**，`0` 表示成功；`result` 为字节数、handle 或新偏移。
+  部分读写不回滚同一 batch 中较早的成功项；批次不是 VFS 事务。
+
+### 错误映射
+
+Store 在 proxy 路径**一次**映射，前端只负责取负：
+
+| VFS/protocol | 正 errno |
+|---|---|
+| `NoEnt` | 2 |
+| `NotDir` | 20 |
+| `Access` | 13 |
+| `Exist` | 17 |
+| `Invalid` | 22 |
+| `NoSpace` | 28 |
+| `Loop` | 40 |
+| `BadHandle` | 9 |
+| `TooManyOpen`（proxy） | 24 `EMFILE` |
+| `Unformatted`/`Io` | 5 |
+| 未支持 op/flag | 38 `ENOSYS` |
+| 缓冲/槽位忙、序号错 | 11/22 |
+
+`TooManyOpen` 的直接客户端路径保持既有 `EAGAIN`；只有 proxy 数据面使用 24。
+禁止把 `EAGAIN` 复用为“句柄表满”，否则前端无法区分缓冲忙与 fd 耗尽。
+
+### 容量与并发
+
+- Store OFD 表全局 8 项，所有 owner 共享；满时 `OPEN` 返回 `EMFILE`，不做每应用预留。
+  前端 fd 表 16 项（0..2 为标准 fd，3..15 为文件 fd），wire fd 只映射 3..10。
+- 代理表 `MAX_PROXIES=8`，每代理一页缓冲、一个在途 batch；batch 最多 8 项，
+  数据区 3808 B；路径 ≤64 B；`STAT` 输出 16 B；`GETDENTS` 上限 3808 B。
+- P2b 数据面**不使用 `PROXY_SELECT`**：batch 的 `OPEN`/`STAT_PATH` 视图直接来自
+  登记表的 `entry.policy`，按 `(发送者 cookie, slot)` 解析。`PROXY_SELECT` 保留给
+  既有路径原语，不参与本数据面。
+- 一个代理服务若同时服务多个应用，必须串行提交数据面 batch；P3 再把选择与暂存
+  绑定到具体 batch。跨 personality 的两个代理是不同发送者，不共享选择状态。
+- 序号、重放、槽位复用与 incarnation 规则沿用 P2a/P1：成功接纳后先消费再回写；
+  重复/跳号拒绝；旧应用或旧代理死亡后关闭 owner，不得授权旧 cookie。
+
+### fixture 与根
+
+`prepare_policy` 的冻结内容（逐字节，SHA-256 为内容哈希）：
+
+| 路径 | 内容 | SHA-256 |
+|---|---|---|
+| `/linux/fixture.txt` | `hello from prima\n` | `505231fb994a337c00dc563c684280c208f99617fdbf2f5cb284c6d4e6bb2cb5` |
+| `/linux/fixturedir/alpha` | `a\n` | `87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7` |
+| `/linux/fixturedir/beta` | `b\n` | `0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f` |
+| `/shared/note` | `shared\n` | `cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419` |
+
+`/linux` 根模式 0555；`/native` 为空；`/shared` 只由 `SERVICE_ROOT_SHARED` 暴露。
+视图根名 `shared` 是保留挂载点：fixture 中不得存在同名真实节点，`prepare_policy`
+发现冲突必须失败（fail closed）；运行时创建/rename 到该首段名必须拒绝。
+`shared` 只匹配视图根第一段；`..` 从共享子树根返回视图根；绝对符号链接目标从视图根
+重新解析。上述内容与哈希任一变化都算新契约裁决，不得在 P2b 内静默改写。
+
+### 验收与边界
+
+P2b-0 交付本节文本、op 矩阵与描述符形态校验；Store 执行、错误映射与端到端测试随 P2b-1 添加。
+P2b-1 至少覆盖：每个 op 的合法/非法描述符、路径/输出区重叠、wire fd 越界、
+`GETDENTS` 半记录截断与 `SEEK` 回退、`EMFILE` 与 `EAGAIN` 区分、保留名冲突。
+P2b-5 才在 QEMU 上观察真实 ABI 程序；host 测试不能替代机器证据。本节不关闭 P2，
+也不构成 7-A 证据。
 
 ## 验证与重审
 

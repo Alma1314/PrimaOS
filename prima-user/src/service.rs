@@ -44,9 +44,9 @@ use prima_runtime::{
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_FILE_ARG_MASK,
         SERVICE_FILE_CHUNK, SERVICE_FILE_EACCES, SERVICE_FILE_EAGAIN, SERVICE_FILE_EBADF,
         SERVICE_FILE_EEXIST, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ELOOP,
-        SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_ENOTDIR,
-        SERVICE_FILE_FD_SHIFT, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE, SERVICE_FILE_OP_LSEEK,
-        SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_READ, SERVICE_FILE_OP_READ_AT,
+        SERVICE_FILE_EMFILE, SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS,
+        SERVICE_FILE_ENOTDIR, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE,
+        SERVICE_FILE_OP_LSEEK, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_READ, SERVICE_FILE_OP_READ_AT,
         SERVICE_FILE_OP_RESIZE, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_STAT, SERVICE_FILE_OP_WRITE,
         SERVICE_FILE_OP_WRITE_AT, SERVICE_FILE_REQUEST_TAG, SERVICE_FILE_SEEK_OFFSET_MASK,
         SERVICE_FILE_SEEK_WHENCE_SHIFT, SERVICE_FILE_SIZE_OFFSET, SERVICE_FILE_WRITE_COUNT_SHIFT,
@@ -237,9 +237,14 @@ fn bulk_request<T: SyscallTransport>(
                 SERVICE_FILE_EFAULT
             } else {
                 let mut storage = SegmentStorage { runtime: rt };
-                match prima_user::bulk::execute(files, &mut storage, &mut page, sequence, |e| {
-                    vfs_status(e) as u32
-                }) {
+                match prima_user::bulk::execute(
+                    files,
+                    &mut storage,
+                    vfs::View::ROOT,
+                    &mut page,
+                    sequence,
+                    |e| vfs_status(e) as u32,
+                ) {
                     Err(_) => SERVICE_FILE_EINVAL,
                     Ok(()) => {
                         // Consume before output/notification: never replay a write
@@ -271,6 +276,7 @@ fn proxy_bulk_request<T: SyscallTransport>(
     files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
     channel: &mut BulkChannel,
     owner: u8,
+    view: vfs::View,
     index: usize,
     peer: TaskId,
     reply: Capability,
@@ -361,8 +367,8 @@ fn proxy_bulk_request<T: SyscallTransport>(
             SERVICE_FILE_EFAULT
         } else {
             let mut storage = SegmentStorage { runtime: rt };
-            match prima_user::bulk::execute(files, &mut storage, &mut page, sequence, |e| {
-                vfs_status(e) as u32
+            match prima_user::bulk::execute(files, &mut storage, view, &mut page, sequence, |e| {
+                proxy_status(e) as u32
             }) {
                 Err(_) => SERVICE_FILE_EINVAL,
                 Ok(()) => {
@@ -791,6 +797,29 @@ pub fn run(
                     bulk::COMPLETE
                 };
                 if let Some(entry) = entry {
+                    let view = match policy_views.get(entry.policy as usize).copied().flatten() {
+                        Some(view) => view,
+                        None => match prepare_policy(&runtime, entry.policy) {
+                            Ok(view) => {
+                                if let Some(slot) = policy_views.get_mut(entry.policy as usize) {
+                                    *slot = Some(view);
+                                }
+                                view
+                            }
+                            Err(error) => {
+                                for cap in message.capabilities.iter().flatten().copied() {
+                                    let _ = runtime.cap_drop(cap);
+                                }
+                                let _ = runtime.send(
+                                    reply_peer,
+                                    reply_send,
+                                    status_tag | (vfs_status(error) << 32),
+                                    &[],
+                                );
+                                continue;
+                            }
+                        },
+                    };
                     let mut next = entry.next;
                     proxy_bulk_request(
                         &runtime,
@@ -798,6 +827,7 @@ pub fn run(
                         &mut files,
                         &mut proxy_channels[index],
                         entry.owner,
+                        view,
                         index,
                         reply_peer,
                         reply_send,
@@ -1189,6 +1219,16 @@ fn open_flags(bits: u8) -> Result<OpenFlags, vfs::VfsError> {
         append: bits & SERVICE_VFS_FLAG_APPEND != 0,
         directory: bits & SERVICE_VFS_FLAG_DIRECTORY != 0,
     })
+}
+
+/// Proxy data-plane status: a full store handle table is `EMFILE`, while the
+/// direct path keeps `EAGAIN` so buffer busy stays distinguishable.
+fn proxy_status(error: vfs::VfsError) -> u64 {
+    if error == vfs::VfsError::TooManyOpen {
+        SERVICE_FILE_EMFILE
+    } else {
+        vfs_status(error)
+    }
 }
 
 fn vfs_status(error: vfs::VfsError) -> u64 {

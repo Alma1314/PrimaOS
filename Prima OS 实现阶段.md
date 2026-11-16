@@ -4,7 +4,7 @@ kind: reference
 authority: current-status
 status: maintained
 lifecycle: current
-updated: 2026-11-11
+updated: 2026-11-17
 ---
 
 # Prima OS 实现阶段
@@ -27,15 +27,16 @@ updated: 2026-11-11
 | 阶段 0–4 | 已满足各自退出条件 | [SPEC-145](docs/superpowers/reports/2026-10-17-stage0-frozen-re-review-spec145.md)、[146](docs/superpowers/reports/2026-10-17-stage1-exit-review-spec146.md)、[147](docs/superpowers/reports/2026-10-17-stage2-exit-review-spec147.md)、[148](docs/superpowers/reports/2026-10-17-stage3-exit-review-spec148.md)、[149](docs/superpowers/reports/2026-10-17-stage4-exit-review-spec149.md)；阶段0限规范文本，各实现/证明范围分别解释 |
 | 阶段 5 | **已满足退出条件（2026-10-27，SPEC-152）**；有界 POSIX profile v2 冻结 | [签署报告](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)、[冻结 v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)；D6 A 已选定；M20/M21 保留为签署前评审 |
 | 兼容范围 | 逐项读取当前台账，不宣称完整 POSIX/Linux 兼容；v2 的 30 行全部 partial | [compat-state](docs/superpowers/compat/compat-state.md)、[symbol-trace](docs/superpowers/compat/symbol-trace.md)、[M20](docs/superpowers/reports/2026-10-23-stage5-m20-compat-final.md) |
-| 最近验证记录 | 2026-11-16：LibOS P2a代理会话与受限根视图落地；host 1152 passed（1145既有+7新增）、lint、musl 7、既有36组72轮BIOS通过。代理路径无QEMU证据，Linux数据面迁移与镜像接线未完成。此前73056ba干净远端九组/97份归档与Cargo材料记录保留 | [P2a报告](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)；[Cargo输入材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)、[证据包](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)；不构成双personality或完整发布验收 |
+| 最近验证记录 | 2026-11-17：LibOS P2b-0/P2b-1 Store批量ops落地；workspace 1158 passed、lint、docs通过。新ops无QEMU证据，Linux前端迁移、fork/exit、镜像接线未完成。2026-11-16 P2a代理会话与受限根视图落地；host 1152 passed（1145既有+7新增）、lint、musl 7、既有36组72轮BIOS通过。代理路径无QEMU证据。此前73056ba干净远端九组/97份归档与Cargo材料记录保留 | [P2b-0/P2b-1报告](docs/superpowers/reports/2026-11-17-p2b-store-batch-ops.md)、[P2a报告](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)；[Cargo输入材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)、[证据包](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)；不构成双personality或完整发布验收 |
 | 阶段 6 | **已满足退出条件，技术复核4/4**；有界Linux profile v1与D12八成员运行冻结 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；不自动构成组织级签署；阶段7由下行启动记录另行授权 |
-| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已取得73056ba自身干净远端九组与97份归档、五类有界单核方法/基线和源码/验收证据包首片，并补充根Cargo依赖材料；LibOS数据通路P1与P2a已落地但P2b（Linux迁移/镜像/QEMU）未完成；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
+| 当前阶段 7 | **进行中（2026-11-06，作者指令启动）**；7-0已取得73056ba自身干净远端九组与97份归档、五类有界单核方法/基线和源码/验收证据包首片，并补充根Cargo依赖材料；LibOS数据通路P1、P2a与P2b-0/P2b-1已落地但P2b其余（前端迁移/镜像/QEMU）未完成；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成，九轨退出均未勾选 | [2026-10-31 范围裁决](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)承接[D16](docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md)；Linux + Prima 原生/POSIX、双路径动态链接、x86_64 2/4 vCPU、核心及I/O配额、完整撤销、受限透明恢复与设备持久化；AArch64仅单核机制验证；QEMU正式验收。[启动报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、[执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)；D14人格桩不等于7-A退出，D15状态分区要求保留 |
 | TCB/容量 | 以对应版本测量为准 | 当前值运行 `cargo xtask tcb`；内核零 unsafe 规则不变 |
 
 ## 证据索引
 
 2026-11-10作者要求完整LibOS数据通路改造；[执行计划](docs/superpowers/plans/2026-11-10-libos-data-path.md)覆盖域内前端、共同服务、批量/异步、背压及多核。2026-11-11[共享批量文件首片](docs/superpowers/reports/2026-11-10-libos-data-path.md)通过完整36组72轮BIOS及host/lint；P2–P6尚未实现，完整改造尚未完成，九轨退出不变。
 2026-11-16 [P2a代理会话/受限根视图](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)完成管理器签发、Store内核元数据绑定、视图约束与代理批量通道的host/lint证据；Linux数据面迁移、fork生命周期、镜像接线及代理QEMU正反例仍未实现，P2继续。
+2026-11-17 [P2b-0/P2b-1 Store批量ops](docs/superpowers/reports/2026-11-17-p2b-store-batch-ops.md)冻结op矩阵并实现OPEN/STAT/CLOSE/GETDENTS/LSEEK/STAT_PATH与proxy EMFILE；host/workspace/lint通过，但Linux前端、fork/exit、镜像与QEMU未做，P2未关闭。
 
 阶段7工程后继：[Cargo输入源码/NOTICE材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)，
 [源码/验收证据包及73056ba自身远端](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)，
@@ -141,7 +142,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 | S6-M1 M1b–M1d 接线 | **有界技术范围收口**：G1–G4、七审计边界与D14原探针双轮通过；S6-D2整体复核完成 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；历史协议/失败及TCG/单CPU限制保留 |
 | 阶段7 Gate矩阵时限（本轮观察） | 本轮前两次矩阵分别在G5第1轮、G4第2轮启动至cow_ready后30秒超时；带异常日志的G4聚焦双轮通过。最终完整结果与C1基线按后继报告独立记录，早期超时因果仍未定位，不以重跑PASS宣称修复 | [本轮失败与验证范围](docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md)；保持原门限，后续需分段诊断及稳定性证据 |
 | 7-0发布输入材料 | 根Cargo图60份原始归档/110份文本候选已校验；bootloader_api、bootloader-boot-config、r-efi三个逐归档文本缺口，嵌套构建图/工具链/独立Rust探针及其它外部输入和镜像字节绑定待完成；不把Cargo图当作镜像链接清单 | [Cargo输入材料与边界](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md) |
-| LibOS P2a 代理会话/根视图 | 管理器签发、Store内核元数据绑定、受限根视图与代理批量通道已实现；host 1152 passed（7项新增）、lint、musl 7及既有36组72轮BIOS回归通过。Linux数据面迁移、fork生命周期、镜像接线和代理路径QEMU正反例未完成，P2未关闭 | [P2a报告](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)；72轮不执行代理路径，不能替代双personality验收 |
+| LibOS P2a 代理会话/根视图 | 管理器签发、Store内核元数据绑定、受限根视图与代理批量通道已实现；host 1152 passed（7项新增）、lint、musl 7及既有36组72轮BIOS回归通过。Linux数据面迁移、fork生命周期、镜像接线和代理路径QEMU正反例未完成，P2未关闭 | [P2a报告](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)、[P2b/holder切片计划](docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md)；72轮不执行代理路径，不能替代双personality验收 |
 | 阶段7 L1普通BIOS时限 | 本机首轮T1/F1/V1/V2共7次30秒超时、次轮E1一次，分别17/6轮通过后中断；宿主CPU争用实测但因果未定位。保持门限，e6dce41干净远端36组72轮通过；本机中断不计完整回归PASS | [L1失败与验证范围](docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md) |
 | QEMU 启动超时记录 | 2026-10-23 VFS 多次超时；后继双轮通过。2026-10-24 原生服务首次 W9 无输出超时；OSTD首轮复用的 V1 停于 bootloader 物理映射、W1 完全无输出；当时仅分段覆盖62轮，完整命令未单次全绿。POD后继完整62轮通过，旧超时根因仍未定位；一次发布后继三次完整命令超时及多次后缀超时，最终成功覆盖60/62轮，保留该版本验证缺口；本轮fork后继分段覆盖62/62，完整命令在35轮后W8 run2超时，根因仍未定位；2026-10-25前批及2026-10-27本轮均分别取得单次68轮PASS；本轮另保留I1/N1计数失败和显式验收修订，见后继报告 | [一次发布超时](docs/superpowers/reports/2026-10-24-asterinas-once-publication-report.md)、[OSTD首轮 V1/W1](docs/superpowers/reports/2026-10-24-asterinas-reuse-report.md)、[W9](docs/superpowers/reports/2026-10-24-native-runtime-service-report.md)、[VFS 历史](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[musl 后继](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)；[本批完整验收](docs/superpowers/reports/2026-10-25-stage5-gap-closure-report.md)；保留门限/断言/失败证据，不以栈保护或退出整改自动解释全部历史超时 |
 | I1接收归账验收（本轮发现跨轮偏差） | 前序有界技术收口及完整72轮PASS保留；本轮首次完整71/72，I1第2轮用户消息总数423→420变化，单轮各自归账成立、非UART出口不变。最终版本完整72/72，I1双轮PASS且消息总数均423；未放宽跨轮判据，首次差异根因仍未唯一确认 | [本轮原始数据与范围](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[历史归账修订](docs/superpowers/reports/2026-10-27-posix-std-file-io-report.md)；不据新失败改写旧签署，不据后继单次PASS倒推因果 |
@@ -334,7 +335,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 | M17 | [fork/COW原始范围](docs/superpowers/reports/2026-10-23-stage5-m17b4-fork-wait.md)、[本轮完整后继](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | W6/W7/W7b双轮和Linux参考通过；有界独立视图/OFD、新crt/连续exec；非多线程fork/动态装载 |
 | M18 | [原始signal范围](docs/superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)、[本轮mask/EINTR等](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | W8/W9双轮通过；合并通知/8层现场，无altstack/实时排队，#AC无机器见证 |
 | M19 | [loopback UDP N1](docs/superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md) | 仅环回 IPv4/UDP，无 NIC/TCP/DNS |
-| VFS / LibOS 基础 | [原始验证](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[本轮会话/OFD](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | 认证Process holder/fork关闭隔离已验证；每LibOS根及多personality仍未实现 |
+| VFS / LibOS 基础 | [原始验证](docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)、[本轮会话/OFD](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | 认证Process holder/fork关闭隔离已验证；阶段5范围不含每LibOS根及多personality。阶段7 P2a已有代理根视图/Store owner原语（host），Linux数据面与QEMU证据待P2b |
 | musl 后继补强 | [原始边界报告](docs/superpowers/reports/2026-10-24-musl-port-boundary-report.md)、[本轮验证](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | 八补丁锁定构建/归档和host5项通过；信号/取消/exec只覆盖本轮有界见证 |
 | M20–M21 | [历史出口评审](docs/superpowers/reports/2026-10-23-stage5-m21-exit-review.md)、[本轮技术验收](docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md) | D6 A已验证；profile v2与D1–D10可审阅，最终范围及组织级签署待确认 |
 

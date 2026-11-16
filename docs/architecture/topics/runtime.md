@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-17
 ---
 
 # 原生运行时、ring3 服务与用户态 I/O
@@ -39,6 +39,10 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 - [2026-10-18-stage1-4-implementation-review.md](../../superpowers/reports/2026-10-18-stage1-4-implementation-review.md)
 - [2026-10-16-exo2d-manifest-boot-abi-report.md](../../superpowers/reports/2026-10-16-exo2d-manifest-boot-abi-report.md)
 - [2026-10-17-exo3m-kernel-service-witness-retirement-report.md](../../superpowers/reports/2026-10-17-exo3m-kernel-service-witness-retirement-report.md)
+- [LibOS 数据通路契约](../../superpowers/specs/2026-11-10-libos-data-path.md)
+- [LibOS 数据通路计划](../../superpowers/plans/2026-11-10-libos-data-path.md)
+- [P2a 代理会话与受限根视图报告](../../superpowers/reports/2026-11-16-stage7-proxy-session.md)
+- [P2b 与 holder 模型切片计划](../../superpowers/plans/2026-11-16-p2b-holder-model-slices.md)
 
 ## 源码定位
 
@@ -49,6 +53,8 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 - [protocol.rs](../../../prima-runtime/src/protocol.rs)
 - [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
 - [service.rs](../../../prima-user/src/service.rs)
+- [proxy.rs](../../../prima-user/src/proxy.rs) — 代理登记、根策略与 fixture
+- [sessions.rs](../../../prima-user/src/sessions.rs) — 直接客户端与代理 owner 的生命周期
 - [log.rs](../../../prima-user/src/log.rs)
 - [ns.rs](../../../prima-user/src/ns.rs)
 - [store.rs](../../../prima-user/src/store.rs)
@@ -66,3 +72,5 @@ runtime 原型 → 独立服务/管理器/协议切片 → SPEC-130 原生应用
 ## 限制与修改注意
 
 原生 API/版本规则与稳定外部 ABI 不同。用户态驱动的受控 COM1/IO port 子集不能当成通用设备栈、NIC 或 IOMMU 已完成。测试见证属于 xtask/用户态协议，不应把服务语义重新耦合进内核。Hello 先校验头/offer 一致性；路径分片仅接受顺序组装，错误后必须重新开始，双路径确认与消费规则见后继契约。
+
+P2a 的管理器签发、Store 绑定与代理批量通道目前只有 host/lint 证据；普通 72 轮 BIOS 不注册代理，不能当作双 personality 数据面验收。Linux 数据面迁移、启动镜像接线和 QEMU 正反例以 P2b 计划为准。

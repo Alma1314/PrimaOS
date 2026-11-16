@@ -2,12 +2,16 @@
 id: plan-p2b-holder-model-slices
 kind: plan
 authority: execution-plan
-status: proposed
+status: in-progress
 lifecycle: current
-updated: 2026-11-16
+updated: 2026-11-17
 ---
 
 # P2b 与 holder 模型依赖切片计划
+
+> 2026-11-17 进度：P2b-0 契约与 P2b-1 Store 批量 ops 已落盘，host/workspace/lint
+> 通过；Linux 前端、fork/exit、镜像与 QEMU 未做。证据见
+> [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)。
 
 ## 目标、范围与基线
 
@@ -16,8 +20,8 @@ fork 生命周期、镜像接线与 QEMU 正反例）和 holder 模型（Process
 ShareGroup 的能力持有者语义）。本计划只确定顺序、交付物、验收输入和停止条件；
 不冻结 holder 语义，不产生运行证据，不签署 7-A，不改变任何退出勾选。
 
-- 基线：`4830638`；P2a 改动仍在未提交工作树（`2026-11-16-stage7-proxy-session.md`、
-  `prima-user/src/proxy.rs` 等）。P2b 从该工作树继续；若先提交 P2a，以新提交为基线并在报告中登记。
+- 基线：`5a163e9`（P2a 已提交；此前基线 `4830638`）。P2a 的代码与报告均在该提交内，
+  P2b 从干净工作树继续。
 - 上位契约：[LibOS 数据通路契约](../specs/2026-11-10-libos-data-path.md)、
   [LibOS 数据通路计划](2026-11-10-libos-data-path.md)、
   [COSIR 原语规范](../../../COSIR%20原语规范.md)、
@@ -85,6 +89,8 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
   4. 冻结 fixture 来源与哈希（当前编译在 `prima-user/src/service.rs`）；记录容量上限：
      `SERVICE_FILE_HANDLES`、`MAX_CLIENTS=18`、`MAX_OWNERS=32`、`MAX_PROXIES=8`、
      Linux fd 表 16。
+- 2026-11-17：契约文本与 op 编码已落盘；16 B 中性 stat、wire fd、错误映射与
+  fixture 哈希和当前代码一致。编解码与 Store 执行由 P2b-1 完成并有 host 证据。
 - 验收：契约文本 + `bulk` 编解码 host 测试；不需要 QEMU。
 - 停止条件：白名单所需 op 无法在现有 VFS/OFD 抽象中保持语义时停止并修订契约；
   不得在前端模拟。
@@ -96,8 +102,9 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 - 交付路径：`prima-user/src/service.rs`、`prima-runtime/src/bulk.rs`、
   `prima-runtime/src/vfs/handles.rs`、`prima-runtime/src/vfs.rs`。
 - 工作：
-  1. 扩展 `bulk::execute` 覆盖 open（经当前 `proxy_current` 视图）、stat、getdents、
-     lseek、close；目录游标保存在 Store 的 OFD，不保存在 Linux 进程。
+  1. 扩展 `bulk::execute` 覆盖 open（视图直接来自登记表 `entry.policy`，不依赖
+     `PROXY_SELECT`）、stat、getdents、lseek、close；目录游标保存在 Store 的 OFD，
+     不保存在 Linux 进程。
   2. append 与共享游标按 P2b-0 实现；每次提交都按代理登记表校验 owner、视图与序号；
      payload 中的 fd/NodeId/PID 不能成为授权。
   3. `VfsError` 到 Linux errno 的映射与现有 `fs_error` 一致；失败路径保持原子性
@@ -116,7 +123,7 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
   1. 删除 Linux 服务内的 `Ram`/`OpenFiles` 数据面；`Shared` 只保留 personality
      私有状态（输入位置、段表等）。
   2. Process fd 表改为 Store OFD 句柄；每个 VFS syscall 通过已登记代理会话提交批量；
-     open 路径必须经 `PROXY_SELECT` 的受限根视图。
+     open 路径的受限根视图由登记策略决定，不依赖 `PROXY_SELECT`。
   3. 保留 Linux 私有语义（fd 标志、标准 fd、errno），但不再持有文件内容。
 - 验收：host 用模拟 transport 覆盖 open/read/write/stat/getdents/lseek/close；
   冻结白名单路径不再访问本地 Ram；QEMU 证据留到 P2b-5。
@@ -288,7 +295,7 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 python3 scripts/docs.py self-test
 python3 scripts/docs.py build
 python3 scripts/docs.py check
-python3 scripts/docs.py check --base 4830638
+python3 scripts/docs.py check --base 5a163e9
 ```
 
 其他最小命令：

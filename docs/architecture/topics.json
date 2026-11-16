@@ -330,7 +330,8 @@
       "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
       "docs/superpowers/specs/2026-11-07-stage7-ipc-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-ipc-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md"
+      "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md",
+      "docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -465,7 +466,9 @@
       "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md",
       "docs/superpowers/specs/2026-11-10-libos-data-path.md",
       "docs/superpowers/plans/2026-11-10-libos-data-path.md",
-      "docs/superpowers/reports/2026-11-10-libos-data-path.md"
+      "docs/superpowers/reports/2026-11-10-libos-data-path.md",
+      "docs/superpowers/reports/2026-11-16-stage7-proxy-session.md",
+      "docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md"
     ],
     "code": [
       "prima-runtime/src/lib.rs",
@@ -490,7 +493,9 @@
       "prima-user/linux-probes/matrix.c",
       "prima-runtime/src/bulk.rs",
       "prima-user/src/bulk.rs",
-      "prima-user/c/prima_bulk.h"
+      "prima-user/c/prima_bulk.h",
+      "prima-user/src/proxy.rs",
+      "prima-user/src/sessions.rs"
     ],
     "tests": [
       "xtask/src/protocol.rs",
@@ -544,7 +549,9 @@
       "docs/superpowers/reports/2026-10-31-stage1-5-regression-remediation.md",
       "docs/superpowers/specs/2026-11-10-libos-data-path.md",
       "docs/superpowers/plans/2026-11-10-libos-data-path.md",
-      "docs/superpowers/reports/2026-11-10-libos-data-path.md"
+      "docs/superpowers/reports/2026-11-10-libos-data-path.md",
+      "docs/superpowers/reports/2026-11-16-stage7-proxy-session.md",
+      "docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md"
     ],
     "code": [
       "prima-runtime/src/vfs.rs",
@@ -557,7 +564,9 @@
       "prima-user/src/staging.rs",
       "prima-runtime/src/bulk.rs",
       "prima-user/src/bulk.rs",
-      "prima-user/c/prima_bulk.h"
+      "prima-user/c/prima_bulk.h",
+      "prima-user/src/proxy.rs",
+      "prima-user/src/sessions.rs"
     ],
     "tests": [
       "prima-runtime/src/vfs/tests.rs",
@@ -637,7 +646,8 @@
       "docs/superpowers/reports/2026-11-01-stage6-context-signals-threads.md",
       "docs/superpowers/specs/2026-11-02-stage6-gate-process.md",
       "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
-      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md"
+      "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
+      "docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md"
     ],
     "code": [
       "kernel/src/bootstrap.rs",

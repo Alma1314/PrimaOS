@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-17
 ---
 
 # 进程、线程、fork、exec 与信号
@@ -52,6 +52,7 @@ S6-M2 的[大映像帧契约](../../superpowers/specs/2026-10-31-stage6-exec-fra
 - [2026-10-23-stage5-m18a-signal-kill.md](../../superpowers/reports/2026-10-23-stage5-m18a-signal-kill.md)
 - [2026-10-23-stage5-m18b-sigaction.md](../../superpowers/reports/2026-10-23-stage5-m18b-sigaction.md)
 - [2026-10-23-stage5-m21-exit-review.md](../../superpowers/reports/2026-10-23-stage5-m21-exit-review.md)
+- [P2b 与 holder 模型切片计划](../../superpowers/plans/2026-11-16-p2b-holder-model-slices.md) — Process/Thread/ShareGroup holder 语义与 Linux fork 生命周期迁移的切片顺序
 
 ## 源码定位
 
@@ -79,6 +80,8 @@ S6-M2 的[大映像帧契约](../../superpowers/specs/2026-10-31-stage6-exec-fra
 ## 限制与修改注意
 
 原生 fork 绕行及续执行缺陷的发现链见 M17b-3/4；当前整改与实际通过范围见下方后继报告。W7b 不是子任务直接 execve(path) 完整闭环。共享 cap 空间导致 close 隔离偏差；信号掩码/EINTR/SA_RESTART/SIGCHLD 自动通知、pthread 取消/分离/属性未覆盖。不要把工作决定视为组织级确认。
+
+holder 模型目前仍是内核中的隐式 `Process.cap_space`；显式 Process/Thread/ShareGroup 语义、Lean 修订与内核一般化都尚未实现，切片顺序和停止条件见 P2b/holder 计划。Linux fork 的 OFD owner 预留/发布/回滚也仍使用域内表，待 P2b-3 迁到 Store。
 
 ## fork / 等待写回整改后继
 
