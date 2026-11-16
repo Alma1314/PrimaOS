@@ -1220,3 +1220,100 @@ fn empty_file_offset_inside_grown_neighbor_does_not_alias_content() {
     assert_eq!(read_file(&mut storage, b"/tmp/b"), b"B");
     files.close_all(&mut storage).unwrap();
 }
+
+#[test]
+fn rooted_views_clamp_dotdot_scope_symlinks_and_dirfd_starts() {
+    let mut storage = mounted();
+    chmod(&mut storage, ROOT, b"/", 0o777).unwrap();
+    let view = mkdir(&mut storage, ROOT, b"/view").unwrap();
+    let outside = mkdir(&mut storage, ROOT, b"/outside").unwrap();
+    let shared = mkdir(&mut storage, ROOT, b"/shared").unwrap();
+    let mut files = OpenFiles::<8>::new();
+    for (path, bytes) in [
+        (b"/view/inner".as_slice(), b"inside".as_slice()),
+        (b"/outside/inner".as_slice(), b"outside".as_slice()),
+        (b"/shared/blob".as_slice(), b"shared".as_slice()),
+    ] {
+        let (fd, _) = files
+            .open(&mut storage, ROOT, path, create_flags())
+            .unwrap();
+        files.write(&mut storage, fd, bytes).unwrap();
+        files.close(&mut storage, fd).unwrap();
+    }
+    assert_eq!(read_file(&mut storage, b"/view/inner"), b"inside");
+    assert_eq!(read_file(&mut storage, b"/outside/inner"), b"outside");
+    assert_eq!(read_file(&mut storage, b"/shared/blob"), b"shared");
+
+    // Absolute paths and `..` are rooted at the view; a sibling of the
+    // service root is not reachable by name.
+    let root_view = View::new(view);
+    assert_eq!(
+        resolve_in(&mut storage, root_view, view, b"/inner").unwrap(),
+        resolve(&mut storage, ROOT, b"/view/inner").unwrap()
+    );
+    assert_eq!(
+        resolve_in(&mut storage, root_view, view, b"/../outside"),
+        Err(VfsError::NoEnt)
+    );
+    assert_eq!(
+        resolve_in(&mut storage, root_view, view, b"/inner"),
+        Ok(resolve(&mut storage, ROOT, b"/view/inner").unwrap())
+    );
+    // A dirfd from another subtree is not a usable start inside this view.
+    assert_eq!(
+        resolve_in(&mut storage, root_view, outside, b"inner"),
+        Err(VfsError::Access)
+    );
+    assert!(!in_view(&mut storage, root_view, outside).unwrap());
+
+    // Absolute symlink targets restart at the view root, so a link to
+    // /outside/inner points at /view/outside/inner (absent), not the
+    // service-level /outside/inner.
+    symlink_in(&mut storage, root_view, view, b"/outside/inner", b"/link").unwrap();
+    assert_eq!(
+        resolve_in(&mut storage, root_view, view, b"/link"),
+        Err(VfsError::NoEnt)
+    );
+    assert_eq!(
+        resolve(&mut storage, ROOT, b"/view/outside/inner"),
+        Err(VfsError::NoEnt)
+    );
+
+    // `..` at the view root stays there, including during creation.
+    let mut table = OpenFiles::<8>::new();
+    let (fd, info) = table
+        .open_in(
+            &mut storage,
+            root_view,
+            view,
+            b"/../../created",
+            create_flags(),
+        )
+        .unwrap_or_else(|error| panic!("create failed: {error:?}"));
+    assert_eq!(
+        info.id,
+        resolve(&mut storage, ROOT, b"/view/created").unwrap()
+    );
+    table.close(&mut storage, fd).unwrap();
+
+    // Rename with `..` components cannot move a node out of the view.
+    rename_in(&mut storage, root_view, view, b"/inner", b"/../../moved").unwrap();
+    assert_eq!(read_file(&mut storage, b"/view/moved"), b"inside");
+    assert_eq!(resolve(&mut storage, ROOT, b"/moved"), Err(VfsError::NoEnt));
+
+    // The explicit shared subtree is visible at /shared and its `..` returns
+    // to the session root rather than the shared node's real parent.
+    let with_shared = View::shared(view, shared);
+    assert_eq!(
+        resolve_in(&mut storage, with_shared, view, b"/shared/blob").unwrap(),
+        resolve(&mut storage, ROOT, b"/shared/blob").unwrap()
+    );
+    assert_eq!(
+        resolve_in(&mut storage, with_shared, view, b"/shared/../inner"),
+        Err(VfsError::NoEnt)
+    );
+    assert_eq!(
+        resolve_in(&mut storage, with_shared, view, b"/shared/../moved").unwrap(),
+        resolve(&mut storage, ROOT, b"/view/moved").unwrap()
+    );
+}

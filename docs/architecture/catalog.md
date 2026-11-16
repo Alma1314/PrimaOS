@@ -53,7 +53,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（23）
+## plan（24）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -80,6 +80,7 @@
 | [Windows LibOS 计划书：PE64 控制台与服务兼容路径](../superpowers/plans/2026-10-31-windows-libos-roadmap.md) | current | `docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md` |
 | [阶段7执行计划：工程底座与九轨冻结顺序](../superpowers/plans/2026-11-06-stage7-execution.md) | current | `docs/superpowers/plans/2026-11-06-stage7-execution.md` |
 | [LibOS 数据通路完整改造计划](../superpowers/plans/2026-11-10-libos-data-path.md) | current | `docs/superpowers/plans/2026-11-10-libos-data-path.md` |
+| [P2b 与 holder 模型依赖切片计划](../superpowers/plans/2026-11-16-p2b-holder-model-slices.md) | current | `docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md` |
 
 ## reference（9）
 
@@ -95,7 +96,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（222）
+## report（223）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -321,6 +322,7 @@
 | [7-0 源码/验收证据包与73056ba主分支CI后继](../superpowers/reports/2026-11-08-stage7-evidence-package.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS 基准与 C1 自身远端后继](../superpowers/reports/2026-11-08-stage7-libos-benchmark.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md` |
 | [LibOS 数据通路改造：共享批量文件首片](../superpowers/reports/2026-11-10-libos-data-path.md) | historical | `docs/superpowers/reports/2026-11-10-libos-data-path.md` |
+| [P2a：管理器签发代理会话与受限根视图](../superpowers/reports/2026-11-16-stage7-proxy-session.md) | current | `docs/superpowers/reports/2026-11-16-stage7-proxy-session.md` |
 
 ## spec（4）
 

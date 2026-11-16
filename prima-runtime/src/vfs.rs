@@ -54,6 +54,37 @@ pub const VERSION: u16 = 3;
 /// 根节点编号。
 pub const ROOT: NodeId = 0;
 
+/// 一个会话可见的根视图。绝对路径从 `root` 开始，`..` 在 `root` 处停留；
+/// `shared` 指向另一个子树（显式共享），`..` 从该子树根返回 `root`。
+/// 视图只约束路径解析，不改变节点归属或打开对象权限。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View {
+    pub root: NodeId,
+    pub shared: Option<NodeId>,
+}
+
+impl View {
+    /// 服务根：既有协议与直接客户端的行为。
+    pub const ROOT: Self = Self {
+        root: ROOT,
+        shared: None,
+    };
+
+    pub const fn new(root: NodeId) -> Self {
+        Self { root, shared: None }
+    }
+
+    pub const fn shared(root: NodeId, shared: NodeId) -> Self {
+        Self {
+            root,
+            shared: Some(shared),
+        }
+    }
+}
+
+/// 视图内的共享挂载名；仅作为 `View.root` 的第一段匹配。
+pub const SHARED_MOUNT: &[u8] = b"shared";
+
 /// 已删除节点的 `parent` 哨兵。`MAX_NODES` 远小于 255，故不会与真实父节点冲突。
 /// 只有最后一个打开引用释放后，节点槽和内容才可复用。
 pub const FREE_PARENT: NodeId = 0xff;
@@ -742,15 +773,19 @@ pub fn read_link<S: Storage>(storage: &mut S, node: &Node) -> Result<[u8; MAX_PA
 
 /// 按分量逐项走路径，并在遇到符号链接时展开。
 ///
-/// 相对目标从链接所在目录开始，绝对目标从根开始；展开深度由
+/// 相对目标从链接所在目录开始，绝对目标从视图根开始；展开深度由
 /// [`MAX_SYMLINK_DEPTH`] 冻结，剩余分量按原顺序接在目标分量之后。链接目标
 /// 本身仍受 [`MAX_PATH`] 解析规则约束，故总分量数有界。
 fn walk<S: Storage>(
     storage: &mut S,
+    view: View,
     start: NodeId,
     parsed: &ParsedPath,
 ) -> Result<NodeId, VfsError> {
-    let mut current = if parsed.absolute { ROOT } else { start };
+    let mut current = if parsed.absolute { view.root } else { start };
+    if !parsed.absolute && !in_view(storage, view, current)? {
+        return Err(VfsError::Access);
+    }
     if !parsed.absolute && read_node(storage, current)?.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
@@ -768,6 +803,15 @@ fn walk<S: Storage>(
     let mut require_directory = parsed.trailing_slash;
     while index < count {
         let component = pending[index];
+        if current == view.root
+            && let Some(shared) = view.shared
+            && component.as_bytes() == SHARED_MOUNT
+        {
+            // 显式共享挂载：只匹配视图根的第一段；其 `..` 返回视图根。
+            current = shared;
+            index += 1;
+            continue;
+        }
         index += 1;
         if read_node(storage, current)?.kind != NodeKind::Directory {
             return Err(VfsError::NotDir);
@@ -776,7 +820,7 @@ fn walk<S: Storage>(
             continue;
         }
         if component.is_dot_dot() {
-            current = read_node(storage, current)?.parent;
+            current = parent_in_view(storage, view, current)?;
             continue;
         }
         let id = lookup(storage, current, component.as_bytes())?.ok_or(VfsError::NoEnt)?;
@@ -806,21 +850,64 @@ fn walk<S: Storage>(
             .copy_from_slice(&target.components[..target.count as usize]);
         index = 0;
         count = total;
-        current = if target.absolute { ROOT } else { node.parent };
+        current = if target.absolute {
+            view.root
+        } else {
+            node.parent
+        };
     }
     if require_directory && read_node(storage, current)?.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
     }
+    if !in_view(storage, view, current)? {
+        return Err(VfsError::Access);
+    }
     Ok(current)
 }
 
-/// 解析路径（不创建）。`start` 是相对路径的起始目录；绝对路径从根开始。
+/// `..` 在视图根处停留；共享子树根返回视图根。
+fn parent_in_view<S: Storage>(
+    storage: &mut S,
+    view: View,
+    current: NodeId,
+) -> Result<NodeId, VfsError> {
+    if current == view.root {
+        return Ok(view.root);
+    }
+    if view.shared == Some(current) {
+        return Ok(view.root);
+    }
+    Ok(read_node(storage, current)?.parent)
+}
+
+/// 节点是否属于视图（根子树或共享子树）。
+pub fn in_view<S: Storage>(storage: &mut S, view: View, node: NodeId) -> Result<bool, VfsError> {
+    if in_subtree(storage, view.root, node)? {
+        return Ok(true);
+    }
+    match view.shared {
+        Some(shared) => in_subtree(storage, shared, node),
+        None => Ok(false),
+    }
+}
+
+/// 解析路径（不创建）。`start` 是相对路径的起始目录；绝对路径从服务根开始。
 pub fn resolve<S: Storage>(
     storage: &mut S,
     start: NodeId,
     path: &[u8],
 ) -> Result<NodeId, VfsError> {
-    walk(storage, start, &ParsedPath::parse(path)?)
+    resolve_in(storage, View::ROOT, start, path)
+}
+
+/// 受限视图内的路径解析；绝对路径从视图根开始。
+pub fn resolve_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
+    walk(storage, view, start, &ParsedPath::parse(path)?)
 }
 
 /// M13a：解析到**末项本身**，不跟随末项的符号链接（`lstat`/`readlink` 语义）。
@@ -828,6 +915,16 @@ pub fn resolve<S: Storage>(
 /// 前缀分量仍按 [`walk`] 展开链接；末项为空、`.`、`..` 或父目录不存在时确定失败。
 pub fn resolve_link<S: Storage>(
     storage: &mut S,
+    start: NodeId,
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
+    resolve_link_in(storage, View::ROOT, start, path)
+}
+
+/// 受限视图内的 `lstat` 路径解析。
+pub fn resolve_link_in<S: Storage>(
+    storage: &mut S,
+    view: View,
     start: NodeId,
     path: &[u8],
 ) -> Result<NodeId, VfsError> {
@@ -839,7 +936,10 @@ pub fn resolve_link<S: Storage>(
     if last.is_dot() || last.is_dot_dot() {
         return Err(VfsError::Invalid);
     }
-    let directory = walk(storage, start, &parsed.prefix())?;
+    let directory = walk(storage, view, start, &parsed.prefix())?;
+    if !in_view(storage, view, directory)? {
+        return Err(VfsError::Access);
+    }
     lookup(storage, directory, last.as_bytes())?.ok_or(VfsError::NoEnt)
 }
 
@@ -850,18 +950,29 @@ pub fn open<S: Storage>(
     path: &[u8],
     flags: OpenFlags,
 ) -> Result<Opened, VfsError> {
+    open_in(storage, View::ROOT, start, path, flags)
+}
+
+/// 受限视图内的打开/创建；路径解析与创建都不能越过视图根。
+pub fn open_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    path: &[u8],
+    flags: OpenFlags,
+) -> Result<Opened, VfsError> {
     let parsed = ParsedPath::parse(path)?;
     // 独占创建按目录项判断，不能先跟随末项链接（包括悬空链接）。
     if flags.create
         && flags.exclusive
         && let Some(last) = parsed.last()
     {
-        let parent = walk(storage, start, &parsed.prefix())?;
+        let parent = walk(storage, view, start, &parsed.prefix())?;
         if lookup(storage, parent, last.as_bytes())?.is_some() {
             return Err(VfsError::Exist);
         }
     }
-    let resolved = walk(storage, start, &parsed);
+    let resolved = walk(storage, view, start, &parsed);
     if let Ok(id) = resolved {
         return finish_open(storage, id, flags);
     }
@@ -875,7 +986,10 @@ pub fn open<S: Storage>(
     if last.is_dot() || last.is_dot_dot() {
         return Err(VfsError::NoEnt);
     }
-    let directory = walk(storage, start, &parsed.prefix())?;
+    let directory = walk(storage, view, start, &parsed.prefix())?;
+    if !in_view(storage, view, directory)? {
+        return Err(VfsError::Access);
+    }
     let parent = read_node(storage, directory)?;
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
@@ -890,7 +1004,7 @@ pub fn open<S: Storage>(
         return Err(VfsError::NotDir);
     }
     if lookup(storage, directory, last.as_bytes())?.is_some() {
-        let id = walk(storage, start, &parsed)?;
+        let id = walk(storage, view, start, &parsed)?;
         return finish_open(storage, id, flags);
     }
     // M11：新建文件同样复用已删除槽，避免删除后节点表高水位仍把创建挡在 ENOSPC。
@@ -999,6 +1113,16 @@ fn has_children<S: Storage>(storage: &mut S, id: NodeId) -> Result<bool, VfsErro
 
 /// `mkdir`：在可写目录中创建一个空目录（mode 由调用方忽略，统一 0777/可写）。
 pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<NodeId, VfsError> {
+    mkdir_in(storage, View::ROOT, start, path)
+}
+
+/// 受限视图内的 `mkdir`。
+pub fn mkdir_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
     let parsed = ParsedPath::parse(path)?;
     if parsed.count == 0 {
         return Err(VfsError::Exist);
@@ -1007,7 +1131,10 @@ pub fn mkdir<S: Storage>(storage: &mut S, start: NodeId, path: &[u8]) -> Result<
     if last.is_dot() || last.is_dot_dot() {
         return Err(VfsError::Exist);
     }
-    let directory = walk(storage, start, &parsed.prefix())?;
+    let directory = walk(storage, view, start, &parsed.prefix())?;
+    if !in_view(storage, view, directory)? {
+        return Err(VfsError::Access);
+    }
     let parent = read_node(storage, directory)?;
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
@@ -1043,6 +1170,17 @@ pub fn unlink<S: Storage>(
     path: &[u8],
     remove_dir: bool,
 ) -> Result<NodeId, VfsError> {
+    unlink_in(storage, View::ROOT, start, path, remove_dir)
+}
+
+/// 受限视图内的 `unlink`/`rmdir`。
+pub fn unlink_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    path: &[u8],
+    remove_dir: bool,
+) -> Result<NodeId, VfsError> {
     let parsed = ParsedPath::parse(path)?;
     if parsed.count == 0 {
         return Err(VfsError::Access);
@@ -1051,7 +1189,10 @@ pub fn unlink<S: Storage>(
     if last.is_dot() || last.is_dot_dot() {
         return Err(VfsError::Invalid);
     }
-    let directory = walk(storage, start, &parsed.prefix())?;
+    let directory = walk(storage, view, start, &parsed.prefix())?;
+    if !in_view(storage, view, directory)? {
+        return Err(VfsError::Access);
+    }
     let parent = read_node(storage, directory)?;
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
@@ -1097,6 +1238,17 @@ pub fn chmod<S: Storage>(
     path: &[u8],
     mode: u16,
 ) -> Result<(), VfsError> {
+    chmod_in(storage, View::ROOT, start, path, mode)
+}
+
+/// 受限视图内的 `chmod`/`fchmod`；空路径的 `start` 也必须在视图内。
+pub fn chmod_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    path: &[u8],
+    mode: u16,
+) -> Result<(), VfsError> {
     if mode > 0o777 {
         return Err(VfsError::Invalid);
     }
@@ -1104,8 +1256,11 @@ pub fn chmod<S: Storage>(
         read_node(storage, start)?; // 仅校验节点存在，不跟随
         start
     } else {
-        resolve(storage, start, path)?
+        resolve_in(storage, view, start, path)?
     };
+    if !in_view(storage, view, id)? {
+        return Err(VfsError::Access);
+    }
     let mut node = read_node(storage, id)?;
     node.mode = mode;
     write_node(storage, id, &node)
@@ -1121,6 +1276,17 @@ pub fn symlink<S: Storage>(
     target: &[u8],
     path: &[u8],
 ) -> Result<NodeId, VfsError> {
+    symlink_in(storage, View::ROOT, start, target, path)
+}
+
+/// 受限视图内的符号链接创建。
+pub fn symlink_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    target: &[u8],
+    path: &[u8],
+) -> Result<NodeId, VfsError> {
     if target.is_empty() || target.len() > MAX_PATH {
         return Err(VfsError::Invalid);
     }
@@ -1132,7 +1298,10 @@ pub fn symlink<S: Storage>(
     if last.is_dot() || last.is_dot_dot() {
         return Err(VfsError::Exist);
     }
-    let directory = walk(storage, start, &parsed.prefix())?;
+    let directory = walk(storage, view, start, &parsed.prefix())?;
+    if !in_view(storage, view, directory)? {
+        return Err(VfsError::Access);
+    }
     let parent = read_node(storage, directory)?;
     if parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);
@@ -1272,6 +1441,17 @@ pub fn rename<S: Storage>(
     from: &[u8],
     to: &[u8],
 ) -> Result<(), VfsError> {
+    rename_in(storage, View::ROOT, start, from, to)
+}
+
+/// 受限视图内的重命名；源和目标都必须解析到同一视图。
+pub fn rename_in<S: Storage>(
+    storage: &mut S,
+    view: View,
+    start: NodeId,
+    from: &[u8],
+    to: &[u8],
+) -> Result<(), VfsError> {
     let from_parsed = ParsedPath::parse(from)?;
     if from_parsed.count == 0 {
         return Err(VfsError::Invalid);
@@ -1280,7 +1460,10 @@ pub fn rename<S: Storage>(
     if from_last.is_dot() || from_last.is_dot_dot() {
         return Err(VfsError::Invalid);
     }
-    let from_dir = walk(storage, start, &from_parsed.prefix())?;
+    let from_dir = walk(storage, view, start, &from_parsed.prefix())?;
+    if !in_view(storage, view, from_dir)? {
+        return Err(VfsError::Access);
+    }
     if !read_node(storage, from_dir)?.writable() {
         return Err(VfsError::Access);
     }
@@ -1297,7 +1480,10 @@ pub fn rename<S: Storage>(
     if to_last.is_dot() || to_last.is_dot_dot() {
         return Err(VfsError::Invalid);
     }
-    let to_dir = walk(storage, start, &to_parsed.prefix())?;
+    let to_dir = walk(storage, view, start, &to_parsed.prefix())?;
+    if !in_view(storage, view, to_dir)? {
+        return Err(VfsError::Access);
+    }
     let to_parent = read_node(storage, to_dir)?;
     if to_parent.kind != NodeKind::Directory {
         return Err(VfsError::NotDir);

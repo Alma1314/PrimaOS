@@ -44,10 +44,12 @@ use core::panic::PanicInfo;
 use prima_runtime::protocol::SERVICE_NET_REQUEST_TAG;
 use prima_runtime::protocol::SERVICE_SESSION_ROUTE_TAG;
 use prima_runtime::protocol::{
-    SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_REGISTER_TAG,
+    SERVICE_ROOT_SERVICE, SERVICE_SESSION_FORK_ACK_TAG, SERVICE_SESSION_FORK_REGISTER_TAG,
+    SERVICE_SESSION_PREPARED_FLAG, SERVICE_SESSION_PROXY_ADD_TAG,
+    SERVICE_SESSION_PROXY_REGISTER_TAG,
 };
 use prima_runtime::protocol::{
-    SERVICE_SESSION_FORK_ACK_TAG, SERVICE_SESSION_FORK_REGISTER_TAG, SERVICE_SESSION_PREPARED_FLAG,
+    SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_REGISTER_TAG,
 };
 use prima_runtime::protocol::{
     STAGE5_TTY_CANCEL_ACK_TAG, STAGE5_TTY_CANCEL_TAG, STAGE5_TTY_READ_ACK_TAG,
@@ -179,6 +181,30 @@ fn reap_file_sessions(
             }
         }
     }
+}
+
+/// Kernel-authenticated ancestry for proxy registration; never uses a payload.
+fn descends_from(
+    runtime: &Runtime<impl SyscallTransport>,
+    mut task: TaskId,
+    ancestor: u64,
+) -> bool {
+    for _ in 0..64 {
+        let Ok(cookie) = runtime.task_cookie(task) else {
+            return false;
+        };
+        if cookie == ancestor {
+            return true;
+        }
+        let Ok(parent) = runtime.task_parent_cookie(task) else {
+            return false;
+        };
+        if parent as u32 == 0 || parent >> 32 == 0 {
+            return false;
+        }
+        task = TaskId::from_raw(parent as u32);
+    }
+    false
 }
 
 /// EXO-3H：在 servicemgr 内读回自己映射的客户端共享段偏移；内核不再解释这些偏移。
@@ -742,6 +768,53 @@ pub extern "C" fn _start(
                 if let Some(cap) = signal {
                     let _ = runtime.cap_drop(cap);
                 }
+            }
+            continue;
+        }
+        if message.payload >> 48 == SERVICE_SESSION_PROXY_REGISTER_TAG >> 48 {
+            let (Some(subject), Some(reply)) = (message.capabilities[0], message.capabilities[1])
+            else {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
+                continue;
+            };
+            let subject_cookie = runtime.send_target_cookie(subject).unwrap_or(0);
+            let reply_cookie = runtime.send_target_cookie(reply).unwrap_or(0);
+            let policy = (message.payload & 0xff) as u8;
+            let parent = file_sessions
+                .get(source_cookie as u32 as usize)
+                .copied()
+                .flatten()
+                .filter(|client| client.cookie == source_cookie);
+            let valid = file_authorized
+                && parent.is_some()
+                && subject_cookie != 0
+                && reply_cookie == source_cookie
+                && policy != SERVICE_ROOT_SERVICE
+                && descends_from(
+                    &runtime,
+                    TaskId::from_raw(subject_cookie as u32),
+                    source_cookie,
+                );
+            let forwarded = if valid && let Some(store) = registry[STORE_SLOT] {
+                let add = SERVICE_SESSION_PROXY_ADD_TAG
+                    | ((policy as u64) << 32)
+                    | (subject_cookie & 0xffff_ffff);
+                runtime
+                    .send(
+                        TaskId::from_raw(store.id as u32),
+                        store.authority,
+                        add,
+                        &[reply],
+                    )
+                    .is_ok()
+            } else {
+                false
+            };
+            let _ = runtime.cap_drop(subject);
+            if !forwarded {
+                let _ = runtime.cap_drop(reply);
             }
             continue;
         }

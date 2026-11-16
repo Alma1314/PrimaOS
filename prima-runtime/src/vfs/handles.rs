@@ -129,12 +129,24 @@ impl<const N: usize> OpenFiles<N> {
         path: &[u8],
         flags: OpenFlags,
     ) -> Result<(HandleId, FileInfo), VfsError> {
+        self.open_in(storage, fs::View::ROOT, start, path, flags)
+    }
+
+    /// 受限视图内的打开；路径解析与创建都不能越过视图根。
+    pub fn open_in<S: Storage>(
+        &mut self,
+        storage: &mut S,
+        view: fs::View,
+        start: NodeId,
+        path: &[u8],
+        flags: OpenFlags,
+    ) -> Result<(HandleId, FileInfo), VfsError> {
         let index = self
             .files
             .iter()
             .position(Option::is_none)
             .ok_or(VfsError::TooManyOpen)?;
-        let opened = fs::open(storage, start, path, flags)?;
+        let opened = fs::open_in(storage, view, start, path, flags)?;
         let mut node = opened.node;
         node.open_refs = node.open_refs.checked_add(1).ok_or(VfsError::TooManyOpen)?;
         fs::write_node(storage, opened.id, &node)?;

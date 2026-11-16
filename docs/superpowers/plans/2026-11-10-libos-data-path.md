@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: in-progress
 lifecycle: current
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # LibOS 数据通路完整改造计划
@@ -32,9 +32,15 @@ P1不替代P2–P6。完整阶段7其它义务保持原计划；本计划不把�
 2026-11-11：P1已实现并通过host、lint及完整36组72轮BIOS，详见
 [本片报告](../reports/2026-11-10-libos-data-path.md)。P2–P6尚未实现，完整计划仍进行中。
 
+2026-11-16：P2拆为P2a/P2b。P2a（代理会话签发、Store绑定与受限根视图）已实现并取得
+host/lint证据，详见[P2a报告](../reports/2026-11-16-stage7-proxy-session.md)；这只是授权与
+视图原语，**Linux数据面迁移、fork生命周期、镜像接线和QEMU正反例仍未实现**，P2b继续。
+P2b 与其后 holder 模型的依赖切片见[P2b与holder模型依赖切片计划](2026-11-16-p2b-holder-model-slices.md)；该计划不冻结 holder 语义，也不关闭 7-A。
+
 ## P2的具体接线与待解决边界
 
-此节是后继实施输入，未实现，不能由P1的测试签收。
+此节是后继实施输入，未实现，不能由P1或P2a的测试签收。P2a只完成第2条中的管理器
+签发/Store绑定骨架及第3条的根视图原语；第1、4、5条与第2条的数据面迁移仍待P2b。
 
 1. `prima-user/src/linux.rs::Shared`当前在Linux服务内持有Ram/OpenFiles；
    `prima-user/src/linux_process.rs::Family`在gate_fork前预留OFD owner，失败时释放。

@@ -6,6 +6,14 @@ pub const OPEN_REPLY: u64 = 0x5f11_0000_0000_0000;
 pub const SUBMIT: u64 = 0x5f12_0000_0000_0000;
 pub const COMPLETE: u64 = 0x5f13_0000_0000_0000;
 pub const CLOSE: u64 = 0x5f14_0000_0000_0000;
+
+/// Proxy channels carry a store-validated slot: OPEN/CLOSE use the low 8 bits,
+/// SUBMIT packs the slot in bits 32..39 and the sequence in the low 32 bits.
+pub const PROXY_OPEN: u64 = 0x5f20_0000_0000_0000;
+pub const PROXY_SUBMIT: u64 = 0x5f21_0000_0000_0000;
+pub const PROXY_CLOSE: u64 = 0x5f22_0000_0000_0000;
+pub const PROXY_SLOT_MASK: u64 = 0xff;
+pub const PROXY_SLOT_SHIFT: u64 = 32;
 pub const PAGE_BYTES: usize = 4096;
 pub const MAX_OPS: usize = 8;
 pub const HEADER_BYTES: usize = 32;

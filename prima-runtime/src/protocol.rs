@@ -1035,6 +1035,26 @@ pub const SERVICE_SESSION_PREPARED_FLAG: u64 = 1 << 47;
 /// Trusted manager announcement: generation(8..39), Task id(0..7).
 pub const SERVICE_SESSION_ROUTE_TAG: u64 = 0x5F19_0000_0000_0000;
 
+/// A registered LibOS client asks the manager to bind an application Task to it.
+/// Carries the application's Task authority and the proxy's reply authority.
+pub const SERVICE_SESSION_PROXY_REGISTER_TAG: u64 = 0x5F1A_0000_0000_0000;
+/// Manager → store: add a proxy session. Low 32 bits are the application Task id;
+/// bits 32..39 are the store root policy; the reply capability targets the proxy.
+pub const SERVICE_SESSION_PROXY_ADD_TAG: u64 = 0x5F1B_0000_0000_0000;
+/// Proxy → store: release an application owner. Low 8 bits select the proxy slot.
+pub const SERVICE_SESSION_PROXY_CLOSE_TAG: u64 = 0x5F1C_0000_0000_0000;
+/// Proxy → store: select the proxy slot for following path operations.
+pub const SERVICE_SESSION_PROXY_SELECT_TAG: u64 = 0x5F1D_0000_0000_0000;
+
+/// ACK bits 8..15 carry the allocated proxy slot; low 8 bits remain the status.
+pub const SERVICE_SESSION_ACK_INDEX_SHIFT: u64 = 8;
+
+/// Store root policies fixed by the service, never by client payloads.
+pub const SERVICE_ROOT_SERVICE: u8 = 0;
+pub const SERVICE_ROOT_LINUX: u8 = 1;
+pub const SERVICE_ROOT_NATIVE: u8 = 2;
+pub const SERVICE_ROOT_SHARED: u8 = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;

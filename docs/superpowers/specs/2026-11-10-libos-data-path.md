@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-implementation-contract
 status: implementation-contract-for-bulk-file-slice
 lifecycle: current
-updated: 2026-11-11
+updated: 2026-11-16
 ---
 
 # LibOS 数据通路改造与批量文件协议首片
@@ -83,6 +83,35 @@ I1的raw输入用例固定两次单字节read；不让UART合并时机改变调�
 - 多核：先按CPU分区状态，再实现AP/IPI/TLB shootdown和锁顺序；沿用D15与7-B范围。
 - 撤销/恢复：明确在途请求完成点、重启epoch、结果查询及副作用去重，与7-D/G对账。
 - 性能：同平台/构建/负载分解Gate、传输、复制、服务和排队；未冻结门槛前不宣称性能达标。
+
+## P2a：代理会话与受限根视图（2026-11-16）
+
+本节冻结共同文件服务的第一段接线；它不关闭 P2，也不构成 Linux 数据面迁移或 QEMU 证据。
+
+- **签发**：已登记的 LibOS 客户端向管理器发送 `PROXY_REGISTER`，携带应用 Task 的
+  `TaskSend` 能力和代理自身的回复能力。管理器只接受已登记文件客户端、回复目标等于发送者，
+  并把应用 Task 经内核 `task_cookie`/`task_parent_cookie` 祖系验证为发送者后代；策略
+  `SERVICE_ROOT_SERVICE` 一律拒绝。管理器把 `PROXY_ADD` 转发给 Store，附带该回复能力。
+- **Store 绑定**：Store 只接受管理器发送的 `PROXY_ADD`；再次用内核元数据验证代理 cookie、
+  应用 Task cookie、Process cookie 和祖系。为应用分配独立 OFD owner，并登记
+  `(代理 cookie, 应用 Task cookie, Process, owner, 根策略)`。请求里的 fd、PID、owner、
+  Task id 或 NodeId 都不是授权；batch 槽位只有命中该登记表且应用 incarnation 仍存活才可用。
+- **根策略**：由 Store 固定，客户端不能传 NodeId。`SERVICE_ROOT_SERVICE` 不可由代理选择；
+  `SERVICE_ROOT_LINUX`、`SERVICE_ROOT_NATIVE` 分别以懒创建的 `/linux`、`/native` 为根，
+  并把 `/shared` 显式挂到视图根名 `shared`；`SERVICE_ROOT_SHARED` 只暴露 `/shared`。
+  Linux 策略在首次创建时写入既有 fixture（`fixture.txt`、`fixturedir/{alpha,beta}`），
+  之后不重置内容。未注册代理策略的镜像不创建这些节点，既有服务根语义不变。
+- **视图语义**：绝对路径从视图根开始；`..` 在视图根处停留；符号链接的绝对目标重新从
+  视图根开始；相对目标的起点必须在视图内；`openat(dirfd)` 的起点、创建/删除/改权限/
+  rename/link 的父目录都必须属于视图。`shared` 只匹配视图根的第一段，`..` 从共享子树根
+  返回视图根。不是字符串前缀检查，也不接受旧协议里客户端自带的 NodeId 作为边界。
+- **数据面**：代理 `PROXY_OPEN`/`PROXY_SUBMIT`/`PROXY_CLOSE` 使用独立槽位与独立缓冲页；
+  slot 经登记表验证，SUBMIT 的序列仍严格递增，成功验收后先消费再回写/通知。每个应用
+  的 OFD 生命周期由 Store owner 管理；应用或代理死亡时关闭 owner 并回收槽位，I/O 失败
+  保留登记以便重试。直接客户端与旧会话路径不变。
+- **边界**：Linux personality 仍使用域内 RAM fixture；P2b 才把 open/stat/read/write/
+  getdents/lseek/close、fork 预留/发布/回滚/退出关闭迁移到 Store，并把 Store 与授权
+  接入启动镜像。本段没有 QEMU 正反例，不能宣称双 personality 共享已完成。
 
 ## 验证与重审
 

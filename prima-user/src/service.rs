@@ -24,12 +24,14 @@
 //! 句柄、路径解析、`O_CREAT`/`O_TRUNC`/`O_APPEND`/`O_EXCL`/`O_DIRECTORY` 与目录字节流都在本
 //! 服务内完成；管理器只做授权与路由，内核不解析文件树。
 
-use prima_runtime::protocol::SERVICE_SESSION_PREPARED_FLAG;
 use prima_runtime::protocol::{
-    SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_CLOSE_TAG,
-    SERVICE_SESSION_FORK_ACK_TAG, SERVICE_SESSION_PUBLISH_TAG, SERVICE_SESSION_RELEASE_TAG,
+    SERVICE_ROOT_SERVICE, SERVICE_SESSION_ACK_INDEX_SHIFT, SERVICE_SESSION_ACK_TAG,
+    SERVICE_SESSION_ADD_TAG, SERVICE_SESSION_CLOSE_TAG, SERVICE_SESSION_FORK_ACK_TAG,
+    SERVICE_SESSION_PREPARED_FLAG, SERVICE_SESSION_PROXY_ADD_TAG, SERVICE_SESSION_PROXY_CLOSE_TAG,
+    SERVICE_SESSION_PROXY_SELECT_TAG, SERVICE_SESSION_PUBLISH_TAG, SERVICE_SESSION_RELEASE_TAG,
     SERVICE_SESSION_RESERVE_TAG,
 };
+use prima_user::proxy::{self, Table as ProxyTable};
 use prima_user::sessions::Sessions;
 use prima_user::staging::{
     LinkTarget, OpenStaging, PairStaging, SESSION_WIRE_BYTES, STAGED_CHMOD, STAGED_MKDIR,
@@ -259,6 +261,157 @@ fn bulk_request<T: SyscallTransport>(
     }
 }
 
+/// One proxy buffer per registered application. The slot in the request is
+/// checked against the manager-registered entry; fd values inside the batch
+/// remain ordinary store handles checked against `owner`.
+#[allow(clippy::too_many_arguments)]
+fn proxy_bulk_request<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    self_cap: Capability,
+    files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
+    channel: &mut BulkChannel,
+    owner: u8,
+    index: usize,
+    peer: TaskId,
+    reply: Capability,
+    payload: u64,
+    capabilities: [Option<Capability>; 2],
+    next: &mut u64,
+) {
+    let slot = prima_user::sessions::MAX_CLIENTS + index;
+    let tag = payload & 0xffff_0000_0000_0000;
+    let send = |tag, status, sequence, caps: &[Capability]| {
+        rt.send(peer, reply, tag | (status << 32) | sequence, caps)
+    };
+    if capabilities.iter().any(Option::is_some) {
+        for cap in capabilities.into_iter().flatten() {
+            let _ = rt.cap_drop(cap);
+        }
+        let _ = send(
+            if tag == bulk::PROXY_OPEN {
+                bulk::OPEN_REPLY
+            } else {
+                bulk::COMPLETE
+            },
+            SERVICE_FILE_EINVAL,
+            0,
+            &[],
+        );
+        return;
+    }
+    if tag == bulk::PROXY_CLOSE {
+        if payload != bulk::PROXY_CLOSE | index as u64 {
+            let _ = send(bulk::COMPLETE, SERVICE_FILE_EINVAL, 0, &[]);
+            return;
+        }
+        if channel.root.is_some() {
+            channel.retire(rt, self_cap, slot);
+        }
+        let _ = send(bulk::COMPLETE, 0, 0, &[]);
+        return;
+    }
+    if tag == bulk::PROXY_OPEN {
+        if payload != bulk::PROXY_OPEN | index as u64
+            || channel.root.is_some()
+            || *next > bulk::MAX_SEQUENCE
+        {
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        }
+        let Ok(root) = rt.memseg_create(1, RW) else {
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        };
+        channel.root = Some(root);
+        if rt
+            .memseg_map(root, self_cap, 0, BulkChannel::address(slot), 1, RW)
+            .is_err()
+        {
+            channel.retire(rt, self_cap, slot);
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        }
+        channel.mapped = true;
+        let Ok(view) = rt.cap_derive(root, Rights::from_bits(7)) else {
+            channel.retire(rt, self_cap, slot);
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        };
+        if send(bulk::OPEN_REPLY, 0, *next, &[view]).is_err() {
+            let _ = rt.cap_drop(view);
+            channel.retire(rt, self_cap, slot);
+        } else {
+            channel.active = true;
+        }
+        return;
+    }
+    let sequence = payload & 0xffff_ffff;
+    let encoded = bulk::PROXY_SUBMIT | ((index as u64) << bulk::PROXY_SLOT_SHIFT) | sequence;
+    let status = if !channel.active || !channel.mapped {
+        SERVICE_FILE_EACCES
+    } else if payload != encoded || sequence != *next || sequence == 0 {
+        SERVICE_FILE_EINVAL
+    } else {
+        let _ = files.set_owner(owner);
+        let mut page = [0; bulk::PAGE_BYTES];
+        if rt
+            .read_user_bytes(BulkChannel::address(slot), &mut page)
+            .is_err()
+        {
+            SERVICE_FILE_EFAULT
+        } else {
+            let mut storage = SegmentStorage { runtime: rt };
+            match prima_user::bulk::execute(files, &mut storage, &mut page, sequence, |e| {
+                vfs_status(e) as u32
+            }) {
+                Err(_) => SERVICE_FILE_EINVAL,
+                Ok(()) => {
+                    // Never replay a write after a later failure.
+                    *next += 1;
+                    if rt
+                        .write_user_bytes(BulkChannel::address(slot), &page)
+                        .is_ok()
+                    {
+                        0
+                    } else {
+                        SERVICE_FILE_EFAULT
+                    }
+                }
+            }
+        }
+    };
+    let _ = send(bulk::COMPLETE, status, sequence, &[]);
+}
+
+/// Kernel-authenticated ancestry: does `task` descend from `ancestor`?
+fn descends_from<T: SyscallTransport>(rt: &Runtime<T>, mut task: TaskId, ancestor: u64) -> bool {
+    for _ in 0..64 {
+        let Ok(cookie) = rt.task_cookie(task) else {
+            return false;
+        };
+        if cookie == ancestor {
+            return true;
+        }
+        let Ok(parent) = rt.task_parent_cookie(task) else {
+            return false;
+        };
+        if parent as u32 == 0 || parent >> 32 == 0 {
+            return false;
+        }
+        task = TaskId::from_raw(parent as u32);
+    }
+    false
+}
+
+/// Resolve the store-fixed root policy for a proxy entry. Unknown policies are
+/// rejected before any data request can select them.
+fn prepare_policy<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    policy: u8,
+) -> Result<vfs::View, vfs::VfsError> {
+    proxy::prepare_policy(&mut SegmentStorage { runtime: rt }, policy)
+}
+
 impl<T: SyscallTransport> Storage for SegmentStorage<'_, T> {
     fn read(&mut self, offset: usize, out: &mut [u8]) -> bool {
         let address = SERVICE_DATA_VA + SERVICE_VFS_BASE + offset as u64;
@@ -323,6 +476,12 @@ pub fn run(
     let mut files = OpenFiles::<SERVICE_FILE_HANDLES>::new();
     let mut sessions = Sessions::new();
     let mut bulk_channels = [BulkChannel::EMPTY; prima_user::sessions::MAX_CLIENTS];
+    let mut proxies = ProxyTable::new();
+    let mut proxy_channels = [BulkChannel::EMPTY; proxy::MAX_PROXIES];
+    // Selected proxy slot and its root view for the following path operations.
+    // The sender cookie is part of the tuple so another client cannot inherit it.
+    let mut proxy_current: Option<(u64, usize, vfs::View)> = None;
+    let mut policy_views: [Option<vfs::View>; 4] = [None; 4];
     let manager_cookie = runtime.task_cookie(peer).unwrap_or(0);
     // M8：rootfs 是否已在该段内成功格式化/挂载。
     let mut vfs_ready = false;
@@ -343,6 +502,7 @@ pub fn run(
         let mut reply_peer = peer;
         let mut reply_send = send_cap;
         let mut staging_slot = 0usize;
+        let mut view = vfs::View::ROOT;
         if kind == SERVICE_BEHAVIOR_STORE && vfs_ready {
             for (slot, channel) in bulk_channels.iter_mut().enumerate() {
                 if channel.root.is_some()
@@ -386,6 +546,35 @@ pub fn run(
                 {
                     let _ = runtime.cap_drop(client.reply);
                     *slot = None;
+                }
+            }
+            // Reclaim proxy entries whose application or submitting LibOS died.
+            // The owner close is retried while an I/O failure persists.
+            for (index, channel) in proxy_channels.iter_mut().enumerate() {
+                let Some(entry) = proxies.entry(index).copied() else {
+                    continue;
+                };
+                let alive = runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                    == Some(entry.app)
+                    && runtime
+                        .task_cookie(TaskId::from_raw(entry.proxy as u32))
+                        .ok()
+                        == Some(entry.proxy);
+                if alive {
+                    continue;
+                }
+                channel.retire(
+                    &runtime,
+                    self_cap,
+                    prima_user::sessions::MAX_CLIENTS + index,
+                );
+                let mut storage = SegmentStorage { runtime: &runtime };
+                if files.close_owner(&mut storage, entry.owner).is_ok() {
+                    sessions.release_external(entry.owner);
+                    proxies.remove(index);
+                    if proxy_current.is_some_and(|(_, current, _)| current == index) {
+                        proxy_current = None;
+                    }
                 }
             }
         }
@@ -452,6 +641,70 @@ pub fn run(
             }
             continue;
         }
+        if tag == SERVICE_SESSION_PROXY_ADD_TAG >> 48 && kind == SERVICE_BEHAVIOR_STORE {
+            if !from_manager || !vfs_ready {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
+                continue;
+            }
+            let Some(reply) = message.capabilities[0] else {
+                continue;
+            };
+            if let Some(extra) = message.capabilities[1] {
+                let _ = runtime.cap_drop(extra);
+            }
+            let proxy_cookie = runtime.send_target_cookie(reply).unwrap_or(0);
+            let app_id = message.payload & 0xffff_ffff;
+            let policy = ((message.payload >> 32) & 0xff) as u8;
+            let app_task = TaskId::from_raw(app_id as u32);
+            let app_cookie = runtime.task_cookie(app_task).unwrap_or(0);
+            let process = runtime.task_process_cookie(app_task).unwrap_or(0);
+            let parent = runtime.task_parent_cookie(app_task).unwrap_or(0);
+            // The manager-authenticated ancestry replaces every client-supplied
+            // fd, PID, owner or cookie as authority.
+            let bound = sessions.client(proxy_cookie).is_some()
+                && app_cookie != 0
+                && policy != SERVICE_ROOT_SERVICE
+                && descends_from(&runtime, app_task, proxy_cookie);
+            let mut index = None;
+            let status = if !bound {
+                SERVICE_FILE_EACCES
+            } else if let Some(owner) = sessions.reserve_external(process, parent) {
+                if prepare_policy(&runtime, policy).is_err() {
+                    sessions.release_external(owner);
+                    SERVICE_FILE_ENOSPC
+                } else if let Some(slot) =
+                    proxies.register(proxy_cookie, app_cookie, process, owner, policy)
+                {
+                    index = Some(slot);
+                    0
+                } else {
+                    sessions.release_external(owner);
+                    SERVICE_FILE_EAGAIN
+                }
+            } else {
+                SERVICE_FILE_EAGAIN
+            };
+            let ack = SERVICE_SESSION_ACK_TAG
+                | ((index.unwrap_or(0) as u64) << SERVICE_SESSION_ACK_INDEX_SHIFT)
+                | status;
+            if runtime
+                .send(TaskId::from_raw(proxy_cookie as u32), reply, ack, &[])
+                .is_err()
+            {
+                // Nothing was published to the client: reclaim the reservation.
+                if let Some(index) = index
+                    && let Some(entry) = proxies.remove(index)
+                {
+                    let mut storage = SegmentStorage { runtime: &runtime };
+                    let _ = files.close_owner(&mut storage, entry.owner);
+                    sessions.release_external(entry.owner);
+                }
+                let _ = runtime.cap_drop(reply);
+            }
+            continue;
+        }
         if !from_manager {
             if kind != SERVICE_BEHAVIOR_STORE {
                 continue;
@@ -479,6 +732,156 @@ pub fn run(
                 );
                 continue;
             }
+            if tag == SERVICE_SESSION_PROXY_SELECT_TAG >> 48 {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
+                let index = (message.payload & bulk::PROXY_SLOT_MASK) as usize;
+                let selected = proxies.entry(index).copied().filter(|entry| {
+                    entry.proxy == client.cookie
+                        && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                            == Some(entry.app)
+                });
+                let status = if let Some(entry) = selected {
+                    let cached = policy_views.get(entry.policy as usize).copied().flatten();
+                    match cached.map(Ok).unwrap_or_else(|| {
+                        prepare_policy(&runtime, entry.policy).inspect(|view| {
+                            policy_views[entry.policy as usize] = Some(*view);
+                        })
+                    }) {
+                        Ok(view) => {
+                            proxy_current = Some((client.cookie, index, view));
+                            let _ = files.set_owner(entry.owner);
+                            0
+                        }
+                        Err(error) => {
+                            proxy_current = None;
+                            vfs_status(error)
+                        }
+                    }
+                } else {
+                    proxy_current = None;
+                    SERVICE_FILE_EACCES
+                };
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    &[],
+                );
+                continue;
+            }
+            if matches!(
+                message.payload & 0xffff_0000_0000_0000,
+                bulk::PROXY_OPEN | bulk::PROXY_SUBMIT | bulk::PROXY_CLOSE
+            ) {
+                let index = if tag == bulk::PROXY_SUBMIT >> 48 {
+                    ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize
+                } else {
+                    (message.payload & bulk::PROXY_SLOT_MASK) as usize
+                };
+                let entry = proxies.entry(index).copied().filter(|entry| {
+                    entry.proxy == client.cookie
+                        && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                            == Some(entry.app)
+                });
+                let status_tag = if tag == bulk::PROXY_OPEN >> 48 {
+                    bulk::OPEN_REPLY
+                } else {
+                    bulk::COMPLETE
+                };
+                if let Some(entry) = entry {
+                    let mut next = entry.next;
+                    proxy_bulk_request(
+                        &runtime,
+                        self_cap,
+                        &mut files,
+                        &mut proxy_channels[index],
+                        entry.owner,
+                        index,
+                        reply_peer,
+                        reply_send,
+                        message.payload,
+                        message.capabilities,
+                        &mut next,
+                    );
+                    if let Some(entry) = proxies.entry_mut(index) {
+                        entry.next = next;
+                    }
+                } else {
+                    for cap in message.capabilities.into_iter().flatten() {
+                        let _ = runtime.cap_drop(cap);
+                    }
+                    let _ = runtime.send(
+                        reply_peer,
+                        reply_send,
+                        status_tag | (SERVICE_FILE_EACCES << 32),
+                        &[],
+                    );
+                }
+                continue;
+            }
+            if tag == SERVICE_SESSION_PROXY_CLOSE_TAG >> 48 {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
+                let index = (message.payload & bulk::PROXY_SLOT_MASK) as usize;
+                let owned = proxies
+                    .entry(index)
+                    .is_some_and(|entry| entry.proxy == client.cookie);
+                let status = if owned {
+                    proxy_channels[index].retire(
+                        &runtime,
+                        self_cap,
+                        prima_user::sessions::MAX_CLIENTS + index,
+                    );
+                    if let Some(entry) = proxies.remove(index) {
+                        let mut storage = SegmentStorage { runtime: &runtime };
+                        let closed = files.close_owner(&mut storage, entry.owner);
+                        sessions.release_external(entry.owner);
+                        closed.map_or_else(vfs_status, |_| 0)
+                    } else {
+                        SERVICE_FILE_ENOENT
+                    }
+                } else {
+                    SERVICE_FILE_EACCES
+                };
+                if proxy_current.is_some_and(|(_, current, _)| current == index) {
+                    proxy_current = None;
+                }
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    &[],
+                );
+                continue;
+            }
+            // A selected proxy slot owns the following path operations. An
+            // invalid or stale selector falls back to the direct client only
+            // after clearing itself.
+            let owner = match proxy_current {
+                Some((cookie, index, selected)) if cookie == source_cookie => {
+                    match proxies.entry(index) {
+                        Some(entry)
+                            if runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                                == Some(entry.app) =>
+                        {
+                            view = selected;
+                            entry.owner
+                        }
+                        _ => {
+                            proxy_current = None;
+                            client.owner
+                        }
+                    }
+                }
+                _ => {
+                    proxy_current = None;
+                    client.owner
+                }
+            };
+            let _ = files.set_owner(owner);
             if tag == SERVICE_SESSION_RESERVE_TAG >> 48 {
                 let key = if let Some((owner, key)) = sessions.reserve(client.process) {
                     if files.fork_owner(client.owner, owner).is_ok() {
@@ -661,11 +1064,11 @@ pub fn run(
             // M8/M9：解析暂存路径。stat 只回元数据；open 成功时再分配服务端句柄。
             let reply = if vfs_ready {
                 if staged.op != 0 {
-                    mutate_staged(&runtime, &mut staged, message.payload)
+                    mutate_staged(&runtime, &mut staged, message.payload, view)
                 } else if staged.flags & SERVICE_VFS_FLAG_STAT as u8 != 0 {
-                    stat_staged(&runtime, &mut staged)
+                    stat_staged(&runtime, &mut staged, view)
                 } else {
-                    open_staged(&runtime, &mut staged, &mut files)
+                    open_staged(&runtime, &mut staged, &mut files, view)
                 }
             } else {
                 pack_file_reply(SERVICE_FILE_OP_OPEN, 0, SERVICE_FILE_ENOSYS, 0)
@@ -725,7 +1128,7 @@ pub fn run(
             let reply = if vfs_ready {
                 match pair.commit(op, slot) {
                     Ok(false) => pack_vfs_pair_reply(op as u64, 0, 0),
-                    Ok(true) => pair_staged(&runtime, &mut pair, &mut link),
+                    Ok(true) => pair_staged(&runtime, &mut pair, &mut link, view),
                     Err(status) => pack_vfs_pair_reply(op as u64, status, 0),
                 }
             } else {
@@ -809,6 +1212,7 @@ fn mutate_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     staged: &mut OpenStaging,
     commit: u64,
+    view: vfs::View,
 ) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
     if !staged.active || staged.got != staged.len {
@@ -823,18 +1227,18 @@ fn mutate_staged<T: SyscallTransport>(
     let path = &staged.path[..len];
     if op == STAGED_CHMOD {
         let mode = (commit >> SERVICE_VFS_CHMOD_MODE_SHIFT) & SERVICE_VFS_CHMOD_MODE_MASK;
-        return match vfs::chmod(&mut storage, start, path, mode as u16) {
+        return match vfs::chmod_in(&mut storage, view, start, path, mode as u16) {
             Ok(()) => reply(0),
             Err(error) => reply(vfs_status(error)),
         };
     }
     match op {
-        STAGED_MKDIR => match vfs::mkdir(&mut storage, start, path) {
+        STAGED_MKDIR => match vfs::mkdir_in(&mut storage, view, start, path) {
             Ok(_) => reply(0),
             Err(error) => reply(vfs_status(error)),
         },
         STAGED_UNLINK | STAGED_RMDIR => {
-            match vfs::unlink(&mut storage, start, path, op == STAGED_RMDIR) {
+            match vfs::unlink_in(&mut storage, view, start, path, op == STAGED_RMDIR) {
                 Ok(_) => reply(0),
                 Err(error) => reply(vfs_status(error)),
             }
@@ -848,6 +1252,7 @@ fn open_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     staged: &mut OpenStaging,
     files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
+    view: vfs::View,
 ) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_OPEN, 0, status, 0);
     if !staged.active || staged.got != staged.len {
@@ -865,7 +1270,8 @@ fn open_staged<T: SyscallTransport>(
     let len = staged.len as usize;
     staged.active = false;
     let mut storage = SegmentStorage { runtime };
-    let (handle, info) = match files.open(&mut storage, start, &staged.path[..len], flags) {
+    let (handle, info) = match files.open_in(&mut storage, view, start, &staged.path[..len], flags)
+    {
         Ok(opened) => opened,
         Err(error) => return reply(vfs_status(error)),
     };
@@ -884,7 +1290,11 @@ fn open_staged<T: SyscallTransport>(
 }
 
 /// M9：只解析暂存路径并回复元数据，不分配句柄、不做 access 检查。
-fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStaging) -> u64 {
+fn stat_staged<T: SyscallTransport>(
+    runtime: &Runtime<T>,
+    staged: &mut OpenStaging,
+    view: vfs::View,
+) -> u64 {
     let reply = |status: u64| pack_file_reply(SERVICE_FILE_OP_STAT, 0, status, 0);
     if !staged.active || staged.got != staged.len {
         staged.active = false;
@@ -895,9 +1305,13 @@ fn stat_staged<T: SyscallTransport>(runtime: &Runtime<T>, staged: &mut OpenStagi
     staged.active = false;
     let mut storage = SegmentStorage { runtime };
     let id = if len == 0 {
-        start
+        match vfs::in_view(&mut storage, view, start) {
+            Ok(true) => start,
+            Ok(false) => return reply(SERVICE_FILE_EACCES),
+            Err(error) => return reply(vfs_status(error)),
+        }
     } else {
-        match vfs::resolve(&mut storage, start, &staged.path[..len]) {
+        match vfs::resolve_in(&mut storage, view, start, &staged.path[..len]) {
             Ok(id) => id,
             Err(error) => return reply(vfs_status(error)),
         }
@@ -922,6 +1336,7 @@ fn pair_staged<T: SyscallTransport>(
     runtime: &Runtime<T>,
     pair: &mut PairStaging,
     link: &mut LinkTarget,
+    view: vfs::View,
 ) -> u64 {
     let op = pair.op as u64;
     let reply = |status: u64, data: u64| pack_vfs_pair_reply(op, status, data);
@@ -932,7 +1347,12 @@ fn pair_staged<T: SyscallTransport>(
     let mut storage = SegmentStorage { runtime };
     let first_len = pair.lens[0] as usize;
     if op == SERVICE_VFS_PAIR_OP_READLINK {
-        let id = match vfs::resolve_link(&mut storage, vfs::ROOT, &pair.paths[0][..first_len]) {
+        let id = match vfs::resolve_link_in(
+            &mut storage,
+            view,
+            vfs::ROOT,
+            &pair.paths[0][..first_len],
+        ) {
             Ok(id) => id,
             Err(error) => {
                 pair.active = false;
@@ -970,15 +1390,17 @@ fn pair_staged<T: SyscallTransport>(
     }
     let second_len = pair.lens[1] as usize;
     let status = match op {
-        SERVICE_VFS_PAIR_OP_RENAME => vfs::rename(
+        SERVICE_VFS_PAIR_OP_RENAME => vfs::rename_in(
             &mut storage,
+            view,
             vfs::ROOT,
             &pair.paths[0][..first_len],
             &pair.paths[1][..second_len],
         )
         .map_or_else(vfs_status, |_| 0),
-        SERVICE_VFS_PAIR_OP_SYMLINK => vfs::symlink(
+        SERVICE_VFS_PAIR_OP_SYMLINK => vfs::symlink_in(
             &mut storage,
+            view,
             vfs::ROOT,
             &pair.paths[1][..second_len],
             &pair.paths[0][..first_len],

@@ -138,6 +138,34 @@ impl Sessions {
                 .map(|o| (i as u8, o))
         })
     }
+
+    /// Allocate an OFD owner for a manager-authenticated proxied application.
+    /// The slot is independent of the legacy manager slot and is released only
+    /// by the proxy entry that allocated it.
+    pub fn reserve_external(&mut self, process: u64, parent: u64) -> Option<u8> {
+        if process >> 32 == 0 || self.owner(process).is_some() {
+            return None;
+        }
+        let slot = self.vacant_owner()?;
+        self.owners[slot as usize] = Some(Owner {
+            cookie: process,
+            parent,
+            key: 0,
+        });
+        Some(slot)
+    }
+
+    /// Release a proxy-owned slot. The target stays alive if killed by owner
+    /// death; the caller closes its OFDs first.
+    pub fn release_external(&mut self, owner: u8) -> bool {
+        if owner == 0 || owner as usize >= MAX_OWNERS {
+            return false;
+        }
+        let slot = &mut self.owners[owner as usize];
+        let present = slot.is_some();
+        *slot = None;
+        present
+    }
 }
 
 #[cfg(test)]
@@ -171,6 +199,20 @@ mod tests {
                 .is_none()
         );
         assert!(!sessions.publish(parent, key, child + (1 << 32)));
+    }
+    #[test]
+    fn external_owner_reservations_are_bounded_and_reusable() {
+        let mut sessions = Sessions::new();
+        let first = (6 << 32) | 9;
+        let second = (7 << 32) | 10;
+        let slot = sessions.reserve_external(first, 1).unwrap();
+        assert_ne!(slot, 0);
+        assert_eq!(sessions.reserve_external(first, 1), None);
+        assert_eq!(sessions.reserve_external(0, 1), None);
+        assert!(sessions.release_external(slot));
+        assert!(!sessions.release_external(slot));
+        assert_eq!(sessions.reserve_external(second, 1), Some(slot));
+        assert!(!sessions.release_external(0));
     }
     #[test]
     fn a_released_owner_slot_cannot_authorize_an_old_client_after_reuse() {
