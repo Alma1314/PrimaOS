@@ -68,23 +68,25 @@ use prima_runtime::{
         SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_REPLY_TAG,
         SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
         SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_LINUX,
-        SERVICE_IMAGE_KIND_NATIVE_APP, SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_KIND_TTY,
-        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
-        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LINUX_SCENARIO,
-        SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NATIVE_SCENARIO, SERVICE_NAME_NS,
-        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_PROXY_DONE_TAG,
-        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
-        SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
-        SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
-        SERVICE_VFS_CHMOD_TAG, SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG,
-        SERVICE_VFS_LINK_CLIENT_SHIFT, SERVICE_VFS_LINK_OFFSET_SHIFT, SERVICE_VFS_LINK_READ_TAG,
-        SERVICE_VFS_LINK_REPLY_TAG, SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OPEN_TAG,
-        SERVICE_VFS_PAIR_COMMIT_TAG, SERVICE_VFS_PAIR_OP_MASK, SERVICE_VFS_PAIR_OP_SHIFT,
-        SERVICE_VFS_PAIR_REPLY_TAG, SERVICE_VFS_PAIR_TAG, SERVICE_VFS_PATH_TAG,
-        SERVICE_VFS_ROOT_PATH, SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK,
-        SERVICE_VFS_STATUS_TAG, SERVICE_VMA_CAP_REQUEST_TAG, SERVICE_VMA_CLIENT_SHIFT,
-        SERVICE_WAKE_TAG, SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG,
-        STAGE5_TTY_ACK_TAG, STAGE5_TTY_LINE_MAX, STAGE5_TTY_MODE_TAG, STAGE5_TTY_READ_CHUNK,
+        SERVICE_IMAGE_KIND_LINUX_MATRIX, SERVICE_IMAGE_KIND_NATIVE_APP,
+        SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC,
+        SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA,
+        SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LINUX_MATRIX,
+        SERVICE_NAME_LINUX_SCENARIO, SERVICE_NAME_LOG, SERVICE_NAME_MASK,
+        SERVICE_NAME_NATIVE_SCENARIO, SERVICE_NAME_NS, SERVICE_NAME_OFFSET, SERVICE_NAME_STORE,
+        SERVICE_NS_CAP_TAG, SERVICE_PROXY_DONE_TAG, SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A,
+        SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE, SERVICE_SERVE_OP_IOPORT_OOR,
+        SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY, SERVICE_SERVE_OP_RESOLVE,
+        SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG, SERVICE_VFS_CHMOD_TAG,
+        SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG, SERVICE_VFS_LINK_CLIENT_SHIFT,
+        SERVICE_VFS_LINK_OFFSET_SHIFT, SERVICE_VFS_LINK_READ_TAG, SERVICE_VFS_LINK_REPLY_TAG,
+        SERVICE_VFS_MUTATE_TAG, SERVICE_VFS_OPEN_TAG, SERVICE_VFS_PAIR_COMMIT_TAG,
+        SERVICE_VFS_PAIR_OP_MASK, SERVICE_VFS_PAIR_OP_SHIFT, SERVICE_VFS_PAIR_REPLY_TAG,
+        SERVICE_VFS_PAIR_TAG, SERVICE_VFS_PATH_TAG, SERVICE_VFS_ROOT_PATH,
+        SERVICE_VFS_STATUS_CLIENT_SHIFT, SERVICE_VFS_STATUS_COUNT_MASK, SERVICE_VFS_STATUS_TAG,
+        SERVICE_VMA_CAP_REQUEST_TAG, SERVICE_VMA_CLIENT_SHIFT, SERVICE_WAKE_TAG,
+        SERVICEMGR_HELLO_TAG, STAGE5_C_PROBE_TAG, STAGE5_ECHO_WRITE_TAG, STAGE5_TTY_ACK_TAG,
+        STAGE5_TTY_LINE_MAX, STAGE5_TTY_MODE_TAG, STAGE5_TTY_READ_CHUNK,
         STAGE5_TTY_READ_COUNT_SHIFT, STAGE5_TTY_READ_MAX_SHIFT, STAGE5_TTY_READ_REPLY_TAG,
         STAGE5_TTY_READ_TAG, STAGE5_TTY_READY_TAG, STAGE5_TTY_SYNC_ACK_TAG, STAGE5_TTY_SYNC_TAG,
         STAGE5_TTY_WRITE_TAG, native_app_hash, native_app_reply, pack_file_reply,
@@ -182,30 +184,6 @@ fn reap_file_sessions(
             }
         }
     }
-}
-
-/// Kernel-authenticated ancestry for proxy registration; never uses a payload.
-fn descends_from(
-    runtime: &Runtime<impl SyscallTransport>,
-    mut task: TaskId,
-    ancestor: u64,
-) -> bool {
-    for _ in 0..64 {
-        let Ok(cookie) = runtime.task_cookie(task) else {
-            return false;
-        };
-        if cookie == ancestor {
-            return true;
-        }
-        let Ok(parent) = runtime.task_parent_cookie(task) else {
-            return false;
-        };
-        if parent as u32 == 0 || parent >> 32 == 0 {
-            return false;
-        }
-        task = TaskId::from_raw(parent as u32);
-    }
-    false
 }
 
 /// EXO-3H：在 servicemgr 内读回自己映射的客户端共享段偏移；内核不再解释这些偏移。
@@ -416,6 +394,8 @@ struct Pending {
 #[derive(Clone, Copy)]
 struct Scenario {
     linux: Option<Pending>,
+    /// 第二个 Linux 场景（共享授权与 fork 限额），与 `linux` 分属不同启动镜像。
+    linux_matrix: Option<Pending>,
     native: Option<Pending>,
     linux_id: Option<u64>,
     native_id: Option<u64>,
@@ -426,6 +406,7 @@ struct Scenario {
 impl Scenario {
     const EMPTY: Self = Self {
         linux: None,
+        linux_matrix: None,
         native: None,
         linux_id: None,
         native_id: None,
@@ -433,7 +414,7 @@ impl Scenario {
         reported: 0,
     };
     fn enabled(&self) -> bool {
-        self.linux.is_some()
+        self.linux.is_some() || self.linux_matrix.is_some()
     }
     /// Both clients have reported; the request id is stable.
     fn complete(&self) -> bool {
@@ -840,16 +821,13 @@ pub extern "C" fn _start(
                 .copied()
                 .flatten()
                 .filter(|client| client.cookie == source_cookie);
+            // P2b-5：受管 gate fork 在内核里没有 Process 父系；主体绑定改为
+            // 客户端出示的 TaskSend 能力本身（内核只允许持有者派生该能力）。
             let valid = (file_authorized || scenario.authorized(u64::from(source_cookie as u32)))
                 && parent.is_some()
                 && subject_cookie != 0
                 && reply_cookie == source_cookie
-                && policy != SERVICE_ROOT_SERVICE
-                && descends_from(
-                    &runtime,
-                    TaskId::from_raw(subject_cookie as u32),
-                    source_cookie,
-                );
+                && policy != SERVICE_ROOT_SERVICE;
             let forwarded = if valid && let Some(store) = registry[STORE_SLOT] {
                 let add = SERVICE_SESSION_PROXY_ADD_TAG
                     | ((policy as u64) << 32)
@@ -859,14 +837,14 @@ pub extern "C" fn _start(
                         TaskId::from_raw(store.id as u32),
                         store.authority,
                         add,
-                        &[reply],
+                        &[reply, subject],
                     )
                     .is_ok()
             } else {
                 false
             };
-            let _ = runtime.cap_drop(subject);
             if !forwarded {
+                let _ = runtime.cap_drop(subject);
                 let _ = runtime.cap_drop(reply);
             }
             continue;
@@ -881,9 +859,26 @@ pub extern "C" fn _start(
                 0
             };
             if bit != 0 {
+                let first = scenario.reported == 0;
                 scenario.reported |= bit;
                 if message.payload & 0xff != 0 {
                     scenario.done |= 0x8000_0000;
+                }
+                // P2b-5：记录单侧先退出；另一侧仍继续，直到两侧都报告。
+                if first
+                    && !scenario.complete()
+                    && let Ok(serial) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT)
+                {
+                    let _ = serial_puts(
+                        &runtime,
+                        serial,
+                        if bit == 0b01 {
+                            b"S7HALF|first=linux\n"
+                        } else {
+                            b"S7HALF|first=native\n"
+                        },
+                    );
+                    let _ = runtime.cap_drop(serial);
                 }
             }
             if scenario.complete() {
@@ -1509,7 +1504,9 @@ pub extern "C" fn _start(
                         false,
                         None,
                         Some((SCENARIO_STACK_PAGES, SCENARIO_STACK_VA)),
-                        if spec.name == SERVICE_NAME_LINUX_SCENARIO {
+                        if spec.name == SERVICE_NAME_LINUX_SCENARIO
+                            || spec.name == SERVICE_NAME_LINUX_MATRIX
+                        {
                             Some(SCENARIO_ROOT_RIGHTS)
                         } else {
                             None
@@ -1522,7 +1519,7 @@ pub extern "C" fn _start(
                             .map(|cookie| u64::from(cookie as u32))
                     })
                 };
-                if let Some(spec) = scenario.linux {
+                if let Some(spec) = scenario.linux.or(scenario.linux_matrix) {
                     scenario.linux_id = id(spec);
                 }
                 if let Some(spec) = scenario.native {
@@ -2083,6 +2080,13 @@ fn read_image_directory(
                     offset_pages,
                     pages,
                     name: SERVICE_NAME_LINUX_SCENARIO,
+                });
+            } else if kind == SERVICE_IMAGE_KIND_LINUX_MATRIX && pages != 0 {
+                scenario.linux_matrix = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name: SERVICE_NAME_LINUX_MATRIX,
                 });
             } else if kind == SERVICE_IMAGE_KIND_NATIVE_APP && pages != 0 {
                 scenario.native = Some(Pending {

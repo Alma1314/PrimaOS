@@ -98,6 +98,12 @@ pub const MATRIX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stage6-matri
 #[cfg(not(feature = "linux-probe"))]
 pub const MATRIX: &[u8] = &[];
 
+/// P2b-5：fork 上限与失败回滚探针（不参与既有 11 项差分）。
+#[cfg(feature = "linux-probe")]
+pub const FORKLIMIT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/stage6-forklimit.elf"));
+#[cfg(not(feature = "linux-probe"))]
+pub const FORKLIMIT: &[u8] = &[];
+
 fn native_error(error: Error) -> i64 {
     match error {
         Error::Fault => -14,

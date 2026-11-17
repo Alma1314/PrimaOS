@@ -5,7 +5,7 @@ fn main() {
     if env::var_os("CARGO_FEATURE_LINUX_PROBE").is_none() {
         return;
     }
-    for name in ["p1", "p2", "process", "process-child"] {
+    for name in ["p1", "p2", "process", "process-child", "forklimit"] {
         let source = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
             .join(format!("linux-probes/{name}.S"));
         let output =

@@ -317,10 +317,17 @@ fn proxy_bulk_request<T: SyscallTransport>(
         return;
     }
     if tag == bulk::PROXY_OPEN {
-        if payload != bulk::PROXY_OPEN | index as u64
-            || channel.root.is_some()
-            || *next > bulk::MAX_SEQUENCE
-        {
+        if payload != bulk::PROXY_OPEN | index as u64 || *next > bulk::MAX_SEQUENCE {
+            let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
+            return;
+        }
+        // A previous close had to retire the page while the client still mapped
+        // the derived capability, so the destroy was deferred. Retry it before
+        // reusing the slot; a client that still maps the page keeps EAGAIN.
+        if channel.root.is_some() && !channel.active {
+            channel.retire(rt, self_cap, slot);
+        }
+        if channel.root.is_some() {
             let _ = send(bulk::OPEN_REPLY, SERVICE_FILE_EAGAIN, 0, &[]);
             return;
         }
@@ -387,26 +394,6 @@ fn proxy_bulk_request<T: SyscallTransport>(
         }
     };
     let _ = send(bulk::COMPLETE, status, sequence, &[]);
-}
-
-/// Kernel-authenticated ancestry: does `task` descend from `ancestor`?
-fn descends_from<T: SyscallTransport>(rt: &Runtime<T>, mut task: TaskId, ancestor: u64) -> bool {
-    for _ in 0..64 {
-        let Ok(cookie) = rt.task_cookie(task) else {
-            return false;
-        };
-        if cookie == ancestor {
-            return true;
-        }
-        let Ok(parent) = rt.task_parent_cookie(task) else {
-            return false;
-        };
-        if parent as u32 == 0 || parent >> 32 == 0 {
-            return false;
-        }
-        task = TaskId::from_raw(parent as u32);
-    }
-    false
 }
 
 /// Resolve the store-fixed root policy for a proxy entry. Unknown policies are
@@ -654,12 +641,13 @@ pub fn run(
                 }
                 continue;
             }
-            let Some(reply) = message.capabilities[0] else {
+            let (Some(reply), Some(subject)) = (message.capabilities[0], message.capabilities[1])
+            else {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
                 continue;
             };
-            if let Some(extra) = message.capabilities[1] {
-                let _ = runtime.cap_drop(extra);
-            }
             let proxy_cookie = runtime.send_target_cookie(reply).unwrap_or(0);
             let app_id = message.payload & 0xffff_ffff;
             let policy = ((message.payload >> 32) & 0xff) as u8;
@@ -667,12 +655,16 @@ pub fn run(
             let app_cookie = runtime.task_cookie(app_task).unwrap_or(0);
             let process = runtime.task_process_cookie(app_task).unwrap_or(0);
             let parent = runtime.task_parent_cookie(app_task).unwrap_or(0);
-            // The manager-authenticated ancestry replaces every client-supplied
-            // fd, PID, owner or cookie as authority.
+            // P2b-5：受管 gate fork 没有内核 Process 父系。主体绑定改为管理器
+            // 转交的 TaskSend 能力：目标必须等于命名的活 Task，能力本身由内核
+            // 保证只出现在其持有者手里。
+            let target = runtime.send_target_cookie(subject).ok();
+            let _ = runtime.cap_drop(subject);
             let bound = sessions.client(proxy_cookie).is_some()
                 && app_cookie != 0
-                && policy != SERVICE_ROOT_SERVICE
-                && descends_from(&runtime, app_task, proxy_cookie);
+                && target
+                    .is_some_and(|target| target == app_cookie && target as u32 == app_id as u32)
+                && policy != SERVICE_ROOT_SERVICE;
             let mut index = None;
             // A forked child already owns the slot published by its parent's
             // reservation. Re-registration must not release that live owner.
@@ -751,10 +743,15 @@ pub fn run(
                 message.payload & 0xffff_0000_0000_0000,
                 bulk::PROXY_RESERVE | bulk::PROXY_PUBLISH | bulk::PROXY_RELEASE
             ) {
-                for cap in message.capabilities.into_iter().flatten() {
-                    let _ = runtime.cap_drop(cap);
-                }
+                let caps = message.capabilities;
                 let kind = message.payload & 0xffff_0000_0000_0000;
+                // PUBLISH carries the child's TaskSend capability; the other
+                // lifecycle messages carry none.
+                if kind != bulk::PROXY_PUBLISH {
+                    for cap in caps.into_iter().flatten() {
+                        let _ = runtime.cap_drop(cap);
+                    }
+                }
                 let index =
                     ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize;
                 let entry = proxies.entry(index).copied().filter(|entry| {
@@ -782,7 +779,18 @@ pub fn run(
                             ((message.payload >> bulk::PROXY_CHILD_SHIFT) & 0xff) as u32,
                         );
                         let cookie = runtime.task_cookie(child).unwrap_or(0);
-                        let valid = runtime.task_parent_cookie(child).ok() == Some(entry.process)
+                        // A managed gate fork has no kernel process parent, so
+                        // the presented TaskSend capability is the binding: the
+                        // kernel only lets its holder derive a cap to that task.
+                        let bound = caps[0].is_some_and(|cap| {
+                            let target = runtime.send_target_cookie(cap).ok();
+                            let _ = runtime.cap_drop(cap);
+                            target == Some(cookie) && cookie != 0
+                        });
+                        for cap in caps[1..].iter().flatten() {
+                            let _ = runtime.cap_drop(*cap);
+                        }
+                        let valid = bound
                             && sessions.publish(entry.process, message.payload as u32, cookie);
                         if valid {
                             // The client needs the published owner to key its
@@ -811,6 +819,11 @@ pub fn run(
                         u64::from(!valid)
                     }
                 } else {
+                    if kind == bulk::PROXY_PUBLISH {
+                        for cap in caps.into_iter().flatten() {
+                            let _ = runtime.cap_drop(cap);
+                        }
+                    }
                     u64::from(true)
                 };
                 // RESERVE reports a key; 0 is failure. PUBLISH reports the

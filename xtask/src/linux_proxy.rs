@@ -1,40 +1,95 @@
-//! P2b-4：两 ABI 代理场景镜像与 QEMU 断言。
+//! P2b-4/P2b-5：两 ABI 代理场景镜像与 QEMU 正反例矩阵。
 //!
 //! 镜像由 init（initgen 生成）、`prima-smoke`（既有 init 握手客户端）、
 //! log/ns/store 基础服务、Linux personality、原生/POSIX 应用与服务管理器组成。
-//! manifest 含 `SERVICE_IMAGE_KIND_LINUX` 即让管理器进入代理场景：Store 就绪后
-//! 创建两个应用，签发文件会话与代理会话；两侧各自读取 Store 内的不同资源。
+//! manifest 含 Linux 场景 kind 即让管理器进入场景模式：Store 就绪后创建两个
+//! 应用，签发文件会话与代理会话。P2b-5 分两次启动，因为内核 Task 表只留两个
+//! `create_held` 空闲 id。
 
 use crate::{image, qemu};
 use prima_runtime::protocol::{
     SERVICE_BEHAVIOR_ALPHA, SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_NS, SERVICE_BEHAVIOR_STORE,
-    SERVICE_IMAGE_KIND_LINUX, SERVICE_IMAGE_KIND_NATIVE_APP, SERVICE_IMAGE_KIND_SERVICEMGR,
+    SERVICE_IMAGE_KIND_LINUX, SERVICE_IMAGE_KIND_LINUX_MATRIX, SERVICE_IMAGE_KIND_NATIVE_APP,
+    SERVICE_IMAGE_KIND_SERVICEMGR,
 };
 use std::{fs, path::Path};
 
 const LINUX_WITNESS: &str = "S7LX|read=1;proxy=1;status=0";
 /// `hello from prima\n` 的 `S6WRITE` 十六进制流。
 const LINUX_BYTES: &str = "S6WRITE|fd=1;hex=68656c6c6f2066726f6d207072696d610a";
-/// `prima rootfs\n`（13 B）——直接客户端看到的服务根，与 `/linux` 私有视图不同。
+/// `M4 fork ok\n` 与 `M4 exec child\n`：代理 fork 子注册、继承游标与 exec。
+const FORK_BYTES: &[&str] = &[
+    "S6WRITE|fd=1;hex=4d3420666f726b206f6b0a",
+    "S6WRITE|fd=1;hex=4d342065786563206368696c640a",
+];
+/// `shared\n`：同一 `/shared` 资源在两个策略视图里都可读。
+const SHARED_BYTES: &[&str] = &["S6WRITE|fd=1;hex=7368617265640a"];
+/// `M4 limit ok\n`：fork 上限失败后父进程仍可继续。
+const LIMIT_BYTES: &str = "S6WRITE|fd=1;hex=4d34206c696d6974206f6b0a";
+/// `prima rootfs\n`（13 B）——原生策略视图 `/native` 的根资源。
 const NATIVE_WITNESS: &str =
     "S7NA|abi=native;path=/README;hex=7072696d6120726f6f7466730a;read=13;status=0";
+/// 负例矩阵：私有根、`..`、绝对/相对符号链接、猜 fd、重放序号、伪造槽位。
+const NEGATIVES: &[&str] = &[
+    "S7NEG|case=private;errno=2;status=0",
+    "S7NEG|case=dotdot;errno=2;status=0",
+    "S7NEG|case=symlink;errno=2;status=0",
+    "S7NEG|case=symlinkup;errno=2;status=0",
+    "S7NEG|case=guessfd;errno=9;status=0",
+    "S7NEG|case=replay;errno=22;status=0",
+    "S7NEG|case=foreign;errno=13;status=0",
+    "S7NEGDONE|fail=0",
+];
+/// 两个 Linux 场景共享的正例：共享资源从 Linux 策略视图也可读。
+const SHARED_NATIVE: &str = "S7NPOS|case=shared;hex=7368617265640a;status=0";
 const COMBINED: &str = "S7ABI|linux=1;native=1;proxy=1;status=0";
 
+/// 每次启动最多两个 `create_held` guest 根（Task 表不回收已销毁 id），故矩阵
+/// 分成两个镜像：`lxsc` 跑私有读与 fork，`lxmx` 跑共享授权与 fork 限额。
 pub(crate) fn test() -> Result<(), String> {
-    let (images, output) = run_round()?;
-    for expected in [LINUX_WITNESS, LINUX_BYTES, NATIVE_WITNESS, COMBINED] {
-        if !output.contains(expected) {
+    for (kind, exits, extra) in [
+        (
+            SERVICE_IMAGE_KIND_LINUX,
+            ["S6EXIT|case=cat;status=0", "S6EXIT|case=M4-fork;status=0"].as_slice(),
+            [LINUX_BYTES, FORK_BYTES[0], FORK_BYTES[1]].as_slice(),
+        ),
+        (
+            SERVICE_IMAGE_KIND_LINUX_MATRIX,
+            [
+                "S6EXIT|case=cat-shared;status=0",
+                "S6EXIT|case=fork-limit;status=0",
+            ]
+            .as_slice(),
+            [SHARED_BYTES[0], LIMIT_BYTES].as_slice(),
+        ),
+    ] {
+        let output = run_round(kind)?;
+        let mut expected: Vec<&str> = vec![LINUX_WITNESS, NATIVE_WITNESS, SHARED_NATIVE, COMBINED];
+        expected.extend(NEGATIVES);
+        expected.extend(exits);
+        expected.extend(extra);
+        for expected in expected {
+            if !output.contains(expected) {
+                return Err(format!(
+                    "proxy scenario kind {kind:#x} missing witness {expected:?}\n{}",
+                    tail(&output)
+                ));
+            }
+        }
+        if !output.contains("S7HALF|first=") {
             return Err(format!(
-                "proxy scenario missing witness {expected:?}\n{}",
+                "proxy scenario kind {kind:#x} did not record one-sided exit\n{}",
                 tail(&output)
             ));
         }
+        if output.contains("S6PANIC|") || output.contains("|event=panic|") {
+            return Err(format!("proxy scenario panicked\n{}", tail(&output)));
+        }
     }
-    if output.contains("S6PANIC|") || output.contains("|event=panic|") {
-        return Err(format!("proxy scenario panicked\n{}", tail(&output)));
-    }
-    let _ = images;
-    println!("PASS S7PROXY abi=2 linux=cat native=/README proxy=1 shared_store=1");
+    println!(
+        "PASS S7PROXY abi=2 boots=2 linux=cat,fork,shared,limit native=/README proxy=1 \
+         shared_store=1 negatives=7"
+    );
     Ok(())
 }
 
@@ -43,8 +98,8 @@ fn tail(output: &str) -> String {
     lines.into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
-/// Build the scenario image once; the QEMU run is the evidence.
-fn run_round() -> Result<(image::Images, String), String> {
+/// Build one scenario image; the QEMU run is the evidence.
+fn run_round(linux_kind: u64) -> Result<String, String> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -68,10 +123,7 @@ fn run_round() -> Result<(image::Images, String), String> {
             SERVICE_BEHAVIOR_STORE,
             env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"),
         ),
-        (
-            SERVICE_IMAGE_KIND_LINUX,
-            env!("CARGO_BIN_FILE_PRIMA_USER_prima-linux"),
-        ),
+        (linux_kind, env!("CARGO_BIN_FILE_PRIMA_USER_prima-linux")),
         (
             SERVICE_IMAGE_KIND_NATIVE_APP,
             env!("CARGO_BIN_FILE_PRIMA_USER_prima-native-scenario"),
@@ -81,7 +133,7 @@ fn run_round() -> Result<(image::Images, String), String> {
             env!("CARGO_BIN_FILE_PRIMA_USER_prima-servicemgr"),
         ),
     ] {
-        let packaged = directory.join(format!("stage7-proxy-{kind:#x}.elf"));
+        let packaged = directory.join(format!("stage7-proxy-{linux_kind:#x}-{kind:#x}.elf"));
         image::strip_debug(Path::new(binary), &packaged)?;
         let bytes = fs::read(&packaged).map_err(|error| error.to_string())?;
         if bytes.is_empty() {
@@ -102,6 +154,10 @@ fn run_round() -> Result<(image::Images, String), String> {
     // the platform witness task reserved by the version-2 manifest layout.
     let images = image::package_images(|target| image::write_manifest(target, manifest))?;
     let output = qemu::run_bios_linux_capture(&images.bios)?;
-    fs::write(directory.join("S7PROXY.log"), &output).map_err(|error| error.to_string())?;
-    Ok((images, output))
+    fs::write(
+        directory.join(format!("S7PROXY-{linux_kind:#x}.log")),
+        &output,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(output)
 }

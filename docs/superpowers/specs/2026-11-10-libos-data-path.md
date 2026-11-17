@@ -220,8 +220,15 @@ Store 在 proxy 路径**一次**映射，前端只负责取负：
 | `/linux/fixturedir/alpha` | `a\n` | `87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7` |
 | `/linux/fixturedir/beta` | `b\n` | `0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f` |
 | `/shared/note` | `shared\n` | `cf99975aa7995fad86fae7f3b0905143f30a52501944dff26002afc99c3b8419` |
+| `/native/README` | `prima rootfs\n` | `f93300ea7f55bf939cf1791b8540524529df110305eac73c40dac61a9b06fe2d` |
+| `/shared/escape` | 符号链接 → `/linux/fixture.txt` | 目标串 `55b5852658be1c0320ebb2f0cd26115f0d262a1ae873fd69badbb3387397197f` |
+| `/shared/up` | 符号链接 → `../linux/fixture.txt` | 目标串 `39df9c3132bd7e670c67aeab1340e58a0bca181789c2ae0a82c5064e22b67de4` |
 
-`/linux` 根模式 0555；`/native` 为空；`/shared` 只由 `SERVICE_ROOT_SHARED` 暴露。
+P2b-5 修订（显式登记，非静默改写）：`/native` 不再为空，新增
+`/native/README` 作为原生策略视图的根资源；`/shared` 新增两条根外逃逸探针
+符号链接，视图解析必须夹在根内并返回 `ENOENT`。已有四个 fixture 的字节与哈希不变。
+
+`/linux` 根模式 0555；`/shared` 只由 `SERVICE_ROOT_SHARED` 暴露。
 视图根名 `shared` 是保留挂载点：fixture 中不得存在同名真实节点，`prepare_policy`
 发现冲突必须失败（fail closed）；运行时创建/rename 到该首段名必须拒绝。
 `shared` 只匹配视图根第一段；`..` 从共享子树根返回视图根；绝对符号链接目标从视图根
@@ -244,7 +251,7 @@ Linux personality 的 fork/exec/exit 不再操作域内 OFD 表，而是经已�
 | 消息 | 载荷 | 语义 |
 |---|---|---|
 | `PROXY_RESERVE` | `tag \| slot<<32` | Store 为 `entry.process` 预留子 owner，复制 `entry.owner` 的 OFD 持有位；回复 `FORK_ACK \| key`，0 表示失败 |
-| `PROXY_PUBLISH` | `tag \| slot<<32 \| child_task<<40 \| key` | 校验子 Task 的父 Process 等于 `entry.process`，把 key 绑定到子 Process cookie；回复 0 成功、1 失败 |
+| `PROXY_PUBLISH` | `tag \| slot<<32 \| child_task<<40 \| key` + 子 Task 的 TaskSend 能力 | 校验能力目标等于子 Task cookie（P2b-5 修订：受管 gate fork 在内核中无 Process 父系），把 key 绑定到子 Process cookie；回复 0 成功、1 失败 |
 | `PROXY_RELEASE` | `tag \| slot<<32 \| key` | 关闭并释放尚未发布的预留；已回收视为成功 |
 
 规则：
@@ -287,7 +294,9 @@ Linux personality 的 fork/exec/exit 不再操作域内 OFD 表，而是经已�
   Process 建立会话。`PROXY_CLOSE` 对缺失条目返回 0（死亡回收已清理），对他人
   条目返回 `EACCES`。
 - 原生/POSIX 应用使用直接会话（既有 `OPEN/SUBMIT/CLOSE`），不经代理；它读取
-  Store 服务根的静态资源。
+  Store 服务根的静态资源。**P2b-5 修订**：该选择让原生 ABI 看到服务根而非
+  `/native` 私有视图，私有资源并不隔离；P2b-5 改为原生策略视图代理会话，
+  `Direct` 保留为未选用的遗留传输。
 - 场景端点由管理器创建，栈预算与基址是显式容量契约：64 页、
   `0x0B00_0060_0000`，避免与 3.2 MiB 的 personality 映像、1 MiB 的
   `ENDPOINT_STACK_VA` 及 4 MiB 的 `SERVER_VA` 重叠。Linux personality 的结构性根
@@ -302,6 +311,66 @@ Linux personality 的 fork/exec/exit 不再操作域内 OFD 表，而是经已�
 `S7ABI|linux=1;native=1;proxy=1;status=0`。代理 fork 子注册、同一 `/shared`
 资源的显式授权、伪造/旧 incarnation/根逃逸与单侧退出属 P2b-5；本节的场景不替代
 正反例矩阵，也不关闭 P2。
+
+## P2b-5：代理路径正反例矩阵（2026-11-18）
+
+本节冻结 P2b-5 的机器证据口径与两处能力绑定修订。历史镜像、既有 72 轮 BIOS 套件
+与 Linux 11 项差分的行为、事件和回执不变；本节不关闭 P2，也不构成 7-A 证据。
+
+### 能力绑定（取代内核父系）
+
+受管 gate fork（`SYS_GATE_FORK`）创建的 Task 在内核中 `Process.parent = None`、
+`forked = false`，`task_parent_cookie` 返回 0。因此 P2b-3 的“子 Task 父 Process
+等于 `entry.process`”校验在真实代理路径上不可满足，P2b-4 也从未运行过 fork。
+P2b-5 改为能力绑定：
+
+- `PROXY_PUBLISH` 携带子 Task 的 `TaskSend` 能力。Store 校验能力目标等于子 Task
+  的完整 cookie，再按预留 key 绑定 owner。能力只能由其持有者派生，payload 中的
+  Task id 单独不构成授权。
+- `PROXY_REGISTER`/`PROXY_ADD` 不再沿内核父系遍历；管理器要求发送者是已授权文件
+  客户端、出示主体 TaskSend 能力且回复目标等于发送者，并把主体能力转交 Store。
+  Store 校验该能力目标等于命名的活 Task（cookie 与代际）后登记代理项。
+- 旧 incarnation 仍由完整 cookie（含 generation）匹配拒绝；host 测试
+  `reused_task_ids_cannot_select_old_sessions` 覆盖 id 复用，QEMU 无法强制任务
+  重生，故该负例只在 host 层出声。
+
+### 视图隔离与负例
+
+- 原生/POSIX 场景应用改用 `SERVICE_ROOT_NATIVE` 代理视图（`/native` + `/shared`），
+  不再经直接会话读取服务根。因此两侧私有根互不可见，`/shared` 是唯一显式共享
+  资源。`/native/README` 与 `/shared/note` 是可读正例。
+- `..` 在视图根处停留；绝对符号链接从视图根重新解析；相对链接从链接父目录解析后
+  仍过 `in_view` 检查。`/shared/escape`、`/shared/up` 在任一策略视图中都必须
+  `ENOENT`，而同一链接在服务根上确实指向目标文件（host 控制例）。
+- 负例矩阵（原生应用经真实直接文件会话 + 代理会话）：猜 fd → `EBADF`；重放已完成
+  `PROXY_SUBMIT` 序号 → `EINVAL`；猜未登记 proxy 槽位提交 → `EACCES`；私有根、
+  `..`、绝对/相对符号链接 → `ENOENT`。
+
+### 启动预算与两次启动
+
+内核 Task 表 `MAX_TASKS=18` 且 `task_create_held` 只扫描无记录的 id（已销毁 Task
+保留 Dead 记录、不复用），服务与场景客户端占满后每次启动只剩两个 `create_held`
+空闲 id。故矩阵分两次启动：kind `SERVICE_IMAGE_KIND_LINUX`（`0x105`，名 `lxsc`）
+跑 `cat` 与 `M4-fork`；kind `SERVICE_IMAGE_KIND_LINUX_MATRIX`（`0x107`，名
+`lxmx`）跑 `cat /shared/note` 与 fork 限额探针。`gate_fork` 走
+`ensure_thread_slot`，可复用无能力引用的 Dead 记录，故 fork 子任务不受此限。
+每次启动仍由管理器签发 Linux 与原生两个代理会话，并各自完成报告。
+
+### 验收
+
+`cargo xtask test-linux-proxy` 必须跑上述两次启动并观察到：
+
+- Linux：`S6EXIT|case=cat|M4-fork|cat-shared|fork-limit;status=0`、`M4 fork ok`/
+  `M4 exec child`/`shared`/`M4 limit ok` 的字节流，以及
+  `S7LX|read=1;proxy=1;status=0`。
+- 原生：`S7NA|...;read=13;status=0`、`S7NPOS|case=shared;...;status=0`、
+  七条 `S7NEG|...;status=0` 与 `S7NEGDONE|fail=0`。
+- 单侧退出：首个完成报告触发 `S7HALF|first=linux|native`，管理器在两侧都报告后
+  才写 `S7ABI` 并退出（0x10/0x11）。
+
+一次启动同时覆盖两项后若再创建第三个 guest 根会得到 `ENOSPC`；这是已登记的
+Task id 容量限制，不是可忽略的重试错误。反例失败必须保留在报告中，不得以重跑
+覆盖。
 
 ## 验证与重审
 

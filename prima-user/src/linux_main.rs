@@ -4,7 +4,10 @@
 
 use prima_runtime::{
     Capability, Error, Rights, Runtime, TaskId, TaskSpec, X86_64Transport,
-    protocol::{SERVICE_NAME_LINUX_SCENARIO, SERVICE_PROXY_DONE_TAG, SERVICE_ROOT_LINUX},
+    protocol::{
+        SERVICE_NAME_LINUX_MATRIX, SERVICE_NAME_LINUX_SCENARIO, SERVICE_PROXY_DONE_TAG,
+        SERVICE_ROOT_LINUX,
+    },
 };
 use prima_user::linux::{
     CASES, MAX_FAMILY_TASKS, P1, P2, PTHREAD, PendingTraps, Process,
@@ -147,13 +150,17 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
     let mut audit_cursor = 0;
     // P2b-4：管理器把本任务按 LINUX_SCENARIO 名创建时进入代理场景——数据面
     // 一律经真实 Store，会话与根视图由管理器签发。
-    let proxy = selection == SERVICE_NAME_LINUX_SCENARIO;
+    let proxy = selection == SERVICE_NAME_LINUX_SCENARIO || selection == SERVICE_NAME_LINUX_MATRIX;
     if proxy {
         emit(&rt, serial, b"S7LXP|phase=boot\n");
         emit(&rt, serial, b"S7LXP|phase=mode\n");
     }
-    let cases = if proxy {
-        &["cat"][..]
+    // P2b-5：Task 表只剩两个 `create_held` 空闲 id（销毁记录不复用），故矩阵
+    // 分两次启动：`lxsc` 跑私有读与 fork 子代理注册，`lxmx` 跑共享授权与 fork 限额。
+    let cases = if selection == SERVICE_NAME_LINUX_SCENARIO {
+        &["cat", "M4-fork"][..]
+    } else if selection == SERVICE_NAME_LINUX_MATRIX {
+        &["cat-shared", "fork-limit"][..]
     } else if selection == 0 {
         &CASES[..]
     } else if cfg!(feature = "libos-bench") && selection == 12 {
@@ -162,7 +169,8 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
         let index = selection as usize - 1;
         &CASES[index..index + 1]
     };
-    for &case in cases {
+    let mut failed = false;
+    'cases: for (case_index, &case) in cases.iter().enumerate() {
         emit(&rt, serial, b"S6BEGIN|case=");
         emit(&rt, serial, case.as_bytes());
         emit(&rt, serial, b"\n");
@@ -202,6 +210,11 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
             }
         };
         let cookie = rt.send_target_cookie(manager).unwrap();
+        if proxy {
+            emit(&rt, serial, b"S7LXP|phase=task;cookie=");
+            number(&rt, serial, cookie);
+            emit(&rt, serial, b"\n");
+        }
         assert!(rt.task_prepared(TaskId::from_raw(cookie as u32)).unwrap());
         assert_eq!(rt.task_start_gated(manager, None, 0), Err(Error::Fault));
         assert_eq!(
@@ -221,6 +234,8 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
             "M4" => c"M4",
             "M4-fork" => c"M4-fork",
             "M3" => c"M3",
+            "cat-shared" => c"cat",
+            "fork-limit" => c"fork-limit",
             #[cfg(feature = "libos-bench")]
             "L1" => c"L1",
             _ => unreachable!(),
@@ -235,6 +250,10 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
             }
             "cat" => {
                 argv[2] = c"/fixture.txt".as_ptr() as u64;
+                3
+            }
+            "cat-shared" => {
+                argv[2] = c"/shared/note".as_ptr() as u64;
                 3
             }
             "ls" => {
@@ -252,6 +271,7 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
                 "M4" => PTHREAD,
                 "M4-fork" => prima_user::linux::PROCESS,
                 "M3" => prima_user::linux::MATRIX,
+                "fork-limit" => prima_user::linux::FORKLIMIT,
                 #[cfg(feature = "libos-bench")]
                 "L1" => prima_user::linux::LIBOS_BENCH,
                 _ => IMAGE,
@@ -302,9 +322,17 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
         let mut unsupported = 0;
         loop {
             let req = rt.gate_wait(gate).unwrap();
-            let owner = family
-                .owner(req.task_cookie)
-                .expect("authenticated family member");
+            let owner = match family.owner(req.task_cookie) {
+                Some(owner) => owner,
+                None => {
+                    emit(&rt, serial, b"S7LXP|phase=stray;cookie=");
+                    number(&rt, serial, req.task_cookie);
+                    emit(&rt, serial, b";number=");
+                    number(&rt, serial, req.number);
+                    emit(&rt, serial, b"\n");
+                    panic!("authenticated family member");
+                }
+            };
             if !seen_tasks.contains(&req.task_cookie) {
                 *seen_tasks
                     .iter_mut()
@@ -365,7 +393,13 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
             } else {
                 let mut terminated = None;
                 let result = if req.number == 57 {
-                    Some(family.fork(&rt, &mut *store, &req, gate))
+                    let forked = family.fork(&rt, &mut *store, &req, gate);
+                    if proxy && forked < 0 {
+                        emit(&rt, serial, b"S7LXP|phase=forkerr;code=");
+                        number(&rt, serial, (-forked) as u64);
+                        emit(&rt, serial, b"\n");
+                    }
+                    Some(forked)
                 } else if req.number == 59 {
                     match family.exec(
                         &rt,
@@ -481,9 +515,18 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
             number(&rt, serial, unsupported);
             emit(&rt, serial, b"\n");
             if proxy {
+                failed |= status != 0;
+                emit(&rt, serial, b"S7LXC|case=");
+                emit(&rt, serial, case.as_bytes());
+                emit(&rt, serial, b";status=");
+                number(&rt, serial, u64::from(status != 0));
+                emit(&rt, serial, b"\n");
+                if !failed && case_index + 1 < cases.len() {
+                    continue 'cases;
+                }
                 // The manager owns the machine verdict in the proxy scenario.
                 emit(&rt, serial, b"S7LX|read=1;proxy=1;status=");
-                number(&rt, serial, u64::from(status != 0));
+                number(&rt, serial, u64::from(failed));
                 emit(&rt, serial, b"\n");
                 if let Ok(send) = Capability::from_raw(send_cap_raw)
                     && let Ok(manager) = rt.send_target_cookie(send)
@@ -491,7 +534,7 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
                     let _ = rt.send(
                         TaskId::from_raw(manager as u32),
                         send,
-                        SERVICE_PROXY_DONE_TAG | u64::from(status != 0),
+                        SERVICE_PROXY_DONE_TAG | u64::from(failed),
                         &[],
                     );
                 }

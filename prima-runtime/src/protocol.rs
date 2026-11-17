@@ -65,12 +65,16 @@ pub const SERVICE_IMAGE_KIND_ECHO_ARGS: u64 = 0x104;
 /// P2b-4：Linux personality 的 opaque kind。仅存在于代理场景镜像；管理器见到它即进入
 /// 场景模式，创建该任务并把它当作 Store 的代理客户端授权。
 pub const SERVICE_IMAGE_KIND_LINUX: u64 = 0x105;
-/// P2b-4：原生/POSIX 代理场景应用的 opaque kind（直接文件会话客户端）。
+/// P2b-4：原生/POSIX 代理场景应用的 opaque kind（原生策略视图客户端）。
 pub const SERVICE_IMAGE_KIND_NATIVE_APP: u64 = 0x106;
+/// P2b-5：共享授权与 fork 限额的第二个 Linux 场景 kind。内核 Task 表只留两个
+/// `create_held` 空闲 id（已销毁记录不复用），故矩阵分两次启动。
+pub const SERVICE_IMAGE_KIND_LINUX_MATRIX: u64 = 0x107;
 /// P2b-4：场景客户端运行期名（≤5 字节）。Linux personality 据此识别代理模式。
-/// `"lxsc"`/`"nasc"` 不是 `SERVICE_TABLE` 条目，不会自报或参与既有探针。
+/// `"lxsc"`/`"nasc"`/`"lxmx"` 不是 `SERVICE_TABLE` 条目，不会自报或参与既有探针。
 pub const SERVICE_NAME_LINUX_SCENARIO: u64 = pack_service_name(b"lxsc");
 pub const SERVICE_NAME_NATIVE_SCENARIO: u64 = pack_service_name(b"nasc");
+pub const SERVICE_NAME_LINUX_MATRIX: u64 = pack_service_name(b"lxmx");
 /// P2b-4：场景客户端向管理器报告完成。低 8 位是状态（0 = 成功）。
 pub const SERVICE_PROXY_DONE_TAG: u64 = 0x5F2E_0000_0000_0000;
 /// M5：argv 块在参数载体页内的偏移。内核要求每个 manifest 条目都是合法 ELF，

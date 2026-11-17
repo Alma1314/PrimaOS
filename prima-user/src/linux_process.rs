@@ -129,7 +129,7 @@ impl Family {
         let cookie = rt
             .send_target_cookie(manager)
             .expect("published child cookie");
-        let child_owner = match self.sessions[owner].publish(store, key, cookie) {
+        let child_owner = match self.sessions[owner].publish(store, key, cookie, manager) {
             Ok(child_owner) => child_owner,
             Err(error) => {
                 // The kernel child already exists; Local cannot fail here, and

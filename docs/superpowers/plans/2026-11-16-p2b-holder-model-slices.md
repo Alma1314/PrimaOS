@@ -10,13 +10,14 @@ updated: 2026-11-17
 # P2b 与 holder 模型依赖切片计划
 
 > 2026-11-18 进度：P2b-0 契约、P2b-1 Store 批量 ops、P2b-2 Linux 前端切换、
-> P2b-3 fork/exec/exit 生命周期与 P2b-4 镜像/会话接线已落盘；workspace/lint、
-> 既有 Linux 差分与新增 `test-linux-proxy` 两 ABI 场景通过。P2b-5 代理正反例
-> 矩阵与 P2b-6 收口未做。证据见
+> P2b-3 fork/exec/exit 生命周期、P2b-4 镜像/会话接线与 P2b-5 代理正反例矩阵
+> 已落盘；workspace/lint、既有 Linux 差分与 `test-linux-proxy` 两次启动通过。
+> P2b-6 收口未做。证据见
 > [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)、
 > [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md)、
-> [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md) 与
-> [P2b-4 报告](../reports/2026-11-18-p2b-proxy-wiring.md)。
+> [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md)、
+> [P2b-4 报告](../reports/2026-11-18-p2b-proxy-wiring.md) 与
+> [P2b-5 报告](../reports/2026-11-18-p2b-proxy-matrix.md)。
 
 ## 目标、范围与基线
 
@@ -199,6 +200,12 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 - 验收：命令、退出码、trace 断言与必要输出摘录进报告；失败保留，不以重跑覆盖。
 - 停止条件：既有 72 轮回归失败或需要修改冻结事件时停止；逐条登记后才可继续。
 - 不包含：7-A 退出、SMP、配额、恢复。
+- 2026-11-18：矩阵分两次启动（`0x105`/`0x107`），覆盖 Linux 私有读、代理 fork
+  子注册与 exec、`/shared` 显式授权、fork 限额，以及原生策略视图的七条负例；
+  `S7HALF` 记录单侧先完成。发现并修正两处真实路径缺陷：受管 gate fork 无内核
+  Process 父系（改为 TaskSend 能力绑定）、代理页槽位复用的延迟销毁未重试。
+  既有 72 轮 BIOS 套件未在本片实跑，留作 P2b-6 停止条件。见
+  [报告](../reports/2026-11-18-p2b-proxy-matrix.md)。
 
 ### P2b-6 P2b 收口
 

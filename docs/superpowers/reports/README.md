@@ -21,6 +21,8 @@ updated: 2026-11-18
 
 2026-11-18：[P2b-4 镜像接线与两 ABI 场景](2026-11-18-p2b-proxy-wiring.md)；管理器签发文件/代理会话，Linux personality 经真实 Remote 读 Store 的 `/linux/fixture.txt`，原生应用读 `/README`；workspace 1169、lint、`test-linux-proxy` 与既有差分通过，正反例矩阵待P2b-5。
 
+2026-11-18：[P2b-5 代理路径正反例矩阵](2026-11-18-p2b-proxy-matrix.md)；两次 QEMU 启动覆盖 Linux 私有读/代理 fork/共享授权/fork 限额与原生策略视图七条负例；以能力绑定取代不可满足的内核父系校验，workspace 1170、lint 与既有差分 22 轮通过；P2b-6 收口待做。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。

@@ -2,9 +2,10 @@
 //! batch submitted through a registered proxy session; the frontend keeps no
 //! file content or store handles of its own.
 //!
-//! `Store` is the transport seam. The manager-issued session transport lands
-//! with the P2b-4 startup wiring; `Local` is the in-process store used until
-//! then and by host tests.
+//! `Store` is the transport seam. `Remote` is the manager-issued proxy session
+//! (P2b-4/P2b-5); `Local` is the in-process store used by host tests and the
+//! legacy differential. `Direct` keeps the plain direct-session client, which
+//! the P2b-5 scenario no longer selects in favor of a policy view.
 
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
@@ -34,8 +35,10 @@ pub trait Store {
     /// Reserve a child owner inheriting the acting owner's OFDs.
     fn reserve(&mut self, owner: u8) -> Result<u32, i64>;
     /// Bind a reservation to the published child Process cookie and return the
-    /// child owner. The reservation belongs to the acting owner's entry.
-    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64>;
+    /// child owner. The reservation belongs to the acting owner's entry. A real
+    /// store authenticates `child` by the presented TaskSend capability; the
+    /// kernel records no process parent for a managed gate fork.
+    fn publish(&mut self, owner: u8, key: u32, child: u64, task: Capability) -> Result<u8, i64>;
     /// Drop a reservation that will not be published.
     fn release(&mut self, owner: u8, key: u32) -> Result<(), i64>;
     /// Close every OFD held by `owner` (process exit).
@@ -71,12 +74,23 @@ impl Session {
         self.owner = owner;
     }
 
+    /// Next accepted sequence; the last accepted one is `next() - 1`.
+    pub fn next(&self) -> u64 {
+        self.next
+    }
+
     pub fn reserve(&mut self, store: &mut dyn Store) -> Result<u32, i64> {
         store.reserve(self.owner)
     }
 
-    pub fn publish(&mut self, store: &mut dyn Store, key: u32, child: u64) -> Result<u8, i64> {
-        store.publish(self.owner, key, child)
+    pub fn publish(
+        &mut self,
+        store: &mut dyn Store,
+        key: u32,
+        child: u64,
+        task: Capability,
+    ) -> Result<u8, i64> {
+        store.publish(self.owner, key, child, task)
     }
 
     pub fn release(&mut self, store: &mut dyn Store, key: u32) -> Result<(), i64> {
@@ -464,7 +478,8 @@ impl Store for Local {
         Ok(key)
     }
 
-    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64> {
+    fn publish(&mut self, owner: u8, key: u32, child: u64, task: Capability) -> Result<u8, i64> {
+        let _ = task;
         self.slot(owner)?;
         if child >> 32 == 0 {
             return Err(-13);
@@ -732,9 +747,13 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
     }
 
     fn send_control(&mut self, payload: u64) -> Result<u64, i64> {
+        self.send_control_caps(payload, &[])
+    }
+
+    fn send_control_caps(&mut self, payload: u64, caps: &[Capability]) -> Result<u64, i64> {
         let (store_cookie, store) = self.store.ok_or(-13)?;
         self.rt
-            .send(TaskId::from_raw(store_cookie as u32), store, payload, &[])
+            .send(TaskId::from_raw(store_cookie as u32), store, payload, caps)
             .map_err(|_| -13)?;
         loop {
             let message = self.rt.receive().map_err(|_| -5)?;
@@ -746,6 +765,34 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
             }
             drop_caps(self.rt, &message);
             return Ok(message.payload & 0xffff_ffff);
+        }
+    }
+
+    /// Proxy slot bound to a local owner tag.
+    pub fn slot(&self, owner: u8) -> Result<u8, i64> {
+        self.entry(owner).map(|entry| entry.slot)
+    }
+
+    /// Send one raw proxy control frame and return the store status word.
+    /// Only the negative matrix uses this: `PROXY_SUBMIT` replays and
+    /// unregistered slots must be rejected by the store, not by the client.
+    pub fn probe(&mut self, owner: u8, payload: u64) -> Result<u64, i64> {
+        self.entry(owner)?;
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        self.rt
+            .send(TaskId::from_raw(store_cookie as u32), store, payload, &[])
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != bulk::COMPLETE
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = (message.payload >> 32) & 0xffff;
+            drop_caps(self.rt, &message);
+            return Ok(status);
         }
     }
 
@@ -821,13 +868,22 @@ impl<T: SyscallTransport> Store for Remote<'_, T> {
         Ok(key as u32)
     }
 
-    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64> {
+    fn publish(&mut self, owner: u8, key: u32, child: u64, task: Capability) -> Result<u8, i64> {
         let entry = self.entry(owner)?;
         let payload = bulk::PROXY_PUBLISH
             | (u64::from(entry.slot) << bulk::PROXY_SLOT_SHIFT)
             | ((child as u32 & 0xff) as u64) << bulk::PROXY_CHILD_SHIFT
             | u64::from(key);
-        let reply = self.send_control(payload)?;
+        // The child TaskSend capability is the authenticated binding; the
+        // reservation key alone never names an arbitrary task.
+        let subject = self.rt.cap_derive(task, TASK_SEND).map_err(|_| -13)?;
+        let reply = match self.send_control_caps(payload, &[subject]) {
+            Ok(reply) => reply,
+            Err(error) => {
+                let _ = self.rt.cap_drop(subject);
+                return Err(error);
+            }
+        };
         if reply & 0xff != 0 {
             return Err(-13);
         }
@@ -892,8 +948,9 @@ impl<T: SyscallTransport> Store for Remote<'_, T> {
 /// Fixed VA for the direct client's single batch page.
 pub const DIRECT_PAGE_VA: u64 = 0x0000_0e00_0000_0000;
 
-/// Direct file session client: the P2b-4 native/POSIX ABI probe. Its batches
-/// name no proxy slot; the store binds the owner from the registering Process.
+/// Plain direct-session client. Its batches name no proxy slot; the store binds
+/// the owner from the registering Process. Kept as the legacy transport: P2b-5
+/// moved the native scenario onto a policy view so private roots stay isolated.
 pub struct Direct<'a, T: SyscallTransport> {
     rt: &'a Runtime<T>,
     self_cap: Capability,
@@ -1105,6 +1162,10 @@ mod tests {
     use super::*;
     use prima_runtime::{bulk::DIRFD_ROOT, vfs};
 
+    fn cap() -> Capability {
+        Capability::from_raw((1 << 32) | 3).unwrap()
+    }
+
     #[test]
     fn session_roundtrip_covers_open_write_read_stat_seek_dirents_and_close() {
         let mut store = Local::new().unwrap();
@@ -1212,7 +1273,9 @@ mod tests {
         assert_eq!(&out, b"hello");
 
         let key = parent.reserve(&mut store).unwrap();
-        let child_owner = parent.publish(&mut store, key, (2 << 32) | 3).unwrap();
+        let child_owner = parent
+            .publish(&mut store, key, (2 << 32) | 3, cap())
+            .unwrap();
         let mut child = Session::new();
         child.set_owner(child_owner);
         assert_eq!(child.read(&mut store, fd, &mut out), Ok(5));
@@ -1228,15 +1291,18 @@ mod tests {
         // The freed owner slot is reusable for the next child.
         let key = parent.reserve(&mut store).unwrap();
         assert_eq!(
-            parent.publish(&mut store, key, (3 << 32) | 4),
+            parent.publish(&mut store, key, (3 << 32) | 4, cap()),
             Ok(child_owner)
         );
         // Republishing the same child is idempotent; other forms are rejected.
         assert_eq!(
-            parent.publish(&mut store, key, (3 << 32) | 4),
+            parent.publish(&mut store, key, (3 << 32) | 4, cap()),
             Ok(child_owner)
         );
-        assert_eq!(parent.publish(&mut store, key, (4 << 32) | 5), Err(-13));
+        assert_eq!(
+            parent.publish(&mut store, key, (4 << 32) | 5, cap()),
+            Err(-13)
+        );
         assert_eq!(parent.release(&mut store, key), Err(-13));
     }
 
@@ -1245,10 +1311,13 @@ mod tests {
         let mut store = Local::new().unwrap();
         let mut session = Session::new();
         let key = session.reserve(&mut store).unwrap();
-        assert_eq!(session.publish(&mut store, key, 0), Err(-13));
+        assert_eq!(session.publish(&mut store, key, 0, cap()), Err(-13));
         assert_eq!(session.release(&mut store, key), Ok(()));
         assert_eq!(session.release(&mut store, key), Ok(()));
-        assert_eq!(session.publish(&mut store, key, (2 << 32) | 3), Err(-13));
+        assert_eq!(
+            session.publish(&mut store, key, (2 << 32) | 3, cap()),
+            Err(-13)
+        );
         assert_eq!(session.close_owner(&mut store), Ok(()));
         assert!(session.reserve(&mut store).is_ok());
         assert_eq!(store.close_owner(31), Err(-13));

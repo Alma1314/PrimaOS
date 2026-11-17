@@ -140,6 +140,8 @@ impl Table {
 const LINUX_FIXTURE_FILE: &[u8] = b"hello from prima\n";
 const LINUX_FIXTURE_ENTRIES: [(&[u8], &[u8]); 2] = [(b"alpha", b"a\n"), (b"beta", b"b\n")];
 const SHARED_NOTE: &[u8] = b"shared\n";
+/// P2b-5：原生策略视图的根资源，字节与服务根 `/README` 相同。
+pub const NATIVE_README: &[u8] = b"prima rootfs\n";
 
 fn ensure_directory<S: Storage>(
     storage: &mut S,
@@ -199,6 +201,10 @@ pub fn prepare_policy<S: Storage>(storage: &mut S, policy: u8) -> Result<vfs::Vi
     let (shared, shared_new) = ensure_directory(storage, b"/shared")?;
     if shared_new {
         write_fixture(storage, b"/shared/note", SHARED_NOTE)?;
+        // P2b-5 根逃逸探针：绝对与相对目标都落在各自的私有视图之外，
+        // 视图解析必须夹在根内并返回 ENOENT。
+        vfs::symlink(storage, vfs::ROOT, b"/linux/fixture.txt", b"/shared/escape")?;
+        vfs::symlink(storage, vfs::ROOT, b"../linux/fixture.txt", b"/shared/up")?;
     }
     if policy == SERVICE_ROOT_SHARED {
         return Ok(vfs::View::new(shared));
@@ -211,6 +217,9 @@ pub fn prepare_policy<S: Storage>(storage: &mut S, policy: u8) -> Result<vfs::Vi
             b"/native"
         },
     )?;
+    if policy == SERVICE_ROOT_NATIVE && created {
+        write_fixture(storage, b"/native/README", NATIVE_README)?;
+    }
     if policy == SERVICE_ROOT_LINUX && created {
         write_fixture(storage, b"/linux/fixture.txt", LINUX_FIXTURE_FILE)?;
         ensure_directory(storage, b"/linux/fixturedir")?;
@@ -382,10 +391,48 @@ mod policy_tests {
         );
         let native = prepare_policy(&mut storage, SERVICE_ROOT_NATIVE).unwrap();
         assert!(same(&mut storage, native, b"/shared/note", SHARED_NOTE));
+        assert!(same(&mut storage, native, b"/README", NATIVE_README));
         assert_eq!(
             vfs::resolve(&mut storage, vfs::ROOT, b"/native"),
             Ok(native.root)
         );
         assert_ne!(native.root, shared.root);
+    }
+
+    /// P2b-5：绝对/相对符号链接都不能把策略视图带出根；同一链接在服务根里确实
+    /// 指向目标文件，证明失败来自视图约束而不是损坏的 fixture。
+    #[test]
+    fn policy_views_contain_absolute_and_relative_symlink_targets() {
+        let mut storage = mounted();
+        let linux = prepare_policy(&mut storage, SERVICE_ROOT_LINUX).unwrap();
+        let native = prepare_policy(&mut storage, SERVICE_ROOT_NATIVE).unwrap();
+        let target = vfs::resolve(&mut storage, vfs::ROOT, b"/linux/fixture.txt").unwrap();
+        assert_eq!(
+            vfs::resolve(&mut storage, vfs::ROOT, b"/shared/escape"),
+            Ok(target)
+        );
+        assert_eq!(
+            vfs::resolve(&mut storage, vfs::ROOT, b"/shared/up"),
+            Ok(target)
+        );
+        for view in [linux, native] {
+            assert_eq!(
+                vfs::resolve_in(&mut storage, view, view.root, b"/shared/escape"),
+                Err(VfsError::NoEnt)
+            );
+            assert_eq!(
+                vfs::resolve_in(&mut storage, view, view.root, b"/shared/up"),
+                Err(VfsError::NoEnt)
+            );
+        }
+        // 私有根互不可见：Linux 无 /native，原生无 /linux。
+        assert_eq!(
+            vfs::resolve_in(&mut storage, linux, linux.root, b"/linux/fixture.txt"),
+            Err(VfsError::NoEnt)
+        );
+        assert_eq!(
+            vfs::resolve_in(&mut storage, native, native.root, b"/linux/fixture.txt"),
+            Err(VfsError::NoEnt)
+        );
     }
 }
