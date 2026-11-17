@@ -41,10 +41,11 @@ fork/exit 生命周期未迁移（P2b-3）、代理路径无 QEMU 正反例（P2
     `OpenFiles`、`dir_position`、`select`。
   - `Process.fds` 改为 app fd → wire fd（Store OFD 句柄）映射；`open` 由
     `entry.policy` 派生的视图解析（`DIRFD_ROOT` 或目录 wire fd），保留原有
-    read-only/NONBLOCK/CLOEXEC/LARGEFILE 接受集与 `EMFILE` 槽位上限。
+    read-only/NONBLOCK/CLOEXEC/LARGEFILE 接受集与 `EMFILE` 槽位上限。OPEN 只回
+    wire fd，前端随后提交一次 STAT 记录句柄类型，使目录 `read` 保持 `EBADF`。
   - `read` 失败回滚改用 Store `LSEEK`；`stat`/`newfstatat` 解码 16 B 中性记录后
     再写 144 B Linux stat；`getdents` 只发射完整 Linux 记录，未发射的 Store
-    尾记录用 `LSEEK` 回退。
+    尾记录用 `LSEEK` 回退；`gate_copy_out` 失败时同样回退已消费的记录。
 - `prima-user/src/linux_process.rs`：`Family` 持有 `Session`；`fork_inner`
   只复制 fd 表，Store owner 预留/回滚留给 P2b-3；`exec` 只清 CLOEXEC 槽位，
   Store 侧关闭留给 P2b-3；`cleanup` 只释放 personality 段。
@@ -58,7 +59,7 @@ fork/exit 生命周期未迁移（P2b-3）、代理路径无 QEMU 正反例（P2
 
 | 命令/输入 | 本次实跑或引用 | 退出结果与观察 | 证据范围 |
 |---|---|---|---|
-| `cargo test --workspace` | 本次 | PASS；1162 passed、0 failed、1 ignored | host |
+| `cargo test --workspace` | 本次 | PASS；1166 passed、0 failed、1 ignored | host |
 | `cargo xtask lint` | 本次 | PASS；fmt、clippy `-D warnings`、裸机构建、44 文件零 unsafe、personality 边界 | host/静态 |
 | `PRIMA_LINUX_ELF=/usr/bin/busybox cargo check -p prima-user --features linux-probe --bin prima-linux` | 本次 | PASS | host/编译 |
 | `CARGO_NET_OFFLINE=true PRIMA_LINUX_ELF=/usr/bin/busybox cargo run -p xtask --features linux-probe -- test-linux` | 本次 | PASS；参考 11 项；Prima 两轮各 11 项，stdout/stderr/status/审计均相符 | QEMU（既有套件，非代理路径） |
@@ -72,6 +73,17 @@ fork/exit 生命周期未迁移（P2b-3）、代理路径无 QEMU 正反例（P2
   `#[allow(clippy::too_many_arguments)]`、删除无用更新后通过，属工具门记录。
 - `linux_dirents` 测试初版预算/消费字节推导有误；按记录长度 24 B 重算后通过，
   不改变实现。
+- 新鲜上下文复核发现并已修复：
+  - GETDENTS 在 `gate_copy_out` 失败时未回退已消费的记录，重试会跳过条目；
+    现回退 `consumed`，`failed_dirent_copy_rewinds_the_shared_store_cursor`
+    在无修复版本上 RED、修复后 GREEN。
+  - Store `READ` 对目录返回目录字节流（原生语义），而 P2b-0 的 Linux 矩阵要求
+    目录 `read` 返回 `EBADF`；现 open 后以 STAT 记录句柄类型，`read` 返回 `-9`，
+    `directory_handles_reject_read_with_ebadf` RED→GREEN。
+  - `Local` 的 `Unformatted`/`Io` 映射由 38/14 对齐为契约的 5。
+  - 1～4 B 的 `getdents` 预算此前被当作 EOF；现至少读取一条最小中性记录，
+    仍返回 `EINVAL` 并回退游标（`tiny_dirent_budget_reports_einval_instead_of_eof`）。
+  - fork 后单 owner 共享/关闭语义未修，按计划留给 P2b-3，不隐藏。
 - **传输仍是进程内 `Local`**：前端已不持有文件内容，但 QEMU 中的字节仍来自
   `Local` 的 fixture，而不是管理器签发会话的真实 Store IPC。真实接线、拒绝
   伪造/旧 incarnation、`/linux`、`/native`、`/shared` 的启动策略执行属 P2b-4。

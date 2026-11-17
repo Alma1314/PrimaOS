@@ -2115,7 +2115,7 @@
       "authority": "current-status",
       "status": "maintained",
       "date": "2026-11-17",
-      "sha256": "4dadefa98e75857c618c791fa007e060afd745c6b5645f56d2b02976301bad41",
+      "sha256": "5a8f1068477973549e602622dc0102269f0534d56401b43e5c3b347c24538d93",
       "topic_ids": [
         "compatibility"
       ],
@@ -34496,16 +34496,16 @@
       "authority": "scoped-implementation-and-validation",
       "status": "validated-with-limits",
       "date": "2026-11-17",
-      "sha256": "01a2e95ff317fbfb024b55bf6c2da43aca1457f9bc939c2bc3202be60a4e76c7",
+      "sha256": "75f600f031f9c1d15fa8398b6c77edf5c9f90469840ffd714793b11e8daf013c",
       "topic_ids": [],
-      "lines": 96,
+      "lines": 108,
       "sections": [
         {
           "level": 1,
           "title": "P2b-2：Linux 前端切换到 Store 批量数据面",
           "line": 10,
           "anchor": "p2b-2linux-前端切换到-store-批量数据面",
-          "end_line": 96
+          "end_line": 108
         },
         {
           "level": 2,
@@ -34526,35 +34526,35 @@
           "title": "实现内容",
           "line": 30,
           "anchor": "实现内容",
-          "end_line": 56
+          "end_line": 57
         },
         {
           "level": 2,
           "title": "命令与结果",
-          "line": 57,
+          "line": 58,
           "anchor": "命令与结果",
-          "end_line": 67
+          "end_line": 68
         },
         {
           "level": 2,
           "title": "失败、反例与限制",
-          "line": 68,
+          "line": 69,
           "anchor": "失败反例与限制",
-          "end_line": 85
+          "end_line": 97
         },
         {
           "level": 2,
           "title": "阶段/profile 影响",
-          "line": 86,
+          "line": 98,
           "anchor": "阶段profile-影响",
-          "end_line": 90
+          "end_line": 102
         },
         {
           "level": 2,
           "title": "后继关系",
-          "line": 91,
+          "line": 103,
           "anchor": "后继关系",
-          "end_line": 96
+          "end_line": 108
         }
       ],
       "mentioned_ids": [],
@@ -34568,11 +34568,11 @@
           "target": "../plans/2026-11-16-p2b-holder-model-slices.md"
         },
         {
-          "line": 93,
+          "line": 105,
           "target": "../plans/2026-11-16-p2b-holder-model-slices.md"
         },
         {
-          "line": 96,
+          "line": 108,
           "target": "../specs/2026-11-10-libos-data-path.md"
         }
       ]
@@ -34680,7 +34680,7 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-11-17",
-      "sha256": "7cd47e68657e697aadc451d3483ad610af708a7b5b5324f100f2238358c8a6f6",
+      "sha256": "7bbad7e1d2f2b061b0524fc1d0cbc8523d14a3f113438f7093450938cc7288ad",
       "topic_ids": [],
       "lines": 399,
       "sections": [

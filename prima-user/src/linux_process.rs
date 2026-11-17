@@ -106,6 +106,7 @@ impl Family {
             clear_tid: 0,
             owner: slot as u8,
             fds: parent.fds,
+            dirs: parent.dirs,
             fd_flags: parent.fd_flags,
             standard_open: parent.standard_open,
             brk: parent.brk,
@@ -223,6 +224,7 @@ impl Family {
                 process.standard_open[fd] = false;
             } else {
                 process.fds[fd] = None;
+                process.dirs[fd] = false;
             }
             process.fd_flags[fd] = 0;
         }

@@ -287,8 +287,7 @@ fn status(error: VfsError) -> u32 {
         VfsError::Exist => 17,
         VfsError::Invalid => 22,
         VfsError::NoSpace => 28,
-        VfsError::Unformatted => 38,
-        VfsError::Io => 14,
+        VfsError::Unformatted | VfsError::Io => 5,
         VfsError::Loop => 40,
         VfsError::BadHandle => 9,
         VfsError::TooManyOpen => 24,
@@ -459,6 +458,12 @@ mod tests {
         // A short budget rewinds the record the frontend did not emit.
         assert_eq!(session.lseek(&mut store, dir, -1, 1), Ok(read as u64 - 1));
         assert_eq!(session.close(&mut store, dir), Ok(()));
+    }
+
+    #[test]
+    fn io_errors_keep_the_frozen_storage_errno() {
+        assert_eq!(status(VfsError::Unformatted), 5);
+        assert_eq!(status(VfsError::Io), 5);
     }
 
     #[test]

@@ -208,6 +208,8 @@ pub struct Process {
     owner: u8,
     /// Application fd slots map to store wire fds; the store owns the OFD.
     fds: [Option<u8>; 16],
+    /// Directory handles reject `read` with `EBADF` per the P2b-0 matrix.
+    dirs: [bool; 16],
     fd_flags: [u64; 16],
     standard_open: [bool; 3],
     brk: u64,
@@ -229,6 +231,7 @@ impl Process {
             clear_tid: 0,
             owner: 0,
             fds: [None; 16],
+            dirs: [false; 16],
             fd_flags: [0; 16],
             standard_open: [true; 3],
             brk: HEAP,
@@ -296,7 +299,20 @@ impl Process {
                 0
             },
         )?;
+        // OPEN returns only the wire fd; one follow-up STAT fixes the kind so
+        // directory handles keep the frozen `read -> EBADF` behavior.
+        let kind = match session
+            .stat(store, wire)
+            .and_then(|bytes| file_info(&bytes))
+        {
+            Ok(info) => info.kind,
+            Err(error) => {
+                let _ = session.close(store, wire);
+                return Err(error);
+            }
+        };
         self.fds[fd] = Some(wire);
+        self.dirs[fd] = kind == NodeKind::Directory;
         self.fd_flags[fd] = u64::from(flags & 0x80000 != 0);
         shared.open_flags[wire as usize] = (flags & !0x80000) | 0x8000;
         Ok(fd as u64)
@@ -326,6 +342,9 @@ impl Process {
             return Ok(size as u64);
         }
         let wire = self.handle(fd)?;
+        if self.dirs[fd as usize] {
+            return Err(-9);
+        }
         let mut bytes = [0; bulk::DATA_BYTES];
         let size = session.read(store, wire, &mut bytes[..limit])?;
         if let Err(error) = rt.gate_copy_out(req, pointer, &bytes[..size]) {
@@ -372,7 +391,13 @@ impl Process {
             return Err(-22);
         }
         let mut neutral = [0; bulk::DATA_BYTES];
-        let read = session.getdents(store, wire, &mut neutral[..budget.min(bulk::DATA_BYTES)])?;
+        // Read at least one smallest neutral record so a tiny budget is
+        // distinguishable from EOF.
+        let read = session.getdents(
+            store,
+            wire,
+            &mut neutral[..budget.clamp(5, bulk::DATA_BYTES)],
+        )?;
         let mut output = [0; 4096];
         let (size, consumed) = linux_dirents(&neutral[..read], budget, &mut output);
         if read != 0 && size == 0 {
@@ -382,8 +407,10 @@ impl Process {
         if consumed < read {
             let _ = session.lseek(store, wire, -((read - consumed) as i64), 1);
         }
-        rt.gate_copy_out(req, pointer, &output[..size])
-            .map_err(native_error)?;
+        if let Err(error) = rt.gate_copy_out(req, pointer, &output[..size]) {
+            let _ = session.lseek(store, wire, -(consumed as i64), 1);
+            return Err(native_error(error));
+        }
         Ok(size as u64)
     }
     fn allocate(&mut self, shared: &mut Shared, rt: &Native, base: u64, pages: u64) -> Result<()> {
@@ -497,6 +524,9 @@ impl Process {
                     session.close(store, wire)?;
                     if let Some(slot) = self.fds.get_mut(a[0] as usize) {
                         *slot = None;
+                    }
+                    if let Some(dir) = self.dirs.get_mut(a[0] as usize) {
+                        *dir = false;
                     }
                     shared.open_flags[wire as usize] = 0;
                     self.fd_flags[a[0] as usize] = 0;
@@ -1007,6 +1037,94 @@ mod tests {
         assert_eq!(
             vfs::read_node(&mut ram, vfs::ROOT).unwrap().kind,
             NodeKind::Directory
+        );
+    }
+
+    #[test]
+    fn failed_dirent_copy_rewinds_the_shared_store_cursor() {
+        let cap = Capability::from_raw(0x100000002).unwrap();
+        let mut process = Process::new(cap, 0x100000003).unwrap();
+        let mut session = Session::new();
+        let mut store = Local::new().unwrap();
+        let wire = session
+            .open(
+                &mut store,
+                bulk::DIRFD_ROOT,
+                b"/fixturedir",
+                bulk::OPEN_DIRECTORY,
+            )
+            .unwrap();
+        process.fds[3] = Some(wire);
+        process.dirs[3] = true;
+        assert_eq!(session.lseek(&mut store, wire, 0, 1), Ok(0));
+        assert!(
+            process
+                .getdents(
+                    &mut session,
+                    &mut store,
+                    &Runtime::x86_64(),
+                    cap,
+                    3,
+                    0,
+                    4096
+                )
+                .is_err()
+        );
+        assert_eq!(session.lseek(&mut store, wire, 0, 1), Ok(0));
+    }
+
+    #[test]
+    fn tiny_dirent_budget_reports_einval_instead_of_eof() {
+        let cap = Capability::from_raw(0x100000002).unwrap();
+        let mut process = Process::new(cap, 0x100000003).unwrap();
+        let mut session = Session::new();
+        let mut store = Local::new().unwrap();
+        let wire = session
+            .open(
+                &mut store,
+                bulk::DIRFD_ROOT,
+                b"/fixturedir",
+                bulk::OPEN_DIRECTORY,
+            )
+            .unwrap();
+        process.fds[3] = Some(wire);
+        process.dirs[3] = true;
+        assert_eq!(
+            process.getdents(&mut session, &mut store, &Runtime::x86_64(), cap, 3, 0, 1),
+            Err(-22)
+        );
+        assert_eq!(session.lseek(&mut store, wire, 0, 1), Ok(0));
+    }
+
+    #[test]
+    fn directory_handles_reject_read_with_ebadf() {
+        let cap = Capability::from_raw(0x100000002).unwrap();
+        let mut process = Process::new(cap, 0x100000003).unwrap();
+        let mut shared = Shared::new();
+        let mut session = Session::new();
+        let mut store = Local::new().unwrap();
+        let wire = session
+            .open(
+                &mut store,
+                bulk::DIRFD_ROOT,
+                b"/fixturedir",
+                bulk::OPEN_DIRECTORY,
+            )
+            .unwrap();
+        process.fds[3] = Some(wire);
+        process.dirs[3] = true;
+        assert_eq!(
+            process.read(
+                &mut shared,
+                &mut session,
+                &mut store,
+                &Runtime::x86_64(),
+                cap,
+                3,
+                0,
+                1
+            ),
+            Err(-9)
         );
     }
 
