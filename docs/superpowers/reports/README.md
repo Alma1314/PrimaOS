@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-17
+updated: 2026-11-18
 ---
 
 # Reports 索引
@@ -18,6 +18,8 @@ updated: 2026-11-17
 2026-11-17：[P2b-2 Linux前端切换](2026-11-17-p2b-linux-frontend.md)；前端经Session/Local覆盖8个op，workspace 1166与既有Linux差分22轮通过；真实代理会话、fork/exit、镜像与代理QEMU正反例仍未完成。
 
 2026-11-17：[P2b-3 fork/exec/exit生命周期](2026-11-17-p2b-fork-exit.md)；owner预留/发布/回滚/退出关闭迁到Store接口并新增代理消息，workspace 1169与既有Linux差分22轮通过；真实会话接线、镜像与代理QEMU正反例仍未完成。
+
+2026-11-18：[P2b-4 镜像接线与两 ABI 场景](2026-11-18-p2b-proxy-wiring.md)；管理器签发文件/代理会话，Linux personality 经真实 Remote 读 Store 的 `/linux/fixture.txt`，原生应用读 `/README`；workspace 1169、lint、`test-linux-proxy` 与既有差分通过，正反例矩阵待P2b-5。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 

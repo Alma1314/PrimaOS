@@ -9,12 +9,14 @@ updated: 2026-11-17
 
 # P2b 与 holder 模型依赖切片计划
 
-> 2026-11-17 进度：P2b-0 契约、P2b-1 Store 批量 ops、P2b-2 Linux 前端切换与
-> P2b-3 fork/exec/exit 生命周期已落盘，host/workspace/lint 及既有 Linux 差分通过；
-> 真实代理会话接线（P2b-4）、镜像与代理 QEMU 正反例未做。证据见
+> 2026-11-18 进度：P2b-0 契约、P2b-1 Store 批量 ops、P2b-2 Linux 前端切换、
+> P2b-3 fork/exec/exit 生命周期与 P2b-4 镜像/会话接线已落盘；workspace/lint、
+> 既有 Linux 差分与新增 `test-linux-proxy` 两 ABI 场景通过。P2b-5 代理正反例
+> 矩阵与 P2b-6 收口未做。证据见
 > [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)、
-> [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md) 与
-> [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md)。
+> [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md)、
+> [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md) 与
+> [P2b-4 报告](../reports/2026-11-18-p2b-proxy-wiring.md)。
 
 ## 目标、范围与基线
 
@@ -176,6 +178,12 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 - 验收：`cargo xtask build` 成功；专用 QEMU 场景能启动两 ABI 程序并观察到代理注册。
 - 停止条件：容量或入口 ABI 需要扩大但没有契约时停止并登记；不得只调大页数掩盖。
 - 不包含：完整正反例矩阵。
+- 2026-11-18：`test-linux-proxy` 启动 Linux personality（真实 `Remote` 经
+  Store 读 `/linux/fixture.txt`）与原生/POSIX 应用（直接会话读 `/README`），
+  管理器签发会话并收齐 `S7ABI` 见证；场景栈 64 页/基址 `0x0B00_0060_0000` 与
+  personality 根 `Derive|NsResolve` 已登记为容量契约。代理 fork 子注册、共享资源
+  授权与正反例矩阵留待 P2b-5。见
+  [报告](../reports/2026-11-18-p2b-proxy-wiring.md)。
 
 ### P2b-5 QEMU 正反例矩阵
 

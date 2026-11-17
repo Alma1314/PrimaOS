@@ -2274,7 +2274,10 @@ fn manifest_index(manifest: &[(u64, Vec<u8>)], kind: u64) -> Result<usize, Strin
 
 /// EXO-2C/2D：init 代码由 host 生成器产出，并封装为两个连续 `PT_LOAD`
 /// （vaddr 0 / 0x1000）的不透明 ELF。布局值改由内核写入的 boot-info 提供。
-fn build_init_elf(alpha_index: usize, servicemgr_index: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn build_init_elf(
+    alpha_index: usize,
+    servicemgr_index: usize,
+) -> Result<Vec<u8>, String> {
     let manifest = prima_initgen::Manifest {
         alpha_index,
         servicemgr_index,

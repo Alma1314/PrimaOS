@@ -62,6 +62,17 @@ pub const SERVICE_IMAGE_KIND_C_PROBE: u64 = 0x101;
 pub const SERVICE_IMAGE_KIND_TTY: u64 = 0x102;
 /// M5：`echo` 的一次性 argv 参数块。格式 `[count][len, bytes]...`，由 xtask 按冻结用例生成。
 pub const SERVICE_IMAGE_KIND_ECHO_ARGS: u64 = 0x104;
+/// P2b-4：Linux personality 的 opaque kind。仅存在于代理场景镜像；管理器见到它即进入
+/// 场景模式，创建该任务并把它当作 Store 的代理客户端授权。
+pub const SERVICE_IMAGE_KIND_LINUX: u64 = 0x105;
+/// P2b-4：原生/POSIX 代理场景应用的 opaque kind（直接文件会话客户端）。
+pub const SERVICE_IMAGE_KIND_NATIVE_APP: u64 = 0x106;
+/// P2b-4：场景客户端运行期名（≤5 字节）。Linux personality 据此识别代理模式。
+/// `"lxsc"`/`"nasc"` 不是 `SERVICE_TABLE` 条目，不会自报或参与既有探针。
+pub const SERVICE_NAME_LINUX_SCENARIO: u64 = pack_service_name(b"lxsc");
+pub const SERVICE_NAME_NATIVE_SCENARIO: u64 = pack_service_name(b"nasc");
+/// P2b-4：场景客户端向管理器报告完成。低 8 位是状态（0 = 成功）。
+pub const SERVICE_PROXY_DONE_TAG: u64 = 0x5F2E_0000_0000_0000;
 /// M5：argv 块在参数载体页内的偏移。内核要求每个 manifest 条目都是合法 ELF，
 /// 故参数块包在一个单页 `PT_LOAD` 的 ET_DYN 头之后；读方只看这个固定偏移。
 pub const SERVICE_ECHO_ARGS_OFFSET: u64 = 0x100;

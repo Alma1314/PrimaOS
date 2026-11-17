@@ -16,6 +16,13 @@ required-features = ["linux-probe"]
 test = false
 bench = false
 
+# P2b-4：代理场景的原生/POSIX ABI 客户端（直接文件会话读取 Store 根）。
+[[bin]]
+name = "prima-native-scenario"
+path = "src/native_probe.rs"
+test = false
+bench = false
+
 [[bin]]
 name = "prima-smoke"
 path = "src/main.rs"

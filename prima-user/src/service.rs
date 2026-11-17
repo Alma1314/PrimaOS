@@ -762,6 +762,7 @@ pub fn run(
                         && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
                             == Some(entry.app)
                 });
+                let mut published = 0u64;
                 let value = if let Some(entry) = entry {
                     if kind == bulk::PROXY_RESERVE {
                         // Reserve a child owner from the application's own
@@ -783,6 +784,11 @@ pub fn run(
                         let cookie = runtime.task_cookie(child).unwrap_or(0);
                         let valid = runtime.task_parent_cookie(child).ok() == Some(entry.process)
                             && sessions.publish(entry.process, message.payload as u32, cookie);
+                        if valid {
+                            // The client needs the published owner to key its
+                            // child session; reply bits 8..15 carry it.
+                            published = u64::from(sessions.owner(cookie).unwrap_or(entry.owner));
+                        }
                         u64::from(!valid)
                     } else {
                         let valid = if let Some((owner, record)) =
@@ -807,7 +813,8 @@ pub fn run(
                 } else {
                     u64::from(true)
                 };
-                // RESERVE reports a key; 0 is failure. PUBLISH/RELEASE report
+                // RESERVE reports a key; 0 is failure. PUBLISH reports the
+                // published owner in bits 8..15 and 0/1 status. RELEASE reports
                 // 0 success and 1 failure, matching the direct-client path.
                 let status = if entry.is_some() {
                     value
@@ -819,7 +826,7 @@ pub fn run(
                 let _ = runtime.send(
                     reply_peer,
                     reply_send,
-                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    SERVICE_SESSION_FORK_ACK_TAG | (published << 8) | status,
                     &[],
                 );
                 continue;
@@ -942,25 +949,27 @@ pub fn run(
                     let _ = runtime.cap_drop(cap);
                 }
                 let index = (message.payload & bulk::PROXY_SLOT_MASK) as usize;
-                let owned = proxies
-                    .entry(index)
-                    .is_some_and(|entry| entry.proxy == client.cookie);
-                let status = if owned {
-                    proxy_channels[index].retire(
-                        &runtime,
-                        self_cap,
-                        prima_user::sessions::MAX_CLIENTS + index,
-                    );
-                    if let Some(entry) = proxies.remove(index) {
-                        let mut storage = SegmentStorage { runtime: &runtime };
-                        let closed = files.close_owner(&mut storage, entry.owner);
-                        sessions.release_external(entry.owner);
-                        closed.map_or_else(vfs_status, |_| 0)
-                    } else {
-                        SERVICE_FILE_ENOENT
+                // A missing entry is already reclaimed: the application Task may
+                // die before the proxy's exit close arrives, and the reaper
+                // removes the entry first. A foreign entry stays EACCES.
+                let status = match proxies.entry(index) {
+                    Some(entry) if entry.proxy == client.cookie => {
+                        proxy_channels[index].retire(
+                            &runtime,
+                            self_cap,
+                            prima_user::sessions::MAX_CLIENTS + index,
+                        );
+                        if let Some(entry) = proxies.remove(index) {
+                            let mut storage = SegmentStorage { runtime: &runtime };
+                            let closed = files.close_owner(&mut storage, entry.owner);
+                            sessions.release_external(entry.owner);
+                            closed.map_or_else(vfs_status, |_| 0)
+                        } else {
+                            0
+                        }
                     }
-                } else {
-                    SERVICE_FILE_EACCES
+                    Some(_) => SERVICE_FILE_EACCES,
+                    None => 0,
                 };
                 if proxy_current.is_some_and(|(_, current, _)| current == index) {
                     proxy_current = None;

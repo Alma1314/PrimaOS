@@ -67,12 +67,13 @@ use prima_runtime::{
         SERVICE_FILE_CLIENT_SHIFT, SERVICE_FILE_ENOENT, SERVICE_FILE_FD_SHIFT,
         SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_REPLY_TAG,
         SERVICE_FILE_REQUEST_TAG, SERVICE_IMAGE_DIR_HEADER, SERVICE_IMAGE_ENTRY_LEN,
-        SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_SERVICEMGR,
-        SERVICE_IMAGE_KIND_TTY, SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT,
-        SERVICE_MARKER_MASK, SERVICE_MARKER_TAG, SERVICE_NAME_ALPHA, SERVICE_NAME_BETA,
-        SERVICE_NAME_DRIVER, SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NS,
-        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_SEG_TAG,
-        SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
+        SERVICE_IMAGE_KIND_C_PROBE, SERVICE_IMAGE_KIND_ECHO_ARGS, SERVICE_IMAGE_KIND_LINUX,
+        SERVICE_IMAGE_KIND_NATIVE_APP, SERVICE_IMAGE_KIND_SERVICEMGR, SERVICE_IMAGE_KIND_TTY,
+        SERVICE_IMAGE_MAGIC, SERVICE_MARKER_KIND_SHIFT, SERVICE_MARKER_MASK, SERVICE_MARKER_TAG,
+        SERVICE_NAME_ALPHA, SERVICE_NAME_BETA, SERVICE_NAME_DRIVER, SERVICE_NAME_LINUX_SCENARIO,
+        SERVICE_NAME_LOG, SERVICE_NAME_MASK, SERVICE_NAME_NATIVE_SCENARIO, SERVICE_NAME_NS,
+        SERVICE_NAME_OFFSET, SERVICE_NAME_STORE, SERVICE_NS_CAP_TAG, SERVICE_PROXY_DONE_TAG,
+        SERVICE_SEG_TAG, SERVICE_SERVE_ARG_A, SERVICE_SERVE_ARG_B, SERVICE_SERVE_OP_ADVANCE,
         SERVICE_SERVE_OP_IOPORT_OOR, SERVICE_SERVE_OP_IOPORT_RW, SERVICE_SERVE_OP_QUERY,
         SERVICE_SERVE_OP_RESOLVE, SERVICE_SERVE_PROBES, SERVICE_SERVE_TAG, SERVICE_SETUP_TAG,
         SERVICE_VFS_CHMOD_TAG, SERVICE_VFS_COMMIT_CLIENT_SHIFT, SERVICE_VFS_COMMIT_TAG,
@@ -233,6 +234,16 @@ const FRAME_SIZE: u64 = 0x1000;
 /// 普通服务端点的栈页数。M8 保持既有 1 页布局，并把 VFS 解析栈帧压回该预算
 /// （名称 ≤16、分量 ≤6）；没有改用 2 页。
 const SERVICE_STACK_PAGES: u64 = 2;
+/// P2b-4：代理场景镜像里由管理器创建的端点/客户端使用更大的栈。历史镜像保持
+/// 2/4 页不变；场景镜像在契约中登记该容量提升（Store 与 Linux personality 的
+/// 复合请求帧超过 16 KiB）。这不是 Invariant 放宽，只影响新场景镜像。
+const SCENARIO_STACK_PAGES: u64 = 64;
+/// P2b-4：场景端点的栈基址放在映像最大跨度（Linux personality 约 3.2 MiB）之上，
+/// 避免与 `ENDPOINT_STACK_VA` 的固定 1 MiB 槽重叠而映射失败。
+const SCENARIO_STACK_VA: u64 = 0x0000_0B00_0060_0000;
+/// P2b-4：Linux personality 以同样的入口 ABI 创建 guest Task，因此其结构性根
+/// 必须兼有 `Derive` 与 `NsResolve`；其余场景端点仍只有 `NsResolve`。
+const SCENARIO_ROOT_RIGHTS: Rights = Rights::from_bits((1 << 0) | (1 << 8));
 /// C 入口栈页数：musl 的 `__libc_start_main` 与 `snprintf` 调用链合计超过 4 页；
 /// 8 页容纳启动初始化与格式化路径，同时把映射条目控制在新的 vspace 预算内。
 const C_STACK_PAGES: u64 = 8;
@@ -399,6 +410,40 @@ struct Pending {
     name: u64,
 }
 
+/// P2b-4 proxy scenario: a Linux personality and a native/POSIX client, both
+/// created from the service image directory and authorized as Store clients.
+/// The mode is inferred from the manifest, so historical images are unaffected.
+#[derive(Clone, Copy)]
+struct Scenario {
+    linux: Option<Pending>,
+    native: Option<Pending>,
+    linux_id: Option<u64>,
+    native_id: Option<u64>,
+    done: u32,
+    reported: u32,
+}
+
+impl Scenario {
+    const EMPTY: Self = Self {
+        linux: None,
+        native: None,
+        linux_id: None,
+        native_id: None,
+        done: 0,
+        reported: 0,
+    };
+    fn enabled(&self) -> bool {
+        self.linux.is_some()
+    }
+    /// Both clients have reported; the request id is stable.
+    fn complete(&self) -> bool {
+        self.reported & 0b11 == 0b11
+    }
+    fn authorized(&self, task: u64) -> bool {
+        self.linux_id == Some(task) || self.native_id == Some(task)
+    }
+}
+
 /// SPEC-105/106：**服务表**——名字 → 行为码。加一个服务 = 表里一行 + 一个二进制 + init 移交一对
 /// cap（「init 零改动」尚未做到，见报告登记）。
 const SERVICE_TABLE: [(u64, u64); SERVICES] = [
@@ -525,6 +570,10 @@ pub extern "C" fn _start(
     let mut echo_hash = 2_166_136_261u32;
     let mut tty_sync_requested = false;
     let mut tty_sync_ack = false;
+    // P2b-4：代理场景模式由 manifest 中的 Linux personality 条目决定。
+    let mut scenario = Scenario::EMPTY;
+    let mut scenario_slot = [false; SERVICES];
+    let mut scenario_attempted = false;
     // SPEC-109：从映像段首页目录一次性读出全部服务的（名字 → 段内页偏移/页数）。
     let _ = read_image_directory(
         &runtime,
@@ -534,6 +583,7 @@ pub extern "C" fn _start(
         &mut c_probe,
         &mut tty_pending,
         &mut echo_args_pending,
+        &mut scenario,
     );
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
@@ -679,12 +729,15 @@ pub extern "C" fn _start(
             let root = capacity_probe.is_some_and(|(cap, _, _, _)| {
                 runtime.send_target_cookie(cap).ok() == Some(subject)
             });
-            let authorized = file_authorized
-                && (root
-                    || file_sessions
-                        .iter()
-                        .flatten()
-                        .any(|c| c.process == process || c.process == parent));
+            // P2b-4：场景客户端由管理器从签名镜像目录创建，其 Task id 在
+            // 创建时登记；这里按内核 cookie 的后代关系再核一次发送者。
+            let authorized = scenario.authorized(u64::from(subject as u32))
+                || (file_authorized
+                    && (root
+                        || file_sessions
+                            .iter()
+                            .flatten()
+                            .any(|c| c.process == process || c.process == parent)));
             let forwarded = if authorized
                 && let (Some(manager), Some(store)) = (store_manager, registry[STORE_SLOT])
             {
@@ -787,7 +840,7 @@ pub extern "C" fn _start(
                 .copied()
                 .flatten()
                 .filter(|client| client.cookie == source_cookie);
-            let valid = file_authorized
+            let valid = (file_authorized || scenario.authorized(u64::from(source_cookie as u32)))
                 && parent.is_some()
                 && subject_cookie != 0
                 && reply_cookie == source_cookie
@@ -815,6 +868,36 @@ pub extern "C" fn _start(
             let _ = runtime.cap_drop(subject);
             if !forwarded {
                 let _ = runtime.cap_drop(reply);
+            }
+            continue;
+        }
+        if scenario.enabled() && message.payload >> 48 == SERVICE_PROXY_DONE_TAG >> 48 {
+            let id = u64::from(source_cookie as u32);
+            let bit = if scenario.linux_id == Some(id) {
+                0b01
+            } else if scenario.native_id == Some(id) {
+                0b10
+            } else {
+                0
+            };
+            if bit != 0 {
+                scenario.reported |= bit;
+                if message.payload & 0xff != 0 {
+                    scenario.done |= 0x8000_0000;
+                }
+            }
+            if scenario.complete() {
+                let ok = scenario.done == 0;
+                if let Ok(serial) = runtime.dev_ioport_create(IOPORT_BASE, IOPORT_COUNT) {
+                    let _ =
+                        serial_puts(&runtime, serial, b"S7ABI|linux=1;native=1;proxy=1;status=");
+                    let _ = serial_dec(&runtime, serial, if ok { 0 } else { 1 });
+                    let _ = serial_puts(&runtime, serial, b"\n");
+                    let _ = runtime.cap_drop(serial);
+                }
+                if let Ok(exit) = runtime.dev_ioport_create(0xf4, 1) {
+                    let _ = runtime.dev_ioport_out(exit, 0xf4, if ok { 16 } else { 17 });
+                }
             }
             continue;
         }
@@ -1369,6 +1452,12 @@ pub extern "C" fn _start(
                         &mut created_slot,
                         false,
                         None,
+                        if scenario.enabled() {
+                            Some((SCENARIO_STACK_PAGES, SCENARIO_STACK_VA))
+                        } else {
+                            None
+                        },
+                        None,
                     )
                 {
                     if slot < 2 {
@@ -1397,8 +1486,48 @@ pub extern "C" fn _start(
                     &mut tty_slot,
                     false,
                     None,
+                    None,
+                    None,
                 );
                 tty_created = true;
+            }
+            // P2b-4：Store 已处理完段 + 三条探针（同一发送者 FIFO）后，两
+            // 个场景客户端才创建并注册，避免落在 Store 尚未挂载的窗口。
+            if scenario.enabled()
+                && !scenario_attempted
+                && reply_count[STORE_SLOT] >= probes_for(STORE_SLOT)
+            {
+                scenario_attempted = true;
+                let mut id = |spec: Pending| {
+                    create_service(
+                        &runtime,
+                        &self_cap,
+                        parent_ns,
+                        &spec,
+                        0,
+                        &mut scenario_slot,
+                        false,
+                        None,
+                        Some((SCENARIO_STACK_PAGES, SCENARIO_STACK_VA)),
+                        if spec.name == SERVICE_NAME_LINUX_SCENARIO {
+                            Some(SCENARIO_ROOT_RIGHTS)
+                        } else {
+                            None
+                        },
+                    )
+                    .and_then(|(_token, manager, _entry, _stack, _data)| {
+                        runtime
+                            .send_target_cookie(manager)
+                            .ok()
+                            .map(|cookie| u64::from(cookie as u32))
+                    })
+                };
+                if let Some(spec) = scenario.linux {
+                    scenario.linux_id = id(spec);
+                }
+                if let Some(spec) = scenario.native {
+                    scenario.native_id = id(spec);
+                }
             }
         }
 
@@ -1621,6 +1750,8 @@ pub extern "C" fn _start(
                         &mut created_slot,
                         true,
                         c_args,
+                        None,
+                        None,
                     ) {
                         // M8：把存储服务的访问令牌绑定到 C 任务根继承的 Namespace 路径 "fs"，
                         // 并**一次**解析成功作为 rootfs 授权。必须在 C 创建之后做——创建前多占
@@ -1902,6 +2033,7 @@ pub extern "C" fn _start(
 ///
 /// 目录布局（little-endian u64）：`magic | count | [name | offset_pages | page_count] × count`。
 /// 读毕即卸载探测映射。目录非法或无匹配时静默跳过（服务缺失由后续见证暴露）。
+#[allow(clippy::too_many_arguments)]
 fn read_image_directory(
     runtime: &Runtime<impl SyscallTransport>,
     self_cap: &Capability,
@@ -1910,6 +2042,7 @@ fn read_image_directory(
     c_probe: &mut Option<Pending>,
     tty_pending: &mut Option<Pending>,
     echo_args: &mut Option<(u64, u64)>,
+    scenario: &mut Scenario,
 ) -> Result<(), ()> {
     runtime
         .memseg_map(image, *self_cap, 0, ENDPOINT_CODE_PROBE_VA, 1, R_ONLY)
@@ -1944,6 +2077,20 @@ fn read_image_directory(
                 });
             } else if kind == SERVICE_IMAGE_KIND_ECHO_ARGS && pages != 0 {
                 *echo_args = Some((offset_pages, pages));
+            } else if kind == SERVICE_IMAGE_KIND_LINUX && pages != 0 {
+                scenario.linux = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name: SERVICE_NAME_LINUX_SCENARIO,
+                });
+            } else if kind == SERVICE_IMAGE_KIND_NATIVE_APP && pages != 0 {
+                scenario.native = Some(Pending {
+                    code: image,
+                    offset_pages,
+                    pages,
+                    name: SERVICE_NAME_NATIVE_SCENARIO,
+                });
             } else if kind != SERVICE_IMAGE_KIND_SERVICEMGR && pages != 0 {
                 let Some(slot) = (kind as usize).checked_sub(1) else {
                     index += 1;
@@ -2008,6 +2155,8 @@ fn create_service(
     created_slot: &mut [bool; SERVICES],
     c_stack: bool,
     c_args: Option<ArgsImage>,
+    stack_override: Option<(u64, u64)>,
+    root_rights: Option<Rights>,
 ) -> Option<(Capability, Capability, u64, Capability, Option<Capability>)> {
     created_slot[slot] = true;
     let (Ok(initial0), Ok(initial1)) = (
@@ -2121,13 +2270,16 @@ fn create_service(
     let _ = runtime.memseg_unmap(*self_cap, ENDPOINT_CODE_PROBE_VA, spec.pages);
     // SPEC-108：自建栈段（`R|W`）；C 入口用多页，musl 初始化需要。
     // M3b：C 任务的匿名 arena 与栈同段，见 `C_HEAP_VA`。
-    let stack_pages = if c_stack {
-        C_STACK_PAGES
-    } else if spec.name == SERVICE_NAME_STORE {
-        4
-    } else {
-        SERVICE_STACK_PAGES
-    };
+    let (stack_pages, stack_base) = stack_override.unwrap_or((
+        if c_stack {
+            C_STACK_PAGES
+        } else if spec.name == SERVICE_NAME_STORE {
+            4
+        } else {
+            SERVICE_STACK_PAGES
+        },
+        ENDPOINT_STACK_VA,
+    ));
     let segment_pages = if c_stack {
         C_STACK_PAGES + C_HEAP_PAGES
     } else {
@@ -2157,9 +2309,9 @@ fn create_service(
         code_pages: spec.pages,
         load_base: ENDPOINT_CODE_VA,
         entry,
-        stack_top: ENDPOINT_STACK_VA + stack_offset,
+        stack_top: stack_base + stack_offset,
         parent_namespace: Some(ns_cap),
-        root_rights: NS_RESOLVE_RIGHTS,
+        root_rights: root_rights.unwrap_or(NS_RESOLVE_RIGHTS),
         initial_capabilities: [Some(initial0), Some(initial1)],
         name: spec.name,
     }) else {
@@ -2177,7 +2329,7 @@ fn create_service(
             .memseg_map(stack, manager, C_STACK_PAGES, C_HEAP_VA, C_HEAP_PAGES, RW)
             .is_ok();
     let stack_mapped = runtime
-        .memseg_map(stack, manager, 0, ENDPOINT_STACK_VA, stack_pages, RW)
+        .memseg_map(stack, manager, 0, stack_base, stack_pages, RW)
         .is_ok();
     if !stack_mapped || !heap_mapped {
         let _ = runtime.task_destroy(manager);

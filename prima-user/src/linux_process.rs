@@ -138,6 +138,11 @@ impl Family {
                 return Err(error);
             }
         };
+        // A real proxy session needs its own entry for the child Process. The
+        // in-process store already keys batches by owner and treats this as a
+        // no-op. The kernel child exists, so a failure here is terminal; the
+        // window is recorded in the P2b-3/P2b-4 reports.
+        store.register_child(child_owner, manager)?;
         let parent = self.entries[owner]
             .as_ref()
             .unwrap()

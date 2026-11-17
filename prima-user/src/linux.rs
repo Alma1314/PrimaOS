@@ -241,6 +241,11 @@ impl Process {
         })
     }
 
+    /// Store-side OFD owner id for this Process. Zero for the root Process.
+    pub fn owner(&self) -> u8 {
+        self.owner
+    }
+
     fn handle(&self, fd: u64) -> Result<u8> {
         self.fds.get(fd as usize).copied().flatten().ok_or(-9)
     }

@@ -2,14 +2,17 @@
 #![no_main]
 #![deny(unsafe_code)]
 
-use prima_runtime::{Capability, Error, Rights, Runtime, TaskId, TaskSpec, X86_64Transport};
+use prima_runtime::{
+    Capability, Error, Rights, Runtime, TaskId, TaskSpec, X86_64Transport,
+    protocol::{SERVICE_NAME_LINUX_SCENARIO, SERVICE_PROXY_DONE_TAG, SERVICE_ROOT_LINUX},
+};
 use prima_user::linux::{
     CASES, MAX_FAMILY_TASKS, P1, P2, PTHREAD, PendingTraps, Process,
     process::Family,
     signal::{Completion, Signals},
     thread::{Call, ThreadGroup},
 };
-use prima_user::linux_store::Local;
+use prima_user::linux_store::{Local, Remote, Store};
 
 // The input path is supplied explicitly by the harness, which verifies D12's
 // SHA-256 before packaging. The bytes are never relinked or patched.
@@ -136,13 +139,22 @@ fn quit(rt: &Native, value: u8) -> ! {
 
 #[unsafe(no_mangle)]
 #[allow(unsafe_code)]
-pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64) -> ! {
+pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u64, _: u64) -> ! {
     let rt = Runtime::x86_64();
     let serial = rt.dev_ioport_create(0x3f8, 8).unwrap();
     let ns = rt.root_namespace().unwrap();
     let mut shared_gate = None;
     let mut audit_cursor = 0;
-    let cases = if selection == 0 {
+    // P2b-4：管理器把本任务按 LINUX_SCENARIO 名创建时进入代理场景——数据面
+    // 一律经真实 Store，会话与根视图由管理器签发。
+    let proxy = selection == SERVICE_NAME_LINUX_SCENARIO;
+    if proxy {
+        emit(&rt, serial, b"S7LXP|phase=boot\n");
+        emit(&rt, serial, b"S7LXP|phase=mode\n");
+    }
+    let cases = if proxy {
+        &["cat"][..]
+    } else if selection == 0 {
         &CASES[..]
     } else if cfg!(feature = "libos-bench") && selection == 12 {
         &["L1"][..]
@@ -155,20 +167,40 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
         emit(&rt, serial, case.as_bytes());
         emit(&rt, serial, b"\n");
         let stub = rt.memseg_create(1, Rights::from_bits(10)).unwrap();
-        let manager = rt
-            .task_create_held(&TaskSpec {
-                code_segment: stub,
-                code_offset: 0,
-                code_pages: 1,
-                load_base: 0x400000,
-                entry: 0x400000,
-                stack_top: 0x70000000,
-                parent_namespace: Some(ns),
-                root_rights: Rights::from_bits(256),
-                initial_capabilities: [None; 2],
-                name: 0,
-            })
-            .unwrap();
+        let manager = match rt.task_create_held(&TaskSpec {
+            code_segment: stub,
+            code_offset: 0,
+            code_pages: 1,
+            load_base: 0x400000,
+            entry: 0x400000,
+            stack_top: 0x70000000,
+            parent_namespace: Some(ns),
+            root_rights: Rights::from_bits(256),
+            initial_capabilities: [None; 2],
+            name: 0,
+        }) {
+            Ok(manager) => manager,
+            Err(error) => {
+                if proxy {
+                    let code = match error {
+                        Error::NotFound => 2,
+                        Error::Again => 11,
+                        Error::Denied => 13,
+                        Error::Fault => 14,
+                        Error::AlreadyExists => 17,
+                        Error::InvalidInput => 22,
+                        Error::ResourceExhausted => 28,
+                        Error::Unsupported => 38,
+                        Error::UnknownErrno(value) => value as u64,
+                        _ => 99,
+                    };
+                    emit(&rt, serial, b"S7ERR|stage=guest;code=");
+                    number(&rt, serial, code);
+                    emit(&rt, serial, b"\n");
+                }
+                panic!("guest task create");
+            }
+        };
         let cookie = rt.send_target_cookie(manager).unwrap();
         assert!(rt.task_prepared(TaskId::from_raw(cookie as u32)).unwrap());
         assert_eq!(rt.task_start_gated(manager, None, 0), Err(Error::Fault));
@@ -239,9 +271,34 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
         shared_gate = Some(gate);
         let mut requests = 0;
         let mut seen_tasks = [0; MAX_FAMILY_TASKS];
+        let root_owner = process.owner();
         let mut family = Family::new(process).unwrap();
-        // Manager-issued proxy sessions replace this local store in P2b-4.
-        let mut store = Local::new().unwrap();
+        // The differential suite keeps the in-process store; the proxy scenario
+        // submits every batch through the manager-issued Store session.
+        let mut local = if proxy {
+            None
+        } else {
+            Some(Local::new().unwrap())
+        };
+        let mut remote = if proxy {
+            emit(&rt, serial, b"S7LXP|phase=connect\n");
+            let send = Capability::from_raw(send_cap_raw).unwrap();
+            let mut remote = Remote::connect(&rt, send, SERVICE_ROOT_LINUX).unwrap();
+            emit(&rt, serial, b"S7LXP|phase=session\n");
+            remote.register_owner(root_owner, manager).unwrap();
+            emit(&rt, serial, b"S7LXP|phase=proxy\n");
+            Some(remote)
+        } else {
+            None
+        };
+        let store: &mut dyn Store = match (local.as_mut(), remote.as_mut()) {
+            (Some(local), _) => local,
+            (_, Some(remote)) => remote,
+            _ => unreachable!(),
+        };
+        if proxy {
+            emit(&rt, serial, b"S7LXP|phase=serve\n");
+        }
         let mut unsupported = 0;
         loop {
             let req = rt.gate_wait(gate).unwrap();
@@ -308,11 +365,11 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             } else {
                 let mut terminated = None;
                 let result = if req.number == 57 {
-                    Some(family.fork(&rt, &mut store, &req, gate))
+                    Some(family.fork(&rt, &mut *store, &req, gate))
                 } else if req.number == 59 {
                     match family.exec(
                         &rt,
-                        &mut store,
+                        &mut *store,
                         &req,
                         IMAGE,
                         prima_user::linux::PROCESS_CHILD,
@@ -343,7 +400,7 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
                         None
                     }
                 } else {
-                    Some(family.dispatch(owner, &mut store, &rt, &req, |fd, bytes| {
+                    Some(family.dispatch(owner, &mut *store, &rt, &req, |fd, bytes| {
                         emit(&rt, serial, b"S6WRITE|fd=");
                         number(&rt, serial, fd);
                         emit(&rt, serial, b";hex=");
@@ -390,9 +447,29 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
                     Completion::Terminated(signal) => u32::from(signal),
                 }
             };
-            let Some(status) = family.exit(&rt, &mut store, owner, &req, status).unwrap() else {
-                continue;
+            if proxy {
+                emit(&rt, serial, b"S7LXP|phase=exit\n");
+            }
+            let status = match family.exit(&rt, &mut *store, owner, &req, status) {
+                Ok(Some(status)) => status,
+                Ok(None) => {
+                    if proxy {
+                        emit(&rt, serial, b"S7LXP|phase=parked\n");
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    if proxy {
+                        emit(&rt, serial, b"S7ERR|stage=exit;code=");
+                        number(&rt, serial, error as u64);
+                        emit(&rt, serial, b"\n");
+                    }
+                    panic!("family exit");
+                }
             };
+            if proxy {
+                emit(&rt, serial, b"S7LXP|phase=exited\n");
+            }
             audit(&rt, serial, gate, &mut audit_cursor, case == "L1");
             emit(&rt, serial, b"S6EXIT|case=");
             emit(&rt, serial, case.as_bytes());
@@ -403,6 +480,25 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             emit(&rt, serial, b";unsupported=");
             number(&rt, serial, unsupported);
             emit(&rt, serial, b"\n");
+            if proxy {
+                // The manager owns the machine verdict in the proxy scenario.
+                emit(&rt, serial, b"S7LX|read=1;proxy=1;status=");
+                number(&rt, serial, u64::from(status != 0));
+                emit(&rt, serial, b"\n");
+                if let Ok(send) = Capability::from_raw(send_cap_raw)
+                    && let Ok(manager) = rt.send_target_cookie(send)
+                {
+                    let _ = rt.send(
+                        TaskId::from_raw(manager as u32),
+                        send,
+                        SERVICE_PROXY_DONE_TAG | u64::from(status != 0),
+                        &[],
+                    );
+                }
+                loop {
+                    let _ = rt.receive();
+                }
+            }
             if status != 0 {
                 quit(&rt, 0x11);
             }

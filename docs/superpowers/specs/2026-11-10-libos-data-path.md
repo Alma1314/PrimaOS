@@ -257,6 +257,52 @@ Linux personality 的 fork/exec/exit 不再操作域内 OFD 表，而是经已�
 - 真实代理会话接线属 P2b-4；P2b-3 的 host 证据使用同一语义的进程内 transport，
   直接客户端既有的 RESERVE/PUBLISH/RELEASE 语义不变。
 
+## P2b-4：镜像接线与两 ABI 场景（2026-11-18）
+
+本节冻结 P2b-4 的启动镜像、会话签发与客户端传输。历史镜像的行为、事件与回执不变；
+本节不关闭 P2，也不构成 7-A 证据。
+
+### 场景镜像与模式推断
+
+- manifest 新增两个 opaque kind：`SERVICE_IMAGE_KIND_LINUX=0x105`（Linux
+  personality）与 `SERVICE_IMAGE_KIND_NATIVE_APP=0x106`（原生/POSIX 应用）。
+  它们只在 `cargo xtask test-linux-proxy` 打包的镜像中出现。
+- 服务管理器从映像目录看到 Linux 条目即进入**场景模式**；历史镜像不含该条目，
+  所有新增路径保持惰性。场景模式下，管理器在 Store 收到持久化段并回复三条探针
+  之后创建两个客户端（避免落在 Store 尚未挂载的窗口），并按管理器自身创建时
+  记录的任务 id 授权它们的文件会话注册。
+- `PROXY_REGISTER` 的既有规则不变：发送者必须是已登记文件客户端（场景客户端按
+  创建记录授权），应用 Task 经内核 cookie/祖系验证为发送者后代，回复目标必须等于
+  发送者，`SERVICE_ROOT_SERVICE` 一律拒绝。Store 端再次用内核元数据校验代理、
+  应用、Process 与祖系。
+
+### 客户端传输
+
+- Linux personality 的 `Remote`：先注册直接文件会话，拿到 Store 发送凭据；再以
+  应用 TaskSend 注册根代理条目并映射 Store 提供的共享页。批量提交使用
+  `PROXY_SUBMIT | slot<<32 | sequence`，完成前先写共享页、完成后读回。
+  owner 生命周期沿用 P2b-3 的 `PROXY_RESERVE/PUBLISH/RELEASE`；退出用
+  `PROXY_CLOSE | slot`。
+- `PROXY_PUBLISH` 的成功 ACK 在 bits 8..15 返回已发布的 owner；客户端据此为子
+  Process 建立会话。`PROXY_CLOSE` 对缺失条目返回 0（死亡回收已清理），对他人
+  条目返回 `EACCES`。
+- 原生/POSIX 应用使用直接会话（既有 `OPEN/SUBMIT/CLOSE`），不经代理；它读取
+  Store 服务根的静态资源。
+- 场景端点由管理器创建，栈预算与基址是显式容量契约：64 页、
+  `0x0B00_0060_0000`，避免与 3.2 MiB 的 personality 映像、1 MiB 的
+  `ENDPOINT_STACK_VA` 及 4 MiB 的 `SERVER_VA` 重叠。Linux personality 的结构性根
+  同时具备 `Derive` 与 `NsResolve`，以便按同一入口 ABI 创建 guest Task。
+- 完成报告使用 `SERVICE_PROXY_DONE_TAG`（低 8 位状态）；管理器收齐两侧后写
+  `S7ABI` 见证并退出 QEMU（0x10 成功 / 0x11 失败）。
+
+### 验收与边界
+
+`cargo xtask test-linux-proxy` 必须同时观察到：Linux guest 经 Store 读到
+`/linux/fixture.txt` 的字节、原生应用读到 `/README`、代理注册阶段以及
+`S7ABI|linux=1;native=1;proxy=1;status=0`。代理 fork 子注册、同一 `/shared`
+资源的显式授权、伪造/旧 incarnation/根逃逸与单侧退出属 P2b-5；本节的场景不替代
+正反例矩阵，也不关闭 P2。
+
 ## 验证与重审
 
 首片host覆盖全批次预检、越界/重叠/保留位、owner隔离、重放拒绝、短读清零、

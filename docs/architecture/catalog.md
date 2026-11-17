@@ -96,7 +96,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（226）
+## report（227）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -326,6 +326,7 @@
 | [P2b-3：fork/exec/exit 文件生命周期迁移](../superpowers/reports/2026-11-17-p2b-fork-exit.md) | historical | `docs/superpowers/reports/2026-11-17-p2b-fork-exit.md` |
 | [P2b-2：Linux 前端切换到 Store 批量数据面](../superpowers/reports/2026-11-17-p2b-linux-frontend.md) | historical | `docs/superpowers/reports/2026-11-17-p2b-linux-frontend.md` |
 | [P2b-0/P2b-1：Linux Store 批量数据面](../superpowers/reports/2026-11-17-p2b-store-batch-ops.md) | historical | `docs/superpowers/reports/2026-11-17-p2b-store-batch-ops.md` |
+| [P2b-4：镜像接线、管理器签发会话与两 ABI 场景](../superpowers/reports/2026-11-18-p2b-proxy-wiring.md) | current | `docs/superpowers/reports/2026-11-18-p2b-proxy-wiring.md` |
 
 ## spec（4）
 

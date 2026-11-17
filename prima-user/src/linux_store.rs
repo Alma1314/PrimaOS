@@ -7,8 +7,13 @@
 //! then and by host tests.
 
 use prima_runtime::{
+    Capability, Rights, Runtime, SyscallTransport, TaskId,
     bulk::{self, MAX_PATH, NEUTRAL_STAT_BYTES, PAGE_BYTES, Request, WIRE_FD_BASE},
-    protocol::SERVICE_FILE_HANDLES,
+    protocol::{
+        SERVICE_FILE_HANDLES, SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_FORK_ACK_TAG,
+        SERVICE_SESSION_PROXY_CLOSE_TAG, SERVICE_SESSION_PROXY_REGISTER_TAG,
+        SERVICE_SESSION_REGISTER_TAG, SERVICE_SESSION_ROUTE_TAG,
+    },
     vfs::{self, OpenFiles, Storage, VfsError, View},
 };
 
@@ -29,12 +34,18 @@ pub trait Store {
     /// Reserve a child owner inheriting the acting owner's OFDs.
     fn reserve(&mut self, owner: u8) -> Result<u32, i64>;
     /// Bind a reservation to the published child Process cookie and return the
-    /// child owner.
-    fn publish(&mut self, key: u32, child: u64) -> Result<u8, i64>;
+    /// child owner. The reservation belongs to the acting owner's entry.
+    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64>;
     /// Drop a reservation that will not be published.
-    fn release(&mut self, key: u32) -> Result<(), i64>;
+    fn release(&mut self, owner: u8, key: u32) -> Result<(), i64>;
     /// Close every OFD held by `owner` (process exit).
     fn close_owner(&mut self, owner: u8) -> Result<(), i64>;
+    /// Bind a freshly published child Process to its own proxy entry. In-process
+    /// storage keys batches by owner, so the default is a no-op.
+    fn register_child(&mut self, owner: u8, task: Capability) -> Result<(), i64> {
+        let _ = (owner, task);
+        Ok(())
+    }
 }
 
 /// Next accepted session sequence and the acting Process's store owner. A
@@ -65,15 +76,24 @@ impl Session {
     }
 
     pub fn publish(&mut self, store: &mut dyn Store, key: u32, child: u64) -> Result<u8, i64> {
-        store.publish(key, child)
+        store.publish(self.owner, key, child)
     }
 
     pub fn release(&mut self, store: &mut dyn Store, key: u32) -> Result<(), i64> {
-        store.release(key)
+        store.release(self.owner, key)
     }
 
     pub fn close_owner(&mut self, store: &mut dyn Store) -> Result<(), i64> {
         store.close_owner(self.owner)
+    }
+
+    pub fn register_child(
+        &mut self,
+        store: &mut dyn Store,
+        owner: u8,
+        task: Capability,
+    ) -> Result<(), i64> {
+        store.register_child(owner, task)
     }
 
     fn submit(
@@ -444,7 +464,8 @@ impl Store for Local {
         Ok(key)
     }
 
-    fn publish(&mut self, key: u32, child: u64) -> Result<u8, i64> {
+    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64> {
+        self.slot(owner)?;
         if child >> 32 == 0 {
             return Err(-13);
         }
@@ -467,7 +488,8 @@ impl Store for Local {
         Ok(index as u8)
     }
 
-    fn release(&mut self, key: u32) -> Result<(), i64> {
+    fn release(&mut self, owner: u8, key: u32) -> Result<(), i64> {
+        self.slot(owner)?;
         let Some(index) = self
             .slots
             .iter()
@@ -494,6 +516,553 @@ impl Store for Local {
             self.slots[owner as usize] = None;
         }
         Ok(())
+    }
+}
+
+/// Fixed VA for proxy slot `index`'s shared page. The personality maps one page
+/// per registered proxy entry for the lifetime of that entry.
+pub const REMOTE_PAGE_VA: u64 = 0x0000_0d00_0000_0000;
+
+/// One entry per Linux Process (`MAX_PROCESSES`); a forked child registers its
+/// own proxy slot after the owner is published.
+const REMOTE_OWNERS: usize = 4;
+const TASK_SEND: Rights = Rights::from_bits(1 << 5);
+const TASK_SEND_DERIVE: Rights = Rights::from_bits(1 | (1 << 5));
+const SEGMENT_RW: Rights = Rights::from_bits((1 << 1) | (1 << 2));
+
+#[derive(Clone, Copy)]
+struct RemoteEntry {
+    owner: u8,
+    slot: u8,
+}
+
+/// Manager-issued proxy transport. Every batch goes through the Store service:
+/// the proxy slot, its shared page and the acting owner all come from the
+/// manager- and store-validated registration, never from the batch payload.
+pub struct Remote<'a, T: SyscallTransport> {
+    rt: &'a Runtime<T>,
+    self_cap: Capability,
+    manager: (u64, Capability),
+    store: Option<(u64, Capability)>,
+    policy: u8,
+    pages: [Option<Capability>; crate::proxy::MAX_PROXIES],
+    entries: [Option<RemoteEntry>; REMOTE_OWNERS],
+}
+
+fn sender_cookie(message: &prima_runtime::Message) -> u64 {
+    message.sender.map_or(0, |task| {
+        u64::from(task.as_raw()) | (u64::from(message.sender_generation) << 32)
+    })
+}
+
+fn drop_caps<T: SyscallTransport>(rt: &Runtime<T>, message: &prima_runtime::Message) {
+    for cap in message.capabilities.iter().flatten() {
+        let _ = rt.cap_drop(*cap);
+    }
+}
+
+/// Register a direct file session with the manager and wait for the store's
+/// announcement. Shared by the proxy transport and the native direct client.
+fn open_session<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    manager: Capability,
+) -> Result<(Capability, u64, Capability), i64> {
+    let self_cap = rt.self_capability().map_err(|_| -13)?;
+    let manager_cookie = rt.send_target_cookie(manager).map_err(|_| -13)?;
+    let reply = rt.cap_derive(self_cap, TASK_SEND_DERIVE).map_err(|_| -13)?;
+    let control = rt.cap_derive(self_cap, TASK_SEND).map_err(|_| -13)?;
+    rt.send(
+        TaskId::from_raw(manager_cookie as u32),
+        manager,
+        SERVICE_SESSION_REGISTER_TAG,
+        &[reply, control],
+    )
+    .map_err(|_| -13)?;
+    let store = accept_store(rt, manager_cookie)?;
+    Ok((self_cap, store.0, store.1))
+}
+
+/// The manager announces the store route, then the store ACKs with the one
+/// send capability whose target is its own live incarnation.
+fn accept_store<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    manager_cookie: u64,
+) -> Result<(u64, Capability), i64> {
+    let mut expected = 0u64;
+    loop {
+        let message = rt.receive().map_err(|_| -5)?;
+        let cookie = sender_cookie(&message);
+        let tag = message.payload & 0xffff_0000_0000_0000;
+        if tag == SERVICE_SESSION_ROUTE_TAG && cookie == manager_cookie {
+            expected = (message.payload & 0xff) | (((message.payload >> 8) & 0xffff_ffff) << 32);
+            continue;
+        }
+        if tag == SERVICE_SESSION_ACK_TAG
+            && let Some(cap) = message.capabilities[0]
+        {
+            let target = rt.send_target_cookie(cap).ok();
+            let status = message.payload & 0xff;
+            if status == 0
+                && expected != 0
+                && target == Some(cookie)
+                && message.capabilities[1].is_none()
+            {
+                return Ok((cookie, cap));
+            }
+            for cap in message.capabilities.iter().flatten() {
+                let _ = rt.cap_drop(*cap);
+            }
+            continue;
+        }
+        drop_caps(rt, &message);
+    }
+}
+
+impl<'a, T: SyscallTransport> Remote<'a, T> {
+    /// Register a direct file session with the manager, then keep the store's
+    /// send authority. Proxy registration for each application follows.
+    pub fn connect(rt: &'a Runtime<T>, manager: Capability, policy: u8) -> Result<Self, i64> {
+        let (self_cap, store_cookie, store_cap) = open_session(rt, manager)?;
+        let manager_cookie = rt.send_target_cookie(manager).map_err(|_| -13)?;
+        Ok(Self {
+            rt,
+            self_cap,
+            manager: (manager_cookie, manager),
+            store: Some((store_cookie, store_cap)),
+            policy,
+            pages: [None; crate::proxy::MAX_PROXIES],
+            entries: [None; REMOTE_OWNERS],
+        })
+    }
+
+    /// Ask the manager to bind a live application Task to this proxy. The
+    /// application's own TaskSend is the only subject authority in the message.
+    fn register_proxy(&mut self, app: Capability) -> Result<u8, i64> {
+        let (store_cookie, _) = self.store.ok_or(-13)?;
+        let subject = self.rt.cap_derive(app, TASK_SEND).map_err(|_| -13)?;
+        let reply = self
+            .rt
+            .cap_derive(self.self_cap, TASK_SEND)
+            .map_err(|_| -13)?;
+        let (manager_cookie, manager) = self.manager;
+        self.rt
+            .send(
+                TaskId::from_raw(manager_cookie as u32),
+                manager,
+                SERVICE_SESSION_PROXY_REGISTER_TAG | u64::from(self.policy),
+                &[subject, reply],
+            )
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != SERVICE_SESSION_ACK_TAG
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = message.payload & 0xff;
+            let index = ((message.payload >> 8) & 0xff) as usize;
+            drop_caps(self.rt, &message);
+            if status != 0 || index >= crate::proxy::MAX_PROXIES {
+                return Err(-13);
+            }
+            return Ok(index as u8);
+        }
+    }
+
+    fn page_va(index: u8) -> u64 {
+        REMOTE_PAGE_VA + u64::from(index) * PAGE_BYTES as u64
+    }
+
+    /// Map the store-owned page. Its root capability never leaves the store.
+    fn open_slot(&mut self, index: u8) -> Result<(), i64> {
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        self.rt
+            .send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                bulk::PROXY_OPEN | u64::from(index),
+                &[],
+            )
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != bulk::OPEN_REPLY
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = (message.payload >> 32) & 0xffff;
+            let Some(cap) = message.capabilities[0] else {
+                drop_caps(self.rt, &message);
+                if status != 0 {
+                    return Err(-(status as i64));
+                }
+                continue;
+            };
+            for extra in message.capabilities[1..].iter().flatten() {
+                let _ = self.rt.cap_drop(*extra);
+            }
+            if status != 0 {
+                let _ = self.rt.cap_drop(cap);
+                return Err(-(status as i64));
+            }
+            if self
+                .rt
+                .memseg_map(cap, self.self_cap, 0, Self::page_va(index), 1, SEGMENT_RW)
+                .is_err()
+            {
+                let _ = self.rt.cap_drop(cap);
+                return Err(-12);
+            }
+            self.pages[index as usize] = Some(cap);
+            return Ok(());
+        }
+    }
+
+    fn entry(&self, owner: u8) -> Result<RemoteEntry, i64> {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|entry| entry.owner == owner)
+            .copied()
+            .ok_or(-9)
+    }
+
+    fn send_control(&mut self, payload: u64) -> Result<u64, i64> {
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        self.rt
+            .send(TaskId::from_raw(store_cookie as u32), store, payload, &[])
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != SERVICE_SESSION_FORK_ACK_TAG
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            drop_caps(self.rt, &message);
+            return Ok(message.payload & 0xffff_ffff);
+        }
+    }
+
+    /// Register a forked child against its published owner. The reservation was
+    /// published on the parent's entry, so the store reuses the inherited OFDs.
+    pub fn register_owner(&mut self, owner: u8, task: Capability) -> Result<(), i64> {
+        let index = self.register_proxy(task)?;
+        if let Err(error) = self.open_slot(index) {
+            let (store_cookie, store) = self.store.ok_or(-13)?;
+            let _ = self.rt.send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                SERVICE_SESSION_PROXY_CLOSE_TAG | u64::from(index),
+                &[],
+            );
+            return Err(error);
+        }
+        let slot = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.is_none())
+            .ok_or(-11)?;
+        *slot = Some(RemoteEntry { owner, slot: index });
+        Ok(())
+    }
+}
+
+impl<T: SyscallTransport> Store for Remote<'_, T> {
+    fn exchange(
+        &mut self,
+        owner: u8,
+        page: &mut [u8; PAGE_BYTES],
+        sequence: u64,
+    ) -> Result<(), i64> {
+        let entry = self.entry(owner)?;
+        let va = Self::page_va(entry.slot);
+        self.rt.write_user_bytes(va, page).map_err(|_| -14)?;
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        let payload =
+            bulk::PROXY_SUBMIT | (u64::from(entry.slot) << bulk::PROXY_SLOT_SHIFT) | sequence;
+        self.rt
+            .send(TaskId::from_raw(store_cookie as u32), store, payload, &[])
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != bulk::COMPLETE
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = (message.payload >> 32) & 0xffff;
+            let echo = message.payload & 0xffff_ffff;
+            drop_caps(self.rt, &message);
+            if echo != sequence {
+                return Err(-22);
+            }
+            if status != 0 {
+                return Err(-(status as i64));
+            }
+            self.rt.read_user_bytes(va, page).map_err(|_| -14)?;
+            return Ok(());
+        }
+    }
+
+    fn reserve(&mut self, owner: u8) -> Result<u32, i64> {
+        let entry = self.entry(owner)?;
+        let payload = bulk::PROXY_RESERVE | (u64::from(entry.slot) << bulk::PROXY_SLOT_SHIFT);
+        let key = self.send_control(payload)?;
+        if key == 0 {
+            return Err(-11);
+        }
+        Ok(key as u32)
+    }
+
+    fn publish(&mut self, owner: u8, key: u32, child: u64) -> Result<u8, i64> {
+        let entry = self.entry(owner)?;
+        let payload = bulk::PROXY_PUBLISH
+            | (u64::from(entry.slot) << bulk::PROXY_SLOT_SHIFT)
+            | ((child as u32 & 0xff) as u64) << bulk::PROXY_CHILD_SHIFT
+            | u64::from(key);
+        let reply = self.send_control(payload)?;
+        if reply & 0xff != 0 {
+            return Err(-13);
+        }
+        Ok(((reply >> 8) & 0xff) as u8)
+    }
+
+    fn release(&mut self, owner: u8, key: u32) -> Result<(), i64> {
+        let entry = self.entry(owner)?;
+        let payload = bulk::PROXY_RELEASE
+            | (u64::from(entry.slot) << bulk::PROXY_SLOT_SHIFT)
+            | u64::from(key);
+        if self.send_control(payload)? != 0 {
+            return Err(-13);
+        }
+        Ok(())
+    }
+
+    fn close_owner(&mut self, owner: u8) -> Result<(), i64> {
+        let entry = self.entry(owner)?;
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        let _ = self.rt.send(
+            TaskId::from_raw(store_cookie as u32),
+            store,
+            SERVICE_SESSION_PROXY_CLOSE_TAG | u64::from(entry.slot),
+            &[],
+        );
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != SERVICE_SESSION_FORK_ACK_TAG
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = message.payload & 0xff;
+            drop_caps(self.rt, &message);
+            if status != 0 {
+                return Err(-(status as i64));
+            }
+            if let Some(cap) = self.pages[entry.slot as usize].take() {
+                let _ = self
+                    .rt
+                    .memseg_unmap(self.self_cap, Self::page_va(entry.slot), 1);
+                let _ = self.rt.cap_drop(cap);
+            }
+            if let Some(index) = self
+                .entries
+                .iter()
+                .position(|candidate| candidate.is_some_and(|e| e.owner == owner))
+            {
+                self.entries[index] = None;
+            }
+            return Ok(());
+        }
+    }
+
+    fn register_child(&mut self, owner: u8, task: Capability) -> Result<(), i64> {
+        self.register_owner(owner, task)
+    }
+}
+
+/// Fixed VA for the direct client's single batch page.
+pub const DIRECT_PAGE_VA: u64 = 0x0000_0e00_0000_0000;
+
+/// Direct file session client: the P2b-4 native/POSIX ABI probe. Its batches
+/// name no proxy slot; the store binds the owner from the registering Process.
+pub struct Direct<'a, T: SyscallTransport> {
+    rt: &'a Runtime<T>,
+    self_cap: Capability,
+    store: (u64, Capability),
+    page: Capability,
+    next: u64,
+}
+
+impl<'a, T: SyscallTransport> Direct<'a, T> {
+    pub fn connect(rt: &'a Runtime<T>, manager: Capability) -> Result<Self, i64> {
+        let (self_cap, store_cookie, store_cap) = open_session(rt, manager)?;
+        rt.send(
+            TaskId::from_raw(store_cookie as u32),
+            store_cap,
+            bulk::OPEN,
+            &[],
+        )
+        .map_err(|_| -13)?;
+        loop {
+            let message = rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != bulk::OPEN_REPLY
+            {
+                drop_caps(rt, &message);
+                continue;
+            }
+            let status = (message.payload >> 32) & 0xffff;
+            let Some(page) = message.capabilities[0] else {
+                drop_caps(rt, &message);
+                continue;
+            };
+            let extra = message.capabilities[1];
+            for cap in extra.iter() {
+                let _ = rt.cap_drop(*cap);
+            }
+            if status != 0 {
+                let _ = rt.cap_drop(page);
+                return Err(-(status as i64));
+            }
+            if extra.is_some() {
+                let _ = rt.cap_drop(page);
+                return Err(-5);
+            }
+            if rt
+                .memseg_map(page, self_cap, 0, DIRECT_PAGE_VA, 1, SEGMENT_RW)
+                .is_err()
+            {
+                let _ = rt.cap_drop(page);
+                return Err(-12);
+            }
+            return Ok(Self {
+                rt,
+                self_cap,
+                store: (store_cookie, store_cap),
+                page,
+                next: message.payload as u32 as u64,
+            });
+        }
+    }
+
+    /// One batch, one COMPLETE. Output stays in the shared page for the caller.
+    fn submit(&mut self, page: &mut [u8; PAGE_BYTES]) -> Result<(u32, u32), i64> {
+        if self.next == 0 || self.next > bulk::MAX_SEQUENCE {
+            return Err(-5);
+        }
+        let (store_cookie, store) = self.store;
+        self.rt
+            .write_user_bytes(DIRECT_PAGE_VA, page)
+            .map_err(|_| -14)?;
+        self.rt
+            .send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                bulk::SUBMIT | self.next,
+                &[],
+            )
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000 != bulk::COMPLETE
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = (message.payload >> 32) & 0xffff;
+            let echo = message.payload & 0xffff_ffff;
+            drop_caps(self.rt, &message);
+            if echo != self.next {
+                return Err(-22);
+            }
+            if status != 0 {
+                return Err(-(status as i64));
+            }
+            self.next += 1;
+            self.rt
+                .read_user_bytes(DIRECT_PAGE_VA, page)
+                .map_err(|_| -14)?;
+            let at = bulk::HEADER_BYTES;
+            return Ok((
+                u32::from_le_bytes(page[at + 24..at + 28].try_into().unwrap()),
+                u32::from_le_bytes(page[at + 28..at + 32].try_into().unwrap()),
+            ));
+        }
+    }
+
+    pub fn open(&mut self, path: &[u8]) -> Result<u8, i64> {
+        if path.is_empty() || path.len() > MAX_PATH {
+            return Err(-36);
+        }
+        let sequence = self.next;
+        let mut page = [0; PAGE_BYTES];
+        bulk::initialize(&mut page, sequence, 1);
+        bulk::encode_request(
+            &mut page,
+            0,
+            Request {
+                op: Request::OPEN,
+                fd: bulk::DIRFD_ROOT,
+                length: path.len(),
+                data: bulk::DATA_OFFSET,
+                ..Request::default()
+            },
+        );
+        page[bulk::DATA_OFFSET..bulk::DATA_OFFSET + path.len()].copy_from_slice(path);
+        let (status, fd) = self.submit(&mut page)?;
+        if status != 0 {
+            return Err(-i64::from(status));
+        }
+        u8::try_from(fd).map_err(|_| -5)
+    }
+
+    pub fn read(&mut self, fd: u8, out: &mut [u8]) -> Result<usize, i64> {
+        if out.is_empty() || out.len() > bulk::DATA_BYTES {
+            return Err(-22);
+        }
+        let sequence = self.next;
+        let mut page = [0; PAGE_BYTES];
+        bulk::initialize(&mut page, sequence, 1);
+        bulk::encode_request(
+            &mut page,
+            0,
+            Request {
+                op: Request::READ,
+                fd,
+                length: out.len(),
+                data: bulk::DATA_OFFSET,
+                ..Request::default()
+            },
+        );
+        let (status, count) = self.submit(&mut page)?;
+        if status != 0 {
+            return Err(-i64::from(status));
+        }
+        let count = (count as usize).min(out.len());
+        out[..count].copy_from_slice(&page[bulk::DATA_OFFSET..bulk::DATA_OFFSET + count]);
+        Ok(count)
+    }
+
+    pub fn shutdown(&mut self) {
+        let (store_cookie, store) = self.store;
+        let _ = self.rt.send(
+            TaskId::from_raw(store_cookie as u32),
+            store,
+            bulk::CLOSE,
+            &[],
+        );
+        let _ = self.rt.memseg_unmap(self.self_cap, DIRECT_PAGE_VA, 1);
+        let _ = self.rt.cap_drop(self.page);
     }
 }
 
