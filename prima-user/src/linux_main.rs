@@ -308,9 +308,15 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
             } else {
                 let mut terminated = None;
                 let result = if req.number == 57 {
-                    Some(family.fork(&rt, &req, gate))
+                    Some(family.fork(&rt, &mut store, &req, gate))
                 } else if req.number == 59 {
-                    match family.exec(&rt, &req, IMAGE, prima_user::linux::PROCESS_CHILD) {
+                    match family.exec(
+                        &rt,
+                        &mut store,
+                        &req,
+                        IMAGE,
+                        prima_user::linux::PROCESS_CHILD,
+                    ) {
                         Ok(()) => continue,
                         Err(error) => Some(error),
                     }
@@ -384,7 +390,7 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
                     Completion::Terminated(signal) => u32::from(signal),
                 }
             };
-            let Some(status) = family.exit(&rt, owner, &req, status).unwrap() else {
+            let Some(status) = family.exit(&rt, &mut store, owner, &req, status).unwrap() else {
                 continue;
             };
             audit(&rt, serial, gate, &mut audit_cursor, case == "L1");

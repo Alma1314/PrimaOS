@@ -15,7 +15,8 @@ struct Entry {
 pub struct Family {
     entries: [Option<Entry>; MAX_PROCESSES],
     pub shared: Shared,
-    session: Session,
+    /// One store session per Process slot: each has its own sequence and owner.
+    sessions: [Session; MAX_PROCESSES],
 }
 
 impl Family {
@@ -32,7 +33,7 @@ impl Family {
         Ok(Self {
             entries,
             shared: Shared::new(),
-            session: Session::new(),
+            sessions: core::array::from_fn(|_| Session::new()),
         })
     }
     pub fn owner(&self, cookie: u64) -> Option<usize> {
@@ -59,13 +60,21 @@ impl Family {
         req: &GateRequest,
         write: impl FnMut(u64, &[u8]) -> Result<()>,
     ) -> i64 {
-        self.entries[owner]
+        let process = self.entries[owner]
             .as_mut()
             .unwrap()
             .process
             .as_mut()
-            .unwrap()
-            .dispatch(&mut self.shared, &mut self.session, store, rt, req, write)
+            .unwrap();
+        self.sessions[owner].set_owner(process.owner);
+        process.dispatch(
+            &mut self.shared,
+            &mut self.sessions[owner],
+            store,
+            rt,
+            req,
+            write,
+        )
     }
     pub fn parent(&self, owner: usize) -> i64 {
         let parent = self.entries[owner].as_ref().unwrap().parent;
@@ -77,34 +86,71 @@ impl Family {
                 .map_or(1, |e| e.cookie as u32 as i64)
         })
     }
-    pub fn fork(&mut self, rt: &Native, req: &GateRequest, gate: Capability) -> i64 {
-        self.fork_inner(rt, req, gate).unwrap_or_else(|error| error)
+    pub fn fork(
+        &mut self,
+        rt: &Native,
+        store: &mut dyn Store,
+        req: &GateRequest,
+        gate: Capability,
+    ) -> i64 {
+        self.fork_inner(rt, store, req, gate)
+            .unwrap_or_else(|error| error)
     }
-    fn fork_inner(&mut self, rt: &Native, req: &GateRequest, gate: Capability) -> Result<i64> {
+    fn fork_inner(
+        &mut self,
+        rt: &Native,
+        store: &mut dyn Store,
+        req: &GateRequest,
+        gate: Capability,
+    ) -> Result<i64> {
         let owner = self.owner(req.task_cookie).ok_or(-3)?;
         let slot = self.entries.iter().position(Option::is_none).ok_or(-11)?;
+        let (parent_owner, context, thread_manager, tls) = {
+            let parent = self.entries[owner]
+                .as_ref()
+                .unwrap()
+                .process
+                .as_ref()
+                .unwrap();
+            let thread = parent.threads.member(req.task_cookie).ok_or(-3)?;
+            (parent.owner, thread.context, thread.manager, thread.tls)
+        };
+        // Reserve the child owner before kernel publication. A failed fork
+        // releases it, so the window is either a complete reservation or none.
+        self.sessions[owner].set_owner(parent_owner);
+        let key = self.sessions[owner].reserve(store)?;
+        let manager = match rt.gate_fork(req.capability, context, thread_manager, gate) {
+            Ok(manager) => manager,
+            Err(error) => {
+                self.sessions[owner].release(store, key)?;
+                return Err(native_error(error));
+            }
+        };
+        let cookie = rt
+            .send_target_cookie(manager)
+            .expect("published child cookie");
+        let child_owner = match self.sessions[owner].publish(store, key, cookie) {
+            Ok(child_owner) => child_owner,
+            Err(error) => {
+                // The kernel child already exists; Local cannot fail here, and
+                // the real transport must keep publish infallible after reserve.
+                let _ = self.sessions[owner].release(store, key);
+                return Err(error);
+            }
+        };
         let parent = self.entries[owner]
             .as_ref()
             .unwrap()
             .process
             .as_ref()
             .unwrap();
-        let thread = parent.threads.member(req.task_cookie).ok_or(-3)?;
-        // Store OFD owner reservation and rollback move with the fork
-        // lifecycle migration (P2b-3); this slice copies only the fd table.
-        let manager = rt
-            .gate_fork(req.capability, thread.context, thread.manager, gate)
-            .map_err(native_error)?;
-        let cookie = rt
-            .send_target_cookie(manager)
-            .expect("published child cookie");
         let child = Process {
             manager,
             cookie,
-            tls: thread.tls,
+            tls,
             threads: parent.threads.fork_child(req.task_cookie, manager, cookie),
             clear_tid: 0,
-            owner: slot as u8,
+            owner: child_owner,
             fds: parent.fds,
             dirs: parent.dirs,
             fd_flags: parent.fd_flags,
@@ -115,10 +161,12 @@ impl Family {
             allocations: parent.allocations,
         };
         for segment in self.shared.segments.iter_mut().flatten() {
-            if segment.1 & (1 << owner) != 0 {
-                segment.1 |= 1 << slot;
+            if segment.1 & (1 << parent_owner) != 0 {
+                segment.1 |= 1 << child_owner;
             }
         }
+        self.sessions[slot] = Session::new();
+        self.sessions[slot].set_owner(child_owner);
         self.entries[slot] = Some(Entry {
             cookie,
             parent: Some(parent.cookie),
@@ -183,6 +231,7 @@ impl Family {
     pub fn exec(
         &mut self,
         rt: &Native,
+        store: &mut dyn Store,
         req: &GateRequest,
         busybox: &[u8],
         child: &[u8],
@@ -214,8 +263,7 @@ impl Family {
             &envp[..env.len],
         )
         .map_err(native_error)?;
-        // The store-side CLOEXEC close follows with the lifecycle migration
-        // (P2b-3); clearing the fd table keeps the process view correct.
+        self.sessions[owner].set_owner(process.owner);
         for fd in 0..16 {
             if process.fd_flags[fd] == 0 {
                 continue;
@@ -223,6 +271,9 @@ impl Family {
             if fd < 3 {
                 process.standard_open[fd] = false;
             } else {
+                if let Some(wire) = process.fds[fd] {
+                    self.sessions[owner].close(store, wire)?;
+                }
                 process.fds[fd] = None;
                 process.dirs[fd] = false;
             }
@@ -230,7 +281,7 @@ impl Family {
         }
         for allocation in &mut process.allocations {
             if let Some((cap, _, _)) = allocation.take() {
-                self.shared.release_segment(rt, cap, owner as u8)?;
+                self.shared.release_segment(rt, cap, process.owner)?;
             }
         }
         process.brk = HEAP;
@@ -245,6 +296,7 @@ impl Family {
     pub fn exit(
         &mut self,
         rt: &Native,
+        store: &mut dyn Store,
         owner: usize,
         req: &GateRequest,
         status: u32,
@@ -252,6 +304,10 @@ impl Family {
         let entry = self.entries[owner].as_mut().unwrap();
         let process = entry.process.as_mut().unwrap();
         process.threads.destroy_all(rt, req)?;
+        // Close the Process's Store owner before personality cleanup. A failed
+        // close keeps the entry; the caller currently treats it as fatal.
+        self.sessions[owner].set_owner(process.owner);
+        self.sessions[owner].close_owner(store)?;
         process.cleanup(&mut self.shared, rt)?;
         entry.wait = None;
         entry.process = None;

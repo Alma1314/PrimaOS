@@ -141,10 +141,15 @@ impl Sessions {
 
     /// Allocate an OFD owner for a manager-authenticated proxied application.
     /// The slot is independent of the legacy manager slot and is released only
-    /// by the proxy entry that allocated it.
+    /// by the proxy entry that allocated it. A forked child already owns the
+    /// slot published by its parent's reservation, so re-registration reuses
+    /// that owner instead of failing.
     pub fn reserve_external(&mut self, process: u64, parent: u64) -> Option<u8> {
-        if process >> 32 == 0 || self.owner(process).is_some() {
+        if process >> 32 == 0 {
             return None;
+        }
+        if let Some(owner) = self.owner(process) {
+            return Some(owner);
         }
         let slot = self.vacant_owner()?;
         self.owners[slot as usize] = Some(Owner {
@@ -207,12 +212,28 @@ mod tests {
         let second = (7 << 32) | 10;
         let slot = sessions.reserve_external(first, 1).unwrap();
         assert_ne!(slot, 0);
-        assert_eq!(sessions.reserve_external(first, 1), None);
+        // Duplicate registration reuses the authenticated owner.
+        assert_eq!(sessions.reserve_external(first, 1), Some(slot));
         assert_eq!(sessions.reserve_external(0, 1), None);
         assert!(sessions.release_external(slot));
         assert!(!sessions.release_external(slot));
         assert_eq!(sessions.reserve_external(second, 1), Some(slot));
         assert!(!sessions.release_external(0));
+    }
+
+    #[test]
+    fn a_published_fork_child_keeps_its_owner_across_proxy_registration() {
+        let mut sessions = Sessions::new();
+        let parent = (8 << 32) | 11;
+        let child = (9 << 32) | 12;
+        let parent_owner = sessions.reserve_external(parent, 1).unwrap();
+        let (child_owner, key) = sessions.reserve(parent).unwrap();
+        assert!(sessions.publish(parent, key, child));
+        // The child's own proxy registration finds the published owner.
+        assert_eq!(sessions.reserve_external(child, parent), Some(child_owner));
+        assert_ne!(child_owner, parent_owner);
+        assert!(sessions.release_external(parent_owner));
+        assert!(sessions.release_external(child_owner));
     }
     #[test]
     fn a_released_owner_slot_cannot_authorize_an_old_client_after_reuse() {

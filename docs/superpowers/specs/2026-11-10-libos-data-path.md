@@ -235,6 +235,28 @@ P2b-1 至少覆盖：每个 op 的合法/非法描述符、路径/输出区重�
 P2b-5 才在 QEMU 上观察真实 ABI 程序；host 测试不能替代机器证据。本节不关闭 P2，
 也不构成 7-A 证据。
 
+## P2b-3：代理 fork/exit 生命周期（2026-11-17）
+
+Linux personality 的 fork/exec/exit 不再操作域内 OFD 表，而是经已登记代理会话
+提交 owner 生命周期消息。位域沿用 `PROXY_*`：slot 在 bits 32..39，RESERVE/RELEASE
+低 32 位为预留 key，PUBLISH 另用 bits 40..47 携带子 Task id。
+
+| 消息 | 载荷 | 语义 |
+|---|---|---|
+| `PROXY_RESERVE` | `tag \| slot<<32` | Store 为 `entry.process` 预留子 owner，复制 `entry.owner` 的 OFD 持有位；回复 `FORK_ACK \| key`，0 表示失败 |
+| `PROXY_PUBLISH` | `tag \| slot<<32 \| child_task<<40 \| key` | 校验子 Task 的父 Process 等于 `entry.process`，把 key 绑定到子 Process cookie；回复 0 成功、1 失败 |
+| `PROXY_RELEASE` | `tag \| slot<<32 \| key` | 关闭并释放尚未发布的预留；已回收视为成功 |
+
+规则：
+
+- 预留先于 `gate_fork`；fork 失败必须释放，失败窗口不得留下 OFD 持有位。
+- 子 owner 槽位复用前必须关闭其所有 OFD；旧 key 与已发布预留不得再次发布或释放。
+- 子进程注册自己的代理项时复用已发布的 owner；`reserve_external` 不再拒绝已发布子。
+- 退出关闭 owner。fork 后父子共享 OFD 与游标；任一 owner 关闭只移除该持有位。
+- owner 0、legacy 槽与 payload 中的 fd/NodeId/PID 均不构成授权。
+- 真实代理会话接线属 P2b-4；P2b-3 的 host 证据使用同一语义的进程内 transport，
+  直接客户端既有的 RESERVE/PUBLISH/RELEASE 语义不变。
+
 ## 验证与重审
 
 首片host覆盖全批次预检、越界/重叠/保留位、owner隔离、重放拒绝、短读清零、

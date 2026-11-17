@@ -12,8 +12,15 @@ pub const CLOSE: u64 = 0x5f14_0000_0000_0000;
 pub const PROXY_OPEN: u64 = 0x5f20_0000_0000_0000;
 pub const PROXY_SUBMIT: u64 = 0x5f21_0000_0000_0000;
 pub const PROXY_CLOSE: u64 = 0x5f22_0000_0000_0000;
+/// Proxy fork lifecycle: the slot is in bits 32..39. RESERVE/RELEASE also
+/// carry the reservation key in the low 32 bits; PUBLISH adds the published
+/// child Task id in bits 40..47.
+pub const PROXY_RESERVE: u64 = 0x5f23_0000_0000_0000;
+pub const PROXY_PUBLISH: u64 = 0x5f24_0000_0000_0000;
+pub const PROXY_RELEASE: u64 = 0x5f25_0000_0000_0000;
 pub const PROXY_SLOT_MASK: u64 = 0xff;
 pub const PROXY_SLOT_SHIFT: u64 = 32;
+pub const PROXY_CHILD_SHIFT: u64 = 40;
 pub const PAGE_BYTES: usize = 4096;
 pub const MAX_OPS: usize = 8;
 pub const HEADER_BYTES: usize = 32;

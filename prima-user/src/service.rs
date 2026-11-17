@@ -674,11 +674,16 @@ pub fn run(
                 && policy != SERVICE_ROOT_SERVICE
                 && descends_from(&runtime, app_task, proxy_cookie);
             let mut index = None;
+            // A forked child already owns the slot published by its parent's
+            // reservation. Re-registration must not release that live owner.
+            let reused = sessions.owner(process).is_some();
             let status = if !bound {
                 SERVICE_FILE_EACCES
             } else if let Some(owner) = sessions.reserve_external(process, parent) {
                 if prepare_policy(&runtime, policy).is_err() {
-                    sessions.release_external(owner);
+                    if !reused {
+                        sessions.release_external(owner);
+                    }
                     SERVICE_FILE_ENOSPC
                 } else if let Some(slot) =
                     proxies.register(proxy_cookie, app_cookie, process, owner, policy)
@@ -686,7 +691,9 @@ pub fn run(
                     index = Some(slot);
                     0
                 } else {
-                    sessions.release_external(owner);
+                    if !reused {
+                        sessions.release_external(owner);
+                    }
                     SERVICE_FILE_EAGAIN
                 }
             } else {
@@ -700,8 +707,10 @@ pub fn run(
                 .is_err()
             {
                 // Nothing was published to the client: reclaim the reservation.
+                // A reused (inherited) owner belongs to the existing entry.
                 if let Some(index) = index
                     && let Some(entry) = proxies.remove(index)
+                    && !reused
                 {
                     let mut storage = SegmentStorage { runtime: &runtime };
                     let _ = files.close_owner(&mut storage, entry.owner);
@@ -735,6 +744,83 @@ pub fn run(
                     client.reply,
                     message.payload,
                     message.capabilities,
+                );
+                continue;
+            }
+            if matches!(
+                message.payload & 0xffff_0000_0000_0000,
+                bulk::PROXY_RESERVE | bulk::PROXY_PUBLISH | bulk::PROXY_RELEASE
+            ) {
+                for cap in message.capabilities.into_iter().flatten() {
+                    let _ = runtime.cap_drop(cap);
+                }
+                let kind = message.payload & 0xffff_0000_0000_0000;
+                let index =
+                    ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize;
+                let entry = proxies.entry(index).copied().filter(|entry| {
+                    entry.proxy == client.cookie
+                        && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                            == Some(entry.app)
+                });
+                let value = if let Some(entry) = entry {
+                    if kind == bulk::PROXY_RESERVE {
+                        // Reserve a child owner from the application's own
+                        // owner; the slot and OFD fork are decided by the store.
+                        if let Some((owner, key)) = sessions.reserve(entry.process) {
+                            if files.fork_owner(entry.owner, owner).is_ok() {
+                                u64::from(key)
+                            } else {
+                                sessions.owners[owner as usize] = None;
+                                0
+                            }
+                        } else {
+                            0
+                        }
+                    } else if kind == bulk::PROXY_PUBLISH {
+                        let child = TaskId::from_raw(
+                            ((message.payload >> bulk::PROXY_CHILD_SHIFT) & 0xff) as u32,
+                        );
+                        let cookie = runtime.task_cookie(child).unwrap_or(0);
+                        let valid = runtime.task_parent_cookie(child).ok() == Some(entry.process)
+                            && sessions.publish(entry.process, message.payload as u32, cookie);
+                        u64::from(!valid)
+                    } else {
+                        let valid = if let Some((owner, record)) =
+                            sessions.reservation(entry.process, message.payload as u32)
+                        {
+                            if record.cookie == 0 {
+                                let mut storage = SegmentStorage { runtime: &runtime };
+                                if files.close_owner(&mut storage, owner).is_ok() {
+                                    sessions.owners[owner as usize] = None;
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            true // already reclaimed
+                        };
+                        u64::from(!valid)
+                    }
+                } else {
+                    u64::from(true)
+                };
+                // RESERVE reports a key; 0 is failure. PUBLISH/RELEASE report
+                // 0 success and 1 failure, matching the direct-client path.
+                let status = if entry.is_some() {
+                    value
+                } else if kind == bulk::PROXY_RESERVE {
+                    0
+                } else {
+                    1
+                };
+                let _ = runtime.send(
+                    reply_peer,
+                    reply_send,
+                    SERVICE_SESSION_FORK_ACK_TAG | status,
+                    &[],
                 );
                 continue;
             }

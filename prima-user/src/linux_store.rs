@@ -15,13 +15,33 @@ use prima_runtime::{
 /// One store session transport. `page` carries a validated batch whose header
 /// sequence already equals `sequence`; on success the completions are written
 /// back in place. Errors are negative errno values.
+///
+/// Lifecycle methods are proxy-scoped: the transport already knows which
+/// registered application entry it submits for, so `owner` is only the acting
+/// Process's store owner. A real session is owner-bound and validates it.
 pub trait Store {
-    fn exchange(&mut self, page: &mut [u8; PAGE_BYTES], sequence: u64) -> Result<(), i64>;
+    fn exchange(
+        &mut self,
+        owner: u8,
+        page: &mut [u8; PAGE_BYTES],
+        sequence: u64,
+    ) -> Result<(), i64>;
+    /// Reserve a child owner inheriting the acting owner's OFDs.
+    fn reserve(&mut self, owner: u8) -> Result<u32, i64>;
+    /// Bind a reservation to the published child Process cookie and return the
+    /// child owner.
+    fn publish(&mut self, key: u32, child: u64) -> Result<u8, i64>;
+    /// Drop a reservation that will not be published.
+    fn release(&mut self, key: u32) -> Result<(), i64>;
+    /// Close every OFD held by `owner` (process exit).
+    fn close_owner(&mut self, owner: u8) -> Result<(), i64>;
 }
 
-/// Next accepted session sequence. A store session is terminal after a lost
-/// completion, so this only advances on a successful exchange.
+/// Next accepted session sequence and the acting Process's store owner. A
+/// store session is terminal after a lost completion, so the sequence only
+/// advances on a successful exchange.
 pub struct Session {
+    owner: u8,
     next: u64,
 }
 
@@ -33,7 +53,27 @@ impl Default for Session {
 
 impl Session {
     pub const fn new() -> Self {
-        Self { next: 1 }
+        Self { owner: 0, next: 1 }
+    }
+
+    pub fn set_owner(&mut self, owner: u8) {
+        self.owner = owner;
+    }
+
+    pub fn reserve(&mut self, store: &mut dyn Store) -> Result<u32, i64> {
+        store.reserve(self.owner)
+    }
+
+    pub fn publish(&mut self, store: &mut dyn Store, key: u32, child: u64) -> Result<u8, i64> {
+        store.publish(key, child)
+    }
+
+    pub fn release(&mut self, store: &mut dyn Store, key: u32) -> Result<(), i64> {
+        store.release(key)
+    }
+
+    pub fn close_owner(&mut self, store: &mut dyn Store) -> Result<(), i64> {
+        store.close_owner(self.owner)
     }
 
     fn submit(
@@ -45,7 +85,7 @@ impl Session {
             return Err(-5);
         }
         let sequence = self.next;
-        store.exchange(page, sequence)?;
+        store.exchange(self.owner, page, sequence)?;
         self.next += 1;
         let at = bulk::HEADER_BYTES;
         Ok((
@@ -294,12 +334,24 @@ fn status(error: VfsError) -> u32 {
     }
 }
 
+const LOCAL_OWNERS: usize = 32;
+
+#[derive(Clone, Copy)]
+struct Slot {
+    key: u32,
+    published: bool,
+    next: u64,
+    child: u64,
+}
+
 /// In-process store used until the manager-issued session transport is wired.
-/// It executes the same codec and OFD semantics as the store service.
+/// It executes the same codec and OFD semantics as the store service, including
+/// owner inheritance, reservation keys and exit close.
 pub struct Local {
     ram: Ram,
     files: OpenFiles<SERVICE_FILE_HANDLES>,
-    next: u64,
+    slots: [Option<Slot>; LOCAL_OWNERS],
+    next_key: u32,
 }
 
 impl Local {
@@ -330,26 +382,118 @@ impl Local {
             vfs::write(&mut ram, opened.id, &mut node, 0, bytes).map_err(|_| -5)?;
         }
         vfs::chmod(&mut ram, vfs::ROOT, b"/", 0o555).map_err(|_| -5)?;
+        let mut slots = [None; LOCAL_OWNERS];
+        slots[0] = Some(Slot {
+            key: 0,
+            published: true,
+            next: 1,
+            child: 0,
+        });
         Ok(Self {
             ram,
             files: OpenFiles::new(),
-            next: 1,
+            slots,
+            next_key: 1,
         })
+    }
+
+    fn slot(&self, owner: u8) -> Result<Slot, i64> {
+        self.slots.get(owner as usize).copied().flatten().ok_or(-13)
     }
 }
 
 impl Store for Local {
-    fn exchange(&mut self, page: &mut [u8; PAGE_BYTES], sequence: u64) -> Result<(), i64> {
-        if sequence == 0 || sequence != self.next {
+    fn exchange(
+        &mut self,
+        owner: u8,
+        page: &mut [u8; PAGE_BYTES],
+        sequence: u64,
+    ) -> Result<(), i64> {
+        let slot = self.slot(owner)?;
+        if !slot.published {
+            return Err(-13);
+        }
+        if sequence == 0 || sequence != slot.next {
             return Err(-22);
         }
+        self.files.set_owner(owner).map_err(|_| -22)?;
         match prima_user_store_execute(&mut self.files, &mut self.ram, page, sequence) {
             Err(_) => Err(-22),
             Ok(()) => {
-                self.next += 1;
+                self.slots[owner as usize].as_mut().unwrap().next += 1;
                 Ok(())
             }
         }
+    }
+
+    fn reserve(&mut self, owner: u8) -> Result<u32, i64> {
+        self.slot(owner)?;
+        let child = (1..LOCAL_OWNERS)
+            .find(|slot| self.slots[*slot].is_none())
+            .ok_or(-11)? as u8;
+        let key = self.next_key;
+        let next_key = key.checked_add(1).ok_or(-11)?;
+        self.files.fork_owner(owner, child).map_err(|_| -22)?;
+        self.slots[child as usize] = Some(Slot {
+            key,
+            published: false,
+            next: 1,
+            child: 0,
+        });
+        self.next_key = next_key;
+        Ok(key)
+    }
+
+    fn publish(&mut self, key: u32, child: u64) -> Result<u8, i64> {
+        if child >> 32 == 0 {
+            return Err(-13);
+        }
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.is_some_and(|slot| slot.key == key))
+            .ok_or(-13)?;
+        let slot = self.slots[index].as_mut().unwrap();
+        if slot.published {
+            // Republishing the same child is idempotent; another child is not.
+            return if slot.child == child {
+                Ok(index as u8)
+            } else {
+                Err(-13)
+            };
+        }
+        slot.published = true;
+        slot.child = child;
+        Ok(index as u8)
+    }
+
+    fn release(&mut self, key: u32) -> Result<(), i64> {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|slot| slot.is_some_and(|slot| slot.key == key))
+        else {
+            return Ok(()); // already reclaimed
+        };
+        if self.slots[index].unwrap().published {
+            return Err(-13);
+        }
+        self.files
+            .close_owner(&mut self.ram, index as u8)
+            .map_err(|_| -5)?;
+        self.slots[index] = None;
+        Ok(())
+    }
+
+    fn close_owner(&mut self, owner: u8) -> Result<(), i64> {
+        self.slot(owner)?;
+        self.files
+            .close_owner(&mut self.ram, owner)
+            .map_err(|_| -5)?;
+        if owner != 0 {
+            self.slots[owner as usize] = None;
+        }
+        Ok(())
     }
 }
 
@@ -483,7 +627,61 @@ mod tests {
             },
         );
         page[bulk::DATA_OFFSET] = b'/';
-        assert_eq!(store.exchange(&mut page, 2), Err(-22));
+        assert_eq!(store.exchange(0, &mut page, 2), Err(-22));
         assert_eq!(store.files.len(), 0);
+    }
+
+    #[test]
+    fn fork_inherits_the_shared_cursor_and_exit_closes_one_owner() {
+        let mut store = Local::new().unwrap();
+        let mut parent = Session::new();
+        let fd = parent
+            .open(&mut store, DIRFD_ROOT, b"/fixture.txt", 0)
+            .unwrap();
+        let mut out = [0; 5];
+        assert_eq!(parent.read(&mut store, fd, &mut out), Ok(5));
+        assert_eq!(&out, b"hello");
+
+        let key = parent.reserve(&mut store).unwrap();
+        let child_owner = parent.publish(&mut store, key, (2 << 32) | 3).unwrap();
+        let mut child = Session::new();
+        child.set_owner(child_owner);
+        assert_eq!(child.read(&mut store, fd, &mut out), Ok(5));
+        assert_eq!(&out, b" from");
+
+        // The parent's exit releases its reference; the child keeps the OFD
+        // and the shared cursor.
+        parent.close_owner(&mut store).unwrap();
+        assert_eq!(child.read(&mut store, fd, &mut out), Ok(5));
+        assert_eq!(&out, b" prim");
+        child.close_owner(&mut store).unwrap();
+
+        // The freed owner slot is reusable for the next child.
+        let key = parent.reserve(&mut store).unwrap();
+        assert_eq!(
+            parent.publish(&mut store, key, (3 << 32) | 4),
+            Ok(child_owner)
+        );
+        // Republishing the same child is idempotent; other forms are rejected.
+        assert_eq!(
+            parent.publish(&mut store, key, (3 << 32) | 4),
+            Ok(child_owner)
+        );
+        assert_eq!(parent.publish(&mut store, key, (4 << 32) | 5), Err(-13));
+        assert_eq!(parent.release(&mut store, key), Err(-13));
+    }
+
+    #[test]
+    fn released_and_stale_reservations_cannot_publish() {
+        let mut store = Local::new().unwrap();
+        let mut session = Session::new();
+        let key = session.reserve(&mut store).unwrap();
+        assert_eq!(session.publish(&mut store, key, 0), Err(-13));
+        assert_eq!(session.release(&mut store, key), Ok(()));
+        assert_eq!(session.release(&mut store, key), Ok(()));
+        assert_eq!(session.publish(&mut store, key, (2 << 32) | 3), Err(-13));
+        assert_eq!(session.close_owner(&mut store), Ok(()));
+        assert!(session.reserve(&mut store).is_ok());
+        assert_eq!(store.close_owner(31), Err(-13));
     }
 }

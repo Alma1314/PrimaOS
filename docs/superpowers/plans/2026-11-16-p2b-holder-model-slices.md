@@ -9,11 +9,12 @@ updated: 2026-11-17
 
 # P2b 与 holder 模型依赖切片计划
 
-> 2026-11-17 进度：P2b-0 契约、P2b-1 Store 批量 ops 与 P2b-2 Linux 前端切换
-> 已落盘，host/workspace/lint 及既有 Linux 差分通过；真实代理会话接线（P2b-4）、
-> fork/exit（P2b-3）、镜像与代理 QEMU 正反例未做。证据见
-> [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md) 与
-> [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md)。
+> 2026-11-17 进度：P2b-0 契约、P2b-1 Store 批量 ops、P2b-2 Linux 前端切换与
+> P2b-3 fork/exec/exit 生命周期已落盘，host/workspace/lint 及既有 Linux 差分通过；
+> 真实代理会话接线（P2b-4）、镜像与代理 QEMU 正反例未做。证据见
+> [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)、
+> [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md) 与
+> [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md)。
 
 ## 目标、范围与基线
 
@@ -153,6 +154,11 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
   两进程共享游标的可见结果与 Linux 参考一致。
 - 停止条件：fork 失败或退出窗口无法保持“要么完整预留、要么无副作用”时停止。
 - 不包含：多线程 fork、完整 execve。
+- 2026-11-17：owner 预留/发布/回滚/退出关闭已迁到 Store 客户端接口，并新增
+  `PROXY_RESERVE/PUBLISH/RELEASE` 代理消息；`Local` 以按 owner 序号与槽位复用
+  提供 host 证据。真实代理会话发送端仍属 P2b-4；fork 成功后发布失败的窗口（内核
+  子已存在）未闭合，已在报告登记。见
+  [报告](../reports/2026-11-17-p2b-fork-exit.md)。
 
 ### P2b-4 镜像与启动 fixture 接线
 
