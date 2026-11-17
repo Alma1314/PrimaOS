@@ -9,15 +9,15 @@ updated: 2026-11-17
 
 # P2b 与 holder 模型依赖切片计划
 
-> 2026-11-18 进度：P2b-0 契约、P2b-1 Store 批量 ops、P2b-2 Linux 前端切换、
-> P2b-3 fork/exec/exit 生命周期、P2b-4 镜像/会话接线与 P2b-5 代理正反例矩阵
-> 已落盘；workspace/lint、既有 Linux 差分与 `test-linux-proxy` 两次启动通过。
-> P2b-6 收口未做。证据见
+> 2026-11-18 进度：P2b-0 至 P2b-6 已全部落盘，P2b 作为证据包收口；workspace/lint、
+> 既有 Linux 差分、`test-linux-proxy` 两次启动与完整 36 组 72 轮 BIOS 套件通过。
+> P2 不签署、7-A 未勾选；P2b-6 的组织级复核仍待办，holder H0–H7 未开始。证据见
 > [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)、
 > [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md)、
 > [P2b-3 报告](../reports/2026-11-17-p2b-fork-exit.md)、
-> [P2b-4 报告](../reports/2026-11-18-p2b-proxy-wiring.md) 与
-> [P2b-5 报告](../reports/2026-11-18-p2b-proxy-matrix.md)。
+> [P2b-4 报告](../reports/2026-11-18-p2b-proxy-wiring.md)、
+> [P2b-5 报告](../reports/2026-11-18-p2b-proxy-matrix.md) 与
+> [P2b-6 收口](../reports/2026-11-18-p2b-closeout.md)。
 
 ## 目标、范围与基线
 
@@ -218,6 +218,9 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 - 验收：文档工具通过；复核记录存在。
 - 停止条件：任何“72 轮 PASS 但代理路径未执行”的表述不得写成双 personality 完成。
 - 不包含：7-A 勾选。
+- 2026-11-18：收口报告已落盘，完整 BIOS 套件 36 程序/72 轮通过；`Direct` 裁决为
+  保留。组织级复核尚未执行，故 P2b-6 仍不是“已复核关闭”。见
+  [收口报告](../reports/2026-11-18-p2b-closeout.md)。
 
 ## Holder 模型切片
 

@@ -37,6 +37,11 @@ host/lint证据，详见[P2a报告](../reports/2026-11-16-stage7-proxy-session.m
 视图原语，**Linux数据面迁移、fork生命周期、镜像接线和QEMU正反例仍未实现**，P2b继续。
 P2b 与其后 holder 模型的依赖切片见[P2b与holder模型依赖切片计划](2026-11-16-p2b-holder-model-slices.md)；该计划不冻结 holder 语义，也不关闭 7-A。
 
+2026-11-18：P2b-0 至 P2b-6 已落盘，Linux 数据面、管理器签发、镜像接线与代理
+正反例矩阵均有 QEMU 证据；完整 36 组 72 轮 BIOS 套件通过。P2b 作为证据包收口，
+**P2 本身未签署**（组织级复核待做），P3–P6 未开始。见
+[P2b 收口报告](../reports/2026-11-18-p2b-closeout.md)。
+
 ## P2的具体接线与待解决边界
 
 此节是后继实施输入，未实现，不能由P1或P2a的测试签收。P2a只完成第2条中的管理器
