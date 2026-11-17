@@ -13,6 +13,7 @@ extern crate std;
 
 mod syscall;
 
+pub mod async_batch;
 pub mod bulk;
 pub mod capability;
 pub mod device;
