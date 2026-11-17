@@ -13,7 +13,7 @@ updated: 2026-11-17
 
 2026-11-16：LibOS数据通路P2拆为P2a/P2b；P2a代理会话与受限根视图已实现，P2b（Linux迁移/镜像/QEMU）待完成，见[报告](../reports/2026-11-16-stage7-proxy-session.md)。
 
-2026-11-16：[P2b与holder模型依赖切片计划](2026-11-16-p2b-holder-model-slices.md)；把LibOS P2b与Process/Thread/ShareGroup holder模型拆为可执行切片，依赖、停止条件和证据边界见正文。2026-11-17 P2b-0契约与P2b-1 Store批量ops已落盘，host/workspace/lint通过，见[报告](../reports/2026-11-17-p2b-store-batch-ops.md)；Linux前端、fork/exit、镜像与QEMU待后续切片。
+2026-11-16：[P2b与holder模型依赖切片计划](2026-11-16-p2b-holder-model-slices.md)；把LibOS P2b与Process/Thread/ShareGroup holder模型拆为可执行切片，依赖、停止条件和证据边界见正文。2026-11-17 P2b-0契约、P2b-1 Store批量ops与P2b-2 Linux前端切换已落盘，host/workspace/lint及既有Linux差分通过，见[P2b-0/1报告](../reports/2026-11-17-p2b-store-batch-ops.md)与[P2b-2报告](../reports/2026-11-17-p2b-linux-frontend.md)；真实代理会话、fork/exit、镜像与代理QEMU待后续切片。
 
 本目录保存**执行计划**：它们记录当时的任务拆分、顺序和验收方式。计划是历史工件，不表示任务已经完成；证据以 `reports/` 中的报告为准。
 

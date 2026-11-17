@@ -9,9 +9,11 @@ updated: 2026-11-17
 
 # P2b 与 holder 模型依赖切片计划
 
-> 2026-11-17 进度：P2b-0 契约与 P2b-1 Store 批量 ops 已落盘，host/workspace/lint
-> 通过；Linux 前端、fork/exit、镜像与 QEMU 未做。证据见
-> [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md)。
+> 2026-11-17 进度：P2b-0 契约、P2b-1 Store 批量 ops 与 P2b-2 Linux 前端切换
+> 已落盘，host/workspace/lint 及既有 Linux 差分通过；真实代理会话接线（P2b-4）、
+> fork/exit（P2b-3）、镜像与代理 QEMU 正反例未做。证据见
+> [P2b-0/P2b-1 报告](../reports/2026-11-17-p2b-store-batch-ops.md) 与
+> [P2b-2 报告](../reports/2026-11-17-p2b-linux-frontend.md)。
 
 ## 目标、范围与基线
 
@@ -130,6 +132,10 @@ H0 ───→ H1 ───→ H2 ───→ H3 ───→ H4 ────�
 - 停止条件：某 syscall 需要 Store 无法表达的私有状态时，保留在域内并登记；
   不得把未授权路径偷偷转成 NodeId 访问。
 - 不包含：fork/exit 生命周期、镜像。
+- 2026-11-17：前端已切到 `linux_store::Session`，`Shared` 不再持有 `Ram`/`OpenFiles`。
+  管理器签发的真实代理会话尚未接线，QEMU 暂由进程内 `Local` transport 提供字节；
+  fork/exec/exit 的 Store owner 预留与关闭按切片顺序留给 P2b-3。见
+  [报告](../reports/2026-11-17-p2b-linux-frontend.md)。
 
 ### P2b-3 fork/exit 生命周期迁移
 

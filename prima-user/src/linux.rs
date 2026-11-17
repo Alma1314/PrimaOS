@@ -1,10 +1,11 @@
 //! Bounded Linux x86_64 personality. Only this user-space module interprets
 //! Linux numbers, errno, flags, stat and dirent layouts. Native Gate controls
 //! remain independent of the personality. Profile publication needs runtime evidence.
+use crate::linux_store::{Session, Store};
 use prima_runtime::{
-    Capability, Error, Rights, Runtime, X86_64Transport,
+    Capability, Error, Rights, Runtime, X86_64Transport, bulk,
     gate::{GateAudit, GateRequest},
-    vfs::{self, FileInfo, HandleId, NodeKind, OpenFiles, Storage, VfsError},
+    vfs::{FileInfo, NodeKind},
 };
 
 #[path = "linux_process.rs"]
@@ -65,7 +66,6 @@ const PAGE: u64 = 4096;
 const HEAP: u64 = 0x1000_0000;
 const MMAP: u64 = 0x2000_0000;
 pub const INPUT: &[u8] = b"z\nb\na\nb\n";
-pub const FILE_CONTENT: &[u8] = b"hello from prima\n";
 pub const CASES: [&str; 11] = [
     "true", "echo", "cat", "ls", "uname", "sort", "P1", "P2", "M4", "M4-fork", "M3",
 ];
@@ -110,21 +110,6 @@ fn native_error(error: Error) -> i64 {
         _ => -5,
     }
 }
-fn fs_error(error: VfsError) -> i64 {
-    match error {
-        VfsError::NoEnt => -2,
-        VfsError::NotDir => -20,
-        VfsError::Access => -13,
-        VfsError::Exist => -17,
-        VfsError::Invalid => -22,
-        VfsError::NoSpace => -28,
-        VfsError::Loop => -40,
-        VfsError::BadHandle => -9,
-        VfsError::TooManyOpen => -24,
-        VfsError::Unformatted | VfsError::Io => -5,
-    }
-}
-
 /// Import the complete bounded iovec before output, then retain byte progress
 /// if a later payload or output fails. Descriptor faults have no I/O effects.
 fn write_vectors(
@@ -172,78 +157,27 @@ fn write_vectors(
     Ok(total)
 }
 
-pub struct Ram([u8; 4096]);
-impl Storage for Ram {
-    fn read(&mut self, at: usize, bytes: &mut [u8]) -> bool {
-        let Some(end) = at.checked_add(bytes.len()) else {
-            return false;
-        };
-        let Some(source) = self.0.get(at..end) else {
-            return false;
-        };
-        bytes.copy_from_slice(source);
-        true
-    }
-    fn write(&mut self, at: usize, bytes: &[u8]) -> bool {
-        let Some(end) = at.checked_add(bytes.len()) else {
-            return false;
-        };
-        let Some(target) = self.0.get_mut(at..end) else {
-            return false;
-        };
-        target.copy_from_slice(bytes);
-        true
-    }
-}
-
-/// One family shares VFS open descriptions and inherited stdin offsets.
+/// One family shares Store open descriptions and inherited stdin offsets.
+/// File content and store handles live in the registered session, never here.
 pub struct Shared {
-    ram: Ram,
-    files: OpenFiles<16>,
     input_position: usize,
-    dir_position: [usize; 16],
+    /// `F_GETFL` value per wire fd: the store OFD is the shared description.
     open_flags: [u64; 16],
     segments: [Option<(Capability, u32)>; 128],
 }
+impl Default for Shared {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Shared {
-    pub fn new() -> Result<Self> {
-        let mut ram = Ram([0; 4096]);
-        vfs::format(&mut ram).map_err(fs_error)?;
-        // The common VFS starts with a read-only root; populate our fixture
-        // before restoring that policy for Linux callers.
-        vfs::chmod(&mut ram, vfs::ROOT, b"/", 0o755).map_err(fs_error)?;
-        vfs::mkdir(&mut ram, vfs::ROOT, b"/fixturedir").map_err(fs_error)?;
-        for (path, bytes) in [
-            (b"/fixture.txt".as_slice(), FILE_CONTENT),
-            (b"/fixturedir/alpha".as_slice(), b"a\n".as_slice()),
-            (b"/fixturedir/beta".as_slice(), b"b\n".as_slice()),
-        ] {
-            let opened = vfs::open(
-                &mut ram,
-                vfs::ROOT,
-                path,
-                vfs::OpenFlags {
-                    create: true,
-                    access: vfs::AccessMode::ReadWrite,
-                    ..Default::default()
-                },
-            )
-            .map_err(fs_error)?;
-            let mut node = opened.node;
-            vfs::write(&mut ram, opened.id, &mut node, 0, bytes).map_err(fs_error)?;
-        }
-        vfs::chmod(&mut ram, vfs::ROOT, b"/", 0o555).map_err(fs_error)?;
-        Ok(Self {
-            ram,
-            files: OpenFiles::new(),
+    pub fn new() -> Self {
+        Self {
             input_position: 0,
-            dir_position: [0; 16],
             open_flags: [0; 16],
             segments: [None; 128],
-        })
-    }
-    fn select(&mut self, owner: u8) -> Result<()> {
-        self.files.set_owner(owner).map_err(fs_error)
+        }
     }
     fn release_segment(&mut self, rt: &Native, cap: Capability, owner: u8) -> Result<()> {
         let slot = self
@@ -272,7 +206,8 @@ pub struct Process {
     pub threads: thread::ThreadGroup,
     clear_tid: u64,
     owner: u8,
-    fds: [Option<HandleId>; 16],
+    /// Application fd slots map to store wire fds; the store owns the OFD.
+    fds: [Option<u8>; 16],
     fd_flags: [u64; 16],
     standard_open: [bool; 3],
     brk: u64,
@@ -303,7 +238,7 @@ impl Process {
         })
     }
 
-    fn handle(&self, fd: u64) -> Result<HandleId> {
+    fn handle(&self, fd: u64) -> Result<u8> {
         self.fds.get(fd as usize).copied().flatten().ok_or(-9)
     }
     fn path(&self, rt: &Native, req: Capability, pointer: u64) -> Result<([u8; 64], usize)> {
@@ -321,23 +256,18 @@ impl Process {
         }
         Err(-36)
     }
-    fn start_dir(&mut self, shared: &mut Shared, dirfd: u64, path: &[u8]) -> Result<u8> {
+    fn start_dir(&self, dirfd: u64, path: &[u8]) -> Result<u8> {
         if path.starts_with(b"/") || dirfd as i32 == -100 {
-            return Ok(vfs::ROOT);
+            return Ok(bulk::DIRFD_ROOT);
         }
-        let handle = self.handle(dirfd)?;
-        let info = shared
-            .files
-            .info(&mut shared.ram, handle)
-            .map_err(fs_error)?;
-        if info.kind != NodeKind::Directory {
-            return Err(-20);
-        }
-        Ok(info.id)
+        self.handle(dirfd)
     }
+    #[allow(clippy::too_many_arguments)]
     fn open(
         &mut self,
         shared: &mut Shared,
+        session: &mut Session,
+        store: &mut dyn Store,
         rt: &Native,
         req: Capability,
         dirfd: u64,
@@ -348,44 +278,42 @@ impl Process {
             return Err(-38);
         }
         // Read-only files/directories, NONBLOCK, CLOEXEC and LARGEFILE. These
-        // finite RAM nodes never block; retain NONBLOCK on the shared OFD.
-        // Reject every other
-        // flag rather than silently claiming creation, append or symlink semantics.
+        // finite nodes never block; reject every other flag rather than
+        // silently claiming creation, append or symlink semantics.
         if flags & !(0x10000 | 0x80000 | 0x8000 | 0x800) != 0 {
             return Err(-38);
         }
         let (path, len) = self.path(rt, req, pointer)?;
-        let start = self.start_dir(shared, dirfd, &path[..len])?;
+        let start = self.start_dir(dirfd, &path[..len])?;
         let fd = (3..16).find(|i| self.fds[*i].is_none()).ok_or(-24)?;
-        let (handle, _) = shared
-            .files
-            .open(
-                &mut shared.ram,
-                start,
-                &path[..len],
-                vfs::OpenFlags {
-                    directory: flags & 0x10000 != 0,
-                    ..Default::default()
-                },
-            )
-            .map_err(fs_error)?;
-        self.fds[fd] = Some(handle);
+        let wire = session.open(
+            store,
+            start,
+            &path[..len],
+            if flags & 0x10000 != 0 {
+                bulk::OPEN_DIRECTORY
+            } else {
+                0
+            },
+        )?;
+        self.fds[fd] = Some(wire);
         self.fd_flags[fd] = u64::from(flags & 0x80000 != 0);
-        shared.dir_position[handle.0] = 0;
-        shared.open_flags[handle.0] = (flags & !0x80000) | 0x8000;
+        shared.open_flags[wire as usize] = (flags & !0x80000) | 0x8000;
         Ok(fd as u64)
     }
+    #[allow(clippy::too_many_arguments)]
     fn read(
         &mut self,
         shared: &mut Shared,
+        session: &mut Session,
+        store: &mut dyn Store,
         rt: &Native,
         req: Capability,
         fd: u64,
         pointer: u64,
         count: u64,
     ) -> Result<u64> {
-        let mut bytes = [0; 4096];
-        let limit = count.min(bytes.len() as u64) as usize;
+        let limit = (count.min(4096) as usize).min(bulk::DATA_BYTES);
         if fd == 0 {
             if !self.standard_open[0] {
                 return Err(-9);
@@ -397,29 +325,21 @@ impl Process {
             shared.input_position += size;
             return Ok(size as u64);
         }
-        let handle = self.handle(fd)?;
-        let size = shared
-            .files
-            .read(&mut shared.ram, handle, &mut bytes[..limit])
-            .map_err(fs_error)?;
+        let wire = self.handle(fd)?;
+        let mut bytes = [0; bulk::DATA_BYTES];
+        let size = session.read(store, wire, &mut bytes[..limit])?;
         if let Err(error) = rt.gate_copy_out(req, pointer, &bytes[..size]) {
-            shared
-                .files
-                .seek(
-                    &mut shared.ram,
-                    handle,
-                    vfs::SeekFrom::Current(-(size as i64)),
-                )
-                .map_err(fs_error)?;
+            let _ = session.lseek(store, wire, -(size as i64), 1);
             return Err(native_error(error));
         }
         Ok(size as u64)
     }
     fn stat(
         &mut self,
-        shared: &mut Shared,
         rt: &Native,
         req: Capability,
+        session: &mut Session,
+        store: &mut dyn Store,
         fd: u64,
         pointer: u64,
     ) -> Result<u64> {
@@ -429,59 +349,41 @@ impl Process {
             }
             standard_stat()
         } else {
-            let handle = self.handle(fd)?;
-            stat_bytes(
-                shared
-                    .files
-                    .info(&mut shared.ram, handle)
-                    .map_err(fs_error)?,
-            )
+            stat_bytes(file_info(&session.stat(store, self.handle(fd)?)?)?)
         };
         rt.gate_copy_out(req, pointer, &bytes)
             .map_err(native_error)?;
         Ok(0)
     }
+    #[allow(clippy::too_many_arguments)]
     fn getdents(
         &mut self,
-        shared: &mut Shared,
+        session: &mut Session,
+        store: &mut dyn Store,
         rt: &Native,
         req: Capability,
         fd: u64,
         pointer: u64,
         count: u64,
     ) -> Result<u64> {
-        let handle = self.handle(fd)?;
-        let info = shared
-            .files
-            .info(&mut shared.ram, handle)
-            .map_err(fs_error)?;
+        let wire = self.handle(fd)?;
+        let budget = count.min(4096) as usize;
+        if budget == 0 {
+            return Err(-22);
+        }
+        let mut neutral = [0; bulk::DATA_BYTES];
+        let read = session.getdents(store, wire, &mut neutral[..budget.min(bulk::DATA_BYTES)])?;
         let mut output = [0; 4096];
-        let mut size = 0;
-        let mut next = shared.dir_position[handle.0];
-        while let Some(entry) = vfs::dir_entry(&mut shared.ram, info.id, next).map_err(fs_error)? {
-            let length = (19 + entry.name_len as usize + 1 + 7) & !7;
-            if size + length > (count.min(4096) as usize) {
-                if size == 0 {
-                    return Err(-22);
-                }
-                break;
-            }
-            output[size..size + 8].copy_from_slice(&(u64::from(entry.node) + 1).to_le_bytes());
-            output[size + 8..size + 16].copy_from_slice(&((next + 1) as u64).to_le_bytes());
-            output[size + 16..size + 18].copy_from_slice(&(length as u16).to_le_bytes());
-            output[size + 18] = if entry.kind == NodeKind::Directory {
-                4
-            } else {
-                8
-            };
-            output[size + 19..size + 19 + entry.name_len as usize]
-                .copy_from_slice(entry.name_bytes());
-            size += length;
-            next += 1;
+        let (size, consumed) = linux_dirents(&neutral[..read], budget, &mut output);
+        if read != 0 && size == 0 {
+            let _ = session.lseek(store, wire, -(read as i64), 1);
+            return Err(-22);
+        }
+        if consumed < read {
+            let _ = session.lseek(store, wire, -((read - consumed) as i64), 1);
         }
         rt.gate_copy_out(req, pointer, &output[..size])
             .map_err(native_error)?;
-        shared.dir_position[handle.0] = next;
         Ok(size as u64)
     }
     fn allocate(&mut self, shared: &mut Shared, rt: &Native, base: u64, pages: u64) -> Result<()> {
@@ -531,8 +433,8 @@ impl Process {
         }
     }
     pub fn cleanup(&mut self, shared: &mut Shared, rt: &Native) -> Result<()> {
-        shared.select(self.owner)?;
-        shared.files.close_all(&mut shared.ram).map_err(fs_error)?;
+        // Store OFD ownership is released with the Store owner slot (P2b-3);
+        // personality-owned segments are released here.
         for allocation in &mut self.allocations {
             if let Some((cap, _, _)) = allocation.take() {
                 shared.release_segment(rt, cap, self.owner)?;
@@ -546,6 +448,8 @@ impl Process {
     pub fn dispatch(
         &mut self,
         shared: &mut Shared,
+        session: &mut Session,
+        store: &mut dyn Store,
         rt: &Native,
         request: &GateRequest,
         mut write: impl FnMut(u64, &[u8]) -> Result<()>,
@@ -554,14 +458,11 @@ impl Process {
         {
             return -3;
         }
-        if let Err(error) = shared.select(self.owner) {
-            return error;
-        }
         let req = request.capability;
         let a = request.args;
         let result: Result<u64> = (|| {
             match request.number {
-                0 => self.read(shared, rt, req, a[0], a[1], a[2]),
+                0 => self.read(shared, session, store, rt, req, a[0], a[1], a[2]),
                 1 => {
                     if (a[0] != 1 && a[0] != 2) || !self.standard_open[a[0] as usize] {
                         return Err(-9);
@@ -573,7 +474,16 @@ impl Process {
                     write(a[0], &bytes[..size])?;
                     Ok(size as u64)
                 }
-                2 => self.open(shared, rt, req, (-100i64) as u64, a[0], a[1]),
+                2 => self.open(
+                    shared,
+                    session,
+                    store,
+                    rt,
+                    req,
+                    (-100i64) as u64,
+                    a[0],
+                    a[1],
+                ),
                 3 => {
                     if a[0] <= 2 {
                         let open = &mut self.standard_open[a[0] as usize];
@@ -583,31 +493,17 @@ impl Process {
                         *open = false;
                         return Ok(0);
                     }
-                    let handle = self.handle(a[0])?;
-                    shared
-                        .files
-                        .close(&mut shared.ram, handle)
-                        .map_err(fs_error)?;
-                    self.fds[a[0] as usize] = None;
+                    let wire = self.handle(a[0])?;
+                    session.close(store, wire)?;
+                    if let Some(slot) = self.fds.get_mut(a[0] as usize) {
+                        *slot = None;
+                    }
+                    shared.open_flags[wire as usize] = 0;
+                    self.fd_flags[a[0] as usize] = 0;
                     Ok(0)
                 }
-                5 => self.stat(shared, rt, req, a[0], a[1]),
-                8 => {
-                    let handle = self.handle(a[0])?;
-                    shared
-                        .files
-                        .seek(
-                            &mut shared.ram,
-                            handle,
-                            match a[2] {
-                                0 => vfs::SeekFrom::Start(a[1] as i64),
-                                1 => vfs::SeekFrom::Current(a[1] as i64),
-                                2 => vfs::SeekFrom::End(a[1] as i64),
-                                _ => return Err(-22),
-                            },
-                        )
-                        .map_err(fs_error)
-                }
+                5 => self.stat(rt, req, session, store, a[0], a[1]),
+                8 => session.lseek(store, self.handle(a[0])?, a[1] as i64, a[2]),
                 9 => {
                     if a[0] != 0 || a[3] & !0x20000 != 0x22 || a[5] != 0 {
                         return Err(-38);
@@ -742,7 +638,7 @@ impl Process {
                         3 => Ok(if a[0] <= 2 {
                             u64::from(a[0] != 0)
                         } else {
-                            shared.open_flags[self.handle(a[0])?.0]
+                            shared.open_flags[self.handle(a[0])? as usize]
                         }),
                         _ => Err(-38),
                     }
@@ -794,29 +690,29 @@ impl Process {
                     }
                     _ => Err(-22),
                 },
-                217 => self.getdents(shared, rt, req, a[0], a[1], a[2]),
+                217 => self.getdents(session, store, rt, req, a[0], a[1], a[2]),
                 218 => {
                     self.clear_tid = a[0];
                     Ok(self.cookie as u32 as u64)
                 }
-                257 => self.open(shared, rt, req, a[0], a[1], a[2]),
+                257 => self.open(shared, session, store, rt, req, a[0], a[1], a[2]),
                 262 => {
                     if a[3] & !(0x100 | 0x1000) != 0 {
                         return Err(-22);
                     }
                     let (path, len) = self.path(rt, req, a[1])?;
                     if len == 0 && a[3] & 0x1000 != 0 {
-                        return self.stat(shared, rt, req, a[0], a[2]);
+                        return self.stat(rt, req, session, store, a[0], a[2]);
                     }
-                    let start = self.start_dir(shared, a[0], &path[..len])?;
+                    let start = self.start_dir(a[0], &path[..len])?;
                     let last = path[..len].rsplit(|b| *b == b'/').find(|p| !p.is_empty());
-                    let node = if a[3] & 0x100 != 0 && !matches!(last, None | Some(b"." | b"..")) {
-                        vfs::resolve_link(&mut shared.ram, start, &path[..len])
-                    } else {
-                        vfs::resolve(&mut shared.ram, start, &path[..len])
-                    }
-                    .map_err(fs_error)?;
-                    let bytes = stat_bytes(vfs::metadata(&mut shared.ram, node).map_err(fs_error)?);
+                    let nofollow = a[3] & 0x100 != 0 && !matches!(last, None | Some(b"." | b".."));
+                    let bytes = stat_bytes(file_info(&session.stat_path(
+                        store,
+                        start,
+                        &path[..len],
+                        nofollow,
+                    )?)?);
                     rt.gate_copy_out(req, a[2], &bytes).map_err(native_error)?;
                     Ok(0)
                 }
@@ -851,6 +747,47 @@ fn standard_stat() -> [u8; 144] {
     bytes[56..64].copy_from_slice(&4096u64.to_le_bytes());
     bytes
 }
+fn file_info(bytes: &[u8; bulk::NEUTRAL_STAT_BYTES]) -> Result<FileInfo> {
+    Ok(FileInfo {
+        id: u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as u8,
+        kind: NodeKind::from_raw(bytes[4]).ok_or(-5)?,
+        mode: u16::from_le_bytes(bytes[5..7].try_into().unwrap()),
+        size: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+    })
+}
+
+/// Re-encode neutral store records (`node:u16 | 0 | kind | name_len | name`) as
+/// Linux dirents. Returns emitted output bytes and consumed neutral bytes; the
+/// caller rewinds the shared store cursor for an unemitted tail.
+fn linux_dirents(neutral: &[u8], budget: usize, output: &mut [u8]) -> (usize, usize) {
+    let mut size = 0;
+    let mut pos = 0;
+    while pos + 4 <= neutral.len() {
+        let name_len = neutral[pos + 3] as usize;
+        let record = 4 + name_len;
+        if pos + record > neutral.len() {
+            break;
+        }
+        let length = (19 + name_len + 1 + 7) & !7;
+        if size + length > budget {
+            break;
+        }
+        let node = u16::from_le_bytes([neutral[pos], neutral[pos + 1]]);
+        output[size..size + 8].copy_from_slice(&(u64::from(node) + 1).to_le_bytes());
+        output[size + 8..size + 16].copy_from_slice(&((pos + record) as u64).to_le_bytes());
+        output[size + 16..size + 18].copy_from_slice(&(length as u16).to_le_bytes());
+        output[size + 18] = if neutral[pos + 2] == NodeKind::Directory.as_raw() {
+            4
+        } else {
+            8
+        };
+        output[size + 19..size + 19 + name_len].copy_from_slice(&neutral[pos + 4..pos + record]);
+        size += length;
+        pos += record;
+    }
+    (size, pos)
+}
+
 pub fn stat_bytes(info: FileInfo) -> [u8; 144] {
     let mut bytes = standard_stat();
     bytes[8..16].copy_from_slice(&(u64::from(info.id) + 1).to_le_bytes());
@@ -869,6 +806,8 @@ pub fn stat_bytes(info: FileInfo) -> [u8; 144] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux_store::{Local, Ram};
+    use prima_runtime::vfs;
 
     #[test]
     fn writev_imports_all_descriptors_before_output_and_retains_payload_progress() {
@@ -981,11 +920,22 @@ mod tests {
     fn stdin_invalid_cursor_returns_io_error_before_copy_and_preserves_cursor() {
         let cap = Capability::from_raw(0x100000002).unwrap();
         let mut process = Process::new(cap, 0x100000003).unwrap();
-        let mut shared = Shared::new().unwrap();
+        let mut shared = Shared::new();
+        let mut session = Session::new();
+        let mut store = Local::new().unwrap();
         for position in [INPUT.len() + 1, usize::MAX] {
             shared.input_position = position;
             assert_eq!(
-                process.read(&mut shared, &Runtime::x86_64(), cap, 0, 0, 1),
+                process.read(
+                    &mut shared,
+                    &mut session,
+                    &mut store,
+                    &Runtime::x86_64(),
+                    cap,
+                    0,
+                    0,
+                    1
+                ),
                 Err(-5)
             );
             assert_eq!(shared.input_position, position);
@@ -996,7 +946,9 @@ mod tests {
     fn unsupported_raw_numbers_and_foreign_cookie_never_touch_parameters() {
         let cap = Capability::from_raw(0x100000002).unwrap();
         let mut process = Process::new(cap, 0x100000003).unwrap();
-        let mut shared = Shared::new().unwrap();
+        let mut shared = Shared::new();
+        let mut session = Session::new();
+        let mut store = Local::new().unwrap();
         assert!(matches!(Process::new(cap, 0), Err(-22)));
         let mut request = GateRequest {
             capability: cap,
@@ -1008,18 +960,28 @@ mod tests {
         for nr in [u64::MAX, 13, 56, 57, 59, 202, 273, 334] {
             request.number = nr;
             assert_eq!(
-                process.dispatch(&mut shared, &Runtime::x86_64(), &request, |_, _| panic!(
-                    "unexpected output"
-                )),
+                process.dispatch(
+                    &mut shared,
+                    &mut session,
+                    &mut store,
+                    &Runtime::x86_64(),
+                    &request,
+                    |_, _| panic!("unexpected output")
+                ),
                 -38
             );
         }
         request.task_cookie += 1;
         request.number = 0; // would copy a pointer if dispatched to this Process
         assert_eq!(
-            process.dispatch(&mut shared, &Runtime::x86_64(), &request, |_, _| panic!(
-                "unexpected output"
-            )),
+            process.dispatch(
+                &mut shared,
+                &mut session,
+                &mut store,
+                &Runtime::x86_64(),
+                &request,
+                |_, _| panic!("unexpected output")
+            ),
             -3
         );
     }
@@ -1046,5 +1008,28 @@ mod tests {
             vfs::read_node(&mut ram, vfs::ROOT).unwrap().kind,
             NodeKind::Directory
         );
+    }
+
+    #[test]
+    fn linux_dirents_emit_only_whole_records_and_report_consumed_bytes() {
+        // "." (neutral 5 bytes), ".." (6), "name" (8).
+        let neutral = [
+            [0, 0, NodeKind::Directory.as_raw(), 1, b'.'].as_slice(),
+            [0, 0, NodeKind::Directory.as_raw(), 2, b'.', b'.'].as_slice(),
+            [4, 0, NodeKind::File.as_raw(), 4, b'n', b'a', b'm', b'e'].as_slice(),
+        ]
+        .concat();
+        let mut output = [0; 4096];
+        let (size, consumed) = linux_dirents(&neutral, 4096, &mut output);
+        assert_eq!((size, consumed), (24 + 24 + 24, neutral.len()));
+        assert_eq!(u16::from_le_bytes(output[16..18].try_into().unwrap()), 24);
+        assert_eq!(output[18], 4);
+        assert_eq!(&output[19..20], b".");
+        assert_eq!(output[24 + 18], 4);
+        assert_eq!(output[48 + 18], 8);
+        assert_eq!(&output[48 + 19..48 + 23], b"name");
+        // A one-record budget stops before ".." and rewinds the rest.
+        let (size, consumed) = linux_dirents(&neutral, 47, &mut output);
+        assert_eq!((size, consumed), (24, 5));
     }
 }

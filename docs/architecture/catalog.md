@@ -96,7 +96,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（224）
+## report（225）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -323,6 +323,7 @@
 | [7-0 L1 端到端 LibOS 基准与 C1 自身远端后继](../superpowers/reports/2026-11-08-stage7-libos-benchmark.md) | historical | `docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md` |
 | [LibOS 数据通路改造：共享批量文件首片](../superpowers/reports/2026-11-10-libos-data-path.md) | historical | `docs/superpowers/reports/2026-11-10-libos-data-path.md` |
 | [P2a：管理器签发代理会话与受限根视图](../superpowers/reports/2026-11-16-stage7-proxy-session.md) | current | `docs/superpowers/reports/2026-11-16-stage7-proxy-session.md` |
+| [P2b-2：Linux 前端切换到 Store 批量数据面](../superpowers/reports/2026-11-17-p2b-linux-frontend.md) | historical | `docs/superpowers/reports/2026-11-17-p2b-linux-frontend.md` |
 | [P2b-0/P2b-1：Linux Store 批量数据面](../superpowers/reports/2026-11-17-p2b-store-batch-ops.md) | historical | `docs/superpowers/reports/2026-11-17-p2b-store-batch-ops.md` |
 
 ## spec（4）

@@ -1,5 +1,6 @@
 //! Bounded personality-owned ancestry, shared OFDs and wait/exec policy.
-use super::{HEAP, MMAP, Native, Process, Result, Shared, fs_error, native_error};
+use super::{HEAP, MMAP, Native, Process, Result, Shared, native_error};
+use crate::linux_store::{Session, Store};
 use prima_runtime::{Capability, gate::GateRequest};
 
 pub const MAX_PROCESSES: usize = 4;
@@ -14,6 +15,7 @@ struct Entry {
 pub struct Family {
     entries: [Option<Entry>; MAX_PROCESSES],
     pub shared: Shared,
+    session: Session,
 }
 
 impl Family {
@@ -29,7 +31,8 @@ impl Family {
         });
         Ok(Self {
             entries,
-            shared: Shared::new()?,
+            shared: Shared::new(),
+            session: Session::new(),
         })
     }
     pub fn owner(&self, cookie: u64) -> Option<usize> {
@@ -51,6 +54,7 @@ impl Family {
     pub fn dispatch(
         &mut self,
         owner: usize,
+        store: &mut dyn Store,
         rt: &Native,
         req: &GateRequest,
         write: impl FnMut(u64, &[u8]) -> Result<()>,
@@ -61,7 +65,7 @@ impl Family {
             .process
             .as_mut()
             .unwrap()
-            .dispatch(&mut self.shared, rt, req, write)
+            .dispatch(&mut self.shared, &mut self.session, store, rt, req, write)
     }
     pub fn parent(&self, owner: usize) -> i64 {
         let parent = self.entries[owner].as_ref().unwrap().parent;
@@ -86,21 +90,11 @@ impl Family {
             .as_ref()
             .unwrap();
         let thread = parent.threads.member(req.task_cookie).ok_or(-3)?;
-        // OFD reservations precede publication and can be released on failure.
-        self.shared
-            .files
-            .fork_owner(owner as u8, slot as u8)
-            .map_err(fs_error)?;
-        let manager = match rt.gate_fork(req.capability, thread.context, thread.manager, gate) {
-            Ok(manager) => manager,
-            Err(error) => {
-                self.shared
-                    .files
-                    .close_owner(&mut self.shared.ram, slot as u8)
-                    .map_err(fs_error)?;
-                return Err(native_error(error));
-            }
-        };
+        // Store OFD owner reservation and rollback move with the fork
+        // lifecycle migration (P2b-3); this slice copies only the fd table.
+        let manager = rt
+            .gate_fork(req.capability, thread.context, thread.manager, gate)
+            .map_err(native_error)?;
         let cookie = rt
             .send_target_cookie(manager)
             .expect("published child cookie");
@@ -219,18 +213,16 @@ impl Family {
             &envp[..env.len],
         )
         .map_err(native_error)?;
-        self.shared.select(owner as u8)?;
+        // The store-side CLOEXEC close follows with the lifecycle migration
+        // (P2b-3); clearing the fd table keeps the process view correct.
         for fd in 0..16 {
             if process.fd_flags[fd] == 0 {
                 continue;
             }
             if fd < 3 {
                 process.standard_open[fd] = false;
-            } else if let Some(handle) = process.fds[fd].take() {
-                self.shared
-                    .files
-                    .close(&mut self.shared.ram, handle)
-                    .map_err(fs_error)?;
+            } else {
+                process.fds[fd] = None;
             }
             process.fd_flags[fd] = 0;
         }

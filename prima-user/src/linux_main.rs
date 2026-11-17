@@ -9,6 +9,7 @@ use prima_user::linux::{
     signal::{Completion, Signals},
     thread::{Call, ThreadGroup},
 };
+use prima_user::linux_store::Local;
 
 // The input path is supplied explicitly by the harness, which verifies D12's
 // SHA-256 before packaging. The bytes are never relinked or patched.
@@ -239,6 +240,8 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
         let mut requests = 0;
         let mut seen_tasks = [0; MAX_FAMILY_TASKS];
         let mut family = Family::new(process).unwrap();
+        // Manager-issued proxy sessions replace this local store in P2b-4.
+        let mut store = Local::new().unwrap();
         let mut unsupported = 0;
         loop {
             let req = rt.gate_wait(gate).unwrap();
@@ -334,7 +337,7 @@ pub extern "C" fn _start(_self_cap: u64, _: u64, _: u64, selection: u64, _: u64)
                         None
                     }
                 } else {
-                    Some(family.dispatch(owner, &rt, &req, |fd, bytes| {
+                    Some(family.dispatch(owner, &mut store, &rt, &req, |fd, bytes| {
                         emit(&rt, serial, b"S6WRITE|fd=");
                         number(&rt, serial, fd);
                         emit(&rt, serial, b";hex=");

@@ -15,6 +15,8 @@ updated: 2026-11-17
 
 2026-11-17：[P2b-0/P2b-1 Store批量数据面](2026-11-17-p2b-store-batch-ops.md)；op矩阵与Store侧OPEN/STAT/CLOSE/GETDENTS/LSEEK/STAT_PATH通过host/workspace/lint；Linux前端、fork/exit、镜像与QEMU未做。
 
+2026-11-17：[P2b-2 Linux前端切换](2026-11-17-p2b-linux-frontend.md)；前端经Session/Local覆盖8个op，workspace 1162与既有Linux差分22轮通过；真实代理会话、fork/exit、镜像与代理QEMU正反例仍未完成。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
