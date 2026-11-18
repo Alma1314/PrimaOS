@@ -31,6 +31,29 @@ pub const SERVER_VA: u64 = 0x0000_0b00_0040_0000;
 pub const CLIENT_VA: u64 = 0x0000_0c00_0200_0000;
 pub const MAX_SEQUENCE: u64 = u32::MAX as u64;
 
+/// P3 version-2 async session tags. The slot is in bits 32..39; the doorbell
+/// also carries the low 8 bits of the generation in 40..47 and `tail` in the
+/// low 32 bits. `ACK` carries the slot in bits 8..15 and the status below it.
+pub const ASYNC_OPEN: u64 = 0x5f30_0000_0000_0000;
+pub const ASYNC_ACK: u64 = 0x5f31_0000_0000_0000;
+pub const ASYNC_DOORBELL: u64 = 0x5f32_0000_0000_0000;
+pub const ASYNC_COMPLETE: u64 = 0x5f33_0000_0000_0000;
+pub const ASYNC_CANCEL: u64 = 0x5f34_0000_0000_0000;
+pub const ASYNC_CLOSE: u64 = 0x5f35_0000_0000_0000;
+pub const ASYNC_CREDITS: usize = crate::async_batch::CREDITS as usize;
+/// The control page followed by one page per credit.
+pub const ASYNC_PAGES: usize = ASYNC_CREDITS + 1;
+/// Control-page header the Store validates after every producer message. Only
+/// this prefix is read on the data path; the rest of the page stays zero.
+pub const ASYNC_HEADER_BYTES: usize = 64;
+pub const ASYNC_MAGIC: [u8; 4] = *b"PBQ2";
+pub const ASYNC_VERSION: u8 = 2;
+pub const ASYNC_TAIL_OFFSET: usize = 8;
+pub const ASYNC_HEAD_OFFSET: usize = 16;
+pub const ASYNC_GENERATION_OFFSET: usize = 24;
+pub const ASYNC_GENERATION_SHIFT: u64 = 40;
+pub const ASYNC_GENERATION_MASK: u64 = 0xff;
+
 /// Path operations: the wire fd is a store handle index plus this base; an
 /// application fd number never crosses the wire.
 pub const WIRE_FD_BASE: u8 = 3;
@@ -98,11 +121,28 @@ pub fn validate(
     page: &[u8; PAGE_BYTES],
     expected: u64,
 ) -> Result<([Request; MAX_OPS], usize), Invalid> {
+    validate_inner(page, expected, true)
+}
+
+/// P3 v2 data pages carry the full `ordinal + 1`, so the frozen v1 32-bit
+/// sequence bound does not apply. Magic and reserved-field checks still do.
+pub fn validate_version_2(
+    page: &[u8; PAGE_BYTES],
+    expected: u64,
+) -> Result<([Request; MAX_OPS], usize), Invalid> {
+    validate_inner(page, expected, false)
+}
+
+fn validate_inner(
+    page: &[u8; PAGE_BYTES],
+    expected: u64,
+    bounded: bool,
+) -> Result<([Request; MAX_OPS], usize), Invalid> {
     if page[..8] != *b"PBIO\x01\0\0\0" || page[20..32] != [0; 12] {
         return Err(Invalid::Header);
     }
     let sequence = u64::from_le_bytes(page[8..16].try_into().unwrap());
-    if expected == 0 || expected > MAX_SEQUENCE || sequence != expected {
+    if (bounded && (expected == 0 || expected > MAX_SEQUENCE)) || sequence != expected {
         return Err(Invalid::Sequence);
     }
     let count = u32_at(page, 16) as usize;
@@ -208,9 +248,116 @@ pub fn complete(page: &mut [u8; PAGE_BYTES], index: usize, status: u32, count: u
     page[at + 28..at + 32].copy_from_slice(&count.to_le_bytes());
 }
 
+/// Producer-written control-page fields. `head` and `generation` are read back
+/// for diagnostics only; the Store's session state remains authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AsyncHeader {
+    pub tail: u64,
+    pub head: u64,
+    pub generation: u64,
+}
+
+pub fn initialize_async(header: &mut [u8; ASYNC_HEADER_BYTES], generation: u64) {
+    header.fill(0);
+    header[..4].copy_from_slice(&ASYNC_MAGIC);
+    header[4] = ASYNC_VERSION;
+    header[5] = ASYNC_CREDITS as u8;
+    header[ASYNC_GENERATION_OFFSET..ASYNC_GENERATION_OFFSET + 8]
+        .copy_from_slice(&generation.to_le_bytes());
+}
+
+/// Header shape and reserved bits only. The bounded window is checked against
+/// the Store's own `head`, never against a producer-writable copy of it.
+pub fn validate_async(header: &[u8; ASYNC_HEADER_BYTES]) -> Result<AsyncHeader, Invalid> {
+    if header[..4] != ASYNC_MAGIC
+        || header[4] != ASYNC_VERSION
+        || header[5] != ASYNC_CREDITS as u8
+        || header[6..8] != [0; 2]
+        || header[32..ASYNC_HEADER_BYTES] != [0; ASYNC_HEADER_BYTES - 32]
+    {
+        return Err(Invalid::Header);
+    }
+    Ok(AsyncHeader {
+        tail: u64::from_le_bytes(
+            header[ASYNC_TAIL_OFFSET..ASYNC_TAIL_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ),
+        head: u64::from_le_bytes(
+            header[ASYNC_HEAD_OFFSET..ASYNC_HEAD_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ),
+        generation: u64::from_le_bytes(
+            header[ASYNC_GENERATION_OFFSET..ASYNC_GENERATION_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_2_pages_accept_sequences_past_the_v1_bound() {
+        let mut page = [0; PAGE_BYTES];
+        initialize(&mut page, MAX_SEQUENCE + 1, 1);
+        encode_request(
+            &mut page,
+            0,
+            Request {
+                op: Request::CLOSE,
+                fd: 3,
+                data: DATA_OFFSET,
+                ..Request::default()
+            },
+        );
+        assert_eq!(validate(&page, MAX_SEQUENCE + 1), Err(Invalid::Sequence));
+        assert!(validate_version_2(&page, MAX_SEQUENCE + 1).is_ok());
+        assert_eq!(
+            validate_version_2(&page, MAX_SEQUENCE),
+            Err(Invalid::Sequence)
+        );
+    }
+
+    #[test]
+    fn async_control_header_round_trips_and_rejects_every_reserved_field() {
+        let mut header = [0u8; ASYNC_HEADER_BYTES];
+        initialize_async(&mut header, 9);
+        assert_eq!(
+            validate_async(&header),
+            Ok(AsyncHeader {
+                tail: 0,
+                head: 0,
+                generation: 9
+            })
+        );
+        // The producer owns only `tail`; the Store writes `head` afterwards.
+        header[ASYNC_TAIL_OFFSET..ASYNC_TAIL_OFFSET + 8]
+            .copy_from_slice(&(ASYNC_CREDITS as u64).to_le_bytes());
+        header[ASYNC_HEAD_OFFSET..ASYNC_HEAD_OFFSET + 8].copy_from_slice(&1u64.to_le_bytes());
+        assert_eq!(validate_async(&header).unwrap().tail, ASYNC_CREDITS as u64);
+
+        for (at, bad) in [(4, 1), (5, 0), (6, 1), (32, 1), (63, 1)] {
+            let mut corrupt = header;
+            corrupt[at] = bad;
+            assert_eq!(
+                validate_async(&corrupt),
+                Err(Invalid::Header),
+                "offset {at}"
+            );
+        }
+        let mut magic = header;
+        magic[0] = b'X';
+        assert_eq!(validate_async(&magic), Err(Invalid::Header));
+        let mut short = [0u8; ASYNC_HEADER_BYTES];
+        short[..4].copy_from_slice(&ASYNC_MAGIC);
+        short[4] = ASYNC_VERSION;
+        short[5] = ASYNC_CREDITS as u8;
+        assert!(validate_async(&short).is_ok());
+    }
 
     #[test]
     fn batch_rejects_late_invalid_descriptors_overlap_and_replay_before_execution() {

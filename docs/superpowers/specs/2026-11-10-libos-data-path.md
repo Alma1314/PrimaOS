@@ -424,10 +424,13 @@ Task id 容量限制，不是可忽略的重试错误。反例失败必须保留
 
 ### 提交通知与完成合并
 
-- `ASYNC_OPEN | slot` 建立会话并回复控制段能力；`ASYNC_ACK | status` 承载控制
-  回复。
-- 生产者发布后发送 `ASYNC_DOORBELL | slot<<32 | tail_low32` 唤醒 Store；重复的
-  doorbell 幂等，Store 只按 `tail` 取工作。
+- `ASYNC_OPEN | slot`（slot 在低 8 位）建立会话并回复控制段能力；控制回复统一为
+  `ASYNC_ACK | slot<<8 | status`（status 为 0 或正 errno），成功 OPEN 的消息附带
+  控制段的派生能力。
+- 生产者发布后发送 `ASYNC_DOORBELL | generation_low8<<40 | slot<<32 | tail_low32`
+  唤醒 Store；重复的 doorbell 幂等，Store 只按 `tail` 取工作。`generation_low8`
+  是旧映像围栏；完整 `tail` 由 Store 在收到消息后从控制页读取（写入先于发送，
+  属同一 IPC 顺序边）。
 - Store 每轮排空后，对每个推进过 `head` 的会话发送**一条**合并
   `ASYNC_COMPLETE | slot<<32 | head_low32`；不按每批发送完成消息。
 - 丢失唤醒：客户端先读 `head` 再 park 于 `receive`。Store 在推进 `head` 后必发
@@ -438,18 +441,23 @@ Task id 容量限制，不是可忽略的重试错误。反例失败必须保留
 
 - 满队列：未完成数达到 `K` 时，生产者**不发布**并返回 `EAGAIN`；Store 对
   `tail - head > K` 的 doorbell 不取工作。无无界排队。
-- 取消：`ASYNC_CANCEL | slot<<32 | ordinal_low32`。仅当 Store **尚未认领**
-  该序号时成功，该批不执行并以 `ECANCELED`（errno 125）写入完成状态；已认领
-  则回复 `EALREADY` 并正常完成。认领点是 Store 排空该会话的时刻，客户端不能
-  假定更早。取消成功不得产生任何 VFS 副作用。
-- 关闭：未完成数为零时才接受 `ASYNC_CLOSE`；否则回复 `EBUSY`，客户端必须先
-  排空。死亡代理由 Store 的死亡回收一次性中止其未认领批、等待已认领批完成后
-  释放 owner，不得把唯一段能力丢掉。
+- 取消：`ASYNC_CANCEL | generation_low8<<40 | slot<<32 | ordinal_low32`。Store
+  按 `head` 把低 32 位重建为完整序号（窗口 `< 2^32`，无歧义）。仅当 Store
+  **尚未认领**该序号时成功，该批不执行并以 `ECANCELED`（errno 125）写入完成
+  状态；已认领则回复 `EALREADY` 并正常完成。认领点是 Store 排空该会话的时刻，
+  客户端不能假定更早。取消成功不得产生任何 VFS 副作用。CANCEL 与 CLOSE 同样先
+  从控制页折算 `tail`（生产者先写页后发送），因此可在 doorbell 之前取消已发布批。
+- 关闭：未完成数为零时才接受 `ASYNC_CLOSE | slot`；否则回复 `EBUSY`，客户端
+  必须先排空。CLOSE 以控制页 `tail` 为准，未发过 doorbell 的已发布批也算未完成。
+  死亡代理由 Store 的死亡回收一次性中止其未认领批、等待已认领批完成后释放
+  owner，不得把唯一段能力丢掉。
 - exec：新映像必须先排空并关闭旧会话再 OPEN；OPEN 递增 `generation`。Store
-  对旧 `generation` 的任何 doorbell 不取工作并回复 `ESTALE`。
+  对旧 `generation` 的 doorbell/CANCEL 不取工作并回复 `ESTALE`（低 8 位比较，
+  并与注册 cookie 绑定）。
 - 重置：控制页校验失败或违反单调性时，Store 中止该会话全部未认领批、写入
-  `ECANCELED` 完成、递增 `generation`、拒绝后续 doorbell（`EACCES`）；客户端
-  必须重新 OPEN。
+  `ECANCELED` 完成、递增 `generation` 并写回控制页、拒绝后续 doorbell
+  （`EACCES`）；客户端必须重新 OPEN。重置会话不可 CLOSE；OPEN 会回收旧段，
+  但客户端必须先解除自己的映射，否则 Store 保留段能力并回复 `EAGAIN` 重试。
 
 ### 在途 fd 与 close 完成点
 
@@ -462,9 +470,11 @@ Task id 容量限制，不是可忽略的重试错误。反例失败必须保留
 
 ### 公平与持续进展
 
-Store 每轮对每个有未完成批的活会话最多处理 `ASYNC_FAIR_QUOTA=2` 个序号，并按
-上次服务位置轮转。只要存在未完成批且会话存活，每轮至少推进一个会话；单会话
-不能饿死其它会话。已认领批不可被取消或撤销，必须完成并交付状态。
+Store 每轮对每个有未完成批的活会话最多处理 `ASYNC_FAIR_QUOTA=2` 个序号，并从
+上次服务位置起轮转。只要存在未完成批且会话存活，每轮至少推进一个会话；单会话
+不能饿死其它会话。轮次重复到没有任何会话推进为止，因此一次合并 doorbell 不会
+留下已发布却无人唤醒的批；每轮每个推进过 `head` 的会话至多一条合并 COMPLETE。
+已认领批不可被取消或撤销，必须完成并交付状态。
 
 ### 容量与预算
 
@@ -472,6 +482,9 @@ Store 每轮对每个有未完成批的活会话最多处理 `ASYNC_FAIR_QUOTA=2
   `MAX_PROXIES=8` 时最多 40 页、160 KiB。
 - 段槽、映射与句柄沿用既有内核额度；建立失败显式返回 `EAGAIN`/`ENOSPC`，不放宽
   容量。v1 的 1 页/1 在途约束只对 v1 生效。
+- 历史 72 轮镜像中 Store 的用户栈由 4 页提高到 8 页：P3-1 实测 4 页在既有代理
+  数据面即栈溢出（F1/V1/V3 在故障分派处 panic），场景镜像的 64 页不变。该调整
+  只扩大栈预算，不放宽任何校验。
 - 不新增 syscall；新 tag 只在用户态协议。
 
 ### 验收与证据边界

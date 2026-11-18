@@ -23,7 +23,51 @@ pub fn execute<S: Storage, const N: usize>(
     sequence: u64,
     error_status: impl Fn(VfsError) -> u32,
 ) -> Result<(), bulk::Invalid> {
-    let (requests, count) = bulk::validate(page, sequence)?;
+    execute_with(
+        files,
+        storage,
+        view,
+        page,
+        sequence,
+        error_status,
+        bulk::validate,
+    )
+}
+
+/// P3 v2 variant: the page header is the full `ordinal + 1`, not a v1
+/// `MAX_SEQUENCE`-bounded replay counter.
+pub fn execute_version_2<S: Storage, const N: usize>(
+    files: &mut OpenFiles<N>,
+    storage: &mut S,
+    view: View,
+    page: &mut [u8; PAGE_BYTES],
+    sequence: u64,
+    error_status: impl Fn(VfsError) -> u32,
+) -> Result<(), bulk::Invalid> {
+    execute_with(
+        files,
+        storage,
+        view,
+        page,
+        sequence,
+        error_status,
+        bulk::validate_version_2,
+    )
+}
+
+fn execute_with<S: Storage, const N: usize>(
+    files: &mut OpenFiles<N>,
+    storage: &mut S,
+    view: View,
+    page: &mut [u8; PAGE_BYTES],
+    sequence: u64,
+    error_status: impl Fn(VfsError) -> u32,
+    validate: impl Fn(
+        &[u8; PAGE_BYTES],
+        u64,
+    ) -> Result<([Request; bulk::MAX_OPS], usize), bulk::Invalid>,
+) -> Result<(), bulk::Invalid> {
+    let (requests, count) = validate(page, sequence)?;
     for (i, request) in requests[..count].iter().enumerate() {
         let result = apply(files, storage, view, page, *request);
         let (status, count) = match result {

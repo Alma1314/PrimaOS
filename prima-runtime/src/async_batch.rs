@@ -83,6 +83,11 @@ impl Session {
         self.generation
     }
 
+    /// Oldest incomplete ordinal. Advances only through [`Self::complete`].
+    pub const fn head(&self) -> u64 {
+        self.head
+    }
+
     /// Data page index for an absolute ordinal.
     pub const fn page(ordinal: u64) -> usize {
         (ordinal % CREDITS) as usize
@@ -228,6 +233,83 @@ impl Producer {
     /// Whether an `ASYNC_CLOSE` may be sent.
     pub fn drained(&self) -> bool {
         self.completed == self.published
+    }
+}
+
+/// Store-side scheduler over `N` fixed session slots.
+///
+/// The Store is single-threaded, so a claim is executed and completed before
+/// the scheduler moves on; `run` must call [`Session::complete`] for every
+/// non-idle claim. One round gives each live session at most [`FAIR_QUOTA`]
+/// claims, visiting slots from the previous cursor (which advances one slot
+/// per round), so a busy session cannot make another wait for more than one
+/// quota per round while both have work.
+pub struct Store<const N: usize> {
+    sessions: [Option<Session>; N],
+    cursor: usize,
+}
+
+impl<const N: usize> Default for Store<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> Store<N> {
+    pub const fn new() -> Self {
+        Self {
+            sessions: [None; N],
+            cursor: 0,
+        }
+    }
+
+    /// Install a fresh session in an empty slot. Generation monotonicity
+    /// belongs to the caller; a live session must be removed first.
+    pub fn open(&mut self, slot: usize, generation: u64) -> bool {
+        match self.sessions.get_mut(slot) {
+            Some(entry) if entry.is_none() => {
+                *entry = Some(Session::new(generation));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn session_mut(&mut self, slot: usize) -> Option<&mut Session> {
+        self.sessions.get_mut(slot)?.as_mut()
+    }
+
+    pub fn remove(&mut self, slot: usize) -> Option<Session> {
+        self.sessions.get_mut(slot)?.take()
+    }
+
+    /// One fairness round. Returns every slot whose `head` advanced, with its
+    /// new head, in service order.
+    #[allow(clippy::type_complexity)]
+    pub fn round(
+        &mut self,
+        run: &mut impl FnMut(usize, &mut Session, Claim),
+    ) -> [Option<(usize, u64)>; N] {
+        let mut advanced = [None; N];
+        let start = self.cursor;
+        self.cursor = (self.cursor + 1) % N;
+        for offset in 0..N {
+            let slot = (start + offset) % N;
+            let Some(session) = self.sessions[slot].as_mut() else {
+                continue;
+            };
+            let before = session.head();
+            for _ in 0..FAIR_QUOTA {
+                match session.claim() {
+                    Claim::Idle => break,
+                    claim => run(slot, session, claim),
+                }
+            }
+            if session.head() != before {
+                advanced[slot] = Some((slot, session.head()));
+            }
+        }
+        advanced
     }
 }
 
@@ -431,5 +513,77 @@ mod tests {
             }
         }
         assert!(states > 20, "interleaving model barely explored: {states}");
+    }
+
+    fn claim_ordinal(claim: Claim) -> u64 {
+        match claim {
+            Claim::Execute(ordinal) | Claim::Cancelled(ordinal) => ordinal,
+            Claim::Idle => panic!("a round never yields Idle"),
+        }
+    }
+
+    #[test]
+    fn scheduler_bounds_each_session_per_round_and_keeps_both_progressing() {
+        let mut store = Store::<2>::new();
+        assert!(store.open(0, 1));
+        assert!(!store.open(0, 2));
+        assert!(store.open(1, 1));
+        store.session_mut(0).unwrap().publish(1, CREDITS).unwrap();
+        store.session_mut(1).unwrap().publish(1, 1).unwrap();
+        let mut log = Vec::new();
+        let first = store.round(&mut |slot, session, claim| {
+            log.push((slot, claim_ordinal(claim)));
+            assert!(session.complete().is_some());
+        });
+        // The busy session is capped at the quota while the other still runs.
+        assert_eq!(log, [(0, 0), (0, 1), (1, 0)]);
+        assert_eq!(first, [Some((0, FAIR_QUOTA)), Some((1, 1))]);
+        log.clear();
+        let second = store.round(&mut |slot, session, claim| {
+            log.push((slot, claim_ordinal(claim)));
+            assert!(session.complete().is_some());
+        });
+        assert_eq!(log, [(0, 2), (0, 3)]);
+        assert_eq!(second, [Some((0, CREDITS)), None]);
+        let third = store.round(&mut |_, session, _| {
+            assert!(session.complete().is_some());
+        });
+        assert_eq!(third, [None, None]);
+    }
+
+    #[test]
+    fn scheduler_cancels_unclaimed_batches_and_close_waits_for_the_drain() {
+        let mut store = Store::<1>::new();
+        assert!(store.open(0, 5));
+        let session = store.session_mut(0).unwrap();
+        session.publish(5, 2).unwrap();
+        assert_eq!(session.close(), Err(CloseError::Busy));
+        assert_eq!(session.cancel(1), Cancel::Cancelled);
+        let mut claims = Vec::new();
+        store.round(&mut |_, session, claim| {
+            claims.push(claim);
+            assert!(session.complete().is_some());
+        });
+        assert_eq!(claims, [Claim::Execute(0), Claim::Cancelled(1)]);
+        assert_eq!(store.session_mut(0).unwrap().close(), Ok(()));
+        assert!(store.remove(0).is_some());
+        assert!(store.remove(0).is_none());
+    }
+
+    #[test]
+    fn scheduler_lets_an_already_claimed_batch_finish_after_reset() {
+        let mut store = Store::<1>::new();
+        store.open(0, 1);
+        let session = store.session_mut(0).unwrap();
+        session.publish(1, 3).unwrap();
+        assert_eq!(session.claim(), Claim::Execute(0));
+        session.reset();
+        assert_eq!(session.complete(), Some(0));
+        let mut claims = Vec::new();
+        store.round(&mut |_, session, claim| {
+            claims.push(claim);
+            assert!(session.complete().is_some());
+        });
+        assert_eq!(claims, [Claim::Cancelled(1), Claim::Cancelled(2)]);
     }
 }

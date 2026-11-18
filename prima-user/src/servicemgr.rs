@@ -2278,7 +2278,10 @@ fn create_service(
         if c_stack {
             C_STACK_PAGES
         } else if spec.name == SERVICE_NAME_STORE {
-            4
+            // P3-1：v2 会话把 8 组控制/页状态与原有 v1 通道同时放进 `run` 帧，
+            // 4 页不再容纳代理数据面的调用链（F1/V1/V3 断言区栈溢出后在故障
+            // 分派处 panic）。只放大 Store 的栈，不改 v1 语义或事件。
+            8
         } else {
             SERVICE_STACK_PAGES
         },

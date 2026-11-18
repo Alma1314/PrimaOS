@@ -27,6 +27,8 @@ updated: 2026-11-18
 
 2026-11-18：[P3-0 异步批量契约与状态机](2026-11-18-p3-async-state-machine.md)；把 P3 草案落成 Store/Producer 纯状态机，改用 IPC 顺序而非裸共享原子，host 有界穷举交错与回绕用例通过；未接线、无 QEMU，P3 未收口。
 
+2026-11-18：[P3-1 Store v2 会话](2026-11-18-p3-store-v2.md)；5 页控制/数据段、ASYNC_* tag、公平排空、取消/重置/EBUSY/ESTALE 与死亡回收落盘；host 1181、lint、既有 72 轮与 `test-linux-proxy` 通过；Store 栈 4→8 页修复既有代理路径溢出；无 v2 前端/QEMU，P3 未收口。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。

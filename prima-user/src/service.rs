@@ -39,13 +39,16 @@ use prima_user::staging::{
 };
 
 use prima_runtime::{
-    Capability, Rights, Runtime, SyscallTransport, TaskId, bulk,
+    Capability, Rights, Runtime, SyscallTransport, TaskId,
+    async_batch::{self, Cancel, Claim, CloseError, PublishError, Session},
+    bulk,
     protocol::{
         SERVICE_BEHAVIOR_LOG, SERVICE_BEHAVIOR_STORE, SERVICE_DATA_VA, SERVICE_FILE_ARG_MASK,
-        SERVICE_FILE_CHUNK, SERVICE_FILE_EACCES, SERVICE_FILE_EAGAIN, SERVICE_FILE_EBADF,
-        SERVICE_FILE_EEXIST, SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ELOOP,
-        SERVICE_FILE_EMFILE, SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS,
-        SERVICE_FILE_ENOTDIR, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE,
+        SERVICE_FILE_CHUNK, SERVICE_FILE_EACCES, SERVICE_FILE_EAGAIN, SERVICE_FILE_EALREADY,
+        SERVICE_FILE_EBADF, SERVICE_FILE_EBUSY, SERVICE_FILE_ECANCELED, SERVICE_FILE_EEXIST,
+        SERVICE_FILE_EFAULT, SERVICE_FILE_EINVAL, SERVICE_FILE_ELOOP, SERVICE_FILE_EMFILE,
+        SERVICE_FILE_ENOENT, SERVICE_FILE_ENOSPC, SERVICE_FILE_ENOSYS, SERVICE_FILE_ENOTDIR,
+        SERVICE_FILE_ESTALE, SERVICE_FILE_FD_SHIFT, SERVICE_FILE_HANDLES, SERVICE_FILE_OP_CLOSE,
         SERVICE_FILE_OP_LSEEK, SERVICE_FILE_OP_OPEN, SERVICE_FILE_OP_READ, SERVICE_FILE_OP_READ_AT,
         SERVICE_FILE_OP_RESIZE, SERVICE_FILE_OP_SHIFT, SERVICE_FILE_OP_STAT, SERVICE_FILE_OP_WRITE,
         SERVICE_FILE_OP_WRITE_AT, SERVICE_FILE_REQUEST_TAG, SERVICE_FILE_SEEK_OFFSET_MASK,
@@ -136,6 +139,403 @@ impl BulkChannel {
         if rt.memseg_destroy(root).is_ok() {
             let _ = rt.cap_drop(root);
             self.root = None;
+        }
+    }
+}
+
+/// P3 version-2 session: one control page plus `ASYNC_CREDITS` data pages.
+/// The protocol state lives in `async_batch::Store`; this struct only owns the
+/// segment, the registered proxy route and the cached policy view.
+#[derive(Clone, Copy)]
+struct AsyncChannel {
+    generation: u64,
+    root: Option<Capability>,
+    mapped: bool,
+    active: bool,
+    cookie: u64,
+    peer: u32,
+    reply: Option<Capability>,
+    owner: u8,
+    view: vfs::View,
+}
+
+impl AsyncChannel {
+    const EMPTY: Self = Self {
+        generation: 0,
+        root: None,
+        mapped: false,
+        active: false,
+        cookie: 0,
+        peer: 0,
+        reply: None,
+        owner: 0,
+        view: vfs::View::ROOT,
+    };
+
+    fn address(index: usize) -> u64 {
+        bulk::SERVER_VA
+            + (prima_user::sessions::MAX_CLIENTS + proxy::MAX_PROXIES + index * bulk::ASYNC_PAGES)
+                as u64
+                * bulk::PAGE_BYTES as u64
+    }
+
+    fn retire(&mut self, rt: &Runtime<impl SyscallTransport>, task: Capability, index: usize) {
+        self.active = false;
+        let Some(root) = self.root else {
+            return;
+        };
+        if self.mapped {
+            if rt
+                .memseg_unmap(task, Self::address(index), bulk::ASYNC_PAGES as u64)
+                .is_err()
+            {
+                return;
+            }
+            self.mapped = false;
+        }
+        if rt.memseg_destroy(root).is_ok() {
+            let _ = rt.cap_drop(root);
+            self.root = None;
+        }
+    }
+}
+
+fn async_fail_page(page: &mut [u8; bulk::PAGE_BYTES], status: u32) {
+    for index in 0..bulk::MAX_OPS {
+        bulk::complete(page, index, status, 0);
+    }
+}
+
+fn async_reset<T: SyscallTransport>(rt: &Runtime<T>, session: &mut Session, index: usize) {
+    session.reset();
+    let address = AsyncChannel::address(index) + bulk::ASYNC_GENERATION_OFFSET as u64;
+    let _ = rt.write_user_bytes(address, &session.generation().to_le_bytes());
+}
+
+/// Re-read the producer's control page after an IPC message (the write always
+/// precedes the send) and fold its `tail` into the Store's authoritative
+/// window. `head` in the page is producer-writable and therefore ignored.
+fn async_load<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    session: &mut Session,
+    index: usize,
+    doorbell_tail: Option<u32>,
+) -> Result<(), u64> {
+    let mut header = [0u8; bulk::ASYNC_HEADER_BYTES];
+    if rt
+        .read_user_bytes(AsyncChannel::address(index), &mut header)
+        .is_err()
+    {
+        async_reset(rt, session, index);
+        return Err(SERVICE_FILE_EFAULT);
+    }
+    let Ok(fields) = bulk::validate_async(&header) else {
+        async_reset(rt, session, index);
+        return Err(SERVICE_FILE_EACCES);
+    };
+    if fields.generation != session.generation()
+        || doorbell_tail.is_some_and(|tail| tail != fields.tail as u32)
+    {
+        async_reset(rt, session, index);
+        return Err(SERVICE_FILE_EACCES);
+    }
+    match session.publish(session.generation(), fields.tail) {
+        Ok(()) => Ok(()),
+        Err(PublishError::Full) => Err(SERVICE_FILE_EAGAIN),
+        Err(PublishError::Stale) => Err(SERVICE_FILE_ESTALE),
+        Err(PublishError::Protocol) => {
+            async_reset(rt, session, index);
+            Err(SERVICE_FILE_EACCES)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn async_request<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    self_cap: Capability,
+    store: &mut async_batch::Store<{ proxy::MAX_PROXIES }>,
+    channels: &mut [AsyncChannel; proxy::MAX_PROXIES],
+    index: usize,
+    cookie: u64,
+    peer: TaskId,
+    reply: Capability,
+    owner: u8,
+    view: vfs::View,
+    payload: u64,
+    capabilities: [Option<Capability>; 2],
+) -> bool {
+    let tag = payload & 0xffff_0000_0000_0000;
+    let ack = |status: u64, caps: &[Capability]| {
+        rt.send(
+            peer,
+            reply,
+            bulk::ASYNC_ACK | ((index as u64) << 8) | status,
+            caps,
+        )
+        .is_ok()
+    };
+    if capabilities.iter().any(Option::is_some) {
+        for cap in capabilities.into_iter().flatten() {
+            let _ = rt.cap_drop(cap);
+        }
+        let _ = ack(SERVICE_FILE_EINVAL, &[]);
+        return false;
+    }
+    let channel = &mut channels[index];
+    if tag != bulk::ASYNC_OPEN && channel.cookie != cookie {
+        let _ = ack(SERVICE_FILE_EACCES, &[]);
+        return false;
+    }
+    if tag == bulk::ASYNC_OPEN {
+        if payload != bulk::ASYNC_OPEN | index as u64 {
+            let _ = ack(SERVICE_FILE_EINVAL, &[]);
+            return false;
+        }
+        // A reset session cannot be closed, only re-opened: retire it here.
+        if store
+            .session_mut(index)
+            .is_some_and(|session| session.reset_flag())
+        {
+            let _ = store.remove(index);
+            channel.retire(rt, self_cap, index);
+        }
+        // A previous close could only defer the destroy because the client
+        // still maps the page; retry before reusing the slot.
+        if channel.root.is_some() && !channel.active {
+            channel.retire(rt, self_cap, index);
+        }
+        if channel.root.is_some() || channel.active {
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        }
+        let Some(generation) = channel.generation.checked_add(1) else {
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        };
+        let Ok(root) = rt.memseg_create(bulk::ASYNC_PAGES as u64, RW) else {
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        };
+        channel.root = Some(root);
+        if rt
+            .memseg_map(
+                root,
+                self_cap,
+                0,
+                AsyncChannel::address(index),
+                bulk::ASYNC_PAGES as u64,
+                RW,
+            )
+            .is_err()
+        {
+            channel.retire(rt, self_cap, index);
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        }
+        channel.mapped = true;
+        let mut header = [0u8; bulk::ASYNC_HEADER_BYTES];
+        bulk::initialize_async(&mut header, generation);
+        if rt
+            .write_user_bytes(AsyncChannel::address(index), &header)
+            .is_err()
+        {
+            channel.retire(rt, self_cap, index);
+            let _ = ack(SERVICE_FILE_EFAULT, &[]);
+            return false;
+        }
+        if !store.open(index, generation) {
+            channel.retire(rt, self_cap, index);
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        }
+        let Ok(view_cap) = rt.cap_derive(root, Rights::from_bits(7)) else {
+            let _ = store.remove(index);
+            channel.retire(rt, self_cap, index);
+            let _ = ack(SERVICE_FILE_EAGAIN, &[]);
+            return false;
+        };
+        channel.generation = generation;
+        channel.active = true;
+        channel.cookie = cookie;
+        channel.peer = peer.as_raw();
+        channel.reply = Some(reply);
+        channel.owner = owner;
+        channel.view = view;
+        if !ack(0, &[view_cap]) {
+            let _ = rt.cap_drop(view_cap);
+            let _ = store.remove(index);
+            channel.retire(rt, self_cap, index);
+        }
+        return false;
+    }
+    if tag == bulk::ASYNC_CLOSE {
+        if payload != bulk::ASYNC_CLOSE | index as u64 {
+            let _ = ack(SERVICE_FILE_EINVAL, &[]);
+            return false;
+        }
+        let Some(session) = store.session_mut(index) else {
+            channel.retire(rt, self_cap, index);
+            let _ = ack(SERVICE_FILE_EACCES, &[]);
+            return false;
+        };
+        if !channel.active {
+            let _ = ack(SERVICE_FILE_EACCES, &[]);
+            return false;
+        }
+        if session.reset_flag() {
+            channel.generation = session.generation();
+            let _ = ack(SERVICE_FILE_EACCES, &[]);
+            return false;
+        }
+        let status = match async_load(rt, session, index, None) {
+            Err(status) => {
+                if session.reset_flag() {
+                    channel.generation = session.generation();
+                }
+                status
+            }
+            Ok(()) => match session.close() {
+                Ok(()) => {
+                    channel.retire(rt, self_cap, index);
+                    let _ = store.remove(index);
+                    0
+                }
+                Err(CloseError::Busy) => SERVICE_FILE_EBUSY,
+                Err(CloseError::Reset) => SERVICE_FILE_EACCES,
+            },
+        };
+        let _ = ack(status, &[]);
+        return true;
+    }
+    let generation = (payload >> bulk::ASYNC_GENERATION_SHIFT) & bulk::ASYNC_GENERATION_MASK;
+    let Some(session) = store.session_mut(index) else {
+        channel.retire(rt, self_cap, index);
+        let _ = ack(SERVICE_FILE_EACCES, &[]);
+        return false;
+    };
+    if !channel.active || session.reset_flag() {
+        let _ = ack(SERVICE_FILE_EACCES, &[]);
+        return false;
+    }
+    if generation != session.generation() & bulk::ASYNC_GENERATION_MASK {
+        let _ = ack(SERVICE_FILE_ESTALE, &[]);
+        return false;
+    }
+    if tag == bulk::ASYNC_DOORBELL {
+        match async_load(rt, session, index, Some(payload as u32)) {
+            Ok(()) => true,
+            Err(status) => {
+                let _ = ack(status, &[]);
+                // A reset still owes ECANCELED completions for unclaimed work.
+                if session.reset_flag() {
+                    channel.generation = session.generation();
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    } else if tag == bulk::ASYNC_CANCEL {
+        match async_load(rt, session, index, None) {
+            Err(status) => {
+                let _ = ack(status, &[]);
+                if session.reset_flag() {
+                    channel.generation = session.generation();
+                    true
+                } else {
+                    false
+                }
+            }
+            Ok(()) => {
+                let head = session.head();
+                let offset =
+                    ((payload as u32) as u64).wrapping_sub(head & 0xffff_ffff) & 0xffff_ffff;
+                let (status, drain) = match session.cancel(head.wrapping_add(offset)) {
+                    Cancel::Cancelled => (0, true),
+                    Cancel::Claimed => (SERVICE_FILE_EALREADY, false),
+                    Cancel::Missing => (SERVICE_FILE_EINVAL, false),
+                };
+                let _ = ack(status, &[]);
+                drain
+            }
+        }
+    } else {
+        false
+    }
+}
+
+/// Fair drain: each round gives every live session at most `FAIR_QUOTA`
+/// batches, then sends one merged `ASYNC_COMPLETE` per advanced session and
+/// writes the new `head` into its control page. Rounds repeat until no session
+/// advances, so a coalesced doorbell cannot leave published work stranded.
+#[inline(never)]
+fn async_drain<T: SyscallTransport>(
+    rt: &Runtime<T>,
+    files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
+    store: &mut async_batch::Store<{ proxy::MAX_PROXIES }>,
+    channels: &mut [AsyncChannel; proxy::MAX_PROXIES],
+) {
+    loop {
+        let advanced = store.round(&mut |index, session, claim| {
+            let channel = channels[index];
+            let ordinal = match claim {
+                Claim::Execute(ordinal) | Claim::Cancelled(ordinal) => ordinal,
+                Claim::Idle => return,
+            };
+            let address = AsyncChannel::address(index)
+                + (1 + Session::page(ordinal)) as u64 * bulk::PAGE_BYTES as u64;
+            let mut page = [0u8; bulk::PAGE_BYTES];
+            if rt.read_user_bytes(address, &mut page).is_err() {
+                session.complete();
+                return;
+            }
+            if matches!(claim, Claim::Cancelled(_)) {
+                async_fail_page(&mut page, SERVICE_FILE_ECANCELED as u32);
+            } else {
+                let _ = files.set_owner(channel.owner);
+                let mut storage = SegmentStorage { runtime: rt };
+                if prima_user::bulk::execute_version_2(
+                    files,
+                    &mut storage,
+                    channel.view,
+                    &mut page,
+                    ordinal.wrapping_add(1),
+                    |error| proxy_status(error) as u32,
+                )
+                .is_err()
+                {
+                    // The protocol is batch-atomic: nothing executed and no
+                    // per-op status exists, so report EINVAL on every slot.
+                    async_fail_page(&mut page, SERVICE_FILE_EINVAL as u32);
+                }
+            }
+            // Consume before output: a lost completion is terminal, never a
+            // replay of an executed write.
+            let _ = rt.write_user_bytes(address, &page);
+            session.complete();
+        });
+        let mut progressed = false;
+        for (index, head) in advanced.into_iter().flatten() {
+            progressed = true;
+            let channel = channels[index];
+            let _ = rt.write_user_bytes(
+                AsyncChannel::address(index) + bulk::ASYNC_HEAD_OFFSET as u64,
+                &head.to_le_bytes(),
+            );
+            if let Some(reply) = channel.reply {
+                let _ = rt.send(
+                    TaskId::from_raw(channel.peer),
+                    reply,
+                    bulk::ASYNC_COMPLETE
+                        | ((index as u64) << bulk::PROXY_SLOT_SHIFT)
+                        | u64::from(head as u32),
+                    &[],
+                );
+            }
+        }
+        if !progressed {
+            break;
         }
     }
 }
@@ -471,6 +871,8 @@ pub fn run(
     let mut bulk_channels = [BulkChannel::EMPTY; prima_user::sessions::MAX_CLIENTS];
     let mut proxies = ProxyTable::new();
     let mut proxy_channels = [BulkChannel::EMPTY; proxy::MAX_PROXIES];
+    let mut async_store = async_batch::Store::<{ proxy::MAX_PROXIES }>::new();
+    let mut async_channels = [AsyncChannel::EMPTY; proxy::MAX_PROXIES];
     // Selected proxy slot and its root view for the following path operations.
     // The sender cookie is part of the tuple so another client cannot inherit it.
     let mut proxy_current: Option<(u64, usize, vfs::View)> = None;
@@ -543,6 +945,21 @@ pub fn run(
             }
             // Reclaim proxy entries whose application or submitting LibOS died.
             // The owner close is retried while an I/O failure persists.
+            // P3 v2 sessions reuse the same proxy index budget. A dead opener
+            // is retired here; the deferred destroy keeps the segment cap when
+            // the client still maps the page.
+            for (index, channel) in async_channels.iter_mut().enumerate() {
+                if channel.root.is_some()
+                    && (!channel.active
+                        || runtime
+                            .task_cookie(TaskId::from_raw(channel.cookie as u32))
+                            .ok()
+                            != Some(channel.cookie))
+                {
+                    channel.retire(&runtime, self_cap, index);
+                    let _ = async_store.remove(index);
+                }
+            }
             for (index, channel) in proxy_channels.iter_mut().enumerate() {
                 let Some(entry) = proxies.entry(index).copied() else {
                     continue;
@@ -561,6 +978,8 @@ pub fn run(
                     self_cap,
                     prima_user::sessions::MAX_CLIENTS + index,
                 );
+                async_channels[index].retire(&runtime, self_cap, index);
+                let _ = async_store.remove(index);
                 let mut storage = SegmentStorage { runtime: &runtime };
                 if files.close_owner(&mut storage, entry.owner).is_ok() {
                     sessions.release_external(entry.owner);
@@ -957,6 +1376,80 @@ pub fn run(
                 }
                 continue;
             }
+            if matches!(
+                message.payload & 0xffff_0000_0000_0000,
+                bulk::ASYNC_OPEN | bulk::ASYNC_DOORBELL | bulk::ASYNC_CANCEL | bulk::ASYNC_CLOSE
+            ) {
+                let async_tag = message.payload & 0xffff_0000_0000_0000;
+                let index = if async_tag == bulk::ASYNC_OPEN || async_tag == bulk::ASYNC_CLOSE {
+                    (message.payload & bulk::PROXY_SLOT_MASK) as usize
+                } else {
+                    ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize
+                };
+                let entry = proxies.entry(index).copied().filter(|entry| {
+                    entry.proxy == client.cookie
+                        && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
+                            == Some(entry.app)
+                });
+                let Some(entry) = entry.filter(|_| vfs_ready) else {
+                    for cap in message.capabilities.into_iter().flatten() {
+                        let _ = runtime.cap_drop(cap);
+                    }
+                    let _ = runtime.send(
+                        reply_peer,
+                        reply_send,
+                        bulk::ASYNC_ACK | ((index as u64) << 8) | SERVICE_FILE_EACCES,
+                        &[],
+                    );
+                    continue;
+                };
+                // The policy view is fixed at proxy registration; cache it for
+                // the OPEN that binds it to this session.
+                let mut view = vfs::View::ROOT;
+                if async_tag == bulk::ASYNC_OPEN {
+                    view = match policy_views.get(entry.policy as usize).copied().flatten() {
+                        Some(view) => view,
+                        None => match prepare_policy(&runtime, entry.policy) {
+                            Ok(view) => {
+                                if let Some(slot) = policy_views.get_mut(entry.policy as usize) {
+                                    *slot = Some(view);
+                                }
+                                view
+                            }
+                            Err(error) => {
+                                for cap in message.capabilities.into_iter().flatten() {
+                                    let _ = runtime.cap_drop(cap);
+                                }
+                                let _ = runtime.send(
+                                    reply_peer,
+                                    reply_send,
+                                    bulk::ASYNC_ACK | ((index as u64) << 8) | vfs_status(error),
+                                    &[],
+                                );
+                                continue;
+                            }
+                        },
+                    };
+                }
+                let drain = async_request(
+                    &runtime,
+                    self_cap,
+                    &mut async_store,
+                    &mut async_channels,
+                    index,
+                    client.cookie,
+                    reply_peer,
+                    reply_send,
+                    entry.owner,
+                    view,
+                    message.payload,
+                    message.capabilities,
+                );
+                if drain {
+                    async_drain(&runtime, &mut files, &mut async_store, &mut async_channels);
+                }
+                continue;
+            }
             if tag == SERVICE_SESSION_PROXY_CLOSE_TAG >> 48 {
                 for cap in message.capabilities.into_iter().flatten() {
                     let _ = runtime.cap_drop(cap);
@@ -972,6 +1465,8 @@ pub fn run(
                             self_cap,
                             prima_user::sessions::MAX_CLIENTS + index,
                         );
+                        async_channels[index].retire(&runtime, self_cap, index);
+                        let _ = async_store.remove(index);
                         if let Some(entry) = proxies.remove(index) {
                             let mut storage = SegmentStorage { runtime: &runtime };
                             let closed = files.close_owner(&mut storage, entry.owner);

@@ -24,8 +24,11 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
   Linux fd 表 16 / `SERVICE_FILE_HANDLES=8`。
 
 > 2026-11-18 进度：P3-0 已落盘——契约 P3 节改为 IPC 顺序模型（拒绝裸共享原子），
-> `async_batch` 状态机与有界穷举交错 host 证据通过；P3-1 起未做。见
-> [P3-0 报告](../reports/2026-11-18-p3-async-state-machine.md)。
+> `async_batch` 状态机与有界穷举交错 host 证据通过。P3-1 Store v2 会话已落盘——
+> ASYNC_* tag、控制页编解码、5 页段、公平排空、取消/重置/关闭与死亡回收，host
+> 1181 与既有 72 轮通过；Store 历史栈 4→8 页已登记。P3-2 起未做。见
+> [P3-0 报告](../reports/2026-11-18-p3-async-state-machine.md) 与
+> [P3-1 报告](../reports/2026-11-18-p3-store-v2.md)。
 
 ## 依赖总览
 
@@ -80,6 +83,11 @@ P3-0 ─→ P3-1 ─→ P3-2 ─→ P3-3 ─→ P3-4
 - 停止条件：共享页校验或公平配额需要放宽 v1 语义时停止；不得让 v1 客户端
   承担 v2 的容量或错误语义。
 - 不包含：Linux 前端切换。
+- 2026-11-18：实现落在 `prima-runtime/src/bulk.rs`、`prima-runtime/src/
+  async_batch.rs`（`Store<N>` 调度）与 `prima-user/src/service.rs`（未新开
+  sessions 模块）；控制页校验、`generation_low8`、CANCEL/CLOSE 折算 `tail`、
+  重置回收与 Store 栈 4→8 页均已落盘。host 1181、lint、既有 72 轮与
+  `test-linux-proxy` 通过。见 [报告](../reports/2026-11-18-p3-store-v2.md)。
 
 ## P3-2 前端 v2 接线
 

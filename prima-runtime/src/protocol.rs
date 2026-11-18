@@ -566,6 +566,12 @@ pub const SERVICE_FILE_ENOSYS: u64 = 38;
 /// M13a：`ELOOP`（符号链接展开超过冻结深度）。
 pub const SERVICE_FILE_ELOOP: u64 = 40;
 
+/// P3：异步会话控制面错误。`ECANCELED` 也作为被取消批内每个描述符的完成状态。
+pub const SERVICE_FILE_EBUSY: u64 = 16;
+pub const SERVICE_FILE_EALREADY: u64 = 114;
+pub const SERVICE_FILE_ESTALE: u64 = 116;
+pub const SERVICE_FILE_ECANCELED: u64 = 125;
+
 /// M4：打包文件服务请求。
 pub const fn pack_file_request(op: u64, fd: u64, client: u64, arg: u64) -> u64 {
     SERVICE_FILE_REQUEST_TAG
