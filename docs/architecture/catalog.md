@@ -97,7 +97,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（231）
+## report（232）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -332,6 +332,7 @@
 | [P2b-4：镜像接线、管理器签发会话与两 ABI 场景](../superpowers/reports/2026-11-18-p2b-proxy-wiring.md) | current | `docs/superpowers/reports/2026-11-18-p2b-proxy-wiring.md` |
 | [P3-0：异步批量契约与状态机](../superpowers/reports/2026-11-18-p3-async-state-machine.md) | current | `docs/superpowers/reports/2026-11-18-p3-async-state-machine.md` |
 | [P3-1：Store v2 会话](../superpowers/reports/2026-11-18-p3-store-v2.md) | current | `docs/superpowers/reports/2026-11-18-p3-store-v2.md` |
+| [P3-2：前端 v2 接线（Rust 侧交付，C 数据面受阻）](../superpowers/reports/2026-11-19-p3-frontend-v2.md) | current | `docs/superpowers/reports/2026-11-19-p3-frontend-v2.md` |
 
 ## spec（4）
 

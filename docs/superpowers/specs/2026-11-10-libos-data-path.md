@@ -424,9 +424,11 @@ Task id 容量限制，不是可忽略的重试错误。反例失败必须保留
 
 ### 提交通知与完成合并
 
-- `ASYNC_OPEN | slot`（slot 在低 8 位）建立会话并回复控制段能力；控制回复统一为
-  `ASYNC_ACK | slot<<8 | status`（status 为 0 或正 errno），成功 OPEN 的消息附带
-  控制段的派生能力。
+- 所有 v2 消息把 `slot` 放在 bits 32..39。直连客户端使用 `0x5f30..0x5f35`；
+  代理会话使用独立族 `0x5f36..0x5f3b`（`+0x0006_0000_0000_0000`），避免直连
+  Task 槽与代理索引在路由上歧义。`ASYNC_OPEN | slot<<32` 建立会话并回复控制段
+  能力；控制回复统一为 `ASYNC_ACK | slot<<8 | status`（status 为 0 或正 errno），
+  成功 OPEN 的消息附带控制段的派生能力。
 - 生产者发布后发送 `ASYNC_DOORBELL | generation_low8<<40 | slot<<32 | tail_low32`
   唤醒 Store；重复的 doorbell 幂等，Store 只按 `tail` 取工作。`generation_low8`
   是旧映像围栏；完整 `tail` 由 Store 在收到消息后从控制页读取（写入先于发送，
@@ -447,7 +449,7 @@ Task id 容量限制，不是可忽略的重试错误。反例失败必须保留
   状态；已认领则回复 `EALREADY` 并正常完成。认领点是 Store 排空该会话的时刻，
   客户端不能假定更早。取消成功不得产生任何 VFS 副作用。CANCEL 与 CLOSE 同样先
   从控制页折算 `tail`（生产者先写页后发送），因此可在 doorbell 之前取消已发布批。
-- 关闭：未完成数为零时才接受 `ASYNC_CLOSE | slot`；否则回复 `EBUSY`，客户端
+- 关闭：未完成数为零时才接受 `ASYNC_CLOSE | slot<<32`；否则回复 `EBUSY`，客户端
   必须先排空。CLOSE 以控制页 `tail` 为准，未发过 doorbell 的已发布批也算未完成。
   死亡代理由 Store 的死亡回收一次性中止其未认领批、等待已认领批完成后释放
   owner，不得把唯一段能力丢掉。
@@ -478,13 +480,15 @@ Store 每轮对每个有未完成批的活会话最多处理 `ASYNC_FAIR_QUOTA=2
 
 ### 容量与预算
 
-- `ASYNC_CREDITS=4`、`ASYNC_FAIR_QUOTA=2`；每会话 5 页（控制页 + 4 数据页），
-  `MAX_PROXIES=8` 时最多 40 页、160 KiB。
+- `ASYNC_CREDITS=4`、`ASYNC_FAIR_QUOTA=2`；每会话 5 页（控制页 + 4 数据页）。
+  直连 `MAX_CLIENTS=18` 与代理 `MAX_PROXIES=8` 各有独立 VA 区：最多
+  18×5 + 8×5 = 130 页。会话只在 OPEN 后占用页帧。
 - 段槽、映射与句柄沿用既有内核额度；建立失败显式返回 `EAGAIN`/`ENOSPC`，不放宽
   容量。v1 的 1 页/1 在途约束只对 v1 生效。
-- 历史 72 轮镜像中 Store 的用户栈由 4 页提高到 8 页：P3-1 实测 4 页在既有代理
-  数据面即栈溢出（F1/V1/V3 在故障分派处 panic），场景镜像的 64 页不变。该调整
-  只扩大栈预算，不放宽任何校验。
+- 历史 72 轮镜像的栈预算：P3-1 把 Store 由 4 页提高到 8 页（代理数据面调用链）；
+  P3-2 的共享 `run` 帧增至约 7.9 KiB，普通服务 2 页（8 KiB）在 `run` 序言处压到
+  只读代码页（log/ns 启动页故障），故普通服务改为 4 页（16 KiB）、Store 改为
+  16 页（64 KiB）。场景镜像的 64 页不变。该调整只扩大栈预算，不放宽任何校验。
 - 不新增 syscall；新 tag 只在用户态协议。
 
 ### 验收与证据边界

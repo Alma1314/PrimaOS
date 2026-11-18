@@ -9,6 +9,7 @@
 
 use prima_runtime::{
     Capability, Rights, Runtime, SyscallTransport, TaskId,
+    async_batch::Producer,
     bulk::{self, MAX_PATH, NEUTRAL_STAT_BYTES, PAGE_BYTES, Request, WIRE_FD_BASE},
     protocol::{
         SERVICE_FILE_HANDLES, SERVICE_SESSION_ACK_TAG, SERVICE_SESSION_FORK_ACK_TAG,
@@ -43,6 +44,12 @@ pub trait Store {
     fn release(&mut self, owner: u8, key: u32) -> Result<(), i64>;
     /// Close every OFD held by `owner` (process exit).
     fn close_owner(&mut self, owner: u8) -> Result<(), i64>;
+    /// Exec fence: the old image closed every fd, so a v2 session may be
+    /// closed and re-opened under a new generation. v1 keeps one session.
+    fn reopen(&mut self, owner: u8) -> Result<(), i64> {
+        let _ = owner;
+        Ok(())
+    }
     /// Bind a freshly published child Process to its own proxy entry. In-process
     /// storage keys batches by owner, so the default is a no-op.
     fn register_child(&mut self, owner: u8, task: Capability) -> Result<(), i64> {
@@ -99,6 +106,11 @@ impl Session {
 
     pub fn close_owner(&mut self, store: &mut dyn Store) -> Result<(), i64> {
         store.close_owner(self.owner)
+    }
+
+    /// Exec fence: drain and re-open the v2 session under a new generation.
+    pub fn reopen(&mut self, store: &mut dyn Store) -> Result<(), i64> {
+        store.reopen(self.owner)
     }
 
     pub fn register_child(
@@ -537,6 +549,9 @@ impl Store for Local {
 /// Fixed VA for proxy slot `index`'s shared page. The personality maps one page
 /// per registered proxy entry for the lifetime of that entry.
 pub const REMOTE_PAGE_VA: u64 = 0x0000_0d00_0000_0000;
+/// P3 v2 sessions map one control page plus `ASYNC_CREDITS` data pages per
+/// proxy index in a disjoint region.
+pub const REMOTE_ASYNC_VA: u64 = 0x0000_0d00_1000_0000;
 
 /// One entry per Linux Process (`MAX_PROCESSES`); a forked child registers its
 /// own proxy slot after the owner is published.
@@ -561,6 +576,10 @@ pub struct Remote<'a, T: SyscallTransport> {
     store: Option<(u64, Capability)>,
     policy: u8,
     pages: [Option<Capability>; crate::proxy::MAX_PROXIES],
+    async_pages: [Option<Capability>; crate::proxy::MAX_PROXIES],
+    generations: [u64; crate::proxy::MAX_PROXIES],
+    producers: [Producer; crate::proxy::MAX_PROXIES],
+    v2: bool,
     entries: [Option<RemoteEntry>; REMOTE_OWNERS],
 }
 
@@ -637,6 +656,21 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
     /// Register a direct file session with the manager, then keep the store's
     /// send authority. Proxy registration for each application follows.
     pub fn connect(rt: &'a Runtime<T>, manager: Capability, policy: u8) -> Result<Self, i64> {
+        Self::connect_mode(rt, manager, policy, false)
+    }
+
+    /// P3 version-2 pipeline: one control page plus `ASYNC_CREDITS` data pages
+    /// per proxy slot, doorbell/COMPLETE ordering instead of v1 submit/reply.
+    pub fn connect_v2(rt: &'a Runtime<T>, manager: Capability, policy: u8) -> Result<Self, i64> {
+        Self::connect_mode(rt, manager, policy, true)
+    }
+
+    fn connect_mode(
+        rt: &'a Runtime<T>,
+        manager: Capability,
+        policy: u8,
+        v2: bool,
+    ) -> Result<Self, i64> {
         let (self_cap, store_cookie, store_cap) = open_session(rt, manager)?;
         let manager_cookie = rt.send_target_cookie(manager).map_err(|_| -13)?;
         Ok(Self {
@@ -646,6 +680,10 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
             store: Some((store_cookie, store_cap)),
             policy,
             pages: [None; crate::proxy::MAX_PROXIES],
+            async_pages: [None; crate::proxy::MAX_PROXIES],
+            generations: [0; crate::proxy::MAX_PROXIES],
+            producers: [Producer::new(0); crate::proxy::MAX_PROXIES],
+            v2,
             entries: [None; REMOTE_OWNERS],
         })
     }
@@ -690,8 +728,15 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
         REMOTE_PAGE_VA + u64::from(index) * PAGE_BYTES as u64
     }
 
+    fn async_va(index: u8) -> u64 {
+        REMOTE_ASYNC_VA + u64::from(index) * bulk::ASYNC_PAGES as u64 * PAGE_BYTES as u64
+    }
+
     /// Map the store-owned page. Its root capability never leaves the store.
     fn open_slot(&mut self, index: u8) -> Result<(), i64> {
+        if self.v2 {
+            return self.open_slot_v2(index);
+        }
         let (store_cookie, store) = self.store.ok_or(-13)?;
         self.rt
             .send(
@@ -733,6 +778,90 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
                 return Err(-12);
             }
             self.pages[index as usize] = Some(cap);
+            return Ok(());
+        }
+    }
+
+    /// `ASYNC_OPEN`: map the control page plus `ASYNC_CREDITS` data pages and
+    /// adopt the Store-issued generation. The page was initialized before the
+    /// reply was sent, so the mapped header is already visible.
+    fn open_slot_v2(&mut self, index: u8) -> Result<(), i64> {
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        self.rt
+            .send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                (bulk::ASYNC_OPEN + bulk::ASYNC_PROXY_OFFSET)
+                    | (u64::from(index) << bulk::PROXY_SLOT_SHIFT),
+                &[],
+            )
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000
+                    != bulk::ASYNC_ACK + bulk::ASYNC_PROXY_OFFSET
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = message.payload & 0xff;
+            let slot = ((message.payload >> 8) & 0xff) as u8;
+            let Some(cap) = message.capabilities[0] else {
+                drop_caps(self.rt, &message);
+                if status != 0 {
+                    return Err(-(status as i64));
+                }
+                continue;
+            };
+            for extra in message.capabilities[1..].iter().flatten() {
+                let _ = self.rt.cap_drop(*extra);
+            }
+            if status != 0 || slot != index {
+                let _ = self.rt.cap_drop(cap);
+                return Err(if status != 0 { -(status as i64) } else { -5 });
+            }
+            if self
+                .rt
+                .memseg_map(
+                    cap,
+                    self.self_cap,
+                    0,
+                    Self::async_va(index),
+                    bulk::ASYNC_PAGES as u64,
+                    SEGMENT_RW,
+                )
+                .is_err()
+            {
+                let _ = self.rt.cap_drop(cap);
+                return Err(-12);
+            }
+            let mut header = [0u8; bulk::ASYNC_HEADER_BYTES];
+            if self
+                .rt
+                .read_user_bytes(Self::async_va(index), &mut header)
+                .is_err()
+            {
+                let _ = self.rt.memseg_unmap(
+                    self.self_cap,
+                    Self::async_va(index),
+                    bulk::ASYNC_PAGES as u64,
+                );
+                let _ = self.rt.cap_drop(cap);
+                return Err(-14);
+            }
+            let Ok(fields) = bulk::validate_async(&header) else {
+                let _ = self.rt.memseg_unmap(
+                    self.self_cap,
+                    Self::async_va(index),
+                    bulk::ASYNC_PAGES as u64,
+                );
+                let _ = self.rt.cap_drop(cap);
+                return Err(-5);
+            };
+            self.async_pages[index as usize] = Some(cap);
+            self.generations[index as usize] = fields.generation;
+            self.producers[index as usize] = Producer::new(fields.generation);
             return Ok(());
         }
     }
@@ -820,6 +949,122 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
     }
 }
 
+impl<'a, T: SyscallTransport> Remote<'a, T> {
+    /// One v2 batch: publish the ordinal's data page, doorbell, wait for the
+    /// merged COMPLETE covering it, then read results back in place.
+    fn exchange_v2(&mut self, slot: u8, page: &mut [u8; PAGE_BYTES]) -> Result<(), i64> {
+        let index = slot as usize;
+        if index >= crate::proxy::MAX_PROXIES || self.async_pages[index].is_none() {
+            return Err(-9);
+        }
+        let ordinal = self.producers[index].try_publish().ok_or(-11)?;
+        let tail = ordinal.wrapping_add(1);
+        let generation = self.generations[index];
+        let base = Self::async_va(slot);
+        // The v2 data page header carries the absolute ordinal + 1, independent
+        // of the client's own v1 batch counter.
+        page[8..16].copy_from_slice(&tail.to_le_bytes());
+        let data = base + (1 + ordinal % (bulk::ASYNC_CREDITS as u64)) * PAGE_BYTES as u64;
+        if self.rt.write_user_bytes(data, page).is_err() {
+            return Err(-14);
+        }
+        if self
+            .rt
+            .write_user_bytes(base + bulk::ASYNC_TAIL_OFFSET as u64, &tail.to_le_bytes())
+            .is_err()
+        {
+            return Err(-14);
+        }
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        let payload = (bulk::ASYNC_DOORBELL + bulk::ASYNC_PROXY_OFFSET)
+            | ((generation & bulk::ASYNC_GENERATION_MASK) << bulk::ASYNC_GENERATION_SHIFT)
+            | (u64::from(slot) << bulk::PROXY_SLOT_SHIFT)
+            | u64::from(tail as u32);
+        if self
+            .rt
+            .send(TaskId::from_raw(store_cookie as u32), store, payload, &[])
+            .is_err()
+        {
+            return Err(-13);
+        }
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            match message.payload & 0xffff_0000_0000_0000 {
+                tag if tag == bulk::ASYNC_COMPLETE + bulk::ASYNC_PROXY_OFFSET => {
+                    let completed_slot =
+                        ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as u8;
+                    let head = message.payload as u32 as u64;
+                    drop_caps(self.rt, &message);
+                    if completed_slot != slot {
+                        continue;
+                    }
+                    // With one batch in flight the Store's head is our tail.
+                    if head != tail as u32 as u64 {
+                        return Err(-5);
+                    }
+                    self.producers[index].observe(tail).map_err(|_| -5)?;
+                    self.rt.read_user_bytes(data, page).map_err(|_| -14)?;
+                    return Ok(());
+                }
+                tag if tag == bulk::ASYNC_ACK + bulk::ASYNC_PROXY_OFFSET => {
+                    let status = message.payload & 0xff;
+                    drop_caps(self.rt, &message);
+                    return Err(-(status as i64));
+                }
+                _ => drop_caps(self.rt, &message),
+            }
+        }
+    }
+
+    /// Close the v2 session of one proxy slot; the mapping and capability are
+    /// released only after the Store accepts the close.
+    fn close_slot_v2(&mut self, index: u8) -> Result<(), i64> {
+        if self.async_pages[index as usize].is_none() {
+            return Ok(());
+        }
+        let (store_cookie, store) = self.store.ok_or(-13)?;
+        self.rt
+            .send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                (bulk::ASYNC_CLOSE + bulk::ASYNC_PROXY_OFFSET)
+                    | (u64::from(index) << bulk::PROXY_SLOT_SHIFT),
+                &[],
+            )
+            .map_err(|_| -13)?;
+        loop {
+            let message = self.rt.receive().map_err(|_| -5)?;
+            if sender_cookie(&message) != store_cookie
+                || message.payload & 0xffff_0000_0000_0000
+                    != bulk::ASYNC_ACK + bulk::ASYNC_PROXY_OFFSET
+            {
+                drop_caps(self.rt, &message);
+                continue;
+            }
+            let status = message.payload & 0xff;
+            drop_caps(self.rt, &message);
+            if status != 0 {
+                return Err(-(status as i64));
+            }
+            if let Some(cap) = self.async_pages[index as usize].take() {
+                let _ = self.rt.memseg_unmap(
+                    self.self_cap,
+                    Self::async_va(index),
+                    bulk::ASYNC_PAGES as u64,
+                );
+                let _ = self.rt.cap_drop(cap);
+            }
+            self.producers[index as usize] = Producer::new(0);
+            self.generations[index as usize] = 0;
+            return Ok(());
+        }
+    }
+}
+
 impl<T: SyscallTransport> Store for Remote<'_, T> {
     fn exchange(
         &mut self,
@@ -828,6 +1073,9 @@ impl<T: SyscallTransport> Store for Remote<'_, T> {
         sequence: u64,
     ) -> Result<(), i64> {
         let entry = self.entry(owner)?;
+        if self.v2 {
+            return self.exchange_v2(entry.slot, page);
+        }
         let va = Self::page_va(entry.slot);
         self.rt.write_user_bytes(va, page).map_err(|_| -14)?;
         let (store_cookie, store) = self.store.ok_or(-13)?;
@@ -903,41 +1151,57 @@ impl<T: SyscallTransport> Store for Remote<'_, T> {
 
     fn close_owner(&mut self, owner: u8) -> Result<(), i64> {
         let entry = self.entry(owner)?;
-        let (store_cookie, store) = self.store.ok_or(-13)?;
-        let _ = self.rt.send(
-            TaskId::from_raw(store_cookie as u32),
-            store,
-            SERVICE_SESSION_PROXY_CLOSE_TAG | u64::from(entry.slot),
-            &[],
-        );
-        loop {
-            let message = self.rt.receive().map_err(|_| -5)?;
-            if sender_cookie(&message) != store_cookie
-                || message.payload & 0xffff_0000_0000_0000 != SERVICE_SESSION_FORK_ACK_TAG
-            {
+        if self.v2 {
+            // The v2 close drains the session first; exact fd cleanup is the
+            // caller's CLOSE batches before this point.
+            self.close_slot_v2(entry.slot)?;
+        } else {
+            let (store_cookie, store) = self.store.ok_or(-13)?;
+            let _ = self.rt.send(
+                TaskId::from_raw(store_cookie as u32),
+                store,
+                SERVICE_SESSION_PROXY_CLOSE_TAG | u64::from(entry.slot),
+                &[],
+            );
+            loop {
+                let message = self.rt.receive().map_err(|_| -5)?;
+                if sender_cookie(&message) != store_cookie
+                    || message.payload & 0xffff_0000_0000_0000 != SERVICE_SESSION_FORK_ACK_TAG
+                {
+                    drop_caps(self.rt, &message);
+                    continue;
+                }
+                let status = message.payload & 0xff;
                 drop_caps(self.rt, &message);
-                continue;
+                if status != 0 {
+                    return Err(-(status as i64));
+                }
+                if let Some(cap) = self.pages[entry.slot as usize].take() {
+                    let _ = self
+                        .rt
+                        .memseg_unmap(self.self_cap, Self::page_va(entry.slot), 1);
+                    let _ = self.rt.cap_drop(cap);
+                }
+                break;
             }
-            let status = message.payload & 0xff;
-            drop_caps(self.rt, &message);
-            if status != 0 {
-                return Err(-(status as i64));
-            }
-            if let Some(cap) = self.pages[entry.slot as usize].take() {
-                let _ = self
-                    .rt
-                    .memseg_unmap(self.self_cap, Self::page_va(entry.slot), 1);
-                let _ = self.rt.cap_drop(cap);
-            }
-            if let Some(index) = self
-                .entries
-                .iter()
-                .position(|candidate| candidate.is_some_and(|e| e.owner == owner))
-            {
-                self.entries[index] = None;
-            }
+        }
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|candidate| candidate.is_some_and(|e| e.owner == owner))
+        {
+            self.entries[index] = None;
+        }
+        Ok(())
+    }
+
+    fn reopen(&mut self, owner: u8) -> Result<(), i64> {
+        if !self.v2 {
             return Ok(());
         }
+        let entry = self.entry(owner)?;
+        self.close_slot_v2(entry.slot)?;
+        self.open_slot_v2(entry.slot)
     }
 
     fn register_child(&mut self, owner: u8, task: Capability) -> Result<(), i64> {

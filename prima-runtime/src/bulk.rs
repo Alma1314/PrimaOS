@@ -40,6 +40,10 @@ pub const ASYNC_DOORBELL: u64 = 0x5f32_0000_0000_0000;
 pub const ASYNC_COMPLETE: u64 = 0x5f33_0000_0000_0000;
 pub const ASYNC_CANCEL: u64 = 0x5f34_0000_0000_0000;
 pub const ASYNC_CLOSE: u64 = 0x5f35_0000_0000_0000;
+/// Proxy-scoped v2 sessions use the next six tags, so a direct client's
+/// Task-slot encoding can never be mistaken for a proxy index. The offset is
+/// applied to the 16-bit tag field, not the payload bits.
+pub const ASYNC_PROXY_OFFSET: u64 = 0x0006_0000_0000_0000;
 pub const ASYNC_CREDITS: usize = crate::async_batch::CREDITS as usize;
 /// The control page followed by one page per credit.
 pub const ASYNC_PAGES: usize = ASYNC_CREDITS + 1;

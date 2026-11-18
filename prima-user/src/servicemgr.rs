@@ -209,9 +209,10 @@ fn read_native_app_hash(runtime: &Runtime<impl SyscallTransport>) -> Option<u32>
 
 /// 端点用户栈的页大小。
 const FRAME_SIZE: u64 = 0x1000;
-/// 普通服务端点的栈页数。M8 保持既有 1 页布局，并把 VFS 解析栈帧压回该预算
-/// （名称 ≤16、分量 ≤6）；没有改用 2 页。
-const SERVICE_STACK_PAGES: u64 = 2;
+/// 普通服务端点的栈页数。M8 曾把 VFS 解析栈帧压回 2 页；P3-2 的 v2 会话把共享
+/// `run` 帧增至约 7.9 KiB，2 页（8 KiB）在 `run` 序言处即压到只读代码页（log/ns
+/// 启动页故障）。扩为 4 页（16 KiB），不放宽任何校验。
+const SERVICE_STACK_PAGES: u64 = 4;
 /// P2b-4：代理场景镜像里由管理器创建的端点/客户端使用更大的栈。历史镜像保持
 /// 2/4 页不变；场景镜像在契约中登记该容量提升（Store 与 Linux personality 的
 /// 复合请求帧超过 16 KiB）。这不是 Invariant 放宽，只影响新场景镜像。
@@ -2278,10 +2279,10 @@ fn create_service(
         if c_stack {
             C_STACK_PAGES
         } else if spec.name == SERVICE_NAME_STORE {
-            // P3-1：v2 会话把 8 组控制/页状态与原有 v1 通道同时放进 `run` 帧，
-            // 4 页不再容纳代理数据面的调用链（F1/V1/V3 断言区栈溢出后在故障
-            // 分派处 panic）。只放大 Store 的栈，不改 v1 语义或事件。
-            8
+            // P3-2：`run` 帧约 7.9 KiB，加上 `bulk_request`/`async_drain` 的 4 KiB
+            // 页缓冲与 VFS 调用链；4 页不够，16 页（64 KiB）留出余量。只放大
+            // Store 的口径，不改变 v1 语义或事件。
+            16
         } else {
             SERVICE_STACK_PAGES
         },

@@ -172,21 +172,24 @@ impl AsyncChannel {
         view: vfs::View::ROOT,
     };
 
-    fn address(index: usize) -> u64 {
+    fn proxy_address(index: usize) -> u64 {
         bulk::SERVER_VA
-            + (prima_user::sessions::MAX_CLIENTS + proxy::MAX_PROXIES + index * bulk::ASYNC_PAGES)
-                as u64
-                * bulk::PAGE_BYTES as u64
+            + (ASYNC_PROXY_BASE + index * bulk::ASYNC_PAGES) as u64 * bulk::PAGE_BYTES as u64
     }
 
-    fn retire(&mut self, rt: &Runtime<impl SyscallTransport>, task: Capability, index: usize) {
+    fn direct_address(index: usize) -> u64 {
+        bulk::SERVER_VA
+            + (ASYNC_DIRECT_BASE + index * bulk::ASYNC_PAGES) as u64 * bulk::PAGE_BYTES as u64
+    }
+
+    fn retire(&mut self, rt: &Runtime<impl SyscallTransport>, task: Capability, address: u64) {
         self.active = false;
         let Some(root) = self.root else {
             return;
         };
         if self.mapped {
             if rt
-                .memseg_unmap(task, Self::address(index), bulk::ASYNC_PAGES as u64)
+                .memseg_unmap(task, address, bulk::ASYNC_PAGES as u64)
                 .is_err()
             {
                 return;
@@ -200,16 +203,24 @@ impl AsyncChannel {
     }
 }
 
+/// Direct-client v2 sessions occupy the slots after the v1 regions; proxy v2
+/// sessions follow them. Both are `ASYNC_PAGES` pages per slot.
+const ASYNC_DIRECT_BASE: usize = prima_user::sessions::MAX_CLIENTS + proxy::MAX_PROXIES;
+const ASYNC_PROXY_BASE: usize =
+    ASYNC_DIRECT_BASE + prima_user::sessions::MAX_CLIENTS * bulk::ASYNC_PAGES;
+
 fn async_fail_page(page: &mut [u8; bulk::PAGE_BYTES], status: u32) {
     for index in 0..bulk::MAX_OPS {
         bulk::complete(page, index, status, 0);
     }
 }
 
-fn async_reset<T: SyscallTransport>(rt: &Runtime<T>, session: &mut Session, index: usize) {
+fn async_reset<T: SyscallTransport>(rt: &Runtime<T>, session: &mut Session, control: u64) {
     session.reset();
-    let address = AsyncChannel::address(index) + bulk::ASYNC_GENERATION_OFFSET as u64;
-    let _ = rt.write_user_bytes(address, &session.generation().to_le_bytes());
+    let _ = rt.write_user_bytes(
+        control + bulk::ASYNC_GENERATION_OFFSET as u64,
+        &session.generation().to_le_bytes(),
+    );
 }
 
 /// Re-read the producer's control page after an IPC message (the write always
@@ -218,25 +229,22 @@ fn async_reset<T: SyscallTransport>(rt: &Runtime<T>, session: &mut Session, inde
 fn async_load<T: SyscallTransport>(
     rt: &Runtime<T>,
     session: &mut Session,
-    index: usize,
+    control: u64,
     doorbell_tail: Option<u32>,
 ) -> Result<(), u64> {
     let mut header = [0u8; bulk::ASYNC_HEADER_BYTES];
-    if rt
-        .read_user_bytes(AsyncChannel::address(index), &mut header)
-        .is_err()
-    {
-        async_reset(rt, session, index);
+    if rt.read_user_bytes(control, &mut header).is_err() {
+        async_reset(rt, session, control);
         return Err(SERVICE_FILE_EFAULT);
     }
     let Ok(fields) = bulk::validate_async(&header) else {
-        async_reset(rt, session, index);
+        async_reset(rt, session, control);
         return Err(SERVICE_FILE_EACCES);
     };
     if fields.generation != session.generation()
         || doorbell_tail.is_some_and(|tail| tail != fields.tail as u32)
     {
-        async_reset(rt, session, index);
+        async_reset(rt, session, control);
         return Err(SERVICE_FILE_EACCES);
     }
     match session.publish(session.generation(), fields.tail) {
@@ -244,18 +252,22 @@ fn async_load<T: SyscallTransport>(
         Err(PublishError::Full) => Err(SERVICE_FILE_EAGAIN),
         Err(PublishError::Stale) => Err(SERVICE_FILE_ESTALE),
         Err(PublishError::Protocol) => {
-            async_reset(rt, session, index);
+            async_reset(rt, session, control);
             Err(SERVICE_FILE_EACCES)
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn async_request<T: SyscallTransport>(
+fn async_request<const N: usize, T: SyscallTransport, F: Fn(usize) -> u64 + Copy>(
     rt: &Runtime<T>,
     self_cap: Capability,
-    store: &mut async_batch::Store<{ proxy::MAX_PROXIES }>,
-    channels: &mut [AsyncChannel; proxy::MAX_PROXIES],
+    store: &mut async_batch::Store<N>,
+    channels: &mut [AsyncChannel; N],
+    address: F,
+    tag: u64,
+    wire_tag: u64,
+    offset: u64,
     index: usize,
     cookie: u64,
     peer: TaskId,
@@ -265,12 +277,11 @@ fn async_request<T: SyscallTransport>(
     payload: u64,
     capabilities: [Option<Capability>; 2],
 ) -> bool {
-    let tag = payload & 0xffff_0000_0000_0000;
     let ack = |status: u64, caps: &[Capability]| {
         rt.send(
             peer,
             reply,
-            bulk::ASYNC_ACK | ((index as u64) << 8) | status,
+            (bulk::ASYNC_ACK + offset) | ((index as u64) << 8) | status,
             caps,
         )
         .is_ok()
@@ -287,8 +298,14 @@ fn async_request<T: SyscallTransport>(
         let _ = ack(SERVICE_FILE_EACCES, &[]);
         return false;
     }
+    if matches!(tag, bulk::ASYNC_DOORBELL | bulk::ASYNC_CANCEL)
+        && ((payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize != index
+    {
+        let _ = ack(SERVICE_FILE_EINVAL, &[]);
+        return false;
+    }
     if tag == bulk::ASYNC_OPEN {
-        if payload != bulk::ASYNC_OPEN | index as u64 {
+        if payload != wire_tag | ((index as u64) << bulk::PROXY_SLOT_SHIFT) {
             let _ = ack(SERVICE_FILE_EINVAL, &[]);
             return false;
         }
@@ -298,12 +315,12 @@ fn async_request<T: SyscallTransport>(
             .is_some_and(|session| session.reset_flag())
         {
             let _ = store.remove(index);
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
         }
         // A previous close could only defer the destroy because the client
         // still maps the page; retry before reusing the slot.
         if channel.root.is_some() && !channel.active {
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
         }
         if channel.root.is_some() || channel.active {
             let _ = ack(SERVICE_FILE_EAGAIN, &[]);
@@ -323,35 +340,32 @@ fn async_request<T: SyscallTransport>(
                 root,
                 self_cap,
                 0,
-                AsyncChannel::address(index),
+                address(index),
                 bulk::ASYNC_PAGES as u64,
                 RW,
             )
             .is_err()
         {
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
             let _ = ack(SERVICE_FILE_EAGAIN, &[]);
             return false;
         }
         channel.mapped = true;
         let mut header = [0u8; bulk::ASYNC_HEADER_BYTES];
         bulk::initialize_async(&mut header, generation);
-        if rt
-            .write_user_bytes(AsyncChannel::address(index), &header)
-            .is_err()
-        {
-            channel.retire(rt, self_cap, index);
+        if rt.write_user_bytes(address(index), &header).is_err() {
+            channel.retire(rt, self_cap, address(index));
             let _ = ack(SERVICE_FILE_EFAULT, &[]);
             return false;
         }
         if !store.open(index, generation) {
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
             let _ = ack(SERVICE_FILE_EAGAIN, &[]);
             return false;
         }
         let Ok(view_cap) = rt.cap_derive(root, Rights::from_bits(7)) else {
             let _ = store.remove(index);
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
             let _ = ack(SERVICE_FILE_EAGAIN, &[]);
             return false;
         };
@@ -365,22 +379,23 @@ fn async_request<T: SyscallTransport>(
         if !ack(0, &[view_cap]) {
             let _ = rt.cap_drop(view_cap);
             let _ = store.remove(index);
-            channel.retire(rt, self_cap, index);
+            channel.retire(rt, self_cap, address(index));
         }
         return false;
     }
     if tag == bulk::ASYNC_CLOSE {
-        if payload != bulk::ASYNC_CLOSE | index as u64 {
+        if payload != wire_tag | ((index as u64) << bulk::PROXY_SLOT_SHIFT) {
             let _ = ack(SERVICE_FILE_EINVAL, &[]);
             return false;
         }
         let Some(session) = store.session_mut(index) else {
-            channel.retire(rt, self_cap, index);
-            let _ = ack(SERVICE_FILE_EACCES, &[]);
+            // Already reclaimed by the death reaper: close stays idempotent.
+            channel.retire(rt, self_cap, address(index));
+            let _ = ack(0, &[]);
             return false;
         };
         if !channel.active {
-            let _ = ack(SERVICE_FILE_EACCES, &[]);
+            let _ = ack(0, &[]);
             return false;
         }
         if session.reset_flag() {
@@ -388,7 +403,7 @@ fn async_request<T: SyscallTransport>(
             let _ = ack(SERVICE_FILE_EACCES, &[]);
             return false;
         }
-        let status = match async_load(rt, session, index, None) {
+        let status = match async_load(rt, session, address(index), None) {
             Err(status) => {
                 if session.reset_flag() {
                     channel.generation = session.generation();
@@ -397,7 +412,7 @@ fn async_request<T: SyscallTransport>(
             }
             Ok(()) => match session.close() {
                 Ok(()) => {
-                    channel.retire(rt, self_cap, index);
+                    channel.retire(rt, self_cap, address(index));
                     let _ = store.remove(index);
                     0
                 }
@@ -410,7 +425,7 @@ fn async_request<T: SyscallTransport>(
     }
     let generation = (payload >> bulk::ASYNC_GENERATION_SHIFT) & bulk::ASYNC_GENERATION_MASK;
     let Some(session) = store.session_mut(index) else {
-        channel.retire(rt, self_cap, index);
+        channel.retire(rt, self_cap, address(index));
         let _ = ack(SERVICE_FILE_EACCES, &[]);
         return false;
     };
@@ -423,7 +438,7 @@ fn async_request<T: SyscallTransport>(
         return false;
     }
     if tag == bulk::ASYNC_DOORBELL {
-        match async_load(rt, session, index, Some(payload as u32)) {
+        match async_load(rt, session, address(index), Some(payload as u32)) {
             Ok(()) => true,
             Err(status) => {
                 let _ = ack(status, &[]);
@@ -437,7 +452,7 @@ fn async_request<T: SyscallTransport>(
             }
         }
     } else if tag == bulk::ASYNC_CANCEL {
-        match async_load(rt, session, index, None) {
+        match async_load(rt, session, address(index), None) {
             Err(status) => {
                 let _ = ack(status, &[]);
                 if session.reset_flag() {
@@ -470,11 +485,13 @@ fn async_request<T: SyscallTransport>(
 /// writes the new `head` into its control page. Rounds repeat until no session
 /// advances, so a coalesced doorbell cannot leave published work stranded.
 #[inline(never)]
-fn async_drain<T: SyscallTransport>(
+fn async_drain<const N: usize, T: SyscallTransport, F: Fn(usize) -> u64 + Copy>(
     rt: &Runtime<T>,
     files: &mut OpenFiles<SERVICE_FILE_HANDLES>,
-    store: &mut async_batch::Store<{ proxy::MAX_PROXIES }>,
-    channels: &mut [AsyncChannel; proxy::MAX_PROXIES],
+    store: &mut async_batch::Store<N>,
+    channels: &mut [AsyncChannel; N],
+    address: F,
+    offset: u64,
 ) {
     loop {
         let advanced = store.round(&mut |index, session, claim| {
@@ -483,10 +500,10 @@ fn async_drain<T: SyscallTransport>(
                 Claim::Execute(ordinal) | Claim::Cancelled(ordinal) => ordinal,
                 Claim::Idle => return,
             };
-            let address = AsyncChannel::address(index)
-                + (1 + Session::page(ordinal)) as u64 * bulk::PAGE_BYTES as u64;
+            let page_address =
+                address(index) + (1 + Session::page(ordinal)) as u64 * bulk::PAGE_BYTES as u64;
             let mut page = [0u8; bulk::PAGE_BYTES];
-            if rt.read_user_bytes(address, &mut page).is_err() {
+            if rt.read_user_bytes(page_address, &mut page).is_err() {
                 session.complete();
                 return;
             }
@@ -512,7 +529,7 @@ fn async_drain<T: SyscallTransport>(
             }
             // Consume before output: a lost completion is terminal, never a
             // replay of an executed write.
-            let _ = rt.write_user_bytes(address, &page);
+            let _ = rt.write_user_bytes(page_address, &page);
             session.complete();
         });
         let mut progressed = false;
@@ -520,14 +537,14 @@ fn async_drain<T: SyscallTransport>(
             progressed = true;
             let channel = channels[index];
             let _ = rt.write_user_bytes(
-                AsyncChannel::address(index) + bulk::ASYNC_HEAD_OFFSET as u64,
+                address(index) + bulk::ASYNC_HEAD_OFFSET as u64,
                 &head.to_le_bytes(),
             );
             if let Some(reply) = channel.reply {
                 let _ = rt.send(
                     TaskId::from_raw(channel.peer),
                     reply,
-                    bulk::ASYNC_COMPLETE
+                    (bulk::ASYNC_COMPLETE + offset)
                         | ((index as u64) << bulk::PROXY_SLOT_SHIFT)
                         | u64::from(head as u32),
                     &[],
@@ -873,6 +890,9 @@ pub fn run(
     let mut proxy_channels = [BulkChannel::EMPTY; proxy::MAX_PROXIES];
     let mut async_store = async_batch::Store::<{ proxy::MAX_PROXIES }>::new();
     let mut async_channels = [AsyncChannel::EMPTY; proxy::MAX_PROXIES];
+    // Direct clients each own one v2 session keyed by their Task slot.
+    let mut async_direct_store = async_batch::Store::<{ prima_user::sessions::MAX_CLIENTS }>::new();
+    let mut async_direct_channels = [AsyncChannel::EMPTY; prima_user::sessions::MAX_CLIENTS];
     // Selected proxy slot and its root view for the following path operations.
     // The sender cookie is part of the tuple so another client cannot inherit it.
     let mut proxy_current: Option<(u64, usize, vfs::View)> = None;
@@ -943,6 +963,20 @@ pub fn run(
                     *slot = None;
                 }
             }
+            // Direct v2 sessions are keyed by the client Task slot; a dead
+            // opener is retired here with the same deferred-destroy retry.
+            for (slot, channel) in async_direct_channels.iter_mut().enumerate() {
+                if channel.root.is_some()
+                    && (!channel.active
+                        || runtime
+                            .task_cookie(TaskId::from_raw(channel.cookie as u32))
+                            .ok()
+                            != Some(channel.cookie))
+                {
+                    channel.retire(&runtime, self_cap, AsyncChannel::direct_address(slot));
+                    let _ = async_direct_store.remove(slot);
+                }
+            }
             // Reclaim proxy entries whose application or submitting LibOS died.
             // The owner close is retried while an I/O failure persists.
             // P3 v2 sessions reuse the same proxy index budget. A dead opener
@@ -956,7 +990,7 @@ pub fn run(
                             .ok()
                             != Some(channel.cookie))
                 {
-                    channel.retire(&runtime, self_cap, index);
+                    channel.retire(&runtime, self_cap, AsyncChannel::proxy_address(index));
                     let _ = async_store.remove(index);
                 }
             }
@@ -978,7 +1012,11 @@ pub fn run(
                     self_cap,
                     prima_user::sessions::MAX_CLIENTS + index,
                 );
-                async_channels[index].retire(&runtime, self_cap, index);
+                async_channels[index].retire(
+                    &runtime,
+                    self_cap,
+                    AsyncChannel::proxy_address(index),
+                );
                 let _ = async_store.remove(index);
                 let mut storage = SegmentStorage { runtime: &runtime };
                 if files.close_owner(&mut storage, entry.owner).is_ok() {
@@ -1142,6 +1180,40 @@ pub fn run(
             reply_send = client.reply;
             staging_slot = client.cookie as u32 as usize;
             let _ = files.set_owner(client.owner);
+            if matches!(
+                message.payload & 0xffff_0000_0000_0000,
+                bulk::ASYNC_OPEN | bulk::ASYNC_DOORBELL | bulk::ASYNC_CANCEL | bulk::ASYNC_CLOSE
+            ) {
+                let drain = async_request(
+                    &runtime,
+                    self_cap,
+                    &mut async_direct_store,
+                    &mut async_direct_channels,
+                    AsyncChannel::direct_address,
+                    message.payload & 0xffff_0000_0000_0000,
+                    message.payload & 0xffff_0000_0000_0000,
+                    0,
+                    staging_slot,
+                    client.cookie,
+                    reply_peer,
+                    reply_send,
+                    client.owner,
+                    vfs::View::ROOT,
+                    message.payload,
+                    message.capabilities,
+                );
+                if drain {
+                    async_drain(
+                        &runtime,
+                        &mut files,
+                        &mut async_direct_store,
+                        &mut async_direct_channels,
+                        AsyncChannel::direct_address,
+                        0,
+                    );
+                }
+                continue;
+            }
             if matches!(
                 message.payload & 0xffff_0000_0000_0000,
                 bulk::OPEN | bulk::SUBMIT | bulk::CLOSE
@@ -1376,16 +1448,17 @@ pub fn run(
                 }
                 continue;
             }
+            let proxy_async = message.payload & 0xffff_0000_0000_0000;
             if matches!(
-                message.payload & 0xffff_0000_0000_0000,
-                bulk::ASYNC_OPEN | bulk::ASYNC_DOORBELL | bulk::ASYNC_CANCEL | bulk::ASYNC_CLOSE
+                proxy_async,
+                tag if tag == bulk::ASYNC_OPEN + bulk::ASYNC_PROXY_OFFSET
+                    || tag == bulk::ASYNC_DOORBELL + bulk::ASYNC_PROXY_OFFSET
+                    || tag == bulk::ASYNC_CANCEL + bulk::ASYNC_PROXY_OFFSET
+                    || tag == bulk::ASYNC_CLOSE + bulk::ASYNC_PROXY_OFFSET
             ) {
-                let async_tag = message.payload & 0xffff_0000_0000_0000;
-                let index = if async_tag == bulk::ASYNC_OPEN || async_tag == bulk::ASYNC_CLOSE {
-                    (message.payload & bulk::PROXY_SLOT_MASK) as usize
-                } else {
-                    ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize
-                };
+                let async_tag = proxy_async - bulk::ASYNC_PROXY_OFFSET;
+                let index =
+                    ((message.payload >> bulk::PROXY_SLOT_SHIFT) & bulk::PROXY_SLOT_MASK) as usize;
                 let entry = proxies.entry(index).copied().filter(|entry| {
                     entry.proxy == client.cookie
                         && runtime.task_cookie(TaskId::from_raw(entry.app as u32)).ok()
@@ -1395,10 +1468,25 @@ pub fn run(
                     for cap in message.capabilities.into_iter().flatten() {
                         let _ = runtime.cap_drop(cap);
                     }
+                    // A missing proxy entry is already reclaimed; only CLOSE
+                    // is idempotent, other operations stay EACCES.
+                    let status = if async_tag == bulk::ASYNC_CLOSE {
+                        async_channels[index].retire(
+                            &runtime,
+                            self_cap,
+                            AsyncChannel::proxy_address(index),
+                        );
+                        let _ = async_store.remove(index);
+                        0
+                    } else {
+                        SERVICE_FILE_EACCES
+                    };
                     let _ = runtime.send(
                         reply_peer,
                         reply_send,
-                        bulk::ASYNC_ACK | ((index as u64) << 8) | SERVICE_FILE_EACCES,
+                        (bulk::ASYNC_ACK + bulk::ASYNC_PROXY_OFFSET)
+                            | ((index as u64) << 8)
+                            | status,
                         &[],
                     );
                     continue;
@@ -1423,7 +1511,9 @@ pub fn run(
                                 let _ = runtime.send(
                                     reply_peer,
                                     reply_send,
-                                    bulk::ASYNC_ACK | ((index as u64) << 8) | vfs_status(error),
+                                    (bulk::ASYNC_ACK + bulk::ASYNC_PROXY_OFFSET)
+                                        | ((index as u64) << 8)
+                                        | vfs_status(error),
                                     &[],
                                 );
                                 continue;
@@ -1436,6 +1526,10 @@ pub fn run(
                     self_cap,
                     &mut async_store,
                     &mut async_channels,
+                    AsyncChannel::proxy_address,
+                    async_tag,
+                    proxy_async,
+                    bulk::ASYNC_PROXY_OFFSET,
                     index,
                     client.cookie,
                     reply_peer,
@@ -1446,7 +1540,14 @@ pub fn run(
                     message.capabilities,
                 );
                 if drain {
-                    async_drain(&runtime, &mut files, &mut async_store, &mut async_channels);
+                    async_drain(
+                        &runtime,
+                        &mut files,
+                        &mut async_store,
+                        &mut async_channels,
+                        AsyncChannel::proxy_address,
+                        bulk::ASYNC_PROXY_OFFSET,
+                    );
                 }
                 continue;
             }
@@ -1465,7 +1566,11 @@ pub fn run(
                             self_cap,
                             prima_user::sessions::MAX_CLIENTS + index,
                         );
-                        async_channels[index].retire(&runtime, self_cap, index);
+                        async_channels[index].retire(
+                            &runtime,
+                            self_cap,
+                            AsyncChannel::proxy_address(index),
+                        );
                         let _ = async_store.remove(index);
                         if let Some(entry) = proxies.remove(index) {
                             let mut storage = SegmentStorage { runtime: &runtime };

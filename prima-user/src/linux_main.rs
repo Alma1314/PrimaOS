@@ -303,7 +303,7 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
         let mut remote = if proxy {
             emit(&rt, serial, b"S7LXP|phase=connect\n");
             let send = Capability::from_raw(send_cap_raw).unwrap();
-            let mut remote = Remote::connect(&rt, send, SERVICE_ROOT_LINUX).unwrap();
+            let mut remote = Remote::connect_v2(&rt, send, SERVICE_ROOT_LINUX).unwrap();
             emit(&rt, serial, b"S7LXP|phase=session\n");
             remote.register_owner(root_owner, manager).unwrap();
             emit(&rt, serial, b"S7LXP|phase=proxy\n");

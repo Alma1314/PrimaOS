@@ -284,6 +284,9 @@ impl Family {
             }
             process.fd_flags[fd] = 0;
         }
+        // P3 exec fence: the old image closed every fd, so a v2 session is
+        // re-opened under a new generation; v1 keeps its single session.
+        self.sessions[owner].reopen(store)?;
         for allocation in &mut process.allocations {
             if let Some((cap, _, _)) = allocation.take() {
                 self.shared.release_segment(rt, cap, process.owner)?;

@@ -26,9 +26,15 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
 > 2026-11-18 进度：P3-0 已落盘——契约 P3 节改为 IPC 顺序模型（拒绝裸共享原子），
 > `async_batch` 状态机与有界穷举交错 host 证据通过。P3-1 Store v2 会话已落盘——
 > ASYNC_* tag、控制页编解码、5 页段、公平排空、取消/重置/关闭与死亡回收，host
-> 1181 与既有 72 轮通过；Store 历史栈 4→8 页已登记。P3-2 起未做。见
-> [P3-0 报告](../reports/2026-11-18-p3-async-state-machine.md) 与
-> [P3-1 报告](../reports/2026-11-18-p3-store-v2.md)。
+> 1181 与既有 72 轮通过；Store 历史栈 4→8 页已登记。
+>
+> 2026-11-19：P3-2 的 Rust 侧已落盘——Store 直连 v2、`Remote` v2 管线、exec
+> 重开、独立代理 tag 族与服务栈预算修复；host 1181、lint、72 轮与
+> `test-linux-proxy` 通过。C 数据面 v2 在 W6/W7b 暴露 fork 后父进程 fd
+> EACCES 反例，已回退未交付；C 文件锁拆分未开始，P3-2 不关闭。见
+> [P3-0 报告](../reports/2026-11-18-p3-async-state-machine.md)、
+> [P3-1 报告](../reports/2026-11-18-p3-store-v2.md) 与
+> [P3-2 报告](../reports/2026-11-19-p3-frontend-v2.md)。
 
 ## 依赖总览
 
@@ -106,6 +112,11 @@ P3-0 ─→ P3-1 ─→ P3-2 ─→ P3-3 ─→ P3-4
 - 停止条件：锁拆分改变 v1/既有 syscall 语义时停止并登记；不得只把 `SUBMIT`
   改成不等待而保留锁。
 - 不包含：完整矩阵、SMP。
+- 2026-11-19：Rust 侧（`Remote` v2、exec 重开、Store 直连 v2、代理 tag 族与
+  栈预算）已落盘并通过 72 轮/代理矩阵；`M4-fork` 冒烟由代理矩阵覆盖。C 数据面
+  v2 在 V1 通过、W6/W7b 因 fork 后父进程 `read(/dev/null)` 返回 EACCES 回退；
+  C 锁拆分未开始。P3-2 保持未关闭，见
+  [报告](../reports/2026-11-19-p3-frontend-v2.md)。
 
 ## P3-3 QEMU 正反例矩阵
 
