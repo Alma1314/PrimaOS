@@ -97,7 +97,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（232）
+## report（233）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -333,6 +333,7 @@
 | [P3-0：异步批量契约与状态机](../superpowers/reports/2026-11-18-p3-async-state-machine.md) | current | `docs/superpowers/reports/2026-11-18-p3-async-state-machine.md` |
 | [P3-1：Store v2 会话](../superpowers/reports/2026-11-18-p3-store-v2.md) | current | `docs/superpowers/reports/2026-11-18-p3-store-v2.md` |
 | [P3-2：前端 v2 接线（Rust 侧交付，C 数据面受阻）](../superpowers/reports/2026-11-19-p3-frontend-v2.md) | current | `docs/superpowers/reports/2026-11-19-p3-frontend-v2.md` |
+| [P3-2：C 适配层数据面 v2（fork 反例修复）](../superpowers/reports/2026-11-24-p3-frontend-v2-data-plane.md) | current | `docs/superpowers/reports/2026-11-24-p3-frontend-v2-data-plane.md` |
 
 ## spec（4）
 
@@ -343,7 +344,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（107）
+## specification（108）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -454,6 +455,7 @@
 | [7-0 源码与验收证据包首片](../superpowers/specs/2026-11-08-stage7-evidence-package.md) | current | `docs/superpowers/specs/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS read 基准](../superpowers/specs/2026-11-08-stage7-libos-benchmark.md) | current | `docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md` |
 | [LibOS 数据通路改造与批量文件协议首片](../superpowers/specs/2026-11-10-libos-data-path.md) | current | `docs/superpowers/specs/2026-11-10-libos-data-path.md` |
+| [异构 ISA 混合执行设计：系统层双构建与应用层用户态兼容层](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
 
 ## template（4）
 

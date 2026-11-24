@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-18
+updated: 2026-11-24
 ---
 
 # Reports 索引
@@ -30,6 +30,8 @@ updated: 2026-11-18
 2026-11-18：[P3-1 Store v2 会话](2026-11-18-p3-store-v2.md)；5 页控制/数据段、ASYNC_* tag、公平排空、取消/重置/EBUSY/ESTALE 与死亡回收落盘；host 1181、lint、既有 72 轮与 `test-linux-proxy` 通过；Store 栈 4→8 页修复既有代理路径溢出；无 v2 前端/QEMU，P3 未收口。
 
 2026-11-19：[P3-2 前端 v2 接线](2026-11-19-p3-frontend-v2.md)；Store 直连 v2、`Remote` v2 管线、exec 重开、独立代理 tag 族与服务栈 2→4/Store→16 页落盘，72 轮与代理矩阵通过；C 数据面 v2 在 W6/W7b 暴露 fork 后父进程 fd EACCES 已回退，C 锁拆分未开始，P3-2 未关闭。
+
+2026-11-24：[P3-2 C 数据面 v2 与 fork 反例修复](2026-11-24-p3-frontend-v2-data-plane.md)；C 的 read/write/pread/pwrite 切到直连 5 页 v2 会话，fork/exec 统一关闭修复 W6/W7b，per-op 失败推进序号修复 V4 悬挂；workspace 1181、musl 7、lint、W4–W9、V1–V4 与完整 72 轮通过；C 锁拆分未开始，P3-2 未关闭。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 

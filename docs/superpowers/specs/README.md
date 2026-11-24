@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-17
+updated: 2026-11-24
 ---
 
 # Specs 索引
@@ -15,6 +15,8 @@ updated: 2026-11-17
 
 2026-11-17：LibOS数据通路契约新增P2b-0线协议、op矩阵、错误映射与fixture冻结文本；
 P2b-1 已完成 Store 批量执行与 host 编解码测试，QEMU 证据待 P2b-5。
+
+2026-11-24：[异构 ISA 混合执行设计](2026-11-24-heterogeneous-isa-hybrid-execution-design.md)：系统层双构建 + 每节点部署、不活迁移（作者已确认）；应用层 native + DBT 混合域仍为提案。不改变阶段状态或退出勾选。
 
 2026-10-27 待最终范围评审：[静态persona与版本护栏](2026-10-26-static-program-contract-design.md)、[阶段5具体评审工件](2026-10-26-stage5-release-decisions.md)。D6用户已选择A。
 
@@ -209,6 +211,7 @@ IPC测量后继：[I1授权IPC用户往返](2026-11-07-stage7-ipc-benchmark.md)�
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
+| 2026-11-24 | [2026-11-24-heterogeneous-isa-hybrid-execution-design.md](2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | 异构 ISA 混合执行：系统层双构建与应用层用户态兼容层（提案） |
 | 2026-10-15 | [2026-10-15-exokernel-alignment-design.md](2026-10-15-exokernel-alignment-design.md) | Exokernel 对齐：规划与实现逻辑优化设计（提案） |
 | 2026-10-14 | [2026-10-14-dual-personality-holder-model-design.md](2026-10-14-dual-personality-holder-model-design.md) | 双人格 Holder 模型设计草案：AddressSpace / CapTable / ShareGroup / Thread |
 

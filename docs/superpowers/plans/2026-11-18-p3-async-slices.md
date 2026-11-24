@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: in-progress
 lifecycle: current
-updated: 2026-11-18
+updated: 2026-11-24
 ---
 
 # P3 有界异步批量切片计划
@@ -35,6 +35,12 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
 > [P3-0 报告](../reports/2026-11-18-p3-async-state-machine.md)、
 > [P3-1 报告](../reports/2026-11-18-p3-store-v2.md) 与
 > [P3-2 报告](../reports/2026-11-19-p3-frontend-v2.md)。
+>
+> 2026-11-24：P3-2 的 C 数据面 v2 已落盘——`prima_bulk_close` 同时清理 v1 页与
+> v2 会话（修复 fork 继承控制页映射的 W6/W7b 反例），per-op 失败也推进生产者
+> 序号（修复 V4 悬挂）；workspace 1181、musl 7、lint、test-process W4–W9、
+> test-vfs V1–V4 与完整 72 轮通过。C 进程级文件锁拆分仍未开始，P3-2 不关闭。见
+> [P3-2 数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
 
 ## 依赖总览
 
@@ -117,6 +123,11 @@ P3-0 ─→ P3-1 ─→ P3-2 ─→ P3-3 ─→ P3-4
   v2 在 V1 通过、W6/W7b 因 fork 后父进程 `read(/dev/null)` 返回 EACCES 回退；
   C 锁拆分未开始。P3-2 保持未关闭，见
   [报告](../reports/2026-11-19-p3-frontend-v2.md)。
+- 2026-11-24：C 数据面 v2 落盘：`prima_bulk.h` 的直连 5 页会话、fork/exec/线程
+  退出统一关闭、per-op 失败仍推进生产者序号；W6/W7b 反例根因为 `prima_bulk_close`
+  只看 v1 页导致 v2 会话与映射被子进程继承。V4 同时验证 v1 探针与 v2 数据面并存。
+  锁拆分仍未开始，P3-2 保持未关闭，见
+  [数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
 
 ## P3-3 QEMU 正反例矩阵
 

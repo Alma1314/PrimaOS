@@ -14,6 +14,22 @@ int main(void) {
     assert(wire[0] == 0xa5 && wire[9] == 0x5a);
     assert(PRIMA_BULK_DATA == 32 + 8 * 32);
     assert(PRIMA_BULK_DATA + PRIMA_BULK_CAPACITY == 4096);
+
+    /* P3 v2 control-page validation and slot addressing are pure arithmetic. */
+    unsigned char control[PRIMA_ASYNC_HEADER_BYTES] = {0};
+    control[0] = 'P'; control[1] = 'B'; control[2] = 'Q'; control[3] = '2';
+    control[4] = 2; control[5] = PRIMA_ASYNC_CREDITS;
+    prima_bulk_put(control + PRIMA_ASYNC_GENERATION_OFFSET, 9, 8);
+    uint64_t generation = 0;
+    assert(prima_async_header_ok(control, &generation) && generation == 9);
+    control[4] = 1; assert(!prima_async_header_ok(control, 0)); control[4] = 2;
+    control[6] = 1; assert(!prima_async_header_ok(control, 0)); control[6] = 0;
+    prima_bulk_put(control + PRIMA_ASYNC_TAIL_OFFSET, 1, 8);
+    assert(!prima_async_header_ok(control, 0));
+    struct prima_session session = {0};
+    session.cookie = UINT64_C(17) | (UINT64_C(1) << 32);
+    assert(prima_async_address(&session) ==
+           PRIMA_ASYNC_VA + UINT64_C(17) * PRIMA_ASYNC_PAGES * 4096);
     assert(prima_fd_at(-1, positioned, 1, 0, 0) == -PRIMA_ERRNO_EBADF);
     assert(prima_fd_resize(-1, 0) == -PRIMA_ERRNO_EBADF);
     prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, 3, 0, 0};

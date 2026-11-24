@@ -659,6 +659,9 @@ static long prima_write_bytes(int fd, const void *buf, unsigned long len) {
 struct prima_session {
     uint64_t cookie, store_cookie, store_cap, self_cap;
     uint64_t bulk_cap, bulk_next;
+    /* P3 v2 direct session: mapped control page, generation fence and the
+     * producer's published count. Zeroed on accept/exec/close. */
+    uint64_t async_cap, async_generation, async_tail;
 };
 static struct prima_session prima_sessions[PRIMA_SESSION_SLOTS];
 struct prima_fork_record { long pid; uint32_t key; };
@@ -698,6 +701,8 @@ static long prima_session_accept(void) {
             (void)prima_raw(PRIMA_SYS_CAP_DROP, session->store_cap, 0, 0, 0, 0, 0);
         if (session->cookie != (uint64_t)cookie) {
             session->bulk_cap = 0; session->bulk_next = 0;
+            session->async_cap = 0; session->async_generation = 0;
+            session->async_tail = 0;
         }
         session->cookie = cookie; session->store_cookie = out[3]; session->store_cap = out[0];
         session->self_cap = (uint64_t)prima_raw(PRIMA_SYS_TASK_INFO, 5, 0, 0, 0, 0, 0);
