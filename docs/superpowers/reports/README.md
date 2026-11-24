@@ -33,6 +33,8 @@ updated: 2026-11-24
 
 2026-11-24：[P3-2 C 数据面 v2 与 fork 反例修复](2026-11-24-p3-frontend-v2-data-plane.md)；C 的 read/write/pread/pwrite 切到直连 5 页 v2 会话，fork/exec 统一关闭修复 W6/W7b，per-op 失败推进序号修复 V4 悬挂；workspace 1181、musl 7、lint、W4–W9、V1–V4 与完整 72 轮通过；C 锁拆分未开始，P3-2 未关闭。
 
+2026-11-24：[P3-2 C 适配层数据面锁拆分](2026-11-24-p3-adapter-lock-split.md)；read/write/readv/writev/pread/pwrite 改为短表锁快照加每 wire fd 在途计数与延迟 CLOSE，不再跨同步 IPC 持进程锁；控制面 open/close/路径仍持表锁，工作项 3 未完整，P3-2 未关闭；musl 7、V1–V4、W4–W9 与完整 72 轮通过。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。

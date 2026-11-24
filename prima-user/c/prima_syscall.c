@@ -86,6 +86,12 @@ static int prima_net_active(void);
 static long prima_tty_send(uint64_t payload);
 static long prima_net_status(uint64_t reply);
 static int prima_fd_lock;
+/* Short fd-table critical sections; the data path never holds this across IPC. */
+static void prima_fd_lock_take(void) {
+    while (__sync_lock_test_and_set(&prima_fd_lock, 1))
+        (void)prima_raw(PRIMA_SYS_YIELD, 0, 0, 0, 0, 0, 0);
+}
+static void prima_fd_lock_give(void) { __sync_lock_release(&prima_fd_lock); }
 
 
 __attribute__((noreturn)) static void prima_signal_trampoline(long slot, uint64_t token,
@@ -813,6 +819,11 @@ static struct prima_fd_entry prima_fds[PRIMA_LOCAL_FD_COUNT] = {
 static unsigned char prima_file_refs[PRIMA_FILE_HANDLES];
 /* Open status is shared by fd aliases, unlike the descriptor CLOEXEC bit. */
 static unsigned int prima_file_flags[PRIMA_FILE_HANDLES];
+/* A data-path batch may outlive its descriptor: `close` removes the local fd
+ * immediately but the wire CLOSE waits for the last in-flight batch, so a
+ * reused fd can never see an old batch. */
+static unsigned char prima_file_inflight[PRIMA_FILE_HANDLES];
+static unsigned char prima_file_retire[PRIMA_FILE_HANDLES];
 // M19：socket 服务端句柄的本地引用计数（dup 共享）。
 static unsigned char prima_net_refs[PRIMA_NET_SOCKETS];
 
@@ -916,12 +927,19 @@ static long prima_fd_drop(int fd) {
         }
     } else if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR) {
         unsigned char handle = entry->object;
-        if (--prima_file_refs[handle - PRIMA_FILE_FIRST_FD] == 0) {
-            long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
-            if (reply < 0)
-                status = reply;
-            else if (prima_reply_status((uint64_t)reply) != 0)
-                status = -prima_reply_status((uint64_t)reply);
+        unsigned char index = handle - PRIMA_FILE_FIRST_FD;
+        if (--prima_file_refs[index] == 0) {
+            if (prima_file_inflight[index]) {
+                /* A read/write on this handle is still in flight; its last
+                 * unref sends the wire CLOSE after the batch completes. */
+                prima_file_retire[index] = 1;
+            } else {
+                long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
+                if (reply < 0)
+                    status = reply;
+                else if (prima_reply_status((uint64_t)reply) != 0)
+                    status = -prima_reply_status((uint64_t)reply);
+            }
             prima_dir_reset(handle);
         }
     }
@@ -952,6 +970,38 @@ static long prima_vfs_call(uint64_t payload) {
 
 static long prima_reply_status(uint64_t reply) {
     return (long)((reply >> PRIMA_FILE_STATUS_SHIFT) & 0xff);
+}
+
+/* Snapshot one descriptor under the table lock. Regular files retain the wire
+ * handle until the matching unref. Returns 0 when the fd is empty. */
+static int prima_fd_snapshot(int fd, unsigned char *kind, unsigned char *object) {
+    prima_fd_lock_take();
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    if (entry) {
+        *kind = entry->kind;
+        *object = entry->object;
+        if (*kind == PRIMA_FD_FILE)
+            prima_file_inflight[*object - PRIMA_FILE_FIRST_FD]++;
+    }
+    prima_fd_lock_give();
+    return entry != 0;
+}
+
+/* Drop a snapshot reference; the last one may owe the server a deferred CLOSE.
+ * The IPC runs outside the lock because it is per-Task, not table state. */
+static void prima_file_unref(unsigned char handle) {
+    if (handle < PRIMA_FILE_FIRST_FD || handle > PRIMA_FILE_LAST_FD) return;
+    unsigned char index = handle - PRIMA_FILE_FIRST_FD;
+    int deferred = 0;
+    prima_fd_lock_take();
+    if (prima_file_inflight[index]) prima_file_inflight[index]--;
+    if (!prima_file_inflight[index] && prima_file_retire[index] &&
+        !prima_file_refs[index]) {
+        prima_file_retire[index] = 0;
+        deferred = 1;
+    }
+    prima_fd_lock_give();
+    if (deferred) (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
 }
 
 /* ---------- M9：工作目录、路径合成与 statx ----------
@@ -2411,42 +2461,46 @@ static long prima_getdents64(int fd, void *dirp, unsigned long count) {
 /* ---------- M8：按 fd 类型分派 ---------- */
 
 static long prima_fd_read(int fd, void *buf, unsigned long len) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
+    unsigned char kind, object;
+    if (!prima_fd_snapshot(fd, &kind, &object))
         return -PRIMA_ERRNO_EBADF;
-    if (entry->kind == PRIMA_FD_SOCKET)
+    if (kind == PRIMA_FD_SOCKET)
         return -PRIMA_ERRNO_NOTSOCK;
-    if (entry->kind == PRIMA_FD_NULL) {
+    if (kind == PRIMA_FD_NULL) {
         if (!buf && len != 0)
             return -PRIMA_ERRNO_EFAULT;
         return 0;
     }
-    if (entry->kind == PRIMA_FD_TTY) {
-        if (entry->object != 0)
+    if (kind == PRIMA_FD_TTY) {
+        if (object != 0)
             return -PRIMA_ERRNO_EBADF;
         return prima_tty_read(buf, len);
     }
-    if (entry->kind != PRIMA_FD_FILE)
+    if (kind != PRIMA_FD_FILE)
         return -PRIMA_ERRNO_EBADF;
-    return prima_handle_read(entry->object, buf, len);
+    long result = prima_handle_read(object, buf, len);
+    prima_file_unref(object);
+    return result;
 }
 
 static long prima_fd_write(int fd, const void *buf, unsigned long len) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
+    unsigned char kind, object;
+    if (!prima_fd_snapshot(fd, &kind, &object))
         return -PRIMA_ERRNO_EBADF;
-    if (entry->kind == PRIMA_FD_NULL) {
+    if (kind == PRIMA_FD_NULL) {
         if (!buf && len != 0)
             return -PRIMA_ERRNO_EFAULT;
         return (long)len;
     }
-    if (entry->kind == PRIMA_FD_SOCKET)
+    if (kind == PRIMA_FD_SOCKET)
         return -PRIMA_ERRNO_NOTSOCK;
-    if (entry->kind == PRIMA_FD_TTY)
-        return prima_write_bytes(entry->object == 0 ? 1 : entry->object, buf, len);
-    if (entry->kind == PRIMA_FD_FILE)
-        return prima_handle_write(entry->object, buf, len);
-    return -PRIMA_ERRNO_EBADF;
+    if (kind == PRIMA_FD_TTY)
+        return prima_write_bytes(object == 0 ? 1 : object, buf, len);
+    if (kind != PRIMA_FD_FILE)
+        return -PRIMA_ERRNO_EBADF;
+    long result = prima_handle_write(object, buf, len);
+    prima_file_unref(object);
+    return result;
 }
 
 static long prima_fd_lseek(int fd, long offset, int whence) {
@@ -2468,16 +2522,18 @@ static long prima_fd_lseek(int fd, long offset, int whence) {
  * WRITE_AT ignores O_APPEND (Linux's pwrite-on-append behavior differs).
  * Do not emulate this with seek/read/restore: fork holders share the cursor. */
 static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int writing) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry) return -PRIMA_ERRNO_EBADF;
+    unsigned char kind, object;
+    if (!prima_fd_snapshot(fd, &kind, &object)) return -PRIMA_ERRNO_EBADF;
     if (offset < 0 || len > (~0UL >> 1)) return -PRIMA_ERRNO_EINVAL;
-    if (entry->kind == PRIMA_FD_DIR)
+    if (kind == PRIMA_FD_DIR)
         return writing ? -PRIMA_ERRNO_EBADF : -PRIMA_ERRNO_EISDIR;
-    if (entry->kind != PRIMA_FD_FILE && entry->kind != PRIMA_FD_NULL)
+    if (kind != PRIMA_FD_FILE && kind != PRIMA_FD_NULL)
         return -PRIMA_ERRNO_ESPIPE;
     if (!buf && len) return -PRIMA_ERRNO_EFAULT;
-    if (entry->kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
-    return prima_bulk_transfer(entry->object, buf, len, (uint64_t)offset, writing, 1);
+    if (kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
+    long result = prima_bulk_transfer(object, buf, len, (uint64_t)offset, writing, 1);
+    prima_file_unref(object);
+    return result;
 }
 
 static long prima_fd_resize(int fd, long size) {
@@ -2740,10 +2796,15 @@ static long prima_sleep_ns(long clock_id, long flags, const void *req,
 /* M12b：退出前释放本地 fd 与服务端句柄。fd 1/2 只清表项；文件/目录的最后一个引用
  * 发同步 CLOSE，保证存储服务的 8 个句柄不随进程退出泄漏。 */
 static void prima_close_all_fds(void) {
+    /* Threads may still hold data-path references; the table lock makes exit
+     * and the per-handle refs agree. The server owner close releases whatever
+     * a deferred wire CLOSE still owes. */
+    prima_fd_lock_take();
     for (int fd = PRIMA_LOCAL_FD_FIRST; fd <= PRIMA_LOCAL_FD_LAST; fd++) {
         if (prima_fd_entry(fd))
             (void)prima_fd_drop(fd);
     }
+    prima_fd_lock_give();
 }
 
 /* Explicit opaque handoff for the Prima crt. The kernel sees retained page
@@ -3494,7 +3555,7 @@ long prima_native(long number, long a0, long a1, long a2, long a3, long a4, long
 /* Fast descriptor transactions finish before delivering a callback. Blocking
  * waits stay interruptible and own explicit cancellation/restart protocols. */
 static long prima_translate(long number, long a0, long a1, long a2, long a3, long a4, long a5) {
-    int fast = 0;
+    int fast = 0, split = 0;
     switch (number) {
     case PRIMA_LINUX_SYS_open: case PRIMA_LINUX_SYS_openat:
     case PRIMA_LINUX_SYS_close: case PRIMA_LINUX_SYS_dup: case PRIMA_LINUX_SYS_dup2:
@@ -3509,28 +3570,34 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3, lon
     case PRIMA_LINUX_SYS_symlink: case PRIMA_LINUX_SYS_symlinkat:
     case PRIMA_LINUX_SYS_readlink: case PRIMA_LINUX_SYS_readlinkat:
     case PRIMA_LINUX_SYS_getdents64: case PRIMA_LINUX_SYS_lseek:
-    case PRIMA_LINUX_SYS_ftruncate: case PRIMA_LINUX_SYS_pread64:
-    case PRIMA_LINUX_SYS_pwrite64:
+    case PRIMA_LINUX_SYS_ftruncate:
     case PRIMA_LINUX_SYS_ioctl: case PRIMA_LINUX_SYS_fork:
     case PRIMA_LINUX_SYS_socket: case PRIMA_LINUX_SYS_bind:
     case PRIMA_LINUX_SYS_getsockname: case PRIMA_LINUX_SYS_sendto:
         fast = 1; break;
     case PRIMA_LINUX_SYS_read: case PRIMA_LINUX_SYS_readv:
     case PRIMA_LINUX_SYS_write: case PRIMA_LINUX_SYS_writev: {
+        prima_fd_lock_take();
         struct prima_fd_entry *entry = prima_fd_entry((int)a0);
-        fast = entry && entry->kind != PRIMA_FD_TTY && entry->kind != PRIMA_FD_SOCKET;
+        unsigned char kind = entry ? entry->kind : PRIMA_FD_FREE;
+        prima_fd_lock_give();
+        split = kind != PRIMA_FD_TTY && kind != PRIMA_FD_SOCKET;
         break;
     }
+    case PRIMA_LINUX_SYS_pread64: case PRIMA_LINUX_SYS_pwrite64:
+        split = 1; break;
     default: break;
     }
-    if (!fast) return prima_translate_body(number, a0, a1, a2, a3, a4, a5);
+    if (!fast && !split) return prima_translate_body(number, a0, a1, a2, a3, a4, a5);
     uint64_t mask, full = ~PRIMA_UNMASKABLE;
     long result = prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &full, &mask, 8);
     if (result < 0) return result;
-    // ponytail: bounded single-CPU Process lock; split only when concurrent VFS throughput matters.
-    while (__sync_lock_test_and_set(&prima_fd_lock, 1)) (void)prima_raw(PRIMA_SYS_YIELD, 0, 0, 0, 0, 0, 0);
+    // ponytail: control-plane ops keep the process-wide table lock; the data
+    // path takes only short snapshots plus per-handle in-flight refs. Split
+    // cwd/path/dir-cache state if concurrent path throughput matters.
+    if (fast) prima_fd_lock_take();
     result = prima_translate_body(number, a0, a1, a2, a3, a4, a5);
-    __sync_lock_release(&prima_fd_lock);
+    if (fast) prima_fd_lock_give();
     (void)prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &mask, 0, 8);
     return result;
 }

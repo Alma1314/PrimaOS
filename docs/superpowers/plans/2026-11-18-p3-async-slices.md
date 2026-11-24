@@ -39,8 +39,12 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
 > 2026-11-24：P3-2 的 C 数据面 v2 已落盘——`prima_bulk_close` 同时清理 v1 页与
 > v2 会话（修复 fork 继承控制页映射的 W6/W7b 反例），per-op 失败也推进生产者
 > 序号（修复 V4 悬挂）；workspace 1181、musl 7、lint、test-process W4–W9、
-> test-vfs V1–V4 与完整 72 轮通过。C 进程级文件锁拆分仍未开始，P3-2 不关闭。见
+> test-vfs V1–V4 与完整 72 轮通过。见
 > [P3-2 数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
+> 同日数据面锁拆分落盘：read/write/readv/writev/pread/pwrite 以短表锁快照加
+> 每 wire fd 在途计数、延迟 CLOSE，不再跨 IPC 持锁；控制面 open/close/路径仍
+> 持表锁，工作项 3 未完整，P3-2 不关闭。见
+> [锁拆分报告](../reports/2026-11-24-p3-adapter-lock-split.md)。
 
 ## 依赖总览
 
@@ -126,8 +130,11 @@ P3-0 ─→ P3-1 ─→ P3-2 ─→ P3-3 ─→ P3-4
 - 2026-11-24：C 数据面 v2 落盘：`prima_bulk.h` 的直连 5 页会话、fork/exec/线程
   退出统一关闭、per-op 失败仍推进生产者序号；W6/W7b 反例根因为 `prima_bulk_close`
   只看 v1 页导致 v2 会话与映射被子进程继承。V4 同时验证 v1 探针与 v2 数据面并存。
-  锁拆分仍未开始，P3-2 保持未关闭，见
-  [数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
+  见[数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
+- 2026-11-24：数据面锁拆分第一段：`prima_fd_snapshot`/`prima_file_unref` 与
+  `prima_file_inflight`/`prima_file_retire` 落地，数据路径不再持有进程级锁跨
+  同步 IPC；控制面（open/close/dup/路径）仍持表锁，工作项 3 未完整，P3-2 保持
+  未关闭，见[锁拆分报告](../reports/2026-11-24-p3-adapter-lock-split.md)。
 
 ## P3-3 QEMU 正反例矩阵
 

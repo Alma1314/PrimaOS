@@ -1,0 +1,86 @@
+---
+id: report-p3-adapter-lock-split
+kind: report
+authority: scoped-implementation-and-validation
+status: validated-with-limits
+lifecycle: current
+updated: 2026-11-24
+---
+
+# P3-2：C 适配层数据面锁拆分与在途引用
+
+## 结论与范围
+
+本报告记录 P3-2 工作项 3 的第一段：C/musl 适配层的数据路径
+（`read`/`write`/`readv`/`writev`/`pread64`/`pwrite64`）不再持有进程级 fd 锁跨越
+同步 IPC；改为短临界区快照 fd 表、按 wire fd 的在途计数，以及最后一次引用再发送
+延迟 `CLOSE`。控制面（`open`/`close`/`dup`/`stat`/路径与目录操作）仍由同一把
+表锁保护，`close` 在无在途引用时仍内联发送 wire `CLOSE` 并保留错误返回；**这把
+控制面锁的完全移除尚未完成，P3-2 不关闭**。v1/v2 数据面、append、共享游标与
+errno 语义保持不变。
+
+## 基线与输入
+
+- 基线：`50500b9`（[P3-2 C 数据面 v2](2026-11-24-p3-frontend-v2-data-plane.md)）。
+- 计划：[P3 有界异步批量切片计划](../plans/2026-11-18-p3-async-slices.md) 的 P3-2
+  工作项 3。
+- 契约：[LibOS 数据通路契约](../specs/2026-11-10-libos-data-path.md) P3 节的
+  "在途 fd 与 close 完成点"。
+
+## 动机
+
+旧实现把整个"fast"系统调用体放在进程级 spinlock 内，包括阻塞的文件 IPC；一个
+进程内的所有 fd 操作因此完全串行，锁还被 fork 后的子进程继承。会话本身按 Task
+独立（`prima_session_current()`），数据面并不需要进程级串行——需要保护的是进程
+共享的本地 fd 表与 wire 句柄表。
+
+## 实现
+
+- `prima_fd_lock_take`/`prima_fd_lock_give`：现有 spinlock 的短临界区入口。
+- `prima_fd_snapshot`：在表锁内复制 `kind`/`object`；普通文件同时递增
+  `prima_file_inflight[object]`，返回后即可在锁外做 IPC。
+- `prima_file_unref`：表锁内递减在途计数；若计数归零且该句柄已标记
+  `prima_file_retire`，在锁外发送 `PRIMA_FILE_OP_CLOSE`。
+- `prima_fd_drop`：本地 fd 立即释放；最后一个本地引用为 0 时，若有在途批则只置
+  `retire`（延迟 `CLOSE`），否则维持原有的内联发送并返回服务端状态。
+- `prima_close_all_fds`（exit/exec）：在表锁内遍历；进程结束时由 owner close
+  兜底释放仍未发送的 wire `CLOSE`。
+- `prima_translate`：`read`/`readv`/`write`/`writev` 与 `pread64`/`pwrite64`
+  走无外层锁的 split 路径；其余控制面操作仍取表锁。信号屏蔽保持不变。
+- `readv`/`writev` 仍按向量逐次快照：跨向量的并发 `close` 语义未定义（与 POSIX
+  不承诺多线程 `readv` 原子性一致）。
+- host 可执行检查：`test_adapter.c` 断言快照确实持引、`close` 在在途时只置
+  `retire` 且不执行 IPC。
+
+## 命令与结果
+
+| 命令/输入 | 本次实跑或引用 | 退出结果与观察 | 证据范围 |
+|---|---|---|---|
+| `cargo test --workspace` | 本次 | PASS；1181 passed、0 failed、1 ignored（Rust 未改动） | host |
+| `python3 prima-user/musl/test_port.py` | 本次 | PASS；7 tests（含锁拆分断言） | host（C 适配层） |
+| `cargo xtask lint` | 本次 | PASS；fmt、clippy、裸机构建、44 文件零 unsafe | host/静态 |
+| `cargo xtask test-vfs` | 本次 | PASS；V1/V2/V3/V4 各 2 轮 | QEMU（v1+v2 并存） |
+| `cargo xtask test-process` | 本次 | PASS；W4/W5/W6/W7/W7b/W8/W9 各 2 轮 | QEMU（fork/线程/信号） |
+| `cargo xtask test` | 本次 | PASS；`full BIOS suite: 36 programs, 72 runs`、`stage1 boot slice` | QEMU（完整套件） |
+
+## 失败与限制
+
+- **控制面锁未完全移除**：`open`/`close`/`dup`/`stat`/路径与目录操作仍在表锁内
+  跨 IPC；工作项 3 的完整验收还缺这一段。
+- 并发 `close` 与在途 I/O 交错时，`close` 立即返回 0；服务端 `CLOSE` 的状态由
+  最后一次 unref 忽略。该交错的错误可见性弱于单线程路径，属本次拆分的已知代价。
+- `readv`/`writev` 跨向量的 fd 复用不保证原子。
+- 无 SMP、恢复/去重、性能门槛；未改变 v1 客户端、`PRIMA_BULK_PROBE` 或既有
+  72 轮事件。
+
+## 阶段/profile 影响
+
+不关闭 P3-2 或 P3，不改变 P2 状态、阶段 7 九轨勾选或 7-A；不改变 profile。
+
+## 后继关系
+
+- 下一段：移除控制面的跨 IPC 表锁（`open`/`close` 的 wire 发送移到锁外，路径与
+  cwd 状态另设短锁），保持 errno 与目录语义。
+- 计划：[P3 有界异步批量切片计划](../plans/2026-11-18-p3-async-slices.md)。
+- 契约：[LibOS 数据通路契约](../specs/2026-11-10-libos-data-path.md) P3 节。
+- 前序：[P3-2 C 数据面 v2](2026-11-24-p3-frontend-v2-data-plane.md)。

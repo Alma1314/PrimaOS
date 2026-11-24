@@ -103,5 +103,22 @@ int main(void) {
     iov[0].iov_len = (~0UL) >> 1;
     iov[1].iov_len = 1;
     assert(prima_fd_iov(3, iov, 2, 1) == -PRIMA_ERRNO_EINVAL);
+
+    /* P3: closing a descriptor with an in-flight batch defers the wire CLOSE
+     * to the last unref (no IPC here; only the accounting is exercised). */
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, PRIMA_FILE_FIRST_FD, 0, 0};
+    prima_file_refs[0] = 1;
+    prima_file_inflight[0] = 0;
+    prima_file_retire[0] = 0;
+    unsigned char kind = 0, object = 0;
+    assert(prima_fd_snapshot(3, &kind, &object));
+    assert(kind == PRIMA_FD_FILE && object == PRIMA_FILE_FIRST_FD);
+    assert(prima_file_inflight[0] == 1);
+    prima_fd_lock_take();
+    assert(prima_fd_drop(3) == 0);
+    prima_fd_lock_give();
+    assert(prima_file_refs[0] == 0 && prima_file_retire[0] == 1);
+    prima_file_inflight[0] = 0; /* the deferred send needs IPC; not on host */
+    prima_file_retire[0] = 0;
     return 0;
 }
