@@ -4,7 +4,7 @@ kind: report
 authority: scoped-implementation-and-validation
 status: validated-with-limits
 lifecycle: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # P3-2：C 适配层数据面锁拆分与在途引用
@@ -52,6 +52,24 @@ errno 语义保持不变。
 - host 可执行检查：`test_adapter.c` 断言快照确实持引、`close` 在在途时只置
   `retire` 且不执行 IPC。
 
+## 复核整改（2026-11-25）
+
+对两个 C 提交做了一次独立只读复核，按发现整改：
+
+- **多线程 fork 继承控制页映射**：fork 前关闭调用者会话后，若同进程其它 Task
+  仍持有 v1/v2 会话，返回 `EAGAIN`（与 tty/net 活动时的 fork 限制一致），避免
+  子进程继承他人控制页映射、使父线程的段无法销毁。
+- **doorbell 后接收失败**：会话被标记为 desync，之后的数据面调用返回 `EIO`
+  直到关闭；不把丢失的完成当成新批。
+- **重置/`ESTALE` 恢复**：doorbell 的 `EACCES`/`ESTALE` 回复会解除本地映射并
+  丢弃能力；下一次调用重新 `OPEN`（Store 的 OPEN 会回收重置会话）。重置会话的
+  `CLOSE` 回复按幂等成功处理，fork/exec 不再被卡死。
+- **`pread`/`pwrite` 校验泄漏**：快照后的偏移/长度/缓冲校验失败路径补上在途
+  引用释放，避免延迟 `CLOSE` 永不发送。
+- **`OPEN` 本地校验失败**：解除映射后补发尽力而为的 `ASYNC_CLOSE`，不留活动
+  会话导致后续 `OPEN` 永久 `EAGAIN`。
+- host 断言新增：非法 `pread` 不遗留在途引用；延迟关闭只在最后一个引用触发。
+
 ## 命令与结果
 
 | 命令/输入 | 本次实跑或引用 | 退出结果与观察 | 证据范围 |
@@ -67,6 +85,10 @@ errno 语义保持不变。
 
 - **控制面锁未完全移除**：`open`/`close`/`dup`/`stat`/路径与目录操作仍在表锁内
   跨 IPC；工作项 3 的完整验收还缺这一段。
+- **多线程 fork 限制**：任一其它线程持有 v1/v2 会话时 fork 返回 `EAGAIN`；这是
+  为不继承他人控制页映射而加的 profile 限制。
+- **丢失完成不可恢复**：doorbell 之后接收失败会把会话毒化为 `EIO`，只能关闭；
+  未实现自动重放或去重（属 P6 范围）。
 - 并发 `close` 与在途 I/O 交错时，`close` 立即返回 0；服务端 `CLOSE` 的状态由
   最后一次 unref 忽略。该交错的错误可见性弱于单线程路径，属本次拆分的已知代价。
 - `readv`/`writev` 跨向量的 fd 复用不保证原子。

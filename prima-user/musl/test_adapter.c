@@ -35,6 +35,7 @@ int main(void) {
     prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, 3, 0, 0};
     assert(prima_fd_resize(3, -1) == -PRIMA_ERRNO_EINVAL);
     assert(prima_fd_at(3, positioned, 1, -1, 0) == -PRIMA_ERRNO_EINVAL);
+    assert(prima_file_inflight[0] == 0); /* validation error releases the ref */
     assert(prima_fd_at(3, positioned, ~0UL, 0, 1) == -PRIMA_ERRNO_EINVAL);
     assert(prima_fd_at(3, 0, 1, 0, 0) == -PRIMA_ERRNO_EFAULT);
     prima_fds[3].kind = PRIMA_FD_DIR;

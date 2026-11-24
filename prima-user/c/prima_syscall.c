@@ -667,7 +667,7 @@ struct prima_session {
     uint64_t bulk_cap, bulk_next;
     /* P3 v2 direct session: mapped control page, generation fence and the
      * producer's published count. Zeroed on accept/exec/close. */
-    uint64_t async_cap, async_generation, async_tail;
+    uint64_t async_cap, async_generation, async_tail, async_desync;
 };
 static struct prima_session prima_sessions[PRIMA_SESSION_SLOTS];
 struct prima_fork_record { long pid; uint32_t key; };
@@ -708,7 +708,7 @@ static long prima_session_accept(void) {
         if (session->cookie != (uint64_t)cookie) {
             session->bulk_cap = 0; session->bulk_next = 0;
             session->async_cap = 0; session->async_generation = 0;
-            session->async_tail = 0;
+            session->async_tail = 0; session->async_desync = 0;
         }
         session->cookie = cookie; session->store_cookie = out[3]; session->store_cap = out[0];
         session->self_cap = (uint64_t)prima_raw(PRIMA_SYS_TASK_INFO, 5, 0, 0, 0, 0, 0);
@@ -2524,12 +2524,17 @@ static long prima_fd_lseek(int fd, long offset, int whence) {
 static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int writing) {
     unsigned char kind, object;
     if (!prima_fd_snapshot(fd, &kind, &object)) return -PRIMA_ERRNO_EBADF;
-    if (offset < 0 || len > (~0UL >> 1)) return -PRIMA_ERRNO_EINVAL;
-    if (kind == PRIMA_FD_DIR)
-        return writing ? -PRIMA_ERRNO_EBADF : -PRIMA_ERRNO_EISDIR;
-    if (kind != PRIMA_FD_FILE && kind != PRIMA_FD_NULL)
-        return -PRIMA_ERRNO_ESPIPE;
-    if (!buf && len) return -PRIMA_ERRNO_EFAULT;
+    long invalid = 0;
+    if (offset < 0 || len > (~0UL >> 1)) invalid = -PRIMA_ERRNO_EINVAL;
+    else if (kind == PRIMA_FD_DIR)
+        invalid = writing ? -PRIMA_ERRNO_EBADF : -PRIMA_ERRNO_EISDIR;
+    else if (kind != PRIMA_FD_FILE && kind != PRIMA_FD_NULL)
+        invalid = -PRIMA_ERRNO_ESPIPE;
+    else if (!buf && len) invalid = -PRIMA_ERRNO_EFAULT;
+    if (invalid) {
+        if (kind == PRIMA_FD_FILE) prima_file_unref(object);
+        return invalid;
+    }
     if (kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
     long result = prima_bulk_transfer(object, buf, len, (uint64_t)offset, writing, 1);
     prima_file_unref(object);
@@ -3298,6 +3303,8 @@ static long prima_translate_body(long number, long a0, long a1, long a2, long a3
         if (prima_tty_active() || prima_net_active()) return -PRIMA_ERRNO_EAGAIN;
         long bulk_closed = prima_bulk_close();
         if (bulk_closed < 0) return bulk_closed;
+        /* A forked child cannot inherit another thread's v2 mapping. */
+        if (prima_bulk_foreign_session()) return -PRIMA_ERRNO_EAGAIN;
         long reserved = prima_session_control(PRIMA_SESSION_RESERVE);
         if (reserved < 0) return reserved;
         uint32_t key = (uint32_t)reserved;

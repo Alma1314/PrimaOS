@@ -43,7 +43,8 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
 > [P3-2 数据面报告](../reports/2026-11-24-p3-frontend-v2-data-plane.md)。
 > 同日数据面锁拆分落盘：read/write/readv/writev/pread/pwrite 以短表锁快照加
 > 每 wire fd 在途计数、延迟 CLOSE，不再跨 IPC 持锁；控制面 open/close/路径仍
-> 持表锁，工作项 3 未完整，P3-2 不关闭。见
+> 持表锁，工作项 3 未完整，P3-2 不关闭。独立只读复核后补了多线程 fork 限制、
+> 丢失完成的 desync 毒化、重置/ESTALE 重开与校验泄漏修复。见
 > [锁拆分报告](../reports/2026-11-24-p3-adapter-lock-split.md)。
 
 ## 依赖总览

@@ -2115,7 +2115,7 @@
       "authority": "current-status",
       "status": "maintained",
       "date": "2026-11-24",
-      "sha256": "d6cf5825e44dbd0475f69ab38efc69524caf80a15289b04fe2290eae0143735d",
+      "sha256": "b3499543bbb1733e45066f8edbb9fe353651c2349c056f4fb5d1841a1e736a72",
       "topic_ids": [
         "compatibility"
       ],
@@ -13165,72 +13165,72 @@
       "authority": "execution-plan",
       "status": "in-progress",
       "date": "2026-11-24",
-      "sha256": "a9c965225ae63fbd869cfded2ef3c19e99225c83dfa1fd6f8722ecff636f2ff9",
+      "sha256": "0d0aa5959a246f2a51c65781567f11ad137521c7452a919ae176c31632b6f4c5",
       "topic_ids": [],
-      "lines": 167,
+      "lines": 168,
       "sections": [
         {
           "level": 1,
           "title": "P3 有界异步批量切片计划",
           "line": 10,
           "anchor": "p3-有界异步批量切片计划",
-          "end_line": 167
+          "end_line": 168
         },
         {
           "level": 2,
           "title": "目标与基线",
           "line": 12,
           "anchor": "目标与基线",
-          "end_line": 48
+          "end_line": 49
         },
         {
           "level": 2,
           "title": "依赖总览",
-          "line": 49,
+          "line": 50,
           "anchor": "依赖总览",
-          "end_line": 62
+          "end_line": 63
         },
         {
           "level": 2,
           "title": "P3-0 契约与环状态机",
-          "line": 63,
+          "line": 64,
           "anchor": "p3-0-契约与环状态机",
-          "end_line": 85
+          "end_line": 86
         },
         {
           "level": 2,
           "title": "P3-1 Store v2 会话",
-          "line": 86,
+          "line": 87,
           "anchor": "p3-1-store-v2-会话",
-          "end_line": 107
+          "end_line": 108
         },
         {
           "level": 2,
           "title": "P3-2 前端 v2 接线",
-          "line": 108,
+          "line": 109,
           "anchor": "p3-2-前端-v2-接线",
-          "end_line": 138
+          "end_line": 139
         },
         {
           "level": 2,
           "title": "P3-3 QEMU 正反例矩阵",
-          "line": 139,
+          "line": 140,
           "anchor": "p3-3-qemu-正反例矩阵",
-          "end_line": 152
+          "end_line": 153
         },
         {
           "level": 2,
           "title": "P3-4 P3 收口",
-          "line": 153,
+          "line": 154,
           "anchor": "p3-4-p3-收口",
-          "end_line": 160
+          "end_line": 161
         },
         {
           "level": 2,
           "title": "排序与停止规则",
-          "line": 161,
+          "line": 162,
           "anchor": "排序与停止规则",
-          "end_line": 167
+          "end_line": 168
         }
       ],
       "mentioned_ids": [],
@@ -13260,27 +13260,27 @@
           "target": "../reports/2026-11-24-p3-frontend-v2-data-plane.md"
         },
         {
-          "line": 47,
+          "line": 48,
           "target": "../reports/2026-11-24-p3-adapter-lock-split.md"
         },
         {
-          "line": 84,
+          "line": 85,
           "target": "../reports/2026-11-18-p3-async-state-machine.md"
         },
         {
-          "line": 106,
+          "line": 107,
           "target": "../reports/2026-11-18-p3-store-v2.md"
         },
         {
-          "line": 129,
+          "line": 130,
           "target": "../reports/2026-11-19-p3-frontend-v2.md"
         },
         {
-          "line": 133,
+          "line": 134,
           "target": "../reports/2026-11-24-p3-frontend-v2-data-plane.md"
         },
         {
-          "line": 137,
+          "line": 138,
           "target": "../reports/2026-11-24-p3-adapter-lock-split.md"
         }
       ]
@@ -35642,17 +35642,17 @@
       "replacements": [],
       "authority": "scoped-implementation-and-validation",
       "status": "validated-with-limits",
-      "date": "2026-11-24",
-      "sha256": "32d14499a35a8e0b1b3f7c33a871a87bf7d7740f05e5229a5d44c194e8e043e5",
+      "date": "2026-11-25",
+      "sha256": "9bd27c4b5980a92332c38b4772427bfdc5dd05234e56aa2c29d57ccf2df50849",
       "topic_ids": [],
-      "lines": 86,
+      "lines": 108,
       "sections": [
         {
           "level": 1,
           "title": "P3-2：C 适配层数据面锁拆分与在途引用",
           "line": 10,
           "anchor": "p3-2c-适配层数据面锁拆分与在途引用",
-          "end_line": 86
+          "end_line": 108
         },
         {
           "level": 2,
@@ -35684,31 +35684,38 @@
         },
         {
           "level": 2,
-          "title": "命令与结果",
+          "title": "复核整改（2026-11-25）",
           "line": 55,
+          "anchor": "复核整改2026-11-25",
+          "end_line": 72
+        },
+        {
+          "level": 2,
+          "title": "命令与结果",
+          "line": 73,
           "anchor": "命令与结果",
-          "end_line": 65
+          "end_line": 83
         },
         {
           "level": 2,
           "title": "失败与限制",
-          "line": 66,
+          "line": 84,
           "anchor": "失败与限制",
-          "end_line": 75
+          "end_line": 97
         },
         {
           "level": 2,
           "title": "阶段/profile 影响",
-          "line": 76,
+          "line": 98,
           "anchor": "阶段profile-影响",
-          "end_line": 79
+          "end_line": 101
         },
         {
           "level": 2,
           "title": "后继关系",
-          "line": 80,
+          "line": 102,
           "anchor": "后继关系",
-          "end_line": 86
+          "end_line": 108
         }
       ],
       "mentioned_ids": [],
@@ -35726,15 +35733,15 @@
           "target": "../specs/2026-11-10-libos-data-path.md"
         },
         {
-          "line": 84,
+          "line": 106,
           "target": "../plans/2026-11-18-p3-async-slices.md"
         },
         {
-          "line": 85,
+          "line": 107,
           "target": "../specs/2026-11-10-libos-data-path.md"
         },
         {
-          "line": 86,
+          "line": 108,
           "target": "2026-11-24-p3-frontend-v2-data-plane.md"
         }
       ]

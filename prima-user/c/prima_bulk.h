@@ -76,6 +76,16 @@ static long prima_bulk_close(void) {
     return result;
 }
 
+/* Another thread's session cannot survive fork: the child would inherit its
+ * control-page mapping and could keep the parent's segment undestroyable. */
+static int prima_bulk_foreign_session(void) {
+    long self = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
+    for (int i = 1; i < PRIMA_SESSION_SLOTS; i++)
+        if (i != self && (prima_sessions[i].bulk_cap || prima_sessions[i].async_cap))
+            return 1;
+    return 0;
+}
+
 static void prima_bulk_put(volatile unsigned char *at, uint64_t value, unsigned bytes) {
     for (unsigned i = 0; i < bytes; i++) at[i] = (unsigned char)(value >> (8 * i));
 }
@@ -115,11 +125,26 @@ static int prima_async_header_ok(const volatile unsigned char *page,
     return 1;
 }
 
+/* Drop the local mapping and capability without telling the Store. Used when
+ * the session is already terminal (reset/ESTALE) or after a lost completion;
+ * a later OPEN reclaims the Store slot. */
+static void prima_async_abandon(struct prima_session *session) {
+    if (!session->async_cap) return;
+    (void)prima_raw(PRIMA_SYS_MEMSEG_UNMAP, session->self_cap,
+                    prima_async_address(session), PRIMA_ASYNC_PAGES, 0, 0, 0);
+    (void)prima_raw(PRIMA_SYS_CAP_DROP, session->async_cap, 0, 0, 0, 0, 0);
+    session->async_cap = 0;
+    session->async_generation = 0;
+    session->async_tail = 0;
+    session->async_desync = 0;
+}
+
 static long prima_async_open(void) {
     long ready = prima_session_register(0);
     if (ready < 0) return ready;
     struct prima_session *session = prima_session_current();
     if (!session) return -PRIMA_ERRNO_EAGAIN;
+    if (session->async_desync) return -PRIMA_ERRNO_EIO;
     if (session->async_cap) return 0;
     uint64_t slot = prima_async_slot(session);
     long sent = prima_session_send(PRIMA_ASYNC_OPEN | (slot << PRIMA_ASYNC_SLOT_SHIFT));
@@ -152,6 +177,9 @@ static long prima_async_open(void) {
                 (void)prima_raw(PRIMA_SYS_MEMSEG_UNMAP, session->self_cap, address,
                                 PRIMA_ASYNC_PAGES, 0, 0, 0);
             (void)prima_raw(PRIMA_SYS_CAP_DROP, out[0], 0, 0, 0, 0, 0);
+            /* The Store already opened the channel; leave no active session. */
+            if (prima_session_send(PRIMA_ASYNC_CLOSE | (slot << PRIMA_ASYNC_SLOT_SHIFT)) >= 0)
+                (void)prima_session_receive(PRIMA_ASYNC_ACK);
             return mapped < 0 ? mapped : -PRIMA_ERRNO_EINVAL;
         }
         session->async_cap = out[0];
@@ -173,12 +201,15 @@ static long prima_async_close_owned(void) {
     session->async_cap = 0;
     session->async_generation = 0;
     session->async_tail = 0;
+    session->async_desync = 0;
     long sent = prima_session_send(PRIMA_ASYNC_CLOSE | (slot << PRIMA_ASYNC_SLOT_SHIFT));
     if (sent < 0) return sent;
     long reply = prima_session_receive(PRIMA_ASYNC_ACK);
     if (reply < 0) return reply;
     long status = (uint64_t)reply & 0xff;
-    return status ? -status : 0;
+    /* A reset session cannot accept CLOSE; the Store reclaims it on the next
+     * OPEN or owner death, so a dead close is idempotent. */
+    return status && status != PRIMA_ERRNO_EACCES ? -status : 0;
 }
 
 /* One v2 batch: publish into the next credit page, raise the control `tail`,
@@ -223,13 +254,25 @@ static long prima_async_transfer_batch(struct prima_session *session, int handle
     for (;;) {
         uint64_t out[5] = {0};
         long raw = prima_receive_meta(out, 0, 0);
-        if (raw < 0) { *result = done ? (long)done : raw; return -1; }
+        if (raw < 0) {
+            /* The doorbell was sent; a lost completion makes this session
+             * terminal, never replayable. */
+            session->async_desync = 1;
+            *result = done ? (long)done : raw;
+            return -1;
+        }
         for (unsigned i = 0; i < out[2] && i < 2; i++)
             (void)prima_raw(PRIMA_SYS_CAP_DROP, out[i], 0, 0, 0, 0, 0);
         if (out[3] != session->store_cookie) continue;
         uint64_t tag = (uint64_t)raw >> 48;
         if (tag == (PRIMA_ASYNC_ACK >> 48)) {
             long status = (uint64_t)raw & 0xff;
+            if (status == PRIMA_ERRNO_EACCES || status == PRIMA_ERRNO_ESTALE) {
+                /* Reset or stale generation: the client must reopen. */
+                prima_async_abandon(session);
+                *result = done ? (long)done : -status;
+                return -1;
+            }
             *result = done ? (long)done : status ? -status : -PRIMA_ERRNO_EINVAL;
             return -1;
         }
@@ -265,6 +308,7 @@ static long prima_bulk_transfer(int handle, void *buffer, unsigned long length,
     result = prima_async_open();
     if (result < 0) goto restore;
     struct prima_session *session = prima_session_current();
+    if (session->async_desync) { result = -PRIMA_ERRNO_EIO; goto restore; }
     unsigned char *bytes = buffer;
     unsigned long done = 0;
     do {
