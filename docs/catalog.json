@@ -8858,8 +8858,8 @@
       "id": "docs/superpowers/compat/compat-state.md",
       "title": "阶段 5 兼容状态台账与历史基线",
       "kind": "compatibility",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "current",
+      "lifecycle_reason": "阶段5 兼容状态台账与历史基线；仍作为兼容目录的证据索引维护，当前状态以阶段跟踪与最新报告为准。",
       "replacements": [],
       "authority": "compatibility-ledger",
       "status": "read-document-for-status",
@@ -9663,8 +9663,8 @@
       "id": "docs/superpowers/compat/symbol-trace.md",
       "title": "阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo）",
       "kind": "compatibility",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "current",
+      "lifecycle_reason": "阶段5 符号追溯表；作为 musl/echo 链接闭包与 M20 调用路径的证据索引维护。",
       "replacements": [],
       "authority": "symbol-trace",
       "status": "read-document-for-status",
@@ -11769,277 +11769,280 @@
       "id": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
       "title": "阶段 5 收尾与阶段 6 入口实施路线图",
       "kind": "plan",
-      "lifecycle": "current",
-      "lifecycle_reason": "阶段 5 未签署前仍是剩余工作排序入口；步骤完成与否只由阶段跟踪和报告判断。",
-      "replacements": [],
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段 5 已于 2026-10-27 由 SPEC-152 签署，原“未签署前排序入口”前提失效；保留为 M12–M21/S6-A–E 时期的执行记录，当前状态只由阶段跟踪与后继报告判断。",
+      "replacements": [
+        "Prima OS 实现阶段.md",
+        "docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md"
+      ],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
       "date": "2026-10-22",
-      "sha256": "12f19210788993d43f6d318efb7d1b378f78681c4109c9a49fa3635040fa8a6d",
+      "sha256": "518a78ce286895e1a3a7202218f0e2520a227be7a3081d8432388aab0394fcc7",
       "topic_ids": [
         "process",
         "compatibility"
       ],
-      "lines": 530,
+      "lines": 534,
       "sections": [
         {
           "level": 1,
           "title": "阶段 5 收尾与阶段 6 入口实施路线图",
           "line": 1,
           "anchor": "阶段-5-收尾与阶段-6-入口实施路线图",
-          "end_line": 530
+          "end_line": 534
         },
         {
           "level": 2,
           "title": "1. 目的与边界",
-          "line": 12,
+          "line": 16,
           "anchor": "1-目的与边界",
-          "end_line": 29
+          "end_line": 33
         },
         {
           "level": 2,
           "title": "2. 现状基线",
-          "line": 30,
+          "line": 34,
           "anchor": "2-现状基线",
-          "end_line": 92
+          "end_line": 96
         },
         {
           "level": 3,
           "title": "2.1 已完成的阶段 5 切片",
-          "line": 32,
+          "line": 36,
           "anchor": "21-已完成的阶段-5-切片",
-          "end_line": 48
+          "end_line": 52
         },
         {
           "level": 3,
           "title": "2.2 代码与证据层面的实质缺口",
-          "line": 49,
+          "line": 53,
           "anchor": "22-代码与证据层面的实质缺口",
-          "end_line": 70
+          "end_line": 74
         },
         {
           "level": 3,
           "title": "2.3 当前容量基线",
-          "line": 71,
+          "line": 75,
           "anchor": "23-当前容量基线",
-          "end_line": 92
+          "end_line": 96
         },
         {
           "level": 2,
           "title": "3. 决策门",
-          "line": 93,
+          "line": 97,
           "anchor": "3-决策门",
-          "end_line": 113
+          "end_line": 117
         },
         {
           "level": 2,
           "title": "4. 里程碑总表",
-          "line": 114,
+          "line": 118,
           "anchor": "4-里程碑总表",
-          "end_line": 153
+          "end_line": 157
         },
         {
           "level": 3,
           "title": "4.1 依赖关系",
-          "line": 136,
+          "line": 140,
           "anchor": "41-依赖关系",
-          "end_line": 153
+          "end_line": 157
         },
         {
           "level": 2,
           "title": "5. 里程碑详细条目",
-          "line": 154,
+          "line": 158,
           "anchor": "5-里程碑详细条目",
-          "end_line": 393
+          "end_line": 397
         },
         {
           "level": 3,
           "title": "M12：C 启动、退出与 fd 清理基座",
-          "line": 159,
+          "line": 163,
           "anchor": "m12c-启动退出与-fd-清理基座",
-          "end_line": 183
+          "end_line": 187
         },
         {
           "level": 3,
           "title": "M13：VFS 完成",
-          "line": 184,
+          "line": 188,
           "anchor": "m13vfs-完成",
-          "end_line": 210
+          "end_line": 214
         },
         {
           "level": 3,
           "title": "M14：tty 输入与最小 console",
-          "line": 211,
+          "line": 215,
           "anchor": "m14tty-输入与最小-console",
-          "end_line": 232
+          "end_line": 236
         },
         {
           "level": 3,
           "title": "M15：Process/Thread 模型与 WaitObject/futex",
-          "line": 233,
+          "line": 237,
           "anchor": "m15processthread-模型与-waitobjectfutex",
-          "end_line": 259
+          "end_line": 263
         },
         {
           "level": 3,
           "title": "M16：pthread/TLS/mutex/cond",
-          "line": 260,
+          "line": 264,
           "anchor": "m16pthreadtlsmutexcond",
-          "end_line": 278
+          "end_line": 282
         },
         {
           "level": 3,
           "title": "M17：`fork/execve/wait4`",
-          "line": 279,
+          "line": 283,
           "anchor": "m17forkexecvewait4",
-          "end_line": 303
+          "end_line": 307
         },
         {
           "level": 3,
           "title": "M18：POSIX signal 最小集",
-          "line": 304,
+          "line": 308,
           "anchor": "m18posix-signal-最小集",
-          "end_line": 328
+          "end_line": 332
         },
         {
           "level": 3,
           "title": "M19：用户态网络子集",
-          "line": 329,
+          "line": 333,
           "anchor": "m19用户态网络子集",
-          "end_line": 352
+          "end_line": 356
         },
         {
           "level": 3,
           "title": "M20：Rust core/std 与兼容矩阵",
-          "line": 353,
+          "line": 357,
           "anchor": "m20rust-corestd-与兼容矩阵",
-          "end_line": 378
+          "end_line": 382
         },
         {
           "level": 3,
           "title": "M21：阶段 5 出口评审",
-          "line": 379,
+          "line": 383,
           "anchor": "m21阶段-5-出口评审",
-          "end_line": 393
+          "end_line": 397
         },
         {
           "level": 2,
           "title": "6. 阶段 5 出口映射",
-          "line": 394,
+          "line": 398,
           "anchor": "6-阶段-5-出口映射",
-          "end_line": 408
+          "end_line": 412
         },
         {
           "level": 2,
           "title": "7. 阶段 6 入口",
-          "line": 409,
+          "line": 413,
           "anchor": "7-阶段-6-入口",
-          "end_line": 446
+          "end_line": 450
         },
         {
           "level": 3,
           "title": "S6-A：Linux 静态 ELF 装载器与初始栈",
-          "line": 413,
+          "line": 417,
           "anchor": "s6-alinux-静态-elf-装载器与初始栈",
-          "end_line": 420
+          "end_line": 424
         },
         {
           "level": 3,
           "title": "S6-B：OS 中立 trap/exception 递送与 Linux persona",
-          "line": 421,
+          "line": 425,
           "anchor": "s6-bos-中立-trapexception-递送与-linux-persona",
-          "end_line": 428
+          "end_line": 432
         },
         {
           "level": 3,
           "title": "S6-C：Linux LibOS syscall profile",
-          "line": 429,
+          "line": 433,
           "anchor": "s6-clinux-libos-syscall-profile",
-          "end_line": 435
+          "end_line": 439
         },
         {
           "level": 3,
           "title": "S6-D：未修改静态 ELF 白名单与测试镜像",
-          "line": 436,
+          "line": 440,
           "anchor": "s6-d未修改静态-elf-白名单与测试镜像",
-          "end_line": 441
+          "end_line": 445
         },
         {
           "level": 3,
           "title": "S6-E：阶段 6 出口评审",
-          "line": 442,
+          "line": 446,
           "anchor": "s6-e阶段-6-出口评审",
-          "end_line": 446
+          "end_line": 450
         },
         {
           "level": 2,
           "title": "8. 横切约束",
-          "line": 447,
+          "line": 451,
           "anchor": "8-横切约束",
-          "end_line": 482
+          "end_line": 486
         },
         {
           "level": 3,
           "title": "8.1 证据分级",
-          "line": 449,
+          "line": 453,
           "anchor": "81-证据分级",
-          "end_line": 453
+          "end_line": 457
         },
         {
           "level": 3,
           "title": "8.2 容量与审计",
-          "line": 454,
+          "line": 458,
           "anchor": "82-容量与审计",
-          "end_line": 461
+          "end_line": 465
         },
         {
           "level": 3,
           "title": "8.3 测试接线",
-          "line": 462,
+          "line": 466,
           "anchor": "83-测试接线",
-          "end_line": 470
+          "end_line": 474
         },
         {
           "level": 3,
           "title": "8.4 文档与语义纪律",
-          "line": 471,
+          "line": 475,
           "anchor": "84-文档与语义纪律",
-          "end_line": 477
+          "end_line": 481
         },
         {
           "level": 3,
           "title": "8.5 安全边界",
-          "line": 478,
+          "line": 482,
           "anchor": "85-安全边界",
-          "end_line": 482
+          "end_line": 486
         },
         {
           "level": 2,
           "title": "9. 风险与回退",
-          "line": 483,
+          "line": 487,
           "anchor": "9-风险与回退",
-          "end_line": 501
+          "end_line": 505
         },
         {
           "level": 2,
           "title": "10. Definition of Done",
-          "line": 502,
+          "line": 506,
           "anchor": "10-definition-of-done",
-          "end_line": 513
+          "end_line": 517
         },
         {
           "level": 2,
           "title": "11. 与现有计划的关系",
-          "line": 514,
+          "line": 518,
           "anchor": "11-与现有计划的关系",
-          "end_line": 522
+          "end_line": 526
         },
         {
           "level": 2,
           "title": "12. 本文件不代表的结论",
-          "line": 523,
+          "line": 527,
           "anchor": "12-本文件不代表的结论",
-          "end_line": 530
+          "end_line": 534
         }
       ],
       "mentioned_ids": [
@@ -12063,99 +12066,108 @@
         "S6-X1",
         "S6-X2",
         "S6-X3",
-        "S6-X4"
+        "S6-X4",
+        "SPEC-152"
       ],
       "links": [
         {
-          "line": 6,
+          "line": 3,
+          "target": "../reports/2026-10-27-stage5-exit-signoff.md"
+        },
+        {
+          "line": 5,
           "target": "../../../Prima%20OS%20实现阶段.md"
-        },
-        {
-          "line": 7,
-          "target": "../../../Prima%20OS.md"
-        },
-        {
-          "line": 8,
-          "target": "../../../COSIR%20原语规范.md"
-        },
-        {
-          "line": 9,
-          "target": "../specs/2026-10-18-stage5-profile-v0.md"
         },
         {
           "line": 10,
+          "target": "../../../Prima%20OS%20实现阶段.md"
+        },
+        {
+          "line": 11,
+          "target": "../../../Prima%20OS.md"
+        },
+        {
+          "line": 12,
+          "target": "../../../COSIR%20原语规范.md"
+        },
+        {
+          "line": 13,
+          "target": "../specs/2026-10-18-stage5-profile-v0.md"
+        },
+        {
+          "line": 14,
           "target": "../specs/2026-10-20-stage5-profile-v1.md"
         },
         {
-          "line": 28,
+          "line": 32,
           "target": "../../../Prima%20OS%20实现阶段.md"
-        },
-        {
-          "line": 36,
-          "target": "../reports/2026-10-18-stage5-musl-m0-inventory.md"
-        },
-        {
-          "line": 37,
-          "target": "../reports/2026-10-18-stage5-c-start-stack.md"
-        },
-        {
-          "line": 37,
-          "target": "../reports/2026-10-18-stage5-main-return-status.md"
-        },
-        {
-          "line": 38,
-          "target": "../reports/2026-10-18-stage5-musl-m2-boundary.md"
-        },
-        {
-          "line": 39,
-          "target": "../reports/2026-10-18-stage5-musl-m3-base.md"
         },
         {
           "line": 40,
-          "target": "../reports/2026-10-18-stage5-musl-m4-file.md"
+          "target": "../reports/2026-10-18-stage5-musl-m0-inventory.md"
         },
         {
           "line": 41,
-          "target": "../reports/2026-10-19-stage5-m5-sbase-echo.md"
+          "target": "../reports/2026-10-18-stage5-c-start-stack.md"
+        },
+        {
+          "line": 41,
+          "target": "../reports/2026-10-18-stage5-main-return-status.md"
         },
         {
           "line": 42,
-          "target": "../reports/2026-10-19-stage5-m6-time.md"
+          "target": "../reports/2026-10-18-stage5-musl-m2-boundary.md"
         },
         {
           "line": 43,
-          "target": "../reports/2026-10-19-stage5-m7-fd-table.md"
+          "target": "../reports/2026-10-18-stage5-musl-m3-base.md"
         },
         {
           "line": 44,
-          "target": "../reports/2026-10-20-stage5-m8-user-vfs.md"
+          "target": "../reports/2026-10-18-stage5-musl-m4-file.md"
         },
         {
           "line": 45,
-          "target": "../reports/2026-10-21-stage5-m9-metadata-cwd.md"
+          "target": "../reports/2026-10-19-stage5-m5-sbase-echo.md"
         },
         {
           "line": 46,
-          "target": "../reports/2026-10-21-stage5-m10-anon-memory.md"
+          "target": "../reports/2026-10-19-stage5-m6-time.md"
         },
         {
           "line": 47,
+          "target": "../reports/2026-10-19-stage5-m7-fd-table.md"
+        },
+        {
+          "line": 48,
+          "target": "../reports/2026-10-20-stage5-m8-user-vfs.md"
+        },
+        {
+          "line": 49,
+          "target": "../reports/2026-10-21-stage5-m9-metadata-cwd.md"
+        },
+        {
+          "line": 50,
+          "target": "../reports/2026-10-21-stage5-m10-anon-memory.md"
+        },
+        {
+          "line": 51,
           "target": "../reports/2026-10-22-stage5-m11-file-mutation.md"
         },
         {
-          "line": 111,
+          "line": 115,
           "target": "../../../Prima%20OS%20实现阶段.md"
         },
         {
-          "line": 516,
+          "line": 520,
           "target": "2026-10-18-stage5-revised-plan.md"
         },
         {
-          "line": 518,
+          "line": 522,
           "target": "2026-10-18-musl-port-plan.md"
         },
         {
-          "line": 521,
+          "line": 525,
           "target": "../../../Prima%20OS%20实现阶段.md"
         }
       ]
@@ -13296,7 +13308,7 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-11-18",
-      "sha256": "a7f7e57a064f1691de2e0e688d90acba19f52a56246314fefcd148b3b01d6d43",
+      "sha256": "157404d313ad15fe5457a01c50bf82220e66018395672b1d0151ab471ca8844f",
       "topic_ids": [],
       "lines": 88,
       "sections": [
@@ -13361,7 +13373,8 @@
         "BLK-001",
         "BLK-002",
         "S1-D3",
-        "S1-D4"
+        "S1-D4",
+        "SPEC-152"
       ],
       "links": [
         {
@@ -13439,6 +13452,14 @@
         {
           "line": 51,
           "target": "2026-10-18-musl-port-plan.md"
+        },
+        {
+          "line": 53,
+          "target": "../reports/2026-10-27-stage5-exit-signoff.md"
+        },
+        {
+          "line": 53,
+          "target": "../../../Prima%20OS%20实现阶段.md"
         },
         {
           "line": 59,
@@ -37079,8 +37100,8 @@
       "id": "docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md",
       "title": "Prima OS 阶段 1 启动闭环设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 启动闭环设计记录；对应实现与阶段1 复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -37295,8 +37316,8 @@
       "id": "docs/superpowers/specs/2026-08-07-blk002-refinement-design.md",
       "title": "BLK-002 细化草案：x86_64 MachineState → POSIR State",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -37423,8 +37444,8 @@
       "id": "docs/superpowers/specs/2026-08-07-exc-resume-design.md",
       "title": "exception 恢复细化：exc_resume 原语设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -37686,8 +37707,8 @@
       "id": "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
       "title": "PrimaOS 细化审查纠偏设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -37859,8 +37880,8 @@
       "id": "docs/superpowers/specs/2026-08-14-cow-refinement-design.md",
       "title": "COW fork 组合协议细化：cow_refine 验证层设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -37985,8 +38006,8 @@
       "id": "docs/superpowers/specs/2026-08-15-tlb-refine-design.md",
       "title": "TLB 细化（tlb_refine）设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38099,8 +38120,8 @@
       "id": "docs/superpowers/specs/2026-08-16-primaos-audit-remediation-design.md",
       "title": "PrimaOS 审计缺陷修复设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38302,8 +38323,8 @@
       "id": "docs/superpowers/specs/2026-08-17-page-gdt-idt-trap-design.md",
       "title": "页表/GDT/IDT/trap 框架设计（S1-D4，切片 B）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 真实内核框架设计记录；对应实现与后续报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38403,8 +38424,8 @@
       "id": "docs/superpowers/specs/2026-08-17-physmem-discovery-design.md",
       "title": "物理内存发现（physmem discovery）设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 物理内存发现设计记录；对应实现与后续报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38531,8 +38552,8 @@
       "id": "docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md",
       "title": "BLK-001 形式化模型工件：Lean 4 可执行模型 + cosir 对拍",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38683,8 +38704,8 @@
       "id": "docs/superpowers/specs/2026-09-05-pf-error-code-semantics-design.md",
       "title": "切片 C(续)设计：#PF error-code 捕获与写保护语义分类",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 冻结切片的实现/差分设计记录；对应实现与报告链已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38816,8 +38837,8 @@
       "id": "docs/superpowers/specs/2026-09-15-linux-trace-compat-design.md",
       "title": "切片 P 设计：Linux trace 与有界 COMPAT-TEST（`cow-write-fault`）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 冻结切片的实现/差分设计记录；对应实现与报告链已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -38946,8 +38967,8 @@
       "id": "docs/superpowers/specs/2026-09-16-stage1-closure-design.md",
       "title": "切片 P 设计：阶段 1 退出条件——帧唯一归属与初始 Authority 物化",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段1 退出条件设计快照；正文已登记 SPEC-150 更正并说明保留原始快照，现行结论见后继报告。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39058,8 +39079,8 @@
       "id": "docs/superpowers/specs/2026-09-16-stage2-bringup-segment-migration-design.md",
       "title": "切片 R 设计：bring-up 13 区域迁移为真实 Segment 对象",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39179,8 +39200,8 @@
       "id": "docs/superpowers/specs/2026-09-16-stage2-handles-caps-segments-design.md",
       "title": "切片 Q 设计：阶段 2 启动——句柄编码、Capability 生命周期、Segment 原语",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39286,8 +39307,8 @@
       "id": "docs/superpowers/specs/2026-09-16-stage2-ipc-user-surface-design.md",
       "title": "切片 S 设计：IPC 用户化与两 ring3 任务共享 Segment",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39397,8 +39418,8 @@
       "id": "docs/superpowers/specs/2026-09-17-stage2-platform-cap-handover-design.md",
       "title": "切片 U 设计：平台段 Capability 按属主移交（ISSUE-AUTH-002 剩余项）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39508,8 +39529,8 @@
       "id": "docs/superpowers/specs/2026-09-17-stage2-task-lifecycle-design.md",
       "title": "切片 T 设计：Task create/yield/destroy 用户原语与单核调度（S2-D4）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39631,8 +39652,8 @@
       "id": "docs/superpowers/specs/2026-09-17-stage2-task-self-destroy-design.md",
       "title": "切片 V 设计：Task 自毁与延迟帧归还（ISSUE-TASK-002）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39754,8 +39775,8 @@
       "id": "docs/superpowers/specs/2026-09-23-stage2-image-frame-vector-design.md",
       "title": "切片 W 设计：image Segment 的真实逐帧向量（ISSUE-FRAME-001）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39868,8 +39889,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-audit-storage-refactor-design.md",
       "title": "切片 AD 设计：审计存储重构（SPEC-075）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -39954,8 +39975,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-exc-resume-design.md",
       "title": "切片 AB 设计：§12.10 `exc_resume` 用户化（`KernelActor` 代调）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40055,8 +40076,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-faulted-state-machine-design.md",
       "title": "切片 Y 设计：`TaskStatus::Faulted` 状态机与 §12.5 迁移入口（ISSUE-TASK-001）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40172,8 +40193,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-kernel-reclaim-design.md",
       "title": "切片 AA 设计：§8.2 内核回收路径（`KernelActor`，无 `task_cap`）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40266,8 +40287,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-reclaim-predicate-tightening-design.md",
       "title": "切片 AC 设计：内核回收判据收紧（SPEC-074）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40332,8 +40353,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-scheduler-state-audit-design.md",
       "title": "切片 Z 设计：调度路径的 `TaskStateChanged` 与审计容量（ISSUE-TASK-003）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40447,8 +40468,8 @@
       "id": "docs/superpowers/specs/2026-09-24-stage2-self-built-cr3-design.md",
       "title": "切片 X 设计：自建内核 CR3 与镜像逐页映射（ISSUE-AUTH-001）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40588,8 +40609,8 @@
       "id": "docs/superpowers/specs/2026-09-25-framekernel-closure-design.md",
       "title": "切片 AI 设计：收口与 TCB 量化（SPEC-080）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40662,8 +40683,8 @@
       "id": "docs/superpowers/specs/2026-09-25-framekernel-entry-inversion-design.md",
       "title": "切片 AH 设计：trap/syscall 入口回调反转 + IDT/GDT 下沉（SPEC-079）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40737,8 +40758,8 @@
       "id": "docs/superpowers/specs/2026-09-25-framekernel-global-state-design.md",
       "title": "切片 AG 设计：内核全局状态 safe 化（SPEC-078）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40809,8 +40830,8 @@
       "id": "docs/superpowers/specs/2026-09-25-framekernel-mm-pod-design.md",
       "title": "切片 AF 设计：物理内存与页表 POD 收敛（SPEC-077）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40894,8 +40915,8 @@
       "id": "docs/superpowers/specs/2026-09-25-framekernel-skeleton-design.md",
       "title": "切片 AE 设计：framekernel 分层与 unsafe 收敛（SPEC-076）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -40966,8 +40987,8 @@
       "id": "docs/superpowers/specs/2026-09-25-stage3-audit-trace-design.md",
       "title": "切片 AL 设计：阶段 3 第三片 —— `audit(cap)` 审计查询（§13.2）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41068,8 +41089,8 @@
       "id": "docs/superpowers/specs/2026-09-25-stage3-namespace-design.md",
       "title": "切片 AJ 设计：阶段 3 第一片 —— Namespace 路径操作（§11 全量）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41207,8 +41228,8 @@
       "id": "docs/superpowers/specs/2026-09-25-stage3-timer-design.md",
       "title": "切片 AK 设计：阶段 3 第二片 —— Timer（§10 全量）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41332,8 +41353,8 @@
       "id": "docs/superpowers/specs/2026-09-25-stage4-runtime-api-design.md",
       "title": "SPEC-084 设计：阶段 4 Prima 原生运行时 API 与版本规则",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41455,8 +41476,8 @@
       "id": "docs/superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md",
       "title": "SPEC-087 设计：init ↔ 存活 ring3 客户端双向握手",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41567,8 +41588,8 @@
       "id": "docs/superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md",
       "title": "SPEC-085 设计：阶段 4 独立 ring3 原生客户端与 IPC Hello 握手",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -41649,8 +41670,8 @@
       "id": "docs/superpowers/specs/2026-10-10-stage4-service-negotiation-design.md",
       "title": "SPEC-088 设计：服务端解析与协商（阶段 4 S4-D2 前置）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -42497,8 +42518,8 @@
       "id": "docs/superpowers/specs/2026-10-11-stage4-independent-service-images-design.md",
       "title": "SPEC-093 设计：独立第二服务端点（独立二进制映像 + 独立物理栈段）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -42605,8 +42626,8 @@
       "id": "docs/superpowers/specs/2026-10-11-stage4-multi-endpoint-service-design.md",
       "title": "SPEC-092 设计：独立第二服务端点（init 按名路由到不同任务）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -42720,8 +42741,8 @@
       "id": "docs/superpowers/specs/2026-10-11-stage4-service-manager-design.md",
       "title": "SPEC-090 设计：服务管理器（init 按名解析并路由）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -42830,8 +42851,8 @@
       "id": "docs/superpowers/specs/2026-10-11-stage4-vspace-arena-design.md",
       "title": "SPEC-091 设计：逻辑 vspace 存储移出 `BootstrapState`（arena 化）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -42924,8 +42945,8 @@
       "id": "docs/superpowers/specs/2026-10-12-stage4-alpha-independent-stack-design.md",
       "title": "SPEC-094 设计：`ALPHA` 端点独立栈段（闭合 SPEC-093 §5.1）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43024,8 +43045,8 @@
       "id": "docs/superpowers/specs/2026-10-12-stage4-runtime-service-registry-design.md",
       "title": "SPEC-095 设计：运行期服务注册表（闭合 SPEC-093 §5.2）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43122,8 +43143,8 @@
       "id": "docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md",
       "title": "SPEC-102 设计：把服务管理器迁到 ring3 Rust（服务机制收敛）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43217,8 +43238,8 @@
       "id": "docs/superpowers/specs/2026-10-13-stage4-string-service-names-design.md",
       "title": "SPEC-101 设计：字符串服务名与端点名的运行期指派（闭合 SPEC-095 §5.1）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43316,8 +43337,8 @@
       "id": "docs/superpowers/specs/2026-10-14-dual-personality-holder-model-design.md",
       "title": "双人格 Holder 模型设计草案：AddressSpace / CapTable / ShareGroup / Thread",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "双人格 holder 早期设计草案；P2b holder 切片计划拟另立 H0 设计，本文保留为提案与评审输入。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43574,8 +43595,8 @@
       "id": "docs/superpowers/specs/2026-10-15-exokernel-alignment-design.md",
       "title": "Exokernel 对齐：规划与实现逻辑优化设计（提案）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "待评审的 Exokernel 对齐提案；未进入当前阶段契约，保留为 EXO 子片报告的设计输入。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43753,8 +43774,8 @@
       "id": "docs/superpowers/specs/2026-10-18-stage5-profile-v0.md",
       "title": "阶段 5 POSIX profile v0（冻结）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 初版冻结 profile；v2 承接并明确 v0 作为历史契约保留，当前冻结剖面见 v2。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -43925,8 +43946,8 @@
       "id": "docs/superpowers/specs/2026-10-20-stage5-profile-v1.md",
       "title": "阶段 5 POSIX profile v1（delta，M8/M9/M10/M11/M12 提案）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "v1 delta 已并入 v2 冻结，按正文自述作为历史 delta 保留；不再单独发布或勾选。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44056,8 +44077,8 @@
       "id": "docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md",
       "title": "阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44147,8 +44168,8 @@
       "id": "docs/superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md",
       "title": "阶段 5 / M10：匿名内存与保护（设计）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44307,8 +44328,8 @@
       "id": "docs/superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md",
       "title": "阶段 5 / M11：文件树变更（`mkdir`/`rmdir`/`unlink`）设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44432,8 +44453,8 @@
       "id": "docs/superpowers/specs/2026-10-22-stage5-m12-c-startup-exit-design.md",
       "title": "阶段 5 / M12：C 启动、退出与 fd 清理基座设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44543,8 +44564,8 @@
       "id": "docs/superpowers/specs/2026-10-22-stage5-m13a-vfs-links-design.md",
       "title": "阶段 5 / M13a：符号链接、rename 与 fchdir 设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44675,8 +44696,8 @@
       "id": "docs/superpowers/specs/2026-10-22-stage5-m13b-permissions-stdio-design.md",
       "title": "阶段 5 / M13b：权限位、umask 与 stdio 文件 API 设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -44906,8 +44927,8 @@
       "id": "docs/superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md",
       "title": "阶段 5 / M14：tty 输入与最小 console 设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 已落地设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -45001,8 +45022,8 @@
       "id": "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
       "title": "阶段 5 / M15：Process/Thread/ShareGroup 与 WaitObject 设计（D3 提案）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -45118,8 +45139,8 @@
       "id": "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md",
       "title": "阶段 5 / M17：fork/execve/wait4 设计（D3 提案）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -45195,8 +45216,8 @@
       "id": "docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md",
       "title": "阶段 5 / M17c-2：execve 的 syscall 契约（设计）",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",
@@ -45274,8 +45295,8 @@
       "id": "docs/superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md",
       "title": "阶段 5 / M19：用户态 loopback IPv4/UDP 子集设计",
       "kind": "specification",
-      "lifecycle": "unclassified",
-      "lifecycle_reason": null,
+      "lifecycle": "historical",
+      "lifecycle_reason": "阶段5 已落地设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": [],
       "authority": "scope-defined-in-document",
       "status": "read-document-for-status",

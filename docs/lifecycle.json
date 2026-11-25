@@ -90,10 +90,13 @@
     },
     {
       "path": "docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md",
-      "lifecycle": "current",
-      "updated": "2026-10-24",
-      "reason": "阶段 5 未签署前仍是剩余工作排序入口；步骤完成与否只由阶段跟踪和报告判断。",
-      "replacements": []
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段 5 已于 2026-10-27 由 SPEC-152 签署，原“未签署前排序入口”前提失效；保留为 M12–M21/S6-A–E 时期的执行记录，当前状态只由阶段跟踪与后继报告判断。",
+      "replacements": [
+        "Prima OS 实现阶段.md",
+        "docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md"
+      ]
     },
     {
       "path": "docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md",
@@ -107,6 +110,454 @@
       "lifecycle": "historical",
       "updated": "2026-10-24",
       "reason": "外部候选的风险审查，仍被白皮书和阶段跟踪引用；保留候选范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/compat/compat-state.md",
+      "lifecycle": "current",
+      "updated": "2026-11-25",
+      "reason": "阶段5 兼容状态台账与历史基线；仍作为兼容目录的证据索引维护，当前状态以阶段跟踪与最新报告为准。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/compat/symbol-trace.md",
+      "lifecycle": "current",
+      "updated": "2026-11-25",
+      "reason": "阶段5 符号追溯表；作为 musl/echo 链接闭包与 M20 调用路径的证据索引维护。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-04-stage1-boot-slice-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 启动闭环设计记录；对应实现与阶段1 复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-07-blk002-refinement-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-07-exc-resume-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-12-refinement-audit-remediation-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-14-cow-refinement-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-15-tlb-refine-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-16-primaos-audit-remediation-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-17-page-gdt-idt-trap-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 真实内核框架设计记录；对应实现与后续报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-17-physmem-discovery-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 物理内存发现设计记录；对应实现与后续报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-08-18-blk001-lean-formal-model-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段0 细化或形式化设计记录；对应模型/实现与后续纠偏已落地，保留当时设计取舍与证据边界。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-05-pf-error-code-semantics-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 冻结切片的实现/差分设计记录；对应实现与报告链已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-15-linux-trace-compat-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 冻结切片的实现/差分设计记录；对应实现与报告链已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-16-stage1-closure-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段1 退出条件设计快照；正文已登记 SPEC-150 更正并说明保留原始快照，现行结论见后继报告。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-16-stage2-bringup-segment-migration-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-16-stage2-handles-caps-segments-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-16-stage2-ipc-user-surface-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-17-stage2-platform-cap-handover-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-17-stage2-task-lifecycle-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-17-stage2-task-self-destroy-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-23-stage2-image-frame-vector-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-audit-storage-refactor-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-exc-resume-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-faulted-state-machine-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-kernel-reclaim-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-reclaim-predicate-tightening-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-scheduler-state-audit-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-stage2-self-built-cr3-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段2 切片设计记录；对应实现与复核报告已承接，保留当时契约与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-framekernel-closure-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-framekernel-entry-inversion-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-framekernel-global-state-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-framekernel-mm-pod-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-framekernel-skeleton-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "framekernel 分层设计记录；重构已完成并由后续阶段报告承接，保留设计依据与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-stage3-audit-trace-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-stage3-namespace-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-stage3-timer-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段3 切片设计记录；实现与阶段3 报告为证据来源，保留当时契约。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-stage4-runtime-api-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-10-stage4-service-negotiation-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-stage4-independent-service-images-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-stage4-multi-endpoint-service-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-stage4-service-manager-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-11-stage4-vspace-arena-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-12-stage4-alpha-independent-stack-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-12-stage4-runtime-service-registry-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-13-stage4-ring3-service-manager-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-13-stage4-string-service-names-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段4 探索设计记录；后续 ring3 服务方案与阶段4 收口已承接其范围，保留演进与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-14-dual-personality-holder-model-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "双人格 holder 早期设计草案；P2b holder 切片计划拟另立 H0 设计，本文保留为提案与评审输入。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-15-exokernel-alignment-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "待评审的 Exokernel 对齐提案；未进入当前阶段契约，保留为 EXO 子片报告的设计输入。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-18-stage5-profile-v0.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 初版冻结 profile；v2 承接并明确 v0 作为历史契约保留，当前冻结剖面见 v2。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-20-stage5-profile-v1.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "v1 delta 已并入 v2 冻结，按正文自述作为历史 delta 保留；不再单独发布或勾选。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-20-stage5-user-vfs-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-21-stage5-m10-anon-memory-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-22-stage5-m11-file-mutation-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-22-stage5-m12-c-startup-exit-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-22-stage5-m13a-vfs-links-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-22-stage5-m13b-permissions-stdio-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 切片设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-23-stage5-m14-tty-input-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 已落地设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-23-stage5-m15-process-thread-wait-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-23-stage5-m17-fork-exec-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-23-stage5-m17c2-exec-syscall.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 提案/设计记录；后续实现与阶段5 签署承接，保留当时工作决定与范围。",
+      "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-25",
+      "reason": "阶段5 已落地设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": []
     }
   ]
