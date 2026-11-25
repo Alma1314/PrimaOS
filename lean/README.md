@@ -17,6 +17,7 @@ updated: 2026-11-25
 > 2026-11-25 的 `Formal.Memseg` 切片把 cosir `memseg_refine` 的最小参考语义纳入模型（双视图一致、权限收窄、帧 owner 转移与失败原子性），抽象边界见文末；它不构成四级树、多页原子映射或 W6 全量扫描证明。
 > 2026-11-25 的 `Formal.Cow` 切片把 cosir `cow_refine` 的最小参考语义纳入模型（COW 建立、写故障、私有化、单运行任务与销毁），抽象边界见文末；它不构成 capability 授权、异常源/恢复帧或 TLB 失效证明。
 > 2026-11-25 的 `Formal.Revoke` 切片把 Prima OS §6.2 撤销域（Bootstrap 宿主）的最小参考语义纳入模型（子树失效、HeldBy 删除、无关域不变、原子与幂等），抽象边界见文末；它是经典命题模型、不可执行，且不构成 7-D 或 Rust 细化证明。
+> 2026-11-25 的 `Formal.Drop` 切片把 COSIR §4.5 `cap_drop` 的规范层语义纳入可执行模型（单位置删除、不传播、记录保留、structural 保护），与 `Formal.Revoke` 正交，见文末。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -32,6 +33,7 @@ updated: 2026-11-25
 - `Formal.Memseg`（`Formal/Memseg.lean`）：每 Task 页表/视图双视图、W6 帧 owner 划分、map/unmap/create/destroy/destroyTask/spawn 的守卫与成功状态，以及失败原子性（2026-11-25 增量，见下节）。
 - `Formal.Cow`（`Formal/Cow.lean`）：COW 对的建立/写故障/私有化、单运行任务、让出/调度与销毁，以及组合不变量 `RunningOk`/`FaultedOk`/`CowPairOk`（2026-11-25 增量，见下节）。
 - `Formal.Revoke`（`Formal/Revoke.lean`）：选择性撤销的子树失效、HeldBy 位置删除、非 HeldBy 保留、无关域不变、原子守卫与幂等（2026-11-25 增量，见下节）。
+- `Formal.Drop`（`Formal/Drop.lean`）：`cap_drop` 的单位置删除、不传播到派生子项、记录与 CDT 保持、structural 守卫与幂等（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -94,7 +96,7 @@ elan run leanprover/lean4:v4.35.0 lake build
   - `cdt_parity_lean`（**关 `ISSUE-FORMAL-001`**）：§4.2/§4.4 CDT 对拍——三条根 Cap 无父、`well_formed(booted)` 成立（对应 Lean `bootedState_wellformed`）；`derive_capability` 派生后子指父、同对象、`well_formed` 保持（对应 `derive_preserves_wellformed`）；父链严格递减并终止于根（对应 `ancestry_lt`/`ancestry_no_cycle`）；四条失败锚（父 ≥ 子 / 无父 / 缺 `CapDerive` / 槽占用）对应 Lean `derive` 的 4 条 `native_decide` 锚。
 - 两端一致即本轮 `MODEL-TEST` 通过；一致性不升级为 refinement 结论。
 - **定理性质（如实声明）**：Lean 侧现有 5 条**实质证明**（**非** `by rfl`/`trivial`，`WellFormed` 亦**非恒真**）——`bootedState_wellformed`（逐 CapId 展开 `initCaps` 三分支证三条根 Cap 满足 CDT 不变量）、`exc_resume_preserves_wellformed`（成功返回原状态、失败返回 `none`）、`derive_preserves_wellformed`（§4.4 派生保持良构，按「新槽位 / 旧槽位」两路，用到 `parent < newId` 与空槽前提）、`parentOf_lt`（§4.2 单步下降）、**`ancestry_lt`（森林性：沿父链 `k ≥ 1` 步 CapId 严格递减 ⇒ 无环，§4.2 头号结论，对 `k` 归纳）**；`no_self_parent`/`ancestry_no_cycle` 为其直接推论。其余定理（§14 三条根 Cap 具体值、`bootstrap` 幂等、投影保真、`exc_resume` 失败各路径、`derive` 的 5 条 `native_decide` 锚）仍是**具体实例的定义展开或求值**——它们钉住可执行语义，但不单独构成普适不变量。Lean `State` 仍是**最小可表达能力子集**（**无 `tasks` 字段**，init 以三条指向 Segment/Namespace/Task 的根 Capability 表示），`excResume` 只建模授权检查、**不建模 §12.10 的成功提交段**；`derive` 只建模 §4.4 的单步派生、**不建模 §4.5 撤销与在途消息**。
-- **CDT 覆盖边界**：`WellFormed` 现表达 §4.2 的「父 `<` 子、父存在/活动、父子同对象」三条，且**无环性已由 `ancestry_lt` 独立证成**（不止于不变量中的局部「父 `<` 子」）；**未**表达「子权限 ⊆ 父权限」（该性质作为 `derive` 的前置条件，在保持性定理中携带，见 `Formal/Derive.lean` 注释），亦未表达 §4.6 `HeldBy` 位置与 W3 唯一位置。§4.7 撤销边界（**规范第一版无 `cap_revoke`**）的 Bootstrap 子集已由 `Formal.Revoke` 给出最小参考模型；§4.5 `cap_drop` 的完整授权语义仍留待后续切片。
+- **CDT 覆盖边界**：`WellFormed` 现表达 §4.2 的「父 `<` 子、父存在/活动、父子同对象」三条，且**无环性已由 `ancestry_lt` 独立证成**（不止于不变量中的局部「父 `<` 子」）；**未**表达「子权限 ⊆ 父权限」（该性质作为 `derive` 的前置条件，在保持性定理中携带，见 `Formal/Derive.lean` 注释），亦未表达 §4.6 `HeldBy` 位置与 W3 唯一位置。§4.7 撤销边界（**规范第一版无 `cap_revoke`**）的 Bootstrap 子集已由 `Formal.Revoke` 给出最小参考模型；§4.5 `cap_drop` 的单位置、不传播与 structural 守卫已由 `Formal.Drop` 最小建模，订阅终止与审计事件仍不覆盖。
 
 ## 已知不覆盖（后续切片）
 
@@ -113,7 +115,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
 - **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
-- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：§4.5 `cap_drop` 的完整授权语义、§4.6 `HeldBy` 位置、W3 唯一位置；§4.7 撤销的 Bootstrap 子集见 2026-11-25 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
+- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：§4.5 订阅终止/审计事件、§4.6 `HeldBy` 位置语义细节、W3 唯一位置；§4.5 单位置 drop 见 2026-11-25 `Formal.Drop` 节，§4.7 撤销的 Bootstrap 子集见 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
   cosir 新增本地 Task/消息/Namespace Bound 的位置、drop 与溯源状态面，见[工作契约](../docs/superpowers/specs/2026-10-25-capability-location-model-design.md)与[分层验证记录](../docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)。
   原 `Capability.owner` 仅映照创建时拥有者，移动不改它；当前授权改查 `State.locations`。
   2026-10-26新增位置/载体更新的有界Lean证明，2026-10-27 lake build通过，见下节；完整消息/Namespace及事件迁移仍没有Lean保持性证明。CDT显式ID helper不升级为完整用户授权操作。
@@ -360,3 +362,34 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Revoke.lean
 边界：不覆盖并发/移动竞争、跨节点 `InTransit`、在途消息/命名空间的收回、审计容量预演与事件、对象销毁回收、`cap_drop` 的完整授权语义、W3 唯一位置，或 Rust 源码细化。
 Bootstrap `revoke_capability` 的 Rust 证据（SPEC-022/023）与 host 测试是独立实现证据，不是本模型的自动对拍。
 本切片不改变阶段状态、7-D 或其它轨道的退出勾选。
+
+## 2026-11-25 Drop 切片
+
+COSIR §4.5 的 `cap_drop`：删除调用者单个 `HeldBy` 位置，不传播、不删记录、
+structural 根受保护。复用 `Formal.TokenLocation` 的 `Snapshot`/`dropToken`，只加
+规范层性质，未改 Rust。
+
+| Lean | cosir / Rust | 边界 |
+|---|---|---|
+| `drop s caller c` | `cap_drop` / `TokenLocation::dropToken` | 单位置；不含订阅终止/审计事件 |
+| `drop_clears` | `locations c := none` | 只清目标 |
+| `drop_does_not_propagate` | §4.5“丢弃父不撤销已派生子项” | 子位置/记录保留 |
+| `drop_structural_fails` | structural 根保护 | — |
+| `drop_preserves_wellformed` | caps 不变 | CDT parent 结构不变 |
+
+10 条定理（公理仅 `propext`/`Quot.sound`）：structural/错误持有者守卫、清位置、
+保其他位置与记录、不传播、父子独立、CDT 保持、Consistent 保持、二次 drop 失败。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/Drop.lean
+```
+
+`#eval` 锚覆盖：派生子项 drop 成功、structural 根与错误持有者拒绝、目标位置清空、
+父记录保留、子记录保留。`Checks/Drop.lean` 显示 10 条定理公理仅 `propext`/`Quot.sound`。
+
+边界：不覆盖订阅终止、审计事件、`cap_drop` 的跨位置移动竞争，也不与 `Formal.Revoke`
+的实现同构（Revoke 是子树失效，Drop 是单位置；规范明确二者正交）。

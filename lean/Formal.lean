@@ -10,6 +10,7 @@ import Formal.Tlb
 import Formal.Memseg
 import Formal.Cow
 import Formal.Revoke
+import Formal.Drop
 
 -- BLK-001 入口：声明模型目标清单；import 各模型模块使 lake build 覆盖 Formal.*。
 

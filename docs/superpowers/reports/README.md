@@ -69,6 +69,8 @@ updated: 2026-11-25
 
 2026-11-25 形式化后继：[Lean Revoke 撤销域最小模型](2026-11-25-lean-revoke.md)，`Formal.Revoke` 的 15 条定理通过固定版本 `lake build`、3 条无公理其余含 `Classical.choice`；Bootstrap 子树失效、HeldBy 删除与非 HeldBy 保留为抽象边界，是经典命题模型、不可执行。
 
+2026-11-25 形式化后继：[Lean cap_drop 最小模型](2026-11-25-lean-drop.md)，`Formal.Drop` 的 10 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，公理仅 `propext`/`Quot.sound`；单位置删除、不传播与 structural 守卫覆盖，订阅终止与审计事件为边界。
+
 阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 
 独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
