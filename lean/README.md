@@ -14,6 +14,7 @@ updated: 2026-11-25
 > **不宣称** `REFINEMENT-PROOF`（内核 C 级细化）、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明，或真实硬件保证。
 > 2026-10-31 的独立 `refinement/` 包新增两个生产 Rust 方法到单槽模型的条件性源码细化证明，范围见文末；它不改变以上 CDT/整内核边界。
 > 2026-11-25 的 `Formal.Tlb` 切片把 cosir `tlb_refine` 的最小参考语义纳入模型（每 Task 缓存、命中/未命中、显式失效与新鲜性），抽象边界见文末；它不改变 CDT/句柄边界，也不构成 SMP、TLB shootdown 或四级页表证明。
+> 2026-11-25 的 `Formal.Memseg` 切片把 cosir `memseg_refine` 的最小参考语义纳入模型（双视图一致、权限收窄、帧 owner 转移与失败原子性），抽象边界见文末；它不构成四级树、多页原子映射或 W6 全量扫描证明。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -26,6 +27,7 @@ updated: 2026-11-25
 - `Formal.KernelHandle`（`Formal/KernelHandle.lean`）：有界 generation、槽分配/释放、退役、任意迁移序列中的旧句柄不复活（见下节）。
 - `Formal.KernelHandleTable`（`Formal/KernelHandleTable.lean`）：有限槽表操作的逐槽投影、良构保持、跨槽隔离和整表任意序列无复活（2026-10-31 增量，见下节）。
 - `Formal.Tlb`（`Formal/Tlb.lean`）：每 Task TLB 缓存、页表命中/未命中、单地址失效、全量刷新、任务移除，以及显式失效后的陈旧性边界与新鲜性保持（2026-11-25 增量，见下节）。
+- `Formal.Memseg`（`Formal/Memseg.lean`）：每 Task 页表/视图双视图、W6 帧 owner 划分、map/unmap/create/destroy/destroyTask/spawn 的守卫与成功状态，以及失败原子性（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -59,7 +61,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 
 | 维度 | 本切片覆盖 | 不覆盖（后续切片） |
 |---|---|---|
-| 模型对象 | `bootstrap`（空态→booted 态）、`excResume`（授权检查）、`derive`（§4.4 能力派生） | `tlb_refine`、`memseg_refine`、`cow_refine` |
+| 模型对象 | `bootstrap`（空态→booted 态）、`excResume`（授权检查）、`derive`（§4.4 能力派生） | `cow_refine`（`tlb_refine`、`memseg_refine` 已有最小模型，见文末） |
 | 证据等级 | `MODEL-TEST`（Lean `#eval`/`theorem` 参考 + cosir host 对拍）+ `REFINEMENT-DESIGN`（独立 Lean 证明通道：CDT 不变量保持性） | `REFINEMENT-PROOF`（内核 C 级细化）、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明 |
 | 目标 | 可执行状态迁移、**非平凡良构谓词（CDT 不变量）及其保持性**、失败原子性 | 真实硬件、CR3/PTE、TLB、多核、帧字节复制 |
 
@@ -102,7 +104,7 @@ elan run leanprover/lean4:v4.35.0 lake build
   新增Rust检查已在[统一验收](../docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)中执行；不从现有句柄/CDT/位置定理推导该完整协议正确。
 
 - ~~`tlb_refine`：非一致刷新 / 显式 `invalidate_va` / `flush_all`~~ **最小模型已纳入（2026-11-25，见文末）**：抽象页表与地址/任务守卫取代四级页表、帧所有权和真实 CR3；多核 shootdown 与平台 TLB 行为仍不覆盖。
-- `memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图（见 cosir `memseg_refine.rs`，Lean 建模留待后续切片）。
+- ~~`memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图~~ **最小模型已纳入（2026-11-25，见文末）**：四级树、页表帧归属扫描、多页原子映射与 `StillMapped` 枚举被抽象成函数式表与调用方守卫；`cow_refine` 仍待后续切片。
 - `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
@@ -244,3 +246,41 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Tlb.lean
 边界：不覆盖四级页表与 canonical/对齐的位级证明、帧所有权与 `check_invariants`、容量与替换策略、真实 CR3/INVLPG/INVPCID、TLB shootdown、多核顺序或内存模型、硬件页表遍历与 SMP。
 `tlb_refine_tests.rs` 的 Rust 测试是独立的 host 见证，不是自动抽取、双向差分或 Rust 源码 refinement proof。
 本切片不改变阶段状态、7-B/7-H 勾选、profile 或既有 COW/Gate 边界。
+
+## 2026-11-25 Memseg 双视图与帧归属切片
+
+[BLK-001 计划](../docs/superpowers/plans/2026-08-18-blk001-lean-formal-model.md)把 `memseg_refine` 列为后续任务；
+本次在 `Formal.Memseg` 建模 cosir `memseg_refine.rs` 的最小参考语义，未修改 Rust 源码或既有定理。
+
+| Lean | cosir / Rust | 边界 |
+|---|---|---|
+| `TaskCtx.table : VAddr → Option Pte`、`vspace : VAddr → Option Mapping` | `TaskCtx.table` 四级树 + `vspace : BTreeMap` | 抽象为函数；不建模树结构与表帧归属检查 |
+| `Pte`（present/user/writable/nx/frame/mapping） | `pagewalk::Pte` | 只保留 W7 检查的字段；帧由 `Segment.frames` 经 `nth?` 决定 |
+| `Segment.frames/allowed` | `Segment.frames/allowed_access` | 顺序列表；不建模分配器顺序或清零 |
+| `Access.valid/sub` | `access & !0x07 == 0`、`allowed & access == access` | 三个 Bool，不是 u8 位掩码 |
+| `State.frameUniverse/free/owner` | `FrameAllocator.universe/free` + 段/表帧扫描 | W6 用单值 `owner` 函数表达唯一归属；`free ↔ owner = free` |
+| `mapEntry/unmapEntry` | `map_verified/unmap_verified`（单页） | 单页原语；多页原子循环不在模型 |
+| `createSegment/destroySegment` | `memseg_create/destroy_verified` | 帧集由调用方选择（过近似）；`StillMapped` 是调用方 Bool 守卫 |
+| `destroyTask/spawnTask` | `destroy_task_memory/spawn_task` | 表帧一帧；不建模 `new_owned_task_table` 的分配失败 |
+
+29 条普适定理（非 `native_decide`），只依赖 `propext`/`Quot.sound`：
+
+- 双视图：`viewsAgree_map`/`viewsAgree_unmap` 同时更新表与视图后仍一致；`mapEntry_success_views`/`unmapEntry_success_views` 把该结论接到成功返回的新 Task。
+- 权限：成功映射的 PTE 由 `makePte` 从段帧与 access 构造；`makePte_ok` 证明 present/user/W/NX、帧偏移与 `access ⊆ allowed`。
+- W6 转移：`createSegment_owned`/`createSegment_other_frame` 证明选中帧变为 `Owner.segment sid` 且离开 free、其他帧不变；`destroySegment_freed`/`destroySegment_removed` 证明归还与段移除；`destroyTask_freed` 归还表帧；`spawnTask_ok` 把一帧从 free 转为 `Owner.table`。
+- 守卫与原子性：`mapEntry_no_task`/`_invalid_access`/`_invalid_segment`/`_overlap`、`unmapEntry_entry`/`_not_mapped`、`createSegment_fail_*`、`destroySegment_still` 都原样返回输入状态；`mapEntry_ok`/`unmapEntry_ok`/`createSegment_ok`/`destroySegment_ok`/`destroyTask_ok` 钉住成功后的精确状态。
+- entry 保护：`unmapEntry_entry` 先于 `notMapped` 拒绝 entry 页。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/Memseg.lean
+```
+
+`Checks/Memseg.lean` 对 29 条定理打印公理依赖；只有 `propext`/`Quot.sound`，无 `sorryAx`/native。`#eval` 锚覆盖创建/销毁的 owner 转移、map 成功与五类错误、unmap 的 entry/未映射、spawn 表帧转移与任务销毁归还。
+
+边界：不覆盖四级页表树与 `check_frame_ownership`、多页原子 map/unmap、地址对齐/canonical、`next_seg` 溢出、分配器顺序、帧清零、`StillMapped` 视图枚举（抽象为 guard）或真实 CR3 操作。
+`memseg_refine_tests.rs` 的 Rust 测试是独立 host 见证，不是自动抽取、双向差分或 Rust 源码 refinement proof。
+本切片不改变阶段状态、7-B/7-C/7-H 勾选、profile 或既有 COW/Gate 边界。

@@ -27,7 +27,8 @@
       "docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md",
       "docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md",
       "docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md",
-      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md"
+      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md",
+      "docs/superpowers/reports/2026-11-25-lean-memseg-refine.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -40,6 +41,7 @@
       "lean/Formal/KernelHandle.lean",
       "lean/Formal/KernelHandleTable.lean",
       "lean/Formal/Tlb.lean",
+      "lean/Formal/Memseg.lean",
       "lean/refinement/Refinement/Handle.lean",
       "lean/refinement/Refinement/Generated/Funs.lean"
     ],
@@ -48,6 +50,7 @@
       "lean/Formal.lean",
       "lean/Checks/KernelHandleTable.lean",
       "lean/Checks/Tlb.lean",
+      "lean/Checks/Memseg.lean",
       "kernel/src/handle_table_tests.rs",
       "lean/refinement/Checks.lean",
       "scripts/check_handle_refinement.py"
@@ -232,7 +235,8 @@
       "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md",
       "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
       "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md",
-      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md"
+      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md",
+      "docs/superpowers/reports/2026-11-25-lean-memseg-refine.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -241,6 +245,7 @@
       "kernel/src/cow.rs",
       "prima-ostd/src/mm.rs",
       "cosir/src/memseg_refine.rs",
+      "lean/Formal/Memseg.lean",
       "cosir/src/pagewalk.rs",
       "cosir/src/tlb_refine.rs",
       "lean/Formal/Tlb.lean",
@@ -259,6 +264,7 @@
       "cosir/src/pagewalk_tests.rs",
       "cosir/src/tlb_refine_tests.rs",
       "lean/Checks/Tlb.lean",
+      "lean/Checks/Memseg.lean",
       "cosir/src/cow_refine_tests.rs",
       "prima-user/c/stage5_mem.c",
       "prima-user/c/stage5_proc.c",
