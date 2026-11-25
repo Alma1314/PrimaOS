@@ -97,7 +97,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（242）
+## report（243）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -343,6 +343,7 @@
 | [Lean `Formal.Tlb`：TLB 缓存最小参考模型（BLK-001 后续切片）](../superpowers/reports/2026-11-25-lean-tlb-refine.md) | current | `docs/superpowers/reports/2026-11-25-lean-tlb-refine.md` |
 | [P3-2：C 适配层控制面锁拆分（工作项 3 完成）](../superpowers/reports/2026-11-25-p3-adapter-control-lock.md) | current | `docs/superpowers/reports/2026-11-25-p3-adapter-control-lock.md` |
 | [P3-3：直连 v2 会话 QEMU 正反例矩阵](../superpowers/reports/2026-11-25-p3-async-matrix.md) | current | `docs/superpowers/reports/2026-11-25-p3-async-matrix.md` |
+| [P3 收口：有界异步批量证据包与复核输入](../superpowers/reports/2026-11-25-p3-closeout.md) | current | `docs/superpowers/reports/2026-11-25-p3-closeout.md` |
 
 ## spec（4）
 
