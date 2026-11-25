@@ -4,7 +4,7 @@ kind: reference
 authority: model-mapping
 status: maintained
 lifecycle: current
-updated: 2026-11-01
+updated: 2026-11-25
 ---
 
 # 形式化模型与内核映照（Lean）
@@ -13,6 +13,7 @@ updated: 2026-11-01
 > 并以 **REFINEMENT-DESIGN**（独立 Lean 证明通道）支撑 §4.2 **能力派生树（CDT）不变量**的保持性。
 > **不宣称** `REFINEMENT-PROOF`（内核 C 级细化）、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明，或真实硬件保证。
 > 2026-10-31 的独立 `refinement/` 包新增两个生产 Rust 方法到单槽模型的条件性源码细化证明，范围见文末；它不改变以上 CDT/整内核边界。
+> 2026-11-25 的 `Formal.Tlb` 切片把 cosir `tlb_refine` 的最小参考语义纳入模型（每 Task 缓存、命中/未命中、显式失效与新鲜性），抽象边界见文末；它不改变 CDT/句柄边界，也不构成 SMP、TLB shootdown 或四级页表证明。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -24,6 +25,7 @@ updated: 2026-11-01
 - `Formal.Forest`（`Formal/Forest.lean`）：`parentOf`/`ancestry` + **`ancestry_lt`（森林性/无环：父链 `k ≥ 1` 步严格递减，§4.2 头号结论）**（**非平凡**）+ `ancestry_no_cycle` + 3 条 `native_decide` 可执行锚。
 - `Formal.KernelHandle`（`Formal/KernelHandle.lean`）：有界 generation、槽分配/释放、退役、任意迁移序列中的旧句柄不复活（见下节）。
 - `Formal.KernelHandleTable`（`Formal/KernelHandleTable.lean`）：有限槽表操作的逐槽投影、良构保持、跨槽隔离和整表任意序列无复活（2026-10-31 增量，见下节）。
+- `Formal.Tlb`（`Formal/Tlb.lean`）：每 Task TLB 缓存、页表命中/未命中、单地址失效、全量刷新、任务移除，以及显式失效后的陈旧性边界与新鲜性保持（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -99,7 +101,7 @@ elan run leanprover/lean4:v4.35.0 lake build
   该细化与既有prepared fork分开标记，契约见[受管理装载](../docs/superpowers/specs/2026-11-01-stage6-managed-launch.md)。
   新增Rust检查已在[统一验收](../docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)中执行；不从现有句柄/CDT/位置定理推导该完整协议正确。
 
-- `tlb_refine`：非一致刷新 / 显式 `invalidate_va` / `flush_all`（见 cosir `tlb_refine.rs`，Lean 建模留待后续切片）。
+- ~~`tlb_refine`：非一致刷新 / 显式 `invalidate_va` / `flush_all`~~ **最小模型已纳入（2026-11-25，见文末）**：抽象页表与地址/任务守卫取代四级页表、帧所有权和真实 CR3；多核 shootdown 与平台 TLB 行为仍不覆盖。
 - `memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图（见 cosir `memseg_refine.rs`，Lean 建模留待后续切片）。
 - `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
@@ -202,3 +204,43 @@ python3 scripts/check_handle_refinement.py --mutation-test
 这是独立 Lake 包，使用 `toolchain.lock.json`/`lake-manifest.json` 固定依赖；安装与缓存准备见报告。原无外部依赖的 `lean/` 普通 `lake build` 不包含此包；默认脚本不下载工具或依赖。当前生产构建仍使用原 pinned Rust，抽取工具链单独安装。
 
 本增量在上述两个方法/后继值上将证据推进至**受信任翻译边界下的源码级细化**；原 CDT、有限表模型的遗漏不因此消失。下一步仍需自动提取整表读写/选槽和检查过程，并建立真实 Rust 状态到 `KernelHandleTable` 的模拟关系。尚不覆盖编解码、整表所有操作、LLVM/二进制、并发或完整内核安全性。
+
+## 2026-11-25 TLB 缓存映照切片
+
+[BLK-001 计划](../docs/superpowers/plans/2026-08-18-blk001-lean-formal-model.md)把 `tlb_refine` 列为后续任务；
+本次在 `Formal.Tlb` 建模 cosir `tlb_refine.rs` 的最小参考语义，未修改 Rust 源码或既有定理。
+
+| Lean | cosir / Rust | 边界 |
+|---|---|---|
+| `TlbState = TaskId → VAddr → Option CachedXlat` | `TlbState.per_task : BTreeMap<TaskId, Tlb>` | 只表达点查询/更新；不建模迭代顺序或容量 |
+| `CachedXlat.framePhys/accessRead/accessWrite/accessExec` | `CachedXlat.frame_phys/access` + `ACCESS_R/W/X` | 权限是三个独立布尔，不是 8 位掩码或 u64 ABI |
+| `validAddr` | `validate_page_vaddr`（对齐 + canonical） | 抽象成任意守卫；不证明位运算、四级索引或 canonical 半区 |
+| `taskExists` | `tasks` 与 `memory.tasks` 双重存在检查 | 合成一个守卫；不区分调度表与页表表项 |
+| `pt : TaskId → VAddr → Option CachedXlat` | `PageTable` 四级树 + `translate` | 抽象页表；不建模 PML4/PDPT/PD/PT、帧所有权或 `check_invariants` |
+| `translate` 命中/未命中/失败 | `tlb_refine::translate` | 未命中填充、未映射不填充、失败不改状态一致 |
+| `invalidateVa` / `flushAll` / `removeTask` | `invalidate_va` / `flush_all` / `remove_task` | 守卫顺序与错误面一致；`remove_task` 无存在性前置 |
+| `FreshFor` | （无显式类型；测试断言） | 新增证明谓词：缓存项与页表一致 |
+
+31 条普适定理（非 `native_decide`），全部只依赖 `propext`/`Quot.sound`（`funext` 引入后者）：
+
+- 点更新：`insert_same`/`insert_other`；失效/刷新/移除分别清除目标，其他 Task 与其他地址不变（`*_other_task`、`*_other_va`）。
+- 幂等：重复失效、刷新、任务移除不再改变状态。
+- 守卫与错误面：成功/非法地址/未知任务各返回预期结果；失败路径原样返回输入 TLB（`invalidate_*`、`flush_*`、`translate_*`）。
+- 命中与填充：命中返回缓存值且不改状态；未命中读抽象页表并填充；未映射返回 `notMapped` 且不填充。
+- **陈旧性边界（核心）**：`translate_after_invalidate`——在有效地址与存活任务下，单地址失效后的下一次翻译完全由当前页表决定，不复用旧缓存。
+- **新鲜性保持**：`invalidate_fresh_for`、`flush_fresh_for`、`removeTask_fresh_for`、`translate_miss_fresh`——干净缓存经失效、刷新、移除和页表填充后仍与页表一致。
+- 任务隔离：`insert_preserves_other_task`；`translate` 的唯一状态变化是 `insert`。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/Tlb.lean
+```
+
+`Checks/Tlb.lean` 对全部 31 条定理打印公理依赖；本次只有 `propext`/`Quot.sound`，无 `sorryAx` 或 native 求值依赖。`#eval` 锚覆盖命中陈旧帧、失效后新帧、单地址/单任务作用域、刷新/移除清空、三类错误面与权限位矩阵。
+
+边界：不覆盖四级页表与 canonical/对齐的位级证明、帧所有权与 `check_invariants`、容量与替换策略、真实 CR3/INVLPG/INVPCID、TLB shootdown、多核顺序或内存模型、硬件页表遍历与 SMP。
+`tlb_refine_tests.rs` 的 Rust 测试是独立的 host 见证，不是自动抽取、双向差分或 Rust 源码 refinement proof。
+本切片不改变阶段状态、7-B/7-H 勾选、profile 或既有 COW/Gate 边界。

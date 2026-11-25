@@ -71,3 +71,6 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 
 
 [同日源码细化后继](../../superpowers/reports/2026-10-31-rust-handle-source-refinement.md)以 Charon/Aeneas 从生产 Rust 提取句柄构造/后继方法；[细化定理](../../../lean/refinement/Refinement/Handle.lean)通过普适证明连接单槽模型，[重放脚本](../../../scripts/check_handle_refinement.py)拒绝陈旧/手改生成物并提供真实源码 mutation。只覆盖所列两个方法与 generation 核心，尚非整张 Rust 槽表或完整内核细化。
+
+
+2026-11-25 [TLB 缓存最小模型](../../superpowers/reports/2026-11-25-lean-tlb-refine.md)把 cosir `tlb_refine` 的命中/未命中、单地址失效、全量刷新与任务移除纳入 [Formal.Tlb](../../../lean/Formal/Tlb.lean)；[公理审计](../../../lean/Checks/Tlb.lean)只显示 `propext`/`Quot.sound`。抽象页表与守卫取代四级页表、帧所有权和真实 CR3，不覆盖 SMP、TLB shootdown 或 Rust 源码细化。

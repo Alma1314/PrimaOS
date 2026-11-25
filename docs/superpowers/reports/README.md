@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # Reports 索引
@@ -35,6 +35,8 @@ updated: 2026-11-24
 
 2026-11-24：[P3-2 C 适配层数据面锁拆分](2026-11-24-p3-adapter-lock-split.md)；read/write/readv/writev/pread/pwrite 改为短表锁快照加每 wire fd 在途计数与延迟 CLOSE，不再跨同步 IPC 持进程锁；控制面 open/close/路径仍持表锁，工作项 3 未完整，P3-2 未关闭；musl 7、V1–V4、W4–W9 与完整 72 轮通过。
 
+2026-11-25：[P3-2 C 适配层控制面锁拆分](2026-11-25-p3-adapter-control-lock.md)；open/close/dup/fcntl/stat/路径/目录/termios/socket 改为短表锁本地段加锁外 IPC，在途引用扩展到目录与 socket，fork 不再持表锁；host 1181、musl 7、lint、V1–V4、W4–W9、代理矩阵与完整 72 轮通过；工作项 3 完整。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
@@ -58,6 +60,8 @@ updated: 2026-11-24
 源码细化：[生产 Rust 句柄方法→Lean](2026-10-31-rust-handle-source-refinement.md)，Charon/Aeneas 自动提取、生成物新鲜度、5 条一般定理与真实 Rust mutation；范围限构造/后继值，翻译器为可信边界。 主分支整合复核见该报告末节。
 
 形式化后继：[有限能力槽表组合证明](2026-10-31-kernel-handle-table-proof.md)，10 条一般 Lean 定理、整表任意序列无复活、真实 Rust 三槽六步回归；不宣称 Rust 源码细化证明。
+
+2026-11-25 形式化后继：[Lean TLB 缓存最小参考模型](2026-11-25-lean-tlb-refine.md)，`Formal.Tlb` 的 31 条定理通过固定版本 `lake build`、公理仅 `propext`/`Quot.sound`；抽象页表与守卫边界、7-B/7-H 不勾选、无源码细化均见正文。
 
 阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 

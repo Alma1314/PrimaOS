@@ -23,7 +23,7 @@ updated: 2026-10-31
 
 先确认阶段跟踪与契约，再按下面链读取设计、计划和报告。历史工件中未开始/未实现的表述只属于其当时基线。
 
-host memseg/pagewalk、COW、TLB 设计实验 → 阶段1/2 实际页表与帧管理 → M10 匿名内存保护 → M17b-2 COW 页表原语/故障接线 → M17b-4 W6。host 细化实验与内核 COW 执行不能合并为同一证据。
+host memseg/pagewalk、COW、TLB 设计实验 → 阶段1/2 实际页表与帧管理 → M10 匿名内存保护 → M17b-2 COW 页表原语/故障接线 → M17b-4 W6。host 细化实验与内核 COW 执行不能合并为同一证据。2026-11-25 的 [Lean TLB 最小模型](../../superpowers/reports/2026-11-25-lean-tlb-refine.md)是参考语义，不替代 `tlb_refine_tests.rs` 的 host 见证，也不构成四级页表或 SMP 证据。
 
 旧 MemorySegment 设计/计划明确由 2026-08-12 细化审查纠偏设计限定证据与术语；2026-08-13 历史工件一致性报告记录了这次校准。host W8 支持仅限 unmap 入口页 guard，不代表完整 W8 抽象投影。
 
@@ -64,6 +64,7 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 - [memseg_refine.rs](../../../cosir/src/memseg_refine.rs)
 - [pagewalk.rs](../../../cosir/src/pagewalk.rs)
 - [tlb_refine.rs](../../../cosir/src/tlb_refine.rs)
+- [Tlb.lean](../../../lean/Formal/Tlb.lean)
 - [cow_refine.rs](../../../cosir/src/cow_refine.rs)
 - [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
 
@@ -76,6 +77,7 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 - [memseg_refine_tests.rs](../../../cosir/src/memseg_refine_tests.rs)
 - [pagewalk_tests.rs](../../../cosir/src/pagewalk_tests.rs)
 - [tlb_refine_tests.rs](../../../cosir/src/tlb_refine_tests.rs)
+- [Tlb.lean（Checks）](../../../lean/Checks/Tlb.lean)
 - [cow_refine_tests.rs](../../../cosir/src/cow_refine_tests.rs)
 - [stage5_mem.c](../../../prima-user/c/stage5_mem.c)
 - [stage5_proc.c](../../../prima-user/c/stage5_proc.c)

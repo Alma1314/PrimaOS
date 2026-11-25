@@ -26,7 +26,8 @@
       "docs/superpowers/reports/2026-10-24-kernel-handle-model-report.md",
       "docs/superpowers/reports/2026-10-31-kernel-handle-table-proof.md",
       "docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md",
-      "docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md"
+      "docs/superpowers/reports/2026-10-31-rust-handle-source-refinement.md",
+      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -38,6 +39,7 @@
       "lean/Formal/Forest.lean",
       "lean/Formal/KernelHandle.lean",
       "lean/Formal/KernelHandleTable.lean",
+      "lean/Formal/Tlb.lean",
       "lean/refinement/Refinement/Handle.lean",
       "lean/refinement/Refinement/Generated/Funs.lean"
     ],
@@ -45,6 +47,7 @@
       "cosir/tests/lean_backtrace.rs",
       "lean/Formal.lean",
       "lean/Checks/KernelHandleTable.lean",
+      "lean/Checks/Tlb.lean",
       "kernel/src/handle_table_tests.rs",
       "lean/refinement/Checks.lean",
       "scripts/check_handle_refinement.py"
@@ -228,7 +231,8 @@
       "docs/superpowers/specs/2026-10-31-stage6-exec-frame-capacity.md",
       "docs/superpowers/reports/2026-10-31-stage6-exec-frame-capacity.md",
       "docs/superpowers/specs/2026-11-07-stage7-cow-benchmark.md",
-      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md"
+      "docs/superpowers/reports/2026-11-07-stage7-cow-benchmark.md",
+      "docs/superpowers/reports/2026-11-25-lean-tlb-refine.md"
     ],
     "code": [
       "kernel/src/frames.rs",
@@ -239,6 +243,7 @@
       "cosir/src/memseg_refine.rs",
       "cosir/src/pagewalk.rs",
       "cosir/src/tlb_refine.rs",
+      "lean/Formal/Tlb.lean",
       "cosir/src/cow_refine.rs",
       "prima-user/c/prima_syscall.c",
       "prima-ostd/src/align.rs",
@@ -253,6 +258,7 @@
       "cosir/src/memseg_refine_tests.rs",
       "cosir/src/pagewalk_tests.rs",
       "cosir/src/tlb_refine_tests.rs",
+      "lean/Checks/Tlb.lean",
       "cosir/src/cow_refine_tests.rs",
       "prima-user/c/stage5_mem.c",
       "prima-user/c/stage5_proc.c",
