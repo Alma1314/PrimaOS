@@ -117,6 +117,8 @@ enum Stage5Program<'a> {
     /// M13b：chmod/fchmod/umask 与 stdio 文件 API 探针。
     Vfs3,
     FileExt,
+    /// P3-3：直连 v2 异步会话正反例矩阵（仅验收镜像）。
+    Async,
     /// M19：用户态 loopback IPv4/UDP 探针。
     Net,
     /// M14：fd 0 tty 输入（canonical/raw/EOF/termios）探针。
@@ -203,6 +205,11 @@ pub(crate) fn build_images_for_vfs3() -> Result<Images, String> {
 
 pub(crate) fn build_images_for_file_ext() -> Result<Images, String> {
     build_images_with_program(Stage5Program::FileExt)
+}
+
+/// P3-3：v2 队列/取消/拒绝矩阵的验收镜像（只跑 Prima，无 Linux 参考）。
+pub(crate) fn build_images_for_async() -> Result<Images, String> {
+    build_images_with_program(Stage5Program::Async)
 }
 
 /// M19：用 loopback UDP 探针替换 C 探针映像并跑同一双轮验证。
@@ -461,6 +468,11 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
             vec![c_dir.join("stage5_file_ext.c")],
             "stage5 positional file probe",
         ),
+        Stage5Program::Async => (
+            path.with_file_name("stage5-async.elf"),
+            vec![c_dir.join("stage5_async.c")],
+            "stage5 v2 async probe",
+        ),
         Stage5Program::Net => (
             path.with_file_name("stage5-net.elf"),
             vec![c_dir.join("stage5_net.c")],
@@ -607,6 +619,9 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     if matches!(program, Stage5Program::FileExt) {
         clang.arg("-DPRIMA_BULK_PROBE");
     }
+    if matches!(program, Stage5Program::Async) {
+        clang.arg("-DPRIMA_ASYNC_PROBE");
+    }
     clang.arg(format!(
         "-Wl,--version-script={}",
         c_dir.join("prima_libc.map").display()
@@ -689,6 +704,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         Stage5Program::Vfs2 => Some((&["stage5-vfs2"], &[])),
         Stage5Program::Vfs3 => Some((&["stage5-vfs3"], &[])),
         Stage5Program::FileExt => Some((&["stage5-file-ext"], &[])),
+        Stage5Program::Async => Some((&["stage5-async"], &[])),
         Stage5Program::Net => Some((&["stage5-net"], &[])),
         Stage5Program::Ttyin => Some((&["stage5-ttyin"], &[])),
         Stage5Program::Wait => Some((&["stage5-wait"], &[])),

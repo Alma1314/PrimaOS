@@ -2785,6 +2785,10 @@ static long prima_fd_resize(int fd, long size) {
 #include "prima_bulk_probe.h"
 #endif
 
+#ifdef PRIMA_ASYNC_PROBE
+#include "prima_async_probe.h"
+#endif
+
 static long prima_fd_close(int fd) {
     struct prima_wire_close close = {0};
     prima_fd_lock_take();

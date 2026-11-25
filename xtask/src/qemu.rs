@@ -1060,6 +1060,15 @@ pub(crate) fn run_bios_linux_capture(image: &Path) -> Result<String, String> {
     Ok(output.stdout)
 }
 
+/// A scenario probe image with its own IPC shape: check the boot exit code and
+/// leave the trace assertions to the caller.
+pub(crate) fn run_bios_probe_capture(image: &Path) -> Result<String, String> {
+    let output = run_captured(image)?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    Ok(output.stdout)
+}
+
 /// 通用 QEMU 捕获运行器：给定完整参数与超时，返回退出状态与双流输出。
 ///
 /// 切片 P 的参考 Linux guest 复用此入口（`-kernel`/`-initrd` 参数、独立 180s 超时）。

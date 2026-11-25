@@ -191,6 +191,10 @@ fn run() -> Result<(), String> {
             };
             test_vfs_slice(program)
         }
+        "test-async" => {
+            require_no_args(&rest)?;
+            test_async_slice()
+        }
         "test-musl" => match rest.as_slice() {
             [] => test_musl_slice(false),
             [flag] if flag == "--host-only" => test_musl_slice(true),
@@ -304,6 +308,56 @@ fn test_process_slice(case: Option<&str>) -> Result<(), String> {
             image::SIGACT_EXPECTED_STDOUT,
         )?;
     }
+    Ok(())
+}
+
+/// P3-3：v2 直连会话正反例矩阵；Prima-only，故断言 case 行而不是 Linux 差分。
+fn test_async_slice() -> Result<(), String> {
+    const CASES: &[&str] = &[
+        "S9ASYNC|case=open;status=0",
+        "S9ASYNC|case=merged;status=0",
+        "S9ASYNC|case=full;status=0",
+        "S9ASYNC|case=replay;status=0",
+        "S9ASYNC|case=rewind;status=0",
+        "S9ASYNC|case=reserved;status=0",
+        "S9ASYNC|case=cancel;status=0",
+        "S9ASYNC|case=fair;status=0",
+        "S9ASYNC|case=death;status=0",
+        "S9ASYNC|case=close;status=0",
+        "S9ASYNCDONE|fail=0",
+    ];
+    let images = image::build_images_for_async()?;
+    let mut baseline: Option<Vec<String>> = None;
+    for run in 1..=2 {
+        let output = qemu::run_bios_probe_capture(&images.bios)
+            .map_err(|error| format!("P3 async run {run} failed: {error}"))?;
+        for expected in CASES {
+            if !output.contains(expected) {
+                return Err(format!(
+                    "P3 async run {run} missing witness {expected:?};\n{output}"
+                ));
+            }
+        }
+        let cases: Vec<String> = output
+            .lines()
+            .filter(|line| line.trim_start().starts_with("S9ASYNC"))
+            .map(str::to_owned)
+            .collect();
+        if let Some(previous) = &baseline {
+            if previous != &cases {
+                return Err(format!(
+                    "P3 async case stream differs across runs: {previous:?} vs {cases:?}"
+                ));
+            }
+        } else {
+            baseline = Some(cases);
+        }
+        if output.contains("S6PANIC|") || output.contains("|event=panic|") {
+            return Err(format!("P3 async run {run} panicked;\n{output}"));
+        }
+        println!("PASS qemu bios V5 run={run}");
+    }
+    println!("PASS P3ASYNC cases=10 runs=2");
     Ok(())
 }
 
@@ -720,8 +774,9 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-async|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
+     \x20      cargo xtask test-async\n\
      \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features linux-probe -- <build-linux|test-linux|test-linux-proxy>\n\
      \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features libos-bench -- test-libos-bench\n\
      \x20      cargo run -p xtask --features gate-probe -- test-gate\n\
