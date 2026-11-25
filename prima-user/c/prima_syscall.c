@@ -86,7 +86,11 @@ static int prima_net_active(void);
 static long prima_tty_send(uint64_t payload);
 static long prima_net_status(uint64_t reply);
 static int prima_fd_lock;
-/* Short fd-table critical sections; the data path never holds this across IPC. */
+/* One lock guards the process-wide adapter state below (fd table, wire handle
+ * refs, cwd, umask, termios, directory caches). Critical sections never span
+ * IPC or user-memory access: helpers ending in _locked require the caller to
+ * hold it. Operations that need a wire handle across IPC take an in-flight
+ * reference, so a concurrent close defers the wire CLOSE. */
 static void prima_fd_lock_take(void) {
     while (__sync_lock_test_and_set(&prima_fd_lock, 1))
         (void)prima_raw(PRIMA_SYS_YIELD, 0, 0, 0, 0, 0, 0);
@@ -826,6 +830,14 @@ static unsigned char prima_file_inflight[PRIMA_FILE_HANDLES];
 static unsigned char prima_file_retire[PRIMA_FILE_HANDLES];
 // M19：socket 服务端句柄的本地引用计数（dup 共享）。
 static unsigned char prima_net_refs[PRIMA_NET_SOCKETS];
+static unsigned char prima_net_inflight[PRIMA_NET_SOCKETS];
+static unsigned char prima_net_retire[PRIMA_NET_SOCKETS];
+
+/* A wire CLOSE owed when the last local reference goes away; sent by the
+ * caller after releasing the table lock. kind 0 means nothing is owed. */
+enum { PRIMA_WIRE_NONE, PRIMA_WIRE_FILE, PRIMA_WIRE_NET };
+struct prima_wire_close { unsigned char kind, handle; };
+static long prima_wire_close_call(const struct prima_wire_close *close);
 
 /* M13a：目录 fd 的规范化绝对路径（与 cwd 一样按文本保存），供 fchdir 使用。
  * dup/dup2/dup3 复制路径；关闭 fd 时清除。 */
@@ -915,30 +927,32 @@ static void prima_dir_reset(unsigned char handle) {
     cache->pos = 0;
 }
 
-/* 释放一项；文件/目录句柄的最后一个引用负责通知服务端。返回服务端状态。 */
-static long prima_fd_drop(int fd) {
+/* Caller holds prima_fd_lock. Removes one entry; `close` receives the wire
+ * handle whose CLOSE is now owed (kind 0 when none or when deferred until the
+ * last in-flight operation returns). No IPC happens here. */
+static void prima_fd_drop_locked(int fd, struct prima_wire_close *close) {
     struct prima_fd_entry *entry = &prima_fds[fd - PRIMA_LOCAL_FD_FIRST];
-    long status = 0;
     if (entry->kind == PRIMA_FD_SOCKET) {
         unsigned char handle = entry->object;
         if (handle < PRIMA_NET_SOCKETS && --prima_net_refs[handle] == 0) {
-            uint64_t reply = 0;
-            (void)prima_net_request(PRIMA_NET_OP_CLOSE, handle, 0, &reply);
+            if (prima_net_inflight[handle]) {
+                prima_net_retire[handle] = 1;
+            } else {
+                close->kind = PRIMA_WIRE_NET;
+                close->handle = handle;
+            }
         }
     } else if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR) {
         unsigned char handle = entry->object;
         unsigned char index = handle - PRIMA_FILE_FIRST_FD;
         if (--prima_file_refs[index] == 0) {
             if (prima_file_inflight[index]) {
-                /* A read/write on this handle is still in flight; its last
-                 * unref sends the wire CLOSE after the batch completes. */
+                /* A read/write/seek on this handle is still in flight; its last
+                 * unref sends the wire CLOSE after the operation completes. */
                 prima_file_retire[index] = 1;
             } else {
-                long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
-                if (reply < 0)
-                    status = reply;
-                else if (prima_reply_status((uint64_t)reply) != 0)
-                    status = -prima_reply_status((uint64_t)reply);
+                close->kind = PRIMA_WIRE_FILE;
+                close->handle = handle;
             }
             prima_dir_reset(handle);
         }
@@ -948,7 +962,6 @@ static long prima_fd_drop(int fd) {
     entry->node = 0;
     entry->cloexec = 0;
     prima_fd_path_clear(fd);
-    return status;
 }
 
 /* 同步请求：发送一帧文件请求、阻塞接收文件应答；返回应答 payload 或原始负 errno。 */
@@ -972,19 +985,21 @@ static long prima_reply_status(uint64_t reply) {
     return (long)((reply >> PRIMA_FILE_STATUS_SHIFT) & 0xff);
 }
 
-/* Snapshot one descriptor under the table lock. Regular files retain the wire
- * handle until the matching unref. Returns 0 when the fd is empty. */
+/* Snapshot one descriptor under the table lock. File and directory handles
+ * retain the wire handle until the matching unref. Returns 0 when empty. */
 static int prima_fd_snapshot(int fd, unsigned char *kind, unsigned char *object) {
+    int present = 0;
     prima_fd_lock_take();
     struct prima_fd_entry *entry = prima_fd_entry(fd);
     if (entry) {
+        present = 1;
         *kind = entry->kind;
         *object = entry->object;
-        if (*kind == PRIMA_FD_FILE)
+        if (*kind == PRIMA_FD_FILE || *kind == PRIMA_FD_DIR)
             prima_file_inflight[*object - PRIMA_FILE_FIRST_FD]++;
     }
     prima_fd_lock_give();
-    return entry != 0;
+    return present;
 }
 
 /* Drop a snapshot reference; the last one may owe the server a deferred CLOSE.
@@ -1002,6 +1017,59 @@ static void prima_file_unref(unsigned char handle) {
     }
     prima_fd_lock_give();
     if (deferred) (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
+}
+
+/* Same contract for socket handles (bind/getsockname/sendto/recvfrom). */
+static int prima_net_snapshot(int fd, unsigned char *handle) {
+    prima_fd_lock_take();
+    struct prima_fd_entry *entry = prima_fd_entry(fd);
+    int socket = entry && entry->kind == PRIMA_FD_SOCKET;
+    if (socket && entry->object < PRIMA_NET_SOCKETS) {
+        *handle = entry->object;
+        prima_net_inflight[*handle]++;
+    }
+    prima_fd_lock_give();
+    return socket;
+}
+
+static void prima_net_unref(unsigned char handle) {
+    if (handle >= PRIMA_NET_SOCKETS) return;
+    int deferred = 0;
+    prima_fd_lock_take();
+    if (prima_net_inflight[handle]) prima_net_inflight[handle]--;
+    if (!prima_net_inflight[handle] && prima_net_retire[handle] &&
+        !prima_net_refs[handle]) {
+        prima_net_retire[handle] = 0;
+        deferred = 1;
+    }
+    prima_fd_lock_give();
+    if (deferred) {
+        uint64_t reply = 0;
+        (void)prima_net_request(PRIMA_NET_OP_CLOSE, handle, 0, &reply);
+    }
+}
+
+/* Release a snapshot taken by prima_fd_snapshot on any early error path. */
+static void prima_file_unref_kind(unsigned char kind, unsigned char handle) {
+    if (kind == PRIMA_FD_FILE || kind == PRIMA_FD_DIR)
+        prima_file_unref(handle);
+}
+
+/* Send a CLOSE collected by a locked drop. File status is reported as before;
+ * socket closes keep the historical best-effort (zero) result. */
+static long prima_wire_close_call(const struct prima_wire_close *close) {
+    if (close->kind == PRIMA_WIRE_FILE) {
+        long reply = prima_file_call(PRIMA_FILE_OP_CLOSE, close->handle, 0);
+        if (reply < 0)
+            return reply;
+        long status = prima_reply_status((uint64_t)reply);
+        return status == 0 ? 0 : -status;
+    }
+    if (close->kind == PRIMA_WIRE_NET) {
+        uint64_t reply = 0;
+        (void)prima_net_request(PRIMA_NET_OP_CLOSE, close->handle, 0, &reply);
+    }
+    return 0;
 }
 
 /* ---------- M9：工作目录、路径合成与 statx ----------
@@ -1033,7 +1101,8 @@ static unsigned long prima_strlen_bounded(const char *text, unsigned long max) {
     return len;
 }
 
-/* 把 path 加上当前 cwd 前缀并消除 `.`/`..`/重复 `/`；失败返回负 errno。 */
+/* 把 path 加上当前 cwd 前缀并消除 `.`/`..`/重复 `/`；失败返回负 errno。
+ * 读取进程级 cwd，调用方必须持有 prima_fd_lock。 */
 static long prima_normalize_path(const char *path, char *out,
                                  unsigned long *out_len) {
     unsigned long len = 0;
@@ -1080,7 +1149,8 @@ static long prima_normalize_path(const char *path, char *out,
 }
 
 /* M13a：把 dirfd + path 合成为规范化绝对路径（供 fchdir/rename/readlink 使用）。
- * 目录 fd 的基准路径来自打开时记录的文本；未知路径返回 EINVAL。 */
+ * 目录 fd 的基准路径来自打开时记录的文本；未知路径返回 EINVAL。
+ * 读取 fd 表与 cwd，调用方必须持有 prima_fd_lock。 */
 static long prima_absolute_path(long dirfd, const char *path, char *out,
                                 unsigned long *out_len) {
     if (!path)
@@ -1113,9 +1183,11 @@ static long prima_absolute_path(long dirfd, const char *path, char *out,
     return prima_normalize_path(joined, out, out_len);
 }
 
-/* 解析 dirfd + path → (起始节点, 实际发送的路径)。cwd 合成缓冲由调用方提供。 */
+/* Caller holds prima_fd_lock. Resolves dirfd + path to (start node, path to
+ * send). The path is copied into `buffer` so the later IPC runs outside the
+ * lock; `*len` receives its length. */
 static long prima_path_target(long dirfd, const char *path, unsigned char *start,
-                              char *buffer, const char **send_path) {
+                              char *buffer, unsigned long *len) {
     if (!path)
         return -PRIMA_ERRNO_EFAULT;
     if (dirfd != PRIMA_AT_FDCWD) {
@@ -1125,20 +1197,25 @@ static long prima_path_target(long dirfd, const char *path, unsigned char *start
         if (dir->kind != PRIMA_FD_DIR)
             return -PRIMA_ERRNO_ENOTDIR;
         *start = dir->node;
-        *send_path = path;
+        unsigned long path_len = prima_strlen_bounded(path, PRIMA_VFS_PATH_MAX);
+        if (path_len > PRIMA_VFS_PATH_MAX)
+            return -PRIMA_ERRNO_EINVAL;
+        for (unsigned long i = 0; i <= path_len; i++)
+            buffer[i] = path[i];
+        *len = path_len;
         return 0;
     }
     *start = 0;
     if (path[0] == '/') {
-        *send_path = path;
+        unsigned long path_len = prima_strlen_bounded(path, PRIMA_VFS_PATH_MAX);
+        if (path_len > PRIMA_VFS_PATH_MAX)
+            return -PRIMA_ERRNO_EINVAL;
+        for (unsigned long i = 0; i <= path_len; i++)
+            buffer[i] = path[i];
+        *len = path_len;
         return 0;
     }
-    unsigned long len = 0;
-    long normalized = prima_normalize_path(path, buffer, &len);
-    if (normalized < 0)
-        return normalized;
-    *send_path = buffer;
-    return 0;
+    return prima_normalize_path(path, buffer, len);
 }
 
 /* 发送一次 OPEN/PATH/COMMIT；成功把应答 payload 写入 reply。 */
@@ -1243,7 +1320,9 @@ static long prima_stat_fetch(unsigned char start, const char *path,
     return 0;
 }
 
-/* M8/M9：打开/创建路径。cwd 默认为根；`dirfd` 形式从该目录节点起。 */
+/* M8/M9：打开/创建路径。cwd 默认为根；`dirfd` 形式从该目录节点起。
+ * The path is resolved under the table lock; the VFS round trip and the
+ * optional chmod run outside it. */
 static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     (void)mode;
     if (!path)
@@ -1252,14 +1331,13 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     if (path[0] == 0)
         return -PRIMA_ERRNO_ENOENT;
     char resolved[PRIMA_VFS_PATH_MAX + 1];
-    const char *send = path;
+    unsigned long len = 0;
     unsigned char start = 0;
-    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    prima_fd_lock_take();
+    long target = prima_path_target(dirfd, path, &start, resolved, &len);
+    prima_fd_lock_give();
     if (target < 0)
         return target;
-    unsigned long len = prima_strlen_bounded(send, PRIMA_VFS_PATH_MAX);
-    if (len > PRIMA_VFS_PATH_MAX)
-        return -PRIMA_ERRNO_EINVAL;
     if (len == 0)
         return -PRIMA_ERRNO_ENOENT;
     long access = flags & PRIMA_O_ACCMODE;
@@ -1270,7 +1348,18 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
                    PRIMA_O_LARGEFILE | PRIMA_O_CLOEXEC;
     if ((flags & ~allowed) != 0)
         return -PRIMA_ERRNO_EINVAL;
-    if (!prima_fd_has_room())
+
+    char absolute[PRIMA_VFS_PATH_MAX + 1];
+    unsigned long absolute_len = 0;
+    long umask_value = 0;
+    int absolute_valid = 0, room = 0;
+    prima_fd_lock_take();
+    room = prima_fd_has_room();
+    umask_value = prima_umask_value;
+    if (prima_absolute_path(dirfd, path, absolute, &absolute_len) == 0)
+        absolute_valid = 1;
+    prima_fd_lock_give();
+    if (!room)
         return -PRIMA_ERRNO_EAGAIN;
 
     uint64_t internal = (uint64_t)access << PRIMA_VFS_ACCESS_SHIFT;
@@ -1286,7 +1375,7 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
         internal |= PRIMA_VFS_FLAG_DIRECTORY;
 
     uint64_t reply = 0;
-    long request = prima_vfs_path_request(internal, start, send, len, &reply);
+    long request = prima_vfs_path_request(internal, start, resolved, len, &reply);
     if (request < 0)
         return request;
     long status = prima_reply_status(reply);
@@ -1301,9 +1390,11 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
                         PRIMA_VFS_REPLY_KIND_MASK);
     if (kind != PRIMA_VFS_KIND_DIR && kind != PRIMA_VFS_KIND_FILE &&
         kind != PRIMA_VFS_KIND_NULL) {
-        (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
+        struct prima_wire_close close = {PRIMA_WIRE_FILE, (unsigned char)handle};
+        (void)prima_wire_close_call(&close);
         return -PRIMA_ERRNO_EINVAL;
     }
+    prima_fd_lock_take();
     prima_file_refs[handle - PRIMA_FILE_FIRST_FD] = 1;
     prima_file_flags[handle - PRIMA_FILE_FIRST_FD] = (unsigned int)flags &
         (PRIMA_O_ACCMODE | PRIMA_O_APPEND | PRIMA_O_DIRECTORY | PRIMA_O_LARGEFILE);
@@ -1311,24 +1402,20 @@ static long prima_openat(long dirfd, const char *path, long flags, long mode) {
     int local = prima_fd_install(
         kind == PRIMA_VFS_KIND_DIR ? PRIMA_FD_DIR : PRIMA_FD_FILE,
         (unsigned char)handle, node, (unsigned char)((flags & PRIMA_O_CLOEXEC) != 0));
-    if (local >= 0 && kind == PRIMA_VFS_KIND_DIR) {
-        char absolute[PRIMA_VFS_PATH_MAX + 1];
-        unsigned long absolute_len = 0;
-        if (prima_absolute_path(dirfd, path, absolute, &absolute_len) == 0)
-            prima_fd_path_set(local, absolute);
-    }
-    if (local >= 0 && (flags & PRIMA_O_CREAT) != 0) {
-        // M13b：VFS 新建文件默认 0666；适配层按 umask 收紧（无 uid/gid 模型）。
-        char absolute[PRIMA_VFS_PATH_MAX + 1];
-        unsigned long absolute_len = 0;
-        if (prima_absolute_path(dirfd, path, absolute, &absolute_len) == 0)
-            (void)prima_vfs_chmod_request(0, absolute, absolute_len,
-                                          (unsigned short)(mode & ~prima_umask_value));
-    }
-    if (local < 0) {
-        (void)prima_file_call(PRIMA_FILE_OP_CLOSE, handle, 0);
+    if (local >= 0 && kind == PRIMA_VFS_KIND_DIR && absolute_valid)
+        prima_fd_path_set(local, absolute);
+    if (local < 0)
         prima_file_refs[handle - PRIMA_FILE_FIRST_FD] = 0;
+    prima_fd_lock_give();
+    if (local < 0) {
+        struct prima_wire_close close = {PRIMA_WIRE_FILE, (unsigned char)handle};
+        (void)prima_wire_close_call(&close);
         return -PRIMA_ERRNO_EAGAIN;
+    }
+    if ((flags & PRIMA_O_CREAT) != 0 && absolute_valid) {
+        // M13b：VFS 新建文件默认 0666；适配层按 umask 收紧（无 uid/gid 模型）。
+        (void)prima_vfs_chmod_request(0, absolute, absolute_len,
+                                      (unsigned short)(mode & ~umask_value));
     }
     return local;
 }
@@ -1372,18 +1459,17 @@ static long prima_mutate_path(long dirfd, const char *path, unsigned char op) {
     if (path[0] == 0)
         return -PRIMA_ERRNO_ENOENT;
     char resolved[PRIMA_VFS_PATH_MAX + 1];
-    const char *send = path;
     unsigned char start = 0;
-    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    unsigned long len = 0;
+    prima_fd_lock_take();
+    long target = prima_path_target(dirfd, path, &start, resolved, &len);
+    prima_fd_lock_give();
     if (target < 0)
         return target;
-    unsigned long len = prima_strlen_bounded(send, PRIMA_VFS_PATH_MAX);
-    if (len > PRIMA_VFS_PATH_MAX)
-        return -PRIMA_ERRNO_EINVAL;
     if (len == 0)
         return -PRIMA_ERRNO_ENOENT;
     uint64_t reply = 0;
-    long request = prima_vfs_mutate_request(op, start, send, len, &reply);
+    long request = prima_vfs_mutate_request(op, start, resolved, len, &reply);
     if (request < 0)
         return request;
     long status = prima_reply_status(reply);
@@ -1395,7 +1481,10 @@ static long prima_mkdirat(long dirfd, const char *path, long mode) {
     if (status != 0)
         return status;
     // M13b：VFS 新建目录默认 0777；适配层按 umask 收紧。
-    return prima_chmod_path(dirfd, path, mode & ~prima_umask_value);
+    prima_fd_lock_take();
+    long umask_value = prima_umask_value;
+    prima_fd_lock_give();
+    return prima_chmod_path(dirfd, path, mode & ~umask_value);
 }
 
 static long prima_unlinkat(long dirfd, const char *path, long flags) {
@@ -1464,35 +1553,50 @@ static void prima_fill_statx(struct prima_statx *stx,
     stx->stx_blocks = ((uint64_t)meta->size + 511) / 512;
 }
 
-/* 取 stat 元数据：AT_EMPTY_PATH 按 fd（本地 tty/null 合成），否则解析路径。 */
+/* 取 stat 元数据：AT_EMPTY_PATH 按 fd（本地 tty/null 合成），否则解析路径。
+ * Only the local node/kind lookup runs under the table lock; the VFS request
+ * uses the captured node and path copy. */
 static long prima_meta_for(long dirfd, const char *path, long flags,
                            struct prima_stat_meta *meta) {
     if ((flags & PRIMA_AT_EMPTY_PATH) != 0 && path != 0 && path[0] == 0) {
+        unsigned char node = 0;
+        int present = 0, local = 0;
+        prima_fd_lock_take();
         struct prima_fd_entry *entry = prima_fd_entry((int)dirfd);
-        if (!entry)
-            return -PRIMA_ERRNO_EBADF;
-        if (entry->kind == PRIMA_FD_TTY || entry->kind == PRIMA_FD_NULL) {
-            meta->node = entry->node;
-            meta->kind = PRIMA_VFS_KIND_NULL;
-            meta->mode = 0666;
-            meta->size = 0;
-            return 0;
+        if (entry) {
+            present = 1;
+            if (entry->kind == PRIMA_FD_TTY || entry->kind == PRIMA_FD_NULL) {
+                meta->node = entry->node;
+                meta->kind = PRIMA_VFS_KIND_NULL;
+                meta->mode = 0666;
+                meta->size = 0;
+                local = 1;
+            } else {
+                node = entry->node;
+            }
         }
+        prima_fd_lock_give();
+        if (local)
+            return 0;
+        if (!present)
+            return -PRIMA_ERRNO_EBADF;
         /* 节点自身：STAT 请求以空路径表示，不走 VFS 的相对路径解析（文件节点上的
          * 相对 "." 会被 POSIX/`walk` 判为 ENOTDIR）。 */
-        return prima_stat_fetch(entry->node, "", meta);
+        return prima_stat_fetch(node, "", meta);
     }
     if (!path)
         return -PRIMA_ERRNO_EFAULT;
     if (path[0] == 0)
         return -PRIMA_ERRNO_ENOENT;
     char resolved[PRIMA_VFS_PATH_MAX + 1];
-    const char *send = path;
     unsigned char start = 0;
-    long target = prima_path_target(dirfd, path, &start, resolved, &send);
+    unsigned long len = 0;
+    prima_fd_lock_take();
+    long target = prima_path_target(dirfd, path, &start, resolved, &len);
+    prima_fd_lock_give();
     if (target < 0)
         return target;
-    return prima_stat_fetch(start, send, meta);
+    return prima_stat_fetch(start, resolved, meta);
 }
 
 static long prima_statx(long dirfd, const char *path, long flags, long mask,
@@ -1577,7 +1681,9 @@ static long prima_chdir(const char *path) {
         return -PRIMA_ERRNO_ENOENT;
     char normalized[PRIMA_VFS_PATH_MAX + 1];
     unsigned long len = 0;
+    prima_fd_lock_take();
     long normalized_status = prima_normalize_path(path, normalized, &len);
+    prima_fd_lock_give();
     if (normalized_status < 0)
         return normalized_status;
     struct prima_stat_meta meta;
@@ -1586,8 +1692,10 @@ static long prima_chdir(const char *path) {
         return fetched;
     if (meta.kind != PRIMA_VFS_KIND_DIR)
         return -PRIMA_ERRNO_ENOTDIR;
+    prima_fd_lock_take();
     for (unsigned long i = 0; i <= len; i++)
         prima_cwd[i] = normalized[i];
+    prima_fd_lock_give();
     return 0;
 }
 
@@ -1595,30 +1703,43 @@ static long prima_chdir(const char *path) {
 static long prima_getcwd(char *buffer, unsigned long size) {
     if (!buffer)
         return -PRIMA_ERRNO_EFAULT;
-    unsigned long len = prima_strlen_bounded(prima_cwd, PRIMA_VFS_PATH_MAX);
+    char current[PRIMA_VFS_PATH_MAX + 1] = {0};
+    unsigned long len = 0;
+    prima_fd_lock_take();
+    len = prima_strlen_bounded(prima_cwd, PRIMA_VFS_PATH_MAX);
+    if (len <= PRIMA_VFS_PATH_MAX)
+        for (unsigned long i = 0; i <= len; i++)
+            current[i] = prima_cwd[i];
+    prima_fd_lock_give();
     if (len > PRIMA_VFS_PATH_MAX)
         return -PRIMA_ERRNO_EINVAL;
     if (size < len + 1)
         return -PRIMA_ERRNO_ERANGE;
     for (unsigned long i = 0; i <= len; i++)
-        buffer[i] = prima_cwd[i];
+        buffer[i] = current[i];
     return (long)(len + 1);
 }
 
 /* M13a：fchdir 取目录 fd 打开时记录的目标路径；路径不可得时确定失败。 */
 static long prima_fchdir(int fd) {
+    long status = 0;
+    prima_fd_lock_take();
     struct prima_fd_entry *entry = prima_fd_entry(fd);
     if (!entry)
-        return -PRIMA_ERRNO_EBADF;
-    if (entry->kind != PRIMA_FD_DIR)
-        return -PRIMA_ERRNO_ENOTDIR;
-    const char *path = prima_fd_paths[fd - PRIMA_LOCAL_FD_FIRST];
-    unsigned long len = prima_strlen_bounded(path, PRIMA_VFS_PATH_MAX);
-    if (len == 0 || len > PRIMA_VFS_PATH_MAX)
-        return -PRIMA_ERRNO_EINVAL;
-    for (unsigned long i = 0; i <= len; i++)
-        prima_cwd[i] = path[i];
-    return 0;
+        status = -PRIMA_ERRNO_EBADF;
+    else if (entry->kind != PRIMA_FD_DIR)
+        status = -PRIMA_ERRNO_ENOTDIR;
+    else {
+        const char *path = prima_fd_paths[fd - PRIMA_LOCAL_FD_FIRST];
+        unsigned long len = prima_strlen_bounded(path, PRIMA_VFS_PATH_MAX);
+        if (len == 0 || len > PRIMA_VFS_PATH_MAX)
+            status = -PRIMA_ERRNO_EINVAL;
+        else
+            for (unsigned long i = 0; i <= len; i++)
+                prima_cwd[i] = path[i];
+    }
+    prima_fd_lock_give();
+    return status;
 }
 
 /* M13a：rename/renameat。两条路径都先规范化为绝对路径，再按槽 0/1 分段发送。 */
@@ -1630,10 +1751,12 @@ static long prima_renameat(long olddirfd, const char *oldpath, long newdirfd,
     char to[PRIMA_VFS_PATH_MAX + 1];
     unsigned long from_len = 0;
     unsigned long to_len = 0;
-    long status = prima_absolute_path(olddirfd, oldpath, from, &from_len);
-    if (status < 0)
-        return status;
-    status = prima_absolute_path(newdirfd, newpath, to, &to_len);
+    long status = 0;
+    prima_fd_lock_take();
+    status = prima_absolute_path(olddirfd, oldpath, from, &from_len);
+    if (status == 0)
+        status = prima_absolute_path(newdirfd, newpath, to, &to_len);
+    prima_fd_lock_give();
     if (status < 0)
         return status;
     status = prima_pair_stage(PRIMA_VFS_PAIR_OP_RENAME, 0, from, from_len);
@@ -1665,7 +1788,9 @@ static long prima_symlinkat(const char *target, long dirfd, const char *linkpath
         return -PRIMA_ERRNO_EINVAL;
     char link[PRIMA_VFS_PATH_MAX + 1];
     unsigned long link_len = 0;
+    prima_fd_lock_take();
     long status = prima_absolute_path(dirfd, linkpath, link, &link_len);
+    prima_fd_lock_give();
     if (status < 0)
         return status;
     status = prima_pair_stage(PRIMA_VFS_PAIR_OP_SYMLINK, 0, link, link_len);
@@ -1698,7 +1823,9 @@ static long prima_readlinkat(long dirfd, const char *path, char *buffer,
         return -PRIMA_ERRNO_EINVAL;
     char resolved[PRIMA_VFS_PATH_MAX + 1];
     unsigned long len = 0;
+    prima_fd_lock_take();
     long status = prima_absolute_path(dirfd, path, resolved, &len);
+    prima_fd_lock_give();
     if (status < 0)
         return status;
     status = prima_pair_stage(PRIMA_VFS_PAIR_OP_READLINK, 0, resolved, len);
@@ -1785,27 +1912,40 @@ static long prima_chmod_path(long dirfd, const char *path, long mode) {
         return -PRIMA_ERRNO_EINVAL;
     char resolved[PRIMA_VFS_PATH_MAX + 1];
     unsigned long len = 0;
+    prima_fd_lock_take();
     long status = prima_absolute_path(dirfd, path, resolved, &len);
+    prima_fd_lock_give();
     if (status < 0)
         return status;
     return prima_vfs_chmod_request(0, resolved, len, (unsigned short)mode);
 }
 
 static long prima_fchmod(int fd, long mode) {
+    unsigned char node = 0;
+    int present = 0, file = 0;
+    prima_fd_lock_take();
     struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
-        return -PRIMA_ERRNO_EBADF;
-    // tty/null 没有 VFS 节点；node 字段为 0 时不能落到根节点。
-    if (entry->kind != PRIMA_FD_FILE && entry->kind != PRIMA_FD_DIR)
+    if (entry) {
+        present = 1;
+        // tty/null 没有 VFS 节点；node 字段为 0 时不能落到根节点。
+        if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR) {
+            file = 1;
+            node = entry->node;
+        }
+    }
+    prima_fd_lock_give();
+    if (!present || !file)
         return -PRIMA_ERRNO_EBADF;
     if (mode < 0 || (mode & ~(long)0777) != 0)
         return -PRIMA_ERRNO_EINVAL;
-    return prima_vfs_chmod_request(entry->node, "", 0, (unsigned short)mode);
+    return prima_vfs_chmod_request(node, "", 0, (unsigned short)mode);
 }
 
 static long prima_kernel_umask(long mask) {
+    prima_fd_lock_take();
     long previous = prima_umask_value;
     prima_umask_value = mask & 0777;
+    prima_fd_lock_give();
     return previous;
 }
 
@@ -1948,35 +2088,32 @@ static long prima_net_socket(long domain, long type, long protocol) {
     unsigned char handle = (unsigned char)(reply & 0xff);
     if (handle >= PRIMA_NET_SOCKETS)
         return -PRIMA_ERRNO_EINVAL;
+    prima_fd_lock_take();
     int local = prima_fd_install(PRIMA_FD_SOCKET, handle, 0, 0);
+    if (local >= 0)
+        prima_net_refs[handle] = 1;
+    prima_fd_lock_give();
     if (local < 0) {
         uint64_t drop_reply = 0;
         (void)prima_net_request(PRIMA_NET_OP_CLOSE, handle, 0, &drop_reply);
         return -PRIMA_ERRNO_EAGAIN;
     }
-    prima_net_refs[handle] = 1;
     return local;
 }
 
-static struct prima_fd_entry *prima_socket_entry(int fd) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
-        return 0;
-    if (entry->kind != PRIMA_FD_SOCKET)
-        return 0;
-    return entry;
-}
-
 static long prima_net_bind(int fd, const void *addr, int len) {
-    struct prima_fd_entry *entry = prima_socket_entry(fd);
-    if (!entry)
+    unsigned char handle = 0;
+    if (!prima_net_snapshot(fd, &handle))
         return -PRIMA_ERRNO_EBADF;
     unsigned short port = 0;
     long status = prima_sockaddr_port(addr, len, 1, &port);
-    if (status < 0)
+    if (status < 0) {
+        prima_net_unref(handle);
         return status;
+    }
     uint64_t reply = 0;
-    status = prima_net_request(PRIMA_NET_OP_BIND, entry->object, port, &reply);
+    status = prima_net_request(PRIMA_NET_OP_BIND, handle, port, &reply);
+    prima_net_unref(handle);
     if (status < 0)
         return status;
     status = prima_net_status(reply);
@@ -1984,11 +2121,12 @@ static long prima_net_bind(int fd, const void *addr, int len) {
 }
 
 static long prima_net_getsockname(int fd, void *addr, int *len) {
-    struct prima_fd_entry *entry = prima_socket_entry(fd);
-    if (!entry)
+    unsigned char handle = 0;
+    if (!prima_net_snapshot(fd, &handle))
         return -PRIMA_ERRNO_EBADF;
     uint64_t reply = 0;
-    long status = prima_net_request(PRIMA_NET_OP_GETSOCKNAME, entry->object, 0, &reply);
+    long status = prima_net_request(PRIMA_NET_OP_GETSOCKNAME, handle, 0, &reply);
+    prima_net_unref(handle);
     if (status < 0)
         return status;
     status = prima_net_status(reply);
@@ -2000,45 +2138,59 @@ static long prima_net_getsockname(int fd, void *addr, int *len) {
 
 static long prima_net_sendto(int fd, const void *buf, unsigned long len, int flags,
                              const void *addr, int addrlen) {
-    struct prima_fd_entry *entry = prima_socket_entry(fd);
-    if (!entry)
+    unsigned char handle = 0;
+    if (!prima_net_snapshot(fd, &handle))
         return -PRIMA_ERRNO_EBADF;
     /* UDP sends never raise SIGPIPE; accept the standard per-send suppression. */
-    if ((flags & ~PRIMA_MSG_NOSIGNAL) != 0)
-        return -PRIMA_ERRNO_EINVAL;
-    if (len > PRIMA_NET_DATAGRAM_MAX)
-        return -PRIMA_ERRNO_MSGSIZE;
-    if (!buf && len != 0)
-        return -PRIMA_ERRNO_EFAULT;
+    long result = 0;
+    if ((flags & ~PRIMA_MSG_NOSIGNAL) != 0) {
+        result = -PRIMA_ERRNO_EINVAL;
+        goto done;
+    }
+    if (len > PRIMA_NET_DATAGRAM_MAX) {
+        result = -PRIMA_ERRNO_MSGSIZE;
+        goto done;
+    }
+    if (!buf && len != 0) {
+        result = -PRIMA_ERRNO_EFAULT;
+        goto done;
+    }
     unsigned short port = 0;
-    long status = prima_sockaddr_port(addr, addrlen, 0, &port);
-    if (status < 0)
-        return status;
+    result = prima_sockaddr_port(addr, addrlen, 0, &port);
+    if (result < 0)
+        goto done;
     uint64_t reply = 0;
     uint64_t arg = (uint64_t)port | ((uint64_t)(len & 0xff) << PRIMA_NET_LEN_SHIFT);
-    status = prima_net_request(PRIMA_NET_OP_SENDTO_BEGIN, entry->object, arg, &reply);
-    if (status < 0)
-        return status;
-    status = prima_net_status(reply);
-    if (status != 0)
-        return -status;
+    result = prima_net_request(PRIMA_NET_OP_SENDTO_BEGIN, handle, arg, &reply);
+    if (result < 0)
+        goto done;
+    result = prima_net_status(reply);
+    if (result != 0) {
+        result = -result;
+        goto done;
+    }
     const unsigned char *bytes = buf;
     for (unsigned long offset = 0; offset < len; offset += PRIMA_NET_CHUNK) {
         uint64_t chunk = 0;
         for (unsigned long i = 0; i < PRIMA_NET_CHUNK && offset + i < len; i++)
             chunk |= (uint64_t)bytes[offset + i] << (8 * i);
-        status = prima_net_request(PRIMA_NET_OP_SENDTO_DATA, entry->object, chunk, &reply);
-        if (status < 0)
-            return status;
-        status = prima_net_status(reply);
-        if (status != 0)
-            return -status;
+        result = prima_net_request(PRIMA_NET_OP_SENDTO_DATA, handle, chunk, &reply);
+        if (result < 0)
+            goto done;
+        result = prima_net_status(reply);
+        if (result != 0) {
+            result = -result;
+            goto done;
+        }
     }
-    status = prima_net_request(PRIMA_NET_OP_SENDTO_END, entry->object, 0, &reply);
-    if (status < 0)
-        return status;
-    status = prima_net_status(reply);
-    return status == 0 ? (long)len : -status;
+    result = prima_net_request(PRIMA_NET_OP_SENDTO_END, handle, 0, &reply);
+    if (result < 0)
+        goto done;
+    result = prima_net_status(reply);
+    result = result == 0 ? (long)len : -result;
+done:
+    prima_net_unref(handle);
+    return result;
 }
 
 static long prima_net_recvfrom(int fd, void *buf, unsigned long len, int flags,
@@ -2046,30 +2198,31 @@ static long prima_net_recvfrom(int fd, void *buf, unsigned long len, int flags,
     if (flags != 0)
         return -PRIMA_ERRNO_EINVAL;
     if (!buf && len) return -PRIMA_ERRNO_EFAULT;
-    uint64_t full = ~PRIMA_UNMASKABLE, mask;
-    long status = prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &full, &mask, 8);
-    if (status < 0) return status;
-    while (__sync_lock_test_and_set(&prima_fd_lock, 1)) (void)prima_raw(PRIMA_SYS_YIELD, 0, 0, 0, 0, 0, 0);
-    struct prima_fd_entry *entry = prima_socket_entry(fd);
-    unsigned char handle = entry ? entry->object : PRIMA_NET_SOCKETS;
-    __sync_lock_release(&prima_fd_lock);
-    (void)prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &mask, 0, 8);
-    if (handle >= PRIMA_NET_SOCKETS) return -PRIMA_ERRNO_EBADF;
+    unsigned char handle = 0;
+    if (!prima_net_snapshot(fd, &handle))
+        return -PRIMA_ERRNO_EBADF;
+    uint64_t full = ~PRIMA_UNMASKABLE, mask = 0;
     uint64_t reply = 0;
-    status = prima_net_request(PRIMA_NET_OP_RECVFROM, handle, 0, &reply);
+    struct prima_net_task *state = 0;
+    unsigned sequence = 0;
+    long status = prima_net_request(PRIMA_NET_OP_RECVFROM, handle, 0, &reply);
     if (status < 0)
-        return status;
+        goto done;
     status = prima_net_status(reply);
-    if (status != 0)
-        return -status;
+    if (status != 0) {
+        status = -status;
+        goto done;
+    }
     unsigned short source = (unsigned short)(reply & 0xffff);
     unsigned long total = (reply >> PRIMA_NET_LEN_SHIFT) & 0xff;
     unsigned long copy = total < len ? total : len;
     unsigned char *bytes = buf;
     long task = prima_raw(PRIMA_SYS_TASK_ID, 0, 0, 0, 0, 0, 0);
-    struct prima_net_task *state = &prima_net_tasks[task];
-    unsigned sequence = state->sequence;
-    (void)prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &full, &mask, 8);
+    state = &prima_net_tasks[task];
+    sequence = state->sequence;
+    status = prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &full, &mask, 8);
+    if (status < 0)
+        goto done;
     for (unsigned long offset = 0; offset < copy; offset += PRIMA_NET_CHUNK) {
         status = prima_net_request(PRIMA_NET_OP_RECV_CHUNK, handle, offset | ((uint64_t)sequence << 16), &reply);
         if (status < 0)
@@ -2087,6 +2240,8 @@ finish:;
     if (status >= 0) status = finished < 0 ? finished : prima_net_status(reply) ? -prima_net_status(reply) : status;
     state->sequence = 0;
     (void)prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &mask, 0, 8);
+done:
+    prima_net_unref(handle);
     return status;
 }
 
@@ -2255,9 +2410,10 @@ static struct prima_termios *prima_termios(void) {
     return &prima_tty_termios;
 }
 
-static void prima_tty_sync_mode(void) {
+/* Sends the mode carried by a termios copy; the caller took it under the lock
+ * and the IPC itself runs outside. */
+static void prima_tty_sync_mode(const struct prima_termios *term) {
     if (prima_session_register(0) < 0) return;
-    struct prima_termios *term = prima_termios();
     uint64_t mode = PRIMA_STAGE5_TTY_MODE_TAG;
     if (term->c_lflag & PRIMA_ICANON)
         mode |= 1;
@@ -2269,17 +2425,28 @@ static void prima_tty_sync_mode(void) {
 }
 
 static long prima_tty_ioctl(int fd, unsigned long request, unsigned long arg) {
+    struct prima_termios local = {0};
+    int present = 0, is_tty = 0;
+    int term_request = request == PRIMA_TCGETS || request == PRIMA_TCSETS ||
+                       request == PRIMA_TCSETSW || request == PRIMA_TCSETSF;
+    prima_fd_lock_take();
     struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
+    if (entry) {
+        present = 1;
+        is_tty = entry->kind == PRIMA_FD_TTY;
+        if (is_tty && term_request)
+            local = *prima_termios();
+    }
+    prima_fd_lock_give();
+    if (!present)
         return -PRIMA_ERRNO_EBADF;
-    if (entry->kind != PRIMA_FD_TTY)
+    if (!is_tty)
         return -PRIMA_ERRNO_ENOTTY;
-    struct prima_termios *term = prima_termios();
     if (request == PRIMA_TCGETS) {
         if (!arg)
             return -PRIMA_ERRNO_EFAULT;
         unsigned char *out = (unsigned char *)arg;
-        const unsigned char *in = (const unsigned char *)term;
+        const unsigned char *in = (const unsigned char *)&local;
         for (int i = 0; i < 60; i++)
             out[i] = in[i];
         return 0;
@@ -2289,10 +2456,13 @@ static long prima_tty_ioctl(int fd, unsigned long request, unsigned long arg) {
         if (!arg)
             return -PRIMA_ERRNO_EFAULT;
         const unsigned char *in = (const unsigned char *)arg;
-        unsigned char *out = (unsigned char *)term;
+        unsigned char *out = (unsigned char *)&local;
         for (int i = 0; i < 60; i++)
             out[i] = in[i];
-        prima_tty_sync_mode();
+        prima_fd_lock_take();
+        *prima_termios() = local;
+        prima_fd_lock_give();
+        prima_tty_sync_mode(&local);
         return 0;
     }
     if (request == PRIMA_TIOCGWINSZ) {
@@ -2358,84 +2528,123 @@ static long prima_dir_read(unsigned char handle, unsigned char *out,
     return (long)count;
 }
 
-/* 返回 >0 成功、0 EOF、<0 原始负 errno。 */
+/* 返回 >0 成功、0 EOF、<0 原始负 errno。The service read runs outside the
+ * lock; the cache is mutating only in short locked sections. Concurrent
+ * getdents on one descriptor is not ordered (same as the data path). */
 static long prima_dir_fill(unsigned char handle, unsigned need) {
     struct prima_dir_cache *cache = &prima_dirs[handle - PRIMA_FILE_FIRST_FD];
-    if (cache->pos > 0) {
-        unsigned i = 0;
-        while ((unsigned)cache->pos + i < cache->len) {
-            cache->buf[i] = cache->buf[cache->pos + i];
-            i++;
+    for (;;) {
+        unsigned char chunk[PRIMA_FILE_CHUNK];
+        unsigned want = 0;
+        prima_fd_lock_take();
+        if (cache->pos > 0) {
+            unsigned i = 0;
+            while ((unsigned)cache->pos + i < cache->len) {
+                cache->buf[i] = cache->buf[cache->pos + i];
+                i++;
+            }
+            cache->len = (unsigned char)i;
+            cache->pos = 0;
         }
-        cache->len = (unsigned char)i;
-        cache->pos = 0;
-    }
-    while (cache->len < need) {
-        unsigned room = PRIMA_DIR_CACHE_BYTES - cache->len;
-        if (room > PRIMA_FILE_CHUNK)
-            room = PRIMA_FILE_CHUNK;
-        long got = prima_dir_read(handle, cache->buf + cache->len, room);
+        if (cache->len >= need) {
+            prima_fd_lock_give();
+            return 1;
+        }
+        want = PRIMA_DIR_CACHE_BYTES - cache->len;
+        if (want > PRIMA_FILE_CHUNK)
+            want = PRIMA_FILE_CHUNK;
+        prima_fd_lock_give();
+        long got = prima_dir_read(handle, chunk, want);
         if (got < 0)
             return got;
-        if (got == 0)
-            return cache->len == 0 ? 0
-                                   : (cache->len >= need ? 1
-                                                         : -PRIMA_ERRNO_EINVAL);
-        cache->len = (unsigned char)(cache->len + (unsigned char)got);
+        prima_fd_lock_take();
+        if (got == 0) {
+            long result = cache->len == 0 ? 0
+                                          : (cache->len >= need
+                                                 ? 1
+                                                 : -PRIMA_ERRNO_EINVAL);
+            prima_fd_lock_give();
+            return result;
+        }
+        if ((unsigned long)got > (unsigned long)(PRIMA_DIR_CACHE_BYTES - cache->len)) {
+            prima_fd_lock_give();
+            return -PRIMA_ERRNO_EINVAL;
+        }
+        for (unsigned long i = 0; i < (unsigned long)got; i++)
+            cache->buf[cache->len + i] = chunk[i];
+        cache->len = (unsigned char)(cache->len + (unsigned long)got);
+        prima_fd_lock_give();
     }
-    return 1;
 }
 
 /* 取下一条完整记录；返回 1 成功、0 EOF、负 errno。 */
 static long prima_dir_take(unsigned char handle, struct prima_dir_record *out) {
-    struct prima_dir_cache *cache = &prima_dirs[handle - PRIMA_FILE_FIRST_FD];
     long filled = prima_dir_fill(handle, 4);
     if (filled <= 0)
         return filled;
-    unsigned name_len = cache->buf[3];
+    unsigned char head[4];
+    prima_fd_lock_take();
+    struct prima_dir_cache *cache = &prima_dirs[handle - PRIMA_FILE_FIRST_FD];
+    for (unsigned i = 0; i < 4; i++)
+        head[i] = cache->buf[i];
+    prima_fd_lock_give();
+    unsigned name_len = head[3];
     if (name_len > PRIMA_DIR_CACHE_BYTES - 4)
         return -PRIMA_ERRNO_EINVAL;
     filled = prima_dir_fill(handle, 4 + name_len);
     if (filled <= 0)
         return filled < 0 ? filled : -PRIMA_ERRNO_EINVAL;
+    prima_fd_lock_take();
+    cache = &prima_dirs[handle - PRIMA_FILE_FIRST_FD];
     out->node = (unsigned short)(cache->buf[0] | ((unsigned short)cache->buf[1] << 8));
     out->kind = cache->buf[2];
     out->name_len = (unsigned char)name_len;
     for (unsigned i = 0; i < name_len; i++)
         out->name[i] = cache->buf[4 + i];
     cache->pos = (unsigned char)(4 + name_len);
+    prima_fd_lock_give();
     return 1;
 }
 
 static void prima_dir_unread(unsigned char handle, unsigned char total) {
+    prima_fd_lock_take();
     struct prima_dir_cache *cache = &prima_dirs[handle - PRIMA_FILE_FIRST_FD];
     cache->pos = (unsigned char)(cache->pos - total);
+    prima_fd_lock_give();
 }
 
 static long prima_getdents64(int fd, void *dirp, unsigned long count) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
+    unsigned char kind = 0, handle = 0;
+    if (!prima_fd_snapshot(fd, &kind, &handle))
         return -PRIMA_ERRNO_EBADF;
-    if (entry->kind != PRIMA_FD_DIR)
+    if (kind != PRIMA_FD_DIR) {
+        prima_file_unref_kind(kind, handle);
         return -PRIMA_ERRNO_ENOTDIR;
+    }
     unsigned char *out = dirp;
-    if (!out && count != 0)
+    if (!out && count != 0) {
+        prima_file_unref(handle);
         return -PRIMA_ERRNO_EFAULT;
-    unsigned char handle = entry->object;
+    }
     unsigned long written = 0;
+    long result = 0;
     for (;;) {
         struct prima_dir_record record;
         long taken = prima_dir_take(handle, &record);
-        if (taken < 0)
-            return written != 0 ? (long)written : taken;
+        if (taken < 0) {
+            result = written != 0 ? (long)written : taken;
+            goto done;
+        }
         if (taken == 0)
             break;
         unsigned long name_len = record.name_len;
         unsigned long reclen = (19 + name_len + 1 + 7) & ~7UL;
         if (written + reclen > count) {
             prima_dir_unread(handle, (unsigned char)(4 + name_len));
-            if (written == 0)
-                return -PRIMA_ERRNO_EINVAL;
+            if (written == 0) {
+                result = -PRIMA_ERRNO_EINVAL;
+                goto done;
+            }
             break;
         }
         struct prima_dirent64 *dirent = (struct prima_dirent64 *)(out + written);
@@ -2455,7 +2664,10 @@ static long prima_getdents64(int fd, void *dirp, unsigned long count) {
             ((unsigned char *)dirent)[i] = 0;
         written += reclen;
     }
-    return (long)written;
+    result = (long)written;
+done:
+    prima_file_unref(handle);
+    return result;
 }
 
 /* ---------- M8：按 fd 类型分派 ---------- */
@@ -2464,8 +2676,10 @@ static long prima_fd_read(int fd, void *buf, unsigned long len) {
     unsigned char kind, object;
     if (!prima_fd_snapshot(fd, &kind, &object))
         return -PRIMA_ERRNO_EBADF;
-    if (kind == PRIMA_FD_SOCKET)
+    if (kind == PRIMA_FD_SOCKET) {
+        prima_file_unref_kind(kind, object);
         return -PRIMA_ERRNO_NOTSOCK;
+    }
     if (kind == PRIMA_FD_NULL) {
         if (!buf && len != 0)
             return -PRIMA_ERRNO_EFAULT;
@@ -2476,8 +2690,10 @@ static long prima_fd_read(int fd, void *buf, unsigned long len) {
             return -PRIMA_ERRNO_EBADF;
         return prima_tty_read(buf, len);
     }
-    if (kind != PRIMA_FD_FILE)
+    if (kind != PRIMA_FD_FILE) {
+        prima_file_unref_kind(kind, object);
         return -PRIMA_ERRNO_EBADF;
+    }
     long result = prima_handle_read(object, buf, len);
     prima_file_unref(object);
     return result;
@@ -2492,30 +2708,39 @@ static long prima_fd_write(int fd, const void *buf, unsigned long len) {
             return -PRIMA_ERRNO_EFAULT;
         return (long)len;
     }
-    if (kind == PRIMA_FD_SOCKET)
+    if (kind == PRIMA_FD_SOCKET) {
+        prima_file_unref_kind(kind, object);
         return -PRIMA_ERRNO_NOTSOCK;
+    }
     if (kind == PRIMA_FD_TTY)
         return prima_write_bytes(object == 0 ? 1 : object, buf, len);
-    if (kind != PRIMA_FD_FILE)
+    if (kind != PRIMA_FD_FILE) {
+        prima_file_unref_kind(kind, object);
         return -PRIMA_ERRNO_EBADF;
+    }
     long result = prima_handle_write(object, buf, len);
     prima_file_unref(object);
     return result;
 }
 
 static long prima_fd_lseek(int fd, long offset, int whence) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
+    unsigned char kind = 0, object = 0;
+    if (!prima_fd_snapshot(fd, &kind, &object))
         return -PRIMA_ERRNO_EBADF;
-    if (entry->kind == PRIMA_FD_NULL)
+    if (kind == PRIMA_FD_NULL)
         return 0;
-    if (entry->kind == PRIMA_FD_DIR) {
-        prima_dir_reset(entry->object);
-        return prima_handle_lseek(entry->object, offset, whence);
-    }
-    if (entry->kind != PRIMA_FD_FILE)
+    if (kind != PRIMA_FD_FILE && kind != PRIMA_FD_DIR) {
+        prima_file_unref_kind(kind, object);
         return -PRIMA_ERRNO_EBADF;
-    return prima_handle_lseek(entry->object, offset, whence);
+    }
+    if (kind == PRIMA_FD_DIR) {
+        prima_fd_lock_take();
+        prima_dir_reset(object);
+        prima_fd_lock_give();
+    }
+    long result = prima_handle_lseek(object, offset, whence);
+    prima_file_unref(object);
+    return result;
 }
 
 /* Native positional ops never mutate the shared OFD cursor. Like POSIX pwrite,
@@ -2532,7 +2757,7 @@ static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int w
         invalid = -PRIMA_ERRNO_ESPIPE;
     else if (!buf && len) invalid = -PRIMA_ERRNO_EFAULT;
     if (invalid) {
-        if (kind == PRIMA_FD_FILE) prima_file_unref(object);
+        prima_file_unref_kind(kind, object);
         return invalid;
     }
     if (kind == PRIMA_FD_NULL) return writing ? (long)len : 0;
@@ -2542,12 +2767,16 @@ static long prima_fd_at(int fd, void *buf, unsigned long len, long offset, int w
 }
 
 static long prima_fd_resize(int fd, long size) {
-    struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry) return -PRIMA_ERRNO_EBADF;
-    if (size < 0 || entry->kind != PRIMA_FD_FILE) return -PRIMA_ERRNO_EINVAL;
+    unsigned char kind = 0, object = 0;
+    if (!prima_fd_snapshot(fd, &kind, &object)) return -PRIMA_ERRNO_EBADF;
+    if (size < 0 || kind != PRIMA_FD_FILE) {
+        prima_file_unref_kind(kind, object);
+        return -PRIMA_ERRNO_EINVAL;
+    }
     /* Preserve every oversize request as oversize; never narrow to zero. */
     uint64_t arg = (uint64_t)size > UINT32_MAX ? UINT32_MAX : (uint64_t)size;
-    long reply = prima_file_call(PRIMA_FILE_OP_RESIZE, entry->object, arg);
+    long reply = prima_file_call(PRIMA_FILE_OP_RESIZE, object, arg);
+    prima_file_unref(object);
     if (reply < 0) return reply;
     return -prima_reply_status((uint64_t)reply);
 }
@@ -2557,11 +2786,18 @@ static long prima_fd_resize(int fd, long size) {
 #endif
 
 static long prima_fd_close(int fd) {
-    if (!prima_fd_entry(fd))
+    struct prima_wire_close close = {0};
+    prima_fd_lock_take();
+    if (!prima_fd_entry(fd)) {
+        prima_fd_lock_give();
         return -PRIMA_ERRNO_EBADF;
-    return prima_fd_drop(fd);
+    }
+    prima_fd_drop_locked(fd, &close);
+    prima_fd_lock_give();
+    return prima_wire_close_call(&close);
 }
 
+/* Caller holds prima_fd_lock. */
 static long prima_fd_dup_min(int oldfd, long minimum, unsigned char cloexec) {
     struct prima_fd_entry *entry = prima_fd_entry(oldfd);
     if (!entry)
@@ -2584,49 +2820,73 @@ static long prima_fd_dup_min(int oldfd, long minimum, unsigned char cloexec) {
 }
 
 static long prima_fd_dup(int oldfd) {
+    prima_fd_lock_take();
     long result = prima_fd_dup_min(oldfd, PRIMA_LOCAL_FD_FIRST, 0);
+    prima_fd_lock_give();
     /* Preserve the existing profile's table-full errno for dup. */
     return result == -PRIMA_ERRNO_EMFILE ? -PRIMA_ERRNO_EAGAIN : result;
 }
 
+/* Caller holds prima_fd_lock. */
+static long prima_fd_flags_locked(const struct prima_fd_entry *entry) {
+    if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR)
+        return prima_file_flags[entry->object - PRIMA_FILE_FIRST_FD];
+    if (entry->kind == PRIMA_FD_NULL)
+        return PRIMA_O_RDWR;
+    if (entry->kind == PRIMA_FD_TTY)
+        return entry->object == 0 ? PRIMA_O_RDONLY : PRIMA_O_WRONLY;
+    return -PRIMA_ERRNO_EINVAL;
+}
+
 static long prima_fd_fcntl(int fd, long command, long arg) {
+    long result = -PRIMA_ERRNO_EINVAL;
+    prima_fd_lock_take();
     struct prima_fd_entry *entry = prima_fd_entry(fd);
-    if (!entry)
-        return -PRIMA_ERRNO_EBADF;
+    if (!entry) {
+        result = -PRIMA_ERRNO_EBADF;
+        goto done;
+    }
     switch (command) {
     case PRIMA_F_GETFD:
-        return entry->cloexec ? PRIMA_FD_CLOEXEC : 0;
+        result = entry->cloexec ? PRIMA_FD_CLOEXEC : 0;
+        break;
     case PRIMA_F_SETFD:
         entry->cloexec = (arg & PRIMA_FD_CLOEXEC) != 0;
-        return 0;
+        result = 0;
+        break;
     case PRIMA_F_DUPFD:
     case PRIMA_F_DUPFD_CLOEXEC:
-        return prima_fd_dup_min(fd, arg, command == PRIMA_F_DUPFD_CLOEXEC);
+        result = prima_fd_dup_min(fd, arg, command == PRIMA_F_DUPFD_CLOEXEC);
+        break;
     case PRIMA_F_GETFL:
-        if (entry->kind == PRIMA_FD_FILE || entry->kind == PRIMA_FD_DIR)
-            return prima_file_flags[entry->object - PRIMA_FILE_FIRST_FD];
-        if (entry->kind == PRIMA_FD_NULL)
-            return PRIMA_O_RDWR;
-        if (entry->kind == PRIMA_FD_TTY)
-            return entry->object == 0 ? PRIMA_O_RDONLY : PRIMA_O_WRONLY;
-        return -PRIMA_ERRNO_EINVAL;
+        result = prima_fd_flags_locked(entry);
+        break;
     case PRIMA_F_SETFL: {
         /* The current service protocol cannot change an open handle's append
          * mode. Accept a no-op only; fdopen must propagate a failed change. */
-        long current = prima_fd_fcntl(fd, PRIMA_F_GETFL, 0);
+        long current = prima_fd_flags_locked(entry);
         long allowed = PRIMA_O_ACCMODE | PRIMA_O_APPEND | PRIMA_O_DIRECTORY | PRIMA_O_LARGEFILE;
-        if (current < 0 || (arg & ~allowed) || ((arg ^ current) & PRIMA_O_APPEND))
-            return -PRIMA_ERRNO_EINVAL;
-        return 0;
+        result = (current < 0 || (arg & ~allowed) ||
+                  ((arg ^ current) & PRIMA_O_APPEND))
+                     ? -PRIMA_ERRNO_EINVAL
+                     : 0;
+        break;
     }
     default:
-        return -PRIMA_ERRNO_EINVAL;
+        result = -PRIMA_ERRNO_EINVAL;
+        break;
     }
+done:
+    prima_fd_lock_give();
+    return result;
 }
 
 /* dup2/dup3 共用：oldfd 已校验；newfd 必须落在本地表内。先为新引用加计数，
- * 再关闭目标项——即使两者指向同一服务端句柄，也不会在中途误发 CLOSE。 */
-static long prima_fd_dup_to(int oldfd, int newfd) {
+ * 再关闭目标项——即使两者指向同一服务端句柄，也不会在中途误发 CLOSE。
+ * Caller holds prima_fd_lock; `close` receives a wire CLOSE owed by the
+ * replaced target (kind 0 when none). */
+static long prima_fd_dup_to_locked(int oldfd, int newfd,
+                                   struct prima_wire_close *close) {
     struct prima_fd_entry *source = prima_fd_entry(oldfd);
     if (!source || newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
         return -PRIMA_ERRNO_EBADF;
@@ -2638,7 +2898,7 @@ static long prima_fd_dup_to(int oldfd, int newfd) {
     else if (kind == PRIMA_FD_SOCKET && object < PRIMA_NET_SOCKETS)
         prima_net_refs[object]++;
     if (prima_fd_entry(newfd))
-        (void)prima_fd_drop(newfd);
+        prima_fd_drop_locked(newfd, close);
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].kind = kind;
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].object = object;
     prima_fds[newfd - PRIMA_LOCAL_FD_FIRST].node = node;
@@ -2651,32 +2911,51 @@ static long prima_fd_dup_to(int oldfd, int newfd) {
 }
 
 static long prima_fd_dup2(int oldfd, int newfd) {
+    struct prima_wire_close close = {0};
+    long result;
+    prima_fd_lock_take();
     if (oldfd == newfd)
-        return prima_fd_entry(oldfd) ? oldfd : -PRIMA_ERRNO_EBADF;
-    if (!prima_fd_entry(oldfd))
-        return -PRIMA_ERRNO_EBADF;
-    if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
-        return -PRIMA_ERRNO_EBADF;
-    return prima_fd_dup_to(oldfd, newfd);
+        result = prima_fd_entry(oldfd) ? oldfd : -PRIMA_ERRNO_EBADF;
+    else if (!prima_fd_entry(oldfd))
+        result = -PRIMA_ERRNO_EBADF;
+    else if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
+        result = -PRIMA_ERRNO_EBADF;
+    else
+        result = prima_fd_dup_to_locked(oldfd, newfd, &close);
+    prima_fd_lock_give();
+    if (result >= 0)
+        (void)prima_wire_close_call(&close);
+    return result;
 }
 
 static long prima_fd_dup3(int oldfd, int newfd, long flags) {
+    struct prima_wire_close close = {0};
+    long result;
+    prima_fd_lock_take();
     if (oldfd == newfd || (flags & ~(long)PRIMA_O_CLOEXEC) != 0)
-        return -PRIMA_ERRNO_EINVAL;
-    if (!prima_fd_entry(oldfd))
-        return -PRIMA_ERRNO_EBADF;
-    if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
-        return -PRIMA_ERRNO_EBADF;
-    long result = prima_fd_dup_to(oldfd, newfd);
-    if (result >= 0 && (flags & PRIMA_O_CLOEXEC) != 0)
-        prima_fds[result - PRIMA_LOCAL_FD_FIRST].cloexec = 1;
+        result = -PRIMA_ERRNO_EINVAL;
+    else if (!prima_fd_entry(oldfd))
+        result = -PRIMA_ERRNO_EBADF;
+    else if (newfd < PRIMA_LOCAL_FD_FIRST || newfd > PRIMA_LOCAL_FD_LAST)
+        result = -PRIMA_ERRNO_EBADF;
+    else {
+        result = prima_fd_dup_to_locked(oldfd, newfd, &close);
+        if (result >= 0 && (flags & PRIMA_O_CLOEXEC) != 0)
+            prima_fds[result - PRIMA_LOCAL_FD_FIRST].cloexec = 1;
+    }
+    prima_fd_lock_give();
+    if (result >= 0)
+        (void)prima_wire_close_call(&close);
     return result;
 }
 
 /* Validate all lengths before any I/O, then retain progress on a later error
  * or short transfer. Multi-IPC operations are not atomic across threads. */
 static long prima_fd_iov(int fd, const struct iovec *iov, long count, int writing) {
-    if (!prima_fd_entry(fd))
+    prima_fd_lock_take();
+    int present = prima_fd_entry(fd) != 0;
+    prima_fd_lock_give();
+    if (!present)
         return -PRIMA_ERRNO_EBADF;
     if (count < 0 || count > 1024)
         return -PRIMA_ERRNO_EINVAL;
@@ -2804,12 +3083,20 @@ static void prima_close_all_fds(void) {
     /* Threads may still hold data-path references; the table lock makes exit
      * and the per-handle refs agree. The server owner close releases whatever
      * a deferred wire CLOSE still owes. */
+    struct prima_wire_close closes[PRIMA_LOCAL_FD_COUNT];
+    unsigned count = 0;
     prima_fd_lock_take();
     for (int fd = PRIMA_LOCAL_FD_FIRST; fd <= PRIMA_LOCAL_FD_LAST; fd++) {
-        if (prima_fd_entry(fd))
-            (void)prima_fd_drop(fd);
+        if (!prima_fd_entry(fd))
+            continue;
+        closes[count] = (struct prima_wire_close){0};
+        prima_fd_drop_locked(fd, &closes[count]);
+        if (closes[count].kind)
+            count++;
     }
     prima_fd_lock_give();
+    for (unsigned i = 0; i < count; i++)
+        (void)prima_wire_close_call(&closes[i]);
 }
 
 /* Explicit opaque handoff for the Prima crt. The kernel sees retained page
@@ -3012,6 +3299,16 @@ void prima_exec_restore(void) {
     PRIMA_LOAD(file_flags, prima_file_flags); PRIMA_LOAD(paths, prima_fd_paths); PRIMA_LOAD(cwd, prima_cwd);
     PRIMA_LOAD(dirs, prima_dirs); PRIMA_LOAD(forks, prima_forks);
 #undef PRIMA_LOAD
+    /* exec replaced every thread and closed the bulk sessions, so no batch
+     * can still be in flight in the new image. */
+    for (unsigned i = 0; i < PRIMA_FILE_HANDLES; i++) {
+        prima_file_inflight[i] = 0;
+        prima_file_retire[i] = 0;
+    }
+    for (unsigned i = 0; i < PRIMA_NET_SOCKETS; i++) {
+        prima_net_inflight[i] = 0;
+        prima_net_retire[i] = 0;
+    }
     *prima_session_current() = (struct prima_session){
         .cookie = state.session.cookie, .store_cookie = state.session.store_cookie,
         .store_cap = state.session.store_cap, .self_cap = state.session.self_cap
@@ -3315,6 +3612,16 @@ static long prima_translate_body(long number, long a0, long a1, long a2, long a3
             prima_fork_child = 1;
             struct prima_session *child_session = prima_session_current();
             if (child_session) { child_session->bulk_cap = 0; child_session->bulk_next = 0; }
+            /* The child has no in-flight batches of its own; inherited counts
+             * would defer its wire CLOSEs forever. */
+            for (unsigned i = 0; i < PRIMA_FILE_HANDLES; i++) {
+                prima_file_inflight[i] = 0;
+                prima_file_retire[i] = 0;
+            }
+            for (unsigned i = 0; i < PRIMA_NET_SOCKETS; i++) {
+                prima_net_inflight[i] = 0;
+                prima_net_retire[i] = 0;
+            }
             if (prima_session_accept() < 0) {
                 (void)prima_raw(PRIMA_SYS_PROCESS_EXIT, 127, 0, 0, 0, 0, 0);
                 __builtin_trap();
@@ -3578,7 +3885,7 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3, lon
     case PRIMA_LINUX_SYS_readlink: case PRIMA_LINUX_SYS_readlinkat:
     case PRIMA_LINUX_SYS_getdents64: case PRIMA_LINUX_SYS_lseek:
     case PRIMA_LINUX_SYS_ftruncate:
-    case PRIMA_LINUX_SYS_ioctl: case PRIMA_LINUX_SYS_fork:
+    case PRIMA_LINUX_SYS_ioctl:
     case PRIMA_LINUX_SYS_socket: case PRIMA_LINUX_SYS_bind:
     case PRIMA_LINUX_SYS_getsockname: case PRIMA_LINUX_SYS_sendto:
         fast = 1; break;
@@ -3592,6 +3899,9 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3, lon
         break;
     }
     case PRIMA_LINUX_SYS_pread64: case PRIMA_LINUX_SYS_pwrite64:
+    /* fork copies the caller's address space; the table lock cannot make a
+     * multi-threaded snapshot atomic, so it runs like the data path instead. */
+    case PRIMA_LINUX_SYS_fork:
         split = 1; break;
     default: break;
     }
@@ -3599,12 +3909,9 @@ static long prima_translate(long number, long a0, long a1, long a2, long a3, lon
     uint64_t mask, full = ~PRIMA_UNMASKABLE;
     long result = prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &full, &mask, 8);
     if (result < 0) return result;
-    // ponytail: control-plane ops keep the process-wide table lock; the data
-    // path takes only short snapshots plus per-handle in-flight refs. Split
-    // cwd/path/dir-cache state if concurrent path throughput matters.
-    if (fast) prima_fd_lock_take();
+    /* Control-plane bodies take their own short table-lock sections; nothing
+     * here holds the lock across IPC or user-memory access. */
     result = prima_translate_body(number, a0, a1, a2, a3, a4, a5);
-    if (fast) prima_fd_lock_give();
     (void)prima_rt_sigprocmask(PRIMA_SIG_SETMASK, &mask, 0, 8);
     return result;
 }

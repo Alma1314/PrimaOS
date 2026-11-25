@@ -115,11 +115,64 @@ int main(void) {
     assert(prima_fd_snapshot(3, &kind, &object));
     assert(kind == PRIMA_FD_FILE && object == PRIMA_FILE_FIRST_FD);
     assert(prima_file_inflight[0] == 1);
+    struct prima_wire_close close = {0};
     prima_fd_lock_take();
-    assert(prima_fd_drop(3) == 0);
+    prima_fd_drop_locked(3, &close);
     prima_fd_lock_give();
+    assert(close.kind == PRIMA_WIRE_NONE); /* deferred: batch still in flight */
     assert(prima_file_refs[0] == 0 && prima_file_retire[0] == 1);
     prima_file_inflight[0] = 0; /* the deferred send needs IPC; not on host */
     prima_file_retire[0] = 0;
+
+    /* Directories now take the same in-flight reference as files, so getdents
+     * and lseek cannot race a wire-handle reuse. */
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_DIR, PRIMA_FILE_FIRST_FD, 0, 0};
+    prima_file_refs[0] = 1;
+    prima_file_inflight[0] = 0;
+    prima_file_retire[0] = 0;
+    assert(prima_fd_snapshot(3, &kind, &object) && kind == PRIMA_FD_DIR);
+    assert(prima_file_inflight[0] == 1);
+    prima_file_unref(object);
+    assert(prima_file_inflight[0] == 0 && prima_file_retire[0] == 0);
+
+    /* Socket operations use their own in-flight counter and defer CLOSE more. */
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_SOCKET, 0, 0, 0};
+    prima_net_refs[0] = 1;
+    prima_net_inflight[0] = 0;
+    prima_net_retire[0] = 0;
+    unsigned char net_handle = 0;
+    assert(prima_net_snapshot(3, &net_handle) && net_handle == 0);
+    assert(prima_net_inflight[0] == 1);
+    struct prima_wire_close net_close = {0};
+    prima_fd_lock_take();
+    prima_fd_drop_locked(3, &net_close);
+    prima_fd_lock_give();
+    assert(net_close.kind == PRIMA_WIRE_NONE);
+    assert(prima_net_refs[0] == 0 && prima_net_retire[0] == 1);
+    prima_net_inflight[0] = 0; /* the deferred send needs IPC; not on host */
+    prima_net_retire[0] = 0;
+
+    /* dup2/dup3 report the replaced target's CLOSE for an unlocked send. */
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_FILE, PRIMA_FILE_FIRST_FD, 0, 0};
+    prima_fds[4] = (struct prima_fd_entry){PRIMA_FD_FILE, PRIMA_FILE_FIRST_FD + 1, 0, 0};
+    prima_file_refs[0] = 1;
+    prima_file_refs[1] = 1;
+    struct prima_wire_close dup_close = {0};
+    prima_fd_lock_take();
+    assert(prima_fd_dup_to_locked(3, 4, &dup_close) == 4);
+    prima_fd_lock_give();
+    assert(dup_close.kind == PRIMA_WIRE_FILE &&
+           dup_close.handle == PRIMA_FILE_FIRST_FD + 1);
+    assert(prima_file_refs[0] == 2 && prima_file_refs[1] == 0);
+
+    /* Path resolution copies the path so IPC runs without the table lock. */
+    char send[PRIMA_VFS_PATH_MAX + 1];
+    unsigned char start = 0;
+    unsigned long send_len = 0;
+    assert(prima_path_target(PRIMA_AT_FDCWD, "/abs", &start, send, &send_len) == 0);
+    assert(start == 0 && send_len == 4 && send[0] == '/' && send[4] == 0);
+    prima_fds[3] = (struct prima_fd_entry){PRIMA_FD_DIR, 0, 7, 0};
+    assert(prima_path_target(3, "rel", &start, send, &send_len) == 0);
+    assert(start == 7 && send_len == 3 && send[2] == 'l' && send[3] == 0);
     return 0;
 }

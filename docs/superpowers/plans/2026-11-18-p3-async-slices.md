@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: in-progress
 lifecycle: current
-updated: 2026-11-24
+updated: 2026-11-25
 ---
 
 # P3 有界异步批量切片计划
@@ -46,6 +46,12 @@ v2 会话，最后用 QEMU 正反例矩阵取证。本计划不改变 v1 同步�
 > 持表锁，工作项 3 未完整，P3-2 不关闭。独立只读复核后补了多线程 fork 限制、
 > 丢失完成的 desync 毒化、重置/ESTALE 重开与校验泄漏修复。见
 > [锁拆分报告](../reports/2026-11-24-p3-adapter-lock-split.md)。
+>
+> 2026-11-25：工作项 3 完成——控制面 open/close/dup/fcntl/stat/路径与目录变更/
+> termios/socket 改为短表锁本地段加锁外 IPC；in-flight 引用扩展到目录与 socket，
+> fork 不再持表锁，子进程与 exec 清零继承计数。host 1181、musl 7、lint、
+> V1–V4、W4–W9、代理矩阵与完整 72 轮通过。见
+> [控制面锁报告](../reports/2026-11-25-p3-adapter-control-lock.md)。
 
 ## 依赖总览
 
@@ -136,6 +142,11 @@ P3-0 ─→ P3-1 ─→ P3-2 ─→ P3-3 ─→ P3-4
   `prima_file_inflight`/`prima_file_retire` 落地，数据路径不再持有进程级锁跨
   同步 IPC；控制面（open/close/dup/路径）仍持表锁，工作项 3 未完整，P3-2 保持
   未关闭，见[锁拆分报告](../reports/2026-11-24-p3-adapter-lock-split.md)。
+- 2026-11-25：工作项 3 完成：控制面分段为短锁本地操作加锁外往返；目录与 socket
+  加入在途引用，`prima_fd_drop_locked` 只输出应发送的 wire CLOSE；cwd/umask/
+  termios/目录缓存均在锁内拷贝或更新；fork 移到只屏蔽信号的分支。host 1181、
+  musl 7、lint、V1–V4、W4–W9、代理矩阵与完整 72 轮通过，见
+  [控制面锁报告](../reports/2026-11-25-p3-adapter-control-lock.md)。
 
 ## P3-3 QEMU 正反例矩阵
 
