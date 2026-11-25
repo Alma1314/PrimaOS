@@ -78,3 +78,5 @@ updated: 2026-10-24
 2026-11-25 [cap_drop 最小模型](../../superpowers/reports/2026-11-25-lean-drop.md)把 §4.5 的单位置删除、不传播、记录/位置保持与 structural 守卫纳入可执行 `Formal.Drop`；它与 `Formal.Revoke`（子树失效）正交，订阅终止与审计事件仍不覆盖。
 
 2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 转移表（send/recv/task_create/ns_* / 删除）、原子更新、直投 `MsgId`、跨节点不移动与 W3 表示层唯一纳入可执行 `Formal.Move`；W4 容器双向一致与审计事件仍不覆盖。
+
+2026-11-25 [W4 容器一致性最小模型](../../superpowers/reports/2026-11-25-lean-container.md)把 `HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries 的双向一致与 send/recv/bind/unbind 的 W3+W4 保持纳入可执行 [Formal.Container](../../../lean/Formal/Container.lean)；[公理审计](../../../lean/Checks/Container.lean)仅 `propext`/`Quot.sound`。列表级重复/路径唯一、生命周期与审计事件仍不覆盖。

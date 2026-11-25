@@ -84,3 +84,5 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 2026-11-25 [cap_drop 最小模型](../../superpowers/reports/2026-11-25-lean-drop.md)把 §4.5 的单位置删除、不传播、记录/位置保持与 structural 守卫纳入可执行 [Formal.Drop](../../../lean/Formal/Drop.lean)；[公理审计](../../../lean/Checks/Drop.lean)仅 `propext`/`Quot.sound`。订阅终止与审计事件仍不覆盖。
 
 2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 的转移表、单位置原子更新、从/到与直投 `MsgId` 记录、删除到 `None`、跨节点不移动与 W3 表示层唯一纳入可执行 [Formal.Move](../../../lean/Formal/Move.lean)；[公理审计](../../../lean/Checks/Move.lean)显示 7 条无公理、其余仅 `propext`。W4 容器双向一致与审计事件仍不覆盖。
+
+2026-11-25 [W4 容器一致性最小模型](../../superpowers/reports/2026-11-25-lean-container.md)把 `HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries 的双向一致与 send/recv/bind/unbind 的 W3+W4 保持纳入可执行 [Formal.Container](../../../lean/Formal/Container.lean)；[公理审计](../../../lean/Checks/Container.lean)仅 `propext`/`Quot.sound`。列表级重复/路径唯一、生命周期与审计事件仍不覆盖。
