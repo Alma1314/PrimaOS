@@ -8,6 +8,7 @@ import Formal.KernelHandleTable
 import Formal.Location
 import Formal.Tlb
 import Formal.Memseg
+import Formal.Cow
 
 -- BLK-001 入口：声明模型目标清单；import 各模型模块使 lake build 覆盖 Formal.*。
 

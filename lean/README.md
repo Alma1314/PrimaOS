@@ -15,6 +15,7 @@ updated: 2026-11-25
 > 2026-10-31 的独立 `refinement/` 包新增两个生产 Rust 方法到单槽模型的条件性源码细化证明，范围见文末；它不改变以上 CDT/整内核边界。
 > 2026-11-25 的 `Formal.Tlb` 切片把 cosir `tlb_refine` 的最小参考语义纳入模型（每 Task 缓存、命中/未命中、显式失效与新鲜性），抽象边界见文末；它不改变 CDT/句柄边界，也不构成 SMP、TLB shootdown 或四级页表证明。
 > 2026-11-25 的 `Formal.Memseg` 切片把 cosir `memseg_refine` 的最小参考语义纳入模型（双视图一致、权限收窄、帧 owner 转移与失败原子性），抽象边界见文末；它不构成四级树、多页原子映射或 W6 全量扫描证明。
+> 2026-11-25 的 `Formal.Cow` 切片把 cosir `cow_refine` 的最小参考语义纳入模型（COW 建立、写故障、私有化、单运行任务与销毁），抽象边界见文末；它不构成 capability 授权、异常源/恢复帧或 TLB 失效证明。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -28,6 +29,7 @@ updated: 2026-11-25
 - `Formal.KernelHandleTable`（`Formal/KernelHandleTable.lean`）：有限槽表操作的逐槽投影、良构保持、跨槽隔离和整表任意序列无复活（2026-10-31 增量，见下节）。
 - `Formal.Tlb`（`Formal/Tlb.lean`）：每 Task TLB 缓存、页表命中/未命中、单地址失效、全量刷新、任务移除，以及显式失效后的陈旧性边界与新鲜性保持（2026-11-25 增量，见下节）。
 - `Formal.Memseg`（`Formal/Memseg.lean`）：每 Task 页表/视图双视图、W6 帧 owner 划分、map/unmap/create/destroy/destroyTask/spawn 的守卫与成功状态，以及失败原子性（2026-11-25 增量，见下节）。
+- `Formal.Cow`（`Formal/Cow.lean`）：COW 对的建立/写故障/私有化、单运行任务、让出/调度与销毁，以及组合不变量 `RunningOk`/`FaultedOk`/`CowPairOk`（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -61,7 +63,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 
 | 维度 | 本切片覆盖 | 不覆盖（后续切片） |
 |---|---|---|
-| 模型对象 | `bootstrap`（空态→booted 态）、`excResume`（授权检查）、`derive`（§4.4 能力派生） | `cow_refine`（`tlb_refine`、`memseg_refine` 已有最小模型，见文末） |
+| 模型对象 | `bootstrap`（空态→booted 态）、`excResume`（授权检查）、`derive`（§4.4 能力派生） | 细化层模型（`tlb_refine`、`memseg_refine`、`cow_refine`）已有最小参考模型，见文末 |
 | 证据等级 | `MODEL-TEST`（Lean `#eval`/`theorem` 参考 + cosir host 对拍）+ `REFINEMENT-DESIGN`（独立 Lean 证明通道：CDT 不变量保持性） | `REFINEMENT-PROOF`（内核 C 级细化）、`KERNEL-TRACE`、`COMPAT-TEST`、机器证明 |
 | 目标 | 可执行状态迁移、**非平凡良构谓词（CDT 不变量）及其保持性**、失败原子性 | 真实硬件、CR3/PTE、TLB、多核、帧字节复制 |
 
@@ -105,7 +107,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 
 - ~~`tlb_refine`：非一致刷新 / 显式 `invalidate_va` / `flush_all`~~ **最小模型已纳入（2026-11-25，见文末）**：抽象页表与地址/任务守卫取代四级页表、帧所有权和真实 CR3；多核 shootdown 与平台 TLB 行为仍不覆盖。
 - ~~`memseg_refine`：MemorySegment host 四级索引树与 W6/W7 双视图~~ **最小模型已纳入（2026-11-25，见文末）**：四级树、页表帧归属扫描、多页原子映射与 `StillMapped` 枚举被抽象成函数式表与调用方守卫；`cow_refine` 仍待后续切片。
-- `cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`，Lean 建模留待后续切片）。
+- ~~`cow_refine`：COW 组合序列（H1 承载体，见 cosir `cow_refine.rs`）~~ **最小模型已纳入（2026-11-25，见文末）**：capability 授权、异常源/订阅、SRET 恢复帧、`exc_resume` 校验与 TLB 失效被抽象成前置或省略；细化层三个宿主的“后续切片”清单至此全部有最小参考模型。
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
 - **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
@@ -284,3 +286,40 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Memseg.lean
 边界：不覆盖四级页表树与 `check_frame_ownership`、多页原子 map/unmap、地址对齐/canonical、`next_seg` 溢出、分配器顺序、帧清零、`StillMapped` 视图枚举（抽象为 guard）或真实 CR3 操作。
 `memseg_refine_tests.rs` 的 Rust 测试是独立 host 见证，不是自动抽取、双向差分或 Rust 源码 refinement proof。
 本切片不改变阶段状态、7-B/7-C/7-H 勾选、profile 或既有 COW/Gate 边界。
+
+## 2026-11-25 Cow 组合切片
+
+[BLK-001 计划](../docs/superpowers/plans/2026-08-18-blk001-lean-formal-model.md)把 `cow_refine` 列为后续任务；
+本次在 `Formal.Cow` 建模 cosir `cow_refine.rs` 的最小参考语义，复用 `Formal.Memseg` 的 `Access`/`Segment`/`Mapping`/`setAt`，未修改 Rust 源码或既有定理。
+
+| Lean | cosir / Rust | 边界 |
+|---|---|---|
+| `State.segments/tasks/current/pending/cows` | `CowSliceState.memory/ops/tlb/current/cow_mappings` | 只保留任务状态、当前任务、待处理故障和 COW 对；capability/订阅/TLB 省略 |
+| `Task.status : ready/running/faulted` | `TaskStatus`（Ready/Running/Faulted） | 不建模 Dead/僵尸与 wait |
+| `Mapping`（复用） | `PageMapping`/`SegmentRef` | 不含 backing/frame 冗余字段 |
+| `establishCow` | `establish_cow` | 父 RW→R、子新增 R、COW 对追加；授权/第三方共享检查为前置 |
+| `access` | `access` | 未映射→present=false；无权限→present=true；故障置 Faulted、清 current、记 pending |
+| `privatize` | `privatize_cow` | 要求 Faulted、非 current、同 va 写故障、旧映射只读；换成私有段 RW 并回 Ready |
+| `schedule`/`yieldTask`/`destroyTask`/`destroySegment` | 同名 | `stillMapped` 仍为调用方守卫 |
+| `RunningOk`/`FaultedOk`/`CowPairOk` | `check_invariants` 的对应合取 | 帧级全不交检查只保留“映射帧不同” |
+
+25 条普适定理（非 `native_decide`），只依赖 `propext`（两条无公理）：
+
+- COW 建立：`establishCow_ok` 钉住精确状态，`establishCow_cows` 钉住追加的对，`readOnly_write` 证明新映射写位为 false；三类冲突/缺任务返回原状态。
+- 访问：`access_read_allowed`（读只读页允许且状态不变）、`access_write_fault`（写只读页→present=true/writable=true、任务 Faulted、current 清空）、`access_unmapped_fault`（present=false）、`access_rejects_*`（非 current/无任务返回原状态）。
+- 私有化：`privatize_ok` 钉住状态，`privatized_task` 证明任务回 Ready、pending 清除、COW 列表不变；`privatize_wrong_va`/`_not_faulted` 原状态失败。
+- 调度：`schedule_ok`/`schedule_busy`/`yieldTask_ok`；销毁：`destroyTask_ok`/`_removed`/`_keeps_other`/`_rejects_faulted`、`destroySegment_still`/`_ok`。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/Cow.lean
+```
+
+`Checks/Cow.lean` 对 25 条定理打印公理依赖；只有 `propext`（两条无公理），无 `sorryAx`/native。`#eval` 锚覆盖建立/冲突、读允许、写故障（present=true）、未映射故障、非当前拒绝、私有化回 Ready、调度忙/空闲、销毁任务/段守卫。
+
+边界：不覆盖 capability 权限/持有者、异常源与订阅、SRET 恢复帧与 `exc_resume`、帧级全不交检查、TLB 失效、COW 对过滤的成员性质、Dead 任务/wait，或真实 CR3 操作。
+`cow_refine` 的 Rust 测试（71 项）是独立 host 见证，不是自动抽取、双向差分或 Rust 源码 refinement proof。
+本切片不改变阶段状态、7-B/7-C/7-D/7-H 勾选、profile 或既有 COW/Gate 边界。

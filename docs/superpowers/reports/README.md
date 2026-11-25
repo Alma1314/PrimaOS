@@ -65,6 +65,8 @@ updated: 2026-11-25
 
 2026-11-25 形式化后继：[Lean Memseg 双视图与帧归属最小模型](2026-11-25-lean-memseg-refine.md)，`Formal.Memseg` 的 29 条定理通过固定版本 `lake build`、公理仅 `propext`/`Quot.sound`；四级树、多页原子与 `StillMapped` 枚举的抽象边界见正文。
 
+2026-11-25 形式化后继：[Lean Cow 组合最小模型](2026-11-25-lean-cow-refine.md)，`Formal.Cow` 的 25 条定理通过固定版本 `lake build`、公理仅 `propext`；COW 建立/写故障/私有化/调度/销毁覆盖，capability、异常源与 TLB 失效为抽象边界。
+
 阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 
 独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
