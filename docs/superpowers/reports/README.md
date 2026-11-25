@@ -37,6 +37,8 @@ updated: 2026-11-25
 
 2026-11-25：[P3-2 C 适配层控制面锁拆分](2026-11-25-p3-adapter-control-lock.md)；open/close/dup/fcntl/stat/路径/目录/termios/socket 改为短表锁本地段加锁外 IPC，在途引用扩展到目录与 socket，fork 不再持表锁；host 1181、musl 7、lint、V1–V4、W4–W9、代理矩阵与完整 72 轮通过；工作项 3 完整。
 
+2026-11-25：[P3-3 v2 正反例矩阵](2026-11-25-p3-async-matrix.md)；V5 验收镜像与 `test-async` 两轮 10 个 case：合并完成、满窗 EAGAIN、重放、回退/保留位重置、取消前 ECANCELED、两会话公平与单侧退出后继续；认领后取消与页改写快照登记为限制；P3 未收口、7-A 未勾选。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
@@ -67,7 +69,7 @@ updated: 2026-11-25
 
 2026-11-25 形式化后继：[Lean Cow 组合最小模型](2026-11-25-lean-cow-refine.md)，`Formal.Cow` 的 25 条定理通过固定版本 `lake build`、公理仅 `propext`；COW 建立/写故障/私有化/调度/销毁覆盖，capability、异常源与 TLB 失效为抽象边界。
 
-2026-11-25 形式化后继：[Lean Revoke 撤销域最小模型](2026-11-25-lean-revoke.md)，`Formal.Revoke` 的 15 条定理通过固定版本 `lake build`、3 条无公理其余含 `Classical.choice`；Bootstrap 子树失效、HeldBy 删除与非 HeldBy 保留为抽象边界，是经典命题模型、不可执行。
+2026-11-25 形式化后继：[Lean Revoke 撤销域最小模型](2026-11-25-lean-revoke.md)，`Formal.Revoke` 的 25 条定理通过固定版本 `lake build`、4 条无公理其余仅 `propext`/`Quot.sound`；子树判定为可执行有界 `Bool` 遍历（`WellFormed` 下完备），Bootstrap 子树失效、HeldBy 删除与非 HeldBy 保留为抽象边界。
 
 2026-11-25 形式化后继：[Lean cap_drop 最小模型](2026-11-25-lean-drop.md)，`Formal.Drop` 的 10 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，公理仅 `propext`/`Quot.sound`；单位置删除、不传播与 structural 守卫覆盖，订阅终止与审计事件为边界。
 

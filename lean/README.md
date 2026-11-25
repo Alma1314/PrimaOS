@@ -16,7 +16,7 @@ updated: 2026-11-25
 > 2026-11-25 的 `Formal.Tlb` 切片把 cosir `tlb_refine` 的最小参考语义纳入模型（每 Task 缓存、命中/未命中、显式失效与新鲜性），抽象边界见文末；它不改变 CDT/句柄边界，也不构成 SMP、TLB shootdown 或四级页表证明。
 > 2026-11-25 的 `Formal.Memseg` 切片把 cosir `memseg_refine` 的最小参考语义纳入模型（双视图一致、权限收窄、帧 owner 转移与失败原子性），抽象边界见文末；它不构成四级树、多页原子映射或 W6 全量扫描证明。
 > 2026-11-25 的 `Formal.Cow` 切片把 cosir `cow_refine` 的最小参考语义纳入模型（COW 建立、写故障、私有化、单运行任务与销毁），抽象边界见文末；它不构成 capability 授权、异常源/恢复帧或 TLB 失效证明。
-> 2026-11-25 的 `Formal.Revoke` 切片把 Prima OS §6.2 撤销域（Bootstrap 宿主）的最小参考语义纳入模型（子树失效、HeldBy 删除、无关域不变、原子与幂等），抽象边界见文末；它是经典命题模型、不可执行，且不构成 7-D 或 Rust 细化证明。
+> 2026-11-25 的 `Formal.Revoke` 切片把 Prima OS §6.2 撤销域（Bootstrap 宿主）的最小参考语义纳入模型（子树失效、HeldBy 删除、无关域不变、原子与幂等），抽象边界见文末。撤销判定现为**可执行**有界 `Bool` 链遍历（`descB`，燃料 `c + 1`），不再依赖经典可判定性；仍不构成 7-D 或 Rust 细化证明。
 > 2026-11-25 的 `Formal.Drop` 切片把 COSIR §4.5 `cap_drop` 的规范层语义纳入可执行模型（单位置删除、不传播、记录保留、structural 保护），与 `Formal.Revoke` 正交，见文末。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
@@ -335,18 +335,22 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Cow.lean
 
 | Lean | Bootstrap 宿主 / 说明 | 边界 |
 |---|---|---|
-| `Desc s root c` | 由 `parent` 指针可达（含 root） | 传递闭包；不含位置/消息节点 |
+| `Desc s root c` | 由 `parent` 指针可达（含 root），用于规范陈述 | 传递闭包；不含位置/消息节点 |
+| `descB n s root c` / `descAt` | 可执行、燃料有界的 `Bool` 链遍历（`descAt` 用 `c + 1` 步） | 穷尽性依赖 `WellFormed` 的父 `<` 子 |
 | `revoked s root` | 子树 token 置 Inactive、删 HeldBy、保留记录与 parent | `InMessage`/`InNamespace` 位置不动 |
 | `revoke s root holder` | `revoke_capability`：仅接受 HeldBy(holder) 的根 | 非 HeldBy 根返回原状态 |
 | `ActiveWellFormed` | 仅约束 active cap 的 CDT 不变量 | 撤销后父子同 inactive，原 `WellFormed` 不适用于该形状 |
 | 原子性/幂等 | 单次操作全树生效；二次撤销无效果 | 并发/跨节点不在范围 |
 
-15 条定理（3 条无公理，其余依赖 `propext`/`Classical.choice`/`Quot.sound`）：
+`descB` 对任意燃料**健全**（`descB_sound`），在 `WellFormed` 下燃料 `c + 1` **完备**（`descB_complete`）；根始终自成员（`descB_self`，无需 `WellFormed`）。
 
+25 条定理（4 条无公理，其余仅 `propext`/`Quot.sound`，**无 `Classical.choice`**）：
+
+- 判定：`descB_self`/`descAt_self`（根自成员）、`descB_succ`/`descB_mono`（燃料单调）、`descB_sound`（健全）、`desc_ge_root`（后代 CapId ≥ 根）、`descB_complete`/`descAt_sound`/`descAt_complete`（`WellFormed` 下等价）。
 - 子树：`desc_trans`（传递闭包）、`not_desc_parent`（根外节点的父也在根外）。
 - 失效：`revoked_caps_desc`（子树 cap active=false）、`revoked_loc_desc_held`（HeldBy 删除）、`revoked_loc_desc_message`/`_namespace`（非 HeldBy 位置保留）。
 - 隔离：`revoked_caps_outside`/`revoked_loc_outside`（域外不变）、`revoked_parent`（记录/parent 保留）。
-- 操作：`revoke_fail`/`revoke_success`（守卫）、`revoke_idempotent`（二次失败且状态不变）。
+- 操作：`revoke_fail`/`revoke_success`（守卫）、`revoked_loc_root`（根 HeldBy 删除，无需 `WellFormed`）、`revoke_idempotent`（二次失败且状态不变）。
 - 不变量：`wellFormed_active`（原 `WellFormed` ⇒ `ActiveWellFormed`）、`revoke_preserves_active_wf`（撤销保持仅约束 active 的 CDT 不变量）。
 
 复现：
@@ -357,7 +361,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 elan run leanprover/lean4:v4.35.0 lake env lean Checks/Revoke.lean
 ```
 
-`Checks/Revoke.lean` 打印 15 条定理的公理依赖；3 条无公理，其余含 `Classical.choice`（`Desc` 的经典可判定性），无 `sorryAx`/native。**本切片是命题级经典模型，`revoked` 为 noncomputable，没有 `#eval` 锚**；证据强度低于前三个可执行切片，已如实登记。
+`Checks/Revoke.lean` 打印 25 条定理的公理依赖；4 条无公理，其余仅 `propext`/`Quot.sound`，无 `Classical.choice`/`sorryAx`/native。`revoked`/`revoke` 为普通可执行定义，`#eval` 锚覆盖成功/失败守卫、根与子项失效、HeldBy 删除、`InMessage` 保留、域外不变与二次撤销失败。**子树定理在 `WellFormed` 下陈述**（燃料 `c + 1` 的完备性依赖父 CapId 严格递减）；该前提在 `revoked_loc_root`/`revoke_*`/`revoked_parent` 与表外隔离性质中不需要。
 
 边界：不覆盖并发/移动竞争、跨节点 `InTransit`、在途消息/命名空间的收回、审计容量预演与事件、对象销毁回收、`cap_drop` 的完整授权语义、W3 唯一位置，或 Rust 源码细化。
 Bootstrap `revoke_capability` 的 Rust 证据（SPEC-022/023）与 host 测试是独立实现证据，不是本模型的自动对拍。

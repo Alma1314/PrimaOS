@@ -1,7 +1,15 @@
 import Formal.Revoke
 
--- Audit the dependencies of every general revocation theorem.
-#print axioms Formal.Revoke.wellFormed_active
+-- Audit the dependencies of every general revocation theorem, excluding `#eval` anchors.
+#print axioms Formal.Revoke.descB_self
+#print axioms Formal.Revoke.descAt_self
+#print axioms Formal.Revoke.descB_succ
+#print axioms Formal.Revoke.descB_mono
+#print axioms Formal.Revoke.descB_sound
+#print axioms Formal.Revoke.desc_ge_root
+#print axioms Formal.Revoke.descB_complete
+#print axioms Formal.Revoke.descAt_sound
+#print axioms Formal.Revoke.descAt_complete
 #print axioms Formal.Revoke.desc_trans
 #print axioms Formal.Revoke.not_desc_parent
 #print axioms Formal.Revoke.revoked_caps_desc
@@ -13,6 +21,8 @@ import Formal.Revoke
 #print axioms Formal.Revoke.revoked_parent
 #print axioms Formal.Revoke.revoke_fail
 #print axioms Formal.Revoke.revoke_success
+#print axioms Formal.Revoke.revoked_loc_root
 #print axioms Formal.Revoke.revoke_idempotent
 #print axioms Formal.Revoke.revoked_caps
+#print axioms Formal.Revoke.wellFormed_active
 #print axioms Formal.Revoke.revoke_preserves_active_wf
