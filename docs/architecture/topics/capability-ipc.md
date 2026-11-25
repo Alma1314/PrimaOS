@@ -41,6 +41,8 @@ updated: 2026-10-24
 - [内核句柄与 Lean 补强设计](../../superpowers/specs/2026-10-24-kernel-handle-model-design.md)
 - [实现、证明与回归报告](../../superpowers/reports/2026-10-24-kernel-handle-model-report.md)
 
+- [2026-11-25-lean-revoke.md](../../superpowers/reports/2026-11-25-lean-revoke.md)
+
 ## 源码定位
 
 - [handle.rs](../../../kernel/src/handle.rs)
@@ -54,6 +56,8 @@ updated: 2026-10-24
 
 - [KernelHandle.lean](../../../lean/Formal/KernelHandle.lean)
 
+- [Revoke.lean](../../../lean/Formal/Revoke.lean)
+
 ## 测试与观察入口
 
 - [test_support.rs](../../../kernel/src/test_support.rs)
@@ -61,8 +65,12 @@ updated: 2026-10-24
 
 测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
 
+- [Revoke.lean（Checks）](../../../lean/Checks/Revoke.lean)
+
 ## 限制与修改注意
 
 原生 Task 不等同于 POSIX Process。共享能力空间是阶段5的额外工作决定，见 process 主题。规范第一版 cap_drop 不隐含选择性撤销；探索实现不能反过来默改抽象基线。
 
 内核句柄的有界 generation/永久退役模型独立于 CDT：`freed_handle_never_live` 覆盖单槽任意后续迁移序列；不证明完整 Rust 内核、整表分配、权限或硬件。范围以 [Lean 映照契约](../../../lean/README.md)为准。
+
+2026-11-25 [Revoke 撤销域最小模型](../../superpowers/reports/2026-11-25-lean-revoke.md)在 `Formal.Revoke` 中建模 Bootstrap 子树的失效、HeldBy 删除、非 HeldBy 保留与原子/幂等；它是经典命题模型（含 `Classical.choice`、不可执行），不改变“第一版无 cap_revoke”的抽象基线与 7-D 退出条件。

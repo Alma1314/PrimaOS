@@ -78,3 +78,5 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 2026-11-25 [Memseg 双视图最小模型](../../superpowers/reports/2026-11-25-lean-memseg-refine.md)把 W7 表/视图一致、W6 帧 owner 转移、权限收窄和失败原子性纳入 [Formal.Memseg](../../../lean/Formal/Memseg.lean)；[公理审计](../../../lean/Checks/Memseg.lean)只显示 `propext`/`Quot.sound`。四级树、多页原子映射与 `StillMapped` 枚举被抽象，不构成 7-B/7-C/7-H 证据。
 
 2026-11-25 [Cow 组合最小模型](../../superpowers/reports/2026-11-25-lean-cow-refine.md)把 COW 建立、写故障、私有化、单运行任务与销毁纳入 [Formal.Cow](../../../lean/Formal/Cow.lean)；[公理审计](../../../lean/Checks/Cow.lean)只显示 `propext`。capability 授权、异常源/恢复帧与 TLB 失效为抽象边界，不构成 7-B/7-C/7-D/7-H 证据。
+
+2026-11-25 [Revoke 撤销域最小模型](../../superpowers/reports/2026-11-25-lean-revoke.md)把 Prima OS §6.2 的子树失效、HeldBy 删除、非 HeldBy 保留与原子/幂等纳入 [Formal.Revoke](../../../lean/Formal/Revoke.lean)；[公理审计](../../../lean/Checks/Revoke.lean)显示 3 条无公理、其余含 `Classical.choice`。该切片是经典命题模型、不可执行，不构成 7-D 证据。
