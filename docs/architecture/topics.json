@@ -31,7 +31,8 @@
       "docs/superpowers/reports/2026-11-25-lean-memseg-refine.md",
       "docs/superpowers/reports/2026-11-25-lean-cow-refine.md",
       "docs/superpowers/reports/2026-11-25-lean-revoke.md",
-      "docs/superpowers/reports/2026-11-25-lean-drop.md"
+      "docs/superpowers/reports/2026-11-25-lean-drop.md",
+      "docs/superpowers/reports/2026-11-25-lean-move.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -48,6 +49,7 @@
       "lean/Formal/Cow.lean",
       "lean/Formal/Revoke.lean",
       "lean/Formal/Drop.lean",
+      "lean/Formal/Move.lean",
       "lean/refinement/Refinement/Handle.lean",
       "lean/refinement/Refinement/Generated/Funs.lean"
     ],
@@ -60,6 +62,7 @@
       "lean/Checks/Cow.lean",
       "lean/Checks/Revoke.lean",
       "lean/Checks/Drop.lean",
+      "lean/Checks/Move.lean",
       "kernel/src/handle_table_tests.rs",
       "lean/refinement/Checks.lean",
       "scripts/check_handle_refinement.py"
@@ -359,7 +362,8 @@
       "docs/superpowers/reports/2026-11-07-stage7-ipc-audit-order.md",
       "docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md",
       "docs/superpowers/reports/2026-11-25-lean-revoke.md",
-      "docs/superpowers/reports/2026-11-25-lean-drop.md"
+      "docs/superpowers/reports/2026-11-25-lean-drop.md",
+      "docs/superpowers/reports/2026-11-25-lean-move.md"
     ],
     "code": [
       "kernel/src/handle.rs",
@@ -393,7 +397,8 @@
       "prima-user/linux-probes/matrix.c",
       "kernel/src/ipc_bench.rs",
       "lean/Formal/Revoke.lean",
-      "lean/Formal/Drop.lean"
+      "lean/Formal/Drop.lean",
+      "lean/Formal/Move.lean"
     ],
     "tests": [
       "kernel/src/gate_probe.rs",
@@ -406,7 +411,8 @@
       "cosir/examples/stage6_domains.rs",
       "kernel/src/gate_bench.rs",
       "lean/Checks/Revoke.lean",
-      "lean/Checks/Drop.lean"
+      "lean/Checks/Drop.lean",
+      "lean/Checks/Move.lean"
     ],
     "guide": "docs/architecture/topics/capability-ipc.md"
   },

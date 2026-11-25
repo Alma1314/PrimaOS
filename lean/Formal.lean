@@ -6,6 +6,7 @@ import Formal.Forest
 import Formal.KernelHandle
 import Formal.KernelHandleTable
 import Formal.Location
+import Formal.Move
 import Formal.Tlb
 import Formal.Memseg
 import Formal.Cow

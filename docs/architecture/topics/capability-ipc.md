@@ -76,3 +76,5 @@ updated: 2026-10-24
 2026-11-25 [Revoke 撤销域最小模型](../../superpowers/reports/2026-11-25-lean-revoke.md)在 `Formal.Revoke` 中建模 Bootstrap 子树的失效、HeldBy 删除、非 HeldBy 保留与原子/幂等；子树判定为可执行有界 `Bool` 遍历（`descB`，`WellFormed` 下完备），公理仅 `propext`/`Quot.sound`，不改变“第一版无 cap_revoke”的抽象基线与 7-D 退出条件。
 
 2026-11-25 [cap_drop 最小模型](../../superpowers/reports/2026-11-25-lean-drop.md)把 §4.5 的单位置删除、不传播、记录/位置保持与 structural 守卫纳入可执行 `Formal.Drop`；它与 `Formal.Revoke`（子树失效）正交，订阅终止与审计事件仍不覆盖。
+
+2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 转移表（send/recv/task_create/ns_* / 删除）、原子更新、直投 `MsgId`、跨节点不移动与 W3 表示层唯一纳入可执行 `Formal.Move`；W4 容器双向一致与审计事件仍不覆盖。

@@ -82,3 +82,5 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 2026-11-25 [Revoke 撤销域最小模型](../../superpowers/reports/2026-11-25-lean-revoke.md)把 Prima OS §6.2 的子树失效、HeldBy 删除、非 HeldBy 保留与原子/幂等纳入可执行 [Formal.Revoke](../../../lean/Formal/Revoke.lean)（有界 `descB`，`WellFormed` 下与 `Desc` 等价）；[公理审计](../../../lean/Checks/Revoke.lean)显示 4 条无公理、其余仅 `propext`/`Quot.sound`，无 `Classical.choice`。不构成 7-D 证据。
 
 2026-11-25 [cap_drop 最小模型](../../superpowers/reports/2026-11-25-lean-drop.md)把 §4.5 的单位置删除、不传播、记录/位置保持与 structural 守卫纳入可执行 [Formal.Drop](../../../lean/Formal/Drop.lean)；[公理审计](../../../lean/Checks/Drop.lean)仅 `propext`/`Quot.sound`。订阅终止与审计事件仍不覆盖。
+
+2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 的转移表、单位置原子更新、从/到与直投 `MsgId` 记录、删除到 `None`、跨节点不移动与 W3 表示层唯一纳入可执行 [Formal.Move](../../../lean/Formal/Move.lean)；[公理审计](../../../lean/Checks/Move.lean)显示 7 条无公理、其余仅 `propext`。W4 容器双向一致与审计事件仍不覆盖。

@@ -73,6 +73,8 @@ updated: 2026-11-25
 
 2026-11-25 形式化后继：[Lean cap_drop 最小模型](2026-11-25-lean-drop.md)，`Formal.Drop` 的 10 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，公理仅 `propext`/`Quot.sound`；单位置删除、不传播与 structural 守卫覆盖，订阅终止与审计事件为边界。
 
+2026-11-25 形式化后继：[Lean Move 位置迁移与 W3 唯一位置最小模型](2026-11-25-lean-move.md)，`Formal.Move` 的 15 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，7 条无公理其余仅 `propext`；转移表、原子更新、从/到与直投 `MsgId` 记录、删除与跨节点不移动覆盖，W4 容器双向一致与审计事件为边界。
+
 阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 
 独立审查：[实现质量独立审查](2026-10-27-implementation-quality-review.md)，host 全门禁实测（1018 测试、lint、TCB 6.42%、docs check）、R1 双轮启动通过，并复现 musl 审计的 locale 依赖缺陷；不改阶段签署。
