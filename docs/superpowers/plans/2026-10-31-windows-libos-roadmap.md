@@ -4,18 +4,21 @@ kind: plan
 authority: execution-plan
 status: active
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # Windows LibOS 计划书：PE64 控制台与服务兼容路径
 
-> 2026-11-26 后继：作者要求推进本计划。已落地的只有
+> 2026-11-27 后继：WIN-M2 补片已把替代导入换为真实 `winpe-stub.dll` 导出表解析，并补
+> 发布失败清理负例（见 [WIN-M2 真实 DLL 导出与发布失败清理](../reports/2026-11-27-windows-m2-real-dll.md)）。
+> 仍未取得 Windows 参考差分，导入闭包、分节权限、TEB/PEB/TLS、控制台与 WIN-D3 未决；
+> M0 范围冻结与完整 M2 验收仍未完成。
+>
+> 2026-11-26 后继：作者要求推进本计划。已落地的有
 > [WIN-M0 有界基线](../specs/2026-11-26-windows-m0-baseline.md)、
 > [WIN-M1 PE/ABI 宿主模型](../reports/2026-11-26-windows-m1-pe-model.md)、
 > [WIN-M2 前置平铺装载模型](../reports/2026-11-26-windows-m2-preflight.md)与
-> [WIN-M2 ring3 原型](../reports/2026-11-26-windows-m2-ring3.md)；
-> 已在 QEMU 运行有界 PE 子任务，但替代导入是手写桩，未取得 Windows 参考差分，
-> M0 范围冻结与完整 M2 验收仍未完成。
+> [WIN-M2 ring3 原型](../reports/2026-11-26-windows-m2-ring3.md)。
 > 本文第 1 节的“尚未启动实现”保留为 2026-10-31 的写作基线。
 
 ## 1. 目标、性质与范围

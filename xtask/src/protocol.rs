@@ -6477,7 +6477,8 @@ pub(crate) fn validate_domains(output: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// WIN-M2 bounded prototype: two original PE children return 42 and the parent survives.
+/// WIN-M2 bounded prototype: publish-failure cleanup, real DLL export, two PE children
+/// returning 42 and a surviving parent.
 pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
     let records: Vec<_> = output
         .lines()
@@ -6485,13 +6486,18 @@ pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
         .filter(|line| line.starts_with("WINPE|") && !line.starts_with("WINPE|stage="))
         .collect();
     let expected = [
+        "WINPE|unpublish=clean",
+        "WINPE|dll=winpe-stub.dll!Stub",
         "WINPE|exit=self",
         "WINPE|exit=self",
         "WINPE|child1=42;child2=42;parent=alive",
         "WINPE|PASS",
     ];
     if records != expected {
-        return Err("WINPE requires two 42 results, parent progress and one final PASS".to_owned());
+        return Err(
+            "WINPE requires clean unpublish, real DLL export, two 42 results, parent progress and one final PASS"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -6499,14 +6505,16 @@ pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
 #[cfg(test)]
 mod winpe_tests {
     use super::validate_winpe;
-    const VALID: &str = "WINPE|stage=begin\nWINPE|exit=self\nWINPE|exit=self\nWINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
+    const VALID: &str = "WINPE|stage=begin\nWINPE|unpublish=clean\nWINPE|dll=winpe-stub.dll!Stub\nWINPE|exit=self\nWINPE|exit=self\nWINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
     #[test]
-    fn winpe_witness_requires_two_results_and_pass() {
+    fn winpe_witness_requires_clean_unpublish_real_dll_and_two_results() {
         assert_eq!(validate_winpe(VALID), Ok(()));
         for bad in [
             VALID.replace("child2=42", "child2=0"),
             VALID.replace("parent=alive", "parent=dead"),
             VALID.replace("WINPE|exit=self", "WINPE|exit=parent"),
+            VALID.replace("unpublish=clean", "unpublish=dirty"),
+            VALID.replace("dll=winpe-stub.dll!Stub", "dll=stub"),
             VALID.replace("WINPE|PASS", "WINPE|FAIL"),
             format!("{VALID}WINPE|PASS\n"),
         ] {

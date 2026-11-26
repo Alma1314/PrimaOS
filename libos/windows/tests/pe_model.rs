@@ -79,6 +79,8 @@ fn build_pe() -> Vec<u8> {
     put16(&mut buf, OPT_OFF + 0x44, 3);
     put32(&mut buf, NUM_DIRS, 16);
 
+    put32(&mut buf, OPT_OFF + 0x70, 0x2c00);
+    put32(&mut buf, OPT_OFF + 0x70 + 4, 40);
     put32(&mut buf, OPT_OFF + 0x70 + 8, 0x2000);
     put32(&mut buf, OPT_OFF + 0x70 + 12, 0x28);
     put32(&mut buf, OPT_OFF + 0x70 + 40, 0x2800);
@@ -127,6 +129,22 @@ fn build_pe() -> Vec<u8> {
     put16(&mut buf, 0xc08, 0xa000);
     put16(&mut buf, 0xc0a, 0x0000);
     put64(&mut buf, 0x200, 0x1_4000_0000);
+
+    // 导出目录 RVA 0x2c00：Base=0、2 个函数、2 个名称。
+    put32(&mut buf, 0x1010, 0); // Base
+    put32(&mut buf, 0x1014, 2); // NumberOfFunctions
+    put32(&mut buf, 0x1018, 2); // NumberOfNames
+    put32(&mut buf, 0x101c, 0x2c40); // AddressOfFunctions
+    put32(&mut buf, 0x1020, 0x2c50); // AddressOfNames
+    put32(&mut buf, 0x1024, 0x2c60); // AddressOfNameOrdinals
+    put32(&mut buf, 0x1040, 0x1000);
+    put32(&mut buf, 0x1044, 0x1010);
+    put32(&mut buf, 0x1050, 0x2c80);
+    put32(&mut buf, 0x1054, 0x2c90);
+    put16(&mut buf, 0x1060, 0);
+    put16(&mut buf, 0x1062, 1);
+    buf[0x1080..0x1086].copy_from_slice(b"Alpha\0");
+    buf[0x1090..0x1095].copy_from_slice(b"Beta\0");
     buf
 }
 
@@ -328,7 +346,7 @@ fn parses_import_descriptors_and_thunks() {
             .size(),
         0x28
     );
-    assert!(pe.data_directory(DataDirectoryIndex::Export).is_none());
+    assert!(pe.data_directory(DataDirectoryIndex::Exception).is_none());
 
     let descriptors: Vec<_> = pe
         .imports()
@@ -591,4 +609,58 @@ fn rejects_wx_image_before_writing_output() {
         Err(LoadError::Pe(PeError::WritableExecutable))
     ));
     assert!(image.iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn iterates_named_exports_with_ordinals_and_rvas() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let exports: Vec<_> = pe
+        .exports()
+        .expect("export directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("exports");
+    assert_eq!(exports.len(), 2);
+    assert_eq!(exports[0].name(), b"Alpha");
+    assert_eq!(exports[0].ordinal(), 0);
+    assert_eq!(exports[0].rva(), 0x1000);
+    assert_eq!(exports[1].name(), b"Beta");
+    assert_eq!(exports[1].ordinal(), 1);
+    assert_eq!(exports[1].rva(), 0x1010);
+
+    let found = pe
+        .export_by_name(b"Beta")
+        .expect("export lookup")
+        .expect("Beta export");
+    assert_eq!(found.rva(), 0x1010);
+    assert!(
+        pe.export_by_name(b"Gamma")
+            .expect("export lookup")
+            .is_none()
+    );
+}
+
+#[test]
+fn rejects_forwarded_exports_instead_of_resolving_dir_rva() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x1040, 0x2c04);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let result: Result<Vec<_>, _> = pe.exports().expect("export directory").collect();
+    assert!(matches!(result, Err(PeError::ForwardedExport)));
+}
+
+#[test]
+fn rejects_truncated_export_directory() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, OPT_OFF + 0x70 + 4, 8);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(matches!(pe.exports(), Err(PeError::ExportOutOfBounds)));
+}
+
+#[test]
+fn rejects_export_tables_outside_file_data() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x1020, 0x3f00);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(matches!(pe.exports(), Err(PeError::ExportOutOfBounds)));
 }

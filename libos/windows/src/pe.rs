@@ -13,6 +13,7 @@ const DATA_DIRECTORY_LEN: usize = 8;
 const MAX_DATA_DIRECTORIES: usize = 16;
 const MAX_SECTIONS: usize = 96;
 const TLS_DIRECTORY_LEN: usize = 40;
+const EXPORT_DIRECTORY_LEN: u32 = 40;
 
 const PE32_PLUS_MAGIC: u16 = 0x20b;
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
@@ -62,6 +63,10 @@ pub enum PeError {
     RelocationOutOfBounds,
     /// TLS 目录、回调数组或回调地址越界。
     TlsOutOfBounds,
+    /// 导出目录、名称或函数表越界。
+    ExportOutOfBounds,
+    /// 导出项是转发器（函数 RVA 落在导出目录内），当前模型不解析。
+    ForwardedExport,
 }
 
 /// 需要解析的 PE 数据目录。
@@ -512,6 +517,83 @@ impl<'a> PeImage<'a> {
         })
     }
 
+    /// 迭代导出表中的按名导出；没有导出目录时返回空迭代器。
+    ///
+    /// 只覆盖按名导出（按序号查表）与普通函数导出；转发器返回
+    /// [`PeError::ForwardedExport`]，不按本映像解析。表区间在构造时校验，因此恶意
+    /// 数量不会导致长度不受文件约束的循环。
+    pub fn exports(self) -> Result<Exports<'a>, PeError> {
+        let empty = Exports {
+            image: self,
+            function_count: 0,
+            name_count: 0,
+            base: 0,
+            names_rva: 0,
+            ordinals_rva: 0,
+            functions_rva: 0,
+            directory_start: 0,
+            directory_end: 0,
+            index: 0,
+        };
+        let Some(directory) = self.data_directory(DataDirectoryIndex::Export) else {
+            return Ok(empty);
+        };
+        if directory.size < EXPORT_DIRECTORY_LEN {
+            return Err(PeError::ExportOutOfBounds);
+        }
+        let raw = self
+            .slice_rva(directory.virtual_address, EXPORT_DIRECTORY_LEN)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        let base = read_u32(raw, 16).map_err(|_| PeError::ExportOutOfBounds)?;
+        let function_count = read_u32(raw, 20).map_err(|_| PeError::ExportOutOfBounds)?;
+        let name_count = read_u32(raw, 24).map_err(|_| PeError::ExportOutOfBounds)?;
+        let functions_rva = read_u32(raw, 28).map_err(|_| PeError::ExportOutOfBounds)?;
+        let names_rva = read_u32(raw, 32).map_err(|_| PeError::ExportOutOfBounds)?;
+        let ordinals_rva = read_u32(raw, 36).map_err(|_| PeError::ExportOutOfBounds)?;
+        let function_bytes = function_count
+            .checked_mul(4)
+            .ok_or(PeError::ExportOutOfBounds)?;
+        let name_bytes = name_count
+            .checked_mul(4)
+            .ok_or(PeError::ExportOutOfBounds)?;
+        let ordinal_bytes = name_count
+            .checked_mul(2)
+            .ok_or(PeError::ExportOutOfBounds)?;
+        self.slice_rva(functions_rva, function_bytes)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        self.slice_rva(names_rva, name_bytes)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        self.slice_rva(ordinals_rva, ordinal_bytes)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        let directory_end = directory
+            .virtual_address
+            .checked_add(directory.size)
+            .ok_or(PeError::RangeOverflow)?;
+        Ok(Exports {
+            image: self,
+            function_count,
+            name_count,
+            base,
+            names_rva,
+            ordinals_rva,
+            functions_rva,
+            directory_start: directory.virtual_address,
+            directory_end,
+            index: 0,
+        })
+    }
+
+    /// 按名称查找导出；未找到返回 `Ok(None)`。
+    pub fn export_by_name(self, name: &[u8]) -> Result<Option<Export<'a>>, PeError> {
+        for export in self.exports()? {
+            let export = export?;
+            if export.name == name {
+                return Ok(Some(export));
+            }
+        }
+        Ok(None)
+    }
+
     fn window(self, rva: u32) -> Result<(usize, usize), PeError> {
         if rva < self.size_of_headers {
             let start = rva as usize;
@@ -567,6 +649,107 @@ impl<'a> PeImage<'a> {
             .position(|&byte| byte == 0)
             .ok_or(PeError::ImportOutOfBounds)?;
         Ok(&window[..len])
+    }
+}
+
+/// 单个导出项。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Export<'a> {
+    name: &'a [u8],
+    ordinal: u32,
+    rva: u32,
+}
+
+impl<'a> Export<'a> {
+    pub fn name(self) -> &'a [u8] {
+        self.name
+    }
+
+    /// PE 导出序号（目录 `Base` 加名称表下标）。
+    pub fn ordinal(self) -> u32 {
+        self.ordinal
+    }
+
+    /// 函数 RVA；调用方加上装载基址得到实际入口地址。
+    pub fn rva(self) -> u32 {
+        self.rva
+    }
+}
+
+/// 按名导出迭代器。
+pub struct Exports<'a> {
+    image: PeImage<'a>,
+    function_count: u32,
+    name_count: u32,
+    base: u32,
+    names_rva: u32,
+    ordinals_rva: u32,
+    functions_rva: u32,
+    directory_start: u32,
+    directory_end: u32,
+    index: u32,
+}
+
+impl<'a> Iterator for Exports<'a> {
+    type Item = Result<Export<'a>, PeError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.name_count {
+            return None;
+        }
+        let index = self.index;
+        self.index += 1;
+        let name_slot = match self
+            .names_rva
+            .checked_add(index.checked_mul(4)?)
+            .map(|rva| self.image.slice_rva(rva, 4))
+        {
+            Some(Ok(raw)) => raw,
+            _ => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        let name_rva = match read_u32(name_slot, 0) {
+            Ok(rva) => rva,
+            Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        let ordinal_slot = match self
+            .ordinals_rva
+            .checked_add(index.checked_mul(2)?)
+            .map(|rva| self.image.slice_rva(rva, 2))
+        {
+            Some(Ok(raw)) => raw,
+            _ => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        let function_ordinal = match read_u16(ordinal_slot, 0) {
+            Ok(ordinal) => u32::from(ordinal),
+            Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        if function_ordinal >= self.function_count {
+            return Some(Err(PeError::ExportOutOfBounds));
+        }
+        let function_slot = match self
+            .functions_rva
+            .checked_add(function_ordinal.checked_mul(4)?)
+            .map(|rva| self.image.slice_rva(rva, 4))
+        {
+            Some(Ok(raw)) => raw,
+            _ => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        let rva = match read_u32(function_slot, 0) {
+            Ok(rva) => rva,
+            Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        if rva >= self.directory_start && rva < self.directory_end {
+            return Some(Err(PeError::ForwardedExport));
+        }
+        let name = match self.image.c_string_rva(name_rva) {
+            Ok(name) => name,
+            Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
+        };
+        Some(Ok(Export {
+            name,
+            ordinal: self.base.wrapping_add(index),
+            rva,
+        }))
     }
 }
 

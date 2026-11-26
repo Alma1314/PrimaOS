@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（254）
+## report（255）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -356,6 +356,7 @@
 | [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |
 | [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 | [WIN-M2 ring3 原型：原样 PE32+ 子任务执行](../superpowers/reports/2026-11-26-windows-m2-ring3.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-ring3.md` |
+| [WIN-M2 补片：真实 DLL 导出与发布失败清理](../superpowers/reports/2026-11-27-windows-m2-real-dll.md) | current | `docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md` |
 
 ## spec（4）
 

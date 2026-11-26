@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # Reports 索引
@@ -54,6 +54,8 @@ updated: 2026-11-26
 2026-11-26：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；`load_into` 在宿主完成平铺复制、DIR64/HIGHLOW 重定位与 IAT 填充，PE 32/32、ABI 4/4 通过；无页映射、Task 发布、TLS 初始化或 ring3 执行，真实 PE 仅首个基址装载。
 
 2026-11-26：[WIN-M2 ring3 原型](2026-11-26-windows-m2-ring3.md)；专用 feature 下 servicemgr 把 clang/lld 原样 PE32+ 经平铺/重定位/IAT 写入 R+X 代码段，两轮 QEMU 各运行两个子任务并自毁，结果 42、exit=self、父服务继续、exit=33；替代导入为手写桩，非完整 M2。
+
+2026-11-27：[WIN-M2 真实 DLL 导出与发布失败清理](2026-11-27-windows-m2-real-dll.md)；解析 `winpe-stub.dll` 导出表替换手写导入桩并把 DLL 以 R+X 映射，新增发布失败负例（held Task 已建 R+X 映射后强制失败，清理并用同一 VA 重新装载）；专用 QEMU 连续 8 轮逐字节通过、host 1223、lint 通过；首次运行一次未复现的 `task_create_held` 失败已登记，无 Windows 参考差分，WIN-M2 未通过。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 

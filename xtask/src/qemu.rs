@@ -99,7 +99,9 @@ pub(crate) fn run_bios_winpe(image: &Path, round: u32) -> Result<(), String> {
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|e| with_output(e, &output))?;
     protocol::validate_winpe(&output.stdout).map_err(|e| with_output(e, &output))?;
-    println!("PASS WINPE round={round} children=2 results=42,42 reloc=1 parent_alive=1");
+    println!(
+        "PASS WINPE round={round} unpublish=clean dll=winpe-stub.dll children=2 results=42,42 reloc=1 parent_alive=1"
+    );
     Ok(())
 }
 

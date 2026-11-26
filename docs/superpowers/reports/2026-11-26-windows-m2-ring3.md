@@ -101,5 +101,6 @@ WINPE|PASS
 
 - 前序：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；
   [WIN-M1 宿主模型](2026-11-26-windows-m1-pe-model.md)。
-- 后继：用真实 PE DLL/导出表替换手写导入桩；补发布失败无残留映射与另一域继续的负例/正例；
-  评审 WIN-D3 后按节设置权限并接入 TEB/TLS；再加入真实 Windows 参考差分。
+- 后继：[WIN-M2 真实 DLL 导出与发布失败清理](2026-11-27-windows-m2-real-dll.md) 已用真实
+  `winpe-stub.dll` 导出表替换手写导入桩并补发布失败清理负例；
+  仍待：按节设置权限与接入 TEB/TLS、真实 Windows 参考差分与更强的并存正例。
