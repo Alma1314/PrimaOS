@@ -10,6 +10,7 @@
 
 pub mod load;
 pub mod pe;
+pub mod teb;
 
 #[cfg(feature = "winpe-probe")]
 pub mod winpe;

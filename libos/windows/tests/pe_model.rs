@@ -122,6 +122,9 @@ fn build_pe() -> Vec<u8> {
     put64(&mut buf, 0x908, 0x1_4000_2710);
     put64(&mut buf, 0x910, 0x1_4000_2720);
     put64(&mut buf, TLS_CALLBACKS, 0x1_4000_2730);
+    put32(&mut buf, 0x920, 8); // ZeroFill
+    put32(&mut buf, 0x924, 8); // Characteristics = 模板对齐
+    buf[0xb00..0xb04].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
     put64(&mut buf, 0xb30, 0x1_4000_1000);
 
     put32(&mut buf, 0xc00, 0x1000);
@@ -430,7 +433,7 @@ fn parses_tls_directory_and_callbacks() {
     let tls = pe.tls().expect("tls parse").expect("tls directory");
     assert_eq!(tls.raw_start(), 0x1_4000_2700);
     assert_eq!(tls.callbacks_address(), 0x1_4000_2730);
-    assert_eq!(tls.zero_fill(), 0);
+    assert_eq!(tls.zero_fill(), 8);
     let callbacks: Vec<_> = pe
         .tls_callbacks()
         .expect("callbacks")
@@ -791,4 +794,55 @@ fn module_set_stops_forwarder_cycles_at_the_depth_limit() {
         None
     );
     assert_eq!(MAX_FORWARD_DEPTH, 8);
+}
+
+#[test]
+fn builds_static_tls_template_from_the_image() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let template = prima_windows::teb::tls_template(pe)
+        .expect("tls parse")
+        .expect("tls directory");
+    // 原始模板 0x2700..0x2710 共 16 字节，加 ZeroFill 8 字节。
+    assert_eq!(template.size(), 24);
+    assert_eq!(template.alignment(), 8);
+    let mut block = [0xeeu8; 24];
+    template.write_into(&mut block).expect("block fits");
+    assert_eq!(&block[..4], &[0x11, 0x22, 0x33, 0x44]);
+    assert!(block[4..].iter().all(|&byte| byte == 0));
+}
+
+#[test]
+fn no_tls_directory_yields_no_template() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, OPT_OFF + 0x70 + 72, 0);
+    put32(&mut bytes, OPT_OFF + 0x70 + 76, 0);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(
+        prima_windows::teb::tls_template(pe)
+            .expect("tls parse")
+            .is_none()
+    );
+}
+
+#[test]
+fn rejects_unaligned_tls_template_characteristics() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x924, 3);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(matches!(
+        prima_windows::teb::tls_template(pe),
+        Err(prima_windows::teb::LayoutError::TlsAlignment(3))
+    ));
+}
+
+#[test]
+fn rejects_tls_template_outside_file_data() {
+    let mut bytes = build_pe();
+    put64(&mut bytes, 0x900, 0x1_4000_3000); // 越出 .rdata 文件后备
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(matches!(
+        prima_windows::teb::tls_template(pe),
+        Err(prima_windows::teb::LayoutError::TlsOutOfBounds)
+    ));
 }
