@@ -15,6 +15,7 @@ mod syscall;
 
 pub mod async_batch;
 pub mod bulk;
+pub mod bulk_exec;
 pub mod capability;
 pub mod device;
 pub mod error;

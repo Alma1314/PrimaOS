@@ -161,11 +161,11 @@ def build():
     options = parser.parse_args()
     clippy = options.clippy
     compiler, sysroot, digest = prepare()
-    subprocess.run(['python3', str(ROOT / 'prima-user/musl/build.py')], cwd=ROOT, check=True)
+    subprocess.run(['python3', str(ROOT / 'libos/linux/musl/build.py')], cwd=ROOT, check=True)
     objects = ROOT / 'target/posix-crt'
     objects.mkdir(exist_ok=True)
     prefix = ROOT / 'target/musl-prefix'
-    c_dir = ROOT / 'prima-user/c'
+    c_dir = ROOT / 'libos/linux/c'
     names = ['prima_crt.c', 'prima_crt_start.S', 'prima_exec_bridge.S', 'prima_syscall.c']
     for name in names:
         subprocess.run(['clang', '-target', 'x86_64-unknown-none', '-O2', '-std=c11', '-Werror',

@@ -569,7 +569,7 @@ pub extern "C" fn _start(
     );
     #[cfg(feature = "windows-pe-probe")]
     if option_env!("PRIMA_WINPE_PROBE").is_some() {
-        prima_user::winpe::run_or_exit(&runtime);
+        prima_windows::winpe::run_or_exit(&runtime);
     }
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];

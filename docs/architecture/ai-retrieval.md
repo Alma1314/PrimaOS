@@ -24,7 +24,7 @@ updated: 2026-10-24
 ```sh
 python3 scripts/docs.py search 'fork' --kind report --limit 5 --json
 python3 scripts/docs.py search 'S5-D6' --limit 5
-rg -n 'SYS_FORK|space_of' kernel/src prima-user/c
+rg -n 'SYS_FORK|space_of' kernel/src libos/linux/c
 sed -n '127,310p' 'COSIR 原语规范.md'
 ```
 

@@ -1,13 +1,13 @@
 //! WIN-M2 ring3 原型：在 Prima 内装载并运行一个原样 PE32+ 控制台程序。
 //!
-//! 只在 `windows-pe-probe` feature 且构建时设置 `PRIMA_WINPE_PROBE` 时由 servicemgr 调用。
-//! 装载器在用户态完成：真实 PE 夹具经 `prima-windows` 解析/平铺/重定位/IAT 填充后写入
+//! 只在 `winpe-probe` feature 且构建时设置 `PRIMA_WINPE_PROBE` 时由 servicemgr 调用。
+//! 装载器在用户态完成：真实 PE 夹具经本 crate 的 PE 解析/平铺/重定位/IAT 填充后写入
 //! 自建 Segment，作为 held Task 的代码段映射为 R+X；栈、结果页和导入/退出桩另段映射。
 //! PE 通过导入桩返回 42，退出桩把 42 写入共享结果页并自毁；父服务在子任务退出后继续
 //! 第二次装载。没有内核 PE 识别、没有 W+X 映射，也没有 Windows 参考差分。
 
+use crate::pe::PeImage;
 use prima_runtime::{Capability, Error, Result, Rights, Runtime, SyscallTransport, TaskSpec};
-use prima_windows::pe::PeImage;
 
 const WINPE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/winpe-probe.exe"));
 

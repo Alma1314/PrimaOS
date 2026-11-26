@@ -4,7 +4,7 @@ kind: reference
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-11-26
 ---
 
 # 术语与检索别名
@@ -17,7 +17,9 @@ updated: 2026-10-23
 | HexArc | 最小对象能力机制内核的架构名称；主要实现位于 kernel | 白皮书§4 |
 | POSIR | 平台无关对象能力抽象状态机 | 原语规范§1 |
 | COSIR | POSIR 在特定硬件上的实例化/细化；规范文件保留历史名称 | 原语规范§18/§20 |
-| personality / persona / LibOS | 用户态构造的 OS 语义与 ABI 兼容层；源码兼容不等于二进制兼容 | 白皮书§8 |
+| personality / persona / LibOS | 用户态构造的 OS 语义与 ABI 兼容层；源码兼容不等于二进制兼容 | 白皮书§8；LibOS 主题 |
+| prima-linux / libos/linux | Linux personality crate（号/errno/stat/dirent、代理 Store 会话、C 适配与 musl 补丁） | LibOS 主题；系统地图 |
+| prima-windows / libos/windows | Windows personality crate（PE32+ 解析、平铺装载、WIN-M2 ring3 原型）；独立候选，不改变阶段 7 组合 | LibOS 主题；WIN-M0/M1/M2 |
 | Capability / cap / 能力 | 显式授权 token；对象、rights、活动状态、派生与位置有独立约束 | 原语规范§4 |
 | Authority / 初始权力 | 自举建立的初始授权来源，不等于任意后续拥有的 cap | 原语规范§14 |
 | CDT / 派生树 | Capability Derivation Tree；父关系与无环性质 | 原语规范§4.2；lean/README |

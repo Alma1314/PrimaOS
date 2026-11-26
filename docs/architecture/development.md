@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-11-08
+updated: 2026-11-26
 ---
 
 # 开发、构建与验证手册
@@ -15,9 +15,9 @@ updated: 2026-11-08
 
 Rust 工具链由[rust-toolchain.toml](../../rust-toolchain.toml)锁定为 `nightly-2026-07-30`，包含 rust-src、llvm-tools-preview、rustfmt、clippy 以及裸机/UEFI targets。Cargo alias 和 artifact dependency 支持见[.cargo/config.toml](../../.cargo/config.toml)。
 
-镜像/C 探针构建还使用 clang、llvm-ar、objdump、make、Python 3.11+、宿主 C 编译器和 shell；QEMU 验收需要 `qemu-system-x86_64`。确切参数和查找逻辑见[image.rs](../../xtask/src/image.rs)与[qemu.rs](../../xtask/src/qemu.rs)。
+镜像/C 探针构建还使用 clang、llvm-ar、objdump、make、Python 3.11+、宿主 C 编译器和 shell；QEMU 验收需要 `qemu-system-x86_64`。Windows 原型的 PE 夹具另需 clang 与 lld-link，只在 `windows-pe-probe` feature 下构建。确切参数和查找逻辑见[image.rs](../../xtask/src/image.rs)与[qemu.rs](../../xtask/src/qemu.rs)。
 
-musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁文件](../superpowers/compat/musl-snapshot.lock.toml)；预期路径 `target/musl-1.2.5`。构建入口[build.sh](../../prima-user/musl/build.sh)调用 Python 3.11+ 标准库实现的[build.py](../../prima-user/musl/build.py)，从锁文件重放八个替换文件并构建 `target/musl-prefix`。缓存命中前也检查快照身份和干净状态；只复制 Git 跟踪文件，跳过 ignored 的宿主生成物。缓存覆盖锁、全部补丁、构建脚本、工具版本和固定参数；构建后用 objdump 检查 libc.a 的原生陷入白名单。默认 `make -j2`，可用 `PRIMA_MUSL_JOBS=1` 等正整数调整；Rust 并行度可另用 `CARGO_BUILD_JOBS` 控制，QEMU 仍可能占满一个核。详见[musl 边界设计](../superpowers/specs/2026-10-24-musl-port-boundary-design.md)。
+musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁文件](../superpowers/compat/musl-snapshot.lock.toml)；预期路径 `target/musl-1.2.5`。构建入口[build.sh](../../libos/linux/musl/build.sh)调用 Python 3.11+ 标准库实现的[build.py](../../libos/linux/musl/build.py)，从锁文件重放八个替换文件并构建 `target/musl-prefix`。缓存命中前也检查快照身份和干净状态；只复制 Git 跟踪文件，跳过 ignored 的宿主生成物。缓存覆盖锁、全部补丁、构建脚本、工具版本和固定参数；构建后用 objdump 检查 libc.a 的原生陷入白名单。默认 `make -j2`，可用 `PRIMA_MUSL_JOBS=1` 等正整数调整；Rust 并行度可另用 `CARGO_BUILD_JOBS` 控制，QEMU 仍可能占满一个核。详见[musl 边界设计](../superpowers/specs/2026-10-24-musl-port-boundary-design.md)。
 
 ## 命令与边界
 
@@ -29,7 +29,9 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask run` | 交互 BIOS QEMU | 人工观察；不替代自动断言 |
 | `cargo xtask test-musl --host-only` | C 适配层、取消点汇编、构建护栏与 Linux F1 参考 | 不运行 QEMU、不重建 sysroot，适合快速迭代 |
 | `cargo xtask test-musl` | 上述检查 + F1/W4 各双轮 BIOS | 共享原有 30 秒门限、trace、容量和清理断言 |
-| `sh prima-user/musl/build.sh --check` | 锁定输入与归档审查；缓存缺失/过期/不完整时失败 | 不构建、不下载；不是运行时兼容证据 |
+| `PRIMA_WINPE_PROBE=1 cargo run -p xtask --features windows-pe-probe -- test-winpe` | WIN-M2 ring3 原型的两次 QEMU 见证 | 替代导入是手写桩；不代表 Win32/CRT、DLL 或 Windows 参考差分 |
+| `PRIMA_LINUX_ELF=<pinned ELF> cargo run -p xtask --features linux-probe -- test-linux` | 用冻结输入运行 Linux 前端与代理场景；同族 `test-linux-proxy`、`--features libos-bench -- test-libos-bench` | 需要预置输入；缺输入时保持未验证，不用 host 测试替代 |
+| `sh libos/linux/musl/build.sh --check` | 锁定输入与归档审查；缓存缺失/过期/不完整时失败 | 不构建、不下载；不是运行时兼容证据 |
 | `cargo xtask test-vfs [V1|V2|V3|V4]` | V1/V2/V3/V4 的 Linux 参考与 BIOS 双轮 | 与全量 test 共用同一实现、30 秒门限和断言；便于文件服务迭代 |
 | `cargo xtask test-process [W4|W5|W6|W7|W7b|W8|W9]` | fork/exec/信号相关探针的聚焦双轮 | 同一 validator、30 秒门限、stdout 和 IPC 基线，无自动重试 |
 | `cargo xtask test` | BIOS 双轮与各冻结 C/开源程序探针 | 实现定义的 trace、字节流、退出码、输入注入与 Linux 参考 |
@@ -97,7 +99,7 @@ N1沿同一构建通道测128次未绑定Gate的SYS_TASK_ID int80，方法与基
 
 内核句柄/权限的维护模式见[补强设计](../superpowers/specs/2026-10-24-kernel-handle-model-design.md)：机器计数器必须检查溢出，槽与逻辑 ID 在共同入口提交；不能把“无效句柄”当成可复用状态，不能以遍历已知权限的方式忽略未知输入位。新增或改变模型迁移时，更新 [Lean 映照契约](../../lean/README.md)，同时给出失败原子性、边界反例、不变量保持与实际证明范围。
 
-修改内核对象/调度时关注状态原子性、审计容量、资源回收与负例；改硬件入口时检查 prima-ostd 安全不变量；改兼容 API 时补 Linux 同源探针并更新 profile/台账及报告，不以一次 stdout 相同代替所有错误语义。
+修改内核对象/调度时关注状态原子性、审计容量、资源回收与负例；改硬件入口时检查 prima-ostd 安全不变量；改兼容 API 时补 Linux 同源探针并更新 profile/台账及报告，不以一次 stdout 相同代替所有错误语义。改 `libos/linux` 或 `libos/windows` 时同步更新对应 profile/冻结门、报告与 [LibOS 主题](topics/libos.md)，并保持中立层无 personality 策略。
 
 ## 失败定位
 

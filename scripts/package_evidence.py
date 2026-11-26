@@ -23,7 +23,7 @@ MAX_MEMBERS = 10000
 LICENSES = {
     'LICENSE': ('GPL-3.0-or-later', '3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986'),
     'prima-ostd/LICENSE-MPL': ('MPL-2.0', '86cf9656479f1edb82245b985f4a2cc0d503b945766ebeda4269c60b307699ae'),
-    'prima-user/musl/COPYRIGHT': ('MIT', 'f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af'),
+    'libos/linux/musl/COPYRIGHT': ('MIT', 'f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af'),
 }
 MPL_FILES = ('prima-ostd/src/align.rs', 'prima-ostd/src/pod.rs', 'prima-ostd/src/sync/lock.rs')
 PENDING = ['binary component and third-party NOTICE inventory',

@@ -2,6 +2,13 @@
 #![no_main]
 #![deny(unsafe_code)]
 
+use prima_linux::linux::{
+    CASES, MAX_FAMILY_TASKS, P1, P2, PTHREAD, PendingTraps, Process,
+    process::Family,
+    signal::{Completion, Signals},
+    thread::{Call, ThreadGroup},
+};
+use prima_linux::linux_store::{Local, Remote, Store};
 use prima_runtime::{
     Capability, Error, Rights, Runtime, TaskId, TaskSpec, X86_64Transport,
     protocol::{
@@ -9,13 +16,6 @@ use prima_runtime::{
         SERVICE_ROOT_LINUX,
     },
 };
-use prima_user::linux::{
-    CASES, MAX_FAMILY_TASKS, P1, P2, PTHREAD, PendingTraps, Process,
-    process::Family,
-    signal::{Completion, Signals},
-    thread::{Call, ThreadGroup},
-};
-use prima_user::linux_store::{Local, Remote, Store};
 
 // The input path is supplied explicitly by the harness, which verifies D12's
 // SHA-256 before packaging. The bytes are never relinked or patched.
@@ -269,11 +269,11 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
                 "P1" => P1,
                 "P2" => P2,
                 "M4" => PTHREAD,
-                "M4-fork" => prima_user::linux::PROCESS,
-                "M3" => prima_user::linux::MATRIX,
-                "fork-limit" => prima_user::linux::FORKLIMIT,
+                "M4-fork" => prima_linux::linux::PROCESS,
+                "M3" => prima_linux::linux::MATRIX,
+                "fork-limit" => prima_linux::linux::FORKLIMIT,
                 #[cfg(feature = "libos-bench")]
-                "L1" => prima_user::linux::LIBOS_BENCH,
+                "L1" => prima_linux::linux::LIBOS_BENCH,
                 _ => IMAGE,
             },
             &argv[..argc],
@@ -406,7 +406,7 @@ pub extern "C" fn _start(_self_cap: u64, send_cap_raw: u64, _: u64, selection: u
                         &mut *store,
                         &req,
                         IMAGE,
-                        prima_user::linux::PROCESS_CHILD,
+                        prima_linux::linux::PROCESS_CHILD,
                     ) {
                         Ok(()) => continue,
                         Err(error) => Some(error),

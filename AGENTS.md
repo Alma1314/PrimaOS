@@ -4,14 +4,14 @@ kind: agent-instructions
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-26
 ---
 
 # Repository Guidelines
 
 ## Project Structure & Module Organization
 
-This is a Rust workspace for a research OS. `cosir/` contains the executable, platform-independent model; `kernel/` implements x86_64 mechanisms; `prima-ostd/` owns privileged hardware support. Shared syscall definitions live in `prima-abi/`, native user APIs in `prima-runtime/`, and user programs and services in `prima-user/`. `prima-initgen/` builds boot inputs, while `xtask/` provides build and validation commands. Formal models are in `lean/`; plans, specifications, and evidence reports are under `docs/superpowers/`. Rust tests sit beside their modules and in crate-level `tests/` directories. Boot images are generated artifacts, not source assets.
+This is a Rust workspace for a research OS. `cosir/` contains the executable, platform-independent model; `kernel/` implements x86_64 mechanisms; `prima-ostd/` owns privileged hardware support. Shared syscall definitions live in `prima-abi/`; native user APIs plus shared batch/proxy protocol in `prima-runtime/`; native ring3 programs and services in `prima-user/`. OS personalities are separate crates under `libos/`: `libos/linux/` (`prima-linux`: Linux front-end, C adapter, musl port and probes) and `libos/windows/` (`prima-windows`: PE model, WIN-M2 loader and probes). `prima-initgen/` builds boot inputs, while `xtask/` provides build and validation commands. Formal models are in `lean/`; plans, specifications, and evidence reports are under `docs/superpowers/`. Rust tests sit beside their modules and in crate-level `tests/` directories. Boot images are generated artifacts, not source assets.
 
 ## How to Read the Documentation
 
@@ -54,8 +54,10 @@ Use the pinned nightly toolchain in `rust-toolchain.toml`. From the repository r
 - `cargo xtask run` starts the BIOS image in interactive QEMU.
 - `cargo test --workspace` runs Rust unit and integration tests.
 - `cargo xtask test` builds images and runs the BIOS QEMU acceptance checks twice.
-- `cargo xtask lint` checks formatting, Clippy warnings, the bare-metal kernel build, and the kernel's zero-`unsafe` rule.
+- `cargo xtask lint` checks formatting, Clippy warnings, the bare-metal kernel build, the kernel's zero-`unsafe` rule, and the S6-X3 personality boundary.
 - `cargo xtask tcb` reports trusted-code and kernel coupling metrics.
+- `PRIMA_WINPE_PROBE=1 cargo run -p xtask --features windows-pe-probe -- test-winpe` runs the WIN-M2 ring3 witness twice.
+- Linux personality runs (`test-linux`, `test-linux-proxy`, `test-libos-bench`) additionally need a pinned `PRIMA_LINUX_ELF`.
 
 The QEMU commands require QEMU and the configured Rust targets on the host.
 
@@ -65,7 +67,7 @@ Use `cargo fmt --all` and four-space Rust indentation. Follow Rust naming conven
 
 ## Testing Guidelines
 
-Add focused `#[test]` cases near changed Rust behavior; name them for the condition and expected result. For boot or protocol changes, also update the relevant `xtask` QEMU trace checks. Run `cargo test --workspace` and `cargo xtask lint` before submission, plus `cargo xtask test` when the boot path changes. There is no stated numeric coverage target. Record evidence at its actual scope: host tests, QEMU execution, and Lean proofs establish different claims.
+Add focused `#[test]` cases near changed Rust behavior; name them for the condition and expected result. For boot or protocol changes, also update the relevant `xtask` QEMU trace checks. For personality changes under `libos/`, update the profile or freeze gate, the owning report, and `docs/architecture/topics/libos.md`. Run `cargo test --workspace` and `cargo xtask lint` before submission, plus `cargo xtask test` when the boot path changes. There is no stated numeric coverage target. Record evidence at its actual scope: host tests, QEMU execution, and Lean proofs establish different claims.
 
 ## Commits & Pull Requests
 

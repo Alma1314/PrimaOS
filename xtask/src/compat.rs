@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn every_c_linux_dispatch_entry_has_a_current_api_ledger_row() {
-        let source = include_str!("../../prima-user/c/prima_syscall.c");
+        let source = include_str!("../../libos/linux/c/prima_syscall.c");
         let ledger = include_str!("../../docs/superpowers/compat/stage5-working-api.md");
         let dispatch = source
             .split_once("static long prima_translate_body(")

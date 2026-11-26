@@ -26,7 +26,7 @@ LibOS 变成阶段 7 必交付 personality，也不替换 Linux + Prima 原生/P
 |---|---|---|
 | 目标文件格式 | PE32+（AMD64）、控制台子系统优先 | 计划书 §4；本轮只解析，不装载 |
 | 宿主验证平台 | Linux x86_64，仓库固定 nightly `nightly-2026-07-30` | 只证明宿主 Rust/汇编行为，不外推 Windows 或 Prima guest |
-| 新组件 | `prima-windows/`，`#![no_std]`、无第三方依赖、`forbid(unsafe_code)` | 库内零 unsafe；ABI 汇编只存在于集成测试 |
+| 新组件 | `libos/windows/`，`#![no_std]`、无第三方依赖、`forbid(unsafe_code)` | 库内零 unsafe；ABI 汇编只存在于集成测试 |
 | M1 范围 | 头部、节表、数据目录、RVA 映射、导入/重定位/TLS 目录解析、映射计划校验 | 不含导出、delay/bound import、重定位应用、TLS 初始化 |
 | 失败策略 | 越界、溢出、重叠、W^X、虚拟填充读取全部返回错误 | 不以零填充、截断或永久 W+X 掩盖坏 PE |
 | ABI 探针 | `extern "win64"` 与最小汇编验证寄存器/栈参数、32 字节 shadow space 槽位、非易失寄存器 | 不验证 NT syscall、APC、SEH 或异常上下文 |

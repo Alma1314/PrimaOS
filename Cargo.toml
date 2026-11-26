@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "prima-abi", "prima-ostd", "prima-runtime", "prima-user", "prima-windows", "prima-initgen", "xtask", "cosir"]
+members = ["kernel", "prima-abi", "prima-ostd", "prima-runtime", "prima-user", "libos/linux", "libos/windows", "prima-initgen", "xtask", "cosir"]
 default-members = ["xtask"]
 
 [profile.dev]
@@ -16,5 +16,14 @@ debug = false
 opt-level = 1
 
 [profile.dev.package.prima-runtime]
+debug = false
+opt-level = 1
+
+# Linux/Windows personality 与 prima-user 同样只做轻量优化，保持既有用户态页数预算。
+[profile.dev.package.prima-linux]
+debug = false
+opt-level = 1
+
+[profile.dev.package.prima-windows]
 debug = false
 opt-level = 1

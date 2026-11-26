@@ -112,7 +112,7 @@ pub(super) fn test() -> Result<(), String> {
     let (_, input) = stage6::build()?;
     let directory = input.parent().unwrap();
     let probe = directory.join("stage7-libos-bench.elf");
-    let bytes = prima_user::linux::LIBOS_BENCH;
+    let bytes = prima_linux::linux::LIBOS_BENCH;
     fs::write(&probe, bytes).map_err(|e| e.to_string())?;
     let service =
         fs::read(directory.join("stage6-native-service.elf")).map_err(|e| e.to_string())?;

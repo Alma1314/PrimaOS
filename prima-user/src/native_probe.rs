@@ -11,12 +11,12 @@
 #![no_main]
 #![deny(unsafe_code)]
 
+use prima_linux::linux_store::{Remote, Session};
 use prima_runtime::{
     Capability, Runtime, TaskId, X86_64Transport,
     bulk::{self, DIRFD_ROOT},
     protocol::{SERVICE_PROXY_DONE_TAG, SERVICE_ROOT_NATIVE},
 };
-use prima_user::linux_store::{Remote, Session};
 
 type Native = Runtime<X86_64Transport>;
 

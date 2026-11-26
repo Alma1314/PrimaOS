@@ -575,10 +575,10 @@ pub struct Remote<'a, T: SyscallTransport> {
     manager: (u64, Capability),
     store: Option<(u64, Capability)>,
     policy: u8,
-    pages: [Option<Capability>; crate::proxy::MAX_PROXIES],
-    async_pages: [Option<Capability>; crate::proxy::MAX_PROXIES],
-    generations: [u64; crate::proxy::MAX_PROXIES],
-    producers: [Producer; crate::proxy::MAX_PROXIES],
+    pages: [Option<Capability>; prima_runtime::protocol::MAX_PROXIES],
+    async_pages: [Option<Capability>; prima_runtime::protocol::MAX_PROXIES],
+    generations: [u64; prima_runtime::protocol::MAX_PROXIES],
+    producers: [Producer; prima_runtime::protocol::MAX_PROXIES],
     v2: bool,
     entries: [Option<RemoteEntry>; REMOTE_OWNERS],
 }
@@ -679,10 +679,10 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
             manager: (manager_cookie, manager),
             store: Some((store_cookie, store_cap)),
             policy,
-            pages: [None; crate::proxy::MAX_PROXIES],
-            async_pages: [None; crate::proxy::MAX_PROXIES],
-            generations: [0; crate::proxy::MAX_PROXIES],
-            producers: [Producer::new(0); crate::proxy::MAX_PROXIES],
+            pages: [None; prima_runtime::protocol::MAX_PROXIES],
+            async_pages: [None; prima_runtime::protocol::MAX_PROXIES],
+            generations: [0; prima_runtime::protocol::MAX_PROXIES],
+            producers: [Producer::new(0); prima_runtime::protocol::MAX_PROXIES],
             v2,
             entries: [None; REMOTE_OWNERS],
         })
@@ -717,7 +717,7 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
             let status = message.payload & 0xff;
             let index = ((message.payload >> 8) & 0xff) as usize;
             drop_caps(self.rt, &message);
-            if status != 0 || index >= crate::proxy::MAX_PROXIES {
+            if status != 0 || index >= prima_runtime::protocol::MAX_PROXIES {
                 return Err(-13);
             }
             return Ok(index as u8);
@@ -954,7 +954,7 @@ impl<'a, T: SyscallTransport> Remote<'a, T> {
     /// merged COMPLETE covering it, then read results back in place.
     fn exchange_v2(&mut self, slot: u8, page: &mut [u8; PAGE_BYTES]) -> Result<(), i64> {
         let index = slot as usize;
-        if index >= crate::proxy::MAX_PROXIES || self.async_pages[index].is_none() {
+        if index >= prima_runtime::protocol::MAX_PROXIES || self.async_pages[index].is_none() {
             return Err(-9);
         }
         let ordinal = self.producers[index].try_publish().ok_or(-11)?;
@@ -1393,7 +1393,7 @@ fn prima_user_store_execute(
     page: &mut [u8; PAGE_BYTES],
     sequence: u64,
 ) -> Result<(), bulk::Invalid> {
-    crate::bulk::execute(files, ram, View::ROOT, page, sequence, status)
+    prima_runtime::bulk_exec::execute(files, ram, View::ROOT, page, sequence, status)
 }
 
 /// Same byte storage the former frontend owned; now private to the transport.

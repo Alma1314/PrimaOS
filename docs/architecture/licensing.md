@@ -54,7 +54,7 @@ GPLv3 不要求每个源文件带许可头；本仓库以 `LICENSE` + `Cargo.tom
 
 | 材料 | 许可 | 仓库内状态 | 义务 |
 |---|---|---|---|
-| [musl](https://musl.libc.org/) 1.2.5（构建期快照） | MIT | **不随仓库分发**：快照在 `target/musl-1.2.5`，由 `docs/superpowers/compat/musl-snapshot.lock.toml` 锁定并校验 | 已把 MIT 通知逐字入库为 [`prima-user/musl/COPYRIGHT`](../../prima-user/musl/COPYRIGHT)（`sha256=f9bc4423…`，与锁定值一致），覆盖 `prima-user/musl/patches/` 中源自 musl 的 `clone.s`、`restore.s`、`syscall_arch.h` 等修改文件 |
+| [musl](https://musl.libc.org/) 1.2.5（构建期快照） | MIT | **不随仓库分发**：快照在 `target/musl-1.2.5`，由 `docs/superpowers/compat/musl-snapshot.lock.toml` 锁定并校验 | 已把 MIT 通知逐字入库为 [`libos/linux/musl/COPYRIGHT`](../../libos/linux/musl/COPYRIGHT)（`sha256=f9bc4423…`，与锁定值一致），覆盖 `libos/linux/musl/patches/` 中源自 musl 的 `clone.s`、`restore.s`、`syscall_arch.h` 等修改文件 |
 | Rust 依赖（`bootloader_api` 等） | 各自许可（MIT/ Apache-2.0 等） | 不 vendored，由 `Cargo.lock` 锁定 | 若将来 `cargo vendor`，必须随之引入各自 NOTICE |
 | [busybox](https://busybox.net/) 1.36.1（阶段 6 白名单） | **GPLv2** | **不随仓库分发**：只登记 `sha256` 与 ELF 属性，见[白名单台账](../superpowers/compat/stage6-static-whitelist.md) | 见下节 |
 | Ubuntu 参考内核（差分 guest） | GPLv2 | 不随仓库分发（`target/linux-ref`，仅差分时下载） | 不进入仓库；不要在发行物中打包 |
@@ -73,7 +73,7 @@ GPLv3 不要求每个源文件带许可头；本仓库以 `LICENSE` + `Cargo.tom
 ## 后继与未覆盖
 
 - **逐文件 SPDX 头**：尚未添加。若添加，必须跳过 `prima-ostd` 的三个 MPL 文件与
-  `prima-user/musl/patches/` 下的 musl 派生文件，并在本文件登记批次与例外。
+  `libos/linux/musl/patches/` 下的 musl 派生文件，并在本文件登记批次与例外。
 - **发行物许可清单**：随 7-0（工程底座）的 release artifact 一并产出（源码 offer、第三方
   NOTICE、镜像内许可清单）。
 - 本文件不构成法律意见；它只把仓库里已经存在的许可事实写清楚。

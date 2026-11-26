@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-26
 ---
 
 # PrimaOS 文档中心
@@ -21,6 +21,7 @@ PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与
 | AI 接手任务、压缩上下文 | [AI 检索协议](architecture/ai-retrieval.md) | 主题包 → 权威章节 → 最新证据 → 代码 |
 | 判断实现进度与阻塞 | [实现阶段](../Prima%20OS%20实现阶段.md) | 指向的报告、兼容台账与决策门 |
 | 修改某个子系统 | [主题地图](architecture/topics/README.md) | 同主题规范、设计、计划、实现与测试 |
+| 新增或修改 OS personality | [LibOS 布局与边界](architecture/topics/libos.md) | 兼容主题 → 系统地图 → 对应 profile/冻结门 |
 | 查术语、缩写或编号 | [术语表](architecture/glossary.md) | [接口与编号边界](architecture/interfaces.md) |
 | 构建、运行与排错 | [开发与验证手册](architecture/development.md) | 命令实现、报告中的运行环境 |
 | 评估安全、兼容或证明主张 | [证据规则](architecture/evidence.md) | 具体报告范围、反例和未覆盖项 |
@@ -79,7 +80,7 @@ scripts/docs.py                   无外部依赖的目录生成、检索与校�
 python3 scripts/docs.py topic process
 python3 scripts/docs.py search 'ISSUE-FORK-CONTINUATION-001' --limit 5
 python3 scripts/docs.py search 'fork' --kind report --json
-rg -n 'SYS_FORK|space_of' kernel/src prima-user/c
+rg -n 'SYS_FORK|space_of' kernel/src libos/linux/c
 ```
 
 主题路由提供精选材料，全文检索覆盖所有源文档。机器目录记录所有 Markdown 标题的起止行；按需读章节，无需把整个历史档案载入上下文。

@@ -1,0 +1,17 @@
+[package]
+name = "prima-windows"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# WIN-M2 ring3 原型：把 winpe 装载模块与 PE 夹具构建挂到 runtime/ostd 依赖后面。
+winpe-probe = ["dep:prima-runtime", "dep:prima-ostd"]
+
+[dependencies]
+prima-runtime = { path = "../../prima-runtime", optional = true }
+prima-ostd = { path = "../../prima-ostd", optional = true }

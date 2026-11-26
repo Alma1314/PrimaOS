@@ -12,7 +12,7 @@ import sys
 import tomllib
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent.parent
+ROOT = HERE.parent.parent.parent
 CFLAGS = "-O2 -fno-stack-protector -fno-omit-frame-pointer -fPIC"
 CC = "clang --target=x86_64-unknown-none"
 

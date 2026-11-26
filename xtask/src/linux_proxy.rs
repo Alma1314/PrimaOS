@@ -123,7 +123,7 @@ fn run_round(linux_kind: u64) -> Result<String, String> {
             SERVICE_BEHAVIOR_STORE,
             env!("CARGO_BIN_FILE_PRIMA_USER_prima-store"),
         ),
-        (linux_kind, env!("CARGO_BIN_FILE_PRIMA_USER_prima-linux")),
+        (linux_kind, env!("CARGO_BIN_FILE_PRIMA_LINUX_prima-linux")),
         (
             SERVICE_IMAGE_KIND_NATIVE_APP,
             env!("CARGO_BIN_FILE_PRIMA_USER_prima-native-scenario"),

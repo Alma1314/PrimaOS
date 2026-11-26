@@ -1,5 +1,5 @@
 //! The same native OpenFiles operations behind a checked, private batch snapshot.
-use prima_runtime::{
+use crate::{
     bulk::{
         self, DIRFD_ROOT, MAX_PATH, NEUTRAL_STAT_BYTES, OPEN_ACCESS_MASK, OPEN_APPEND, OPEN_CREATE,
         OPEN_DIRECTORY, OPEN_EXCLUSIVE, OPEN_TRUNCATE, PAGE_BYTES, Request, STAT_NOFOLLOW,
@@ -283,7 +283,7 @@ fn write_partial(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prima_runtime::{
+    use crate::{
         bulk::{DATA_OFFSET, DESCRIPTOR_BYTES, HEADER_BYTES},
         vfs::{self, AccessMode, OpenFlags, SeekFrom},
     };

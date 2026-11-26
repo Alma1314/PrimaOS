@@ -8,7 +8,7 @@ use std::{
 
 const INPUT: &[u8] = include_bytes!(env!("PRIMA_LINUX_ELF"));
 const HASH: &str = "dbac288c29ba568459550a2da9e7ae0ded6b1fc728ee9fad3044c44e62d6ac14";
-const CASES: [&str; 11] = prima_user::linux::CASES;
+const CASES: [&str; 11] = prima_linux::linux::CASES;
 
 pub(crate) fn build() -> Result<(image::Images, PathBuf), String> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -17,19 +17,19 @@ pub(crate) fn build() -> Result<(image::Images, PathBuf), String> {
         .join("target/prima-os");
     let input = verify_input(&directory)?;
     for (name, bytes) in [
-        ("p1", prima_user::linux::P1),
-        ("p2", prima_user::linux::P2),
-        ("pthread", prima_user::linux::PTHREAD),
-        ("process", prima_user::linux::PROCESS),
-        ("process-child", prima_user::linux::PROCESS_CHILD),
-        ("matrix", prima_user::linux::MATRIX),
+        ("p1", prima_linux::linux::P1),
+        ("p2", prima_linux::linux::P2),
+        ("pthread", prima_linux::linux::PTHREAD),
+        ("process", prima_linux::linux::PROCESS),
+        ("process-child", prima_linux::linux::PROCESS_CHILD),
+        ("matrix", prima_linux::linux::MATRIX),
     ] {
         fs::write(directory.join(format!("stage6-{name}.elf")), bytes)
             .map_err(|e| e.to_string())?;
     }
     let service_path = directory.join("stage6-native-service.elf");
     image::strip_debug(
-        Path::new(env!("CARGO_BIN_FILE_PRIMA_USER_prima-linux")),
+        Path::new(env!("CARGO_BIN_FILE_PRIMA_LINUX_prima-linux")),
         &service_path,
     )?;
     let service = fs::read(service_path).map_err(|e| e.to_string())?;
@@ -37,12 +37,12 @@ pub(crate) fn build() -> Result<(image::Images, PathBuf), String> {
         return Err("native service does not embed the exact pinned ELF bytes".into());
     }
     for bytes in [
-        prima_user::linux::P1,
-        prima_user::linux::P2,
-        prima_user::linux::PTHREAD,
-        prima_user::linux::PROCESS,
-        prima_user::linux::PROCESS_CHILD,
-        prima_user::linux::MATRIX,
+        prima_linux::linux::P1,
+        prima_linux::linux::P2,
+        prima_linux::linux::PTHREAD,
+        prima_linux::linux::PROCESS,
+        prima_linux::linux::PROCESS_CHILD,
+        prima_linux::linux::MATRIX,
     ] {
         if !service.windows(bytes.len()).any(|window| window == bytes) {
             return Err("native service does not embed the exact probe ELF bytes".into());

@@ -489,13 +489,14 @@
 | [实现/验证/整改报告模板](templates/report.md) | current | `docs/architecture/templates/report.md` |
 | [设计/接口规格模板](templates/spec.md) | current | `docs/architecture/templates/spec.md` |
 
-## topic（10）
+## topic（11）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [启动、硬件与可信边界](topics/boot.md) | current | `docs/architecture/topics/boot.md` |
 | [Capability、句柄、Task 与 IPC](topics/capability-ipc.md) | current | `docs/architecture/topics/capability-ipc.md` |
-| [POSIX profile、musl、网络与 Linux 路线](topics/compatibility.md) | current | `docs/architecture/topics/compatibility.md` |
+| [POSIX/Linux 兼容与 Windows LibOS 候选](topics/compatibility.md) | current | `docs/architecture/topics/compatibility.md` |
+| [LibOS 布局、personality 边界与验证入口](topics/libos.md) | current | `docs/architecture/topics/libos.md` |
 | [页帧、映射、TLB 与 COW](topics/memory.md) | current | `docs/architecture/topics/memory.md` |
 | [Namespace、Timer 与 Audit](topics/namespace-time-audit.md) | current | `docs/architecture/topics/namespace-time-audit.md` |
 | [进程、线程、fork、exec 与信号](topics/process.md) | current | `docs/architecture/topics/process.md` |

@@ -1,0 +1,23 @@
+[package]
+name = "prima-linux"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+linux-probe = []
+libos-bench = ["linux-probe"]
+
+[[bin]]
+name = "prima-linux"
+path = "src/main.rs"
+required-features = ["linux-probe"]
+test = false
+bench = false
+
+[dependencies]
+prima-runtime = { path = "../../prima-runtime" }

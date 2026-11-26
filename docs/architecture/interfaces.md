@@ -9,7 +9,7 @@ updated: 2026-10-27
 
 # 接口、号段与版本边界
 
-本页提供定位，不创建新的 ABI。源定义见[prima-abi](../../prima-abi/src/lib.rs)、[原生传输接口](../../prima-runtime/src/transport.rs)、[C 适配层](../../prima-user/c/prima_syscall.c)。
+本页提供定位，不创建新的 ABI。源定义见[prima-abi](../../prima-abi/src/lib.rs)、[原生传输接口](../../prima-runtime/src/transport.rs)、[C 适配层](../../libos/linux/c/prima_syscall.c)。
 
 ## 四种契约分开读取
 
@@ -65,7 +65,7 @@ Linux 风格 `syscall(57)` 在 C 边界表示 fork，Prima 原生 57 表示 siga
 
 ## 文件服务与 personality
 
-[原生打开对象](../../prima-runtime/src/vfs/handles.rs)接受 AccessMode/SeekFrom/OpenFlags 并返回 FileInfo/语义错误；[服务边界](../../prima-user/src/service.rs)负责原生 IPC 编解码，[C personality](../../prima-user/c/prima_syscall.c)负责 Linux fd、errno、stat/dirent。HandleId/NodeId 都不是 Capability。v3 RAM 镜像版本独立于当前不变的线协议和 syscall 号空间。当前认证Process会话/OFD holder已通过本轮host及W6/W7b/N1有界见证；多LibOS的独立根/personality隔离尚未实现，详见[VFS 契约](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)。
+[原生打开对象](../../prima-runtime/src/vfs/handles.rs)接受 AccessMode/SeekFrom/OpenFlags 并返回 FileInfo/语义错误；[服务边界](../../prima-user/src/service.rs)负责原生 IPC 编解码，[C personality](../../libos/linux/c/prima_syscall.c)负责 Linux fd、errno、stat/dirent。HandleId/NodeId 都不是 Capability。v3 RAM 镜像版本独立于当前不变的线协议和 syscall 号空间。当前认证Process会话/OFD holder已通过本轮host及W6/W7b/N1有界见证；多LibOS的独立根/personality隔离尚未实现，详见[VFS 契约](../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)。
 
 ## 变更流程
 

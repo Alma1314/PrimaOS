@@ -217,7 +217,7 @@ SEH 执行。[Microsoft x64 exception handling](https://learn.microsoft.com/en-u
 | WIN-M9 并存与硬化 | M4–M8、相应阶段 7 机制 | 按需接入配额、撤销、监督与端到端恢复；新增模型与生产映照 | Windows/Linux/原生域并存；无授权不能互访；资源耗尽/撤销/组件故障矩阵有界通过；明确恢复协议覆盖 |
 | WIN-M10 冻结与签署 | M0–M9 | Windows profile、符号追溯、制品清单、报告、验收工具与文档索引 | 原样真实 CLI 与服务、逐 API 差分、负例、成本与关键性质证明形成完整包；独立评审后签署 |
 
-建议只在 M0 的目录/构建设计通过后，创建例如 `prima-windows/` 的最小用户态组件；这是候选
+建议只在 M0 的目录/构建设计通过后，创建例如 `libos/windows/` 的最小用户态组件；这是候选
 归属，不是已经存在的源码路径。本次不创建 crate、空接口或预留 syscall 号。
 通用改动沿用 `prima-runtime`、`prima-abi`、`kernel`、`prima-ostd` 现有边界，保持内核零 unsafe。
 

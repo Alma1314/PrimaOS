@@ -125,7 +125,7 @@ generation 不复用、stale handle、槽位退役、权限未知位等高风险
 - **症状**：默认 locale 下 `cargo xtask test-rust R1` 在 musl 阶段失败：
   `ERROR musl: unexpected raw syscall boundary in musl: {'': [58, 48]}`。
 - **根因**：`prima-user/musl/build.py` 用英文正则 `":     file format "` 解析
-  `objdump -d` 的归档成员边界（[build.py:76](../../../prima-user/musl/build.py)），
+  `objdump -d` 的归档成员边界（[build.py:76](../../../libos/linux/musl/build.py)），
   并把白名单固定为 `{"restore.lo": [58], "clone.lo": [48]}`（同文件第 85 行）。
   中文 locale 下成员头是 `aio.lo：     文件格式 elf64-x86-64`，成员名永远解析为
   空串，两个 `syscall` 都归到 `''` 下，必然不匹配。
@@ -139,7 +139,7 @@ generation 不复用、stale handle、槽位退役、权限未知位等高风险
 ### P1 · 缓存未命中时 `--check` 会打印 PASS
 
 `build.py` 的 `--check` 分支只在缓存命中时才审计归档，其余情况仍打印
-`PASS musl locked snapshot; cache=miss`（[build.py:107](../../../prima-user/musl/build.py)）。
+`PASS musl locked snapshot; cache=miss`（[build.py:107](../../../libos/linux/musl/build.py)）。
 实测默认 locale 得到 `cache=miss` 的 PASS，`LC_ALL=C` 得到 `cache=hit` 的 PASS；前者
 实际未验证任何归档内容。此外缓存键包含 `objdump --version` 的本地化文本，locale 切换
 会无谓地使缓存失效。建议 miss 时输出 SKIP 并返回非零，或明确区分"已验证/未验证"。

@@ -16,6 +16,7 @@ updated: 2026-10-24
 - [Repository instructions](AGENTS.md): constraints and validation commands.
 - [Documentation center](docs/README.md): task-based routing and authority rules.
 - [AI retrieval protocol](docs/architecture/ai-retrieval.md): bounded reading and claim provenance.
+- [LibOS layout and personality boundaries](docs/architecture/topics/libos.md): where each personality lives and how it is verified.
 - [Current status](Prima%20OS%20实现阶段.md): sole current stage/exit/blocker summary.
 
 ## Contracts and evidence

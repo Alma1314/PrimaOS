@@ -399,7 +399,7 @@ fn check_musl_host() -> Result<(), String> {
         .parent()
         .expect("xtask must be under workspace root");
     let status = process::Command::new("python3")
-        .arg(root.join("prima-user/musl/test_port.py"))
+        .arg(root.join("libos/linux/musl/test_port.py"))
         .status()
         .map_err(|error| format!("failed to run musl port host checks: {error}"))?;
     if !status.success() {

@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-11-26
 ---
 
 # 按子系统检索
@@ -19,14 +19,16 @@ updated: 2026-10-23
 | `capability-ipc` | [Capability、句柄、Task 与 IPC](capability-ipc.md) | cap, rights, handle, generation, holder |
 | `namespace-time-audit` | [Namespace、Timer 与 Audit](namespace-time-audit.md) | ns_bind, ns_mount, ns_resolve, timer, audit |
 | `runtime` | [原生运行时、ring3 服务与用户态 I/O](runtime.md) | prima-runtime, servicemgr, init, service, protocol |
+| `libos` | [LibOS 布局、personality 边界与验证入口](libos.md) | libos, personality, prima-linux, prima-windows, winpe, S6-X3 |
 | `vfs` | [用户态 VFS、文件描述符与路径](vfs.md) | rootfs, fd, OFD, openat, statx |
 | `process` | [进程、线程、fork、exec 与信号](process.md) | Process, Thread, ShareGroup, pthread, clone |
 | `synchronization` | [等待、唤醒、futex、时间与 TTY](synchronization.md) | WaitObject, wait_objects, signal_object, futex, BlockedWait |
-| `compatibility` | [POSIX profile、musl、网络与 Linux 路线](compatibility.md) | POSIX, Linux, musl, libc, profile |
+| `compatibility` | [POSIX/Linux 兼容与 Windows LibOS 候选](compatibility.md) | POSIX, Linux, musl, libc, profile, Windows, PE64 |
 
 ## 选择多个主题的场景
 
 - fork/COW：process + memory + capability-ipc。
+- 新增/修改 personality：libos + compatibility + runtime。
 - TTY 阻塞读：synchronization + runtime + compatibility。
 - VFS 路径授权：vfs + namespace-time-audit + capability-ipc。
 - boot ABI：boot + runtime；号段另查[接口边界](../interfaces.md)。

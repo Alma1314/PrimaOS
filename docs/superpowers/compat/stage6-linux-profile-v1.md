@@ -11,7 +11,7 @@ updated: 2026-11-06
 
 ## 状态与边界
 
-本台账对应`prima-user/src/linux.rs`与`linux_main.rs`的用户态实现。[统一报告](../reports/2026-11-02-stage6-process-and-differential.md)记录同一ELF在pinned Linux与Prima的11项双轮差分通过；最终普通完整回归通过，按本页有界范围冻结。
+本台账对应`libos/linux/src/linux.rs`与`libos/linux/src/main.rs`的用户态实现。[统一报告](../reports/2026-11-02-stage6-process-and-differential.md)记录同一ELF在pinned Linux与Prima的11项双轮差分通过；最终普通完整回归通过，按本页有界范围冻结。
 它不替代[阶段5 profile v2](../specs/2026-10-25-stage5-profile-v2.md)，不宣称完整Linux或POSIX兼容，
 v1冻结范围以上表边界与命名差分观察为准。当前阶段与退出条件只查[阶段跟踪](../../../Prima%20OS%20实现阶段.md)。
 上游为[D12白名单](stage6-static-whitelist.md)、[停车/装载协议](../specs/2026-11-01-stage6-managed-launch.md)

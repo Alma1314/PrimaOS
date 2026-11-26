@@ -282,6 +282,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "prima-linux"
+version = "0.1.0"
+dependencies = [
+ "prima-runtime",
+]
+
+[[package]]
 name = "prima-ostd"
 version = "0.1.0"
 
@@ -298,6 +305,7 @@ name = "prima-user"
 version = "0.1.0"
 dependencies = [
  "prima-abi",
+ "prima-linux",
  "prima-ostd",
  "prima-runtime",
  "prima-windows",
@@ -306,6 +314,10 @@ dependencies = [
 [[package]]
 name = "prima-windows"
 version = "0.1.0"
+dependencies = [
+ "prima-ostd",
+ "prima-runtime",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -570,6 +582,7 @@ dependencies = [
  "llvm-tools",
  "prima-abi",
  "prima-initgen",
+ "prima-linux",
  "prima-runtime",
  "prima-user",
 ]

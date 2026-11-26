@@ -8,9 +8,9 @@ license = "GPL-3.0-or-later"
 [features]
 gate-audit-probe = ["kernel/gate-audit-probe"]
 gate-probe = ["kernel/gate-probe"]
-linux-probe = ["prima-user/linux-probe"]
+linux-probe = ["prima-linux/linux-probe"]
 windows-pe-probe = ["prima-user/windows-pe-probe"]
-libos-bench = ["linux-probe", "prima-user/libos-bench", "kernel/timestamp-probe"]
+libos-bench = ["linux-probe", "prima-linux/libos-bench", "kernel/timestamp-probe"]
 
 [dependencies]
 prima-abi = { path = "../prima-abi" }
@@ -19,4 +19,5 @@ prima-runtime = { path = "../prima-runtime" }
 bootloader = "=0.11.17"
 llvm-tools = "=0.1.1"
 prima-user = { path = "../prima-user", artifact = "bin", lib = true, target = "x86_64-unknown-none" }
+prima-linux = { path = "../libos/linux", artifact = "bin", lib = true, target = "x86_64-unknown-none" }
 kernel = { path = "../kernel", artifact = "bin", target = "x86_64-unknown-none" }

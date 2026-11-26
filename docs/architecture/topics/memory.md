@@ -68,7 +68,7 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 - [Memseg.lean](../../../lean/Formal/Memseg.lean)
 - [Cow.lean](../../../lean/Formal/Cow.lean)
 - [cow_refine.rs](../../../cosir/src/cow_refine.rs)
-- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+- [prima_syscall.c](../../../libos/linux/c/prima_syscall.c)
 
 - [align.rs](../../../prima-ostd/src/align.rs)
 - [sync.rs](../../../prima-ostd/src/sync.rs)
@@ -83,8 +83,8 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 - [Memseg.lean（Checks）](../../../lean/Checks/Memseg.lean)
 - [Cow.lean（Checks）](../../../lean/Checks/Cow.lean)
 - [cow_refine_tests.rs](../../../cosir/src/cow_refine_tests.rs)
-- [stage5_mem.c](../../../prima-user/c/stage5_mem.c)
-- [stage5_proc.c](../../../prima-user/c/stage5_proc.c)
+- [stage5_mem.c](../../../libos/linux/c/stage5_mem.c)
+- [stage5_proc.c](../../../libos/linux/c/stage5_proc.c)
 
 测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
 
@@ -125,4 +125,4 @@ clone_root_cow 的构造/写保护/同步刷新顺序，分配失败回收、NX 
 `PreparedUserWrite` 不能跨调度或映射变更保存；原生输出、IPC 接收和 wait 写回共用该路径。
 内存原语不承担 Gate 请求授权/Task 代次检查，G1–G3 与服务接线仍待完成。
 测试见 [vspace.rs](../../../kernel/src/vspace.rs) 与
-[W9 跨页 COW 探针](../../../prima-user/c/stage5_sigaction.c)。
+[W9 跨页 COW 探针](../../../libos/linux/c/stage5_sigaction.c)。

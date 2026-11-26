@@ -7,13 +7,15 @@ lifecycle: current
 updated: 2026-11-26
 ---
 
-# POSIX profile、musl、网络与 Linux 路线
+# POSIX/Linux 兼容与 Windows LibOS 候选
 
 返回[主题地图](README.md) · [AI 检索协议](../ai-retrieval.md) · [当前阶段](../../../Prima%20OS%20实现阶段.md)
 
 ## 解决的问题与检索词
 
 源码兼容与未修改 ELF 兼容有什么区别？哪个 profile 已冻结？逐 API 和符号怎么追溯？哪些测试有 Linux 参考？
+
+crate 归属、personality 边界与构建入口见[LibOS 主题](libos.md)；本页解释兼容语义与证据范围。
 
 检索别名：POSIX, Linux, musl, libc, profile, ABI, sbase, UDP, socket, compat, Windows, Win32, PE64。
 
@@ -56,20 +58,20 @@ updated: 2026-11-26
 
 ## 源码定位
 
-- [prima_crt.c](../../../prima-user/c/prima_crt.c)
-- [prima_crt_start.S](../../../prima-user/c/prima_crt_start.S)
-- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
-- [build.sh](../../../prima-user/musl/build.sh)
-- [syscall_arch.h](../../../prima-user/musl/patches/syscall_arch.h)
+- [prima_crt.c](../../../libos/linux/c/prima_crt.c)
+- [prima_crt_start.S](../../../libos/linux/c/prima_crt_start.S)
+- [prima_syscall.c](../../../libos/linux/c/prima_syscall.c)
+- [build.sh](../../../libos/linux/musl/build.sh)
+- [syscall_arch.h](../../../libos/linux/musl/patches/syscall_arch.h)
 - [compat.rs](../../../xtask/src/compat.rs)
 - [linux.rs](../../../xtask/src/linux.rs)
 
 ## 测试与观察入口
 
-- [musl 宿主边界测试](../../../prima-user/musl/test_port.py)
-- [fd/stdio 同源探针](../../../prima-user/c/stage5_fd.c)
-- [stage5_probe.c](../../../prima-user/c/stage5_probe.c)
-- [stage5_net.c](../../../prima-user/c/stage5_net.c)
+- [musl 宿主边界测试](../../../libos/linux/musl/test_port.py)
+- [fd/stdio 同源探针](../../../libos/linux/c/stage5_fd.c)
+- [stage5_probe.c](../../../libos/linux/c/stage5_probe.c)
+- [stage5_net.c](../../../libos/linux/c/stage5_net.c)
 - [image.rs](../../../xtask/src/image.rs)
 - [protocol.rs](../../../xtask/src/protocol.rs)
 

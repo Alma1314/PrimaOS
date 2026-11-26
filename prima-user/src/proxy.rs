@@ -8,8 +8,7 @@ use prima_runtime::protocol::{
 };
 use prima_runtime::vfs::{self, NodeKind, Storage, VfsError};
 
-/// Proxy entries are independent of client slots so both can be registered.
-pub const MAX_PROXIES: usize = 8;
+pub use prima_runtime::protocol::MAX_PROXIES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Entry {

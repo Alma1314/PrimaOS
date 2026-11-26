@@ -4,7 +4,7 @@ kind: guide
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-26
 ---
 
 # 系统层次与源码地图
@@ -38,11 +38,27 @@ flowchart TD
 | kernel | 对象、授权、调度、syscall 与页表机制编排 | [main.rs](../../kernel/src/main.rs)、[bootstrap.rs](../../kernel/src/bootstrap.rs)、[syscall.rs](../../kernel/src/syscall.rs) | `kernel/src` 零 unsafe；容量与失败原子性 |
 | prima-ostd | 唯一允许必要 privileged unsafe 的硬件框架 | [entry.rs](../../prima-ostd/src/entry.rs)、[arch.rs](../../prima-ostd/src/arch.rs)、[mm.rs](../../prima-ostd/src/mm.rs)、[sync.rs](../../prima-ostd/src/sync.rs)、[IRQ 锁](../../prima-ostd/src/sync/lock.rs)、[align.rs](../../prima-ostd/src/align.rs) | 每个硬件操作的安全不变量 |
 | prima-abi | 原生号段、boot manifest、boot info、trace 布局 | [lib.rs](../../prima-abi/src/lib.rs) | 实验性 ABI，号段只追加、不复用空洞 |
-| prima-runtime | 原生 safe API、传输抽象、服务协议与 VFS 辅助 | [lib.rs](../../prima-runtime/src/lib.rs)、[transport.rs](../../prima-runtime/src/transport.rs)、[protocol.rs](../../prima-runtime/src/protocol.rs) | 包装检查不替代内核授权 |
-| prima-user | ring3 服务、驱动、应用；C 适配与 musl 补丁 | [servicemgr.rs](../../prima-user/src/servicemgr.rs)、[prima_syscall.c](../../prima-user/c/prima_syscall.c) | 原生/兼容语义、按 Task 授权和探针边界 |
+| prima-runtime | 原生 safe API、传输抽象、服务协议、批量执行与 VFS 辅助 | [lib.rs](../../prima-runtime/src/lib.rs)、[transport.rs](../../prima-runtime/src/transport.rs)、[protocol.rs](../../prima-runtime/src/protocol.rs)、[bulk_exec.rs](../../prima-runtime/src/bulk_exec.rs) | 包装检查不替代内核授权 |
+| prima-user | 原生 ring3 服务、驱动与应用（含管理器代理会话表）；不承载 personality 语义 | [servicemgr.rs](../../prima-user/src/servicemgr.rs)、[service.rs](../../prima-user/src/service.rs)、[proxy.rs](../../prima-user/src/proxy.rs) | 按 Task 授权、协议与探针边界 |
+| libos/linux（prima-linux） | Linux x86_64 personality：号/errno/stat/dirent、代理 Store 会话、C 适配与 musl 补丁 | [linux.rs](../../libos/linux/src/linux.rs)、[linux_store.rs](../../libos/linux/src/linux_store.rs)、[prima_syscall.c](../../libos/linux/c/prima_syscall.c)、[musl 构建](../../libos/linux/musl/build.sh) | 语义映射范围、探针边界与 Linux 差分证据 |
+| libos/windows（prima-windows） | Windows personality：PE32+ 解析/映射计划、平铺重定位与 WIN-M2 ring3 原型 | [pe.rs](../../libos/windows/src/pe.rs)、[load.rs](../../libos/windows/src/load.rs)、[winpe.rs](../../libos/windows/src/winpe.rs) | PE 边界检查、未决 WIN-D 门与参考差分缺口 |
 | prima-initgen | 构造 init 可执行输入与原生调用编码 | [lib.rs](../../prima-initgen/src/lib.rs)、[code.rs](../../prima-initgen/src/code.rs) | 与 boot ABI 保持一致 |
 | xtask | 镜像打包、QEMU 见证、差分与门禁 | [main.rs](../../xtask/src/main.rs)、[image.rs](../../xtask/src/image.rs)、[protocol.rs](../../xtask/src/protocol.rs) | 预期 trace 与负例不能随意放宽 |
 | lean | 独立 Lean 状态、CDT 不变量与证明 | [README](../../lean/README.md)、[Formal.lean](../../lean/Formal.lean) | 保留映照契约与 cosir-only 差异 |
+
+## LibOS 分区与依赖
+
+多个 personality 各自成 crate，资产随 crate 放置：Linux 的 C 适配、musl 补丁与差分探针在 `libos/linux/{c,musl,probes}`；Windows 的 PE 夹具在 `libos/windows/probes`。更完整的归属与验证入口见[LibOS 主题](topics/libos.md)。
+
+```text
+libos/linux  (prima-linux)   ─┐
+libos/windows(prima-windows) ─┴─→ prima-runtime ─→ prima-abi / prima-ostd
+prima-user（原生服务/程序、代理会话表）→ libos/linux 仅作代理客户端；可选 libos/windows（winpe-probe）
+```
+
+- 中立层 `prima-runtime`/`prima-abi`/`prima-ostd`/`kernel` 不解释 personality；`cargo xtask lint` 的 S6-X3 检查会拒绝 personality 策略与 fixture 词。
+- 共享批量执行器与容量常量留在中立层；含根策略的代理会话表留在 `prima-user`。
+- `libos/*` 不得反向依赖 `prima-user`；内核不识别 Linux 号或 PE。
 
 ## 启动路径
 

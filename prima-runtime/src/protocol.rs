@@ -1073,6 +1073,9 @@ pub const SERVICE_SESSION_PROXY_SELECT_TAG: u64 = 0x5F1D_0000_0000_0000;
 /// ACK bits 8..15 carry the allocated proxy slot; low 8 bits remain the status.
 pub const SERVICE_SESSION_ACK_INDEX_SHIFT: u64 = 8;
 
+/// Manager-issued proxy slots; independent of client slots so both can register.
+pub const MAX_PROXIES: usize = 8;
+
 /// Store root policies fixed by the service, never by client payloads.
 pub const SERVICE_ROOT_SERVICE: u8 = 0;
 pub const SERVICE_ROOT_LINUX: u8 = 1;

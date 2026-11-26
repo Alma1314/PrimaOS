@@ -512,7 +512,7 @@ fn async_drain<const N: usize, T: SyscallTransport, F: Fn(usize) -> u64 + Copy>(
             } else {
                 let _ = files.set_owner(channel.owner);
                 let mut storage = SegmentStorage { runtime: rt };
-                if prima_user::bulk::execute_version_2(
+                if prima_runtime::bulk_exec::execute_version_2(
                     files,
                     &mut storage,
                     channel.view,
@@ -654,7 +654,7 @@ fn bulk_request<T: SyscallTransport>(
                 SERVICE_FILE_EFAULT
             } else {
                 let mut storage = SegmentStorage { runtime: rt };
-                match prima_user::bulk::execute(
+                match prima_runtime::bulk_exec::execute(
                     files,
                     &mut storage,
                     vfs::View::ROOT,
@@ -791,9 +791,14 @@ fn proxy_bulk_request<T: SyscallTransport>(
             SERVICE_FILE_EFAULT
         } else {
             let mut storage = SegmentStorage { runtime: rt };
-            match prima_user::bulk::execute(files, &mut storage, view, &mut page, sequence, |e| {
-                proxy_status(e) as u32
-            }) {
+            match prima_runtime::bulk_exec::execute(
+                files,
+                &mut storage,
+                view,
+                &mut page,
+                sequence,
+                |e| proxy_status(e) as u32,
+            ) {
                 Err(_) => SERVICE_FILE_EINVAL,
                 Ok(()) => {
                     // Never replay a write after a later failure.

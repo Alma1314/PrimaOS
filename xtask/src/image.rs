@@ -379,7 +379,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let musl_script = workspace.join("prima-user").join("musl").join("build.sh");
+    let musl_script = workspace.join("libos/linux").join("musl").join("build.sh");
     let musl_status = Command::new("sh")
         .arg(&musl_script)
         .status()
@@ -392,7 +392,7 @@ fn build_ramdisk(path: &Path, program: Stage5Program<'_>) -> Result<(), String> 
     }
     let musl_prefix = workspace.join("target").join("musl-prefix");
 
-    let c_dir = workspace.join("prima-user").join("c");
+    let c_dir = workspace.join("libos/linux").join("c");
     let crt = c_dir.join("prima_crt.c");
     let start = c_dir.join("prima_crt_start.S");
     let adapter = c_dir.join("prima_syscall.c");
@@ -938,7 +938,7 @@ fn stage5_probe_source() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask must be directly under the workspace root")
-        .join("prima-user/c/stage5_probe.c")
+        .join("libos/linux/c/stage5_probe.c")
 }
 
 /// 同一 C 源码在 Linux 宿主上的 main 返回码参考：成功及两个输入拒绝。
@@ -1041,7 +1041,7 @@ pub(crate) fn check_stage5_linux_start() -> Result<(), String> {
     let binary = directory.join("stage5-start-linux");
     let output = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Wextra", "-Werror"])
-        .arg(root.join("prima-user/c/stage5_start.c"))
+        .arg(root.join("libos/linux/c/stage5_start.c"))
         .arg("-o")
         .arg(&binary)
         .output()
@@ -1200,7 +1200,7 @@ pub(crate) fn check_stage5_linux_time() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_time.c");
+    let source = workspace.join("libos/linux/c/stage5_time.c");
     let binary = workspace.join("target/prima-os/time-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror"])
@@ -1242,7 +1242,7 @@ pub(crate) fn check_stage5_linux_fd() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_fd.c");
+    let source = workspace.join("libos/linux/c/stage5_fd.c");
     let binary = workspace.join("target/prima-os/fd-linux");
     fs::create_dir_all(binary.parent().expect("probe has output directory"))
         .map_err(|error| format!("failed to create fd probe output directory: {error}"))?;
@@ -1304,7 +1304,7 @@ pub(crate) fn check_stage5_linux_vfs() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_vfs.c");
+    let source = workspace.join("libos/linux/c/stage5_vfs.c");
     let binary = workspace.join("target/prima-os/vfs-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1345,7 +1345,7 @@ pub(crate) fn check_stage5_linux_vfs2() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_vfs2.c");
+    let source = workspace.join("libos/linux/c/stage5_vfs2.c");
     let binary = workspace.join("target/prima-os/vfs2-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1394,7 +1394,7 @@ fn check_stage5_linux_file_probe(name: &str, expected: &[u8]) -> Result<(), Stri
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join(format!("prima-user/c/stage5_{name}.c"));
+    let source = workspace.join(format!("libos/linux/c/stage5_{name}.c"));
     let binary = workspace.join(format!("target/prima-os/{name}-linux"));
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1436,7 +1436,7 @@ pub(crate) fn check_stage5_linux_net() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_net.c");
+    let source = workspace.join("libos/linux/c/stage5_net.c");
     let binary = workspace.join("target/prima-os/net-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1474,7 +1474,7 @@ pub(crate) fn check_stage5_linux_ttyin() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_ttyin.c");
+    let source = workspace.join("libos/linux/c/stage5_ttyin.c");
     let binary = workspace.join("target/prima-os/ttyin-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1624,7 +1624,7 @@ pub(crate) fn check_stage5_linux_sigact() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_sigaction.c");
+    let source = workspace.join("libos/linux/c/stage5_sigaction.c");
     let binary = workspace.join("target/prima-os/sigact-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1662,7 +1662,7 @@ pub(crate) fn check_stage5_linux_sig() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_signal.c");
+    let source = workspace.join("libos/linux/c/stage5_signal.c");
     let binary = workspace.join("target/prima-os/sig-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1699,7 +1699,7 @@ pub(crate) fn check_stage5_linux_proc() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_proc.c");
+    let source = workspace.join("libos/linux/c/stage5_proc.c");
     let binary = workspace.join("target/prima-os/proc-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -1760,7 +1760,7 @@ fn build_exec_child(
     let label = if host { "host" } else { "prima" };
     let binary = directory.join(format!("exec-crt-{label}.elf"));
     let embed = directory.join(format!("exec-crt-{label}.S"));
-    let sources = workspace.join("prima-user/c");
+    let sources = workspace.join("libos/linux/c");
     let mut command = Command::new(if host { "cc" } else { "clang" });
     command.args(["-O2", "-std=c11", "-Wall", "-Werror"]);
     if host {
@@ -1844,7 +1844,7 @@ fn check_linux_exec_reference(source: &str, name: &str, expected: &[u8]) -> Resu
     let mut command = Command::new("cc");
     command
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
-        .arg(workspace.join("prima-user/c").join(source));
+        .arg(workspace.join("libos/linux/c").join(source));
     if source == "stage5_execve.c" {
         command.arg(build_exec_child(
             &workspace,
@@ -1896,7 +1896,7 @@ pub(crate) fn check_stage5_linux_pthread() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_pthread.c");
+    let source = workspace.join("libos/linux/c/stage5_pthread.c");
     let binary = workspace.join("target/prima-os/pthread-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-pthread"])
@@ -1972,7 +1972,7 @@ pub(crate) fn check_stage5_linux_meta() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_meta.c");
+    let source = workspace.join("libos/linux/c/stage5_meta.c");
     let binary = workspace.join("target/prima-os/meta-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -2013,7 +2013,7 @@ pub(crate) fn check_stage5_linux_mem() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_mem.c");
+    let source = workspace.join("libos/linux/c/stage5_mem.c");
     let binary = workspace.join("target/prima-os/mem-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])
@@ -2051,7 +2051,7 @@ pub(crate) fn check_stage5_linux_mut() -> Result<(), String> {
         .parent()
         .expect("xtask must be directly under the workspace root")
         .to_path_buf();
-    let source = workspace.join("prima-user/c/stage5_mut.c");
+    let source = workspace.join("libos/linux/c/stage5_mut.c");
     let binary = workspace.join("target/prima-os/mut-linux");
     let compiled = Command::new("cc")
         .args(["-O2", "-std=c11", "-Wall", "-Werror", "-DPRIMA_HOST"])

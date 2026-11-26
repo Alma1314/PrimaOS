@@ -62,18 +62,18 @@ S6-M2 的[大映像帧契约](../../superpowers/specs/2026-10-31-stage6-exec-fra
 - [exec.rs](../../../kernel/src/exec.rs)
 - [signal.rs](../../../kernel/src/signal.rs)
 - [cow.rs](../../../kernel/src/cow.rs)
-- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
-- [clone.s](../../../prima-user/musl/patches/clone.s)
+- [prima_syscall.c](../../../libos/linux/c/prima_syscall.c)
+- [clone.s](../../../libos/linux/musl/patches/clone.s)
 
 ## 测试与观察入口
 
-- [stage5_pthread.c](../../../prima-user/c/stage5_pthread.c)
-- [stage5_share.c](../../../prima-user/c/stage5_share.c)
-- [stage5_proc.c](../../../prima-user/c/stage5_proc.c)
-- [stage5_exec.c](../../../prima-user/c/stage5_exec.c)
-- [stage5_execve.c](../../../prima-user/c/stage5_execve.c)
-- [stage5_signal.c](../../../prima-user/c/stage5_signal.c)
-- [stage5_sigaction.c](../../../prima-user/c/stage5_sigaction.c)
+- [stage5_pthread.c](../../../libos/linux/c/stage5_pthread.c)
+- [stage5_share.c](../../../libos/linux/c/stage5_share.c)
+- [stage5_proc.c](../../../libos/linux/c/stage5_proc.c)
+- [stage5_exec.c](../../../libos/linux/c/stage5_exec.c)
+- [stage5_execve.c](../../../libos/linux/c/stage5_execve.c)
+- [stage5_signal.c](../../../libos/linux/c/stage5_signal.c)
+- [stage5_sigaction.c](../../../libos/linux/c/stage5_sigaction.c)
 
 测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
 

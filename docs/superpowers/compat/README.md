@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-03
+updated: 2026-11-26
 ---
 
 # 兼容性台账索引
@@ -37,6 +37,8 @@ updated: 2026-11-03
 两表的开头保留早期盘点，不能按首个表格概括整个当前实现。compat-state §5–7 / symbol-trace §5–6记录后继汇总；组织级签署与未满足条件仍查阶段跟踪/M21。源码号段以prima-abi为准，历史候选号不得直接用于调用。
 
 2026-10-24 musl 子集与证据见[边界设计](../specs/2026-10-24-musl-port-boundary-design.md)、[验证报告](../reports/2026-10-24-musl-port-boundary-report.md)；快照重放输入见 [musl-snapshot.lock.toml](musl-snapshot.lock.toml)。
+
+Windows LibOS 尚无冻结 profile：WIN-M0 未通过，当前只有 WIN-M1 宿主模型与 WIN-M2 ring3 原型报告，替代导入是手写桩。阅读顺序与 crate 归属见[LibOS 主题](../../architecture/topics/libos.md)与[WIN-M0 基线](../specs/2026-11-26-windows-m0-baseline.md)；本目录不登记未冻结的 Win32 兼容状态。
 
 
 2026-10-27本轮新增入口的分层结果见[统一报告](../reports/2026-10-25-stage0-5-gap-followup.md)：

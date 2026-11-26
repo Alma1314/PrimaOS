@@ -41,7 +41,7 @@ updated: 2026-10-28
 | `ET_EXEC/EM_X86_64/无 PT_INTERP` 的 ELF64 解析、`argc/argv/envp/auxv` 构造（[exec.rs](../../../kernel/src/exec.rs)，459 行，`MAX_EXEC_SEGMENTS=4`） | 段上限与 `PT_GNU_STACK`/`PT_GNU_RELRO` 处理；auxv 完整性（`AT_PHDR`/`AT_ENTRY`/`AT_RANDOM` 等） |
 | 任务帧保存/恢复、`iretq` 跳板、信号阻塞与 `RESTART` 重放（[syscall.rs](../../../kernel/src/syscall.rs) `prepare_signal_resume`） | **同步 syscall 转发**：`SYS_EXC_*` 只是异步通知；`SYS_UPCALL_CONTROL` 实为信号管道（sigaction/mask/pending/kill） |
 | 异常订阅/等待与用户态恢复帧（[exc.rs](../../../kernel/src/exc.rs)） | 请求-回复语义：参数内存授权、回复一次、超时/取消、LibOS 崩溃时请求者的确定性状态 |
-| musl 适配层（[prima_syscall.c](../../../prima-user/c/prima_syscall.c)）把 Linux 号段映射到原生 syscall | 该适配层**编译期链接进程序**；未修改二进制不能链接它，必须改为**运行时 LibOS** |
+| musl 适配层（[prima_syscall.c](../../../libos/linux/c/prima_syscall.c)）把 Linux 号段映射到原生 syscall | 该适配层**编译期链接进程序**；未修改二进制不能链接它，必须改为**运行时 LibOS** |
 | Linux 参考差分脚手架（[linux.rs](../../../xtask/src/linux.rs)，pinned 6.8 内核 + busybox initramfs，目前仅 `cow-write-fault` tracepoint） | 逐 syscall 差分矩阵、白名单程序集、性能基线 |
 | TLS（`SYS_TASK_SET_FS_BASE`）、futex 式（`SYS_WAIT_WORD`）、fork/clone/线程基础 | Linux 细节：`CLONE_*` flags、`set_tid_address`、`sigaltstack`/`siginfo`、`wait4`/rusage |
 | persona 声明在用户态 `.note.prima.abi`（内核不认识 OS） | 决策：Linux LibOS 是**常驻服务**还是**每程序加载器** |

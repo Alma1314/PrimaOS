@@ -50,7 +50,7 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 - [preempt.rs](../../../kernel/src/preempt.rs)
 - [tty.rs](../../../prima-user/src/tty.rs)
 - [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
-- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+- [prima_syscall.c](../../../libos/linux/c/prima_syscall.c)
 
 - [align.rs](../../../prima-ostd/src/align.rs)
 - [sync.rs](../../../prima-ostd/src/sync.rs)
@@ -58,11 +58,11 @@ OSTD 后继补强：[Asterinas 移植契约](../../superpowers/specs/2026-10-24-
 
 ## 测试与观察入口
 
-- [stage5_wait.c](../../../prima-user/c/stage5_wait.c)
-- [stage5_wait2.c](../../../prima-user/c/stage5_wait2.c)
-- [stage5_futex.c](../../../prima-user/c/stage5_futex.c)
-- [stage5_time.c](../../../prima-user/c/stage5_time.c)
-- [stage5_ttyin.c](../../../prima-user/c/stage5_ttyin.c)
+- [stage5_wait.c](../../../libos/linux/c/stage5_wait.c)
+- [stage5_wait2.c](../../../libos/linux/c/stage5_wait2.c)
+- [stage5_futex.c](../../../libos/linux/c/stage5_futex.c)
+- [stage5_time.c](../../../libos/linux/c/stage5_time.c)
+- [stage5_ttyin.c](../../../libos/linux/c/stage5_ttyin.c)
 
 测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
 

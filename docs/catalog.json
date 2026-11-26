@@ -282,7 +282,7 @@
         "cosir/src/tlb_refine.rs",
         "lean/Formal/Tlb.lean",
         "cosir/src/cow_refine.rs",
-        "prima-user/c/prima_syscall.c",
+        "libos/linux/c/prima_syscall.c",
         "prima-ostd/src/align.rs",
         "prima-ostd/src/sync.rs",
         "prima-ostd/src/sync/lock.rs",
@@ -299,8 +299,8 @@
         "lean/Checks/Memseg.lean",
         "lean/Checks/Cow.lean",
         "cosir/src/cow_refine_tests.rs",
-        "prima-user/c/stage5_mem.c",
-        "prima-user/c/stage5_proc.c",
+        "libos/linux/c/stage5_mem.c",
+        "libos/linux/c/stage5_proc.c",
         "prima-ostd/src/align.rs",
         "prima-ostd/src/sync.rs",
         "prima-ostd/src/sync/lock.rs",
@@ -311,7 +311,7 @@
         "kernel/src/bootstrap.rs",
         "kernel/src/sched.rs",
         "xtask/src/main.rs",
-        "prima-user/c/stage5_sigaction.c"
+        "libos/linux/c/stage5_sigaction.c"
       ],
       "guide": "docs/architecture/topics/memory.md"
     },
@@ -410,14 +410,14 @@
         "prima-user/src/domain_probe.rs",
         "prima-runtime/src/gate.rs",
         "kernel/src/launch.rs",
-        "prima-user/src/linux_signal.rs",
-        "prima-user/src/linux_thread.rs",
-        "prima-user/linux-probes/p1.S",
-        "prima-user/linux-probes/p2.S",
-        "prima-user/src/linux_process.rs",
-        "prima-user/linux-probes/pthread.c",
-        "prima-user/linux-probes/process.S",
-        "prima-user/linux-probes/matrix.c",
+        "libos/linux/src/linux_signal.rs",
+        "libos/linux/src/linux_thread.rs",
+        "libos/linux/probes/p1.S",
+        "libos/linux/probes/p2.S",
+        "libos/linux/src/linux_process.rs",
+        "libos/linux/probes/pthread.c",
+        "libos/linux/probes/process.S",
+        "libos/linux/probes/matrix.c",
         "kernel/src/ipc_bench.rs",
         "lean/Formal/Revoke.lean",
         "lean/Formal/Drop.lean",
@@ -560,17 +560,17 @@
         "prima-user/src/tty.rs",
         "prima-user/src/staging.rs",
         "prima-user/src/startup.rs",
-        "prima-user/src/linux_signal.rs",
-        "prima-user/src/linux_thread.rs",
-        "prima-user/linux-probes/p1.S",
-        "prima-user/linux-probes/p2.S",
-        "prima-user/src/linux_process.rs",
-        "prima-user/linux-probes/pthread.c",
-        "prima-user/linux-probes/process.S",
-        "prima-user/linux-probes/matrix.c",
+        "libos/linux/src/linux_signal.rs",
+        "libos/linux/src/linux_thread.rs",
+        "libos/linux/probes/p1.S",
+        "libos/linux/probes/p2.S",
+        "libos/linux/src/linux_process.rs",
+        "libos/linux/probes/pthread.c",
+        "libos/linux/probes/process.S",
+        "libos/linux/probes/matrix.c",
         "prima-runtime/src/bulk.rs",
-        "prima-user/src/bulk.rs",
-        "prima-user/c/prima_bulk.h",
+        "prima-runtime/src/bulk_exec.rs",
+        "libos/linux/c/prima_bulk.h",
         "prima-user/src/proxy.rs",
         "prima-user/src/sessions.rs"
       ],
@@ -580,7 +580,7 @@
         "prima-user/src/beta.rs",
         "prima-user/src/staging.rs",
         "prima-runtime/src/protocol.rs",
-        "prima-user/c/stage5_start.c"
+        "libos/linux/c/stage5_start.c"
       ],
       "guide": "docs/architecture/topics/runtime.md"
     },
@@ -639,22 +639,22 @@
         "prima-user/src/store.rs",
         "prima-user/src/ns.rs",
         "prima-user/src/servicemgr.rs",
-        "prima-user/c/prima_syscall.c",
+        "libos/linux/c/prima_syscall.c",
         "prima-user/src/staging.rs",
         "prima-runtime/src/bulk.rs",
-        "prima-user/src/bulk.rs",
-        "prima-user/c/prima_bulk.h",
+        "prima-runtime/src/bulk_exec.rs",
+        "libos/linux/c/prima_bulk.h",
         "prima-user/src/proxy.rs",
         "prima-user/src/sessions.rs"
       ],
       "tests": [
         "prima-runtime/src/vfs/tests.rs",
-        "prima-user/c/stage5_fd.c",
-        "prima-user/c/stage5_vfs.c",
-        "prima-user/c/stage5_meta.c",
-        "prima-user/c/stage5_mut.c",
-        "prima-user/c/stage5_vfs2.c",
-        "prima-user/c/stage5_vfs3.c",
+        "libos/linux/c/stage5_fd.c",
+        "libos/linux/c/stage5_vfs.c",
+        "libos/linux/c/stage5_meta.c",
+        "libos/linux/c/stage5_mut.c",
+        "libos/linux/c/stage5_vfs2.c",
+        "libos/linux/c/stage5_vfs3.c",
         "prima-user/src/staging.rs"
       ],
       "guide": "docs/architecture/topics/vfs.md"
@@ -737,32 +737,32 @@
         "kernel/src/exec.rs",
         "kernel/src/signal.rs",
         "kernel/src/cow.rs",
-        "prima-user/c/prima_syscall.c",
-        "prima-user/musl/patches/clone.s",
+        "libos/linux/c/prima_syscall.c",
+        "libos/linux/musl/patches/clone.s",
         "kernel/src/vspace.rs",
         "prima-user/src/startup.rs",
-        "prima-user/src/linux_signal.rs",
-        "prima-user/src/linux_thread.rs",
-        "prima-user/linux-probes/p1.S",
-        "prima-user/linux-probes/p2.S",
-        "prima-user/src/linux_process.rs",
-        "prima-user/linux-probes/pthread.c",
-        "prima-user/linux-probes/process.S",
-        "prima-user/linux-probes/matrix.c"
+        "libos/linux/src/linux_signal.rs",
+        "libos/linux/src/linux_thread.rs",
+        "libos/linux/probes/p1.S",
+        "libos/linux/probes/p2.S",
+        "libos/linux/src/linux_process.rs",
+        "libos/linux/probes/pthread.c",
+        "libos/linux/probes/process.S",
+        "libos/linux/probes/matrix.c"
       ],
       "tests": [
-        "prima-user/c/stage5_pthread.c",
-        "prima-user/c/stage5_share.c",
-        "prima-user/c/stage5_proc.c",
-        "prima-user/c/stage5_exec.c",
-        "prima-user/c/stage5_execve.c",
-        "prima-user/c/stage5_signal.c",
-        "prima-user/c/stage5_sigaction.c",
+        "libos/linux/c/stage5_pthread.c",
+        "libos/linux/c/stage5_share.c",
+        "libos/linux/c/stage5_proc.c",
+        "libos/linux/c/stage5_exec.c",
+        "libos/linux/c/stage5_execve.c",
+        "libos/linux/c/stage5_signal.c",
+        "libos/linux/c/stage5_sigaction.c",
         "kernel/src/vspace.rs",
         "kernel/src/bootstrap.rs",
         "kernel/src/sched.rs",
         "xtask/src/main.rs",
-        "prima-user/c/stage5_start.c"
+        "libos/linux/c/stage5_start.c"
       ],
       "guide": "docs/architecture/topics/process.md"
     },
@@ -821,7 +821,7 @@
         "kernel/src/preempt.rs",
         "prima-user/src/tty.rs",
         "prima-user/src/servicemgr.rs",
-        "prima-user/c/prima_syscall.c",
+        "libos/linux/c/prima_syscall.c",
         "prima-ostd/src/sync.rs",
         "prima-ostd/src/sync/lock.rs",
         "kernel/src/user.rs",
@@ -838,25 +838,84 @@
         "kernel/src/gate_audit_probe.rs"
       ],
       "tests": [
-        "prima-user/c/stage5_wait.c",
-        "prima-user/c/stage5_wait2.c",
-        "prima-user/c/stage5_futex.c",
-        "prima-user/c/stage5_time.c",
-        "prima-user/c/stage5_ttyin.c",
+        "libos/linux/c/stage5_wait.c",
+        "libos/linux/c/stage5_wait2.c",
+        "libos/linux/c/stage5_futex.c",
+        "libos/linux/c/stage5_time.c",
+        "libos/linux/c/stage5_ttyin.c",
         "prima-ostd/src/sync.rs",
         "prima-ostd/src/sync/lock.rs",
         "prima-ostd/src/entry.rs",
         "xtask/src/protocol.rs",
         "prima-user/src/console.rs",
-        "prima-user/c/stage5_sigaction.c",
+        "libos/linux/c/stage5_sigaction.c",
         "cosir/src/authority/event_tests.rs",
         "xtask/src/gate_audit.rs"
       ],
       "guide": "docs/architecture/topics/synchronization.md"
     },
     {
+      "id": "libos",
+      "title": "LibOS 布局、personality 边界与验证入口",
+      "aliases": [
+        "libos",
+        "LibOS",
+        "personality",
+        "prima-linux",
+        "prima-windows",
+        "winpe",
+        "PE64",
+        "C adapter",
+        "musl",
+        "多 LibOS",
+        "S6-X3"
+      ],
+      "sources": [
+        "AGENTS.md",
+        "Prima OS.md",
+        "docs/architecture/system-map.md",
+        "docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md",
+        "docs/superpowers/specs/2026-11-10-libos-data-path.md",
+        "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md",
+        "docs/superpowers/compat/stage6-linux-profile-v1.md",
+        "docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md",
+        "docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md",
+        "docs/superpowers/specs/2026-11-26-windows-m0-baseline.md",
+        "docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md",
+        "docs/superpowers/reports/2026-11-26-windows-m2-preflight.md",
+        "docs/superpowers/reports/2026-11-26-windows-m2-ring3.md"
+      ],
+      "code": [
+        "libos/linux/Cargo.toml",
+        "libos/linux/src/lib.rs",
+        "libos/linux/src/linux.rs",
+        "libos/linux/src/linux_store.rs",
+        "libos/linux/c/prima_syscall.c",
+        "libos/linux/musl/build.sh",
+        "libos/windows/Cargo.toml",
+        "libos/windows/src/pe.rs",
+        "libos/windows/src/load.rs",
+        "libos/windows/src/winpe.rs",
+        "prima-runtime/src/bulk_exec.rs",
+        "prima-runtime/src/protocol.rs",
+        "prima-user/src/proxy.rs",
+        "prima-user/src/servicemgr.rs",
+        "xtask/Cargo.toml",
+        "xtask/src/image.rs"
+      ],
+      "tests": [
+        "libos/windows/tests/pe_model.rs",
+        "libos/windows/tests/win64_abi.rs",
+        "libos/linux/musl/test_port.py",
+        "xtask/src/lint.rs",
+        "xtask/src/qemu.rs",
+        "xtask/src/protocol.rs"
+      ],
+      "guide": "docs/architecture/topics/libos.md"
+    },
+    {
       "id": "compatibility",
-      "title": "POSIX profile、musl、网络与 Linux 路线",
+      "title": "POSIX/Linux 兼容与 Windows LibOS 候选",
       "aliases": [
         "Windows",
         "Win32",
@@ -936,67 +995,67 @@
         "docs/superpowers/reports/2026-11-08-stage7-libos-benchmark.md"
       ],
       "code": [
-        "prima-user/c/prima_crt.c",
-        "prima-user/c/prima_crt_start.S",
-        "prima-user/c/prima_syscall.c",
-        "prima-user/musl/build.sh",
-        "prima-user/musl/patches/syscall_arch.h",
+        "libos/linux/c/prima_crt.c",
+        "libos/linux/c/prima_crt_start.S",
+        "libos/linux/c/prima_syscall.c",
+        "libos/linux/musl/build.sh",
+        "libos/linux/musl/patches/syscall_arch.h",
         "xtask/src/compat.rs",
         "xtask/src/linux.rs",
-        "prima-user/musl/build.py",
-        "prima-user/musl/patches/syscall_cp.s",
-        "prima-user/musl/patches/__fdopen.c",
+        "libos/linux/musl/build.py",
+        "libos/linux/musl/patches/syscall_cp.s",
+        "libos/linux/musl/patches/__fdopen.c",
         "kernel/src/vspace.rs",
         "kernel/src/sched.rs",
         "targets/x86_64-prima.json",
         "scripts/build_rust_probe.py",
         "scripts/rustc_prima.py",
         "prima-user/src/network.rs",
-        "prima-user/c/stage5_exec_child.c",
-        "prima-user/c/prima_exec_bridge.S",
+        "libos/linux/c/stage5_exec_child.c",
+        "libos/linux/c/prima_exec_bridge.S",
         "prima-user/rust-probe/src/pal.rs",
         "prima-user/rust-probe/pal/stdio.rs",
         "prima-user/rust-probe/pal/time.rs",
         "prima-user/rust-probe/pal/thread.rs",
         "prima-abi/src/program_contract.rs",
-        "prima-user/c/prima_contract.h",
-        "prima-user/c/prima_libc.map",
+        "libos/linux/c/prima_contract.h",
+        "libos/linux/c/prima_libc.map",
         "scripts/build_posix_std.py",
         "targets/x86_64-prima-posix.json",
         "prima-user/src/file_ops.rs",
-        "prima-user/src/linux.rs",
-        "prima-user/src/linux_main.rs",
+        "libos/linux/src/linux.rs",
+        "libos/linux/src/main.rs",
         "xtask/src/stage6.rs",
-        "prima-user/src/linux_signal.rs",
-        "prima-user/src/linux_thread.rs",
-        "prima-user/linux-probes/p1.S",
-        "prima-user/linux-probes/p2.S",
-        "prima-user/src/linux_process.rs",
-        "prima-user/linux-probes/pthread.c",
-        "prima-user/linux-probes/process.S",
-        "prima-user/linux-probes/matrix.c"
+        "libos/linux/src/linux_signal.rs",
+        "libos/linux/src/linux_thread.rs",
+        "libos/linux/probes/p1.S",
+        "libos/linux/probes/p2.S",
+        "libos/linux/src/linux_process.rs",
+        "libos/linux/probes/pthread.c",
+        "libos/linux/probes/process.S",
+        "libos/linux/probes/matrix.c"
       ],
       "tests": [
-        "prima-user/c/stage5_probe.c",
-        "prima-user/c/stage5_net.c",
+        "libos/linux/c/stage5_probe.c",
+        "libos/linux/c/stage5_net.c",
         "xtask/src/image.rs",
         "xtask/src/protocol.rs",
-        "prima-user/musl/test_port.py",
-        "prima-user/musl/test_adapter.c",
-        "prima-user/musl/test_cp.c",
-        "prima-user/c/stage5_fd.c",
+        "libos/linux/musl/test_port.py",
+        "libos/linux/musl/test_adapter.c",
+        "libos/linux/musl/test_cp.c",
+        "libos/linux/c/stage5_fd.c",
         "kernel/src/vspace.rs",
         "kernel/src/bootstrap.rs",
         "kernel/src/sched.rs",
-        "prima-user/c/stage5_proc.c",
+        "libos/linux/c/stage5_proc.c",
         "xtask/src/main.rs",
         "prima-user/rust-probe/src/main.rs",
-        "prima-user/c/stage5_start.c",
+        "libos/linux/c/stage5_start.c",
         "prima-abi/src/program_contract.rs",
         "xtask/src/compat.rs",
         "prima-user/rust-probe/src/posix.rs",
         "prima-user/rust-probe/src/native.rs",
-        "prima-user/c/stage5_file_ext.c",
+        "libos/linux/c/stage5_file_ext.c",
         "scripts/test_posix_std.py"
       ],
       "guide": "docs/architecture/topics/compatibility.md"
@@ -1083,17 +1142,19 @@
       "replacements": [],
       "authority": "operational",
       "status": "maintained",
-      "date": "2026-10-31",
-      "sha256": "5ead161490cf316012251d94af5128446e3c9bcf69406b89cf2e507a7c3c641c",
-      "topic_ids": [],
-      "lines": 72,
+      "date": "2026-11-26",
+      "sha256": "e9d1f1d6d2c86e01a05289ff07488dc8e3e3abd39b4f45c1c2608dc174adc966",
+      "topic_ids": [
+        "libos"
+      ],
+      "lines": 74,
       "sections": [
         {
           "level": 1,
           "title": "Repository Guidelines",
           "line": 10,
           "anchor": "repository-guidelines",
-          "end_line": 72
+          "end_line": 74
         },
         {
           "level": 2,
@@ -1114,31 +1175,32 @@
           "title": "Build, Test, and Development Commands",
           "line": 49,
           "anchor": "build-test-and-development-commands",
-          "end_line": 61
+          "end_line": 63
         },
         {
           "level": 2,
           "title": "Coding Style & Naming Conventions",
-          "line": 62,
+          "line": 64,
           "anchor": "coding-style--naming-conventions",
-          "end_line": 65
+          "end_line": 67
         },
         {
           "level": 2,
           "title": "Testing Guidelines",
-          "line": 66,
+          "line": 68,
           "anchor": "testing-guidelines",
-          "end_line": 69
+          "end_line": 71
         },
         {
           "level": 2,
           "title": "Commits & Pull Requests",
-          "line": 70,
+          "line": 72,
           "anchor": "commits--pull-requests",
-          "end_line": 72
+          "end_line": 74
         }
       ],
       "mentioned_ids": [
+        "S6-X3",
         "SPEC-114"
       ],
       "links": []
@@ -3739,7 +3801,8 @@
       "sha256": "ecff8cef3ea5429c75c8a244d9428d94637c7a3791611f1c2fcc8a24d349055c",
       "topic_ids": [
         "semantics",
-        "runtime"
+        "runtime",
+        "libos"
       ],
       "lines": 1133,
       "sections": [
@@ -4591,52 +4654,52 @@
       "replacements": [],
       "authority": "navigation",
       "status": "maintained",
-      "date": "2026-10-24",
-      "sha256": "4361a3a5680092c62cbea3402080d8c3ce1c419b865963564a6e2d3685862e8c",
+      "date": "2026-11-26",
+      "sha256": "39791a03aa51668990c04494e93b5b825e0d38faa624b20233b0850c38bcbbd8",
       "topic_ids": [],
-      "lines": 89,
+      "lines": 90,
       "sections": [
         {
           "level": 1,
           "title": "PrimaOS 文档中心",
           "line": 10,
           "anchor": "primaos-文档中心",
-          "end_line": 89
+          "end_line": 90
         },
         {
           "level": 2,
           "title": "按任务进入",
           "line": 16,
           "anchor": "按任务进入",
-          "end_line": 30
+          "end_line": 31
         },
         {
           "level": 2,
           "title": "权威来源按问题分工",
-          "line": 31,
+          "line": 32,
           "anchor": "权威来源按问题分工",
-          "end_line": 45
+          "end_line": 46
         },
         {
           "level": 2,
           "title": "文档布局",
-          "line": 46,
+          "line": 47,
           "anchor": "文档布局",
-          "end_line": 73
+          "end_line": 74
         },
         {
           "level": 2,
           "title": "离线检索",
-          "line": 74,
+          "line": 75,
           "anchor": "离线检索",
-          "end_line": 86
+          "end_line": 87
         },
         {
           "level": 2,
           "title": "编写与废弃入口",
-          "line": 87,
+          "line": 88,
           "anchor": "编写与废弃入口",
-          "end_line": 89
+          "end_line": 90
         }
       ],
       "mentioned_ids": [
@@ -4669,78 +4732,82 @@
         },
         {
           "line": 24,
-          "target": "architecture/glossary.md"
-        },
-        {
-          "line": 24,
-          "target": "architecture/interfaces.md"
+          "target": "architecture/topics/libos.md"
         },
         {
           "line": 25,
-          "target": "architecture/development.md"
+          "target": "architecture/glossary.md"
+        },
+        {
+          "line": 25,
+          "target": "architecture/interfaces.md"
         },
         {
           "line": 26,
-          "target": "architecture/evidence.md"
+          "target": "architecture/development.md"
         },
         {
           "line": 27,
+          "target": "architecture/evidence.md"
+        },
+        {
+          "line": 28,
           "target": "architecture/licensing.md"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "superpowers/specs/2026-10-23-documentation-system-design.md"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "architecture/documentation-maintenance.md"
         },
         {
-          "line": 29,
+          "line": 30,
           "target": "architecture/catalog.md"
         },
         {
-          "line": 29,
+          "line": 30,
           "target": "catalog.json"
         },
         {
-          "line": 35,
+          "line": 36,
           "target": "../Prima%20OS.md"
         },
         {
-          "line": 36,
+          "line": 37,
           "target": "../COSIR%20原语规范.md"
         },
         {
-          "line": 37,
+          "line": 38,
           "target": "../Prima%20OS%20实现阶段.md"
         },
         {
-          "line": 38,
+          "line": 39,
           "target": "superpowers/specs/README.md"
         },
         {
-          "line": 39,
+          "line": 40,
           "target": "superpowers/plans/README.md"
         },
         {
-          "line": 40,
+          "line": 41,
           "target": "superpowers/reports/README.md"
         },
         {
-          "line": 41,
+          "line": 42,
           "target": "superpowers/compat/README.md"
         },
         {
-          "line": 42,
+          "line": 43,
           "target": "../lean/README.md"
         },
         {
-          "line": 89,
+          "line": 90,
           "target": "architecture/documentation-maintenance.md"
         },
         {
-          "line": 89,
+          "line": 90,
           "target": "lifecycle.json"
         }
       ]
@@ -4859,7 +4926,7 @@
       "authority": "retrieval-protocol",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "6f70c43211ea128b49ddc6bcd0089eda97edd343550304778e726f81b678fb9c",
+      "sha256": "30d8bd033a30690abdf13ce6fdde0f2dd47b65e6e26acab3eecdc6fba8b375e2",
       "topic_ids": [],
       "lines": 77,
       "sections": [
@@ -5049,17 +5116,17 @@
       "replacements": [],
       "authority": "operational",
       "status": "maintained",
-      "date": "2026-11-08",
-      "sha256": "acae0c7ead5ba3ecc6a259d138d10709a88cc2ee7705ac28f3148c2ad0482123",
+      "date": "2026-11-26",
+      "sha256": "21bce877937b2eb0012a46737162861d565503300712375289e8dec01fbd88fc",
       "topic_ids": [],
-      "lines": 112,
+      "lines": 114,
       "sections": [
         {
           "level": 1,
           "title": "开发、构建与验证手册",
           "line": 10,
           "anchor": "开发构建与验证手册",
-          "end_line": 112
+          "end_line": 114
         },
         {
           "level": 2,
@@ -5073,35 +5140,35 @@
           "title": "命令与边界",
           "line": 22,
           "anchor": "命令与边界",
-          "end_line": 42
+          "end_line": 44
         },
         {
           "level": 2,
           "title": "共享镜像工件与并发",
-          "line": 43,
+          "line": 45,
           "anchor": "共享镜像工件与并发",
-          "end_line": 55
+          "end_line": 57
         },
         {
           "level": 2,
           "title": "CI分组与验收身份",
-          "line": 56,
+          "line": 58,
           "anchor": "ci分组与验收身份",
-          "end_line": 93
+          "end_line": 95
         },
         {
           "level": 2,
           "title": "变更对应验证",
-          "line": 94,
+          "line": 96,
           "anchor": "变更对应验证",
-          "end_line": 101
+          "end_line": 103
         },
         {
           "level": 2,
           "title": "失败定位",
-          "line": 102,
+          "line": 104,
           "anchor": "失败定位",
-          "end_line": 112
+          "end_line": 114
         }
       ],
       "mentioned_ids": [],
@@ -5136,11 +5203,11 @@
         },
         {
           "line": 20,
-          "target": "../../prima-user/musl/build.sh"
+          "target": "../../libos/linux/musl/build.sh"
         },
         {
           "line": 20,
-          "target": "../../prima-user/musl/build.py"
+          "target": "../../libos/linux/musl/build.py"
         },
         {
           "line": 20,
@@ -5151,75 +5218,79 @@
           "target": "../../xtask/src/lint.rs"
         },
         {
-          "line": 40,
+          "line": 42,
           "target": "../superpowers/reports/2026-10-31-rust-handle-source-refinement.md"
         },
         {
-          "line": 53,
+          "line": 55,
           "target": "../superpowers/specs/2026-11-06-stage7-artifact-exclusion.md"
         },
         {
-          "line": 54,
+          "line": 56,
           "target": "../superpowers/reports/2026-11-06-stage7-start.md"
         },
         {
-          "line": 64,
+          "line": 66,
           "target": "../superpowers/specs/2026-11-07-stage7-native-syscall-benchmark.md"
         },
         {
-          "line": 65,
+          "line": 67,
           "target": "../superpowers/reports/2026-11-07-stage7-native-syscall-benchmark.md"
         },
         {
-          "line": 67,
+          "line": 69,
           "target": "../superpowers/specs/2026-11-07-stage7-ipc-benchmark.md"
         },
         {
-          "line": 68,
+          "line": 70,
           "target": "../superpowers/reports/2026-11-07-stage7-ipc-benchmark.md"
         },
         {
-          "line": 70,
+          "line": 72,
           "target": "../superpowers/specs/2026-11-07-stage7-cow-benchmark.md"
         },
         {
-          "line": 71,
+          "line": 73,
           "target": "../superpowers/reports/2026-11-07-stage7-cow-benchmark.md"
         },
         {
-          "line": 73,
+          "line": 75,
           "target": "../superpowers/specs/2026-11-07-stage7-gate-user-benchmark.md"
         },
         {
-          "line": 74,
+          "line": 76,
           "target": "../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md"
         },
         {
-          "line": 89,
+          "line": 91,
           "target": "../superpowers/specs/2026-11-06-stage7-ci-evidence.md"
         },
         {
-          "line": 90,
+          "line": 92,
           "target": "../superpowers/reports/2026-11-06-stage7-ci-evidence.md"
         },
         {
-          "line": 91,
+          "line": 93,
           "target": "../superpowers/reports/2026-11-07-stage7-ci-remediation.md"
         },
         {
-          "line": 92,
+          "line": 94,
           "target": "../superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md"
         },
         {
-          "line": 98,
+          "line": 100,
           "target": "../superpowers/specs/2026-10-24-kernel-handle-model-design.md"
         },
         {
-          "line": 98,
+          "line": 100,
           "target": "../../lean/README.md"
         },
         {
-          "line": 112,
+          "line": 102,
+          "target": "topics/libos.md"
+        },
+        {
+          "line": 114,
           "target": "templates/report.md"
         }
       ]
@@ -5520,24 +5591,24 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "28c58b6fbaea5bdcc2e068e0388638510d05157569db7ec7db83f9958f68f95d",
+      "date": "2026-11-26",
+      "sha256": "18740bc354f460cd7d9207637810355cf640e2efe01e52eca1922a71d66e9c88",
       "topic_ids": [],
-      "lines": 49,
+      "lines": 51,
       "sections": [
         {
           "level": 1,
           "title": "术语与检索别名",
           "line": 10,
           "anchor": "术语与检索别名",
-          "end_line": 49
+          "end_line": 51
         },
         {
           "level": 2,
           "title": "容易混用的编号",
-          "line": 45,
+          "line": 47,
           "anchor": "容易混用的编号",
-          "end_line": 49
+          "end_line": 51
         }
       ],
       "mentioned_ids": [],
@@ -5551,7 +5622,7 @@
           "target": "../../Prima%20OS.md"
         },
         {
-          "line": 49,
+          "line": 51,
           "target": "interfaces.md"
         }
       ]
@@ -5567,7 +5638,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-27",
-      "sha256": "36ddf2570155dfc0b670bc4995101aa3865a006ff27a4a3c7534ddf521a01502",
+      "sha256": "fadc966c266065ef10c287aae109b92722d63178c6c8c675245b6779e6e1895b",
       "topic_ids": [],
       "lines": 93,
       "sections": [
@@ -5647,7 +5718,7 @@
         },
         {
           "line": 12,
-          "target": "../../prima-user/c/prima_syscall.c"
+          "target": "../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 27,
@@ -5675,7 +5746,7 @@
         },
         {
           "line": 68,
-          "target": "../../prima-user/c/prima_syscall.c"
+          "target": "../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 68,
@@ -5710,7 +5781,7 @@
       "authority": "license-policy",
       "status": "maintained",
       "date": "2026-11-08",
-      "sha256": "7099691aab0fc5a6f834436cbe7065221f9d61118726df778e181a8f2dc354cc",
+      "sha256": "a7331933118cd1f7c248002cfc172f53e0bee7c6ec1852d9adc348d15d638829",
       "topic_ids": [],
       "lines": 109,
       "sections": [
@@ -5822,7 +5893,7 @@
         },
         {
           "line": 57,
-          "target": "../../prima-user/musl/COPYRIGHT"
+          "target": "../../libos/linux/musl/COPYRIGHT"
         },
         {
           "line": 59,
@@ -5868,17 +5939,19 @@
       "replacements": [],
       "authority": "explanatory",
       "status": "maintained",
-      "date": "2026-10-24",
-      "sha256": "3810a8fd4c806346332a0bc5e5533f8013fe5c34cfe13cdfa561045040334839",
-      "topic_ids": [],
-      "lines": 70,
+      "date": "2026-11-26",
+      "sha256": "ed9ab7f1e20b4c37bc5124dff233df43e52b2cd3c9f4de24012d4d41596d9f38",
+      "topic_ids": [
+        "libos"
+      ],
+      "lines": 86,
       "sections": [
         {
           "level": 1,
           "title": "系统层次与源码地图",
           "line": 10,
           "anchor": "系统层次与源码地图",
-          "end_line": 70
+          "end_line": 86
         },
         {
           "level": 2,
@@ -5892,31 +5965,40 @@
           "title": "crate 与入口",
           "line": 33,
           "anchor": "crate-与入口",
-          "end_line": 46
+          "end_line": 48
+        },
+        {
+          "level": 2,
+          "title": "LibOS 分区与依赖",
+          "line": 49,
+          "anchor": "libos-分区与依赖",
+          "end_line": 62
         },
         {
           "level": 2,
           "title": "启动路径",
-          "line": 47,
+          "line": 63,
           "anchor": "启动路径",
-          "end_line": 52
+          "end_line": 68
         },
         {
           "level": 2,
           "title": "调用与错误路径",
-          "line": 53,
+          "line": 69,
           "anchor": "调用与错误路径",
-          "end_line": 58
+          "end_line": 74
         },
         {
           "level": 2,
           "title": "改动影响检查",
-          "line": 59,
+          "line": 75,
           "anchor": "改动影响检查",
-          "end_line": 70
+          "end_line": 86
         }
       ],
-      "mentioned_ids": [],
+      "mentioned_ids": [
+        "S6-X3"
+      ],
       "links": [
         {
           "line": 12,
@@ -5995,59 +6077,99 @@
           "target": "../../prima-runtime/src/protocol.rs"
         },
         {
+          "line": 41,
+          "target": "../../prima-runtime/src/bulk_exec.rs"
+        },
+        {
           "line": 42,
           "target": "../../prima-user/src/servicemgr.rs"
         },
         {
           "line": 42,
-          "target": "../../prima-user/c/prima_syscall.c"
+          "target": "../../prima-user/src/service.rs"
+        },
+        {
+          "line": 42,
+          "target": "../../prima-user/src/proxy.rs"
         },
         {
           "line": 43,
+          "target": "../../libos/linux/src/linux.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../libos/linux/src/linux_store.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../libos/linux/c/prima_syscall.c"
+        },
+        {
+          "line": 43,
+          "target": "../../libos/linux/musl/build.sh"
+        },
+        {
+          "line": 44,
+          "target": "../../libos/windows/src/pe.rs"
+        },
+        {
+          "line": 44,
+          "target": "../../libos/windows/src/load.rs"
+        },
+        {
+          "line": 44,
+          "target": "../../libos/windows/src/winpe.rs"
+        },
+        {
+          "line": 45,
           "target": "../../prima-initgen/src/lib.rs"
         },
         {
-          "line": 43,
+          "line": 45,
           "target": "../../prima-initgen/src/code.rs"
         },
         {
-          "line": 44,
+          "line": 46,
           "target": "../../xtask/src/main.rs"
         },
         {
-          "line": 44,
+          "line": 46,
           "target": "../../xtask/src/image.rs"
         },
         {
-          "line": 44,
+          "line": 46,
           "target": "../../xtask/src/protocol.rs"
         },
         {
-          "line": 45,
+          "line": 47,
           "target": "../../lean/README.md"
         },
         {
-          "line": 45,
+          "line": 47,
           "target": "../../lean/Formal.lean"
         },
         {
           "line": 51,
+          "target": "topics/libos.md"
+        },
+        {
+          "line": 67,
           "target": "topics/boot.md"
         },
         {
-          "line": 51,
+          "line": 67,
           "target": "topics/runtime.md"
         },
         {
-          "line": 57,
+          "line": 73,
           "target": "topics/process.md"
         },
         {
-          "line": 70,
+          "line": 86,
           "target": "asterinas-provenance.md"
         },
         {
-          "line": 70,
+          "line": 86,
           "target": "../superpowers/specs/2026-10-24-asterinas-reuse-design.md"
         }
       ]
@@ -6335,34 +6457,36 @@
       "replacements": [],
       "authority": "navigation",
       "status": "maintained",
-      "date": "2026-10-23",
-      "sha256": "07ab8e574e166ec9818a511021fe1f9c7c2a092010e5095d3597b625e7e44664",
+      "date": "2026-11-26",
+      "sha256": "feeb0da76d0f457868861775bcbe09684b64498ce65b488b86b17a64e8cbd6c1",
       "topic_ids": [],
-      "lines": 42,
+      "lines": 44,
       "sections": [
         {
           "level": 1,
           "title": "按子系统检索",
           "line": 10,
           "anchor": "按子系统检索",
-          "end_line": 42
+          "end_line": 44
         },
         {
           "level": 2,
           "title": "选择多个主题的场景",
-          "line": 27,
+          "line": 28,
           "anchor": "选择多个主题的场景",
-          "end_line": 34
+          "end_line": 36
         },
         {
           "level": 2,
           "title": "机器读取",
-          "line": 35,
+          "line": 37,
           "anchor": "机器读取",
-          "end_line": 42
+          "end_line": 44
         }
       ],
-      "mentioned_ids": [],
+      "mentioned_ids": [
+        "S6-X3"
+      ],
       "links": [
         {
           "line": 12,
@@ -6394,30 +6518,34 @@
         },
         {
           "line": 22,
-          "target": "vfs.md"
+          "target": "libos.md"
         },
         {
           "line": 23,
-          "target": "process.md"
+          "target": "vfs.md"
         },
         {
           "line": 24,
-          "target": "synchronization.md"
+          "target": "process.md"
         },
         {
           "line": 25,
+          "target": "synchronization.md"
+        },
+        {
+          "line": 26,
           "target": "compatibility.md"
         },
         {
-          "line": 32,
+          "line": 34,
           "target": "../interfaces.md"
         },
         {
-          "line": 42,
+          "line": 44,
           "target": "../topics.json"
         },
         {
-          "line": 42,
+          "line": 44,
           "target": "../../catalog.json"
         }
       ]
@@ -6969,7 +7097,7 @@
     {
       "path": "docs/architecture/topics/compatibility.md",
       "id": "topic-compatibility",
-      "title": "POSIX profile、musl、网络与 Linux 路线",
+      "title": "POSIX/Linux 兼容与 Windows LibOS 候选",
       "kind": "topic",
       "lifecycle": "current",
       "lifecycle_reason": null,
@@ -6977,60 +7105,60 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-11-26",
-      "sha256": "1f2b683a233b27e74e421ade295bc81b45d12b80ed8eccb58bdfd5149ad1b1b0",
+      "sha256": "c25233d630bd98ef70a16d346598ec823c936c1eb3b62986e71d82f05d23c661",
       "topic_ids": [
         "compatibility"
       ],
-      "lines": 82,
+      "lines": 84,
       "sections": [
         {
           "level": 1,
-          "title": "POSIX profile、musl、网络与 Linux 路线",
+          "title": "POSIX/Linux 兼容与 Windows LibOS 候选",
           "line": 10,
-          "anchor": "posix-profilemusl网络与-linux-路线",
-          "end_line": 82
+          "anchor": "posixlinux-兼容与-windows-libos-候选",
+          "end_line": 84
         },
         {
           "level": 2,
           "title": "解决的问题与检索词",
           "line": 14,
           "anchor": "解决的问题与检索词",
-          "end_line": 19
+          "end_line": 21
         },
         {
           "level": 2,
           "title": "权威章节与阅读顺序",
-          "line": 20,
+          "line": 22,
           "anchor": "权威章节与阅读顺序",
-          "end_line": 27
+          "end_line": 29
         },
         {
           "level": 2,
           "title": "契约、计划与证据入口",
-          "line": 28,
+          "line": 30,
           "anchor": "契约计划与证据入口",
-          "end_line": 56
+          "end_line": 58
         },
         {
           "level": 2,
           "title": "源码定位",
-          "line": 57,
+          "line": 59,
           "anchor": "源码定位",
-          "end_line": 66
+          "end_line": 68
         },
         {
           "level": 2,
           "title": "测试与观察入口",
-          "line": 67,
+          "line": 69,
           "anchor": "测试与观察入口",
-          "end_line": 77
+          "end_line": 79
         },
         {
           "level": 2,
           "title": "限制与修改注意",
-          "line": 78,
+          "line": 80,
           "anchor": "限制与修改注意",
-          "end_line": 82
+          "end_line": 84
         }
       ],
       "mentioned_ids": [],
@@ -7048,160 +7176,368 @@
           "target": "../../../Prima%20OS%20实现阶段.md"
         },
         {
-          "line": 30,
-          "target": "../../superpowers/specs/2026-10-31-stage7-scope-decisions.md"
-        },
-        {
-          "line": 31,
-          "target": "../../superpowers/plans/2026-10-31-windows-libos-roadmap.md"
+          "line": 18,
+          "target": "libos.md"
         },
         {
           "line": 32,
-          "target": "../../superpowers/specs/2026-11-26-windows-m0-baseline.md"
+          "target": "../../superpowers/specs/2026-10-31-stage7-scope-decisions.md"
         },
         {
           "line": 33,
-          "target": "../../superpowers/reports/2026-11-26-windows-m1-pe-model.md"
+          "target": "../../superpowers/plans/2026-10-31-windows-libos-roadmap.md"
         },
         {
           "line": 34,
-          "target": "../../superpowers/reports/2026-11-26-windows-m2-preflight.md"
+          "target": "../../superpowers/specs/2026-11-26-windows-m0-baseline.md"
         },
         {
           "line": 35,
-          "target": "../../superpowers/reports/2026-11-26-windows-m2-ring3.md"
+          "target": "../../superpowers/reports/2026-11-26-windows-m1-pe-model.md"
+        },
+        {
+          "line": 36,
+          "target": "../../superpowers/reports/2026-11-26-windows-m2-preflight.md"
         },
         {
           "line": 37,
+          "target": "../../superpowers/reports/2026-11-26-windows-m2-ring3.md"
+        },
+        {
+          "line": 39,
           "target": "../../superpowers/specs/2026-10-24-musl-port-boundary-design.md"
         },
         {
-          "line": 38,
+          "line": 40,
           "target": "../../superpowers/reports/2026-10-24-musl-port-boundary-report.md"
         },
         {
-          "line": 40,
+          "line": 42,
           "target": "../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md"
         },
         {
-          "line": 41,
+          "line": 43,
           "target": "../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
         },
         {
-          "line": 42,
+          "line": 44,
           "target": "../../../Prima%20OS%20%E5%AE%9E%E7%8E%B0%E9%98%B6%E6%AE%B5.md"
         },
         {
-          "line": 43,
+          "line": 45,
           "target": "../../superpowers/specs/2026-10-18-stage5-profile-v0.md"
         },
         {
-          "line": 44,
+          "line": 46,
           "target": "../../superpowers/specs/2026-10-20-stage5-profile-v1.md"
         },
         {
-          "line": 45,
+          "line": 47,
           "target": "../../superpowers/plans/2026-10-18-musl-port-plan.md"
         },
         {
-          "line": 46,
+          "line": 48,
           "target": "../../superpowers/plans/2026-10-18-stage5-revised-plan.md"
         },
         {
-          "line": 47,
+          "line": 49,
           "target": "../../superpowers/plans/2026-10-22-stage5-completion-roadmap.md"
         },
         {
-          "line": 48,
+          "line": 50,
           "target": "../../superpowers/compat/compat-state.md"
         },
         {
-          "line": 49,
+          "line": 51,
           "target": "../../superpowers/compat/symbol-trace.md"
         },
         {
-          "line": 50,
+          "line": 52,
           "target": "../../superpowers/reports/2026-10-18-stage5-musl-m3-base.md"
         },
         {
-          "line": 51,
+          "line": 53,
           "target": "../../superpowers/reports/2026-10-19-stage5-m5-sbase-echo.md"
         },
         {
-          "line": 52,
+          "line": 54,
           "target": "../../superpowers/specs/2026-10-23-stage5-m19-loopback-udp-design.md"
         },
         {
-          "line": 53,
+          "line": 55,
           "target": "../../superpowers/reports/2026-10-23-stage5-m19-loopback-udp.md"
         },
         {
-          "line": 54,
+          "line": 56,
           "target": "../../superpowers/reports/2026-10-23-stage5-m20-compat-final.md"
         },
         {
-          "line": 55,
+          "line": 57,
           "target": "../../superpowers/reports/2026-10-23-stage5-m21-exit-review.md"
         },
         {
-          "line": 59,
-          "target": "../../../prima-user/c/prima_crt.c"
-        },
-        {
-          "line": 60,
-          "target": "../../../prima-user/c/prima_crt_start.S"
-        },
-        {
           "line": 61,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_crt.c"
         },
         {
           "line": 62,
-          "target": "../../../prima-user/musl/build.sh"
+          "target": "../../../libos/linux/c/prima_crt_start.S"
         },
         {
           "line": 63,
-          "target": "../../../prima-user/musl/patches/syscall_arch.h"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 64,
-          "target": "../../../xtask/src/compat.rs"
+          "target": "../../../libos/linux/musl/build.sh"
         },
         {
           "line": 65,
+          "target": "../../../libos/linux/musl/patches/syscall_arch.h"
+        },
+        {
+          "line": 66,
+          "target": "../../../xtask/src/compat.rs"
+        },
+        {
+          "line": 67,
           "target": "../../../xtask/src/linux.rs"
         },
         {
-          "line": 69,
-          "target": "../../../prima-user/musl/test_port.py"
-        },
-        {
-          "line": 70,
-          "target": "../../../prima-user/c/stage5_fd.c"
-        },
-        {
           "line": 71,
-          "target": "../../../prima-user/c/stage5_probe.c"
+          "target": "../../../libos/linux/musl/test_port.py"
         },
         {
           "line": 72,
-          "target": "../../../prima-user/c/stage5_net.c"
+          "target": "../../../libos/linux/c/stage5_fd.c"
         },
         {
           "line": 73,
-          "target": "../../../xtask/src/image.rs"
+          "target": "../../../libos/linux/c/stage5_probe.c"
         },
         {
           "line": 74,
+          "target": "../../../libos/linux/c/stage5_net.c"
+        },
+        {
+          "line": 75,
+          "target": "../../../xtask/src/image.rs"
+        },
+        {
+          "line": 76,
           "target": "../../../xtask/src/protocol.rs"
         },
         {
-          "line": 76,
+          "line": 78,
           "target": "../development.md"
         },
         {
-          "line": 76,
+          "line": 78,
           "target": "../evidence.md"
+        }
+      ]
+    },
+    {
+      "path": "docs/architecture/topics/libos.md",
+      "id": "topic-libos",
+      "title": "LibOS 布局、personality 边界与验证入口",
+      "kind": "topic",
+      "lifecycle": "current",
+      "lifecycle_reason": null,
+      "replacements": [],
+      "authority": "explanatory",
+      "status": "maintained",
+      "date": "2026-11-26",
+      "sha256": "0b85f2af3f99d1e3aa4e30638a06e626b7a20deba745d23d48aeafb952a5d3ee",
+      "topic_ids": [
+        "libos"
+      ],
+      "lines": 64,
+      "sections": [
+        {
+          "level": 1,
+          "title": "LibOS 布局、personality 边界与验证入口",
+          "line": 10,
+          "anchor": "libos-布局personality-边界与验证入口",
+          "end_line": 64
+        },
+        {
+          "level": 2,
+          "title": "解决的问题与检索词",
+          "line": 14,
+          "anchor": "解决的问题与检索词",
+          "end_line": 19
+        },
+        {
+          "level": 2,
+          "title": "权威章节与阅读顺序",
+          "line": 20,
+          "anchor": "权威章节与阅读顺序",
+          "end_line": 25
+        },
+        {
+          "level": 2,
+          "title": "crate 与资产归属",
+          "line": 26,
+          "anchor": "crate-与资产归属",
+          "end_line": 38
+        },
+        {
+          "level": 2,
+          "title": "源码定位",
+          "line": 39,
+          "anchor": "源码定位",
+          "end_line": 45
+        },
+        {
+          "level": 2,
+          "title": "构建与验证入口",
+          "line": 46,
+          "anchor": "构建与验证入口",
+          "end_line": 53
+        },
+        {
+          "level": 2,
+          "title": "契约、计划与证据",
+          "line": 54,
+          "anchor": "契约计划与证据",
+          "end_line": 59
+        },
+        {
+          "level": 2,
+          "title": "限制与修改注意",
+          "line": 60,
+          "anchor": "限制与修改注意",
+          "end_line": 64
+        }
+      ],
+      "mentioned_ids": [
+        "S6-X3"
+      ],
+      "links": [
+        {
+          "line": 12,
+          "target": "README.md"
+        },
+        {
+          "line": 12,
+          "target": "../ai-retrieval.md"
+        },
+        {
+          "line": 12,
+          "target": "../../../Prima%20OS%20实现阶段.md"
+        },
+        {
+          "line": 22,
+          "target": "../../../AGENTS.md"
+        },
+        {
+          "line": 22,
+          "target": "../system-map.md"
+        },
+        {
+          "line": 22,
+          "target": "../../../Prima%20OS%20实现阶段.md"
+        },
+        {
+          "line": 41,
+          "target": "../../../libos/linux/Cargo.toml"
+        },
+        {
+          "line": 41,
+          "target": "../../../libos/linux/src/linux.rs"
+        },
+        {
+          "line": 41,
+          "target": "../../../libos/linux/src/linux_store.rs"
+        },
+        {
+          "line": 41,
+          "target": "../../../libos/linux/c/prima_syscall.c"
+        },
+        {
+          "line": 41,
+          "target": "../../../libos/linux/musl/build.sh"
+        },
+        {
+          "line": 42,
+          "target": "../../../libos/windows/Cargo.toml"
+        },
+        {
+          "line": 42,
+          "target": "../../../libos/windows/src/pe.rs"
+        },
+        {
+          "line": 42,
+          "target": "../../../libos/windows/src/load.rs"
+        },
+        {
+          "line": 42,
+          "target": "../../../libos/windows/src/winpe.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../../prima-runtime/src/bulk_exec.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../../prima-runtime/src/protocol.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../../prima-user/src/proxy.rs"
+        },
+        {
+          "line": 43,
+          "target": "../../../prima-user/src/servicemgr.rs"
+        },
+        {
+          "line": 44,
+          "target": "../../../xtask/Cargo.toml"
+        },
+        {
+          "line": 44,
+          "target": "../../../xtask/src/image.rs"
+        },
+        {
+          "line": 44,
+          "target": "../../../xtask/src/lint.rs"
+        },
+        {
+          "line": 56,
+          "target": "../../superpowers/specs/2026-10-31-stage7-scope-decisions.md"
+        },
+        {
+          "line": 56,
+          "target": "../../superpowers/specs/2026-11-10-libos-data-path.md"
+        },
+        {
+          "line": 56,
+          "target": "../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md"
+        },
+        {
+          "line": 57,
+          "target": "../../superpowers/compat/stage6-linux-profile-v1.md"
+        },
+        {
+          "line": 58,
+          "target": "../../superpowers/plans/2026-10-31-windows-libos-roadmap.md"
+        },
+        {
+          "line": 58,
+          "target": "../../superpowers/specs/2026-11-26-windows-m0-baseline.md"
+        },
+        {
+          "line": 58,
+          "target": "../../superpowers/reports/2026-11-26-windows-m1-pe-model.md"
+        },
+        {
+          "line": 58,
+          "target": "../../superpowers/reports/2026-11-26-windows-m2-preflight.md"
+        },
+        {
+          "line": 58,
+          "target": "../../superpowers/reports/2026-11-26-windows-m2-ring3.md"
         }
       ]
     },
@@ -7216,7 +7552,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-31",
-      "sha256": "3eaef9a47aa8ca5177e433bd51e61eebff24fd1f3907ea5546d0697973ea3b85",
+      "sha256": "7491dfefd41e0290efdfcd9392f9a58951c9bd76ab549a261e01e12e73973771",
       "topic_ids": [
         "memory"
       ],
@@ -7452,7 +7788,7 @@
         },
         {
           "line": 71,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 73,
@@ -7496,11 +7832,11 @@
         },
         {
           "line": 86,
-          "target": "../../../prima-user/c/stage5_mem.c"
+          "target": "../../../libos/linux/c/stage5_mem.c"
         },
         {
           "line": 87,
-          "target": "../../../prima-user/c/stage5_proc.c"
+          "target": "../../../libos/linux/c/stage5_proc.c"
         },
         {
           "line": 89,
@@ -7564,7 +7900,7 @@
         },
         {
           "line": 128,
-          "target": "../../../prima-user/c/stage5_sigaction.c"
+          "target": "../../../libos/linux/c/stage5_sigaction.c"
         }
       ]
     },
@@ -7760,7 +8096,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-11-17",
-      "sha256": "87b7661ef4831a3be579c4579a8f8a5c8b2427457be7db3677ce9205ed60e531",
+      "sha256": "07a405d8b61e9e406d808fbbda1574fe4f20ddb6dc094feafcf1e0ecf1f3c3f2",
       "topic_ids": [
         "process"
       ],
@@ -7943,39 +8279,39 @@
         },
         {
           "line": 65,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 66,
-          "target": "../../../prima-user/musl/patches/clone.s"
+          "target": "../../../libos/linux/musl/patches/clone.s"
         },
         {
           "line": 70,
-          "target": "../../../prima-user/c/stage5_pthread.c"
+          "target": "../../../libos/linux/c/stage5_pthread.c"
         },
         {
           "line": 71,
-          "target": "../../../prima-user/c/stage5_share.c"
+          "target": "../../../libos/linux/c/stage5_share.c"
         },
         {
           "line": 72,
-          "target": "../../../prima-user/c/stage5_proc.c"
+          "target": "../../../libos/linux/c/stage5_proc.c"
         },
         {
           "line": 73,
-          "target": "../../../prima-user/c/stage5_exec.c"
+          "target": "../../../libos/linux/c/stage5_exec.c"
         },
         {
           "line": 74,
-          "target": "../../../prima-user/c/stage5_execve.c"
+          "target": "../../../libos/linux/c/stage5_execve.c"
         },
         {
           "line": 75,
-          "target": "../../../prima-user/c/stage5_signal.c"
+          "target": "../../../libos/linux/c/stage5_signal.c"
         },
         {
           "line": 76,
-          "target": "../../../prima-user/c/stage5_sigaction.c"
+          "target": "../../../libos/linux/c/stage5_sigaction.c"
         },
         {
           "line": 78,
@@ -8558,7 +8894,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-30",
-      "sha256": "b7015dae21211bdb430244cb4c3c62908de79b166ab8e3bd9b948510b309a9ef",
+      "sha256": "7112a2e68542cbbe69e5cba5e66458f9fc8cb4d2d5ef318e7fc7fdcc44cb18d9",
       "topic_ids": [
         "synchronization"
       ],
@@ -8722,7 +9058,7 @@
         },
         {
           "line": 53,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 55,
@@ -8738,23 +9074,23 @@
         },
         {
           "line": 61,
-          "target": "../../../prima-user/c/stage5_wait.c"
+          "target": "../../../libos/linux/c/stage5_wait.c"
         },
         {
           "line": 62,
-          "target": "../../../prima-user/c/stage5_wait2.c"
+          "target": "../../../libos/linux/c/stage5_wait2.c"
         },
         {
           "line": 63,
-          "target": "../../../prima-user/c/stage5_futex.c"
+          "target": "../../../libos/linux/c/stage5_futex.c"
         },
         {
           "line": 64,
-          "target": "../../../prima-user/c/stage5_time.c"
+          "target": "../../../libos/linux/c/stage5_time.c"
         },
         {
           "line": 65,
-          "target": "../../../prima-user/c/stage5_ttyin.c"
+          "target": "../../../libos/linux/c/stage5_ttyin.c"
         },
         {
           "line": 67,
@@ -8829,7 +9165,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-11-17",
-      "sha256": "0915470adb958e121ef741e64c9463e7627aeb14b3d8667f4ca2063b71e4d5b8",
+      "sha256": "67df96c6dfdd8a9dcdc4bfea174820271c7184aba84fc5e744084f6f973b6c02",
       "topic_ids": [
         "vfs"
       ],
@@ -9017,7 +9353,7 @@
         },
         {
           "line": 64,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 68,
@@ -9025,27 +9361,27 @@
         },
         {
           "line": 69,
-          "target": "../../../prima-user/c/stage5_fd.c"
+          "target": "../../../libos/linux/c/stage5_fd.c"
         },
         {
           "line": 70,
-          "target": "../../../prima-user/c/stage5_vfs.c"
+          "target": "../../../libos/linux/c/stage5_vfs.c"
         },
         {
           "line": 71,
-          "target": "../../../prima-user/c/stage5_meta.c"
+          "target": "../../../libos/linux/c/stage5_meta.c"
         },
         {
           "line": 72,
-          "target": "../../../prima-user/c/stage5_mut.c"
+          "target": "../../../libos/linux/c/stage5_mut.c"
         },
         {
           "line": 73,
-          "target": "../../../prima-user/c/stage5_vfs2.c"
+          "target": "../../../libos/linux/c/stage5_vfs2.c"
         },
         {
           "line": 74,
-          "target": "../../../prima-user/c/stage5_vfs3.c"
+          "target": "../../../libos/linux/c/stage5_vfs3.c"
         },
         {
           "line": 76,
@@ -9163,17 +9499,17 @@
       "replacements": [],
       "authority": "navigation",
       "status": "maintained",
-      "date": "2026-11-03",
-      "sha256": "49154aa225617e9a1aba4cf11de13e35db217fe92f964f06e7286f9b74e05804",
+      "date": "2026-11-26",
+      "sha256": "0a6fc3023c82f65cb48ce39f483043a481ab15f8715ce45597376efca73bd9f5",
       "topic_ids": [],
-      "lines": 44,
+      "lines": 46,
       "sections": [
         {
           "level": 1,
           "title": "兼容性台账索引",
           "line": 10,
           "anchor": "兼容性台账索引",
-          "end_line": 44
+          "end_line": 46
         },
         {
           "level": 2,
@@ -9187,7 +9523,7 @@
           "title": "按范围读取",
           "line": 33,
           "anchor": "按范围读取",
-          "end_line": 44
+          "end_line": 46
         }
       ],
       "mentioned_ids": [],
@@ -9241,7 +9577,15 @@
           "target": "musl-snapshot.lock.toml"
         },
         {
-          "line": 42,
+          "line": 41,
+          "target": "../../architecture/topics/libos.md"
+        },
+        {
+          "line": 41,
+          "target": "../specs/2026-11-26-windows-m0-baseline.md"
+        },
+        {
+          "line": 44,
           "target": "../reports/2026-10-25-stage0-5-gap-followup.md"
         }
       ]
@@ -9795,11 +10139,12 @@
       "authority": "frozen-bounded-syscall-profile",
       "status": "frozen-with-partial-coverage",
       "date": "2026-11-06",
-      "sha256": "a0ab250d0feeb254c808fa392323ed6ef81f0b826c457e4c0c2e37ba53daf06f",
+      "sha256": "5f7a5f25c1680b094acf678da4a7642ca5800ca81ea40f4301dc21faa8a4983b",
       "topic_ids": [
         "capability-ipc",
         "runtime",
         "process",
+        "libos",
         "compatibility"
       ],
       "lines": 108,
@@ -12613,7 +12958,7 @@
       "authority": "execution-plan",
       "status": "executing",
       "date": "2026-10-28",
-      "sha256": "21f9d2b12d8efadf0788fa0747be72ffbdac71ff6aeb093c3ac98d3f9e1944fa",
+      "sha256": "c016f000c2a2b6a74f078aa7de84536f47e10173120a1b8abf9e68a1de943c3e",
       "topic_ids": [],
       "lines": 167,
       "sections": [
@@ -12735,7 +13080,7 @@
         },
         {
           "line": 44,
-          "target": "../../../prima-user/c/prima_syscall.c"
+          "target": "../../../libos/linux/c/prima_syscall.c"
         },
         {
           "line": 45,
@@ -12778,8 +13123,9 @@
       "authority": "execution-plan",
       "status": "active",
       "date": "2026-11-26",
-      "sha256": "b4dc4eca31ff14a65c8c9ab1bf5f7f64f298f170b7d0e07c83f1cab36dbb990c",
+      "sha256": "ac2ea3c3644ad2a7949e6265b8c7aad26ccd0bbeb0a290567ab3d6b5fef5d0ad",
       "topic_ids": [
+        "libos",
         "compatibility"
       ],
       "lines": 315,
@@ -29037,7 +29383,7 @@
       "authority": "scoped-evidence",
       "status": "reviewed-with-open-findings",
       "date": "2026-10-27",
-      "sha256": "330c7afd55996d55db22031d2a7fb4b112096642a3e37c7659497bcefc68386f",
+      "sha256": "144072e2bfd512f5b8d8d5d20e8a8e02f220fea15c128b57e2eb8dc470a06c37",
       "topic_ids": [],
       "lines": 231,
       "sections": [
@@ -29261,7 +29607,7 @@
         },
         {
           "line": 128,
-          "target": "../../../prima-user/musl/build.py"
+          "target": "../../../libos/linux/musl/build.py"
         },
         {
           "line": 135,
@@ -29269,7 +29615,7 @@
         },
         {
           "line": 142,
-          "target": "../../../prima-user/musl/build.py"
+          "target": "../../../libos/linux/musl/build.py"
         },
         {
           "line": 150,
@@ -38312,7 +38658,9 @@
       "status": "host-tests-pass-limits",
       "date": "2026-11-26",
       "sha256": "e9ba4ff8e861ce6ceacb82a07dbf564c9afcc4bdb1f6ed9d0ff757fd8664c9df",
-      "topic_ids": [],
+      "topic_ids": [
+        "libos"
+      ],
       "lines": 99,
       "sections": [
         {
@@ -38410,7 +38758,9 @@
       "status": "host-tests-pass-limits",
       "date": "2026-11-26",
       "sha256": "1e1dbc9e51fc826e0f0b78951adc84b8f23bfd51b496f5f198c580274ecb2ce8",
-      "topic_ids": [],
+      "topic_ids": [
+        "libos"
+      ],
       "lines": 97,
       "sections": [
         {
@@ -38506,7 +38856,9 @@
       "status": "ring3-prototype-pass-limits",
       "date": "2026-11-26",
       "sha256": "213940fcba7d474f1e2d3f149c3f701500c495dad6281b59be34059cecde989f",
-      "topic_ids": [],
+      "topic_ids": [
+        "libos"
+      ],
       "lines": 105,
       "sections": [
         {
@@ -48156,6 +48508,7 @@
       "sha256": "507784475b4a50eef4975d31fa8c0dd4b0c657fac64f28550348ae6361141cde",
       "topic_ids": [
         "vfs",
+        "libos",
         "compatibility"
       ],
       "lines": 67,
@@ -48794,6 +49147,7 @@
       "date": "2026-10-24",
       "sha256": "ad61b8820716876af5fa52de79b40f5effd2b70c9cf7cd7b188d2bb0b497d393",
       "topic_ids": [
+        "libos",
         "compatibility"
       ],
       "lines": 62,
@@ -51008,6 +51362,7 @@
         "semantics",
         "boot",
         "runtime",
+        "libos",
         "compatibility"
       ],
       "lines": 228,
@@ -52456,7 +52811,8 @@
       "sha256": "0d2bb75bf183061e484abd16dce615ff0025f14beda199b86f1c40ec33645bd5",
       "topic_ids": [
         "runtime",
-        "vfs"
+        "vfs",
+        "libos"
       ],
       "lines": 514,
       "sections": [
@@ -53054,8 +53410,10 @@
       "authority": "windows-libos-boundary",
       "status": "bounded-baseline-m0-open",
       "date": "2026-11-26",
-      "sha256": "09b40485fb14a8c279715280e11a927098df3e56a7702c3d8891483d9a62148d",
-      "topic_ids": [],
+      "sha256": "f7bb209e584304954277a9f5dd1d3584d17b451cfa96723e00b88316868fde95",
+      "topic_ids": [
+        "libos"
+      ],
       "lines": 77,
       "sections": [
         {
@@ -54057,37 +54415,37 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "09b726a1f27cc54c893d13eaaf4b443689c85c1f73845bf0357fb48fb5274001",
+      "sha256": "22a54862daed8906f4bf595027a5eeb7b71242333ce92b93cd9a6eeed8f39c32",
       "topic_ids": [],
-      "lines": 41,
+      "lines": 42,
       "sections": [
         {
           "level": 1,
           "title": "PrimaOS",
           "line": 10,
           "anchor": "primaos",
-          "end_line": 41
+          "end_line": 42
         },
         {
           "level": 2,
           "title": "Start here",
           "line": 15,
           "anchor": "start-here",
-          "end_line": 20
+          "end_line": 21
         },
         {
           "level": 2,
           "title": "Contracts and evidence",
-          "line": 21,
+          "line": 22,
           "anchor": "contracts-and-evidence",
-          "end_line": 30
+          "end_line": 31
         },
         {
           "level": 2,
           "title": "Machine-readable retrieval",
-          "line": 31,
+          "line": 32,
           "anchor": "machine-readable-retrieval",
-          "end_line": 41
+          "end_line": 42
         }
       ],
       "mentioned_ids": [],
@@ -54106,54 +54464,58 @@
         },
         {
           "line": 19,
+          "target": "docs/architecture/topics/libos.md"
+        },
+        {
+          "line": 20,
           "target": "Prima%20OS%20实现阶段.md"
         },
         {
-          "line": 22,
+          "line": 23,
           "target": "Prima%20OS.md"
         },
         {
-          "line": 23,
+          "line": 24,
           "target": "COSIR%20原语规范.md"
         },
         {
-          "line": 24,
+          "line": 25,
           "target": "docs/architecture/topics/README.md"
         },
         {
-          "line": 25,
+          "line": 26,
           "target": "docs/architecture/evidence.md"
         },
         {
-          "line": 26,
+          "line": 27,
           "target": "LICENSE"
         },
         {
-          "line": 26,
+          "line": 27,
           "target": "docs/architecture/licensing.md"
         },
         {
-          "line": 27,
+          "line": 28,
           "target": "lean/README.md"
         },
         {
-          "line": 28,
+          "line": 29,
           "target": "docs/superpowers/compat/compat-state.md"
         },
         {
-          "line": 29,
+          "line": 30,
           "target": "docs/superpowers/compat/symbol-trace.md"
         },
         {
-          "line": 32,
+          "line": 33,
           "target": "docs/architecture/topics.json"
         },
         {
-          "line": 33,
+          "line": 34,
           "target": "docs/catalog.json"
         },
         {
-          "line": 36,
+          "line": 37,
           "target": "docs/lifecycle.json"
         }
       ]

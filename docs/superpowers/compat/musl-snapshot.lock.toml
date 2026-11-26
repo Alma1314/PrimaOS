@@ -34,7 +34,7 @@ verify_license = "sha256sum target/musl-1.2.5/COPYRIGHT"
 verify_archive = "sha256sum target/musl-v1.2.5.tar.gz"
 
 # M3 移植补丁（以完整替换文件保存，构建脚本复制进工作副本）。
-patch_dir = "prima-user/musl/patches"
+patch_dir = "libos/linux/musl/patches"
 patches = [
   "arch/x86_64/syscall_arch.h",
   "src/thread/x86_64/__set_thread_area.s",
@@ -45,7 +45,7 @@ patches = [
   "src/signal/x86_64/restore.s",
   "src/stdio/__fdopen.c",
 ]
-build_script = "prima-user/musl/build.sh"
+build_script = "libos/linux/musl/build.sh"
 sysroot_dir = "target/musl-prefix"
 build_cache = "target/musl-prefix/.stamp  # 锁文件、全部补丁、构建脚本、工具版本、参数、绝对构建路径的 sha256"
 

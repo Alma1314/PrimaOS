@@ -64,7 +64,7 @@ def commands(group, root=ROOT):
         cargo('run', '--locked', '-p', 'xtask', '--features', feature, '--', verb), env)
     if group == 'host':
         return [step(cargo('test', '--locked', '--workspace')),
-                step(['python3', 'prima-user/musl/test_port.py']),
+                step(['python3', 'libos/linux/musl/test_port.py']),
                 step(['python3', 'scripts/test_posix_std.py']),
                 step(['python3', 'scripts/test_ci.py']),
                 step(['python3', 'scripts/test_package_evidence.py']),
@@ -278,7 +278,7 @@ def checked_checkout(url, destination, commit):
 
 
 def musl_module(root):
-    spec = importlib.util.spec_from_file_location('prima_musl_build', root / 'prima-user/musl/build.py')
+    spec = importlib.util.spec_from_file_location('prima_musl_build', root / 'libos/linux/musl/build.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

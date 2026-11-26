@@ -6,16 +6,7 @@ publish = false
 license = "GPL-3.0-or-later"
 
 [features]
-linux-probe = []
-libos-bench = ["linux-probe"]
-windows-pe-probe = ["dep:prima-windows"]
-
-[[bin]]
-name = "prima-linux"
-path = "src/linux_main.rs"
-required-features = ["linux-probe"]
-test = false
-bench = false
+windows-pe-probe = ["dep:prima-windows", "prima-windows/winpe-probe"]
 
 # P2b-4：代理场景的原生/POSIX ABI 客户端（直接文件会话读取 Store 根）。
 [[bin]]
@@ -81,4 +72,5 @@ bench = false
 prima-abi = { path = "../prima-abi" }
 prima-runtime = { path = "../prima-runtime" }
 prima-ostd = { path = "../prima-ostd" }
-prima-windows = { path = "../prima-windows", optional = true }
+prima-linux = { path = "../libos/linux" }
+prima-windows = { path = "../libos/windows", optional = true }

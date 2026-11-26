@@ -61,17 +61,17 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 - [servicemgr.rs](../../../prima-user/src/servicemgr.rs)
 - [proxy.rs](../../../prima-user/src/proxy.rs) — 代理登记、根策略与 fixture
 - [sessions.rs](../../../prima-user/src/sessions.rs) — 直接客户端与代理 owner 的分配/释放
-- [prima_syscall.c](../../../prima-user/c/prima_syscall.c)
+- [prima_syscall.c](../../../libos/linux/c/prima_syscall.c)
 
 ## 测试与观察入口
 
 - [tests.rs](../../../prima-runtime/src/vfs/tests.rs) — 后端及打开对象 host 回归
-- [stage5_fd.c](../../../prima-user/c/stage5_fd.c)
-- [stage5_vfs.c](../../../prima-user/c/stage5_vfs.c)
-- [stage5_meta.c](../../../prima-user/c/stage5_meta.c)
-- [stage5_mut.c](../../../prima-user/c/stage5_mut.c)
-- [stage5_vfs2.c](../../../prima-user/c/stage5_vfs2.c)
-- [stage5_vfs3.c](../../../prima-user/c/stage5_vfs3.c)
+- [stage5_fd.c](../../../libos/linux/c/stage5_fd.c)
+- [stage5_vfs.c](../../../libos/linux/c/stage5_vfs.c)
+- [stage5_meta.c](../../../libos/linux/c/stage5_meta.c)
+- [stage5_mut.c](../../../libos/linux/c/stage5_mut.c)
+- [stage5_vfs2.c](../../../libos/linux/c/stage5_vfs2.c)
+- [stage5_vfs3.c](../../../libos/linux/c/stage5_vfs3.c)
 
 测试命令与证据分类见[开发手册](../development.md)和[证据规则](../evidence.md)。路径指向模块内联测试或探针入口，不保证所有分支都已覆盖。
 

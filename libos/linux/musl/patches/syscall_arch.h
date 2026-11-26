@@ -2,7 +2,7 @@
  *
  * The Linux syscall instruction is not the system boundary. Every musl call
  * site keeps the `__syscallN` name, but the implementation is the Prima
- * user-space adapter (`prima-user/c/prima_syscall.c`), which translates Linux
+ * user-space adapter (`libos/linux/c/prima_syscall.c`), which translates Linux
  * call numbers to Prima natives and returns the raw negative errno.
  */
 #define __SYSCALL_LL_E(x) (x)
