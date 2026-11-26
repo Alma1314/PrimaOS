@@ -7,17 +7,12 @@
 //! **范围边界：** 单核、非抢占、无时钟/中断；仅 `SYS_YIELD` 触发的协作切换；共享单一
 //! `TSS.rsp0` 内核栈（每次 CPL3→CPL0 硬件重置，无需 per-task 内核栈或 `swapgs`）。
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use crate::bootstrap;
 use crate::exc::SretFrame;
 use prima_ostd::sync::StaticCell;
 
 /// 调度器与 Task 表共用同一上限，避免新增 Task 只有模型槽、没有上下文槽。
 pub const MAX_TASKS: usize = bootstrap::MAX_TASKS;
-
-/// 当前运行的 Task id（进入用户态前初始化；初值 1 与 Bootstrap init Task 一致）。
-static CURRENT: AtomicU32 = AtomicU32::new(1);
 
 /// 每个 Task 的用户上下文；索引即 Task id。
 static FRAMES: StaticCell<[SretFrame; MAX_TASKS]> = StaticCell::new([SretFrame::ZERO; MAX_TASKS]);
@@ -191,18 +186,18 @@ fn write_pending_status(task_id: u32) {
     }
 }
 
-/// 当前运行的 Task id。
+/// 当前 CPU 上运行的 Task id（D15：这是 CPU 本地状态，不是全局变量）。
 pub fn current() -> u32 {
-    CURRENT.load(Ordering::Relaxed)
+    crate::cpu::local::current_task()
 }
 
 /// 进入用户态前初始化调度器（当前为 init Task）。
 pub fn init() {
-    CURRENT.store(crate::bootstrap::INIT_TASK_ID, Ordering::Relaxed);
+    crate::cpu::local::set_current_task(crate::bootstrap::INIT_TASK_ID);
 }
 
 fn set_current(task_id: u32) {
-    CURRENT.store(task_id, Ordering::Relaxed);
+    crate::cpu::local::set_current_task(task_id);
 }
 
 /// 记录某 Task 的用户上下文（初始进入或让出时保存）。

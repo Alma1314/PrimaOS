@@ -152,10 +152,13 @@
       "docs/superpowers/specs/2026-11-08-stage7-evidence-package.md",
       "docs/superpowers/reports/2026-11-08-stage7-evidence-package.md",
       "docs/superpowers/specs/2026-11-08-stage7-cargo-materials.md",
-      "docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md"
+      "docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md",
+      "docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md",
+      "docs/superpowers/reports/2026-11-27-p5-0-state-partition.md"
     ],
     "code": [
       "kernel/src/main.rs",
+      "kernel/src/cpu.rs",
       "kernel/src/bootstrap.rs",
       "kernel/src/gdt.rs",
       "kernel/src/idt.rs",

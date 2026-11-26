@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（256）
+## report（257）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -356,6 +356,7 @@
 | [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |
 | [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 | [WIN-M2 ring3 原型：原样 PE32+ 子任务执行](../superpowers/reports/2026-11-26-windows-m2-ring3.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-ring3.md` |
+| [P5-0：SMP 状态所有权设计与 CPU 本地状态基座](../superpowers/reports/2026-11-27-p5-0-state-partition.md) | current | `docs/superpowers/reports/2026-11-27-p5-0-state-partition.md` |
 | [WIN-M2 补片：真实 DLL 导出与发布失败清理](../superpowers/reports/2026-11-27-windows-m2-real-dll.md) | current | `docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md` |
 | [WIN-M3 部分：多模块导入、静态 TLS 布局与三 DLL ring3 原型](../superpowers/reports/2026-11-27-windows-m3-loader-runtime.md) | current | `docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md` |
 
@@ -368,7 +369,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（109）
+## specification（110）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -481,6 +482,7 @@
 | [LibOS 数据通路改造与批量文件协议首片](../superpowers/specs/2026-11-10-libos-data-path.md) | current | `docs/superpowers/specs/2026-11-10-libos-data-path.md` |
 | [异构 ISA 混合执行设计：系统层双构建与应用层用户态兼容层](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
 | [WIN-M0 有界基线：PE64 宿主模型与未决冻结门](../superpowers/specs/2026-11-26-windows-m0-baseline.md) | current | `docs/superpowers/specs/2026-11-26-windows-m0-baseline.md` |
+| [阶段 7 S7-B.1：SMP 状态所有权与按 CPU 分区设计](../superpowers/specs/2026-11-27-stage7-smp-state-partition.md) | current | `docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md` |
 
 ## template（4）
 

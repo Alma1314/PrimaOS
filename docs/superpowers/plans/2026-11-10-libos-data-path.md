@@ -4,7 +4,7 @@ kind: plan
 authority: execution-plan
 status: in-progress
 lifecycle: current
-updated: 2026-11-16
+updated: 2026-11-27
 ---
 
 # LibOS 数据通路完整改造计划
@@ -41,6 +41,12 @@ P2b 与其后 holder 模型的依赖切片见[P2b与holder模型依赖切片计�
 正反例矩阵均有 QEMU 证据；完整 36 组 72 轮 BIOS 套件通过。P2b 作为证据包收口，
 **P2 本身未签署**（组织级复核待做），P3–P6 未开始。见
 [P2b 收口报告](../reports/2026-11-18-p2b-closeout.md)。
+
+2026-11-27：P5-0 已落盘——按 D15 先做 SMP 状态所有权设计与 CPU 本地基座（调度当前
+任务从全局静态迁到每 CPU 槽），host/lint 与完整 72 轮 BIOS 通过。**未启动 AP、未做
+`-smp 2/4`、未分区 `BOOTSTRAP_STATE`**；P5 未签署，P6 未开始。见
+[S7-B.1 设计](../specs/2026-11-27-stage7-smp-state-partition.md)与
+[P5-0 报告](../reports/2026-11-27-p5-0-state-partition.md)。
 
 ## P2的具体接线与待解决边界
 

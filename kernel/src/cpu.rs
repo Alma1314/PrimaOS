@@ -209,6 +209,92 @@ pub fn audit_reachable_page_tables(
     Ok(count)
 }
 
+/// D15 / S7-B.1：CPU 本地状态的唯一边界，SMP 分区从「当前任务」开始。
+///
+/// 这里的每个字段**每 CPU 各自一份**：任何 CPU 只读写自己的槽位，不跨 CPU 共享。
+/// 任务表、地址空间、能力等共享状态不在此处，仍由各自锁保护——分区不意味着复制
+/// 共享状态。单核阶段只有 BSP(0) 在线，[`current_index`] 固定返回 BSP；AP 启动
+/// 后改为由 LAPIC ID 映射到索引。设计与分期见
+/// `docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md`。
+pub mod local {
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    /// 平台上限：S7-SCOPE-13 冻结 x86_64 为 2/4 vCPU。
+    pub const MAX_CPUS: usize = 4;
+    /// BSP 的索引固定为 0。
+    pub const BSP: usize = 0;
+
+    struct CpuLocal {
+        /// 本 CPU 当前（或即将恢复）的 Task id；0 = 尚无任务（AP 握手前）。
+        current_task: AtomicU32,
+    }
+
+    impl CpuLocal {
+        const fn new(current_task: u32) -> Self {
+            Self {
+                current_task: AtomicU32::new(current_task),
+            }
+        }
+    }
+
+    /// BSP 初值与迁移前 `sched::CURRENT` 相同（bootstrap init Task）。
+    static LOCALS: [CpuLocal; MAX_CPUS] = [
+        CpuLocal::new(crate::bootstrap::INIT_TASK_ID),
+        CpuLocal::new(0),
+        CpuLocal::new(0),
+        CpuLocal::new(0),
+    ];
+
+    /// 本 CPU 的索引。AP 上线前唯一在线 CPU 是 BSP。
+    pub fn current_index() -> usize {
+        BSP
+    }
+
+    /// 本 CPU 的当前 Task id。
+    pub fn current_task() -> u32 {
+        task_on(current_index())
+    }
+
+    /// 记录本 CPU 的当前 Task id（由调度切换调用）。
+    pub fn set_current_task(task_id: u32) {
+        set_task_on(current_index(), task_id);
+    }
+
+    /// 读取指定 CPU 的当前 Task id；越界 panic，不静默落到错误槽位。
+    pub fn task_on(cpu: usize) -> u32 {
+        LOCALS[cpu].current_task.load(Ordering::Relaxed)
+    }
+
+    /// 记录指定 CPU 的当前 Task id（AP 握手与宿主测试的受控入口）。
+    pub fn set_task_on(cpu: usize, task_id: u32) {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].current_task.store(task_id, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn cpu_slots_hold_independent_current_tasks() {
+            set_task_on(1, 7);
+            set_task_on(2, 9);
+            assert_eq!((task_on(1), task_on(2)), (7, 9));
+            set_task_on(1, 8);
+            assert_eq!((task_on(1), task_on(2)), (8, 9), "写一个槽不影响另一个");
+            assert_eq!(current_task(), task_on(current_index()));
+            set_task_on(1, 0);
+            set_task_on(2, 0);
+        }
+
+        #[test]
+        #[should_panic(expected = "cpu index out of range")]
+        fn out_of_range_cpu_index_panics() {
+            set_task_on(MAX_CPUS, 1);
+        }
+    }
+}
+
 /// 在 host 单测中使用的恒等映射（物理==虚拟），纯逻辑测试用。
 #[cfg(test)]
 fn identity_map(phys: u64) -> u64 {
