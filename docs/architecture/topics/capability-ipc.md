@@ -80,3 +80,5 @@ updated: 2026-10-24
 2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 转移表（send/recv/task_create/ns_* / 删除）、原子更新、直投 `MsgId`、跨节点不移动与 W3 表示层唯一纳入可执行 `Formal.Move`；W4 容器双向一致与审计事件仍不覆盖。
 
 2026-11-25 [W4 容器一致性最小模型](../../superpowers/reports/2026-11-25-lean-container.md)把 `HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries 的双向一致与 send/recv/bind/unbind 的 W3+W4 保持纳入可执行 [Formal.Container](../../../lean/Formal/Container.lean)；[公理审计](../../../lean/Checks/Container.lean)仅 `propext`/`Quot.sound`。列表级重复/路径唯一、生命周期与审计事件仍不覆盖。
+
+2026-11-26 [P4-0 Gate/IPC 分段基线](../../superpowers/reports/2026-11-26-p4-baseline.md)用 I1/N1/G5 两轮样本固定 Gate 递送与恢复的阶段占比（本机 `queue-deliver` 约 48%、`deliver-reply` 约 29%）；这是测量输入，不是性能门槛或实现证据，P4 切片见[计划](../../superpowers/plans/2026-11-26-p4-path-narrowing.md)。

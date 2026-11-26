@@ -15,6 +15,8 @@ updated: 2026-11-18
 
 2026-11-18：[P3有界异步批量切片计划](2026-11-18-p3-async-slices.md)；把契约P3草案拆为环状态机、Store v2会话、前端接线、QEMU矩阵与收口五片；并发证据要求真实多线程，v1与既有72轮保持。
 
+2026-11-26：[P4 Gate/IPC路径收窄切片计划](2026-11-26-p4-path-narrowing.md)；先固定I1/N1/G5测量方法与本机基线，再按同负载选择一项递送/恢复收窄，最后做安全与失败原子性回归；不引入SMP快路径、不设性能门槛。
+
 2026-11-16：[P2b与holder模型依赖切片计划](2026-11-16-p2b-holder-model-slices.md)；把LibOS P2b与Process/Thread/ShareGroup holder模型拆为可执行切片，依赖、停止条件和证据边界见正文。2026-11-18 P2b-0契约、P2b-1 Store批量ops、P2b-2 Linux前端切换、P2b-3 fork/exec/exit生命周期与P2b-4镜像/会话接线已落盘，workspace/lint、既有Linux差分及新增两ABI代理场景通过，见[P2b-0/1报告](../reports/2026-11-17-p2b-store-batch-ops.md)、[P2b-2报告](../reports/2026-11-17-p2b-linux-frontend.md)、[P2b-3报告](../reports/2026-11-17-p2b-fork-exit.md)与[P2b-4报告](../reports/2026-11-18-p2b-proxy-wiring.md)；代理正反例矩阵与收口待P2b-5/6。
 
 本目录保存**执行计划**：它们记录当时的任务拆分、顺序和验收方式。计划是历史工件，不表示任务已经完成；证据以 `reports/` 中的报告为准。

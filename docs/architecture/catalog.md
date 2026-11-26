@@ -53,7 +53,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（25）
+## plan（26）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -82,6 +82,7 @@
 | [LibOS 数据通路完整改造计划](../superpowers/plans/2026-11-10-libos-data-path.md) | current | `docs/superpowers/plans/2026-11-10-libos-data-path.md` |
 | [P2b 与 holder 模型依赖切片计划](../superpowers/plans/2026-11-16-p2b-holder-model-slices.md) | current | `docs/superpowers/plans/2026-11-16-p2b-holder-model-slices.md` |
 | [P3 有界异步批量切片计划](../superpowers/plans/2026-11-18-p3-async-slices.md) | current | `docs/superpowers/plans/2026-11-18-p3-async-slices.md` |
+| [P4 Gate/IPC 路径收窄执行切片](../superpowers/plans/2026-11-26-p4-path-narrowing.md) | current | `docs/superpowers/plans/2026-11-26-p4-path-narrowing.md` |
 
 ## reference（9）
 
@@ -97,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（244）
+## report（245）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -345,6 +346,7 @@
 | [P3-2：C 适配层控制面锁拆分（工作项 3 完成）](../superpowers/reports/2026-11-25-p3-adapter-control-lock.md) | current | `docs/superpowers/reports/2026-11-25-p3-adapter-control-lock.md` |
 | [P3-3：直连 v2 会话 QEMU 正反例矩阵](../superpowers/reports/2026-11-25-p3-async-matrix.md) | current | `docs/superpowers/reports/2026-11-25-p3-async-matrix.md` |
 | [P3 收口：有界异步批量证据包与复核输入](../superpowers/reports/2026-11-25-p3-closeout.md) | current | `docs/superpowers/reports/2026-11-25-p3-closeout.md` |
+| [P4-0：Gate/IPC 分段测量基线与候选](../superpowers/reports/2026-11-26-p4-baseline.md) | current | `docs/superpowers/reports/2026-11-26-p4-baseline.md` |
 
 ## spec（4）
 
