@@ -183,6 +183,13 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
             "user-entry",
             "user-return",
             "user-total",
+            // G5 phase extension: splits the two task switches out of
+            // queue-deliver / deliver-reply. The original fields stay frozen.
+            "queue-wait",
+            "switch-service",
+            "wait-output",
+            "reply-dispatch",
+            "resume-client",
         ]
     } else {
         &[
@@ -193,6 +200,23 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
             "total",
         ]
     };
+    let phase_rows: Vec<Vec<u64>> = if user_mode {
+        output
+            .lines()
+            .filter_map(|s| s.strip_prefix("S7PHASE|"))
+            .map(|line| {
+                line.split(';')
+                    .map(str::parse)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|_| "invalid phase timestamp")?
+    } else {
+        Vec::new()
+    };
+    if user_mode && phase_rows.len() != count {
+        return Err("benchmark requires one phase row per sample".into());
+    }
     let mut durations = vec![Vec::new(); names.len()];
     let mut previous = 0;
     for (index, line) in output
@@ -222,6 +246,29 @@ fn validate_gate_bench(output: &str, user_mode: bool) -> Result<String, String> 
             durations[5].push(values[2] - values[1]);
             durations[6].push(values[7] - values[6]);
             durations[7].push(values[7] - values[1]);
+            let Some(extra) = phase_rows.get(index) else {
+                return Err("unexpected extra benchmark sample".into());
+            };
+            if extra.len() != 4 || extra[0] != index as u64 {
+                return Err("unordered or incomplete phase sample".into());
+            }
+            let (t5, t6, t7) = (extra[1], extra[2], extra[3]);
+            if t5 == 0
+                || t6 == 0
+                || t7 == 0
+                || !(values[3] <= t5
+                    && t5 <= t6
+                    && t6 <= values[4]
+                    && values[5] <= t7
+                    && t7 <= values[6])
+            {
+                return Err("unordered phase sample".into());
+            }
+            durations[8].push(t5 - values[3]);
+            durations[9].push(t6 - t5);
+            durations[10].push(values[4] - t6);
+            durations[11].push(t7 - values[5]);
+            durations[12].push(values[6] - t7);
         }
         previous = *values.last().unwrap();
     }
@@ -719,10 +766,13 @@ fn user_benchmark_requires_complete_ordered_outer_and_kernel_intervals() {
             t + 10,
             t + 12 + i
         ));
+        good.push_str(&format!("S7PHASE|{i};{};{};{}\n", t + 3, t + 4, t + 8));
     }
     let summary = validate_gate_bench(&good, true).unwrap();
     assert!(summary.contains("kernel-total_ns=9/9"));
     assert!(summary.contains("user-entry_ns=1/1 user-return_ns=65/128 user-total_ns=75/138"));
+    assert!(summary.contains("queue-wait_ns=1/1"));
+    assert!(summary.contains("resume-client_ns=2/2"));
     assert!(validate_gate_bench(&good, false).is_err());
     for bad in [
         good.replace(history, ""),
@@ -739,6 +789,10 @@ fn user_benchmark_requires_complete_ordered_outer_and_kernel_intervals() {
         good.replace("S7TIME|1;1001", "S7TIME|1;12"), // next begin before previous end
         good.replace("S7TIME|0;1;2", "S7TIME|0;0;2"),
         good.replace("S7TIME|0;1;2;", "S7TIME|0;1;"),
+        good.replace("S7PHASE|0;4;5;9\n", ""), // missing phase row
+        good.replace("S7PHASE|0;4;5;9", "S7PHASE|0;2;5;9"), // t5 before t1
+        good.replace("S7PHASE|0;4;5;9", "S7PHASE|0;5;4;9"), // t5 after t6
+        good.replace("S7PHASE|0;4;5;9", "S7PHASE|0;4;5;7"), // t7 before t3
         good.clone() + "S7TIME|128;128001;128002;128003;128005;128008;128011;128141\n",
         good + "PRIMA|event=panic|status=error\n",
     ] {

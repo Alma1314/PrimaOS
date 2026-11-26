@@ -543,6 +543,10 @@ pub fn flush_deferred_frames() {
 /// （本函数所在代码、当前栈、直映射）在新根下仍然可见。
 pub fn resume(task_id: u32) -> ! {
     bootstrap::gate_audit::enforce_stop("resume");
+    // G5: entry timestamp for the service (5) and client (7) resumes; other
+    // images compile this call out and the hook itself is a no-op.
+    #[cfg(feature = "gate-probe")]
+    bootstrap::gate_probe::bench::stamp(if task_id == 1 { 5 } else { 7 }, task_id);
     if let Some(top) = kstack_top(task_id) {
         crate::gdt::set_rsp0(top);
     }

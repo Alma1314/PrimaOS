@@ -12,6 +12,9 @@ pub const SAMPLES: usize = 1000;
 const USER_SAMPLES: usize = 128;
 const _: () = assert!(USER_SAMPLES * 16 <= 4096);
 static TIMES: StaticCell<[[u64; 5]; SAMPLES]> = StaticCell::new([[0; 5]; SAMPLES]);
+/// G5 only: service resume entry, `GATE_WAIT` kernel entry and client resume
+/// entry. Kept separate so the G4 sample array and its capacity stay frozen.
+static USER_TIMES: StaticCell<[[u64; 3]; USER_SAMPLES]> = StaticCell::new([[0; 3]; USER_SAMPLES]);
 static PROGRESS: StaticCell<Option<(usize, usize)>> = StaticCell::new(None);
 
 pub fn selected() -> bool {
@@ -41,29 +44,62 @@ fn sample_count() -> usize {
     if user_mode() { USER_SAMPLES } else { SAMPLES }
 }
 
-/// Phase 0/1 run on the client; 2/3 on its fixed service; 4 on client resume.
-/// This feature contains no sampling in ordinary images. Phase assertions also
-/// reject a benchmark that silently skips a call or measures an empty wait.
+/// Phases 0/1 run on the client; 2/3 on its fixed service; 4 on client resume.
+/// G5 adds 5 (service resume entry), 6 (`GATE_WAIT` kernel entry) and 7
+/// (client resume entry) so the two task switches can be separated from the
+/// service work. This feature contains no sampling in ordinary images.
 pub fn stamp(phase: usize, task: u32) {
     if !selected() || native_mode() || ipc_mode() || cow_mode() {
+        return;
+    }
+    // G4 keeps the original 0..4 sequence; the extra resume/wait-entry hooks
+    // are compiled into every gate-probe image and must not advance it.
+    if phase >= 5 && !user_mode() {
         return;
     }
     PROGRESS.with_mut(|progress| {
         let Some((index, expected)) = *progress else {
             return;
         };
-        if phase == 4 && (task != 2 || expected != 4) {
-            return; // initial client entry or service scheduling
+        let want_task = match phase {
+            0 | 1 | 4 | 7 => 2,
+            2 | 3 | 5 | 6 => 1,
+            _ => return,
+        };
+        if task != want_task || phase != expected {
+            // Resume hooks fire for every task and entry; only the exact slot
+            // advances the sampled sequence.
+            if matches!(phase, 4 | 5 | 7) {
+                return;
+            }
+            assert_eq!(task, want_task);
+            assert_eq!(phase, expected);
         }
-        assert_eq!(task, if phase == 2 || phase == 3 { 1 } else { 2 });
-        assert_eq!(phase, expected);
         assert!(index < sample_count());
         let now = prima_ostd::arch::timestamp_counter();
-        TIMES.with_mut(|times| times[index][phase] = now);
+        if phase >= 5 {
+            USER_TIMES.with_mut(|times| times[index][phase - 5] = now);
+        } else {
+            TIMES.with_mut(|times| times[index][phase] = now);
+        }
+        let next = if user_mode() {
+            match phase {
+                0 => 1,
+                1 => 5,
+                5 => 6,
+                6 => 2,
+                2 => 3,
+                3 => 7,
+                7 => 4,
+                _ => 0,
+            }
+        } else {
+            phase + 1
+        };
         *progress = Some(if phase == 4 {
             (index + 1, 0)
         } else {
-            (index, expected + 1)
+            (index, next)
         });
     });
 }
@@ -176,18 +212,31 @@ pub fn verify() {
     let count = sample_count();
     assert_eq!(PROGRESS.with(|p| *p), Some((count, 0)));
     TIMES.with(|times| {
-        let mut previous = 0;
-        for (index, row) in times[..count].iter().enumerate() {
-            assert!(row[0] > 0);
-            assert!(row.windows(2).all(|w| w[0] <= w[1]));
-            if user_mode() {
-                let begin = read_word(2, user::USER2_Y_VA + index as u64 * 16);
-                let end = read_word(2, user::USER2_Y_VA + index as u64 * 16 + 8);
-                assert!(begin > 0 && begin >= previous && begin <= row[0]);
-                assert!(row[4] <= end);
-                previous = end;
+        USER_TIMES.with(|user| {
+            let mut previous = 0;
+            for (index, row) in times[..count].iter().enumerate() {
+                assert!(row[0] > 0);
+                assert!(row.windows(2).all(|w| w[0] <= w[1]));
+                if user_mode() {
+                    let extra = user[index];
+                    assert!(extra[0] > 0 && extra[1] > 0 && extra[2] > 0);
+                    assert!(
+                        row[0] <= row[1]
+                            && row[1] <= extra[0]
+                            && extra[0] <= extra[1]
+                            && extra[1] <= row[2]
+                            && row[2] <= row[3]
+                            && row[3] <= extra[2]
+                            && extra[2] <= row[4]
+                    );
+                    let begin = read_word(2, user::USER2_Y_VA + index as u64 * 16);
+                    let end = read_word(2, user::USER2_Y_VA + index as u64 * 16 + 8);
+                    assert!(begin > 0 && begin >= previous && begin <= row[0]);
+                    assert!(row[4] <= end);
+                    previous = end;
+                }
             }
-        }
+        });
     });
     BOOTSTRAP_STATE.with(|slot| {
         let s = slot.as_ref().unwrap();
@@ -293,6 +342,20 @@ pub fn emit(mut write: impl FnMut(&[u8])) {
             write(b"\n");
         }
     });
+    if user_mode() {
+        USER_TIMES.with(|times| {
+            for (index, row) in times[..count].iter().enumerate() {
+                write(prefix);
+                write(b"PHASE|");
+                decimal(index as u64, &mut write);
+                for stamp in row {
+                    write(b";");
+                    decimal(*stamp, &mut write);
+                }
+                write(b"\n");
+            }
+        });
+    }
 }
 
 fn decimal(mut n: u64, write: &mut impl FnMut(&[u8])) {

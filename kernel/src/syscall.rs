@@ -4266,6 +4266,8 @@ fn gate_control_operation(task: u32, num: u64, args: &[u64; MAX_ARGS]) -> Result
                     .map_err(gate_errno)
             }
             SYS_GATE_WAIT => {
+                #[cfg(feature = "gate-probe")]
+                bootstrap::gate_probe::bench::stamp(6, task);
                 if args[1] & 7 != 0 || args[2] != gate::OUTPUT_BYTES {
                     return Err(Errno::Invalid);
                 }
