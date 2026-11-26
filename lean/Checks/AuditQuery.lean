@@ -14,3 +14,12 @@ import Formal.AuditQuery
 #print axioms Formal.AuditQuery.audit_ok_fields
 #print axioms Formal.AuditQuery.audit_dead_target_ok
 #print axioms Formal.AuditQuery.audit_ok_creation_mem
+
+-- Fuel completeness of the parent walk under WellFormed.
+#print axioms Formal.AuditQuery.lastParentNone_getLast
+#print axioms Formal.AuditQuery.lastParentNone_cons_of_tail
+#print axioms Formal.AuditQuery.parentChain_nonempty
+#print axioms Formal.AuditQuery.parentChain_succ_of_done
+#print axioms Formal.AuditQuery.parentChain_done_add
+#print axioms Formal.AuditQuery.parentChain_complete
+#print axioms Formal.AuditQuery.auditChain_root_parent_none

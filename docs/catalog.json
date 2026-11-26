@@ -6700,7 +6700,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-24",
-      "sha256": "3a9ec5ed415877e38d402860b4ed8a265b56bf7428099a59cb670efe9f1dd11d",
+      "sha256": "2fc56e27bcdb9245165fdbcdea0f55e2ac62cfcce15016d7183472f9847ed331",
       "topic_ids": [
         "capability-ipc"
       ],
@@ -7563,7 +7563,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-23",
-      "sha256": "3644fc58e5e5150b958a7bfb4198841c26ae7a444fd8e312448efecf6491a122",
+      "sha256": "fdbe938c06045e2675660eec6d75d03db9fcf1aa80f195b8a01d9accd1f15789",
       "topic_ids": [
         "namespace-time-audit"
       ],
@@ -8208,7 +8208,7 @@
       "authority": "explanatory",
       "status": "maintained",
       "date": "2026-10-31",
-      "sha256": "6db5248d89cbe01dde05eae099f676941ad864650fb9563551a59bfbc77cf94a",
+      "sha256": "9df431d29d5251810c4c1816b8f5193c46059baa7837e08a3a2d042af58639dc",
       "topic_ids": [
         "semantics"
       ],
@@ -36418,91 +36418,91 @@
       "authority": "scoped-model-evidence",
       "status": "validated-with-limits",
       "date": "2026-11-25",
-      "sha256": "1901c33be028aa4ee346865366032795fe17a3d7e15955a1bd7c122598493b06",
+      "sha256": "db5d101bcafd63d399af7163213ea4d6c9e109e9ca9708c93539bcefe09f9d67",
       "topic_ids": [
         "semantics",
         "capability-ipc",
         "namespace-time-audit"
       ],
-      "lines": 78,
+      "lines": 81,
       "sections": [
         {
           "level": 1,
           "title": "Lean `Formal.AuditQuery`：§13.2 `audit(cap)` 查询最小模型",
           "line": 10,
           "anchor": "lean-formalauditquery132-auditcap-查询最小模型",
-          "end_line": 78
+          "end_line": 81
         },
         {
           "level": 2,
           "title": "结论与范围",
           "line": 12,
           "anchor": "结论与范围",
-          "end_line": 23
+          "end_line": 24
         },
         {
           "level": 2,
           "title": "基线与输入",
-          "line": 24,
+          "line": 25,
           "anchor": "基线与输入",
-          "end_line": 31
+          "end_line": 32
         },
         {
           "level": 2,
           "title": "实现",
-          "line": 32,
+          "line": 33,
           "anchor": "实现",
-          "end_line": 49
+          "end_line": 53
         },
         {
           "level": 2,
           "title": "命令与结果",
-          "line": 50,
+          "line": 54,
           "anchor": "命令与结果",
-          "end_line": 58
+          "end_line": 62
         },
         {
           "level": 2,
           "title": "失败与限制",
-          "line": 59,
+          "line": 63,
           "anchor": "失败与限制",
-          "end_line": 68
+          "end_line": 71
         },
         {
           "level": 2,
           "title": "阶段/契约影响",
-          "line": 69,
+          "line": 72,
           "anchor": "阶段契约影响",
-          "end_line": 73
+          "end_line": 76
         },
         {
           "level": 2,
           "title": "后继关系",
-          "line": 74,
+          "line": 77,
           "anchor": "后继关系",
-          "end_line": 78
+          "end_line": 81
         }
       ],
       "mentioned_ids": [],
       "links": [
         {
-          "line": 30,
+          "line": 31,
           "target": "../../../lean/README.md"
         },
         {
-          "line": 76,
+          "line": 79,
           "target": "../../../COSIR%20原语规范.md"
         },
         {
-          "line": 77,
+          "line": 80,
           "target": "../../../lean/README.md"
         },
         {
-          "line": 78,
+          "line": 81,
           "target": "2026-11-25-lean-audit.md"
         },
         {
-          "line": 78,
+          "line": 81,
           "target": "2026-11-25-lean-move.md"
         }
       ]
@@ -38267,7 +38267,7 @@
       "authority": "navigation",
       "status": "maintained",
       "date": "2026-11-26",
-      "sha256": "347f93510b82bd42e3d2b23403a6db53d0c2c80923fa16b903d71d6333b90082",
+      "sha256": "8eee7c85feabb087d53ad4f4a0ecf2f665a3f952bbda58aacce170571336683e",
       "topic_ids": [],
       "lines": 446,
       "sections": [
@@ -53458,7 +53458,7 @@
       "authority": "lean-model-mapping",
       "status": "maintained",
       "date": "2026-11-25",
-      "sha256": "97286c2f8d03387b10d0d0af40049deb3c603cbd1cec12cb6c8effe94434b459",
+      "sha256": "8e78ee5d5f7f9e62b9c10c2b80748a2014af1ed77cebec8415d64e1026b28937",
       "topic_ids": [
         "semantics"
       ],

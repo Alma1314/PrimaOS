@@ -91,4 +91,4 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 
 2026-11-25 [§13.1/W13 审计日志核心最小模型](../../superpowers/reports/2026-11-25-lean-audit.md)在 [Formal.Audit](../../../lean/Formal/Audit.lean) 中建模信封、追加式日志、严格递增 EventId、Capability 位置历史、created_at 与受审计 move/drop/mint；[公理审计](../../../lean/Checks/Audit.lean)仅 `propext`/`Quot.sound`。载荷完整性与 audit 父链查询不覆盖。
 
-2026-11-25 [§13.2 audit 查询最小模型](../../superpowers/reports/2026-11-25-lean-audit-query.md)在 [Formal.AuditQuery](../../../lean/Formal/AuditQuery.lean) 中建模 parent 链、created_at 列表、位置历史、对象事件与 InvalidCap/NotHeld 错误语义；[公理审计](../../../lean/Checks/AuditQuery.lean)仅 `propext`/`Quot.sound`。父链燃料完备性与完整载荷不覆盖。
+2026-11-25 [§13.2 audit 查询最小模型](../../superpowers/reports/2026-11-25-lean-audit-query.md)在 [Formal.AuditQuery](../../../lean/Formal/AuditQuery.lean) 中建模 parent 链、created_at 列表、位置历史、对象事件与 InvalidCap/NotHeld 错误语义；[公理审计](../../../lean/Checks/AuditQuery.lean)仅 `propext`/`Quot.sound`。`WellFormed` 下燃料完备性已证；完整载荷不覆盖。

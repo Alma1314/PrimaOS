@@ -15,11 +15,12 @@ updated: 2026-11-25
 `lean/Formal/AuditQuery.lean` 与 `lean/Checks/AuditQuery.lean`。复用
 `Formal.Audit` 的日志、`created` 与 `capHistory`，建模 root→cap 父链、链上
 `created_at` 列表、位置历史、目标对象创建/销毁事件，以及 `InvalidCap`/`NotHeld`
-错误语义与纯查询性。13 条定理通过 `lake build`，全部无 `sorryAx`，仅依赖
-`propext`/`Quot.sound`。
+错误语义与纯查询性。20 条定理通过 `lake build`，全部无 `sorryAx`，仅依赖
+`propext`/`Quot.sound`；其中 `parentChain_complete` 在 `WellFormed` 下证明燃料
+`c + 1` 未被截断。
 
-本切片是查询结果与错误语义的最小模型；父链在任意状态下的燃料完备性、完整事件
-载荷、跨节点 `origin` 与 Rust 细化不在范围。
+本切片是查询结果与错误语义的最小模型；父链完备性以 `WellFormed`（W2）为前提，
+完整事件载荷、跨节点 `origin` 与 Rust 细化不在范围。
 
 ## 基线与输入
 
@@ -39,10 +40,13 @@ updated: 2026-11-25
   Capability 的 `created_at`、`capHistory`、目标对象创建/销毁事件。
 - 查询是纯函数：不返回状态，成功不要求目标对象存活。
 
-已证性质（13 条）：
+已证性质（20 条）：
 
 - 父链：`parentChain_head`、`parentChain_sound`、`parentChain_length_le`、
   `auditChain_sound`、`auditChain_length_le`、`auditChain_last`。
+- 完备性：`lastParentNone_getLast`、`lastParentNone_cons_of_tail`、
+  `parentChain_nonempty`、`parentChain_succ_of_done`、`parentChain_done_add`、
+  `parentChain_complete`、`auditChain_root_parent_none`。
 - 错误/成功：`audit_invalid`、`audit_not_held`、`audit_not_held_other`、
   `audit_ok_held`。
 - 结果：`audit_ok_fields`、`audit_dead_target_ok`、`audit_ok_creation_mem`。
@@ -52,15 +56,14 @@ updated: 2026-11-25
 | 命令 | 结果 | 证据范围 |
 |---|---|---|
 | `elan run leanprover/lean4:v4.35.0 lake build`（`lean/`） | PASS；`Build completed successfully (21 jobs)`，exit 0 | Lean 模型构建 |
-| `elan run leanprover/lean4:v4.35.0 lake env lean Checks/AuditQuery.lean`（`lean/`） | PASS；13 条定理，仅 `propext`/`Quot.sound` | 公理审计 |
+| `elan run leanprover/lean4:v4.35.0 lake env lean Checks/AuditQuery.lean`（`lean/`） | PASS；20 条定理，仅 `propext`/`Quot.sound` | 公理审计 |
 
 原始输出保存在 `/tmp/`；本报告只保留命令、退出码与必要摘录。
 
 ## 失败与限制
 
-- **父链完备性**：`auditChain` 使用燃料 `capId + 1`；在 `WellFormed`（父 `<` 子）
-  下链不应被截断，但“未截断”的归纳论证未形式化。已证的是成员健全性（每个链成员
-  有记录）与长度上界（≤ `capId + 1`），不是完整链到根。
+- **父链完备性前提**：`parentChain_complete` 在 `WellFormed`（父 `<` 子）下证明
+  燃料 `capId + 1` 足以走到无父根；非良构状态（如环）仍可能截断，模型不覆盖。
 - 不覆盖：`origin`/跨节点代理根（v1 恒 `None`）、内容摘要、完整 §13.1 事件载荷
   （授权 Cap/权限/目标对象字段）、时钟推进、拒绝事件日志、并发或 Rust 细化。
 - 查询结果与 `Container.WorldOk`、`Subscription.W15`、CDT `WellFormed` 为独立

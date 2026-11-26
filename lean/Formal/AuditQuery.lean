@@ -96,6 +96,141 @@ theorem auditChain_last {s : AState} {capId : Nat} {cap : Capability}
   rw [auditChain, List.getLast?_reverse, parentChain_head hcap]
   simp
 
+/-- The walk stopped at a parentless capability (the chain is not truncated). -/
+def lastParentNone (w : World) : List Nat → Prop
+  | [] => False
+  | [x] => ∃ cap, w.snap.state.caps x = some cap ∧ cap.parent = none
+  | _ :: y :: rest => lastParentNone w (y :: rest)
+
+theorem lastParentNone_getLast {w : World} {chain : List Nat}
+    (h : lastParentNone w chain) :
+    ∀ x, chain.getLast? = some x →
+      ∃ cap, w.snap.state.caps x = some cap ∧ cap.parent = none := by
+  induction chain with
+  | nil => simp [lastParentNone] at h
+  | cons a rest ih =>
+      cases rest with
+      | nil =>
+          intro x hx
+          simp at hx
+          subst hx
+          simpa [lastParentNone] using h
+      | cons b rest' =>
+          intro x hx
+          exact ih h x (by simpa using hx)
+
+theorem lastParentNone_cons_of_tail {w : World} {x : Nat} {tail : List Nat}
+    (h : lastParentNone w tail) (hne : tail ≠ []) : lastParentNone w (x :: tail) := by
+  cases tail with
+  | nil => exact absurd rfl hne
+  | cons y rest =>
+      cases rest with
+      | nil => simpa [lastParentNone] using h
+      | cons z rest' => simpa [lastParentNone] using h
+
+theorem parentChain_nonempty {n : Nat} {w : World} {c : Nat} {cap : Capability}
+    (hn : 0 < n) (hcap : w.snap.state.caps c = some cap) : parentChain n w c ≠ [] := by
+  cases n with
+  | zero => exact absurd hn (Nat.lt_irrefl 0)
+  | succ k =>
+      intro h
+      rw [parentChain_head hcap] at h
+      simp at h
+
+/-- A completed chain is stable under extra fuel. -/
+theorem parentChain_succ_of_done : ∀ (n : Nat) (w : World) (c : Nat),
+    lastParentNone w (parentChain n w c) →
+      parentChain (n + 1) w c = parentChain n w c := by
+  intro n
+  induction n with
+  | zero => intro w c h; exact False.elim h
+  | succ k ih =>
+      intro w c h
+      cases hcap : w.snap.state.caps c with
+      | none => simp [parentChain.eq_2, hcap]
+      | some cap =>
+          cases hp : cap.parent with
+          | none => simp [parentChain.eq_2, hcap, hp]
+          | some p =>
+              have hleft : parentChain (k + 1) w c = c :: parentChain k w p := by
+                simp [parentChain.eq_2, hcap, hp]
+              rw [hleft] at h
+              cases htail : parentChain k w p with
+              | nil =>
+                  rw [htail] at h
+                  simp [lastParentNone, hcap, hp] at h
+              | cons y rest =>
+                  rw [htail] at h
+                  have hdone : lastParentNone w (parentChain k w p) := by
+                    rw [htail]
+                    change lastParentNone w (y :: rest) at h
+                    exact h
+                  have hEq := ih w p hdone
+                  rw [show parentChain (k + 2) w c = c :: parentChain (k + 1) w p by
+                        simp [parentChain.eq_2, hcap, hp],
+                      show parentChain (k + 1) w c = c :: parentChain k w p by
+                        simp [parentChain.eq_2, hcap, hp],
+                      hEq]
+
+theorem parentChain_done_add : ∀ (k : Nat) {m : Nat} {w : World} {c : Nat},
+    lastParentNone w (parentChain m w c) →
+      parentChain (m + k) w c = parentChain m w c := by
+  intro k
+  induction k with
+  | zero => intro m w c h; simp
+  | succ k ih =>
+      intro m w c h
+      have hEq := ih (m := m) (w := w) (c := c) h
+      have hdone : lastParentNone w (parentChain (m + k) w c) := by
+        rw [hEq]
+        exact h
+      have hsucc := parentChain_succ_of_done (m + k) w c hdone
+      rw [Nat.add_succ, hsucc, hEq]
+
+theorem parentChain_complete {w : World} (hwf : WellFormed w.snap.state) :
+    ∀ (c : Nat) (cap : Capability), w.snap.state.caps c = some cap →
+      lastParentNone w (parentChain (c + 1) w c) := by
+  intro c
+  induction c using Nat.strongRecOn with
+  | ind c ih =>
+      intro cap hcap
+      cases hp : cap.parent with
+      | none => simp [parentChain.eq_2, hcap, hp, lastParentNone]
+      | some p =>
+          have hlt : p < c := (hwf c cap hcap p hp).1
+          obtain ⟨pcap, hpcap, _⟩ := (hwf c cap hcap p hp).2
+          have hdone := ih p hlt pcap hpcap
+          have hle : p + 1 ≤ c := hlt
+          obtain ⟨k, hk⟩ := Nat.le.dest hle
+          rw [← hk] at hcap ⊢
+          have hstable : parentChain (p + 1 + k) w p = parentChain (p + 1) w p :=
+            parentChain_done_add k hdone
+          have hp0 : 0 < p + 1 + k := by
+            rw [Nat.add_right_comm]
+            exact Nat.succ_pos (p + k)
+          have hne : parentChain (p + 1 + k) w p ≠ [] :=
+            parentChain_nonempty hp0 hpcap
+          have hne' : parentChain (p + 1) w p ≠ [] := by
+            rw [← hstable]
+            exact hne
+          rw [parentChain_head hcap, hp]
+          change lastParentNone w ((p + 1 + k) :: parentChain (p + 1 + k) w p)
+          rw [hstable]
+          exact lastParentNone_cons_of_tail hdone hne'
+
+/-- The root of the queried chain (chain head, the end of the parent walk) has no
+    parent, under `WellFormed`. -/
+theorem auditChain_root_parent_none {s : AState} {capId : Nat} {cap : Capability}
+    (hwf : WellFormed s.world.base.snap.state)
+    (hcap : s.world.base.snap.state.caps capId = some cap) :
+    ∀ root, (auditChain s capId).head? = some root →
+      ∃ rcap, s.world.base.snap.state.caps root = some rcap ∧ rcap.parent = none := by
+  have hdone := parentChain_complete hwf capId cap hcap
+  have hlast := lastParentNone_getLast hdone
+  intro root hroot
+  rw [auditChain, List.head?_reverse] at hroot
+  exact hlast root hroot
+
 /-- Object creation/destruction events for one object, with their `EventId`. -/
 def objectId : Object → Nat
   | .segment i => i
