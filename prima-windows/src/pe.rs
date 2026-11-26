@@ -280,6 +280,10 @@ impl<'a> PeImage<'a> {
         })
     }
 
+    pub(crate) fn raw_bytes(self) -> &'a [u8] {
+        self.bytes
+    }
+
     pub fn machine(self) -> u16 {
         self.machine
     }

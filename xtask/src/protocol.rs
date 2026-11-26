@@ -6477,6 +6477,44 @@ pub(crate) fn validate_domains(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// WIN-M2 bounded prototype: two original PE children return 42 and the parent survives.
+pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("WINPE|") && !line.starts_with("WINPE|stage="))
+        .collect();
+    let expected = [
+        "WINPE|exit=self",
+        "WINPE|exit=self",
+        "WINPE|child1=42;child2=42;parent=alive",
+        "WINPE|PASS",
+    ];
+    if records != expected {
+        return Err("WINPE requires two 42 results, parent progress and one final PASS".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod winpe_tests {
+    use super::validate_winpe;
+    const VALID: &str = "WINPE|stage=begin\nWINPE|exit=self\nWINPE|exit=self\nWINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
+    #[test]
+    fn winpe_witness_requires_two_results_and_pass() {
+        assert_eq!(validate_winpe(VALID), Ok(()));
+        for bad in [
+            VALID.replace("child2=42", "child2=0"),
+            VALID.replace("parent=alive", "parent=dead"),
+            VALID.replace("WINPE|exit=self", "WINPE|exit=parent"),
+            VALID.replace("WINPE|PASS", "WINPE|FAIL"),
+            format!("{VALID}WINPE|PASS\n"),
+        ] {
+            assert!(validate_winpe(&bad).is_err());
+        }
+    }
+}
+
 #[cfg(test)]
 mod domain_tests {
     use super::validate_domains;

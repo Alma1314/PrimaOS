@@ -137,6 +137,20 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
+        "test-winpe" => {
+            require_no_args(&rest)?;
+            if !cfg!(feature = "windows-pe-probe") || option_env!("PRIMA_WINPE_PROBE").is_none() {
+                return Err(
+                    "test-winpe requires PRIMA_WINPE_PROBE=1 and --features windows-pe-probe at cargo build time"
+                        .to_owned(),
+                );
+            }
+            let images = build_and_report()?;
+            for round in 1..=2 {
+                qemu::run_bios_winpe(&images.bios, round)?;
+            }
+            Ok(())
+        }
         "run" => {
             require_no_args(&rest)?;
             let images = build_and_report()?;
@@ -774,7 +788,8 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-domains|test-vfs|test-process|test-async|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-domains|test-winpe|test-vfs|test-process|test-async|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
+     \x20      PRIMA_WINPE_PROBE=1 cargo run -p xtask --features windows-pe-probe -- test-winpe\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask test-async\n\
      \x20      PRIMA_LINUX_ELF=/path/to/pinned-busybox cargo run -p xtask --features linux-probe -- <build-linux|test-linux|test-linux-proxy>\n\

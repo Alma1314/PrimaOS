@@ -567,6 +567,10 @@ pub extern "C" fn _start(
         &mut echo_args_pending,
         &mut scenario,
     );
+    #[cfg(feature = "windows-pe-probe")]
+    if option_env!("PRIMA_WINPE_PROBE").is_some() {
+        prima_user::winpe::run_or_exit(&runtime);
+    }
     let mut created = 0u64;
     let mut created_slot: [bool; SERVICES] = [false; SERVICES];
     // EXO-3M：端点栈段句柄（本管理器创建），供原始 trace 的通用活对象判定。

@@ -1,3 +1,4 @@
+use prima_windows::load::LoadError;
 use prima_windows::pe::{
     DataDirectoryIndex, ImportThunk, PeError, PeImage, Protection, RelocationEntry,
 };
@@ -125,6 +126,7 @@ fn build_pe() -> Vec<u8> {
     put32(&mut buf, RELOC_BLOCK_SIZE, 12);
     put16(&mut buf, 0xc08, 0xa000);
     put16(&mut buf, 0xc0a, 0x0000);
+    put64(&mut buf, 0x200, 0x1_4000_0000);
     buf
 }
 
@@ -423,4 +425,170 @@ fn rejects_tls_callback_outside_image() {
         .next()
         .expect("one callback");
     assert!(matches!(first, Err(PeError::TlsOutOfBounds)));
+}
+
+fn stub_resolver() -> impl FnMut(&[u8], ImportThunk<'_>) -> Option<u64> {
+    |dll, thunk| {
+        if dll != b"KERNEL32.dll" {
+            return None;
+        }
+        match thunk {
+            ImportThunk::Name { name, .. } if name == b"ExitProcess" => Some(0x1_5000_9000),
+            ImportThunk::Ordinal(5) => Some(0x1_5000_9008),
+            _ => None,
+        }
+    }
+}
+
+fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("8 bytes"))
+}
+
+#[test]
+fn loads_at_preferred_base_and_resolves_imports() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    let loaded = pe
+        .load_into(pe.image_base(), &mut image, stub_resolver())
+        .expect("load at preferred base");
+
+    assert_eq!(loaded.base(), pe.image_base());
+    assert_eq!(loaded.entry_va(), pe.image_base() + 0x1000);
+    assert_eq!(&image[0..2], b"MZ");
+    assert_eq!(read_u64_at(&image, 0x1000), pe.image_base());
+    assert_eq!(read_u64_at(&image, 0x2300), 0x1_5000_9000);
+    assert_eq!(read_u64_at(&image, 0x2308), 0x1_5000_9008);
+    assert_eq!(loaded.imports_resolved(), 2);
+    assert_eq!(loaded.relocations_applied(), 1);
+}
+
+#[test]
+fn loads_at_new_base_and_applies_dir64_relocation() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let base = 0x1_5000_0000;
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    let loaded = pe
+        .load_into(base, &mut image, stub_resolver())
+        .expect("load at new base");
+
+    assert_eq!(loaded.entry_va(), base + 0x1000);
+    assert_eq!(read_u64_at(&image, 0x1000), base);
+}
+
+#[test]
+fn rejects_small_output_buffer() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; 0x2000];
+    assert!(matches!(
+        pe.load_into(pe.image_base(), &mut image, stub_resolver()),
+        Err(LoadError::OutputTooSmall { .. })
+    ));
+}
+
+#[test]
+fn rejects_base_change_without_relocations() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, OPT_OFF + 0x70 + 40, 0);
+    put32(&mut bytes, OPT_OFF + 0x70 + 44, 0);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base() + 0x1000_0000, &mut image, stub_resolver()),
+        Err(LoadError::BaseWithoutRelocations)
+    ));
+}
+
+#[test]
+fn applies_highlow_relocation_without_touching_upper_dword() {
+    let mut bytes = build_pe();
+    put16(&mut bytes, 0xc08, 0x3000);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let base = 0x1_5000_0000;
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    pe.load_into(base, &mut image, stub_resolver())
+        .expect("load with highlow");
+
+    assert_eq!(
+        u32::from_le_bytes(image[0x1000..0x1004].try_into().unwrap()),
+        0x5000_0000
+    );
+    assert_eq!(
+        u32::from_le_bytes(image[0x1004..0x1008].try_into().unwrap()),
+        1
+    );
+}
+
+#[test]
+fn rejects_relocation_target_outside_image() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0xc00, 0x5000);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base() + 0x1000_0000, &mut image, stub_resolver()),
+        Err(LoadError::RelocationTargetOutOfImage)
+    ));
+}
+
+#[test]
+fn rejects_unsupported_relocation_type() {
+    let mut bytes = build_pe();
+    put16(&mut bytes, 0xc08, 0x1000);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base() + 0x1000_0000, &mut image, stub_resolver()),
+        Err(LoadError::UnsupportedRelocation(1))
+    ));
+}
+
+#[test]
+fn rejects_unresolved_import() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base(), &mut image, |_, _| None),
+        Err(LoadError::UnresolvedImport)
+    ));
+}
+
+#[test]
+fn rejects_import_address_outside_image() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x410, 0x5000);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base(), &mut image, stub_resolver()),
+        Err(LoadError::ImportAddressOutOfImage)
+    ));
+}
+
+#[test]
+fn rejects_zero_import_address_table() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x410, 0);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base(), &mut image, stub_resolver()),
+        Err(LoadError::ImportAddressOutOfImage)
+    ));
+}
+
+#[test]
+fn rejects_wx_image_before_writing_output() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, RDATA_CHARS, 0xe000_0040);
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let mut image = vec![0u8; pe.size_of_image() as usize];
+    assert!(matches!(
+        pe.load_into(pe.image_base(), &mut image, stub_resolver()),
+        Err(LoadError::Pe(PeError::WritableExecutable))
+    ));
+    assert!(image.iter().all(|&byte| byte == 0));
 }

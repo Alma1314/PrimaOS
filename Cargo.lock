@@ -300,6 +300,7 @@ dependencies = [
  "prima-abi",
  "prima-ostd",
  "prima-runtime",
+ "prima-windows",
 ]
 
 [[package]]

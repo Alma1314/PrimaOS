@@ -101,6 +101,16 @@ pub fn bytes_at(va: u64, len: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(va as *const u8, len) }
 }
 
+/// 把 `va` 起 `len` 字节当作独占可变切片。
+///
+/// 契约：`[va, va+len)` 已映射、可写，且调用方在借用期间独占该范围（不允许仍有其他
+/// 共享引用或并行访问）。`'static` 是穿透映射的既有约定，不是内存所有权。
+#[inline]
+pub fn bytes_mut_at(va: u64, len: usize) -> &'static mut [u8] {
+    // SAFETY: 见函数契约——调用方保证映射、可写性与独占性。
+    unsafe { core::slice::from_raw_parts_mut(va as *mut u8, len) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +125,16 @@ mod tests {
         assert_eq!(&destination[..3], &[0xa5; 3]);
         assert_eq!(&destination[3..4100], &source);
         assert_eq!(&destination[4100..], &[0xa5; 12]);
+    }
+
+    #[test]
+    fn bytes_mut_at_round_trips_writes() {
+        let mut buffer = [0u8; 16];
+        let address = buffer.as_mut_ptr() as u64;
+        let slice = bytes_mut_at(address, buffer.len());
+        slice[3..7].copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(&buffer[3..7], &[1, 2, 3, 4]);
+        assert_eq!(bytes_at(address, buffer.len())[7], 0);
     }
 
     #[test]

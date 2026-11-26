@@ -86,6 +86,23 @@ pub(crate) fn run_bios_domains(image: &Path, round: u32) -> Result<(), String> {
     println!("PASS S6DOM round={round} roots=2 shared_log=3 denied=3 survivor=1");
     Ok(())
 }
+/// WIN-M2 bounded ring3 prototype: the supervisor exits through the debug port
+/// after two original PE children report 42. Not a normal boot-suite round.
+pub(crate) fn run_bios_winpe(image: &Path, round: u32) -> Result<(), String> {
+    let output = run_captured(image)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/WINPE-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve winpe witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|e| with_output(e, &output))?;
+    protocol::validate_winpe(&output.stdout).map_err(|e| with_output(e, &output))?;
+    println!("PASS WINPE round={round} children=2 results=42,42 reloc=1 parent_alive=1");
+    Ok(())
+}
+
 fn fs_write_domain_log(root: &Path, round: u32, text: &str) -> Result<(), String> {
     std::fs::write(
         root.join(format!("target/prima-os/S6DOM-{round}.log")),

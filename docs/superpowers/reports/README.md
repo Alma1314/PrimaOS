@@ -53,6 +53,8 @@ updated: 2026-11-26
 
 2026-11-26：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；`load_into` 在宿主完成平铺复制、DIR64/HIGHLOW 重定位与 IAT 填充，PE 32/32、ABI 4/4 通过；无页映射、Task 发布、TLS 初始化或 ring3 执行，真实 PE 仅首个基址装载。
 
+2026-11-26：[WIN-M2 ring3 原型](2026-11-26-windows-m2-ring3.md)；专用 feature 下 servicemgr 把 clang/lld 原样 PE32+ 经平铺/重定位/IAT 写入 R+X 代码段，两轮 QEMU 各运行两个子任务并自毁，结果 42、exit=self、父服务继续、exit=33；替代导入为手写桩，非完整 M2。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。

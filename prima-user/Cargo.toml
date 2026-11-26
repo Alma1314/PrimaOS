@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 [features]
 linux-probe = []
 libos-bench = ["linux-probe"]
+windows-pe-probe = ["dep:prima-windows"]
 
 [[bin]]
 name = "prima-linux"
@@ -80,3 +81,4 @@ bench = false
 prima-abi = { path = "../prima-abi" }
 prima-runtime = { path = "../prima-runtime" }
 prima-ostd = { path = "../prima-ostd" }
+prima-windows = { path = "../prima-windows", optional = true }
