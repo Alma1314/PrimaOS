@@ -86,3 +86,5 @@ SPEC-145 是规范文本范围。Lean 不覆盖完整 Task/vspace/Audit，cosir 
 2026-11-25 [Move 位置迁移最小模型](../../superpowers/reports/2026-11-25-lean-move.md)把 §4.6 的转移表、单位置原子更新、从/到与直投 `MsgId` 记录、删除到 `None`、跨节点不移动与 W3 表示层唯一纳入可执行 [Formal.Move](../../../lean/Formal/Move.lean)；[公理审计](../../../lean/Checks/Move.lean)显示 7 条无公理、其余仅 `propext`。W4 容器双向一致与审计事件仍不覆盖。
 
 2026-11-25 [W4 容器一致性最小模型](../../superpowers/reports/2026-11-25-lean-container.md)把 `HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries 的双向一致与 send/recv/bind/unbind 的 W3+W4 保持纳入可执行 [Formal.Container](../../../lean/Formal/Container.lean)；[公理审计](../../../lean/Checks/Container.lean)仅 `propext`/`Quot.sound`。列表级重复/路径唯一、生命周期与审计事件仍不覆盖。
+
+2026-11-25 [§12.4/W15 订阅生命周期最小模型](../../superpowers/reports/2026-11-25-lean-subscription.md)在 [Formal.Subscription](../../../lean/Formal/Subscription.lean) 中建模订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后授权 Cap 的原子终止与源销毁；[公理审计](../../../lean/Checks/Subscription.lean)仅 `propext`/`Quot.sound`。关系模型不证明 lastness 检查器、活性或审计事件。

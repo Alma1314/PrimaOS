@@ -82,6 +82,7 @@ updated: 2026-11-25
 2026-11-25 形式化后继：[Lean Move 位置迁移与 W3 唯一位置最小模型](2026-11-25-lean-move.md)，`Formal.Move` 的 15 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，7 条无公理其余仅 `propext`；转移表、原子更新、从/到与直投 `MsgId` 记录、删除与跨节点不移动覆盖，W4 容器双向一致与审计事件为边界。
 
 2026-11-25 形式化后继：[Lean W4 容器/位置双向一致最小模型](2026-11-25-lean-container.md)，`Formal.Container` 的 18 条定理通过可执行 `#eval` 锚与固定版本 `lake build`，1 条无公理其余仅 `propext`/`Quot.sound`；HeldBy/InMessage/InNamespace 双向一致与四个耦合更新的 W3+W4 保持覆盖，列表级重复/路径唯一、生命周期与审计事件为边界。
+2026-11-25 形式化后继：[Lean §12.4/W15 订阅生命周期最小模型](2026-11-25-lean-subscription.md)，`Formal.Subscription` 的 24 条定理通过固定版本 `lake build`，2 条无公理其余仅 `propext`/`Quot.sound`；关系模型覆盖订阅表、usable 见证、subscribe/unsubscribe、失去最后授权 Cap 的原子终止与源销毁，lastness 检查器、活性与审计事件为边界。
 
 阶段 1～5 的当前后继整改：[VFS 内容别名与 musl 检查护栏](2026-10-31-stage1-5-regression-remediation.md)，保留历史签署及其限制。
 

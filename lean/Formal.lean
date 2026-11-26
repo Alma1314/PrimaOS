@@ -8,6 +8,7 @@ import Formal.KernelHandleTable
 import Formal.Location
 import Formal.Move
 import Formal.Container
+import Formal.Subscription
 import Formal.Tlb
 import Formal.Memseg
 import Formal.Cow

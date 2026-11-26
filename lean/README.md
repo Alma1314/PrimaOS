@@ -20,6 +20,7 @@ updated: 2026-11-25
 > 2026-11-25 的 `Formal.Drop` 切片把 COSIR §4.5 `cap_drop` 的规范层语义纳入可执行模型（单位置删除、不传播、记录保留、structural 保护），与 `Formal.Revoke` 正交，见文末。
 > 2026-11-25 的 `Formal.Move` 切片把 COSIR §4.6 的位置变化纳入可执行模型（转移表、单位置原子更新、原位置/新位置与直投 `MsgId` 记录、删除到 `None`、跨节点不移动、W3 表示层唯一），抽象边界与 W4 容器侧缺口见文末。
 > 2026-11-25 的 `Formal.Container` 切片把 COSIR W4 的容器双向一致纳入可执行模型（`HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries），并证明 send/recv/bind/unbind 的原子耦合更新保持 W3+W4；函数式容器表示使“列表无重复/路径唯一”由构造满足，见文末。
+> 2026-11-25 的 `Formal.Subscription` 切片把 §12.4/W15 订阅生命周期纳入关系模型（订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后一个授权 Cap 时的原子终止与源销毁），不带 `#eval` 锚，见文末。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -38,6 +39,7 @@ updated: 2026-11-25
 - `Formal.Drop`（`Formal/Drop.lean`）：`cap_drop` 的单位置删除、不传播到派生子项、记录与 CDT 保持、structural 守卫与幂等（2026-11-25 增量，见下节）。
 - `Formal.Move`（`Formal/Move.lean`）：§4.6 位置迁移表、原子 `applyMove`、原/新位置与直投 `MsgId` 事件、删除到 `None`、跨节点不移动、W3 表示层唯一位置（2026-11-25 增量，见下节）。
 - `Formal.Container`（`Formal/Container.lean`）：W4 的 Task/Message/Namespace 容器与 `locations` 双向一致、W3+W4 组合不变量 `WorldOk`、四个耦合原子操作（send/recv/bind/unbind）的保持性与空世界锚（2026-11-25 增量，见下节）。
+- `Formal.Subscription`（`Formal/Subscription.lean`）：§12.4/W15 订阅表与 usable `ExcSubscribe` 见证、subscribe/unsubscribe、drop/send 失去最后授权 Cap 的原子终止、源销毁，以及 W15 保持（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -119,7 +121,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
 - **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
-- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：§4.5 订阅终止/审计事件、W4 的列表级重复/路径唯一与对象生命周期；§4.6 位置迁移与 W3 表示层唯一见 2026-11-25 `Formal.Move` 节，W4 双向一致见 `Formal.Container` 节，§4.5 单位置 drop 见 `Formal.Drop` 节，§4.7 撤销的 Bootstrap 子集见 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
+- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：审计事件、W4 的列表级重复/路径唯一与对象生命周期；§12.4/W15 订阅生命周期见 `Formal.Subscription` 节，§4.6 位置迁移与 W3 表示层唯一见 2026-11-25 `Formal.Move` 节，W4 双向一致见 `Formal.Container` 节，§4.5 单位置 drop 见 `Formal.Drop` 节，§4.7 撤销的 Bootstrap 子集见 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
   cosir 新增本地 Task/消息/Namespace Bound 的位置、drop 与溯源状态面，见[工作契约](../docs/superpowers/specs/2026-10-25-capability-location-model-design.md)与[分层验证记录](../docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)。
   原 `Capability.owner` 仅映照创建时拥有者，移动不改它；当前授权改查 `State.locations`。
   2026-10-26新增位置/载体更新的有界Lean证明，2026-10-27 lake build通过，见下节；完整消息/Namespace及事件迁移仍没有Lean保持性证明。CDT显式ID helper不升级为完整用户授权操作。
@@ -379,7 +381,7 @@ structural 根受保护。复用 `Formal.TokenLocation` 的 `Snapshot`/`dropToke
 
 | Lean | cosir / Rust | 边界 |
 |---|---|---|
-| `drop s caller c` | `cap_drop` / `TokenLocation::dropToken` | 单位置；不含订阅终止/审计事件 |
+| `drop s caller c` | `cap_drop` / `TokenLocation::dropToken` | 单位置；订阅终止见 `Formal.Subscription` 节，不含审计事件 |
 | `drop_clears` | `locations c := none` | 只清目标 |
 | `drop_does_not_propagate` | §4.5“丢弃父不撤销已派生子项” | 子位置/记录保留 |
 | `drop_structural_fails` | structural 根保护 | — |
@@ -399,7 +401,7 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Drop.lean
 `#eval` 锚覆盖：派生子项 drop 成功、structural 根与错误持有者拒绝、目标位置清空、
 父记录保留、子记录保留。`Checks/Drop.lean` 显示 10 条定理公理仅 `propext`/`Quot.sound`。
 
-边界：不覆盖订阅终止、审计事件、`cap_drop` 的跨位置移动竞争，也不与 `Formal.Revoke`
+边界：不覆盖审计事件、`cap_drop` 的跨位置移动竞争，也不与 `Formal.Revoke`
 的实现同构（Revoke 是子树失效，Drop 是单位置；规范明确二者正交）。
 
 ## 2026-11-25 Move 位置迁移切片
@@ -438,7 +440,7 @@ recv 交付、删除位置与 carrier 清除、`CapRecord` 不变、跨节点非
 空 `transferred` 成功。
 
 边界：`Formal.Location` 在 v1 不含 `InTransit`（§4.6/W3），模型由构造排除了该位置；
-W4 容器双向一致随后由 2026-11-25 `Formal.Container` 节补上；订阅终止与审计事件仍不覆盖。
+W4 容器双向一致随后由 2026-11-25 `Formal.Container` 节补上，订阅终止见 `Formal.Subscription` 节；审计事件仍不覆盖。
 `applyMove` 的原子性由单步函数表示，没有时序/并发模型中“中间不可观察”的形式化。
 
 ## 2026-11-25 Container 切片（W4）
@@ -479,5 +481,43 @@ caps 且新 `HeldBy` 要求活动 Task、bind 同步 Namespace 条目、bind→u
 
 边界：消息 caps 与 Namespace entries 用函数表示，因此“消息列表无重复”与“同一路径
 至多一个 Capability”由构造满足，未对 `List` 版本证明；消息/Namespace 对象生命周期、
-容器销毁、订阅终止、审计事件与 Rust 细化不覆盖。`WorldOk` 不含 `Formal.State` 的
+容器销毁、审计事件与 Rust 细化不覆盖；订阅终止见 `Formal.Subscription` 节。`WorldOk` 不含 `Formal.State` 的
 CDT 不变量，需与 `WellFormed` 独立组合。
+
+## 2026-11-25 Subscription 切片（§12.4 / W15）
+
+订阅是异常源的内部状态：每个 Task 一个 bit（因此“每 Task 每源至多一个活跃订阅”
+由表示保证）。W15 要求订阅者是有活动 Task，且持有至少一个指向该源、可用、含
+`ExcSubscribe` 的 Capability；失去最后一个此类 Capability 时订阅同终止。本次在
+`Formal.Subscription` 以关系模型（携带源/Capability 见证）建模生命周期，未改 Rust。
+
+| Lean | §12.4 / W15 | 边界 |
+|---|---|---|
+| `Source {active, subscribers}` | 订阅位 + 源活动性 | 每 Task 一 bit |
+| `UsableFor w holder source capId` | 持有 + active + right + 指向源 | `ExcSubscribe` bit 为模型本地 0x80 |
+| `W15` | 订阅者活动 Task + usable 见证 | — |
+| `SubscribeStep` / `UnsubscribeStep` | subscribe/unsubscribe 一步 | 关系模型，无执行函数 |
+| `DropLastStep` / `SendLastStep` | 失去最后授权 Cap 时位置与订阅同步终止 | “最后”为调用方前置，未证明检查器 |
+| `DestroySourceStep` | 源销毁移除全部订阅 | 通知投递不建模 |
+
+24 条定理（2 条无公理，其余仅 `propext`/`Quot.sound`）：
+
+- 更新投影：`setSource_self`/`_other`、`addSubscriber_self`/`_other`/`_active`、`clearSubscriber_self`/`_other`/`_active`、`endSub_self`/`_other`、`endSubCap_excSource`。
+- 见证迁移：`usableFor_snap`（同一源的见证跨位置删除保持）、`usableFor_snap_of_ne`（其他源）、`w15_active`/`w15_witness`。
+- 生命周期：`SubscribeStep_adds`/`_preserves`、`UnsubscribeStep_clears`/`_preserves`、`DropLastStep_clears`/`_preserves`、`SendLastStep_clears`/`_preserves`、`DestroySourceStep_removes`/`_preserves`。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/Subscription.lean
+```
+
+本切片**没有 `#eval` 锚**：步骤以关系表述，携带不可执行的见证与前置条件；证据为
+`lake build` 与公理审计。
+
+边界：不证明实现层“最后一个授权 Cap”检查器的正确性；不建模订阅在仍有其他授权
+Cap 时的存续活性（liveness）、审计事件（`ExcSubscribed`/`ExcUnsubscribed`）、源
+kind/`KindMismatch`、通知投递、源销毁通知、并发、或 Rust 细化。`SubWorld` 的
+`W15` 与 `Container.WorldOk`/CDT `WellFormed` 为独立不变量，需另行组合。
