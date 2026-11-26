@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（248）
+## report（251）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -336,6 +336,7 @@
 | [P3-2：前端 v2 接线（Rust 侧交付，C 数据面受阻）](../superpowers/reports/2026-11-19-p3-frontend-v2.md) | current | `docs/superpowers/reports/2026-11-19-p3-frontend-v2.md` |
 | [P3-2：C 适配层数据面锁拆分与在途引用](../superpowers/reports/2026-11-24-p3-adapter-lock-split.md) | current | `docs/superpowers/reports/2026-11-24-p3-adapter-lock-split.md` |
 | [P3-2：C 适配层数据面 v2（fork 反例修复）](../superpowers/reports/2026-11-24-p3-frontend-v2-data-plane.md) | current | `docs/superpowers/reports/2026-11-24-p3-frontend-v2-data-plane.md` |
+| [Lean `Formal.AuditQuery`：§13.2 `audit(cap)` 查询最小模型](../superpowers/reports/2026-11-25-lean-audit-query.md) | current | `docs/superpowers/reports/2026-11-25-lean-audit-query.md` |
 | [Lean `Formal.Audit`：§13.1 事件信封与 W13 日志核心最小模型](../superpowers/reports/2026-11-25-lean-audit.md) | current | `docs/superpowers/reports/2026-11-25-lean-audit.md` |
 | [Lean `Formal.Container`：W4 容器/位置双向一致最小模型](../superpowers/reports/2026-11-25-lean-container.md) | current | `docs/superpowers/reports/2026-11-25-lean-container.md` |
 | [Lean `Formal.Cow`：COW 组合最小参考模型（BLK-001 后续切片）](../superpowers/reports/2026-11-25-lean-cow-refine.md) | current | `docs/superpowers/reports/2026-11-25-lean-cow-refine.md` |
@@ -349,7 +350,9 @@
 | [P3-3：直连 v2 会话 QEMU 正反例矩阵](../superpowers/reports/2026-11-25-p3-async-matrix.md) | current | `docs/superpowers/reports/2026-11-25-p3-async-matrix.md` |
 | [P3 收口：有界异步批量证据包与复核输入](../superpowers/reports/2026-11-25-p3-closeout.md) | current | `docs/superpowers/reports/2026-11-25-p3-closeout.md` |
 | [P4-0：Gate/IPC 分段测量基线与候选](../superpowers/reports/2026-11-26-p4-baseline.md) | current | `docs/superpowers/reports/2026-11-26-p4-baseline.md` |
+| [P4-2a：G5 细分采样探针与阶段分解](../superpowers/reports/2026-11-26-p4-segmentation-probe.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation-probe.md` |
 | [P4-1：Gate 递送/恢复分段确认与候选](../superpowers/reports/2026-11-26-p4-segmentation.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation.md` |
+| [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |
 
 ## spec（4）
 
@@ -360,7 +363,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（108）
+## specification（109）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -472,6 +475,7 @@
 | [7-0 L1 端到端 LibOS read 基准](../superpowers/specs/2026-11-08-stage7-libos-benchmark.md) | current | `docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md` |
 | [LibOS 数据通路改造与批量文件协议首片](../superpowers/specs/2026-11-10-libos-data-path.md) | current | `docs/superpowers/specs/2026-11-10-libos-data-path.md` |
 | [异构 ISA 混合执行设计：系统层双构建与应用层用户态兼容层](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
+| [WIN-M0 有界基线：PE64 宿主模型与未决冻结门](../superpowers/specs/2026-11-26-windows-m0-baseline.md) | current | `docs/superpowers/specs/2026-11-26-windows-m0-baseline.md` |
 
 ## template（4）
 

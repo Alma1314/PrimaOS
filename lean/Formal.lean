@@ -10,6 +10,7 @@ import Formal.Move
 import Formal.Container
 import Formal.Subscription
 import Formal.Audit
+import Formal.AuditQuery
 import Formal.Tlb
 import Formal.Memseg
 import Formal.Cow

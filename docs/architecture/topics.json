@@ -35,7 +35,8 @@
       "docs/superpowers/reports/2026-11-25-lean-move.md",
       "docs/superpowers/reports/2026-11-25-lean-container.md",
       "docs/superpowers/reports/2026-11-25-lean-subscription.md",
-      "docs/superpowers/reports/2026-11-25-lean-audit.md"
+      "docs/superpowers/reports/2026-11-25-lean-audit.md",
+      "docs/superpowers/reports/2026-11-25-lean-audit-query.md"
     ],
     "code": [
       "cosir/src/state.rs",
@@ -57,7 +58,8 @@
       "lean/Formal/Subscription.lean",
       "lean/refinement/Refinement/Handle.lean",
       "lean/refinement/Refinement/Generated/Funs.lean",
-      "lean/Formal/Audit.lean"
+      "lean/Formal/Audit.lean",
+      "lean/Formal/AuditQuery.lean"
     ],
     "tests": [
       "cosir/tests/lean_backtrace.rs",
@@ -74,7 +76,8 @@
       "kernel/src/handle_table_tests.rs",
       "lean/refinement/Checks.lean",
       "scripts/check_handle_refinement.py",
-      "lean/Checks/Audit.lean"
+      "lean/Checks/Audit.lean",
+      "lean/Checks/AuditQuery.lean"
     ],
     "guide": "docs/architecture/topics/semantics.md"
   },
@@ -376,6 +379,7 @@
       "docs/superpowers/reports/2026-11-25-lean-container.md",
       "docs/superpowers/reports/2026-11-25-lean-subscription.md",
       "docs/superpowers/reports/2026-11-25-lean-audit.md",
+      "docs/superpowers/reports/2026-11-25-lean-audit-query.md",
       "docs/superpowers/plans/2026-11-26-p4-path-narrowing.md",
       "docs/superpowers/reports/2026-11-26-p4-baseline.md",
       "docs/superpowers/reports/2026-11-26-p4-segmentation.md"
@@ -416,7 +420,8 @@
       "lean/Formal/Move.lean",
       "lean/Formal/Container.lean",
       "lean/Formal/Subscription.lean",
-      "lean/Formal/Audit.lean"
+      "lean/Formal/Audit.lean",
+      "lean/Formal/AuditQuery.lean"
     ],
     "tests": [
       "kernel/src/gate_probe.rs",
@@ -433,7 +438,8 @@
       "lean/Checks/Move.lean",
       "lean/Checks/Container.lean",
       "lean/Checks/Subscription.lean",
-      "lean/Checks/Audit.lean"
+      "lean/Checks/Audit.lean",
+      "lean/Checks/AuditQuery.lean"
     ],
     "guide": "docs/architecture/topics/capability-ipc.md"
   },
@@ -464,7 +470,8 @@
       "docs/superpowers/specs/2026-11-06-gate-request-audit-history.md",
       "docs/superpowers/reports/2026-11-06-gate-request-audit-history.md",
       "docs/superpowers/reports/2026-11-06-stage0-6-review-remediation.md",
-      "docs/superpowers/reports/2026-11-25-lean-audit.md"
+      "docs/superpowers/reports/2026-11-25-lean-audit.md",
+      "docs/superpowers/reports/2026-11-25-lean-audit-query.md"
     ],
     "code": [
       "kernel/src/namespace.rs",
@@ -476,13 +483,15 @@
       "cosir/src/authority/remote.rs",
       "cosir/src/authority/wait.rs",
       "lean/Formal/Location.lean",
-      "lean/Formal/Audit.lean"
+      "lean/Formal/Audit.lean",
+      "lean/Formal/AuditQuery.lean"
     ],
     "tests": [
       "xtask/src/protocol.rs",
       "kernel/src/namespace.rs",
       "cosir/src/authority/event_tests.rs",
-      "lean/Checks/Audit.lean"
+      "lean/Checks/Audit.lean",
+      "lean/Checks/AuditQuery.lean"
     ],
     "guide": "docs/architecture/topics/namespace-time-audit.md"
   },

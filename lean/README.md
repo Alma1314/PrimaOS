@@ -21,7 +21,7 @@ updated: 2026-11-25
 > 2026-11-25 的 `Formal.Move` 切片把 COSIR §4.6 的位置变化纳入可执行模型（转移表、单位置原子更新、原位置/新位置与直投 `MsgId` 记录、删除到 `None`、跨节点不移动、W3 表示层唯一），抽象边界与 W4 容器侧缺口见文末。
 > 2026-11-25 的 `Formal.Container` 切片把 COSIR W4 的容器双向一致纳入可执行模型（`HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries），并证明 send/recv/bind/unbind 的原子耦合更新保持 W3+W4；函数式容器表示使“列表无重复/路径唯一”由构造满足，见文末。
 > 2026-11-25 的 `Formal.Subscription` 切片把 §12.4/W15 订阅生命周期纳入关系模型（订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后一个授权 Cap 时的原子终止与源销毁），不带 `#eval` 锚，见文末。
-> 2026-11-25 的 `Formal.Audit` 切片把 §13.1/W13 审计日志核心纳入模型（信封、追加式日志、由位置推导的严格递增 EventId、位置历史、created_at、对象创建事件与受审计操作），事件载荷完整性与 `audit` 父链查询仍不覆盖，见文末。
+> 2026-11-25 的 `Formal.Audit` 切片把 §13.1/W13 审计日志核心纳入模型（信封、追加式日志、由位置推导的严格递增 EventId、位置历史、created_at、对象创建事件与受审计操作），其后的 `audit` 查询由 `Formal.AuditQuery` 最小建模，事件载荷完整性与父链燃料完备性仍不覆盖，见文末。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
 ## 模块与入口
@@ -42,6 +42,7 @@ updated: 2026-11-25
 - `Formal.Container`（`Formal/Container.lean`）：W4 的 Task/Message/Namespace 容器与 `locations` 双向一致、W3+W4 组合不变量 `WorldOk`、四个耦合原子操作（send/recv/bind/unbind）的保持性与空世界锚（2026-11-25 增量，见下节）。
 - `Formal.Subscription`（`Formal/Subscription.lean`）：§12.4/W15 订阅表与 usable `ExcSubscribe` 见证、subscribe/unsubscribe、drop/send 失去最后授权 Cap 的原子终止、源销毁，以及 W15 保持（2026-11-25 增量，见下节）。
 - `Formal.Audit`（`Formal/Audit.lean`）：§13.1 事件信封与追加式日志、W13 严格递增 ID、Capability 位置历史、`created_at`、Task 状态与对象创建事件，以及受审计 move/drop/mint 的一步原子追加（2026-11-25 增量，见下节）。
+- `Formal.AuditQuery`（`Formal/AuditQuery.lean`）：§13.2 `audit(cap)` 参数化查询——父链（root→cap）、created_at 列表、位置历史、目标对象事件，及 `InvalidCap`/`NotHeld` 错误语义（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
 
 ## 构建与复现
@@ -123,7 +124,7 @@ elan run leanprover/lean4:v4.35.0 lake build
 - **§14 步骤 4/7（image vspace 与结构性根）**：§20.3「init 能力集恰好等于 §14 初始 Authority」的**能力部分已兑现**（三条根 Capability 两侧一致）；**cosir 侧已投影** §14 步骤 4 的 image 逐页 `vspace`（由 `MachineState.image_frames`/`image_virtual_base` 生成 `PageMapping{backing}`）与步骤 7 的结构性根（`Task.root_ns_cap = 2`），并由 `bootstrap_parity_lean` 钉住。**Lean 侧未建模**这两项（`State` 无 `tasks` 字段、无 MachineState）；该分歧已在映照契约表如实标注（cosir-only）。
 - **`raise_exception` 的 Audit（§12.5/§13.1）**：**cosir 侧已补齐**（2026-10-12）——`AuditEvent` 新增 `ExceptionRaised`（§12.5 动作 1）与 `TaskStateChanged`（§13.1），`ops::raise_exception` 按 §12.5 顺序追加；同日续片（`ISSUE-EXC-008`）再把 `AuditEvent` 重构为 §13.1 **信封 `{id, at, actor, kind}`** 并补 `State.now`/`next_event` 与 §6.1 `Actor`。**Lean 侧不建模 `audit`**（`State` 无该字段/无时间），故无对拍项、此分歧为 cosir-only。原bootstrap探针的now初值仍为0；2026-10-26 authority事件组合新增advance_time/Timer，本轮host回归已通过，Lean仍无时间/audit。
 - **§14 步骤 9 的 bootstrap 初始 Audit（`ISSUE-EXC-009`，2026-10-13）**：**cosir 侧已补齐**——`abstract_ops::abstract_state(booted)` 写入第一组 Audit：`Bootstrapped` → 两个 `ObjectCreated`（image Segment、init Namespace，`segment` 标志区分同 id 对象）→ init Task 的**创建**事件。顺序与形态镜像真实内核（`kernel/src/bootstrap.rs`）；init Task 用 §13.1 的 `TaskCreated`（**创建非迁移**，故不误用 `TaskStateChanged`）。三条根 Capability **不发 `CapMinted`**（§13.1 该事件用于运行时铸造路径，内核亦不发）。**Lean 侧不建模 `audit`**，故 cosir-only、无对拍项。
-- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：审计事件载荷完整性与 `audit` 父链查询（W13 日志核心见 `Formal.Audit` 节）、W4 的列表级重复/路径唯一与对象生命周期；§12.4/W15 订阅生命周期见 `Formal.Subscription` 节，§4.6 位置迁移与 W3 表示层唯一见 2026-11-25 `Formal.Move` 节，W4 双向一致见 `Formal.Container` 节，§4.5 单位置 drop 见 `Formal.Drop` 节，§4.7 撤销的 Bootstrap 子集见 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
+- ~~**能力派生树（CDT）在 cosir 侧未建模（Lean-ahead 分歧）**~~ **已闭合（2026-10-13，SPEC-099）**：cosir `state::Capability` 已补 `parent : Option<CapId>`，新增 `abstract_ops::well_formed`/`derive_capability`，`lean_backtrace::cdt_parity_lean` 对拍 Lean 的 CDT 定理（关 `ISSUE-FORMAL-001`）。**Lean 仍不覆盖**：审计事件载荷完整性、`audit` 父链在任意状态下的燃料完备性（W13 日志核心见 `Formal.Audit` 节，查询见 `Formal.AuditQuery` 节）、W4 的列表级重复/路径唯一与对象生命周期；§12.4/W15 订阅生命周期见 `Formal.Subscription` 节，§4.6 位置迁移与 W3 表示层唯一见 2026-11-25 `Formal.Move` 节，W4 双向一致见 `Formal.Container` 节，§4.5 单位置 drop 见 `Formal.Drop` 节，§4.7 撤销的 Bootstrap 子集见 `Formal.Revoke` 节（规范第一版仍不提供 `cap_revoke`）。
   cosir 新增本地 Task/消息/Namespace Bound 的位置、drop 与溯源状态面，见[工作契约](../docs/superpowers/specs/2026-10-25-capability-location-model-design.md)与[分层验证记录](../docs/superpowers/reports/2026-10-25-stage0-5-gap-followup.md)。
   原 `Capability.owner` 仅映照创建时拥有者，移动不改它；当前授权改查 `State.locations`。
   2026-10-26新增位置/载体更新的有界Lean证明，2026-10-27 lake build通过，见下节；完整消息/Namespace及事件迁移仍没有Lean保持性证明。CDT显式ID helper不升级为完整用户授权操作。
@@ -559,6 +560,43 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Audit.lean
 
 边界：EventId 由日志位置推导，故 W13 严格递增是表示性质而非跨实现的分配器证明；
 事件载荷只覆盖已用到的字段，未逐类断言 §13.1 的授权 Cap/权限/目标对象；`audit`
-（§13.2）的 parent 链、位置历史拼接与对象创建/销毁查询、内容摘要、时钟推进、
+（§13.2）的父链在任意状态下的燃料完备性、内容摘要、时钟推进、
 跨节点 `transport_msg`、拒绝事件与 Rust 细化均不覆盖。审计日志与
 `Container.WorldOk`/`Subscription.W15`/CDT `WellFormed` 为独立不变量。
+
+## 2026-11-25 AuditQuery 切片（§13.2）
+
+§13.2 `audit(cap)` 是纯查询：返回 root→cap 的 parent 链、链上各 Capability 的
+铸造/派生事件、该 Capability 的位置历史、目标对象创建/销毁事件；目标对象已销毁
+不构成失败。本次在 `Formal.AuditQuery` 建模查询与错误语义，未改 Rust。
+
+| Lean | §13.2 | 边界 |
+|---|---|---|
+| `parentChain fuel w c` | 燃料有界的 parent 行走（含记录） | 完备性仅登记 |
+| `auditChain s capId` | 反转后的 root→cap 链 | 长度 ≤ `capId + 1` |
+| `audit s caller capId` | 返回 `Except AuditError AuditTrace` | 纯查询，无状态输出 |
+| `AuditError.invalidCap`/`notHeld` | 未知 CapId vs 未被调用者持有 | 目标可已销毁 |
+| `AuditTrace.creations` | 链上每个 Cap 的 `created_at` | 派生事件的完整载荷不含 |
+| `AuditTrace.positions` | `capHistory` 原样 | 与 §4.6 事件对齐 |
+| `AuditTrace.objectHistory` | 目标对象的创建/销毁事件 | 按对象 ID 过滤 |
+
+13 条定理（全部无 `sorryAx`，仅 `propext`/`Quot.sound`）：
+
+- 父链：`parentChain_head`、`parentChain_sound`（成员都有 CapRecord）、`parentChain_length_le`（长度 ≤ 燃料）、`auditChain_sound`、`auditChain_length_le`（≤ `capId + 1`）、`auditChain_last`（末端为查询 CapId）。
+- 错误/成功：`audit_invalid`（无记录 → `InvalidCap`）、`audit_not_held`/`audit_not_held_other`（未由调用者 HeldBy → `NotHeld`）、`audit_ok_held`（成功 ⇒ 记录存在且 `HeldBy(caller)`）。
+- 结果：`audit_ok_fields`（链、created_at、位置历史、对象事件与模型定义一致）、`audit_dead_target_ok`（目标已销毁仍成功）、`audit_ok_creation_mem`（created 列表项对应链成员与 `created_at`）。
+
+复现：
+
+```sh
+cd lean
+elan run leanprover/lean4:v4.35.0 lake build
+elan run leanprover/lean4:v4.35.0 lake env lean Checks/AuditQuery.lean
+```
+
+本切片无 `#eval` 锚；证据为 `lake build` 与公理审计。
+
+边界：父链以燃料 `capId + 1` 行走，`WellFormed` 下“链未被截断”的完备性论证未形式化
+（只证成员健全性与长度上界）；`origin`/跨节点代理根、内容摘要、完整 §13.1 事件载荷、
+时钟推进、拒绝事件与 Rust 细化不覆盖；查询结果与 `WorldOk`/`W15`/`WellFormed`
+为独立模型，未证明联合查询正确性。
