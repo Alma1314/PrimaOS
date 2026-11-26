@@ -65,8 +65,6 @@ pub enum PeError {
     TlsOutOfBounds,
     /// 导出目录、名称或函数表越界。
     ExportOutOfBounds,
-    /// 导出项是转发器（函数 RVA 落在导出目录内），当前模型不解析。
-    ForwardedExport,
 }
 
 /// 需要解析的 PE 数据目录。
@@ -519,9 +517,8 @@ impl<'a> PeImage<'a> {
 
     /// 迭代导出表中的按名导出；没有导出目录时返回空迭代器。
     ///
-    /// 只覆盖按名导出（按序号查表）与普通函数导出；转发器返回
-    /// [`PeError::ForwardedExport`]，不按本映像解析。表区间在构造时校验，因此恶意
-    /// 数量不会导致长度不受文件约束的循环。
+    /// 每项给出函数或转发器目标，解析链由调用方（装载器）负责。表区间在构造时校验，
+    /// 因此恶意数量不会导致长度不受文件约束的循环。
     pub fn exports(self) -> Result<Exports<'a>, PeError> {
         let empty = Exports {
             image: self,
@@ -587,11 +584,65 @@ impl<'a> PeImage<'a> {
     pub fn export_by_name(self, name: &[u8]) -> Result<Option<Export<'a>>, PeError> {
         for export in self.exports()? {
             let export = export?;
-            if export.name == name {
+            if export.name == Some(name) {
                 return Ok(Some(export));
             }
         }
         Ok(None)
+    }
+
+    /// 按序号查找导出（`Base` 起算）；越界或未使用槽位返回 `Ok(None)`。
+    ///
+    /// 返回项不保证带名称。转发器同样按 [`ExportTarget::Forwarder`] 给出，不在本层
+    /// 解析。
+    pub fn export_by_ordinal(self, ordinal: u32) -> Result<Option<Export<'a>>, PeError> {
+        let exports = self.exports()?;
+        let Some(index) = ordinal.checked_sub(exports.base) else {
+            return Ok(None);
+        };
+        if index >= exports.function_count {
+            return Ok(None);
+        }
+        let slot = exports
+            .functions_rva
+            .checked_add(index.checked_mul(4).ok_or(PeError::ExportOutOfBounds)?)
+            .ok_or(PeError::RangeOverflow)?;
+        let raw = self
+            .slice_rva(slot, 4)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        let rva = read_u32(raw, 0).map_err(|_| PeError::ExportOutOfBounds)?;
+        if rva == 0 {
+            return Ok(None);
+        }
+        let target = self.export_target(rva, exports.directory_start, exports.directory_end)?;
+        Ok(Some(Export {
+            name: None,
+            ordinal,
+            target,
+        }))
+    }
+
+    /// 把函数表 RVA 解释为函数或转发器；转发器字符串必须含 `模块.符号`。
+    fn export_target(
+        self,
+        rva: u32,
+        directory_start: u32,
+        directory_end: u32,
+    ) -> Result<ExportTarget<'a>, PeError> {
+        if !(directory_start <= rva && rva < directory_end) {
+            return Ok(ExportTarget::Function { rva });
+        }
+        let text = self
+            .c_string_rva(rva)
+            .map_err(|_| PeError::ExportOutOfBounds)?;
+        let Some(dot) = text.iter().position(|&byte| byte == b'.') else {
+            return Err(PeError::ExportOutOfBounds);
+        };
+        let (module, symbol) = (&text[..dot], &text[dot + 1..]);
+        if module.is_empty() || symbol.is_empty() {
+            return Err(PeError::ExportOutOfBounds);
+        }
+        Ok(ExportTarget::Forwarder { module, symbol })
     }
 
     fn window(self, rva: u32) -> Result<(usize, usize), PeError> {
@@ -652,16 +703,26 @@ impl<'a> PeImage<'a> {
     }
 }
 
+/// 导出目标。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportTarget<'a> {
+    /// 映像内函数；RVA 加装载基址得到实际地址。
+    Function { rva: u32 },
+    /// 转发器：`DLL.Symbol` 字符串拆出的模块与符号；模块名可能带或不带 `.dll`。
+    Forwarder { module: &'a [u8], symbol: &'a [u8] },
+}
+
 /// 单个导出项。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Export<'a> {
-    name: &'a [u8],
+    name: Option<&'a [u8]>,
     ordinal: u32,
-    rva: u32,
+    target: ExportTarget<'a>,
 }
 
 impl<'a> Export<'a> {
-    pub fn name(self) -> &'a [u8] {
+    /// 按名查找时有名称；按序号查找不保证给出名称。
+    pub fn name(self) -> Option<&'a [u8]> {
         self.name
     }
 
@@ -670,9 +731,8 @@ impl<'a> Export<'a> {
         self.ordinal
     }
 
-    /// 函数 RVA；调用方加上装载基址得到实际入口地址。
-    pub fn rva(self) -> u32 {
-        self.rva
+    pub fn target(self) -> ExportTarget<'a> {
+        self.target
     }
 }
 
@@ -738,17 +798,21 @@ impl<'a> Iterator for Exports<'a> {
             Ok(rva) => rva,
             Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
         };
-        if rva >= self.directory_start && rva < self.directory_end {
-            return Some(Err(PeError::ForwardedExport));
-        }
+        let target = match self
+            .image
+            .export_target(rva, self.directory_start, self.directory_end)
+        {
+            Ok(target) => target,
+            Err(error) => return Some(Err(error)),
+        };
         let name = match self.image.c_string_rva(name_rva) {
             Ok(name) => name,
             Err(_) => return Some(Err(PeError::ExportOutOfBounds)),
         };
         Some(Ok(Export {
-            name,
+            name: Some(name),
             ordinal: self.base.wrapping_add(index),
-            rva,
+            target,
         }))
     }
 }

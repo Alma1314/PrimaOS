@@ -6,7 +6,7 @@
 
 use core::cmp::min;
 
-use crate::pe::{ImportThunk, PeError, PeImage, RelocationEntry};
+use crate::pe::{ExportTarget, ImportThunk, PeError, PeImage, RelocationEntry};
 
 /// 平铺装载失败。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +181,102 @@ impl<'a> PeImage<'a> {
             imports_resolved,
             relocations_applied,
         })
+    }
+}
+
+/// 已装载模块：解析视图、装载基址与导入表给出的名称。
+#[derive(Clone, Copy, Debug)]
+pub struct Module<'a> {
+    name: &'a [u8],
+    image: PeImage<'a>,
+    base: u64,
+}
+
+impl<'a> Module<'a> {
+    pub const fn new(name: &'a [u8], image: PeImage<'a>, base: u64) -> Self {
+        Self { name, image, base }
+    }
+
+    pub fn name(self) -> &'a [u8] {
+        self.name
+    }
+
+    pub fn image(self) -> PeImage<'a> {
+        self.image
+    }
+
+    pub fn base(self) -> u64 {
+        self.base
+    }
+}
+
+/// 转发链的最大深度；超过即视为无法解析，防止循环转发。
+pub const MAX_FORWARD_DEPTH: u8 = 8;
+
+/// 有界模块集合上的导入解析器。
+///
+/// 只按显式模块名匹配（忽略 ASCII 大小写与可选 `.dll` 后缀），不猜测 API-set 路由；
+/// API-set 白名单应由调用方展开为模块集合。按名与按序号导入都经同一转发解析，
+/// 每次转发消耗一层深度，循环在深度耗尽时返回 `None`。
+pub struct ModuleSet<'a> {
+    modules: &'a [Module<'a>],
+}
+
+impl<'a> ModuleSet<'a> {
+    pub const fn new(modules: &'a [Module<'a>]) -> Self {
+        Self { modules }
+    }
+
+    /// 解析一个导入；任何模块/导出缺失或转发链过深都返回 `None`。
+    pub fn resolve(&self, dll: &[u8], thunk: ImportThunk<'_>) -> Option<u64> {
+        self.resolve_from(dll, thunk, MAX_FORWARD_DEPTH)
+    }
+
+    fn resolve_from(&self, dll: &[u8], thunk: ImportThunk<'_>, depth: u8) -> Option<u64> {
+        let module = self.find(dll)?;
+        let export = match thunk {
+            ImportThunk::Name { name, .. } => module.image.export_by_name(name).ok()??,
+            ImportThunk::Ordinal(ordinal) => {
+                module.image.export_by_ordinal(u32::from(ordinal)).ok()??
+            }
+        };
+        match export.target() {
+            ExportTarget::Function { rva } => module.base.checked_add(u64::from(rva)),
+            ExportTarget::Forwarder {
+                module: target_module,
+                symbol,
+            } => {
+                if depth == 0 {
+                    return None;
+                }
+                self.resolve_from(
+                    target_module,
+                    ImportThunk::Name {
+                        hint: 0,
+                        name: symbol,
+                    },
+                    depth - 1,
+                )
+            }
+        }
+    }
+
+    fn find(&self, dll: &[u8]) -> Option<&Module<'a>> {
+        self.modules
+            .iter()
+            .find(|module| module_names_equal(module.name, dll))
+    }
+}
+
+fn module_names_equal(left: &[u8], right: &[u8]) -> bool {
+    strip_dll_suffix(left).eq_ignore_ascii_case(strip_dll_suffix(right))
+}
+
+fn strip_dll_suffix(name: &[u8]) -> &[u8] {
+    if name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".dll") {
+        &name[..name.len() - 4]
+    } else {
+        name
     }
 }
 

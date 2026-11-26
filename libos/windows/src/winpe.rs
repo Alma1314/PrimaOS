@@ -8,7 +8,7 @@
 //! 负例：在子地址空间已建立可执行映像后强制发布失败，验证暂存映射被回收且同一 VA 可再
 //! 装载。没有内核 PE 识别、没有 W+X 映射，也没有 Windows 参考差分。
 
-use crate::pe::{ImportThunk, PeImage};
+use crate::pe::{ExportTarget, ImportThunk, PeImage};
 use prima_runtime::{Capability, Error, Result, Rights, Runtime, SyscallTransport, TaskSpec};
 
 const WINPE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/winpe-probe.exe"));
@@ -68,7 +68,10 @@ fn run<T: SyscallTransport>(runtime: &Runtime<T>) -> Result<()> {
         .export_by_name(EXPORT_NAME)
         .map_err(|_| Error::InvalidInput)?
         .ok_or(Error::InvalidInput)?;
-    let stub_va = DLL_BASE + u64::from(export.rva());
+    let ExportTarget::Function { rva } = export.target() else {
+        return Err(Error::InvalidInput);
+    };
+    let stub_va = DLL_BASE + u64::from(rva);
     serial(runtime, b"WINPE|stage=parsed\n");
 
     let namespace = runtime.namespace_create()?;

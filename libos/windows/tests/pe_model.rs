@@ -1,6 +1,6 @@
-use prima_windows::load::LoadError;
+use prima_windows::load::{LoadError, MAX_FORWARD_DEPTH, Module, ModuleSet};
 use prima_windows::pe::{
-    DataDirectoryIndex, ImportThunk, PeError, PeImage, Protection, RelocationEntry,
+    DataDirectoryIndex, ExportTarget, ImportThunk, PeError, PeImage, Protection, RelocationEntry,
 };
 
 const LEN: usize = 0x1400;
@@ -80,7 +80,7 @@ fn build_pe() -> Vec<u8> {
     put32(&mut buf, NUM_DIRS, 16);
 
     put32(&mut buf, OPT_OFF + 0x70, 0x2c00);
-    put32(&mut buf, OPT_OFF + 0x70 + 4, 40);
+    put32(&mut buf, OPT_OFF + 0x70 + 4, 0x90);
     put32(&mut buf, OPT_OFF + 0x70 + 8, 0x2000);
     put32(&mut buf, OPT_OFF + 0x70 + 12, 0x28);
     put32(&mut buf, OPT_OFF + 0x70 + 40, 0x2800);
@@ -130,21 +130,28 @@ fn build_pe() -> Vec<u8> {
     put16(&mut buf, 0xc0a, 0x0000);
     put64(&mut buf, 0x200, 0x1_4000_0000);
 
-    // 导出目录 RVA 0x2c00：Base=0、2 个函数、2 个名称。
+    // 导出目录 RVA 0x2c00：Base=0、3 个函数（第 3 个转发到 KERNEL32.Alpha）。
     put32(&mut buf, 0x1010, 0); // Base
-    put32(&mut buf, 0x1014, 2); // NumberOfFunctions
-    put32(&mut buf, 0x1018, 2); // NumberOfNames
-    put32(&mut buf, 0x101c, 0x2c40); // AddressOfFunctions
-    put32(&mut buf, 0x1020, 0x2c50); // AddressOfNames
-    put32(&mut buf, 0x1024, 0x2c60); // AddressOfNameOrdinals
-    put32(&mut buf, 0x1040, 0x1000);
-    put32(&mut buf, 0x1044, 0x1010);
-    put32(&mut buf, 0x1050, 0x2c80);
-    put32(&mut buf, 0x1054, 0x2c90);
-    put16(&mut buf, 0x1060, 0);
-    put16(&mut buf, 0x1062, 1);
-    buf[0x1080..0x1086].copy_from_slice(b"Alpha\0");
-    buf[0x1090..0x1095].copy_from_slice(b"Beta\0");
+    put32(&mut buf, 0x1014, 3); // NumberOfFunctions
+    put32(&mut buf, 0x1018, 3); // NumberOfNames
+    put32(&mut buf, 0x101c, 0x2c28); // AddressOfFunctions
+    put32(&mut buf, 0x1020, 0x2c34); // AddressOfNames
+    put32(&mut buf, 0x1024, 0x2c40); // AddressOfNameOrdinals
+    put32(&mut buf, 0x1028, 0x1000);
+    put32(&mut buf, 0x102c, 0x1010);
+    put32(&mut buf, 0x1030, 0x2c60); // Fwd -> "KERNEL32.Alpha"
+    put32(&mut buf, 0x1034, 0x2c48);
+    put32(&mut buf, 0x1038, 0x2c50);
+    put32(&mut buf, 0x103c, 0x2c58);
+    put16(&mut buf, 0x1040, 0);
+    put16(&mut buf, 0x1042, 1);
+    put16(&mut buf, 0x1044, 2);
+    buf[0x1048..0x104e].copy_from_slice(b"Alpha\0");
+    buf[0x1050..0x1055].copy_from_slice(b"Beta\0");
+    buf[0x1058..0x105c].copy_from_slice(b"Fwd\0");
+    buf[0x1060..0x106f].copy_from_slice(b"KERNEL32.Alpha\0");
+    // 供循环转发用例改写函数表使用。
+    buf[0x1070..0x107f].copy_from_slice(b"winpe-stub.Fwd\0");
     buf
 }
 
@@ -612,7 +619,7 @@ fn rejects_wx_image_before_writing_output() {
 }
 
 #[test]
-fn iterates_named_exports_with_ordinals_and_rvas() {
+fn iterates_named_exports_with_ordinals_and_targets() {
     let bytes = build_pe();
     let pe = PeImage::parse(&bytes).expect("valid fixture");
     let exports: Vec<_> = pe
@@ -620,19 +627,27 @@ fn iterates_named_exports_with_ordinals_and_rvas() {
         .expect("export directory")
         .collect::<Result<Vec<_>, _>>()
         .expect("exports");
-    assert_eq!(exports.len(), 2);
-    assert_eq!(exports[0].name(), b"Alpha");
+    assert_eq!(exports.len(), 3);
+    assert_eq!(exports[0].name(), Some(&b"Alpha"[..]));
     assert_eq!(exports[0].ordinal(), 0);
-    assert_eq!(exports[0].rva(), 0x1000);
-    assert_eq!(exports[1].name(), b"Beta");
+    assert_eq!(exports[0].target(), ExportTarget::Function { rva: 0x1000 });
+    assert_eq!(exports[1].name(), Some(&b"Beta"[..]));
     assert_eq!(exports[1].ordinal(), 1);
-    assert_eq!(exports[1].rva(), 0x1010);
+    assert_eq!(exports[1].target(), ExportTarget::Function { rva: 0x1010 });
+    assert_eq!(exports[2].name(), Some(&b"Fwd"[..]));
+    assert_eq!(
+        exports[2].target(),
+        ExportTarget::Forwarder {
+            module: b"KERNEL32",
+            symbol: b"Alpha"
+        }
+    );
 
     let found = pe
         .export_by_name(b"Beta")
         .expect("export lookup")
         .expect("Beta export");
-    assert_eq!(found.rva(), 0x1010);
+    assert_eq!(found.target(), ExportTarget::Function { rva: 0x1010 });
     assert!(
         pe.export_by_name(b"Gamma")
             .expect("export lookup")
@@ -641,12 +656,33 @@ fn iterates_named_exports_with_ordinals_and_rvas() {
 }
 
 #[test]
-fn rejects_forwarded_exports_instead_of_resolving_dir_rva() {
-    let mut bytes = build_pe();
-    put32(&mut bytes, 0x1040, 0x2c04);
+fn looks_up_exports_by_ordinal() {
+    let bytes = build_pe();
     let pe = PeImage::parse(&bytes).expect("valid fixture");
-    let result: Result<Vec<_>, _> = pe.exports().expect("export directory").collect();
-    assert!(matches!(result, Err(PeError::ForwardedExport)));
+    assert_eq!(
+        pe.export_by_ordinal(0)
+            .expect("ordinal lookup")
+            .expect("ordinal 0")
+            .target(),
+        ExportTarget::Function { rva: 0x1000 }
+    );
+    assert_eq!(
+        pe.export_by_ordinal(2)
+            .expect("ordinal lookup")
+            .expect("ordinal 2")
+            .target(),
+        ExportTarget::Forwarder {
+            module: b"KERNEL32",
+            symbol: b"Alpha"
+        }
+    );
+    assert!(pe.export_by_ordinal(3).expect("ordinal lookup").is_none());
+    assert!(pe.export_by_ordinal(u32::MAX).expect("lookup").is_none());
+
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x1028, 0); // 零 RVA 槽位视为未使用。
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    assert!(pe.export_by_ordinal(0).expect("ordinal lookup").is_none());
 }
 
 #[test]
@@ -663,4 +699,96 @@ fn rejects_export_tables_outside_file_data() {
     put32(&mut bytes, 0x1020, 0x3f00);
     let pe = PeImage::parse(&bytes).expect("valid fixture");
     assert!(matches!(pe.exports(), Err(PeError::ExportOutOfBounds)));
+}
+
+#[test]
+fn module_set_resolves_names_ordinals_and_normalizes_module_names() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let modules = [Module::new(b"winpe-stub.dll", pe, 0x1_4000_0000)];
+    let set = ModuleSet::new(&modules);
+
+    assert_eq!(
+        set.resolve(
+            b"WINPE-STUB",
+            ImportThunk::Name {
+                hint: 0,
+                name: b"Alpha"
+            }
+        ),
+        Some(0x1_4000_1000)
+    );
+    assert_eq!(
+        set.resolve(b"winpe-stub.dll", ImportThunk::Ordinal(1)),
+        Some(0x1_4000_1010)
+    );
+    assert_eq!(
+        set.resolve(
+            b"winpe-stub.dll",
+            ImportThunk::Name {
+                hint: 0,
+                name: b"Gamma"
+            }
+        ),
+        None
+    );
+    assert_eq!(set.resolve(b"other.dll", ImportThunk::Ordinal(0)), None);
+}
+
+#[test]
+fn module_set_follows_forwarders_across_modules() {
+    let bytes = build_pe();
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let modules = [
+        Module::new(b"winpe-stub.dll", pe, 0x1_4000_0000),
+        Module::new(b"KERNEL32.dll", pe, 0x1_5000_0000),
+    ];
+    let set = ModuleSet::new(&modules);
+
+    assert_eq!(
+        set.resolve(
+            b"winpe-stub.dll",
+            ImportThunk::Name {
+                hint: 0,
+                name: b"Fwd"
+            }
+        ),
+        Some(0x1_5000_1000)
+    );
+    // 按序号导入同样走转发链。
+    assert_eq!(
+        set.resolve(b"winpe-stub", ImportThunk::Ordinal(2)),
+        Some(0x1_5000_1000)
+    );
+
+    let only_stub = [Module::new(b"winpe-stub.dll", pe, 0x1_4000_0000)];
+    assert_eq!(
+        ModuleSet::new(&only_stub).resolve(
+            b"winpe-stub.dll",
+            ImportThunk::Name {
+                hint: 0,
+                name: b"Fwd"
+            }
+        ),
+        None
+    );
+}
+
+#[test]
+fn module_set_stops_forwarder_cycles_at_the_depth_limit() {
+    let mut bytes = build_pe();
+    put32(&mut bytes, 0x1030, 0x2c70); // Fwd -> "winpe-stub.Fwd"（自引用）
+    let pe = PeImage::parse(&bytes).expect("valid fixture");
+    let modules = [Module::new(b"winpe-stub.dll", pe, 0x1_4000_0000)];
+    assert_eq!(
+        ModuleSet::new(&modules).resolve(
+            b"winpe-stub.dll",
+            ImportThunk::Name {
+                hint: 0,
+                name: b"Fwd"
+            }
+        ),
+        None
+    );
+    assert_eq!(MAX_FORWARD_DEPTH, 8);
 }
