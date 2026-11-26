@@ -59,6 +59,8 @@ updated: 2026-11-27
 
 2026-11-27：[WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md)；导出区分函数/转发器并新增 `export_by_ordinal` 与 `ModuleSet`（大小写/后缀归一、转发限深 8），新增 TEB/PEB 冻结子集与静态 TLS 模板宿主模型，ring3 改为三 DLL + `Fwd->winpe-stub.Stub` 转发；QEMU 两轮逐字节通过、host 1234、lint 通过；无用户 GS，动态 TLS/运行期 TEB/PEB、API-set 清单、`DllMain`、堆/错误与参考差分未覆盖，WIN-M3 未通过。
 
+2026-11-27：[P5-1 ACPI/MADT 宿主解析](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT 与 MADT 纯解析，8 个宿主用例覆盖校验和、条目边界、enabled 过滤、x2APIC 优先与 CPU 上限；host 1244、lint 通过；未读 `BootInfo.rsdp_addr`、未访问 LAPIC、未做 CPUID/AP，P5-1 仍为部分交付。
+
 2026-11-27：[P5-0 SMP 状态所有权设计](2026-11-27-p5-0-state-partition.md)；按 D15 给出每 CPU/任务级/全局共享/只读的状态分类、AP 启动与 IPI/TLB 分期、锁顺序与六项待决，并把调度当前任务迁到 `cpu::local`（BSP 初值不变）；host 1236、lint、完整 BIOS 36 组 72 轮通过；未启动 AP、未做 `-smp 2/4`，7-B 未勾选，P6 未开始。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
@@ -255,11 +257,11 @@ BIOS 72/72；记录 2 项中等（单次启动约 1279 次 Gate 交付上限、1
 
 2026-11-01：[RAM复制、四段几何与八页栈](2026-11-01-stage6-loader-geometry.md)，S6-M2后继；workspace1091、lint和Linux参考通过，完整BIOS60/72；单次QEMU诊断26.63秒完成geometry=1，隔离W7双轮仍超时；合成入口，不代表冻结busybox运行。
 
-2026-10-31：[原生 Gate 控制失败尝试审计](2026-10-31-stage6-gate-control-rejections.md)，73/74/77/78 的拒绝共用记录身份、原始参数和错误；workspace1090、lint、G1双轮9条拒绝PASS，完整BIOS68/72（默认/V1各首轮及W7双轮30秒超时）；不扩大至75/76或完整G2/G3。
+2026-10-31：[原生 Gate 控制失败尝试审计](2026-10-31-stage6-gate-control-rejections.md)，73/74/78/88 的拒绝共用记录身份、原始参数和错误；workspace1090、lint、G1双轮9条拒绝PASS，完整BIOS68/72（默认/V1各首轮及W7双轮30秒超时）；不扩大至75/76或完整G2/G3。
 
 2026-10-31：[Ready 挂接准入整改](2026-10-31-stage6-gate-admission.md)，拒绝待领取原生返回及恢复续体，24 个 host 拒绝组合与 ring3 注入反例双轮通过；workspace1089、lint PASS，完整BIOS70/72（W7双轮30秒超时）；完整 G2/G3、代理复制与失败尝试审计仍待完成。
 
-2026-10-31：[trap 与四个控制入口及 G1](2026-10-31-stage6-gate-dispatch.md)，原生73/74/77/78、syscall/int80截获、只写rax、信号保留与wait输出事务；修复原生分派栈回归，最终BIOS71/72、W7一轮超时仍保留；75/76与完整G2/G3未完成。
+2026-10-31：[trap 与四个控制入口及 G1](2026-10-31-stage6-gate-dispatch.md)，原生73/74/78/88、syscall/int80截获、只写rax、信号保留与wait输出事务；修复原生分派栈回归，最终BIOS71/72、W7一轮超时仍保留；75/76与完整G2/G3未完成。
 
 2026-10-31：[最后服务授权丢失钩子](2026-10-31-stage6-gate-authority-loss.md)，drop/move/revoke、Namespace/IPC 转移共用总预算与孤儿化提交；请求根丢弃后的别名回收，host 证据，非 G1–G3。
 
