@@ -27,6 +27,8 @@ pub struct Report {
     pub lapic_phys: u32,
     pub lapic_id: u32,
     pub x2apic: bool,
+    /// 已解析的 MADT 拓扑；AP 启动按它建立 CPU 索引。
+    pub topology: CpuTopology,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +139,7 @@ pub fn run(rsdp_phys: u64, phys_offset: u64) -> Result<Report, ProbeError> {
         lapic_phys: topology.local_apic_phys(),
         lapic_id,
         x2apic: topology.uses_x2apic(),
+        topology,
     })
 }
 

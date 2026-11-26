@@ -54,6 +54,12 @@ P2b 与其后 holder 模型的依赖切片见[P2b与holder模型依赖切片计�
 默认 `-smp 1` 与 72 轮 BIOS 不变。见
 [P5-1 报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)。
 
+2026-11-27：P5-2 AP 启动原型——`prima-ostd::smp` 实模式→长模式跳板与 `kernel::smp`
+INIT-SIPI-SIPI，`test-smp-ap` 在 `-smp 2/4` 各两轮通过，AP 置在线位后 `hlt` 停放；
+剔除 SMP 行后两种 vCPU 数输出逐字节相同。**AP 不参与调度**，无每 CPU GDT/TSS/IDT、
+IPI、TLB shootdown；默认镜像与 72 轮不变。见
+[P5-2 报告](../reports/2026-11-27-p5-2-ap-bringup.md)。
+
 ## P2的具体接线与待解决边界
 
 此节是后继实施输入，未实现，不能由P1或P2a的测试签收。P2a只完成第2条中的管理器

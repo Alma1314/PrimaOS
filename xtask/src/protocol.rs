@@ -6508,7 +6508,7 @@ pub(crate) fn validate_smp(output: &str, smp: u8) -> Result<(), String> {
     let records: Vec<_> = output
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with("SMP|"))
+        .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
         .collect();
     if records.len() != 3 || records[0] != "SMP|begin" || records[2] != "SMP|PASS" {
         return Err("SMP requires begin, one discovery line and one PASS".to_owned());
@@ -6558,9 +6558,74 @@ pub(crate) fn validate_smp(output: &str, smp: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// P5-2：在只读探测之外，固件报告的每个非 BSP CPU 都必须经 INIT-SIPI-SIPI 上线。
+pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
+        .collect();
+    if records.len() != 4 || records[0] != "SMP|begin" || records[3] != "SMP|PASS" {
+        return Err("SMP-AP requires begin, discovery, AP line and one PASS".to_owned());
+    }
+    let discovery = records[1]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed SMP discovery line".to_owned())?;
+    let mut cpus = None;
+    let mut bsp_apic = None;
+    let mut lapic_id = None;
+    let mut online = None;
+    for field in discovery.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SMP field".to_owned())?;
+        match key {
+            "cpus" => cpus = Some(parse_decimal(value, key)?),
+            "bsp_apic" => bsp_apic = Some(parse_decimal(value, key)?),
+            "lapic_id" => lapic_id = Some(parse_decimal(value, key)?),
+            "online" => online = Some(parse_decimal(value, key)?),
+            "rsdp" | "xsdt" | "bsp_index" | "x2apic" => {
+                parse_decimal(value, key)?;
+            }
+            "lapic" if value.starts_with("0x") => {}
+            _ => return Err(format!("unknown or malformed SMP field: {key}")),
+        }
+    }
+    if cpus != Some(u64::from(smp)) {
+        return Err(format!("SMP-AP firmware must report {smp} CPUs"));
+    }
+    if bsp_apic.is_none() || lapic_id != bsp_apic {
+        return Err("SMP-AP LAPIC ID must match the CPUID APIC ID".to_owned());
+    }
+    if online != Some(1) {
+        return Err("SMP-AP discovery must precede AP start (online=1)".to_owned());
+    }
+    let ap_line = records[2]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed SMP AP line".to_owned())?;
+    let (mut aps, mut ap_online) = (None, None);
+    for field in ap_line.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SMP AP field".to_owned())?;
+        match key {
+            "aps" => aps = Some(parse_decimal(value, key)?),
+            "online" => ap_online = Some(parse_decimal(value, key)?),
+            _ => return Err(format!("unknown SMP AP field: {key}")),
+        }
+    }
+    if aps != Some(u64::from(smp) - 1) {
+        return Err(format!("SMP-AP must start {} APs", smp - 1));
+    }
+    if ap_online != Some(u64::from(smp)) {
+        return Err(format!("SMP-AP must report all {smp} CPUs online"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod smp_tests {
-    use super::validate_smp;
+    use super::{validate_smp, validate_smp_ap};
 
     const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
 
@@ -6580,6 +6645,26 @@ mod smp_tests {
             assert!(
                 validate_smp(&bad, 4).is_err(),
                 "bad witness accepted: {bad}"
+            );
+        }
+    }
+
+    const VALID_AP: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4\nSMP|PASS\n";
+
+    #[test]
+    fn smp_ap_witness_requires_every_reported_cpu_online() {
+        assert_eq!(validate_smp_ap(VALID_AP, 4), Ok(()));
+        assert!(validate_smp_ap(VALID_AP, 2).is_err());
+        for bad in [
+            VALID_AP.replace("aps=3", "aps=2"),
+            VALID_AP.replace("online=4", "online=3"),
+            VALID_AP.replace("SMP|aps=3;online=4\n", ""),
+            VALID_AP.replace("SMP|PASS\n", "SMP|FAIL|ap-online-timeout\n"),
+            VALID_AP.replace("lapic_id=0", "lapic_id=1"),
+        ] {
+            assert!(
+                validate_smp_ap(&bad, 4).is_err(),
+                "bad AP witness accepted: {bad}"
             );
         }
     }

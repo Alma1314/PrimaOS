@@ -36,6 +36,32 @@ pub(crate) fn smp_ready(report: &kernel::smp_probe::Report) {
     serial::write_bytes(b";online=1\r\n");
 }
 
+/// P5-2 诊断阶段行；不与验收见证计数（校验器过滤 `SMP|stage=`）。
+#[cfg(feature = "smp-ap")]
+pub(crate) fn smp_stage(stage: &str) {
+    serial::write_bytes(b"SMP|stage=");
+    serial::write_bytes(stage.as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
+/// P5-2 诊断：panic 时最近触碰的地址（`SMP|stage=` 前缀，校验器忽略）。
+#[cfg(feature = "smp-ap")]
+pub(crate) fn smp_panic_addr(addr: u64) {
+    serial::write_bytes(b"SMP|stage=panic-addr=");
+    write_hex_u64(addr);
+    serial::write_bytes(b"\r\n");
+}
+
+/// P5-2：AP 上线结果；`online` 含 BSP（bit0 固定）。
+#[cfg(feature = "smp-ap")]
+pub(crate) fn smp_aps(aps: u32, online: u32) {
+    serial::write_bytes(b"SMP|aps=");
+    write_u32(aps);
+    serial::write_bytes(b";online=");
+    write_u32(online);
+    serial::write_bytes(b"\r\n");
+}
+
 #[cfg(feature = "smp-probe")]
 pub(crate) fn smp_pass() {
     serial::write_bytes(b"SMP|PASS\r\n");

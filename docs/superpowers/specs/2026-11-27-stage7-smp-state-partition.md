@@ -122,7 +122,7 @@ CPU 本地状态都进这一入口，不再回到全局静态。
 |---|---|---|---|
 | P5-0 | 本文 + CPU 本地入口 + 调度当前任务分区 | host 测试与既有 BIOS 启动逐字节回归；不声称 SMP | **本片** |
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
-| P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | 待做 |
+| P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
 | P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 并行 fork/exec 无丢唤醒；任务状态与根一致 | 待做 |
 | P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 反例：一端解除共享映射，另一端旧地址必须失效 | 待做 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |

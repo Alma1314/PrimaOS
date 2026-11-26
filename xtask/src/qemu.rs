@@ -98,20 +98,43 @@ pub(crate) fn run_bios_smp(image: &Path, smp: u8, round: u32) -> Result<(), Stri
     .map_err(|error| format!("could not preserve smp witness: {error}"))?;
     validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
         .map_err(|error| with_output(error, &output))?;
-    // 同一镜像在 2/4 vCPU 下仍须通过既有启动校验器；AP 未启动，事件应不变。
-    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
-    protocol::validate_service_traces(&output.stdout)
-        .map_err(|error| with_output(error, &output))?;
-    protocol::validate_native_app_trace(&output.stdout)
-        .map_err(|error| with_output(error, &output))?;
-    protocol::validate_stage5_capacity(&output.stdout)
-        .map_err(|error| with_output(error, &output))?;
-    protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, &output))?;
-    protocol::validate_user_fault_trace(&output.stdout)
-        .map_err(|error| with_output(error, &output))?;
+    validate_boot_output(&output)?;
     protocol::validate_smp(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
     println!("PASS SMP smp={smp} round={round} cpus={smp} lapic=matched online=1");
     Ok(())
+}
+
+/// P5-2：除只读探测外，AP 经 INIT-SIPI-SIPI 进入长模式并置在线位。
+pub(crate) fn run_bios_smp_ap(image: &Path, smp: u8, round: u32) -> Result<(), String> {
+    let output = run_captured_with(qemu_args_smp(image, smp), TEST_TIMEOUT)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/SMPAP-{smp}-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve smp-ap witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    validate_boot_output(&output)?;
+    protocol::validate_smp_ap(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
+    println!(
+        "PASS SMP-AP smp={smp} round={round} aps={} online={smp}",
+        u32::from(smp) - 1
+    );
+    Ok(())
+}
+
+/// 2/4 vCPU 启动仍须通过默认镜像的既有校验器；AP parked 时事件应不变。
+fn validate_boot_output(output: &CapturedOutput) -> Result<(), String> {
+    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, output))?;
+    protocol::validate_stage5_capacity(&output.stdout)
+        .map_err(|error| with_output(error, output))?;
+    protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, output))?;
+    protocol::validate_user_fault_trace(&output.stdout).map_err(|error| with_output(error, output))
 }
 
 /// 把默认单核参数中的 `-smp 1` 替换为指定 vCPU 数；其余参数保持冻结。

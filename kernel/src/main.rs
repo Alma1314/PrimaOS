@@ -73,6 +73,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     Some(rsdp) => match kernel::smp_probe::run(rsdp, offset) {
                                         Ok(report) => {
                                             protocol::smp_ready(&report);
+                                            #[cfg(feature = "smp-ap")]
+                                            match kernel::smp::start_aps(
+                                                &report,
+                                                offset,
+                                                &mut |stage| protocol::smp_stage(stage),
+                                            ) {
+                                                Ok(aps) => {
+                                                    protocol::smp_aps(aps, aps + 1);
+                                                    protocol::smp_pass();
+                                                }
+                                                Err(error) => protocol::smp_fail(error.as_str()),
+                                            }
+                                            #[cfg(not(feature = "smp-ap"))]
                                             protocol::smp_pass();
                                         }
                                         Err(error) => protocol::smp_fail(error.as_str()),
@@ -432,6 +445,8 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     protocol::panic_event();
     #[cfg(feature = "gate-audit-probe")]
     kernel::bootstrap::gate_audit_probe::panic_evidence();
+    #[cfg(feature = "smp-ap")]
+    protocol::smp_panic_addr(kernel::smp::last_addr());
     if let Some(location) = info.location() {
         serial::write_bytes(b"[panic] ");
         serial::write_bytes(location.file().as_bytes());

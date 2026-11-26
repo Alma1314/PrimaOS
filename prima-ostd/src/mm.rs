@@ -36,6 +36,15 @@ pub fn read_u32(va: u64) -> u32 {
     unsafe { ptr::read_volatile(va as *const u32) }
 }
 
+/// 写 `va` 处的 u32（LAPIC ICR/TPR/SVR 等 32 位 MMIO 寄存器）。
+///
+/// 契约：`va`（4 字节）已映射且可写；MMIO 的到达/排序由设备契约决定。
+#[inline]
+pub fn write_u32(va: u64, value: u32) {
+    // SAFETY: 见模块与函数契约——调用方保证 va 已映射可写。
+    unsafe { ptr::write_volatile(va as *mut u32, value) }
+}
+
 /// 读 `va` 处的 u8。
 ///
 /// 契约：`va`（1 字节）已映射且可读。
