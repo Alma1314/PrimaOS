@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（252）
+## report（253）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -350,6 +350,7 @@
 | [P3-3：直连 v2 会话 QEMU 正反例矩阵](../superpowers/reports/2026-11-25-p3-async-matrix.md) | current | `docs/superpowers/reports/2026-11-25-p3-async-matrix.md` |
 | [P3 收口：有界异步批量证据包与复核输入](../superpowers/reports/2026-11-25-p3-closeout.md) | current | `docs/superpowers/reports/2026-11-25-p3-closeout.md` |
 | [P4-0：Gate/IPC 分段测量基线与候选](../superpowers/reports/2026-11-26-p4-baseline.md) | current | `docs/superpowers/reports/2026-11-26-p4-baseline.md` |
+| [P4 收口：Gate/IPC 测量、候选评估与回归证据包](../superpowers/reports/2026-11-26-p4-closeout.md) | current | `docs/superpowers/reports/2026-11-26-p4-closeout.md` |
 | [P4-2a：G5 细分采样探针与阶段分解](../superpowers/reports/2026-11-26-p4-segmentation-probe.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation-probe.md` |
 | [P4-1：Gate 递送/恢复分段确认与候选](../superpowers/reports/2026-11-26-p4-segmentation.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation.md` |
 | [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |

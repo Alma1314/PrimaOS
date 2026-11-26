@@ -47,6 +47,8 @@ updated: 2026-11-26
 
 2026-11-26：[P4-2a G5 细分采样探针](2026-11-26-p4-segmentation-probe.md)；新增服务/客户端 resume 入口与 `GATE_WAIT` 内核入口，拆出 queue-wait/switch-service/wait-output 与 reply-dispatch/resume-client；旧 G4 事件与 G5 旧字段冻结，新增 `S7PHASE` 行；G4/G5 各两轮、完整 72 轮通过；未实现优化。
 
+2026-11-26：[P4 收口证据包](2026-11-26-p4-closeout.md)；汇总 P4-0…P4-2a 方法与样本，P4-2 候选评估保留现状；P4-3 回归 G4/G5/I1/N1/C1 各两轮、workspace 1205、lint 与完整 72 轮通过；P4 未关闭、门槛未冻结、7-A 未勾选。
+
 2026-11-26：[WIN-M1 PE/ABI 宿主模型](2026-11-26-windows-m1-pe-model.md)；新增 `prima-windows` 的有界 PE32+ 解析、严格 RVA/映射校验与 Win64 ABI 探针，PE 21/21、ABI 4/4 宿主通过；真实 PE 只验证头与 `.text`，无导入/重定位/TLS/装载/Windows 参考差分。
 
 2026-11-26：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；`load_into` 在宿主完成平铺复制、DIR64/HIGHLOW 重定位与 IAT 填充，PE 32/32、ABI 4/4 通过；无页映射、Task 发布、TLS 初始化或 ring3 执行，真实 PE 仅首个基址装载。
