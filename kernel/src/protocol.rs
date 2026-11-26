@@ -9,6 +9,45 @@ pub(crate) fn boot_start() {
     write_event("boot_start", "ok");
 }
 
+/// P5-1 只读探测的开始标记（专用 `smp-probe` 镜像；默认启动不产生）。
+#[cfg(feature = "smp-probe")]
+pub(crate) fn smp_begin() {
+    serial::write_bytes(b"SMP|begin\r\n");
+}
+
+#[cfg(feature = "smp-probe")]
+pub(crate) fn smp_ready(report: &kernel::smp_probe::Report) {
+    serial::write_bytes(b"SMP|rsdp=");
+    write_u32(u32::from(report.rsdp_revision));
+    serial::write_bytes(b";xsdt=");
+    write_u32(u32::from(report.used_xsdt));
+    serial::write_bytes(b";cpus=");
+    write_u32(report.cpus as u32);
+    serial::write_bytes(b";bsp_apic=");
+    write_u32(report.bsp_apic_id);
+    serial::write_bytes(b";bsp_index=");
+    write_u32(report.bsp_index as u32);
+    serial::write_bytes(b";lapic=");
+    write_hex_u64(u64::from(report.lapic_phys));
+    serial::write_bytes(b";lapic_id=");
+    write_u32(report.lapic_id);
+    serial::write_bytes(b";x2apic=");
+    write_u32(u32::from(report.x2apic));
+    serial::write_bytes(b";online=1\r\n");
+}
+
+#[cfg(feature = "smp-probe")]
+pub(crate) fn smp_pass() {
+    serial::write_bytes(b"SMP|PASS\r\n");
+}
+
+#[cfg(feature = "smp-probe")]
+pub(crate) fn smp_fail(reason: &str) {
+    serial::write_bytes(b"SMP|FAIL|");
+    serial::write_bytes(reason.as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
 pub(crate) fn serial_ready() {
     write_event("serial_ready", "ok");
 }

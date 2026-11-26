@@ -48,9 +48,10 @@ P2b 与其后 holder 模型的依赖切片见[P2b与holder模型依赖切片计�
 [S7-B.1 设计](../specs/2026-11-27-stage7-smp-state-partition.md)与
 [P5-0 报告](../reports/2026-11-27-p5-0-state-partition.md)。
 
-2026-11-27：P5-1 部分——新增 `kernel/src/acpi.rs` 的 RSDP/RSDT/XSDT 与 MADT 纯解析，
-7 个宿主用例覆盖校验和、条目边界、enabled 过滤、x2APIC 优先与 CPU 上限。**未接线**：
-不读 `BootInfo.rsdp_addr`、不访问 LAPIC、不做 CPUID、不启动 AP。见
+2026-11-27：P5-1 完成——`kernel/src/acpi.rs` 的 RSDP/RSDT/XSDT 与 MADT 纯解析，加
+`smp_probe` 从 `BootInfo.rsdp_addr` 经物理直映射读表、CPUID 与 LAPIC 自识别；专用
+`test-smp` 在 `-smp 2/4` 各两轮通过并复用既有启动校验器。**AP 未启动**（`online=1`），
+默认 `-smp 1` 与 72 轮 BIOS 不变。见
 [P5-1 报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)。
 
 ## P2的具体接线与待解决边界

@@ -6502,6 +6502,89 @@ pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// P5-1 只读探测：固件报告的 CPU 数必须匹配启动参数，BSP 的 CPUID APIC ID
+/// 必须出现在 MADT 且与 LAPIC ID 一致；AP 未启动，`online` 必须为 1。
+pub(crate) fn validate_smp(output: &str, smp: u8) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SMP|"))
+        .collect();
+    if records.len() != 3 || records[0] != "SMP|begin" || records[2] != "SMP|PASS" {
+        return Err("SMP requires begin, one discovery line and one PASS".to_owned());
+    }
+    let body = records[1]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed SMP discovery line".to_owned())?;
+    let mut cpus = None;
+    let mut bsp_apic = None;
+    let mut bsp_index = None;
+    let mut lapic_id = None;
+    let mut online = None;
+    for field in body.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SMP field".to_owned())?;
+        match key {
+            "cpus" => cpus = Some(parse_decimal(value, key)?),
+            "bsp_apic" => bsp_apic = Some(parse_decimal(value, key)?),
+            "bsp_index" => bsp_index = Some(parse_decimal(value, key)?),
+            "lapic_id" => lapic_id = Some(parse_decimal(value, key)?),
+            "online" => online = Some(parse_decimal(value, key)?),
+            "rsdp" | "xsdt" | "x2apic" => {
+                parse_decimal(value, key)?;
+            }
+            "lapic" if value.starts_with("0x") => {}
+            _ => return Err(format!("unknown or malformed SMP field: {key}")),
+        }
+    }
+    let cpus = cpus.ok_or_else(|| "missing SMP cpus".to_owned())?;
+    if cpus != u64::from(smp) {
+        return Err(format!(
+            "SMP firmware reported {cpus} CPUs; QEMU was started with -smp {smp}"
+        ));
+    }
+    let bsp_apic = bsp_apic.ok_or_else(|| "missing SMP bsp_apic".to_owned())?;
+    let bsp_index = bsp_index.ok_or_else(|| "missing SMP bsp_index".to_owned())?;
+    if bsp_index >= cpus {
+        return Err("SMP BSP index is outside the reported CPU set".to_owned());
+    }
+    if lapic_id != Some(bsp_apic) {
+        return Err("SMP LAPIC ID does not match the CPUID APIC ID".to_owned());
+    }
+    if online != Some(1) {
+        return Err("SMP probe must report exactly the bootstrap CPU online".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod smp_tests {
+    use super::validate_smp;
+
+    const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
+
+    #[test]
+    fn smp_witness_requires_matching_cpu_count_and_lapic() {
+        assert_eq!(validate_smp(VALID, 4), Ok(()));
+        assert!(validate_smp(VALID, 2).is_err(), "必须匹配 -smp");
+        for bad in [
+            VALID.replace("lapic_id=0", "lapic_id=1"),
+            VALID.replace("bsp_index=0", "bsp_index=9"),
+            VALID.replace("online=1", "online=4"),
+            VALID.replace("cpus=4", "cpus=5"),
+            VALID.replace("SMP|PASS\n", ""),
+            VALID.replace("SMP|begin\n", ""),
+            format!("{VALID}SMP|PASS\n"),
+        ] {
+            assert!(
+                validate_smp(&bad, 4).is_err(),
+                "bad witness accepted: {bad}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod winpe_tests {
     use super::validate_winpe;

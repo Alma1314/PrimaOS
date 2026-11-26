@@ -86,6 +86,43 @@ pub(crate) fn run_bios_domains(image: &Path, round: u32) -> Result<(), String> {
     println!("PASS S6DOM round={round} roots=2 shared_log=3 denied=3 survivor=1");
     Ok(())
 }
+/// P5-1 只读探测：用指定 vCPU 数启动同一镜像，只额外验证 ACPI/MADT 见证；
+/// 正常启动事件仍走各自的校验器不在此重复。AP 不启动，`cpus=` 只代表固件报告。
+pub(crate) fn run_bios_smp(image: &Path, smp: u8, round: u32) -> Result<(), String> {
+    let output = run_captured_with(qemu_args_smp(image, smp), TEST_TIMEOUT)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/SMP-{smp}-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve smp witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    // 同一镜像在 2/4 vCPU 下仍须通过既有启动校验器；AP 未启动，事件应不变。
+    protocol::validate_output(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_service_traces(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_native_app_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_capacity(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_stage5_tty(&output.stdout).map_err(|error| with_output(error, &output))?;
+    protocol::validate_user_fault_trace(&output.stdout)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_smp(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
+    println!("PASS SMP smp={smp} round={round} cpus={smp} lapic=matched online=1");
+    Ok(())
+}
+
+/// 把默认单核参数中的 `-smp 1` 替换为指定 vCPU 数；其余参数保持冻结。
+fn qemu_args_smp(image: &Path, smp: u8) -> Vec<OsString> {
+    let mut args = qemu_args(image);
+    if let Some(index) = args.iter().position(|argument| argument == "-smp") {
+        args[index + 1] = OsString::from(smp.to_string());
+    }
+    args
+}
+
 /// WIN-M2 bounded ring3 prototype: the supervisor exits through the debug port
 /// after two original PE children report 42. Not a normal boot-suite round.
 pub(crate) fn run_bios_winpe(image: &Path, round: u32) -> Result<(), String> {

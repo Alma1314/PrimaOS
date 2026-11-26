@@ -63,6 +63,25 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             let (va, _byte) = mem::probe_physical_memory(phys, offset);
                             protocol::physical_map_ready(offset, va);
 
+                            // P5-1（仅 smp-probe）：只读发现 ACPI/MADT 与自身 APIC ID。
+                            // 探测失败只打印 FAIL 并继续正常启动；专用校验器要求完整
+                            // 见证，不能靠继续启动掩盖失败。不启动 AP。
+                            #[cfg(feature = "smp-probe")]
+                            {
+                                protocol::smp_begin();
+                                match boot_info.rsdp_addr.into_option() {
+                                    Some(rsdp) => match kernel::smp_probe::run(rsdp, offset) {
+                                        Ok(report) => {
+                                            protocol::smp_ready(&report);
+                                            protocol::smp_pass();
+                                        }
+                                        Err(error) => protocol::smp_fail(error.as_str()),
+                                    },
+                                    None => protocol::smp_fail("no-rsdp"),
+                                }
+                                serial::flush();
+                            }
+
                             // B2: 读 cr3 得到 PML4 物理地址，经直映射转虚拟，translate 内核镜像
                             // 虚拟地址到物理，证明 bootloader 页表可读。
                             let pml4_phys = kernel::cpu::cr3().0 & 0x000f_ffff_ffff_f000;

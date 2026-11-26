@@ -164,6 +164,8 @@
       "code": [
         "kernel/src/main.rs",
         "kernel/src/cpu.rs",
+        "kernel/src/acpi.rs",
+        "kernel/src/smp_probe.rs",
         "kernel/src/bootstrap.rs",
         "kernel/src/gdt.rs",
         "kernel/src/idt.rs",
@@ -2264,7 +2266,7 @@
       "status_class": "maintained",
       "abstract": "文档整理更新：2026-10-23。当前阶段结论依据已有报告；本次文档/Rust回归见整理报告，不改变组织级签署。 架构见白皮书，抽象语义见原语规范。 文档中心 · 主题地图 · 证据规则",
       "date": "2026-11-27",
-      "sha256": "258d5792d215182328f484724d6634db36f42b91a5c38bc229465ee04f49eee8",
+      "sha256": "66a54be30ded3a49865f7717bd0fb4afeb3b0da687d0aabeb78b2410e77b797d",
       "topic_ids": [
         "compatibility"
       ],
@@ -13748,19 +13750,19 @@
       "status_class": "partial",
       "abstract": "作者要求完整改造；基线63c555e2661b371454521a2afe70f5b1010b6765，初始工作树干净。 遵循工作契约和 阶段7计划。复用已有域内C适配层、能力/Segment、 认证服务会话与OpenFiles，不重写中立内核。全范围按依赖分片，未完成项保留而不记完成。",
       "date": "2026-11-27",
-      "sha256": "dea9c3ea75388171d610e08e1a6a713e2d766128f300584c6f2d8512d5685484",
+      "sha256": "4dec9f12a530c0434bc6f9f329480f6bae3659121d96d6dc2f6b8c28e4e4019e",
       "topic_ids": [
         "runtime",
         "vfs"
       ],
-      "lines": 91,
+      "lines": 92,
       "sections": [
         {
           "level": 1,
           "title": "LibOS 数据通路完整改造计划",
           "line": 10,
           "anchor": "libos-数据通路完整改造计划",
-          "end_line": 91
+          "end_line": 92
         },
         {
           "level": 2,
@@ -13774,21 +13776,21 @@
           "title": "工作项与依赖",
           "line": 19,
           "anchor": "工作项与依赖",
-          "end_line": 55
+          "end_line": 56
         },
         {
           "level": 2,
           "title": "P2的具体接线与待解决边界",
-          "line": 56,
+          "line": 57,
           "anchor": "p2的具体接线与待解决边界",
-          "end_line": 85
+          "end_line": 86
         },
         {
           "level": 2,
           "title": "验证与收口",
-          "line": 86,
+          "line": 87,
           "anchor": "验证与收口",
-          "end_line": 91
+          "end_line": 92
         }
       ],
       "mentioned_ids": [],
@@ -13826,11 +13828,11 @@
           "target": "../reports/2026-11-27-p5-0-state-partition.md"
         },
         {
-          "line": 54,
+          "line": 55,
           "target": "../reports/2026-11-27-p5-1-acpi-madt-host.md"
         },
         {
-          "line": 80,
+          "line": 81,
           "target": "2026-11-18-p3-async-slices.md"
         }
       ]
@@ -39745,77 +39747,77 @@
     {
       "path": "docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md",
       "id": "report-p5-1-acpi-madt-host",
-      "title": "P5-1 部分：ACPI RSDP/RSDT/XSDT 与 MADT 解析宿主模型",
+      "title": "P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测",
       "kind": "report",
       "lifecycle": "current",
       "lifecycle_reason": null,
       "replacements": [],
-      "authority": "scoped-host-evidence",
-      "status": "host-tests-pass-limits",
+      "authority": "scoped-host-and-qemu-evidence",
+      "status": "verified-scoped",
       "status_class": "verified",
-      "abstract": "本切片是 S7-B.1 设计 P5-1 的第一部分： 新增 kernel/src/acpi.rs，对调用方给出的字节切片做 RSDP v0/v2、RSDT/XSDT 表项与 MADT CPU 拓扑的纯解析，并用 8 个 host 用例钉住边界。 未接线：不读取 BootInfo.rsdp_addr、不访问 LAPIC MMIO、不做 CPUID、不启动 AP、 不改 QEMU -smp。这是解析器宿主模型，不是 SMP 或任何机器证据；不能替代 P5-2。",
+      "abstract": "本切片完成 S7-B.1 设计 P5-1： 解析器 + 只读探测。 新增 kernel/src/acpi.rs：RSDP v0/v2、RSDT/XSDT 表项与 MADT CPU 拓扑的纯解析 （零 unsafe，接收 &[u8]）。 新增 kernel/src/smp_probe.rs（仅 smp-probe feature）：从 BootInfo.rsdp_addr 经物理直映射读表，找到 MADT，用 CPUID 与 LAPIC 自识别 BSP 的 APIC ID。 新增专用 cargo xtask test-smp：同一镜像分别以 -smp 2…",
       "date": "2026-11-27",
-      "sha256": "5bc2212cd8a01f8045ea1bb8d1685c033ea38dfa0232bb0dcbc707e0c35e25e2",
+      "sha256": "d31482806870ec7291b766bc16918e1c25811103df6cd9fb86e7f14091d7f005",
       "topic_ids": [
         "boot"
       ],
-      "lines": 73,
+      "lines": 97,
       "sections": [
         {
           "level": 1,
-          "title": "P5-1 部分：ACPI RSDP/RSDT/XSDT 与 MADT 解析宿主模型",
+          "title": "P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测",
           "line": 10,
-          "anchor": "p5-1-部分acpi-rsdprsdtxsdt-与-madt-解析宿主模型",
-          "end_line": 73
+          "anchor": "p5-1acpimadt-解析与-24-vcpu-只读探测",
+          "end_line": 97
         },
         {
           "level": 2,
           "title": "结论与范围",
           "line": 12,
           "anchor": "结论与范围",
-          "end_line": 20
+          "end_line": 26
         },
         {
           "level": 2,
           "title": "基线与输入",
-          "line": 21,
+          "line": 27,
           "anchor": "基线与输入",
-          "end_line": 28
+          "end_line": 34
         },
         {
           "level": 2,
           "title": "实现内容",
-          "line": 29,
+          "line": 35,
           "anchor": "实现内容",
-          "end_line": 40
+          "end_line": 46
         },
         {
           "level": 2,
           "title": "命令与结果",
-          "line": 41,
+          "line": 47,
           "anchor": "命令与结果",
-          "end_line": 53
+          "end_line": 73
         },
         {
           "level": 2,
           "title": "失败、反例与限制",
-          "line": 54,
+          "line": 74,
           "anchor": "失败反例与限制",
-          "end_line": 63
+          "end_line": 87
         },
         {
           "level": 2,
           "title": "阶段/profile 影响",
-          "line": 64,
+          "line": 88,
           "anchor": "阶段profile-影响",
-          "end_line": 68
+          "end_line": 92
         },
         {
           "level": 2,
           "title": "后继关系",
-          "line": 69,
+          "line": 93,
           "anchor": "后继关系",
-          "end_line": 73
+          "end_line": 97
         }
       ],
       "mentioned_ids": [
@@ -39827,15 +39829,15 @@
           "target": "../specs/2026-11-27-stage7-smp-state-partition.md"
         },
         {
-          "line": 24,
+          "line": 30,
           "target": "../specs/2026-11-27-stage7-smp-state-partition.md"
         },
         {
-          "line": 25,
+          "line": 31,
           "target": "../plans/2026-11-06-stage7-execution.md"
         },
         {
-          "line": 71,
+          "line": 95,
           "target": "2026-11-27-p5-0-state-partition.md"
         }
       ]
@@ -40057,7 +40059,7 @@
       "status_class": "maintained",
       "abstract": "2026-11-11：LibOS数据通路共享批量首片；P1完整36组72轮BIOS通过，P2–P6待实现，未完成项和验证边界见正文。 2026-11-16：P2a代理会话与受限根视图；管理器签发、Store绑定与视图原语通过host/lint及既有72轮BIOS回归；Linux数据面迁移、镜像接线和代理QEMU正反例仍未实现。 2026-11-17：P2b-0/P2b-1 Store批量数据面；op矩阵与Store侧OPEN/STAT/CLOSE/GETDENTS/LSEEK/STAT_PATH通过host/workspace/lint；Linux前端…",
       "date": "2026-11-27",
-      "sha256": "49a013cad85687aacd5722adf37e6118a8251ef39cbfaaa4a17893bf6bf74438",
+      "sha256": "b68c34e9f6036f51cd4c24840167276cf34be668b577b069064349bd22975949",
       "topic_ids": [],
       "lines": 462,
       "sections": [
@@ -54856,7 +54858,7 @@
       "status_class": "proposed",
       "abstract": "作者在 2026-11-27 要求转回阶段 7 P5/P6。本文件是 S7-B.1 的第一项可审阅交付：per-CPU 状态/ 所有权设计，并附第一步已落地的代码边界。D15（SMP 前先做状态按 CPU 分区，禁止在单一 全局状态上直接加锁）继续有效。 本文是工作设计，不是 7-B 的冻结契约，也不勾选任何退出条件。它不改变 阶段跟踪的阶段状态、profile、QEMU 参数或既有 证据；AP 启动、IPI、TLB shootdown 与 2/4 vCPU 验收仍待后续切片。",
       "date": "2026-11-27",
-      "sha256": "ac70d68d8b45b1695aac9dfc62661a197531781f789bdd80cb7ecc734a1a9724",
+      "sha256": "808ea867eb758bab6091d66c6296c27a68b34ffbf0c0fef4495fb347478fa64e",
       "topic_ids": [
         "boot"
       ],

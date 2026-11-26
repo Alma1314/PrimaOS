@@ -59,7 +59,7 @@ updated: 2026-11-27
 
 2026-11-27：[WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md)；导出区分函数/转发器并新增 `export_by_ordinal` 与 `ModuleSet`（大小写/后缀归一、转发限深 8），新增 TEB/PEB 冻结子集与静态 TLS 模板宿主模型，ring3 改为三 DLL + `Fwd->winpe-stub.Stub` 转发；QEMU 两轮逐字节通过、host 1234、lint 通过；无用户 GS，动态 TLS/运行期 TEB/PEB、API-set 清单、`DllMain`、堆/错误与参考差分未覆盖，WIN-M3 未通过。
 
-2026-11-27：[P5-1 ACPI/MADT 宿主解析](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT 与 MADT 纯解析，8 个宿主用例覆盖校验和、条目边界、enabled 过滤、x2APIC 优先与 CPU 上限；host 1244、lint 通过；未读 `BootInfo.rsdp_addr`、未访问 LAPIC、未做 CPUID/AP，P5-1 仍为部分交付。
+2026-11-27：[P5-1 ACPI/MADT 解析与只读探测](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT、MADT 纯解析与 `smp_probe`（CPUID + LAPIC 自识别），专用 `test-smp` 在 `-smp 2/4` 各两轮通过并复用既有启动校验器，剔除 SMP 行后两种 vCPU 数日志逐字节相同；host 1245、lint、默认 72 轮通过；**AP 未启动**（`online=1`），7-B 未勾选，P6 未开始。
 
 2026-11-27：[P5-0 SMP 状态所有权设计](2026-11-27-p5-0-state-partition.md)；按 D15 给出每 CPU/任务级/全局共享/只读的状态分类、AP 启动与 IPI/TLB 分期、锁顺序与六项待决，并把调度当前任务迁到 `cpu::local`（BSP 初值不变）；host 1236、lint、完整 BIOS 36 组 72 轮通过；未启动 AP、未做 `-smp 2/4`，7-B 未勾选，P6 未开始。
 

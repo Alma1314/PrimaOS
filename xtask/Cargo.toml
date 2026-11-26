@@ -8,6 +8,7 @@ license = "GPL-3.0-or-later"
 [features]
 gate-audit-probe = ["kernel/gate-audit-probe"]
 gate-probe = ["kernel/gate-probe"]
+smp-probe = ["kernel/smp-probe"]
 linux-probe = ["prima-linux/linux-probe"]
 windows-pe-probe = ["prima-user/windows-pe-probe"]
 libos-bench = ["linux-probe", "prima-linux/libos-bench", "kernel/timestamp-probe"]

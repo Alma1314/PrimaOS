@@ -27,6 +27,8 @@ pub mod rights;
 pub mod sched;
 #[doc(hidden)]
 pub mod signal;
+#[cfg(feature = "smp-probe")]
+pub mod smp_probe;
 pub mod syscall;
 #[cfg(test)]
 pub mod test_support;

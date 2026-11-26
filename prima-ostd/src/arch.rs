@@ -68,6 +68,32 @@ pub fn rdmsr(msr: u32) -> u64 {
     ((high as u64) << 32) | low as u64
 }
 
+/// 执行 `cpuid`，返回 `[eax, ebx, ecx, edx]`。
+///
+/// 契约：无内存副作用；`leaf`/`subleaf` 由调用方选择。结果随 CPU 与固件变化，
+/// 调用方不得把某个叶子的返回值当成跨平台常量。
+#[inline]
+pub fn cpuid(leaf: u32, subleaf: u32) -> [u32; 4] {
+    let (eax, ebx, ecx, edx): (u32, u32, u32, u32);
+    // SAFETY: CPUID 读取 CPU 标识，不改内存或特权状态。rbx 由 LLVM 保留，
+    // 不能作为操作数：先存入通用寄存器，读回后再恢复。
+    unsafe {
+        asm!(
+            "mov {saved:r}, rbx",
+            "cpuid",
+            "mov {out:e}, ebx",
+            "mov rbx, {saved:r}",
+            saved = out(reg) _,
+            out = out(reg) ebx,
+            inlateout("eax") leaf => eax,
+            inlateout("ecx") subleaf => ecx,
+            out("edx") edx,
+            options(nostack, preserves_flags)
+        );
+    }
+    [eax, ebx, ecx, edx]
+}
+
 /// 写一个 MSR。
 ///
 /// 契约：特权指令，**只能在 CPL0 执行**；写入未定义的值会使依赖该 MSR 的后续行为未定义

@@ -160,6 +160,8 @@
     "code": [
       "kernel/src/main.rs",
       "kernel/src/cpu.rs",
+      "kernel/src/acpi.rs",
+      "kernel/src/smp_probe.rs",
       "kernel/src/bootstrap.rs",
       "kernel/src/gdt.rs",
       "kernel/src/idt.rs",
