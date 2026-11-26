@@ -13729,18 +13729,18 @@
       "authority": "execution-plan",
       "status": "in-progress",
       "date": "2026-11-26",
-      "sha256": "3253b3517914adfac2b9d17750723c5528512c06d8e313913cc1c388959cc1c5",
+      "sha256": "c0c9d7b0e40f3bce5e1b3a6f95cf6e4139e521f3296d33d46bd6eecf0faa99e5",
       "topic_ids": [
         "capability-ipc"
       ],
-      "lines": 86,
+      "lines": 89,
       "sections": [
         {
           "level": 1,
           "title": "P4 Gate/IPC 路径收窄执行切片",
           "line": 10,
           "anchor": "p4-gateipc-路径收窄执行切片",
-          "end_line": 86
+          "end_line": 89
         },
         {
           "level": 2,
@@ -13775,21 +13775,21 @@
           "title": "P4-2 单项收窄",
           "line": 65,
           "anchor": "p4-2-单项收窄",
-          "end_line": 73
+          "end_line": 76
         },
         {
           "level": 2,
           "title": "P4-3 回归与门限输入",
-          "line": 74,
+          "line": 77,
           "anchor": "p4-3-回归与门限输入",
-          "end_line": 80
+          "end_line": 83
         },
         {
           "level": 2,
           "title": "排序与停止规则",
-          "line": 81,
+          "line": 84,
           "anchor": "排序与停止规则",
-          "end_line": 86
+          "end_line": 89
         }
       ],
       "mentioned_ids": [],
@@ -13812,6 +13812,10 @@
         },
         {
           "line": 60,
+          "target": "../reports/2026-11-26-p4-segmentation-probe.md"
+        },
+        {
+          "line": 73,
           "target": "../reports/2026-11-26-p4-segmentation-probe.md"
         }
       ]
@@ -37962,16 +37966,16 @@
       "authority": "scoped-implementation-and-validation",
       "status": "validated-with-limits",
       "date": "2026-11-26",
-      "sha256": "3288d8b037511d8018db2b052fa2d54d072e48f2635243e2387e1f7f8b2cddeb",
+      "sha256": "1e493a8c584139d279cbfc8cf129e479f36044009c8c2d6436788bd36a41deb8",
       "topic_ids": [],
-      "lines": 99,
+      "lines": 109,
       "sections": [
         {
           "level": 1,
           "title": "P4-2a：G5 细分采样探针与阶段分解",
           "line": 10,
           "anchor": "p4-2ag5-细分采样探针与阶段分解",
-          "end_line": 99
+          "end_line": 109
         },
         {
           "level": 2,
@@ -38031,10 +38035,17 @@
         },
         {
           "level": 2,
-          "title": "后继关系",
+          "title": "P4-2 候选评估（未实现）",
           "line": 95,
+          "anchor": "p4-2-候选评估未实现",
+          "end_line": 104
+        },
+        {
+          "level": 2,
+          "title": "后继关系",
+          "line": 105,
           "anchor": "后继关系",
-          "end_line": 99
+          "end_line": 109
         }
       ],
       "mentioned_ids": [],
@@ -38052,7 +38063,7 @@
           "target": "2026-11-26-p4-segmentation.md"
         },
         {
-          "line": 99,
+          "line": 109,
           "target": "../plans/2026-11-26-p4-path-narrowing.md"
         }
       ]
