@@ -53,6 +53,10 @@ P4-0 ─→ P4-1 ─→ P4-2 ─→ P4-3
   帧保存/恢复、`SYS_SEND` 直投写回、`gate_copy` scratch 双拷贝），为每个候选
   写出可能收益、风险与可证伪断言。
 - 停止条件：候选需要改变抽象语义或放宽校验时停止。
+- 2026-11-26：审查完成，见[分段确认报告](../reports/2026-11-26-p4-segmentation.md)。
+  `queue-deliver`/`deliver-reply` 主要是两次任务切换与恢复（FXSAVE/FXRSTOR 512 B、
+  CR3、iretq），现有 5 阶段不足以细分；候选排序先补细分探针，再评估 FPU 惰性、
+  绑定索引与 `gate_copy` scratch。
 
 ## P4-2 单项收窄
 
