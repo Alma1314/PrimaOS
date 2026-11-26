@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -150,6 +151,20 @@ class EvidenceTests(unittest.TestCase):
                 ci.checked_download('https://example.invalid/input', cached, '0' * 64)
         network.assert_not_called()
         self.assertEqual(cached.read_bytes(), b'corrupt')
+
+    def test_formal_bundle_is_published_only_after_hash_verification(self):
+        archive = self.root / 'bundle.tar.gz'
+        payload = self.root / 'tool'
+        payload.write_bytes(b'pinned formal tool')
+        with tarfile.open(archive, 'w:gz') as bundle:
+            bundle.add(payload, arcname='tool')
+        expected = hashlib.sha256(payload.read_bytes()).hexdigest()
+        destination = self.root / 'target/aeneas'
+        with self.assertRaisesRegex(ValueError, 'hash mismatch'):
+            ci.extract_verified(archive, destination, {'tool': '0' * 64})
+        self.assertFalse(destination.exists())
+        ci.extract_verified(archive, destination, {'tool': expected})
+        self.assertEqual((destination / 'tool').read_bytes(), b'pinned formal tool')
 
     def test_checkout_rejects_dirty_input_without_resetting_it(self):
         destination = self.root / 'target/snapshot'

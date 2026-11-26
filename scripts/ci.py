@@ -277,6 +277,25 @@ def checked_checkout(url, destination, commit):
         raise ValueError(f'input commit/cleanliness mismatch: {destination}')
 
 
+def extract_verified(archive, destination, expected):
+    """Extract a pinned archive into a temporary directory and publish it atomically.
+
+    Cache restores are advisory: a failed or interrupted extraction must not leave
+    `destination` looking like a complete pinned input to the next run.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(dir=destination.parent, prefix=destination.name + '.'))
+    try:
+        with tarfile.open(archive) as source:
+            source.extractall(temporary, filter='data')
+        for name, sha256 in expected.items():
+            verify_hash(temporary / name, sha256)
+        temporary.rename(destination)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
 def musl_module(root):
     spec = importlib.util.spec_from_file_location('prima_musl_build', root / 'libos/linux/musl/build.py')
     module = importlib.util.module_from_spec(spec)
@@ -391,8 +410,7 @@ def prepare(group, root=ROOT):
         checked_download(formal['url'], archive, formal['sha256'])
         destination = root / 'target/aeneas'
         if not destination.exists():
-            with tarfile.open(archive) as source:
-                source.extractall(destination, filter='data')
+            extract_verified(archive, destination, formal['binaries'])
         for name, expected in formal['binaries'].items():
             if digest(destination / name) != expected:
                 raise ValueError(f'unpinned formal tool: {name}')

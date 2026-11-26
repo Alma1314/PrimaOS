@@ -4,7 +4,7 @@ kind: specification
 authority: scoped-tooling-contract
 status: reviewed-for-ci-slice
 lifecycle: current
-updated: 2026-11-08
+updated: 2026-11-26
 ---
 
 # 7-0 CI分组、锁定输入与验收身份契约
@@ -77,3 +77,22 @@ host测试必须覆盖：失败后停止与旧制品排除、成功的新制品�
 [2026-11-07整改报告](../reports/2026-11-07-stage7-ci-remediation.md)。
 1921757干净远端九组通过，以及原始串口/探针子目录身份后继的本地证据见
 [九组CI与Gate基线](../reports/2026-11-07-stage7-ci-green-gate-baseline.md)。
+
+## 2026-11-26 优化：分层安装与可验证缓存
+
+- 工具安装按组裁剪：docs/lint 不运行 apt；formal 只装 elan；host 保留 C 工具但不装 QEMU；
+  镜像组按需装 QEMU，bios/linux 另装系统 busybox 供 Linux 参考构建。
+- checkout 仅 docs 组取完整历史（基线比较需要），其余组 depth=1；源身份仍以 HEAD、
+  `git ls-files` 和运行前后状态为准，不使用远端历史作为验收依据。
+- 新增固定 commit 的 `actions/cache`（v4.3.0，`0057852…`），只缓存候选工具/输入路径：
+  Rust 工具链与 Cargo 缓存、musl 快照与 `target/musl-prefix`、sbase、Linux 参考包/内核、
+  Aeneas 与 Lean 缓存。恢复的路径仍由 `--prepare` 重新验证：哈希/commit/干净状态、
+  musl 构建 stamp 或精确二进制 SHA-256。缓存缺失、损坏或过期只会导致重新下载、重建
+  或作业失败，不改变 PASS 条件。
+- 缓存不是证据：命令、断言、30 秒门限、组预算、九组划分与 `max-parallel: 2` 均不变；
+  缓存命中不改变 `result.json` 内容，也不产生签署主张。
+- formal 归档解包改为在临时目录验证全部二进制哈希后再原子发布；中断或坏哈希不会留下
+  看似完整的 `target/aeneas`，避免半解包缓存污染后继运行。
+- 本次未重跑远端九组；远端通过仍须下一次干净 runner 的九组结果。本地检查为
+  `scripts/test_ci.py`、`scripts/ci.py <group> --plan` 与工作流 YAML 解析，不构成
+  QEMU 或远端证据。

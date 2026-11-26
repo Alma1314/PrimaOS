@@ -76,6 +76,9 @@ N1沿同一构建通道测128次未绑定Gate的SYS_TASK_ID int80，方法与基
 [基线报告](../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md)，两种边界/样本数的数据不混算。
 
 同工作区一次只运行一个组；每组内部串行，Cargo/musl各2 worker，组预算不替代原QEMU门限。
+GitHub 工作流按组安装工具并恢复固定 commit 的缓存（Rust/Cargo、musl/sbase、Linux 参考、
+Aeneas）；缓存路径必须在 `--prepare` 中重新通过哈希/commit/stamp 校验，命中不改变命令、
+断言或预算，也不构成证据。
 准备步骤会预构建锁定bootloader，以获取其构建脚本额外安装的五个BIOS/UEFI包；
 仅`cargo fetch`不足以准备干净runner。上游会并行启动五个Cargo，各2 worker并非宿主全局2 worker上限。
 继承的Gate/审计/人格桩/Linux ELF选择器与Rust覆盖会被清理，每条命令使用自己的配置；

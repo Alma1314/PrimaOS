@@ -5117,16 +5117,16 @@
       "authority": "operational",
       "status": "maintained",
       "date": "2026-11-26",
-      "sha256": "21bce877937b2eb0012a46737162861d565503300712375289e8dec01fbd88fc",
+      "sha256": "853552e5c14ad3c60a770cdfc227d12a99666d5036dd7d7e552614e33c26feee",
       "topic_ids": [],
-      "lines": 114,
+      "lines": 117,
       "sections": [
         {
           "level": 1,
           "title": "开发、构建与验证手册",
           "line": 10,
           "anchor": "开发构建与验证手册",
-          "end_line": 114
+          "end_line": 117
         },
         {
           "level": 2,
@@ -5154,21 +5154,21 @@
           "title": "CI分组与验收身份",
           "line": 58,
           "anchor": "ci分组与验收身份",
-          "end_line": 95
+          "end_line": 98
         },
         {
           "level": 2,
           "title": "变更对应验证",
-          "line": 96,
+          "line": 99,
           "anchor": "变更对应验证",
-          "end_line": 103
+          "end_line": 106
         },
         {
           "level": 2,
           "title": "失败定位",
-          "line": 104,
+          "line": 107,
           "anchor": "失败定位",
-          "end_line": 114
+          "end_line": 117
         }
       ],
       "mentioned_ids": [],
@@ -5262,35 +5262,35 @@
           "target": "../superpowers/reports/2026-11-07-stage7-gate-user-benchmark.md"
         },
         {
-          "line": 91,
+          "line": 94,
           "target": "../superpowers/specs/2026-11-06-stage7-ci-evidence.md"
         },
         {
-          "line": 92,
+          "line": 95,
           "target": "../superpowers/reports/2026-11-06-stage7-ci-evidence.md"
         },
         {
-          "line": 93,
+          "line": 96,
           "target": "../superpowers/reports/2026-11-07-stage7-ci-remediation.md"
         },
         {
-          "line": 94,
+          "line": 97,
           "target": "../superpowers/reports/2026-11-07-stage7-ci-green-gate-baseline.md"
         },
         {
-          "line": 100,
+          "line": 103,
           "target": "../superpowers/specs/2026-10-24-kernel-handle-model-design.md"
         },
         {
-          "line": 100,
+          "line": 103,
           "target": "../../lean/README.md"
         },
         {
-          "line": 102,
+          "line": 105,
           "target": "topics/libos.md"
         },
         {
-          "line": 114,
+          "line": 117,
           "target": "templates/report.md"
         }
       ]
@@ -52073,19 +52073,19 @@
       "replacements": [],
       "authority": "scoped-tooling-contract",
       "status": "reviewed-for-ci-slice",
-      "date": "2026-11-08",
-      "sha256": "c365dac13e771657bd6cb5e899b83d3cf8d5160173752113a78513d9ab6eff71",
+      "date": "2026-11-26",
+      "sha256": "4c493d37ac59598016034ade8fe546c34770fa819f4866004378f4fb9bb43737",
       "topic_ids": [
         "boot"
       ],
-      "lines": 79,
+      "lines": 98,
       "sections": [
         {
           "level": 1,
           "title": "7-0 CI分组、锁定输入与验收身份契约",
           "line": 10,
           "anchor": "7-0-ci分组锁定输入与验收身份契约",
-          "end_line": 79
+          "end_line": 98
         },
         {
           "level": 2,
@@ -52113,7 +52113,14 @@
           "title": "验证",
           "line": 69,
           "anchor": "验证",
-          "end_line": 79
+          "end_line": 80
+        },
+        {
+          "level": 2,
+          "title": "2026-11-26 优化：分层安装与可验证缓存",
+          "line": 81,
+          "anchor": "2026-11-26-优化分层安装与可验证缓存",
+          "end_line": 98
         }
       ],
       "mentioned_ids": [],
