@@ -57,6 +57,10 @@ P4-0 ─→ P4-1 ─→ P4-2 ─→ P4-3
   `queue-deliver`/`deliver-reply` 主要是两次任务切换与恢复（FXSAVE/FXRSTOR 512 B、
   CR3、iretq），现有 5 阶段不足以细分；候选排序先补细分探针，再评估 FPU 惰性、
   绑定索引与 `gate_copy` scratch。
+- 2026-11-26：细分探针落盘，见[细分采样报告](../reports/2026-11-26-p4-segmentation-probe.md)。
+  G5 新增服务/客户端 resume 入口与 `GATE_WAIT` 内核入口；旧 G4 事件逐字节不变，
+  G5 追加 `S7PHASE` 行与 5 个派生字段。两轮 G5 显示 `wait-output` 是
+  `queue-deliver` 中最大子段；P4-2 据此选择单项收窄。
 
 ## P4-2 单项收窄
 

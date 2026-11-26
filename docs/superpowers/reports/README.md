@@ -45,7 +45,11 @@ updated: 2026-11-26
 
 2026-11-26：[P4-1 Gate 递送/恢复分段确认](2026-11-26-p4-segmentation.md)；把 queue-deliver/deliver-reply 映射到两次任务切换与 FXSAVE/FXRSTOR、CR3、iretq，确认现有 5 阶段不足以细分；候选排序先补细分探针，再评估 FPU 惰性、绑定索引与 `gate_copy` scratch；不改代码。
 
+2026-11-26：[P4-2a G5 细分采样探针](2026-11-26-p4-segmentation-probe.md)；新增服务/客户端 resume 入口与 `GATE_WAIT` 内核入口，拆出 queue-wait/switch-service/wait-output 与 reply-dispatch/resume-client；旧 G4 事件与 G5 旧字段冻结，新增 `S7PHASE` 行；G4/G5 各两轮、完整 72 轮通过；未实现优化。
+
 2026-11-26：[WIN-M1 PE/ABI 宿主模型](2026-11-26-windows-m1-pe-model.md)；新增 `prima-windows` 的有界 PE32+ 解析、严格 RVA/映射校验与 Win64 ABI 探针，PE 21/21、ABI 4/4 宿主通过；真实 PE 只验证头与 `.text`，无导入/重定位/TLS/装载/Windows 参考差分。
+
+2026-11-26：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；`load_into` 在宿主完成平铺复制、DIR64/HIGHLOW 重定位与 IAT 填充，PE 32/32、ABI 4/4 通过；无页映射、Task 发布、TLS 初始化或 ring3 执行，真实 PE 仅首个基址装载。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
