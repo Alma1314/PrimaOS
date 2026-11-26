@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（251）
+## report（252）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -353,6 +353,7 @@
 | [P4-2a：G5 细分采样探针与阶段分解](../superpowers/reports/2026-11-26-p4-segmentation-probe.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation-probe.md` |
 | [P4-1：Gate 递送/恢复分段确认与候选](../superpowers/reports/2026-11-26-p4-segmentation.md) | current | `docs/superpowers/reports/2026-11-26-p4-segmentation.md` |
 | [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |
+| [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 
 ## spec（4）
 

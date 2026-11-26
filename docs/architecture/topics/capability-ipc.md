@@ -83,7 +83,7 @@ updated: 2026-10-24
 
 2026-11-26 [P4-0 Gate/IPC 分段基线](../../superpowers/reports/2026-11-26-p4-baseline.md)用 I1/N1/G5 两轮样本固定 Gate 递送与恢复的阶段占比（本机 `queue-deliver` 约 48%、`deliver-reply` 约 29%）；这是测量输入，不是性能门槛或实现证据，P4 切片见[计划](../../superpowers/plans/2026-11-26-p4-path-narrowing.md)。
 
-2026-11-25 [§12.4/W15 订阅生命周期最小模型](../../superpowers/reports/2026-11-25-lean-subscription.md)在 [Formal.Subscription](../../../lean/Formal/Subscription.lean) 中建模订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后授权 Cap 的原子终止与源销毁；[公理审计](../../../lean/Checks/Subscription.lean)仅 `propext`/`Quot.sound`。关系模型不证明 lastness 检查器、活性或审计事件。
+2026-11-25 [§12.4/W15 订阅生命周期最小模型](../../superpowers/reports/2026-11-25-lean-subscription.md)在 [Formal.Subscription](../../../lean/Formal/Subscription.lean) 中建模订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后授权 Cap 的原子终止与源销毁；[公理审计](../../../lean/Checks/Subscription.lean)仅 `propext`/`Quot.sound`。关系步骤与可执行函数经桥接；不证明 lastness 检查器、活性或审计事件。
 
 2026-11-25 [§13.1/W13 审计日志核心最小模型](../../superpowers/reports/2026-11-25-lean-audit.md)在 [Formal.Audit](../../../lean/Formal/Audit.lean) 中建模信封、追加式日志、严格递增 EventId、Capability 位置历史、created_at 与受审计 move/drop/mint；[公理审计](../../../lean/Checks/Audit.lean)仅 `propext`/`Quot.sound`。载荷完整性与 audit 父链查询不覆盖。
 

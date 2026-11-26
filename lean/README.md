@@ -20,7 +20,7 @@ updated: 2026-11-25
 > 2026-11-25 的 `Formal.Drop` 切片把 COSIR §4.5 `cap_drop` 的规范层语义纳入可执行模型（单位置删除、不传播、记录保留、structural 保护），与 `Formal.Revoke` 正交，见文末。
 > 2026-11-25 的 `Formal.Move` 切片把 COSIR §4.6 的位置变化纳入可执行模型（转移表、单位置原子更新、原位置/新位置与直投 `MsgId` 记录、删除到 `None`、跨节点不移动、W3 表示层唯一），抽象边界与 W4 容器侧缺口见文末。
 > 2026-11-25 的 `Formal.Container` 切片把 COSIR W4 的容器双向一致纳入可执行模型（`HeldBy` 的 Task 活动性、`InMessage` ↔ 消息 caps、`InNamespace` ↔ Namespace entries），并证明 send/recv/bind/unbind 的原子耦合更新保持 W3+W4；函数式容器表示使“列表无重复/路径唯一”由构造满足，见文末。
-> 2026-11-25 的 `Formal.Subscription` 切片把 §12.4/W15 订阅生命周期纳入关系模型（订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后一个授权 Cap 时的原子终止与源销毁），不带 `#eval` 锚，见文末。
+> 2026-11-25 的 `Formal.Subscription` 切片把 §12.4/W15 订阅生命周期纳入模型（订阅表、usable `ExcSubscribe` 见证、subscribe/unsubscribe、失去最后授权 Cap 时的原子终止与源销毁）；既有关系步骤与可执行函数通过桥接定理对齐，并带 `#eval` 锚，见文末。
 > 2026-11-25 的 `Formal.Audit` 切片把 §13.1/W13 审计日志核心纳入模型（信封、追加式日志、由位置推导的严格递增 EventId、位置历史、created_at、对象创建事件与受审计操作），其后的 `audit` 查询由 `Formal.AuditQuery` 最小建模（`WellFormed` 下父链燃料完备性已证），事件载荷完整性仍不覆盖，见文末。
 > 本文是 Lean 模型与 cosir host / 内核句柄模型之间的**唯一权威映照契约**。新增内核句柄模型是独立命名空间，不扩充下述 CDT `State`，也不将模型证明提升为 Rust 内核的细化证明。
 
@@ -40,7 +40,7 @@ updated: 2026-11-25
 - `Formal.Drop`（`Formal/Drop.lean`）：`cap_drop` 的单位置删除、不传播到派生子项、记录与 CDT 保持、structural 守卫与幂等（2026-11-25 增量，见下节）。
 - `Formal.Move`（`Formal/Move.lean`）：§4.6 位置迁移表、原子 `applyMove`、原/新位置与直投 `MsgId` 事件、删除到 `None`、跨节点不移动、W3 表示层唯一位置（2026-11-25 增量，见下节）。
 - `Formal.Container`（`Formal/Container.lean`）：W4 的 Task/Message/Namespace 容器与 `locations` 双向一致、W3+W4 组合不变量 `WorldOk`、四个耦合原子操作（send/recv/bind/unbind）的保持性与空世界锚（2026-11-25 增量，见下节）。
-- `Formal.Subscription`（`Formal/Subscription.lean`）：§12.4/W15 订阅表与 usable `ExcSubscribe` 见证、subscribe/unsubscribe、drop/send 失去最后授权 Cap 的原子终止、源销毁，以及 W15 保持（2026-11-25 增量，见下节）。
+- `Formal.Subscription`（`Formal/Subscription.lean`）：§12.4/W15 订阅表与 usable `ExcSubscribe` 见证、subscribe/unsubscribe、drop/send 失去最后授权 Cap 的原子终止、源销毁，以及 W15 保持；可执行函数与关系步骤桥接（2026-11-25 增量，见下节）。
 - `Formal.Audit`（`Formal/Audit.lean`）：§13.1 事件信封与追加式日志、W13 严格递增 ID、Capability 位置历史、`created_at`、Task 状态与对象创建事件，以及受审计 move/drop/mint 的一步原子追加（2026-11-25 增量，见下节）。
 - `Formal.AuditQuery`（`Formal/AuditQuery.lean`）：§13.2 `audit(cap)` 参数化查询——父链（root→cap）、created_at 列表、位置历史、目标对象事件、`InvalidCap`/`NotHeld` 错误语义，以及 `WellFormed` 下的父链燃料完备性（2026-11-25 增量，见下节）。
 - `Formal.lean`（入口）：`import` 上述模块，使 `lake build` 覆盖全部 `Formal.*`；含 `smokeState` 冒烟 `#eval`。
@@ -492,22 +492,23 @@ CDT 不变量，需与 `WellFormed` 独立组合。
 订阅是异常源的内部状态：每个 Task 一个 bit（因此“每 Task 每源至多一个活跃订阅”
 由表示保证）。W15 要求订阅者是有活动 Task，且持有至少一个指向该源、可用、含
 `ExcSubscribe` 的 Capability；失去最后一个此类 Capability 时订阅同终止。本次在
-`Formal.Subscription` 以关系模型（携带源/Capability 见证）建模生命周期，未改 Rust。
+`Formal.Subscription` 以关系步骤（携带源/Capability 见证）加可执行函数（桥接到步骤）建模生命周期，未改 Rust。
 
 | Lean | §12.4 / W15 | 边界 |
 |---|---|---|
 | `Source {active, subscribers}` | 订阅位 + 源活动性 | 每 Task 一 bit |
 | `UsableFor w holder source capId` | 持有 + active + right + 指向源 | `ExcSubscribe` bit 为模型本地 0x80 |
 | `W15` | 订阅者活动 Task + usable 见证 | — |
-| `SubscribeStep` / `UnsubscribeStep` | subscribe/unsubscribe 一步 | 关系模型，无执行函数 |
+| `SubscribeStep` / `UnsubscribeStep` | subscribe/unsubscribe 一步 | 关系 + 可执行 `excSubscribe`/`excUnsubscribe` |
 | `DropLastStep` / `SendLastStep` | 失去最后授权 Cap 时位置与订阅同步终止 | “最后”为调用方前置，未证明检查器 |
 | `DestroySourceStep` | 源销毁移除全部订阅 | 通知投递不建模 |
 
-24 条定理（2 条无公理，其余仅 `propext`/`Quot.sound`）：
+39 条定理（2 条无公理，其余仅 `propext`/`Quot.sound`）：
 
 - 更新投影：`setSource_self`/`_other`、`addSubscriber_self`/`_other`/`_active`、`clearSubscriber_self`/`_other`/`_active`、`endSub_self`/`_other`、`endSubCap_excSource`。
 - 见证迁移：`usableFor_snap`（同一源的见证跨位置删除保持）、`usableFor_snap_of_ne`（其他源）、`w15_active`/`w15_witness`。
 - 生命周期：`SubscribeStep_adds`/`_preserves`、`UnsubscribeStep_clears`/`_preserves`、`DropLastStep_clears`/`_preserves`、`SendLastStep_clears`/`_preserves`、`DestroySourceStep_removes`/`_preserves`。
+- 可执行：`excSubscribe`/`excUnsubscribe`/`dropSubCap`/`sendSubCap`/`destroySource` 的成功结果通过 `*_step` 桥接到关系；`excSubscribe_preserves`/`_adds`、`excUnsubscribe_preserves`/`_clears`、`dropSubCap_preserves`/`_clears`、`sendSubCap_preserves`/`_clears`、`destroySource_preserves`/`_removes`。
 
 复现：
 
@@ -517,13 +518,15 @@ elan run leanprover/lean4:v4.35.0 lake build
 elan run leanprover/lean4:v4.35.0 lake env lean Checks/Subscription.lean
 ```
 
-本切片**没有 `#eval` 锚**：步骤以关系表述，携带不可执行的见证与前置条件；证据为
-`lake build` 与公理审计。
+`#eval` 锚覆盖：subscribe 成功/无权限/非持有者/重复订阅失败、成功加位、退订清位、
+drop/send 失去最后一个授权 Cap 时位置与订阅同步、源销毁移除；关系步骤仍保留作
+规范陈述，并由 `*_step` 桥接。证据为 `lake build` 与公理审计。
 
-边界：不证明实现层“最后一个授权 Cap”检查器的正确性；不建模订阅在仍有其他授权
-Cap 时的存续活性（liveness）、审计事件（`ExcSubscribed`/`ExcUnsubscribed`）、源
-kind/`KindMismatch`、通知投递、源销毁通知、并发、或 Rust 细化。`SubWorld` 的
-`W15` 与 `Container.WorldOk`/CDT `WellFormed` 为独立不变量，需另行组合。
+边界：`dropSubCap`/`sendSubCap` 仅用于指向源的 Capability；“这是最后一个授权 Cap”
+仍是调用方前置，不证明检查器，也不建模仍有其他授权 Cap 时的存续活性（liveness）。
+不覆盖审计事件（`ExcSubscribed`/`ExcUnsubscribed`）、源 kind/`KindMismatch`、通知
+投递、源销毁通知、并发或 Rust 细化；`W15` 与 `Container.WorldOk`/CDT `WellFormed`
+为独立不变量。
 
 ## 2026-11-25 Audit 切片（§13.1 / W13）
 

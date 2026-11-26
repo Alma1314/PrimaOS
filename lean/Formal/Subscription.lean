@@ -398,4 +398,253 @@ theorem DestroySourceStep_preserves {w w' : SubWorld} {s : Nat}
       simpa [hse] using hsrc'
     exact h15 s' src' hsrcOld hact'
 
+
+/-! Executable operations. Each is the computable counterpart of the corresponding
+    `Step` relation; the bridges below feed the relational preservation theorems. -/
+
+def excSubscribe (w : SubWorld) (caller capId s : Nat) : Option SubWorld :=
+  match w.base.snap.state.locations capId with
+  | some (.heldBy owner) =>
+      match w.base.snap.state.caps capId, w.sources s, w.base.tasks caller with
+      | some cap, some src, some tk =>
+          if owner = caller ∧ cap.active = true ∧ cap.rights &&& capExcSubscribe ≠ 0
+             ∧ cap.obj = .excSource s ∧ src.active = true
+             ∧ src.subscribers caller = false ∧ tk.active = true then
+            some (setSource w s (addSubscriber src caller))
+          else none
+      | _, _, _ => none
+  | _ => none
+
+def excUnsubscribe (w : SubWorld) (caller capId s : Nat) : Option SubWorld :=
+  match w.base.snap.state.locations capId with
+  | some (.heldBy owner) =>
+      match w.base.snap.state.caps capId, w.sources s with
+      | some cap, some src =>
+          if owner = caller ∧ cap.active = true ∧ cap.rights &&& capExcSubscribe ≠ 0
+             ∧ cap.obj = .excSource s ∧ src.active = true
+             ∧ src.subscribers caller = true then
+            some (setSource w s (clearSubscriber src caller))
+          else none
+      | _, _ => none
+  | _ => none
+
+def upd (w : SubWorld) (base : World) (sources : Nat → Option Source) : SubWorld :=
+  { w with base := base, sources := sources }
+
+/-- Executable coupled drop of a capability that points at source `s`. -/
+def dropSubCap (w : SubWorld) (capId holder s : Nat) : Option SubWorld :=
+  match w.base.snap.state.locations capId, w.base.snap.state.caps capId with
+  | some loc, some cap =>
+      if loc = .heldBy holder ∧ cap.obj = .excSource s then
+        some (upd w { w.base with snap := replace w.base.snap capId none }
+          (endSub w s holder).sources)
+      else none
+  | _, _ => none
+
+/-- Executable coupled queued send of a capability that points at source `s`. -/
+def sendSubCap (w : SubWorld) (capId sender msg s : Nat) : Option SubWorld :=
+  match w.base.snap.state.caps capId with
+  | some cap =>
+      if cap.obj = .excSource s then
+        match queuedSend w.base capId sender msg with
+        | some base' => some (upd w base' (endSub w s sender).sources)
+        | none => none
+      else none
+  | none => none
+
+def destroySource (w : SubWorld) (s : Nat) : Option SubWorld :=
+  match w.sources s with
+  | some _ => some { w with sources := fun x => if x = s then none else w.sources x }
+  | none => none
+
+theorem excSubscribe_step {w w' : SubWorld} {caller capId s : Nat}
+    (h : excSubscribe w caller capId s = some w') :
+    SubscribeStep w caller capId s w' := by
+  unfold excSubscribe at h
+  split at h
+  · rename_i hloc
+    split at h
+    · rename_i cap src tk hcap hsrc htk
+      split at h
+      · rename_i hguard
+        rcases hguard with ⟨hcaller, hact, hright, hobj, hsrcAct, hfresh, htask⟩
+        rw [hcaller] at hloc
+        cases h
+        exact ⟨caller, cap, src, tk, hloc, hcap, hsrc, htk, rfl, hact, hright, hobj,
+          hsrcAct, hfresh, htask, rfl⟩
+      · simp at h
+    · simp at h
+  · simp at h
+
+theorem excUnsubscribe_step {w w' : SubWorld} {caller capId s : Nat}
+    (h : excUnsubscribe w caller capId s = some w') :
+    UnsubscribeStep w caller capId s w' := by
+  unfold excUnsubscribe at h
+  split at h
+  · rename_i hloc
+    split at h
+    · rename_i cap src hcap hsrc
+      split at h
+      · rename_i hguard
+        rcases hguard with ⟨hcaller, hact, hright, hobj, hsrcAct, hsub⟩
+        rw [hcaller] at hloc
+        cases h
+        exact ⟨caller, cap, src, hloc, hcap, hsrc, rfl, hact, hright, hobj, hsrcAct,
+          hsub, rfl⟩
+      · simp at h
+    · simp at h
+  · simp at h
+
+theorem dropSubCap_step {w w' : SubWorld} {capId holder s : Nat}
+    (h : dropSubCap w capId holder s = some w') :
+    DropLastStep w capId holder w' := by
+  unfold dropSubCap at h
+  split at h
+  · rename_i loc cap hlocEq hcap
+    split at h
+    · rename_i hguard
+      rcases hguard with ⟨hheld, hobj⟩
+      rw [hheld] at hlocEq
+      cases h
+      refine ⟨holder, cap, s, hlocEq, rfl, hcap, hobj, ?_⟩
+      simp [upd, endSubCap_excSource hobj]
+    · simp at h
+  · simp at h
+
+theorem sendSubCap_step {w w' : SubWorld} {capId sender msg s : Nat}
+    (h : sendSubCap w capId sender msg s = some w') :
+    SendLastStep w capId sender msg w' := by
+  unfold sendSubCap at h
+  split at h
+  · rename_i cap hcap
+    split at h
+    · rename_i hobj
+      split at h
+      · rename_i hq
+        unfold queuedSend at hq
+        split at hq
+        · rename_i hloc
+          split at hq
+          · rename_i message hm
+            split at hq
+            · rename_i hactive
+              cases hq
+              cases h
+              refine ⟨cap, s, message, hcap, hloc, hobj, hm, hactive, ?_⟩
+              simp [upd, endSubCap_excSource hobj]
+            · simp at hq
+          · simp at hq
+        · simp at hq
+      · simp at h
+    · simp at h
+  · simp at h
+
+theorem destroySource_step {w w' : SubWorld} {s : Nat}
+    (h : destroySource w s = some w') : DestroySourceStep w s w' := by
+  unfold destroySource at h
+  split at h
+  · rename_i src hsrc
+    cases h
+    exact ⟨src, hsrc, rfl⟩
+  · simp at h
+
+theorem excSubscribe_preserves {w w' : SubWorld} {caller capId s : Nat}
+    (h15 : W15 w) (h : excSubscribe w caller capId s = some w') : W15 w' :=
+  SubscribeStep_preserves h15 (excSubscribe_step h)
+
+theorem excSubscribe_adds {w w' : SubWorld} {caller capId s : Nat}
+    (h : excSubscribe w caller capId s = some w') :
+    ∃ src, w'.sources s = some src ∧ src.subscribers caller = true :=
+  SubscribeStep_adds (excSubscribe_step h)
+
+theorem excUnsubscribe_preserves {w w' : SubWorld} {caller capId s : Nat}
+    (h15 : W15 w) (h : excUnsubscribe w caller capId s = some w') : W15 w' :=
+  UnsubscribeStep_preserves h15 (excUnsubscribe_step h)
+
+theorem excUnsubscribe_clears {w w' : SubWorld} {caller capId s : Nat}
+    (h : excUnsubscribe w caller capId s = some w') :
+    ∃ src, w'.sources s = some src ∧ src.subscribers caller = false :=
+  UnsubscribeStep_clears (excUnsubscribe_step h)
+
+theorem dropSubCap_preserves {w w' : SubWorld} {capId holder s : Nat}
+    (h15 : W15 w) (h : dropSubCap w capId holder s = some w') : W15 w' :=
+  DropLastStep_preserves h15 (dropSubCap_step h)
+
+theorem dropSubCap_clears {w w' : SubWorld} {capId holder s : Nat}
+    (h : dropSubCap w capId holder s = some w') :
+    ∃ s' cap, w.base.snap.state.caps capId = some cap ∧ cap.obj = .excSource s' ∧
+      (w'.sources s' = none ∨ ∃ src, w'.sources s' = some src ∧ src.subscribers holder = false) :=
+  DropLastStep_clears (dropSubCap_step h)
+
+theorem sendSubCap_preserves {w w' : SubWorld} {capId sender msg s : Nat}
+    (h15 : W15 w) (h : sendSubCap w capId sender msg s = some w') : W15 w' :=
+  SendLastStep_preserves h15 (sendSubCap_step h)
+
+theorem sendSubCap_clears {w w' : SubWorld} {capId sender msg s : Nat}
+    (h : sendSubCap w capId sender msg s = some w') :
+    ∃ s' cap, w.base.snap.state.caps capId = some cap ∧ cap.obj = .excSource s' ∧
+      (w'.sources s' = none ∨ ∃ src, w'.sources s' = some src ∧ src.subscribers sender = false) :=
+  SendLastStep_clears (sendSubCap_step h)
+
+theorem destroySource_preserves {w w' : SubWorld} {s : Nat}
+    (h15 : W15 w) (h : destroySource w s = some w') : W15 w' :=
+  DestroySourceStep_preserves h15 (destroySource_step h)
+
+theorem destroySource_removes {w w' : SubWorld} {s : Nat}
+    (h : destroySource w s = some w') : w'.sources s = none :=
+  DestroySourceStep_removes (destroySource_step h)
+
+-- Executable anchors: task 9 active; source 1 active and unsubscribed; cap 1 is a
+-- held `ExcSubscribe` token for source 1; cap 2 is a non-source token.
+
+def eCap1 : Capability :=
+  { owner := 9, obj := .excSource 1, rights := capExcSubscribe, active := true, parent := none }
+
+def eCap2 : Capability :=
+  { owner := 9, obj := .segment 7, rights := 0, active := true, parent := none }
+
+def eMsg : Message := { caps := fun _ => false, active := true }
+
+def eBase : World :=
+  { snap :=
+      { state :=
+          { caps := fun id => if id = 1 then some eCap1 else if id = 2 then some eCap2 else none
+            booted := true
+            locations := fun id => if id = 1 then some (.heldBy 9) else if id = 2 then some (.heldBy 9) else none }
+        carriers := fun loc id =>
+          match loc with
+          | .heldBy n => n == 9 && (id == 1 || id == 2)
+          | _ => false
+        structural := fun _ => false }
+    tasks := fun id => if id = 9 then some { active := true } else none
+    messages := fun id => if id = 5 then some eMsg else none
+    namespaces := fun _ => none }
+
+def eSrc : Source := { active := true, subscribers := fun _ => false }
+
+def eWorld : SubWorld :=
+  { base := eBase, sources := fun id => if id = 1 then some eSrc else none }
+
+#eval (excSubscribe eWorld 9 1 1).isSome                      -- true
+#eval (excSubscribe eWorld 9 2 1).isSome                      -- false（cap 2 无 ExcSubscribe）
+#eval (excSubscribe eWorld 8 1 1).isSome                      -- false（非持有者）
+#eval ((excSubscribe eWorld 9 1 1).bind (fun w => excSubscribe w 9 1 1)).isSome
+  -- false（重复订阅）
+#eval ((excSubscribe eWorld 9 1 1).map (fun w => (w.sources 1).map (fun src => src.subscribers 9)))
+  -- some (some true)
+#eval ((excSubscribe eWorld 9 1 1).bind (fun w => excUnsubscribe w 9 1 1)).map
+  (fun w => (w.sources 1).map (fun src => src.subscribers 9))
+  -- some (some false)
+#eval (excUnsubscribe eWorld 9 1 1).isSome                    -- false（未订阅）
+#eval ((dropSubCap eWorld 1 9 1).map (fun w => w.base.snap.state.locations 1))
+  -- some none
+#eval ((dropSubCap eWorld 1 9 1).map (fun w => (w.sources 1).map (fun src => src.subscribers 9)))
+  -- some (some false)：失去最后授权 Cap 即终止
+#eval ((sendSubCap eWorld 1 9 5 1).map (fun w => w.base.snap.state.locations 1))
+  -- some (some (inMessage 5))
+#eval ((sendSubCap eWorld 1 9 5 1).map (fun w => (w.sources 1).map (fun src => src.subscribers 9)))
+  -- some (some false)
+#eval (destroySource eWorld 1).isSome                         -- true
+#eval ((destroySource eWorld 1).map (fun w => (w.sources 1).isSome))   -- some false
+#eval (destroySource eWorld 2).isSome                         -- false（无此源）
 end Formal.Subscription
