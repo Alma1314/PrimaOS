@@ -1,0 +1,3 @@
+LIBRARY winpe-fwd.dll
+EXPORTS
+  Fwd=winpe-stub.Stub

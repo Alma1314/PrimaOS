@@ -1,37 +1,30 @@
-//! WIN-M2 ring3 原型：在 Prima 内装载并运行一个原样 PE32+ 控制台程序。
+//! WIN-M3 ring3 原型：多 DLL 导入（按名与转发器）并运行原样 PE32+ 控制台程序。
 //!
 //! 只在 `winpe-probe` feature 且构建时设置 `PRIMA_WINPE_PROBE` 时由 servicemgr 调用。
-//! 装载器在用户态完成：真实 PE 夹具经本 crate 的 PE 解析/平铺/重定位后写入自建 Segment，
-//! 作为 held Task 的代码段映射为 R+X；同一次装载还把真实 `winpe-stub.dll` 的导出表
-//! 解析为 EXE 的 IAT 目标，DLL 映像另段映射为 R+X；栈、结果页与退出桩另段映射。PE 通过
-//! 真实 DLL 导出返回 42，退出桩把 42 写入共享结果页并自毁。装载前先跑一个“发布失败”
-//! 负例：在子地址空间已建立可执行映像后强制发布失败，验证暂存映射被回收且同一 VA 可再
-//! 装载。没有内核 PE 识别、没有 W+X 映射，也没有 Windows 参考差分。
+//! 装载器在用户态完成：EXE 与三个真实 DLL 经本 crate 的 PE 解析/平铺/重定位后写入自建
+//! Segment；导入由 [`ModuleSet`] 按显式模块集合解析，`winpe-fwd.dll!Fwd` 是转发器，解析
+//! 链落到 `winpe-stub.dll!Stub`。EXE 与 DLL 作为 held Task 的代码段映射为 R+X；栈、结果页
+//! 与退出桩另段映射。装载前先跑一个“发布失败”负例：在子地址空间已建立可执行映像后强制
+//! 发布失败，验证暂存映射被回收且同一 VA 可再装载。没有内核 PE 识别、没有 W+X 映射，
+//! 也没有 Windows 参考差分、TEB/GS 或 Win32 API。
 
-use crate::pe::{ExportTarget, ImportThunk, PeImage};
+use crate::load::{Module, ModuleSet};
+use crate::pe::{ExportTarget, PeImage};
 use prima_runtime::{Capability, Error, Result, Rights, Runtime, SyscallTransport, TaskSpec};
 
 const WINPE_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/winpe-probe.exe"));
-const WINPE_DLL_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/winpe-stub.dll"));
-
-const DLL_NAME: &[u8] = b"winpe-stub.dll";
-const EXPORT_NAME: &[u8] = b"Stub";
 
 const MAX_IMAGE: usize = 0x5000;
 const IMAGE_PAGES: u64 = 5;
-const DLL_MAX_IMAGE: usize = 0x3000;
-const DLL_PAGES: u64 = 3;
+const MAX_DLL_IMAGE: usize = 0x8000;
 
 const PREFERRED_BASE: u64 = 0x1_4000_0000;
 const RELOCATED_BASE: u64 = 0x1_5000_0000;
-/// `lld-link /dll` 的默认映像基址；DLL 无重定位，按首选基址映射。
-const DLL_BASE: u64 = 0x1_8000_0000;
 
 const PE_STAGE_VA: u64 = 0x0000_0A60_0000_0000;
 const STACK_STAGE_VA: u64 = 0x0000_0A61_0000_0000;
 const RESULT_STAGE_VA: u64 = 0x0000_0A62_0000_0000;
 const STUB_STAGE_VA: u64 = 0x0000_0A63_0000_0000;
-const DLL_STAGE_VA: u64 = 0x0000_0A64_0000_0000;
 
 const CHILD_STACK_VA: u64 = 0x1_6000_0000;
 const CHILD_RESULT_VA: u64 = 0x1_7000_0000;
@@ -44,9 +37,63 @@ const RX: Rights = Rights::from_bits((1 << 1) | (1 << 3));
 const RWX: Rights = Rights::from_bits((1 << 1) | (1 << 2) | (1 << 3));
 const NS_RESOLVE: Rights = Rights::from_bits(1 << 8);
 
+/// 参与装载的真实 DLL；`base` 与 build.rs 的 `/base` 一致。
+struct DllSource {
+    name: &'static [u8],
+    bytes: &'static [u8],
+    base: u64,
+    stage_va: u64,
+}
+
+const DLL_SOURCES: [DllSource; 3] = [
+    DllSource {
+        name: b"winpe-stub.dll",
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/winpe-stub.dll")),
+        base: 0x1_8000_0000,
+        stage_va: 0x0000_0A64_0000_0000,
+    },
+    DllSource {
+        name: b"winpe-extra.dll",
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/winpe-extra.dll")),
+        base: 0x1_9000_0000,
+        stage_va: 0x0000_0A65_0000_0000,
+    },
+    DllSource {
+        name: b"winpe-fwd.dll",
+        bytes: include_bytes!(concat!(env!("OUT_DIR"), "/winpe-fwd.dll")),
+        base: 0x1_A000_0000,
+        stage_va: 0x0000_0A66_0000_0000,
+    },
+];
+
+/// 已解析并校验的 DLL。
+#[derive(Clone, Copy)]
+struct Dll {
+    name: &'static [u8],
+    image: PeImage<'static>,
+    base: u64,
+    stage_va: u64,
+    pages: u64,
+}
+
+fn load_dll(source: &DllSource) -> Result<Dll> {
+    let image = PeImage::parse(source.bytes).map_err(|_| Error::InvalidInput)?;
+    let size = image.size_of_image() as usize;
+    if size == 0 || size > MAX_DLL_IMAGE {
+        return Err(Error::InvalidInput);
+    }
+    Ok(Dll {
+        name: source.name,
+        image,
+        base: source.base,
+        stage_va: source.stage_va,
+        pages: (image.size_of_image() as u64).div_ceil(FRAME_SIZE),
+    })
+}
+
 /// 串口见证行；xtask 只认这些完整行（`stage=` 行被忽略）。
 const NEGATIVE_LINE: &[u8] = b"WINPE|unpublish=clean\n";
-const DLL_LINE: &[u8] = b"WINPE|dll=winpe-stub.dll!Stub\n";
+const DLL_LINE: &[u8] = b"WINPE|dlls=3;forwarder=winpe-fwd.dll!Fwd\n";
 const PASS_LINE: &[u8] = b"WINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
 const FAIL_LINE: &[u8] = b"WINPE|FAIL\n";
 
@@ -60,25 +107,43 @@ pub fn run_or_exit<T: SyscallTransport>(runtime: &Runtime<T>) -> ! {
 
 fn run<T: SyscallTransport>(runtime: &Runtime<T>) -> Result<()> {
     let pe = PeImage::parse(WINPE_BYTES).map_err(|_| Error::InvalidInput)?;
-    let dll = PeImage::parse(WINPE_DLL_BYTES).map_err(|_| Error::InvalidInput)?;
-    if pe.size_of_image() as usize > MAX_IMAGE || dll.size_of_image() as usize > DLL_MAX_IMAGE {
+    if pe.size_of_image() as usize > MAX_IMAGE {
         return Err(Error::InvalidInput);
     }
-    let export = dll
-        .export_by_name(EXPORT_NAME)
-        .map_err(|_| Error::InvalidInput)?
-        .ok_or(Error::InvalidInput)?;
-    let ExportTarget::Function { rva } = export.target() else {
-        return Err(Error::InvalidInput);
-    };
-    let stub_va = DLL_BASE + u64::from(rva);
+    let dlls = [
+        load_dll(&DLL_SOURCES[0])?,
+        load_dll(&DLL_SOURCES[1])?,
+        load_dll(&DLL_SOURCES[2])?,
+    ];
+    // 夹具关系：Fwd 必须是转发器，Stub/Extra 必须是映像内函数。
+    for (dll, name, forwarded) in [
+        (&dlls[2], &b"Fwd"[..], true),
+        (&dlls[0], &b"Stub"[..], false),
+        (&dlls[1], &b"Extra"[..], false),
+    ] {
+        let export = dll
+            .image
+            .export_by_name(name)
+            .map_err(|_| Error::InvalidInput)?
+            .ok_or(Error::InvalidInput)?;
+        let is_forwarder = matches!(export.target(), ExportTarget::Forwarder { .. });
+        if is_forwarder != forwarded {
+            return Err(Error::InvalidInput);
+        }
+    }
     serial(runtime, b"WINPE|stage=parsed\n");
 
+    let modules = [
+        Module::new(dlls[0].name, dlls[0].image, dlls[0].base),
+        Module::new(dlls[1].name, dlls[1].image, dlls[1].base),
+        Module::new(dlls[2].name, dlls[2].image, dlls[2].base),
+    ];
+    let set = ModuleSet::new(&modules);
     let namespace = runtime.namespace_create()?;
     let self_cap = runtime.self_capability()?;
     serial(runtime, b"WINPE|stage=namespace\n");
 
-    run_publish_failure(runtime, self_cap, namespace, pe, stub_va)?;
+    run_publish_failure(runtime, self_cap, namespace, pe, &set)?;
     serial(runtime, NEGATIVE_LINE);
     serial(runtime, DLL_LINE);
 
@@ -87,8 +152,8 @@ fn run<T: SyscallTransport>(runtime: &Runtime<T>) -> Result<()> {
         self_cap,
         namespace,
         pe,
-        dll,
-        stub_va,
+        &dlls,
+        &set,
         RELOCATED_BASE,
     )?;
     serial(runtime, b"WINPE|stage=child1\n");
@@ -97,8 +162,8 @@ fn run<T: SyscallTransport>(runtime: &Runtime<T>) -> Result<()> {
         self_cap,
         namespace,
         pe,
-        dll,
-        stub_va,
+        &dlls,
+        &set,
         PREFERRED_BASE,
     )?;
     serial(runtime, b"WINPE|stage=child2\n");
@@ -113,21 +178,13 @@ fn run<T: SyscallTransport>(runtime: &Runtime<T>) -> Result<()> {
     }
 }
 
-/// 把一个 EXE 导入解析为真实 DLL 的导出地址；其他 DLL 或按序号导入一律拒绝。
-fn resolve_import(stub_va: u64, dll: &[u8], thunk: ImportThunk<'_>) -> Option<u64> {
-    match thunk {
-        ImportThunk::Name { name, .. } if dll == DLL_NAME && name == EXPORT_NAME => Some(stub_va),
-        _ => None,
-    }
-}
-
 /// 发布失败负例：子地址空间已建立可执行映像后强制发布失败，清理后再验证暂存 VA 已释放。
 fn run_publish_failure<T: SyscallTransport>(
     runtime: &Runtime<T>,
     self_cap: Capability,
     namespace: Capability,
     pe: PeImage<'static>,
-    stub_va: u64,
+    set: &ModuleSet<'_>,
 ) -> Result<()> {
     let image_segment = runtime.memseg_create(IMAGE_PAGES, RWX)?;
     serial(runtime, b"WINPE|stage=neg-segment\n");
@@ -137,9 +194,7 @@ fn run_publish_failure<T: SyscallTransport>(
         serial(runtime, b"WINPE|stage=neg-staged\n");
         let buffer = prima_ostd::mm::bytes_mut_at(PE_STAGE_VA, MAX_IMAGE);
         let loaded = pe
-            .load_into(RELOCATED_BASE, buffer, |dll, thunk| {
-                resolve_import(stub_va, dll, thunk)
-            })
+            .load_into(RELOCATED_BASE, buffer, |dll, thunk| set.resolve(dll, thunk))
             .map_err(|_| Error::InvalidInput)?;
         serial(runtime, b"WINPE|stage=neg-loaded\n");
         // `task_create_held` 在子地址空间建立 R+X 代码映射；随后以未对齐目标强制
@@ -199,55 +254,69 @@ fn run_publish_failure<T: SyscallTransport>(
     Ok(())
 }
 
+/// 段槽位：映像、栈、结果、退出桩，随后是各 DLL。
+const SEG_IMAGE: usize = 0;
+const SEG_STACK: usize = 1;
+const SEG_RESULT: usize = 2;
+const SEG_STUB: usize = 3;
+const SEG_DLL: usize = 4;
+const SEGMENTS: usize = SEG_DLL + DLL_SOURCES.len();
+
 fn run_child<T: SyscallTransport>(
     runtime: &Runtime<T>,
     self_cap: Capability,
     namespace: Capability,
     pe: PeImage<'static>,
-    dll: PeImage<'static>,
-    stub_va: u64,
+    dlls: &[Dll],
+    set: &ModuleSet<'_>,
     base: u64,
 ) -> Result<u64> {
-    let mut segments = [None; 5];
+    let mut segments = [None; SEGMENTS];
     let mut held = None;
     let outcome = (|| -> Result<u64> {
-        segments[0] = Some(runtime.memseg_create(IMAGE_PAGES, RWX)?);
-        segments[1] = Some(runtime.memseg_create(DLL_PAGES, RWX)?);
-        segments[2] = Some(runtime.memseg_create(STACK_PAGES, RW)?);
-        segments[3] = Some(runtime.memseg_create(1, RW)?);
-        segments[4] = Some(runtime.memseg_create(1, RWX)?);
-        let (image_segment, dll_segment, stack_segment, result_segment, stub_segment) = (
-            segments[0].unwrap(),
-            segments[1].unwrap(),
-            segments[2].unwrap(),
-            segments[3].unwrap(),
-            segments[4].unwrap(),
-        );
+        segments[SEG_IMAGE] = Some(runtime.memseg_create(IMAGE_PAGES, RWX)?);
+        segments[SEG_STACK] = Some(runtime.memseg_create(STACK_PAGES, RW)?);
+        segments[SEG_RESULT] = Some(runtime.memseg_create(1, RW)?);
+        segments[SEG_STUB] = Some(runtime.memseg_create(1, RWX)?);
+        for (index, dll) in dlls.iter().enumerate() {
+            segments[SEG_DLL + index] = Some(runtime.memseg_create(dll.pages, RWX)?);
+        }
+        let seg = |slot: usize| segments[slot].unwrap();
         serial(runtime, b"WINPE|stage=segments\n");
 
-        runtime.memseg_map(image_segment, self_cap, 0, PE_STAGE_VA, IMAGE_PAGES, RW)?;
-        runtime.memseg_map(dll_segment, self_cap, 0, DLL_STAGE_VA, DLL_PAGES, RW)?;
-        runtime.memseg_map(stack_segment, self_cap, 0, STACK_STAGE_VA, STACK_PAGES, RW)?;
-        runtime.memseg_map(result_segment, self_cap, 0, RESULT_STAGE_VA, 1, RW)?;
-        runtime.memseg_map(stub_segment, self_cap, 0, STUB_STAGE_VA, 1, RW)?;
+        runtime.memseg_map(seg(SEG_IMAGE), self_cap, 0, PE_STAGE_VA, IMAGE_PAGES, RW)?;
+        runtime.memseg_map(seg(SEG_STACK), self_cap, 0, STACK_STAGE_VA, STACK_PAGES, RW)?;
+        runtime.memseg_map(seg(SEG_RESULT), self_cap, 0, RESULT_STAGE_VA, 1, RW)?;
+        runtime.memseg_map(seg(SEG_STUB), self_cap, 0, STUB_STAGE_VA, 1, RW)?;
+        for (index, dll) in dlls.iter().enumerate() {
+            runtime.memseg_map(
+                seg(SEG_DLL + index),
+                self_cap,
+                0,
+                dll.stage_va,
+                dll.pages,
+                RW,
+            )?;
+        }
         serial(runtime, b"WINPE|stage=mapped\n");
 
         serial(runtime, b"WINPE|stage=load\n");
         let buffer = prima_ostd::mm::bytes_mut_at(PE_STAGE_VA, MAX_IMAGE);
         let loaded = pe
-            .load_into(base, buffer, |dll_name, thunk| {
-                resolve_import(stub_va, dll_name, thunk)
-            })
+            .load_into(base, buffer, |dll, thunk| set.resolve(dll, thunk))
             .map_err(|_| Error::InvalidInput)?;
-        if loaded.imports_resolved() != 1 {
+        if loaded.imports_resolved() != dlls.len() as u32 {
             return Err(Error::InvalidInput);
         }
-        let dll_buffer = prima_ostd::mm::bytes_mut_at(DLL_STAGE_VA, DLL_MAX_IMAGE);
-        let dll_loaded = dll
-            .load_into(DLL_BASE, dll_buffer, |_, _| None)
-            .map_err(|_| Error::InvalidInput)?;
-        if dll_loaded.base() != DLL_BASE {
-            return Err(Error::InvalidInput);
+        for (index, dll) in dlls.iter().enumerate() {
+            let buffer = prima_ostd::mm::bytes_mut_at(dll.stage_va, MAX_DLL_IMAGE);
+            let loaded = dll
+                .image
+                .load_into(dll.base, buffer, |_, _| None)
+                .map_err(|_| Error::InvalidInput)?;
+            if loaded.base() != dlls[index].base {
+                return Err(Error::InvalidInput);
+            }
         }
         serial(runtime, b"WINPE|stage=loaded\n");
 
@@ -260,7 +329,7 @@ fn run_child<T: SyscallTransport>(
 
         serial(runtime, b"WINPE|stage=staged\n");
         let manager = runtime.task_create_held(&TaskSpec {
-            code_segment: image_segment,
+            code_segment: seg(SEG_IMAGE),
             code_offset: 0,
             code_pages: IMAGE_PAGES,
             load_base: base,
@@ -273,10 +342,12 @@ fn run_child<T: SyscallTransport>(
         })?;
         held = Some(manager);
 
-        runtime.memseg_map(stack_segment, manager, 0, CHILD_STACK_VA, STACK_PAGES, RW)?;
-        runtime.memseg_map(result_segment, manager, 0, CHILD_RESULT_VA, 1, RW)?;
-        runtime.memseg_map(dll_segment, manager, 0, DLL_BASE, DLL_PAGES, RX)?;
-        runtime.memseg_map(stub_segment, manager, 0, CHILD_EXIT_STUB_VA, 1, RX)?;
+        runtime.memseg_map(seg(SEG_STACK), manager, 0, CHILD_STACK_VA, STACK_PAGES, RW)?;
+        runtime.memseg_map(seg(SEG_RESULT), manager, 0, CHILD_RESULT_VA, 1, RW)?;
+        for (index, dll) in dlls.iter().enumerate() {
+            runtime.memseg_map(seg(SEG_DLL + index), manager, 0, dll.base, dll.pages, RX)?;
+        }
+        runtime.memseg_map(seg(SEG_STUB), manager, 0, CHILD_EXIT_STUB_VA, 1, RX)?;
         serial(runtime, b"WINPE|stage=held\n");
         runtime.task_start_native(manager)?;
         serial(runtime, b"WINPE|stage=started\n");
@@ -315,10 +386,12 @@ fn run_child<T: SyscallTransport>(
     })();
 
     let _ = runtime.memseg_unmap(self_cap, PE_STAGE_VA, IMAGE_PAGES);
-    let _ = runtime.memseg_unmap(self_cap, DLL_STAGE_VA, DLL_PAGES);
     let _ = runtime.memseg_unmap(self_cap, STACK_STAGE_VA, STACK_PAGES);
     let _ = runtime.memseg_unmap(self_cap, RESULT_STAGE_VA, 1);
     let _ = runtime.memseg_unmap(self_cap, STUB_STAGE_VA, 1);
+    for dll in dlls {
+        let _ = runtime.memseg_unmap(self_cap, dll.stage_va, dll.pages);
+    }
     if let Some(manager) = held.take() {
         let _ = runtime.task_destroy(manager);
         let _ = runtime.cap_drop(manager);

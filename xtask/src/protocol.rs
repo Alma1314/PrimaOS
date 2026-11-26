@@ -6487,7 +6487,7 @@ pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
         .collect();
     let expected = [
         "WINPE|unpublish=clean",
-        "WINPE|dll=winpe-stub.dll!Stub",
+        "WINPE|dlls=3;forwarder=winpe-fwd.dll!Fwd",
         "WINPE|exit=self",
         "WINPE|exit=self",
         "WINPE|child1=42;child2=42;parent=alive",
@@ -6505,16 +6505,17 @@ pub(crate) fn validate_winpe(output: &str) -> Result<(), String> {
 #[cfg(test)]
 mod winpe_tests {
     use super::validate_winpe;
-    const VALID: &str = "WINPE|stage=begin\nWINPE|unpublish=clean\nWINPE|dll=winpe-stub.dll!Stub\nWINPE|exit=self\nWINPE|exit=self\nWINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
+    const VALID: &str = "WINPE|stage=begin\nWINPE|unpublish=clean\nWINPE|dlls=3;forwarder=winpe-fwd.dll!Fwd\nWINPE|exit=self\nWINPE|exit=self\nWINPE|child1=42;child2=42;parent=alive\nWINPE|PASS\n";
     #[test]
-    fn winpe_witness_requires_clean_unpublish_real_dll_and_two_results() {
+    fn winpe_witness_requires_clean_unpublish_and_real_dlls() {
         assert_eq!(validate_winpe(VALID), Ok(()));
         for bad in [
             VALID.replace("child2=42", "child2=0"),
             VALID.replace("parent=alive", "parent=dead"),
             VALID.replace("WINPE|exit=self", "WINPE|exit=parent"),
             VALID.replace("unpublish=clean", "unpublish=dirty"),
-            VALID.replace("dll=winpe-stub.dll!Stub", "dll=stub"),
+            VALID.replace("dlls=3", "dlls=2"),
+            VALID.replace("forwarder=winpe-fwd.dll!Fwd", "forwarder=missing"),
             VALID.replace("WINPE|PASS", "WINPE|FAIL"),
             format!("{VALID}WINPE|PASS\n"),
         ] {

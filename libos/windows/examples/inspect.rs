@@ -47,6 +47,18 @@ fn main() {
             }
         }
     }
+    if let Ok(exports) = pe.exports() {
+        for export in exports.flatten() {
+            println!(
+                "export name={:?} ordinal={} target={:?}",
+                export
+                    .name()
+                    .and_then(|name| core::str::from_utf8(name).ok()),
+                export.ordinal(),
+                export.target()
+            );
+        }
+    }
     let relocations = match pe.relocations() {
         Ok(blocks) => blocks.filter(|block| block.is_ok()).count(),
         Err(_) => 0,
