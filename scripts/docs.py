@@ -19,6 +19,59 @@ INDEX = "docs/architecture/catalog.md"
 TOPICS = "docs/architecture/topics.json"
 LIFECYCLE = "docs/lifecycle.json"
 STATES = {"current", "historical", "deprecated", "removed", "unclassified"}
+# Coarse retrieval classes for free-text front-matter status values. They are hints for
+# filtering, never approval, completion or evidence scope; the raw status stays in the catalog.
+STATUS_CLASSES = {
+    "record": {"read-document-for-status", "execution-record"},
+    "template": {"template"},
+    "maintained": {"maintained"},
+    "contract": {"current-contract", "implementation-contract", "working-contract",
+                 "implementation-contract-not-exit-signoff",
+                 "implementation-contract-for-bulk-file-slice", "frozen",
+                 "frozen-by-decision-d12", "frozen-with-partial-coverage", "accepted-scoped",
+                 "scoped-accepted-in-spec152", "user-selected-working-contract",
+                 "user-selected-posix-backend-extension", "working-contract-scoped-validation"},
+    "verified": {"validated-with-limits", "verified-scoped", "verified-with-limits",
+                 "verified-with-bounded-remediation", "verified-scoped-with-failures",
+                 "verified-with-bounded-exit-review", "validated-with-regression-failure",
+                 "validated-in-scope", "validated-pending-scope-review", "locally-validated",
+                 "measured-with-limits", "signed-with-limits", "host-tests-pass-limits",
+                 "ring3-prototype-pass-limits", "first-slice-verified-with-limits",
+                 "cargo-input-materials-and-gaps-verified",
+                 "ci-wiring-locally-verified-with-limits", "cow-fault-locally-verified",
+                 "ipc-roundtrip-locally-verified", "libos-read-and-clean-ci-verified",
+                 "native-roundtrip-locally-verified",
+                 "remote-nine-green-local-evidence-verified",
+                 "source-evidence-package-verified", "user-roundtrip-locally-verified"},
+    "partial": {"partial-validation", "built-not-runtime-verified",
+                "implemented-not-runtime-verified", "implemented-with-limits",
+                "prepared-for-review", "reviewed-with-open-findings", "reviewed-with-limits",
+                "local-remediation-remote-rerun-pending", "changes-required",
+                "bounded-baseline-m0-open", "diagnosed-scoped-with-failures",
+                "evidence-complete-review-pending", "in-progress", "active", "executing",
+                "executing-foundation", "working-scoped-validation"},
+    "proposed": {"proposal", "design-proposal", "working-design",
+                 "working-design-scoped-validation", "scope-confirmed-design-pending",
+                 "experimental", "model-reviewed", "reviewed-for-cargo-input-materials",
+                 "reviewed-for-ci-slice", "reviewed-for-cow-fault-slice",
+                 "reviewed-for-first-slice", "reviewed-for-gate-baseline-slice",
+                 "reviewed-for-ipc-roundtrip-slice", "reviewed-for-libos-read-slice",
+                 "reviewed-for-native-syscall-slice",
+                 "reviewed-for-source-evidence-package",
+                 "reviewed-for-user-roundtrip-slice"},
+}
+STATUS_CLASS_OF = {status: name for name, values in STATUS_CLASSES.items() for status in values}
+STATUS_CLASS_MEANING = {
+    "record": "dated process or evidence record; read in its stated scope",
+    "maintained": "current guidance or manual; still read the body",
+    "verified": "a scoped validation, measurement or acceptance is recorded; limits are in the body",
+    "partial": "implementation, evidence or review is incomplete; pending items are in the body",
+    "proposed": "design or proposal under review; not an implemented contract",
+    "contract": "contract or frozen decision; check its stated scope",
+    "template": "template, not evidence",
+    "other": "unmapped status; read the raw status and body",
+}
+ABSTRACT_LIMIT = 280
 ROLES = {
     "Prima OS.md": "architecture-contract",
     "COSIR 原语规范.md": "abstract-semantics",
@@ -74,6 +127,35 @@ def metadata(source):
             raise ValueError(f"invalid or duplicate flat metadata field: {line}")
         fields[match[1]] = match[2]
     return fields
+
+
+def status_class(status):
+    return STATUS_CLASS_OF.get(status, "other")
+
+
+def summary(source, limit=ABSTRACT_LIMIT):
+    """First prose block after the title, flattened for bounded machine routing."""
+    parts = []
+    for _, line in prose_lines(source):
+        text = line.strip()
+        if not text:
+            continue
+        if re.match(r"^#{1,6}\s", text):
+            if parts:
+                break
+            continue
+        if text.startswith("|"):
+            continue
+        text = re.sub(r"^>\s?", "", text)
+        text = re.sub(r"^[-*+]\s+", "", text)
+        text = re.sub(r"^\d+[.)]\s+", "", text)
+        text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+        text = text.replace("`", "").replace("**", "").replace("__", "")
+        parts.append(text)
+        if sum(len(part) for part in parts) >= limit:
+            break
+    text = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    return text[:limit - 1].rstrip() + "…" if len(text) > limit else text
 
 
 def slug(title):
@@ -286,6 +368,7 @@ def collect():
         # Historical means a dated process/evidence artifact, never "completed" or "invalid".
         default_state = "historical" if category in {"plan", "report"} else "unclassified"
         state = entry.get("lifecycle", meta.get("lifecycle", default_state))
+        status = meta.get("status", "read-document-for-status")
         documents.append({
             "path": relative, "id": meta.get("id", relative),
             "title": sections[0]["title"] if sections else path.stem,
@@ -294,7 +377,8 @@ def collect():
             "lifecycle_reason": entry.get("reason"),
             "replacements": entry.get("replacements", []),
             "authority": ROLES.get(relative, meta.get("authority", "scope-defined-in-document")),
-            "status": meta.get("status", "read-document-for-status"),
+            "status": status, "status_class": status_class(status),
+            "abstract": summary(source),
             "date": meta.get("updated", re.match(r"\d{4}-\d{2}-\d{2}", path.name)[0]
                              if re.match(r"\d{4}-\d{2}-\d{2}", path.name) else None),
             "sha256": hashlib.sha256(source.encode()).hexdigest(),
@@ -305,8 +389,9 @@ def collect():
                 r"\b(?:SPEC-\d+|DOC-\d+|BLK-\d+|ISSUE-[A-Z0-9-]+|S[0-7]-[DX]\d+)\b", source))),
             "links": [{"line": n, "target": t} for n, t in links(source)],
         })
-    return {"schema_version": 2, "path_base": "repository-root",
-            "notice": "Dates and mentioned_ids are retrieval hints, never approval or implementation status.",
+    return {"schema_version": 3, "path_base": "repository-root",
+            "notice": "Dates, abstracts, status_class and mentioned_ids are retrieval hints, "
+                      "never approval, implementation status or evidence scope.",
             "topics": topics,
             "retired_documents": [entry for entry in records.values() if entry["lifecycle"] == "removed"],
             "documents": documents}
@@ -347,6 +432,9 @@ def validate(catalog):
         ids.add(document["id"])
         if not document["sections"]:
             errors.append(f"{document['path']}: missing Markdown heading")
+        if document["status_class"] == "other":
+            errors.append(f"{document['path']}: unknown status class for status "
+                          f"'{document['status']}'; add it to STATUS_CLASSES in scripts/docs.py")
         source = path.read_text(encoding="utf-8")
         meta = metadata(source)
         if meta:
@@ -407,7 +495,7 @@ def validate(catalog):
     return errors
 
 
-def search(catalog, query, limit, category, lifecycle=None):
+def search(catalog, query, limit, category, lifecycle=None, status=None):
     terms = query.casefold().split()
     results = []
     for document in catalog["documents"]:
@@ -418,6 +506,8 @@ def search(catalog, query, limit, category, lifecycle=None):
         elif not lifecycle and document["lifecycle"] == "deprecated":
             continue
         if category and document["kind"] != category:
+            continue
+        if status and document["status_class"] != status:
             continue
         source = (ROOT / document["path"]).read_text(encoding="utf-8")
         text = source.casefold()
@@ -430,7 +520,8 @@ def search(catalog, query, limit, category, lifecycle=None):
                    for n, line in prose_lines(source) if any(t in line.casefold() for t in terms)][:4]
         results.append({"path": document["path"], "title": document["title"],
                         "kind": document["kind"], "authority": document["authority"],
-                        "status": document["status"], "lifecycle": document["lifecycle"],
+                        "status": document["status"], "status_class": document["status_class"],
+                        "abstract": document["abstract"], "lifecycle": document["lifecycle"],
                         "lifecycle_reason": document["lifecycle_reason"], "replacements": document["replacements"],
                         "topic_ids": document["topic_ids"],
                         "score": score, "matches": matches})
@@ -451,6 +542,63 @@ def inspect_document(catalog, path):
             "topic_ids": [t["id"] for t in catalog["topics"] if path == t["guide"] or path in t["sources"]]}
 
 
+def context_pack(catalog, topic_id):
+    topic = next((t for t in catalog["topics"] if t["id"] == topic_id), None)
+    if topic is None:
+        raise ValueError("unknown topic; choose: " + ", ".join(t["id"] for t in catalog["topics"]))
+    documents = {d["path"]: d for d in catalog["documents"]}
+    sources = []
+    for path in [topic["guide"], *topic["sources"]]:
+        document = documents.get(path)
+        if document is None:
+            continue
+        headings = [s for s in document["sections"] if s["level"] == 2][:8] \
+            or document["sections"][:6]
+        sources.append({**{field: document[field] for field in (
+            "path", "title", "kind", "lifecycle", "status", "status_class", "date", "abstract")},
+            "guide": path == topic["guide"],
+            "sections": [{"title": s["title"], "line": s["line"], "end_line": s["end_line"]}
+                         for s in headings]})
+    return {"topic": topic, "always_read": list(ROLES), "sources": sources,
+            "code": topic["code"], "tests": topic["tests"],
+            "class_meaning": STATUS_CLASS_MEANING}
+
+
+def render_pack(pack):
+    topic = pack["topic"]
+    lines = [f"# PrimaOS context pack: {topic['title']}", "",
+             f"- topic: `{topic['id']}`",
+             f"- aliases: {', '.join(topic['aliases'])}",
+             f"- guide: `{topic['guide']}`",
+             "- generated by `python3 scripts/docs.py pack %s`; status classes and abstracts "
+             "are retrieval hints, not approval or evidence scope." % topic["id"], "",
+             "## Always read first", ""]
+    lines += [f"- `{path}`" for path in pack["always_read"]]
+    lines += ["", f"## Topic sources ({len(pack['sources'])})", ""]
+    for number, source in enumerate(pack["sources"], 1):
+        tag = " (guide)" if source["guide"] else ""
+        date = source["date"] or "undated"
+        lines.append(f"{number}. `{source['path']}`{tag} — {source['lifecycle']} / "
+                     f"{source['status_class']} / {date}")
+        if source["abstract"]:
+            lines.append(f"   {source['abstract']}")
+        if source["sections"]:
+            outline = "; ".join(f"{s['title']} (L{s['line']}-{s['end_line']})"
+                                for s in source["sections"])
+            lines.append(f"   sections: {outline}")
+    lines += ["", "## Code", ""] + [f"- `{path}`" for path in pack["code"]]
+    lines += ["", "## Tests", ""] + [f"- `{path}`" for path in pack["tests"]]
+    lines += ["", "## Status classes", ""]
+    lines += [f"- `{name}`: {meaning}" for name, meaning in STATUS_CLASS_MEANING.items()
+              if name != "other"]
+    lines += ["", "## Next", "",
+              f"- `python3 scripts/docs.py topic {topic['id']}`",
+              "- `python3 scripts/docs.py search '<identifier>' --limit 5 --json`",
+              "- Read only the section line ranges above, then check the document's stated limits.",
+              ""]
+    return "\n".join(lines)
+
+
 def self_test():
     global ROOT
     original = ROOT
@@ -458,7 +606,10 @@ def self_test():
         with tempfile.TemporaryDirectory() as temp:
             ROOT = Path(temp)
             (ROOT / "docs/architecture").mkdir(parents=True)
-            (ROOT / TOPICS).write_text("[]", encoding="utf-8")
+            (ROOT / TOPICS).write_text(json.dumps([{
+                "id": "fixture", "title": "Fixture", "aliases": ["fixture"],
+                "guide": "README.md", "sources": ["docs/中文.md"],
+                "code": ["docs/中文.md"], "tests": ["README.md"]}]), encoding="utf-8")
             (ROOT / LIFECYCLE).write_text('{"schema_version": 1, "entries": []}', encoding="utf-8")
             (ROOT / "README.md").write_text(
                 '# 测试\n\n## Fork `API`\n[ok](#fork-api)\n## Fork `API`\n'
@@ -468,6 +619,16 @@ def self_test():
             catalog = collect()
             assert not validate(catalog), validate(catalog)
             assert len(catalog["documents"][0]["sections"]) == 3
+            assert all(d["status_class"] and d["abstract"] for d in catalog["documents"])
+            assert status_class("weird") == "other"
+            fixture = context_pack(catalog, "fixture")
+            assert fixture["sources"][0]["guide"]
+            assert "Topic sources" in render_pack(fixture)
+            (ROOT / "docs/odd.md").write_text(
+                "---\nid: odd\nkind: guide\nauthority: explanatory\nstatus: weird\n"
+                "lifecycle: current\nupdated: 2026-10-24\n---\n# Odd\nText.\n", encoding="utf-8")
+            assert any("unknown status class" in e for e in validate(collect()))
+            (ROOT / "docs/odd.md").unlink()
             assert search(catalog, "COW fork", 2, None)[0]["path"] == "docs/中文.md"
             with (ROOT / "README.md").open("a", encoding="utf-8") as file:
                 file.write("[bad](missing.md)\n[bad anchor](#absent)\n")
@@ -571,12 +732,16 @@ def main():
     search_parser.add_argument("query")
     search_parser.add_argument("--limit", type=int, default=8)
     search_parser.add_argument("--kind")
+    search_parser.add_argument("--class", dest="status_class", choices=sorted(STATUS_CLASSES))
     search_parser.add_argument("--json", action="store_true")
     search_parser.add_argument("--lifecycle", choices=sorted(STATES - {"removed"}) + ["all"])
     inspect_parser = commands.add_parser("inspect")
     inspect_parser.add_argument("path")
     topic_parser = commands.add_parser("topic")
     topic_parser.add_argument("id")
+    pack_parser = commands.add_parser("pack", help="Bounded Markdown/JSON context pack for a topic")
+    pack_parser.add_argument("id")
+    pack_parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.command == "self-test":
         self_test()
@@ -590,22 +755,30 @@ def main():
             parser.error("--limit must be between 1 and 100")
         if not args.query.strip():
             parser.error("query must not be empty")
-        results = search(catalog, args.query, args.limit, args.kind, args.lifecycle)
+        results = search(catalog, args.query, args.limit, args.kind, args.lifecycle,
+                         args.status_class)
         if args.json:
             print(json.dumps(results, ensure_ascii=False, indent=2))
         else:
             for result in results:
                 topics = ",".join(result["topic_ids"]) or "unassigned"
-                print(f"{result['path']} [{result['kind']}; {result['authority']}; lifecycle={result['lifecycle']}; topics={topics}] {result['title']}")
+                print(f"{result['path']} [{result['kind']}; {result['authority']}; "
+                      f"lifecycle={result['lifecycle']}; class={result['status_class']}; "
+                      f"topics={topics}] {result['title']}")
                 for match in result["matches"]:
                     print(f"  L{match['line']}: {match['text']}")
+        return 0
+    if args.command == "pack":
+        pack = context_pack(catalog, args.id)
+        print(json.dumps(pack, ensure_ascii=False, indent=2) if args.json else render_pack(pack))
         return 0
     if args.command == "topic":
         topic = next((t for t in catalog["topics"] if t["id"] == args.id), None)
         if topic is None:
             parser.error("unknown topic; choose: " + ", ".join(t["id"] for t in catalog["topics"]))
         documents = {d["path"]: d for d in catalog["documents"]}
-        states = [{field: documents[path][field] for field in ("path", "status", "lifecycle", "replacements")}
+        states = [{field: documents[path][field] for field in (
+            "path", "status", "status_class", "lifecycle", "replacements", "abstract")}
                   for path in [topic["guide"], *topic["sources"]]]
         print(json.dumps({**topic, "source_lifecycle": states}, ensure_ascii=False, indent=2))
         return 0

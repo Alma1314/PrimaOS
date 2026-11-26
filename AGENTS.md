@@ -4,7 +4,7 @@ kind: agent-instructions
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # Repository Guidelines
@@ -15,7 +15,7 @@ This is a Rust workspace for a research OS. `cosir/` contains the executable, pl
 
 ## How to Read the Documentation
 
-Start at `docs/README.md`, then use `docs/architecture/ai-retrieval.md` and the topic routes in `docs/architecture/topics.json` to select a bounded context package. `llms.md` is a lightweight routing entry, not another source of project status.
+Start at `docs/README.md`, then use `docs/architecture/ai-retrieval.md` and the topic routes in `docs/architecture/topics.json` to select a bounded context package. Run `python3 scripts/docs.py pack <topic-id>` for a one-page pack with bounded abstracts, section line ranges and code/test paths. `llms.md` is a lightweight routing entry, not another source of project status.
 
 Authority depends on the question:
 
@@ -44,7 +44,7 @@ python3 scripts/docs.py check
 python3 scripts/docs.py check --base <pre-change-commit>
 ```
 
-`docs/catalog.json` and `docs/architecture/catalog.md` are generated; do not hand-edit them. `topics.json` and `docs/lifecycle.json` are curated. The catalog uses schema_version 2; default search excludes deprecated documents but retains historical evidence. `inspect <path>` finds lifecycle, inbound links and retired-path recovery. The base check enforces metadata on new documents and recovery registration for deletions. The catalog includes heading line ranges, hashes and identifier mentions; mentions are not unique document IDs or approval evidence. `python3 scripts/docs.py topic <id>` and `search '<terms>' --limit 5 --json` support bounded offline retrieval.
+`docs/catalog.json` and `docs/architecture/catalog.md` are generated; do not hand-edit them. `topics.json` and `docs/lifecycle.json` are curated. The catalog uses schema_version 3; default search excludes deprecated documents but retains historical evidence. `inspect <path>` finds lifecycle, inbound links and retired-path recovery. The base check enforces metadata on new documents and recovery registration for deletions. The catalog includes heading line ranges, hashes, identifier mentions, bounded abstracts and normalized `status_class` hints; none of these is approval evidence. `pack <topic-id>`, `topic <id>` and `search '<terms>' --limit 5 --json` support bounded offline retrieval. New `status` values must be added to `STATUS_CLASSES` in `scripts/docs.py`, or `check` fails.
 
 ## Build, Test, and Development Commands
 

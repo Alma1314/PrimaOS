@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # PrimaOS 文档中心
@@ -18,7 +18,7 @@ PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与
 | 任务 | 第一入口 | 然后读取 |
 |---|---|---|
 | 第一次接触项目 | [入门路线](architecture/getting-started.md) | [系统与代码地图](architecture/system-map.md) → 白皮书 |
-| AI 接手任务、压缩上下文 | [AI 检索协议](architecture/ai-retrieval.md) | 主题包 → 权威章节 → 最新证据 → 代码 |
+| AI 接手任务、压缩上下文 | [AI 检索协议](architecture/ai-retrieval.md) | `docs.py pack <主题>` → 权威章节 → 最新证据 → 代码 |
 | 判断实现进度与阻塞 | [实现阶段](../Prima%20OS%20实现阶段.md) | 指向的报告、兼容台账与决策门 |
 | 修改某个子系统 | [主题地图](architecture/topics/README.md) | 同主题规范、设计、计划、实现与测试 |
 | 新增或修改 OS personality | [LibOS 布局与边界](architecture/topics/libos.md) | 兼容主题 → 系统地图 → 对应 profile/冻结门 |
@@ -55,7 +55,7 @@ Prima OS 实现阶段.md              当前阶段、退出条件、活跃问题
 lean/README.md                    Lean ↔ Rust 映照契约
 docs/
   README.md                       本入口
-  catalog.json                    自动生成：文档/章节/关系/行号/哈希/生命周期
+  catalog.json                    自动生成：文档/章节/关系/行号/哈希/生命周期/摘要/状态类
   lifecycle.json                  人工维护：废弃/删除理由、替代入口和 Git 恢复
   architecture/
     ai-retrieval.md                AI 检索与上下文组装协议
@@ -77,13 +77,15 @@ scripts/docs.py                   无外部依赖的目录生成、检索与校�
 在仓库根目录运行：
 
 ```sh
+python3 scripts/docs.py pack process
+python3 scripts/docs.py pack libos --json
 python3 scripts/docs.py topic process
 python3 scripts/docs.py search 'ISSUE-FORK-CONTINUATION-001' --limit 5
-python3 scripts/docs.py search 'fork' --kind report --json
+python3 scripts/docs.py search 'fork' --kind report --class verified --json
 rg -n 'SYS_FORK|space_of' kernel/src libos/linux/c
 ```
 
-主题路由提供精选材料，全文检索覆盖所有源文档。机器目录记录所有 Markdown 标题的起止行；按需读章节，无需把整个历史档案载入上下文。
+`pack` 为主题生成单页上下文包：来源、生命周期、状态类、摘要和章节行范围。主题路由提供精选材料，全文检索覆盖所有源文档。机器目录记录所有 Markdown 标题的起止行与有界摘要；按需读章节，无需把整个历史档案载入上下文。
 
 ## 编写与废弃入口
 

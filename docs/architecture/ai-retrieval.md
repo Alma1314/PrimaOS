@@ -4,7 +4,7 @@ kind: guide
 authority: retrieval-protocol
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-27
 ---
 
 # AI 检索与上下文组装协议
@@ -14,7 +14,7 @@ updated: 2026-10-24
 ## 检索顺序
 
 1. 读取根目录 `AGENTS.md`，确认任务约束；读取[阶段跟踪](../../Prima%20OS%20实现阶段.md)确认进度与活跃问题。
-2. 用主题路由选一个或多个包：`python3 scripts/docs.py topic process`。包中的 `sources` 是推荐阅读关系，不代表全部文档都是冻结契约。
+2. 用主题路由选一个或多个包：`python3 scripts/docs.py pack process` 直接得到该主题的有界上下文包（来源、摘要、章节行范围、代码与测试路径）；`topic process` 只输出原始路由 JSON。
 3. 读取原语规范的相关章节及不变量，再读包中的设计、计划、最新报告和前序失败。
 4. 用标识符检索精确命中，例如 `ISSUE-FORK-CONTINUATION-001`、`S5-D6`；用英文符号与中文别名交叉检索。
 5. 读取源码/测试实现，回答或修改后重新核对契约与证据。
@@ -22,23 +22,29 @@ updated: 2026-10-24
 ## 有界读取
 
 ```sh
-python3 scripts/docs.py search 'fork' --kind report --limit 5 --json
+python3 scripts/docs.py pack process
+python3 scripts/docs.py pack libos --json
+python3 scripts/docs.py search 'fork' --kind report --class verified --limit 5 --json
 python3 scripts/docs.py search 'S5-D6' --limit 5
 rg -n 'SYS_FORK|space_of' kernel/src libos/linux/c
 sed -n '127,310p' 'COSIR 原语规范.md'
 ```
 
+`pack` 按主题输出单页 Markdown：权威参考、来源的 `lifecycle / status_class / date`、至多 280 字的正文摘要、二级章节起止行，以及代码/测试路径。它只复制结构，不复制正文；按行范围读取原文，不对摘要作证据引用。
+
 `search` 实时读文件，返回至多 100 个文档（默认 8），每个文档至多 4 条正文片段，每条至多 240 字符。查询以空格分词、AND 匹配，保留大小写不敏感的符号精度；多个同义词请分别查询。默认排除 deprecated，但保留 historical，以免隐藏前序失败；`--lifecycle all` 包含废弃材料，`--lifecycle current` 只读显式当前材料。已移除正文用 `inspect <旧路径>` 查询替代与 Git 恢复信息。它是词法检索，不是语义搜索，也不判定主张真伪。
 
 目录的 `sections` 提供标题层级、`line`、`end_line`、`anchor`；父章节范围包含子章节，可选最小相关子节读取。`sha256` 表示文件内容，行号只对同一哈希有效。更改文档后重新生成，不能引用旧目录的行号。
 
-## 机器目录字段契约（schema_version 2）
+## 机器目录字段契约（schema_version 3）
 
 | 字段 | 解释 |
 |---|---|
 | path_base / documents[].path | 源文档路径相对于仓库根；不是机器绝对路径 |
 | documents[].id | front matter 明确 id，否则使用完整相对路径；跨目录同名文件不合并 |
-| kind / authority / status / date | 类型、权威角色、文档状态和日期线索；未知历史状态保留显式占位 |
+| kind / authority / status / date | 类型、权威角色、原始文档状态和日期线索；未知历史状态保留显式占位 |
+| status_class | status 的固定粗分类，供筛选；不是批准、完成或证据范围。未知 status 映射为 other 并使 check 失败 |
+| abstract | 首个正文块的有界扁平摘要（≤280 字），用于路由；不作为证据引用 |
 | lifecycle / lifecycle_reason / replacements | 阅读用途、人工废弃理由、保留的替代入口；current 不等于批准或实现，historical 不等于失效；unclassified 须读正文 |
 | retired_documents[] | 已移除路径、保留身份、原因、替代入口、恢复 revision/sha256；不含旧正文 |
 | sha256 / lines | 当前 UTF-8 内容哈希与总行数，用于判断引用是否陈旧 |
@@ -48,7 +54,22 @@ sed -n '127,310p' 'COSIR 原语规范.md'
 | mentioned_ids[] | 正文中提及的 SPEC/DOC/BLK/ISSUE/阶段条件；不等于本文身份或完成状态 |
 | topics[] | 与 topics.json 相同的精选路由；sources 不是隐式实现/证明/取代关系 |
 
-目录不含完整正文。消费端按 path 和章节行号读取需要的文本；先校验哈希再缓存片段。v1 → v2 新增 lifecycle/lifecycle_reason/replacements 与 retired_documents，旧字段意义不变。消费端必须识别 v2 后按生命周期解释结果；原始日期、status 和 mentioned_ids 都没有升级为批准证据。topic 命令在精选路由之外附 source_lifecycle；默认路由仍可保留被纠偏文档作为历史上下文。
+目录不含完整正文。消费端按 path 和章节行号读取需要的文本；先校验哈希再缓存片段。v1 → v2 新增 lifecycle/lifecycle_reason/replacements 与 retired_documents；v2 → v3 新增 status_class 与 abstract，字段均为附加，旧字段意义不变。消费端必须识别 v3 后按生命周期和状态类解释结果；原始日期、status、status_class、abstract 和 mentioned_ids 都没有升级为批准证据。topic/pack 在精选路由之外附 source 生命周期与摘要；默认路由仍可保留被纠偏文档作为历史上下文。
+
+`status_class` 只有八个值，含义固定为：
+
+| status_class | 含义 | 使用方式 |
+|---|---|---|
+| `record` | 过程/证据记录（含默认旧报告） | 按正文范围解释，不作当前结论 |
+| `maintained` | 现行手册、指南、台账或入口 | 仍要读正文与权威边界 |
+| `verified` | 有范围化验证/测量/验收记录 | 查报告中的命令、结果与限制 |
+| `partial` | 实现、证据或复核未完成 | 查正文的待办与未覆盖项 |
+| `proposed` | 设计、提案或待实现契约 | 不得当作已实现接口 |
+| `contract` | 契约、冻结决定或已接受范围 | 查其声明的适用范围 |
+| `template` | 模板 | 不是证据 |
+| `other` | 未归类；check 会拒绝 | 先补 status 归类，再使用该文档 |
+
+`python3 scripts/docs.py search ... --class verified` 可按类别筛选；类别是粗粒度检索提示，不区分“宿主通过”“QEMU 通过”“有界签署”等实际范围，这些必须读报告正文。
 
 ## 上下文包最少保留什么
 

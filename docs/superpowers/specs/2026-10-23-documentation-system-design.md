@@ -4,7 +4,7 @@ kind: specification
 authority: documentation-contract
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-27
 ---
 
 # 文档系统设计与维护契约
@@ -50,7 +50,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-27
 ---
 ```
 
@@ -69,7 +69,7 @@ updated: 2026-10-24
 
 标题可用中文，API/原语名保留精确英文。无需为了机器读取把全部正文翻译成英文；术语表和主题别名提供双语词汇。历史正文/代码样例中的原始路径不冒充有效链接。
 
-`catalog.json` schema_version 2 记录生命周期、替代入口、删除记录，以及源文件 SHA-256、标题、行数、章节层级/起止行/锚点、原始链接和提及编号。源文档范围为根 Markdown、docs 下 Markdown、lean 根 Markdown；不索引 target、私有编辑器目录和依赖快照。生成的 catalog.md 不自索引，避免自哈希循环。
+`catalog.json` schema_version 3 记录生命周期、替代入口、删除记录，以及源文件 SHA-256、标题、行数、章节层级/起止行/锚点、原始链接和提及编号。v3 增加 `abstract`（首个正文块的有界扁平摘要）与 `status_class`（自由 status 的固定粗分类）；两者都是检索提示，不替代正文、批准或证据范围，未知 status 会使 check 失败。源文档范围为根 Markdown、docs 下 Markdown、lean 根 Markdown；不索引 target、私有编辑器目录和依赖快照。生成的 catalog.md 不自索引，避免自哈希循环。
 
 ## 6. 主题包与关系
 
@@ -79,7 +79,7 @@ updated: 2026-10-24
 
 ## 7. 检索与校验
 
-`build`从源文档生成目录，输出稳定、无当前时间戳；同样输入必须生成同样字节。`search`实时检索正文和路径，默认排除 deprecated，保留 historical 以发现失败；可显式筛选生命周期。`inspect`返回文件的生命周期、替代入口、入站链接或删除恢复记录；`topic`返回精选路由。搜索排序只表示词法相关性。
+`build`从源文档生成目录，输出稳定、无当前时间戳；同样输入必须生成同样字节。`search`实时检索正文和路径，默认排除 deprecated，保留 historical 以发现失败；可按生命周期与 `status_class`（`--class`）筛选。`inspect`返回文件的生命周期、替代入口、入站链接或删除恢复记录；`topic`返回精选路由；`pack`为主题输出有界上下文包（来源、生命周期/状态类、摘要、章节行范围、代码/测试路径），可 `--json`。搜索排序只表示词法相关性。
 
 `check`验证源文档唯一 ID、生命周期/恢复哈希/退役身份、主题引用、本地 Markdown 链接/锚点、残留 wiki 链接和生成物新鲜度。`check --base <提交>` 额外比较该提交与当前已保存文件（包含未跟踪文档），拒绝没有完整元数据的新文档、未登记的删除及恢复内容与基线不符。代码块与内联代码示例中的路径不当作活跃链接。远端链接不联网探测，技术结论、自然语言后继关系和批准真实性仍需审查。
 

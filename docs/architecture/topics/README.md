@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # 按子系统检索
@@ -37,8 +37,11 @@ updated: 2026-11-26
 ## 机器读取
 
 ```sh
+python3 scripts/docs.py pack process
 python3 scripts/docs.py topic process
-python3 scripts/docs.py search 'fork' --kind report --limit 5 --json
+python3 scripts/docs.py search 'fork' --kind report --class verified --limit 5 --json
 ```
+
+`pack` 输出带摘要与章节行范围的有界上下文包，适合直接交给 AI 或人工快速定向。
 
 [topics.json](../topics.json)是人工维护的精选路由；[catalog.json](../../catalog.json)是全量目录，覆盖未被精选进主题包的历史材料。新增工件即使未进入精选包，也会在重建目录后可检索。检索结果按词法相关性排列，不代表权威程度或最新状态。

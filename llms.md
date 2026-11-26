@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-27
 ---
 
 # PrimaOS
@@ -31,9 +31,9 @@ updated: 2026-10-24
 
 ## Machine-readable retrieval
 - [Topic routes](docs/architecture/topics.json): curated sources/code/tests by topic id.
-- [Full catalog](docs/catalog.json): paths, roles, hashes, headings, line ranges, links, mentioned ids.
-- Run: python3 scripts/docs.py topic process
-- Run: python3 scripts/docs.py search 'fork' --kind report --limit 5 --json
+- [Full catalog](docs/catalog.json): paths, roles, hashes, headings, line ranges, links, mentioned ids, bounded abstracts and coarse status classes.
+- Run: python3 scripts/docs.py pack process
+- Run: python3 scripts/docs.py search 'fork' --kind report --class verified --limit 5 --json
 - [Document lifecycle](docs/lifecycle.json): retirement reasons, replacements, reserved IDs and Git recovery.
 - Run: python3 scripts/docs.py inspect <repository-relative-path>
 - Run: python3 scripts/docs.py check --base <pre-change-commit>

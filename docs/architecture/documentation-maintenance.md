@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-27
 ---
 
 # 文档编写、复查与废弃操作手册
@@ -35,7 +35,7 @@ updated: 2026-10-31
 | 概念、源码地图、检索/开发手册 | docs/architecture/ | 现有指南格式 |
 | 主题阅读包 | docs/architecture/topics/ | 契约、前序失败、后继、代码、测试、限制 |
 
-新文档必须填写 id/kind/authority/status/lifecycle/updated；模板 id 必须换成真实身份。status 描述提案、冻结或验证状态，lifecycle 描述维护用途：两者互不推导。current 不代表实现或批准；historical 不代表完成或失效；deprecated 表示停止照此实施；removed 只存在台账；unclassified 表示旧文档尚未分类。
+新文档必须填写 id/kind/authority/status/lifecycle/updated；模板 id 必须换成真实身份。status 描述提案、冻结或验证状态，lifecycle 描述维护用途：两者互不推导。current 不代表实现或批准；historical 不代表完成或失效；deprecated 表示停止照此实施；removed 只存在台账；unclassified 表示旧文档尚未分类。status 优先复用已登记词汇；新增 status 必须同时加入 `scripts/docs.py` 的 `STATUS_CLASSES`，否则 `check` 报 unknown status class。`abstract` 与 `status_class` 由脚本生成，不要手写。
 
 ## 编写与复查事务
 
@@ -76,9 +76,9 @@ inspect 显示结构化入站链接、主题、生命周期和替代入口；rg 
 
 ## 生成、检索与人工检查
 
-[catalog.json](../catalog.json)和[catalog.md](catalog.md)自动生成，禁止手修；[topics.json](topics.json)和生命周期台账人工维护。schema_version 2 目录保留正文哈希、章节范围、生命周期和删除记录。
+[catalog.json](../catalog.json)和[catalog.md](catalog.md)自动生成，禁止手修；[topics.json](topics.json)和生命周期台账人工维护。schema_version 3 目录保留正文哈希、章节范围、生命周期、删除记录、有界摘要和状态粗分类。
 
-search 默认包括历史报告和未分类旧文档，排除 deprecated；用 `--lifecycle all` 查全部留存材料，`--lifecycle current` 只查显式当前材料。已移除正文不全文检索，用 inspect 查询。topic 输出为精选路径附生命周期提示；仍须读正文判断批准、实现与证据范围。
+search 默认包括历史报告和未分类旧文档，排除 deprecated；用 `--lifecycle all` 查全部留存材料，`--lifecycle current` 只查显式当前材料，`--class verified|partial|contract|...` 按状态粗分类筛选。已移除正文不全文检索，用 inspect 查询。`pack <主题>` 输出含摘要、章节行范围与代码/测试路径的单页上下文包；topic/pack 都只给精选路径与提示，仍须读正文判断批准、实现与证据范围。
 
 check 不修改文件；它校验结构、链接、恢复 Git blob/哈希/身份及生成物新鲜度。check --base 包含当前已保存的未跟踪文档，额外检查新增元数据和删除登记；发布时基线应为合并前主分支或本轮开始提交，不用已经包含变更的 HEAD 逃避差异检查。
 
