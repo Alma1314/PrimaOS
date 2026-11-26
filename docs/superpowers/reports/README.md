@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-25
+updated: 2026-11-26
 ---
 
 # Reports 索引
@@ -44,6 +44,8 @@ updated: 2026-11-25
 2026-11-26：[P4-0 Gate/IPC 分段测量基线](2026-11-26-p4-baseline.md)；I1 64 次、N1 128 次、G5 128 次各两轮；本机 G5 的 `queue-deliver` 约占内核时间 48%、`deliver-reply` 约 29%；列出 gate 查找、调度/帧、`gate_copy` scratch 等候选；不改代码、不设门限。
 
 2026-11-26：[P4-1 Gate 递送/恢复分段确认](2026-11-26-p4-segmentation.md)；把 queue-deliver/deliver-reply 映射到两次任务切换与 FXSAVE/FXRSTOR、CR3、iretq，确认现有 5 阶段不足以细分；候选排序先补细分探针，再评估 FPU 惰性、绑定索引与 `gate_copy` scratch；不改代码。
+
+2026-11-26：[WIN-M1 PE/ABI 宿主模型](2026-11-26-windows-m1-pe-model.md)；新增 `prima-windows` 的有界 PE32+ 解析、严格 RVA/映射校验与 Win64 ABI 探针，PE 21/21、ABI 4/4 宿主通过；真实 PE 只验证头与 `.text`，无导入/重定位/TLS/装载/Windows 参考差分。
 
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 

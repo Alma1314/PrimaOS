@@ -459,7 +459,10 @@ CI分组接线、73056ba自身干净远端九组/97份归档、五类有界单�
 
 独立候选扩展：[Windows LibOS 计划书](docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md)。
 作者已选择控制台与服务优先（PE64、DLL、文件、进程/线程、同步与异常）；技术路线及profile仍为提案，
-实现未启动，不替换上述Linux + Prima原生/POSIX组合，也不自动增加第三个阶段7必交付personality。
+不替换上述Linux + Prima原生/POSIX组合，也不自动增加第三个阶段7必交付personality。
+2026-11-26 起仅有[M0 有界基线](docs/superpowers/specs/2026-11-26-windows-m0-baseline.md)与
+[M1 PE/ABI 宿主模型](docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md)：参考 Windows、
+SDK、程序白名单与 WIN-D1–D7 仍未冻结；未装载或运行 Windows 程序，M0 未通过。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 

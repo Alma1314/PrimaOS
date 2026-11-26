@@ -2,12 +2,18 @@
 id: plan-windows-libos-roadmap
 kind: plan
 authority: execution-plan
-status: proposed
+status: active
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-26
 ---
 
 # Windows LibOS 计划书：PE64 控制台与服务兼容路径
+
+> 2026-11-26 后继：作者要求推进本计划。已落地的只有
+> [WIN-M0 有界基线](../specs/2026-11-26-windows-m0-baseline.md)与
+> [WIN-M1 PE/ABI 宿主模型](../reports/2026-11-26-windows-m1-pe-model.md)；
+> 未装载或运行 Windows 程序，未取得 Windows 参考差分，M0 范围冻结仍未完成。
+> 本文第 1 节的“尚未启动实现”保留为 2026-10-31 的写作基线。
 
 ## 1. 目标、性质与范围
 

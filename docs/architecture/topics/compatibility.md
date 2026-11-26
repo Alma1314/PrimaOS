@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-26
 ---
 
 # POSIX profile、musl、网络与 Linux 路线
@@ -28,7 +28,9 @@ updated: 2026-10-31
 ## 契约、计划与证据入口
 
 - [阶段7范围裁决](../../superpowers/specs/2026-10-31-stage7-scope-decisions.md)：Linux + Prima原生/POSIX及双路径动态链接等范围已确认；具体契约待冻结，不是实现证据。
-- [Windows LibOS 独立候选计划](../../superpowers/plans/2026-10-31-windows-libos-roadmap.md)：控制台与服务优先，PE64/Win32导入路径；未启动，不替换阶段7组合，不承诺完整NT syscall或GUI兼容。计划追溯早期双人格缺口、holder评审与阶段5后继实现。
+- [Windows LibOS 独立候选计划](../../superpowers/plans/2026-10-31-windows-libos-roadmap.md)：控制台与服务优先，PE64/Win32导入路径；2026-11-26 起进入 M1 宿主模型，仍不替换阶段7组合，不承诺完整NT syscall或GUI兼容。计划追溯早期双人格缺口、holder评审与阶段5后继实现。
+- [WIN-M0 有界基线](../../superpowers/specs/2026-11-26-windows-m0-baseline.md)：只冻结 M1 输入；参考 Windows、SDK、白名单与 WIN-D1–D7 仍待定，不是 M0 通过。
+- [WIN-M1 PE/ABI 宿主模型](../../superpowers/reports/2026-11-26-windows-m1-pe-model.md)：PE32+ 解析与 Win64 ABI 宿主测试通过；未装载或运行 Windows 程序。
 
 - [musl 调用边界与可重放构建设计](../../superpowers/specs/2026-10-24-musl-port-boundary-design.md)
 - [musl fd/stdio 验证报告](../../superpowers/reports/2026-10-24-musl-port-boundary-report.md)

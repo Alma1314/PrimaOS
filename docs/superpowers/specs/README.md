@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-24
+updated: 2026-11-26
 ---
 
 # Specs 索引
@@ -17,6 +17,8 @@ updated: 2026-11-24
 P2b-1 已完成 Store 批量执行与 host 编解码测试，QEMU 证据待 P2b-5。
 
 2026-11-24：[异构 ISA 混合执行设计](2026-11-24-heterogeneous-isa-hybrid-execution-design.md)：系统层双构建 + 每节点部署、不活迁移（作者已确认）；应用层 native + DBT 混合域仍为提案。不改变阶段状态或退出勾选。
+
+2026-11-26：[WIN-M0 有界基线](2026-11-26-windows-m0-baseline.md)：作者要求推进 Windows LibOS 后，只冻结 M1 的 PE32+/宿主/ABI 输入；参考 Windows、SDK、程序白名单与 WIN-D1–D7 仍待定，不构成 M0 通过。
 
 2026-10-27 待最终范围评审：[静态persona与版本护栏](2026-10-26-static-program-contract-design.md)、[阶段5具体评审工件](2026-10-26-stage5-release-decisions.md)。D6用户已选择A。
 
