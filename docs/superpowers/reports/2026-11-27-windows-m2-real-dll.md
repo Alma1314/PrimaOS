@@ -116,5 +116,6 @@ ring3 原型推进到“真实 DLL 导出 + 发布失败清理”的有界切片
 
 - 前序：[WIN-M2 ring3 原型](2026-11-26-windows-m2-ring3.md)；
   [WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)。
-- 后继：接入按节权限与 TEB/PEB/TLS，冻结 WIN-D3 后评审多 DLL 导入闭包与 `DllMain`；
-  准备 Windows 参考环境取得逐 API 差分；补负例的部分失败/回滚与任务创建内部失败断言。
+- 后继：[WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md) 已落地多模块导入与
+  三 DLL ring3；仍待：冻结 WIN-D3 后接入运行期 TEB/PEB/TLS 与 `DllMain`，准备 Windows
+  参考环境取得逐 API 差分，补负例的部分失败/回滚与任务创建内部失败断言。

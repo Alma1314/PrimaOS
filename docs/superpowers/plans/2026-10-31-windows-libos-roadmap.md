@@ -9,6 +9,12 @@ updated: 2026-11-27
 
 # Windows LibOS 计划书：PE64 控制台与服务兼容路径
 
+> 2026-11-27 后继：WIN-M3 部分交付——多模块按名/按序号/转发导入解析、TEB/PEB 冻结
+> 子集与静态 TLS 模板（宿主模型）、三 DLL + 转发器的 ring3 原型（见
+> [WIN-M3 部分交付](../reports/2026-11-27-windows-m3-loader-runtime.md)）。动态 TLS、
+> 运行期 TEB/PEB（用户 GS）、API-set 清单、`DllMain`、堆/错误、参考差分均未覆盖；
+> WIN-M3 未通过，WIN-D3 未决。
+>
 > 2026-11-27 后继：WIN-M2 补片已把替代导入换为真实 `winpe-stub.dll` 导出表解析，并补
 > 发布失败清理负例（见 [WIN-M2 真实 DLL 导出与发布失败清理](../reports/2026-11-27-windows-m2-real-dll.md)）。
 > 仍未取得 Windows 参考差分，导入闭包、分节权限、TEB/PEB/TLS、控制台与 WIN-D3 未决；

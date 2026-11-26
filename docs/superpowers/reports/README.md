@@ -57,6 +57,8 @@ updated: 2026-11-27
 
 2026-11-27：[WIN-M2 真实 DLL 导出与发布失败清理](2026-11-27-windows-m2-real-dll.md)；解析 `winpe-stub.dll` 导出表替换手写导入桩并把 DLL 以 R+X 映射，新增发布失败负例（held Task 已建 R+X 映射后强制失败，清理并用同一 VA 重新装载）；专用 QEMU 连续 8 轮逐字节通过、host 1223、lint 通过；首次运行一次未复现的 `task_create_held` 失败已登记，无 Windows 参考差分，WIN-M2 未通过。
 
+2026-11-27：[WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md)；导出区分函数/转发器并新增 `export_by_ordinal` 与 `ModuleSet`（大小写/后缀归一、转发限深 8），新增 TEB/PEB 冻结子集与静态 TLS 模板宿主模型，ring3 改为三 DLL + `Fwd->winpe-stub.Stub` 转发；QEMU 两轮逐字节通过、host 1234、lint 通过；无用户 GS，动态 TLS/运行期 TEB/PEB、API-set 清单、`DllMain`、堆/错误与参考差分未覆盖，WIN-M3 未通过。
+
 历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
