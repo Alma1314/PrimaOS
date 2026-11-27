@@ -259,8 +259,10 @@ CRT、所有 DLL、PE 属性与 SHA-256。Windows build/修订号、语言、区
 权限、CPU 及服务配置也需固定，不能用版本可变的系统 DLL 作隐含基线。
 
 比较返回值、错误、输出缓冲、句柄关系、阻塞/唤醒、文件及服务状态。地址、PID 和时间等
-非确定字段通过预先定义的关系比较，不能为了通过任意删除差异。参考 Windows 环境尚未准备，
-本计划未取得任何 Windows 差分结果；Wine 可作辅助对照，不能替代所选 Windows 参考。
+非确定字段通过预先定义的关系比较，不能为了通过任意删除差异。参考宿主已定为 WinBoat
+托管的真实 Windows guest（KVM；探针在 guest 内原生执行，不经 remote-app 代理），但
+镜像、哈希与逐 API 行尚未固定，本计划未取得任何 Windows 差分结果；Wine 可作辅助对照，
+不能替代所选 Windows 参考。
 
 未来可在 `xtask` 增加独立 Windows 构建/验收入口，命令名及制品获取规则在 M0 冻结；
 当前没有 `cargo xtask test-windows`，本文不将其列为可执行命令。
@@ -289,7 +291,7 @@ Capability 和版本协议访问；Windows 访问权不能扩大底层 Authority
 
 | 冻结门 | 待决定内容 |
 |---|---|
-| WIN-D1 版本/profile | Windows 参考 build、编译器/CRT、DLL/API-set 映射表、应用/服务白名单及每行语义；M0 签署是 M4 的硬门 |
+| WIN-D1 版本/profile | Windows 参考 build、编译器/CRT、DLL/API-set 映射表、应用/服务白名单及每行语义；参考宿主采用 WinBoat 托管的真实 Windows guest（镜像/哈希待固定，探针在 guest 内原生执行）；M0 签署是 M4 的硬门 |
 | WIN-D2 复用 | 自有薄层与选定 Wine 代码的边界、工具链、来源与接口；不默认移植整套 Wine |
 | WIN-D3 装载/GS | 停车与发布（D3a，原型已有）、映射权限（D3c）、PE 初始化；用户 GS（D3b）采用内核 `swapgs` 分期，见[阻断处置](../specs/2026-11-27-windows-blocker-decisions.md) |
 | WIN-D4 共享与复制 | v1 契约已冻结：Process/Thread 模型、Gate 绑定、参数快照、等待/APC、取消/销毁；未决项在 M5 前冻结，见[阻断处置](../specs/2026-11-27-windows-blocker-decisions.md) |

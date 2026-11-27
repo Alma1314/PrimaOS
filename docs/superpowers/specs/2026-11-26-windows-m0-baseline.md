@@ -52,7 +52,7 @@ thunk 名称、重定位块与 TLS 回调数组的越界分别报告，不静默
 
 | 冻结门 | 当前状态 | 启动 M2 前需要 |
 |---|---|---|
-| WIN-D1 版本/profile | **未决**：参考 Windows build、MSVC/CRT 版本、API-set 与程序白名单未固定 | 固定可复现参考镜像、SDK、编译器与首批导入闭包 |
+| WIN-D1 版本/profile | **未决**：参考 Windows build、MSVC/CRT 版本、API-set 与程序白名单未固定；参考宿主已定为 WinBoat 托管的真实 Windows guest，镜像/哈希仍未固定 | 固定参考镜像（WinBoat/KVM guest）与哈希、SDK、编译器与首批导入闭包 |
 | WIN-D2 复用 | **未决**：本切片只用自有薄层 | 决定是否评估选定 Wine 组件及其来源/工具链 |
 | WIN-D3 装载/GS | **未决**；D3b 用户 GS 方向已裁决、实现未做 | 停车/发布、映射权限、PEB/TEB 与用户 GS 安全设计；见[阻断处置](2026-11-27-windows-blocker-decisions.md) |
 | WIN-D4 共享与复制 | **未决** | 共享 root 的 Gate 绑定、参数快照与失败原子性 |
