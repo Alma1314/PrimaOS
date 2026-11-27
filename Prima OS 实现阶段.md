@@ -466,12 +466,17 @@ CI分组接线、73056ba自身干净远端九组/97份归档、五类有界单�
 独立候选扩展：[Windows LibOS 计划书](docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md)。
 作者已选择控制台与服务优先（PE64、DLL、文件、进程/线程、同步与异常）；技术路线及profile仍为提案，
 不替换上述Linux + Prima原生/POSIX组合，也不自动增加第三个阶段7必交付personality。
-2026-11-26 起仅有[M0 有界基线](docs/superpowers/specs/2026-11-26-windows-m0-baseline.md)、
+2026-11-26 起落地的有[M0 有界基线](docs/superpowers/specs/2026-11-26-windows-m0-baseline.md)、
 [M1 PE/ABI 宿主模型](docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md)、
-[M2 前置平铺装载模型](docs/superpowers/reports/2026-11-26-windows-m2-preflight.md)与
-[M2 ring3 原型](docs/superpowers/reports/2026-11-26-windows-m2-ring3.md)：参考 Windows、
-SDK、程序白名单与 WIN-D1–D7 仍未冻结；ring3 只用专用 feature 运行有限 PE 子任务，
-替代导入为手写桩，完整 M2 与 M0 均未通过。
+[M2 前置平铺装载模型](docs/superpowers/reports/2026-11-26-windows-m2-preflight.md)、
+[M2 ring3 原型](docs/superpowers/reports/2026-11-26-windows-m2-ring3.md)，以及 2026-11-27 的
+[M2 真实 DLL 导出与发布失败清理](docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md)与
+[M3 部分交付](docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md)：参考 Windows、
+SDK、程序白名单与 WIN-D1–D7 仍未冻结；ring3 仅以专用 feature 运行有限 PE 子任务（真实
+`winpe-stub.dll` 导出与三 DLL 转发），整映像 R+X，无按节权限/TEB/PEB/TLS/API-set 清单/
+`DllMain`/堆/错误/参考差分；完整 M0、M2 与 M3 均未通过。2026-11-27
+[计划审计](docs/superpowers/reports/2026-11-27-windows-plan-audit.md)列出 3 项阻断与若干
+修订建议，里程碑表未改写。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 

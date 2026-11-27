@@ -9,6 +9,10 @@ updated: 2026-11-27
 
 # Windows LibOS 计划书：PE64 控制台与服务兼容路径
 
+> 2026-11-27 审计：[Windows LibOS 计划审计](../reports/2026-11-27-windows-plan-audit.md)
+> 记录 3 项阻断（M0 参考未冻结、WIN-D3 用户 GS 与 SMP/内核上下文耦合、D4 共享 root/
+> 多线程）与 6 项重大建议；本文里程碑表保持原样，修订待作者决定。
+>
 > 2026-11-27 后继：WIN-M3 部分交付——多模块按名/按序号/转发导入解析、TEB/PEB 冻结
 > 子集与静态 TLS 模板（宿主模型）、三 DLL + 转发器的 ring3 原型（见
 > [WIN-M3 部分交付](../reports/2026-11-27-windows-m3-loader-runtime.md)）。动态 TLS、

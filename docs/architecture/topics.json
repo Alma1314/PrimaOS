@@ -888,7 +888,10 @@
       "docs/superpowers/specs/2026-11-26-windows-m0-baseline.md",
       "docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md",
       "docs/superpowers/reports/2026-11-26-windows-m2-preflight.md",
-      "docs/superpowers/reports/2026-11-26-windows-m2-ring3.md"
+      "docs/superpowers/reports/2026-11-26-windows-m2-ring3.md",
+      "docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md",
+      "docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md",
+      "docs/superpowers/reports/2026-11-27-windows-plan-audit.md"
     ],
     "code": [
       "libos/linux/Cargo.toml",
