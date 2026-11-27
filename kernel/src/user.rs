@@ -610,6 +610,20 @@ pub const fn gs_task1_code() -> [u8; GS_TASK1_CODE_LEN] {
     at = emit(&mut c, at, MOV_RAX_GS0);
     at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
     at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x20]);
+    // 用户态写只读 X 页 → 真实 #PF（COW 重试写成功）；随后再读 gs:[0] → Y+48，验证
+    // #PF 入口/出口 swapgs 配对后用户 GS 不变。
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_X_VA);
+    at = emit_imm64(&mut c, at, 0x48, 0xB8, 0x1122_3344_5566_7788);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x01]); // mov [rcx], rax
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x30]); // Y+48
+    // 用户态 `int 0x25`（DPL3 门 → external_irq_entry line 5）→ IRQ 入口/出口 swapgs 配对，
+    // 随后再读 gs:[0] → Y+56。
+    at = emit(&mut c, at, &[0xCD, 0x25]); // int 0x25
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x38]); // Y+56
     // int3 收尾
     let _ = emit(&mut c, at, &[0xCC]);
     c
@@ -645,11 +659,15 @@ pub struct GsWitness {
     pub post_syscall: u64,
     /// `syscall` ECHO 返回值（应 [`GS_ECHO_RET`]）。
     pub echo_ret: u64,
+    /// task 1 用户态 #PF(COW 重试) 后 `gs:[0]`（应 [`GS_MAGIC1`]）。
+    pub post_pf: u64,
+    /// task 1 用户态 `int 0x25`（IRQ 入口）后 `gs:[0]`（应 [`GS_MAGIC1`]）。
+    pub post_irq: u64,
 }
 
 #[cfg(feature = "gs-probe")]
 impl GsWitness {
-    /// 纯判定：三项验收是否全部成立。
+    /// 纯判定：全部验收是否成立。
     pub fn evidence_ok(&self) -> bool {
         self.read1 == GS_MAGIC1
             && self.read2 == GS_MAGIC2
@@ -657,6 +675,8 @@ impl GsWitness {
             && self.post_yield == GS_MAGIC1
             && self.post_syscall == GS_MAGIC1
             && self.echo_ret == GS_ECHO_RET
+            && self.post_pf == GS_MAGIC1
+            && self.post_irq == GS_MAGIC1
     }
 }
 
@@ -688,6 +708,8 @@ pub fn gs_probe_witness() -> GsWitness {
         post_yield: gs_task1_qword(24),
         post_syscall: gs_task1_qword(32),
         echo_ret: gs_task1_qword(40),
+        post_pf: gs_task1_qword(48),
+        post_irq: gs_task1_qword(56),
     }
 }
 

@@ -140,6 +140,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             let seen = kernel::idt::trap_seen();
                                             protocol::trap_ready(seen);
 
+                                            // GS-2：IDT 已装载（含 vector 2 的 IST 门）且 IRQ 已屏蔽，
+                                            // 用 LAPIC 自注入真实 NMI 验证半交换窗口安全。
+                                            #[cfg(feature = "gs-probe")]
+                                            {
+                                                match kernel::nmi_probe::run(offset) {
+                                                    Ok(witness) => protocol::gs_nmi_ready(&witness),
+                                                    Err(reason) => protocol::gs_nmi_fail(reason),
+                                                }
+                                                serial::flush();
+                                            }
+
                                             // P5-3a：BSP 的 GDT/TSS/IDT 已就绪，此时启动 AP；
                                             // AP 装载每 CPU GDT/TSS 与同一只读 IDT。
                                             #[cfg(feature = "smp-ap")]

@@ -168,6 +168,30 @@ static GDTS: [StaticCell<Gdt>; crate::cpu::local::MAX_CPUS] =
 static TSSES: [StaticCell<Tss>; crate::cpu::local::MAX_CPUS] =
     [const { StaticCell::new(Tss::new(0)) }; crate::cpu::local::MAX_CPUS];
 
+/// GS-2：NMI 的 IST 栈大小（单 CPU 受控探针；AP 不使用 NMI）。
+#[cfg(feature = "gs-probe")]
+const NMI_STACK_SIZE: usize = 16 * 1024;
+
+/// GS-2：NMI 交付用的独立 IST 栈（与普通内核栈分离，NMI 命中任意窗口都可安全换栈）。
+#[cfg(feature = "gs-probe")]
+#[repr(align(16))]
+struct NmiStack(#[allow(dead_code)] [u8; NMI_STACK_SIZE]);
+#[cfg(feature = "gs-probe")]
+static NMI_STACK: StaticCell<NmiStack> = StaticCell::new(NmiStack([0; NMI_STACK_SIZE]));
+
+/// GS-2：IST1 栈顶（16 对齐）。
+#[cfg(feature = "gs-probe")]
+fn nmi_stack_top() -> u64 {
+    NMI_STACK.as_ptr() as u64 + NMI_STACK_SIZE as u64
+}
+
+/// GS-2：IST1 栈区间 `[base, top)`，供探针核对 NMI handler 确实运行在该栈上。
+#[cfg(feature = "gs-probe")]
+pub fn nmi_stack_bounds() -> (u64, u64) {
+    let base = NMI_STACK.as_ptr() as u64;
+    (base, base + NMI_STACK_SIZE as u64)
+}
+
 /// 装载指定 CPU 的 GDT/TSS。索引越界确定性失败，不静默落到 BSP。
 ///
 /// 契约：调用方正在该 CPU 上执行，且此后再无人并发写同一槽。
@@ -183,6 +207,9 @@ pub fn init_cpu_gdt(cpu: usize, rsp0: u64) -> Result<(), ()> {
         *gdt = Gdt::new();
         tss.with_mut(|tss| {
             *tss = Tss::new(rsp0);
+            // GS-2：把 NMI 的 IST1 指向独立栈（仅在受控探针镜像）。
+            #[cfg(feature = "gs-probe")]
+            tss.set_ist(1, nmi_stack_top());
             init(gdt, tss)
         })
     })

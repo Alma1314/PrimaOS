@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（264）
+## report（265）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -362,6 +362,7 @@
 | [P5-2：AP 启动原型（INIT-SIPI-SIPI 到长模式）](../superpowers/reports/2026-11-27-p5-2-ap-bringup.md) | current | `docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md` |
 | [P5-3a：每 CPU GDT/TSS 与共享 IDT](../superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md) | current | `docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md` |
 | [GS-1：`syscall` 路径 `swapgs` 与每任务用户 GS（受控探针）](../superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md) | current | `docs/superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md` |
+| [GS-2：异常/中断/IRQ 入口出口 `swapgs` 与 NMI/IST](../superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md) | current | `docs/superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md` |
 | [失效候选提案清理与 Git 恢复](../superpowers/reports/2026-11-27-proposal-cleanup.md) | historical | `docs/superpowers/reports/2026-11-27-proposal-cleanup.md` |
 | [WIN-M2 补片：真实 DLL 导出与发布失败清理](../superpowers/reports/2026-11-27-windows-m2-real-dll.md) | current | `docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md` |
 | [WIN-M3 部分：多模块导入、静态 TLS 布局与三 DLL ring3 原型](../superpowers/reports/2026-11-27-windows-m3-loader-runtime.md) | current | `docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md` |

@@ -144,9 +144,11 @@ P5-4 须冻结 active-CPU 集合、generation/ticket、确认与超时失败策�
 
 2026-11-27 执行顺序（作者）：先落盘 P5-3 的每 CPU GDT/TSS/IDT；随后 GS-1（仅
 `syscall` 路径的 `swapgs`）；再 GS-2（异常/IRQ）。Windows 运行期 TEB/TLS 不早于
-GS-4；P5-3 不等待 GS。其中 **P5-3a 与 GS-1 已落盘**（GS-1 见
-[报告](../reports/2026-11-27-p5-gs1-syscall-swapgs.md)：受控探针双轮通过，普通镜像不启用，
-`int 0x80`/异常/IRQ 仍待 GS-2），GS-2 待做。
+GS-4；P5-3 不等待 GS。其中 **P5-3a、GS-1 与 GS-2 已落盘**（GS-1 见
+[报告](../reports/2026-11-27-p5-gs1-syscall-swapgs.md)，GS-2 见
+[报告](../reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md)：异常/中断/IRQ 入口出口 `swapgs`
+与 NMI/IST，受控探针双轮通过、普通镜像不启用；IRQ0 的 GS 注入与 AP NMI 未单独覆盖），
+GS-3（每 CPU GS 区与热路径 CPU 索引）待做。
 
 ## 8. 分期工作包与验收观察
 

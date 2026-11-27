@@ -11,7 +11,7 @@
 //! 仍是 8 字节、仍走 `rdi`，ABI 与原裸指针参数逐字节一致。信任调用方，不宣称 sound。
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::mm;
 use crate::sync::StaticCell;
@@ -350,6 +350,20 @@ impl Tss {
     pub fn set_rsp0(&mut self, rsp0: u64) {
         self.rsp0 = rsp0;
     }
+
+    /// Sets IST entry `index` (1..=7; IDT gate encodes the same 1-based index) to `top`.
+    /// `index == 0` is a no-op (0 means "no IST" in a gate).
+    pub fn set_ist(&mut self, index: u8, top: u64) {
+        if (1..=7).contains(&index) {
+            // `Tss` is `#[repr(C, packed)]`, so the field may be unaligned; write through
+            // a raw field pointer instead of forming a reference (E0793).
+            let slot = core::ptr::addr_of_mut!(self.ist[(index - 1) as usize]);
+            // SAFETY: `slot` points into `self`; unaligned store is valid for `packed`.
+            unsafe {
+                slot.write_unaligned(top);
+            }
+        }
+    }
 }
 
 // SAFETY: repr(C, packed) contains only integer fields/arrays: no padding,
@@ -590,13 +604,18 @@ macro_rules! external_irq_entry {
         #[unsafe(naked)]
         unsafe extern "C" fn $name() -> ! {
             core::arch::naked_asm!(
+                // GS-2：外部 IRQ 来源为 CPL3 时入口交换，出口换回；内核来源不交换。
+                "cmp byte ptr [rip + {gs}], 0", "je 8f",
+                "test byte ptr [rsp + 8], 3", "jz 8f", "swapgs", "8:",
                 "push r15", "push r14", "push r13", "push r12", "push r11", "push r10",
                 "push r9", "push r8", "push rbp", "push rdi", "push rsi", "push rdx",
                 "push rcx", "push rbx", "push rax", "cld", "mov rbp, rsp", "and rsp, -16",
                 "mov rdi, {line}", "call qword ptr [rip + {handler}]", "mov rsp, rbp",
                 "pop rax", "pop rbx", "pop rcx", "pop rdx", "pop rsi", "pop rdi", "pop rbp",
-                "pop r8", "pop r9", "pop r10", "pop r11", "pop r12", "pop r13", "pop r14", "pop r15", "iretq",
-                line = const $line, handler = sym EXTERNAL_IRQ_HANDLER,
+                "pop r8", "pop r9", "pop r10", "pop r11", "pop r12", "pop r13", "pop r14", "pop r15",
+                "cmp byte ptr [rip + {gs}], 0", "je 9f",
+                "test byte ptr [rsp + 8], 3", "jz 9f", "swapgs", "9:", "iretq",
+                line = const $line, handler = sym EXTERNAL_IRQ_HANDLER, gs = sym GS_SWAP,
             )
         }
     }
@@ -766,6 +785,11 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         "mov r10, qword ptr [rsp + 0x88]",
         "test r10, 3",
         "jz 2f",
+        // GS-2：#PF 来自 CPL3 时入口交换 GS（已判定为用户来源，无需再测 CS）。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 6f",
+        "swapgs",
+        "6:",
         // ---- CPL3 路径：保存用户返回现场（含特权切换多压的 rsp/ss）----
         "lea r11, [rip + {uframe}]",
         "mov r10, qword ptr [rsp + 0x80]",
@@ -815,6 +839,11 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         "push qword ptr [rip + {uframe} + 0x10]", // rflags
         "push qword ptr [rip + {uframe} + 0x08]", // cs
         "push qword ptr [rip + {uframe} + 0x00]", // rip
+        // GS-2：CPL3 出口与入口配对换回。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 7f",
+        "swapgs",
+        "7:",
         "iretq",
         "2:",
         // ---- CPL0 路径（原逻辑）----
@@ -848,6 +877,7 @@ unsafe extern "C" fn page_fault_entry() -> ! {
         err = sym FAULT_ERROR,
         uframe = sym USER_FRAME,
         handler = sym PAGE_FAULT_HANDLER,
+        gs = sym GS_SWAP,
     )
 }
 
@@ -929,6 +959,14 @@ pub fn cpu_exception_entry_addr(vector: u8) -> Option<u64> {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn syscall_entry() -> ! {
     core::arch::naked_asm!(
+        // GS-2：用户来源（CS.RPL==3）时入口交换 GS；内核来源（如嵌套）不交换。开关与
+        // 快路径共用，默认关闭。只改 RFLAGS，不碰 GPR（用户 RFLAGS 仍在硬件帧里）。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 4f",
+        "test byte ptr [rsp + 8], 3",
+        "jz 4f",
+        "swapgs",
+        "4:",
         // 保存全部 15 个 GPR：rax 最后压、位于最低地址，与恢复时的弹出序对齐。
         // 保存块偏移：rax=0x00 rbx=0x08 rcx=0x10 rdx=0x18 rsi=0x20 rdi=0x28
         // rbp=0x30 r8=0x38 r9=0x40 r10=0x48 r11=0x50 r12=0x58 r13=0x60 r14=0x68 r15=0x70。
@@ -990,10 +1028,19 @@ unsafe extern "C" fn syscall_entry() -> ! {
         "pop r13",
         "pop r14",
         "pop r15",
-        // rsp 现指向硬件压栈的 rip；iretq 依目标 CS 决定弹 3（CPL0）或 5（CPL3）个 qword。
+        // GS-2：出口按同一 CS.RPL 判据换回（仅当入口来自用户且开启开关）。rsp 现指向
+        // 硬件压栈的 rip，cs 在 [rsp+8]。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 5f",
+        "test byte ptr [rsp + 8], 3",
+        "jz 5f",
+        "swapgs",
+        "5:",
+        // iretq 依目标 CS 决定弹 3（CPL0）或 5（CPL3）个 qword。
         "iretq",
         handle = sym SYSCALL_HANDLER,
         ctx = sym CONTEXT_BASE,
+        gs = sym GS_SWAP,
     )
 }
 
@@ -1147,6 +1194,13 @@ pub fn set_fast_syscall_ss(ss: u64) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn timer_entry() -> ! {
     core::arch::naked_asm!(
+        // GS-2：IRQ0 来源为 CPL3 时入口交换；内核来源（嵌套/抢占内核）不交换。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 8f",
+        "test byte ptr [rsp + 8], 3",
+        "jz 8f",
+        "swapgs",
+        "8:",
         "push r15",
         "push r14",
         "push r13",
@@ -1184,8 +1238,16 @@ unsafe extern "C" fn timer_entry() -> ! {
         "pop r13",
         "pop r14",
         "pop r15",
+        // GS-2：出口按同一 CS.RPL 判据换回；rsp 现指向硬件帧，cs 在 [rsp+8]。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 9f",
+        "test byte ptr [rsp + 8], 3",
+        "jz 9f",
+        "swapgs",
+        "9:",
         "iretq",
         tick = sym TIMER_HANDLER,
+        gs = sym GS_SWAP,
     )
 }
 
@@ -1302,6 +1364,54 @@ extern "x86-interrupt" fn breakpoint_handler(_frame: &mut InterruptStackFrame) {
         handler();
     }
     TRAP_VECTOR_SEEN.store(3, Ordering::Relaxed);
+}
+
+/// NMI（vector 2）计数（GS-2 探针）。只由 [`nmi_entry`] 增长。
+static NMI_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// 最近一次 NMI 交付时 handler 的栈指针（用于证明 NMI 确实运行在 IST 栈上）。
+static NMI_RSP: AtomicU64 = AtomicU64::new(0);
+
+/// 读取 NMI 计数。
+pub fn nmi_count() -> u32 {
+    NMI_COUNT.load(Ordering::Relaxed)
+}
+
+/// 读取最近一次 NMI 交付时的 handler 栈指针。
+pub fn nmi_rsp() -> u64 {
+    NMI_RSP.load(Ordering::Relaxed)
+}
+
+/// 清零 NMI 计数与记录的栈指针（探针开始前）。
+pub fn reset_nmi_count() {
+    NMI_COUNT.store(0, Ordering::Relaxed);
+    NMI_RSP.store(0, Ordering::Relaxed);
+}
+
+/// NMI（vector 2）裸入口；由 IDT 在 `gs-probe` 下以 IST 门装载。
+///
+/// 只记录自身 `rsp`（证明运行在 IST 栈上）并 `lock inc` 计数器后 `iretq`。除被保存/
+/// 恢复的 `rax` 外**不触碰任何 GPR，也不碰 GS 或调用者内核栈**。NMI 经独立 IST 栈交付，
+/// 故无论命中用户态、内核半交换窗口或嵌套中断，本 handler 都不依赖 `%gs`；RFLAGS 由
+/// `iretq` 从硬件帧恢复。这是 GS-2 安全不变量 4（NMI/IST 不依赖半交换状态）的实现。
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn nmi_entry() -> ! {
+    core::arch::naked_asm!(
+        "push rax",
+        "mov rax, rsp",
+        "mov qword ptr [rip + {recorded}], rax",
+        "pop rax",
+        "lock inc dword ptr [rip + {counter}]",
+        "iretq",
+        counter = sym NMI_COUNT,
+        recorded = sym NMI_RSP,
+    )
+}
+
+/// NMI 入口地址（IDT vector 2）。
+pub fn nmi_entry_addr() -> u64 {
+    nmi_entry as *const () as u64
 }
 
 /// 装载 IDT（`lidt`）。`limit` 为 IDT 字节长 - 1。

@@ -139,7 +139,8 @@ pub(crate) fn run_bios_gs(image: &Path, round: u32) -> Result<(), String> {
         .map_err(|error| with_output(error, &output))?;
     protocol::validate_gs(&output.stdout).map_err(|error| with_output(error, &output))?;
     println!(
-        "PASS GS round={round} read1=magic1 read2=magic2 invalid=EINVAL post_yield=magic1 post_syscall=magic1 echo=ok"
+        "PASS GS round={round} read1=magic1 read2=magic2 invalid=EINVAL post_syscall=magic1 \
+post_yield=magic1 post_pf=magic1 post_irq=magic1 nmi(kernel,userlike,window,ist,nested)=1 delivered=8"
     );
     Ok(())
 }

@@ -22,6 +22,8 @@ pub mod irq;
 pub mod mem;
 pub mod msr;
 pub mod namespace;
+#[cfg(feature = "gs-probe")]
+pub mod nmi_probe;
 pub mod preempt;
 pub mod rights;
 pub mod sched;

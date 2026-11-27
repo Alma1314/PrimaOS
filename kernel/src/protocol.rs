@@ -84,9 +84,40 @@ pub(crate) fn gs_ready(witness: &kernel::user::GsWitness) {
     write_hex_u64(witness.post_syscall);
     serial::write_bytes(b";echo=");
     write_hex_u64(witness.echo_ret);
+    serial::write_bytes(b";post_pf=");
+    write_hex_u64(witness.post_pf);
+    serial::write_bytes(b";post_irq=");
+    write_hex_u64(witness.post_irq);
     let ok = witness.evidence_ok();
     serial::write_bytes(if ok { b";ok=1\r\n" } else { b";ok=0\r\n" });
     serial::write_bytes(if ok { b"GS|PASS\r\n" } else { b"GS|FAIL\r\n" });
+}
+
+/// GS-2：输出真实 NMI 自注入矩阵见证（`GS|nmi=...;PASS/FAIL`）。
+#[cfg(feature = "gs-probe")]
+pub(crate) fn gs_nmi_ready(witness: &kernel::nmi_probe::NmiWitness) {
+    serial::write_bytes(b"GS|nmi=kernel=");
+    write_u32(u32::from(witness.kernel_swapped_ok));
+    serial::write_bytes(b";userlike=");
+    write_u32(u32::from(witness.userlike_ok));
+    serial::write_bytes(b";window=");
+    write_u32(u32::from(witness.window_ok));
+    serial::write_bytes(b";delivered=");
+    write_u32(witness.window_delivered);
+    serial::write_bytes(b";ist=");
+    write_u32(u32::from(witness.ist_ok));
+    serial::write_bytes(b";nested=");
+    write_u32(u32::from(witness.nested_pf_ok));
+    let ok = witness.evidence_ok();
+    serial::write_bytes(if ok { b";PASS\r\n" } else { b";FAIL\r\n" });
+}
+
+/// GS-2：NMI 自注入矩阵无法运行（映射/注入失败）。
+#[cfg(feature = "gs-probe")]
+pub(crate) fn gs_nmi_fail(reason: &str) {
+    serial::write_bytes(b"GS|nmi=FAIL|");
+    serial::write_bytes(reason.as_bytes());
+    serial::write_bytes(b"\r\n");
 }
 
 #[cfg(feature = "smp-probe")]

@@ -65,6 +65,15 @@ impl Idt {
         self.entries[index as usize] = Self::gate_entry(handler_addr, 3);
     }
 
+    /// 同 [`Idt::set_handler_addr`]，但门选用 IST `index`（1..=7；0 = 不换栈）。
+    ///
+    /// GS-2：NMI 走独立 IST 栈，使其不依赖被中断上下文的栈或半交换的 GS 状态。
+    pub fn set_handler_addr_ist(&mut self, index: u8, handler_addr: u64, ist: u8) {
+        let mut entry = Self::gate_entry(handler_addr, 0);
+        entry.ist = ist & 7;
+        self.entries[index as usize] = entry;
+    }
+
     /// 构造一个指向 `handler_addr` 的 64-bit interrupt gate 条目（DPL = `dpl`）。
     fn gate_entry(handler_addr: u64, dpl: u8) -> Entry {
         Entry {
@@ -228,6 +237,16 @@ pub fn init_idt() -> Result<(), ()> {
             crate::preempt::TIMER_VECTOR,
             prima_ostd::entry::timer_entry_addr(),
         );
+        // GS-2：受控探针镜像注册 NMI（vector 2）IST 门；默认镜像不注册（保持既有行为）。
+        #[cfg(feature = "gs-probe")]
+        {
+            idt.set_handler_addr_ist(2, prima_ostd::entry::nmi_entry_addr(), 1);
+            // 另把 IRQ line 5（vector 0x25）改成 DPL3 门，供 ring3 用 `int 0x25` 触发
+            // external_irq_entry，验证 IRQ 入口/出口 swapgs 配对（line 5 无设备，安全）。
+            if let Some(addr) = prima_ostd::entry::external_irq_entry_addr(5) {
+                idt.set_handler_addr_dpl3(0x20 + 5, addr);
+            }
+        }
     });
     IDT_ITEM.with(load_idt)
 }

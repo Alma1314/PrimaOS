@@ -6636,7 +6636,10 @@ pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
 pub(crate) fn validate_gs(output: &str) -> Result<(), String> {
     const EXPECTED: &str = "GS|read1=0x47535f54315f4d41;read2=0x47535f54325f4d42;\
 invalid=0xffffffffffffffea;post_yield=0x47535f54315f4d41;\
-post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1";
+post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;\
+post_pf=0x47535f54315f4d41;post_irq=0x47535f54315f4d41;ok=1";
+    const NMI_EXPECTED: &str =
+        "GS|nmi=kernel=1;userlike=1;window=1;delivered=8;ist=1;nested=1;PASS";
     let witness = output
         .lines()
         .map(str::trim)
@@ -6646,6 +6649,14 @@ post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1";
         return Err(format!(
             "GS witness mismatch:\n got: {witness}\n want: {EXPECTED}"
         ));
+    }
+    let nmi = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("GS|nmi="))
+        .ok_or_else(|| "missing GS NMI witness line".to_owned())?;
+    if nmi != NMI_EXPECTED {
+        return Err(format!("GS NMI witness mismatch: {nmi}"));
     }
     let passes = output
         .lines()
@@ -6665,9 +6676,11 @@ post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1";
 mod gs_tests {
     use super::validate_gs;
 
+    const NMI: &str = "GS|nmi=kernel=1;userlike=1;window=1;delivered=8;ist=1;nested=1;PASS\n";
     const VALID: &str = "boot\nGS|read1=0x47535f54315f4d41;read2=0x47535f54325f4d42;\
 invalid=0xffffffffffffffea;post_yield=0x47535f54315f4d41;\
-post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1\nGS|PASS\n";
+post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;\
+post_pf=0x47535f54315f4d41;post_irq=0x47535f54315f4d41;ok=1\nGS|PASS\nGS|nmi=kernel=1;userlike=1;window=1;delivered=8;ist=1;nested=1;PASS\n";
 
     #[test]
     fn gs_witness_requires_all_fields_and_one_pass() {
@@ -6676,9 +6689,14 @@ post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1\nGS|PASS\n";
             VALID.replace("0x47535f54315f4d41;read2", "0x0;read2"),
             VALID.replace("echo=0xffff0000ffff1234", "echo=0xffff0000ffff1235"),
             VALID.replace("invalid=0xffffffffffffffea", "invalid=0x0"),
+            VALID.replace("post_pf=0x47535f54315f4d41", "post_pf=0x0"),
+            VALID.replace("post_irq=0x47535f54315f4d41", "post_irq=0x0"),
             VALID.replace("GS|PASS", "GS|FAIL"),
+            VALID.replace(NMI, ""),
+            VALID.replace("delivered=8", "delivered=7"),
+            VALID.replace("window=1", "window=0"),
+            VALID.replace("nested=1", "nested=0"),
             format!("{VALID}GS|PASS\n"),
-            VALID.replace("GS|PASS\n", ""),
         ] {
             assert!(validate_gs(&bad).is_err(), "{bad}");
         }

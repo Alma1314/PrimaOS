@@ -438,7 +438,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS，受控探针`-smp 1`双轮通过，普通镜像不启用、P5未签署）；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
+**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS）与GS-2（异常/中断/IRQ入口出口`swapgs`及NMI/IST，真实LAPIC自注入NMI矩阵双轮通过）；二者均受控探针、普通镜像不启用，P5未签署；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
 [启动与首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、
 [CI后继报告](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、
 [远端CI整改报告](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、
@@ -451,7 +451,8 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 [Cargo输入源码/NOTICE材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)、
 [执行计划](docs/superpowers/plans/2026-11-06-stage7-execution.md)、
 [共享工件互斥契约](docs/superpowers/specs/2026-11-06-stage7-artifact-exclusion.md)以及
-[GS-1 `syscall` 路径 `swapgs`](docs/superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md)记录实际范围。
+[GS-1 `syscall` 路径 `swapgs`](docs/superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md)、
+[GS-2 陷阱 `swapgs` 与 NMI/IST](docs/superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md)记录实际范围。
 技术规格、应用/设备白名单和量化门槛继续逐片冻结。作者在
 [2026-10-31 范围讨论](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)中逐项确认下列范围，
 承接 D16 的九条子轨结构。九轨均为必交付，排序仍是假设，各轨需自身退出签署；本次启动不勾选任何退出项。
