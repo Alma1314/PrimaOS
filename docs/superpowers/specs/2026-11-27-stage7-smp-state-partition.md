@@ -105,20 +105,20 @@ CPU 本地状态都进这一入口，不再回到全局静态。
 4. 跨表不变量（任务状态 + 根 + 帧）必须在一个所有者临界区内完成，不靠事后“再检查”。
 5. `StaticCell` 递归加锁仍禁；SMP 下该限制从“会死锁”升级为“跨 CPU 死锁”。
 
-## 7. 待决项（未冻结，不在本片实施）
+## 7. 决策与待决项
 
-| # | 问题 | 推荐 | 代价/说明 |
+| # | 问题 | 推荐/决定 | 代价/说明 |
 |---|---|---|---|
 | 1 | AP 启动失败策略 | **已决（作者 2026-11-27）：默认确定性 fail-stop，不静默降级；仅显式 profile 可退化为 BSP-only 并写审计事件** | 当前 `test-smp-ap` 仍是“继续启动 + 校验器拒绝”；生产启动的 fail-stop 接线属 P5-3/7-B |
 | 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 方向已由 [Windows 阻断处置](2026-11-27-windows-blocker-decisions.md)选择内核 GS，但 GS-1…GS-3 未实现前 P5 不依赖它 | P5-3 不等待 GS；GS-3 后才评估热路径迁移 |
 | 3 | xAPIC vs x2APIC | 先 xAPIC（QEMU `qemu64` 默认）；x2APIC 记录但不作为验收前提 | 需 CPUID 探测 |
 | 4 | 任务迁移策略 | **已决（作者 2026-11-27）：每 CPU 就绪队列 + 固定放置（fork/exec 在父 CPU，唤醒按目标 CPU）；首片运行中任务不迁移、不做 work stealing；迁移/steal 留到扩展曲线切片** | 每 CPU 队列与放置规则增加唤醒路由和丢唤醒反例的验证量 |
+| 5 | 跨 CPU 审计顺序 | 保留全局序号，允许并发 append 时按获取顺序线性化 | 需明确“顺序”是锁顺序还是提交顺序 |
+| 6 | per-CPU 时基与 sleep deadline | 各 CPU 本地校准，deadline 用绝对 tick 比较 | 频率漂移需在扩展曲线中记录 |
 
 2026-11-27 执行顺序（作者）：先落盘 P5-3 的每 CPU GDT/TSS/IDT；随后 GS-1（仅
 `syscall` 路径的 `swapgs`）；再 GS-2（异常/IRQ）。Windows 运行期 TEB/TLS 不早于
 GS-4；P5-3 不等待 GS。
-| 5 | 跨 CPU 审计顺序 | 保留全局序号，允许并发 append 时按获取顺序线性化 | 需明确“顺序”是锁顺序还是提交顺序 |
-| 6 | per-CPU 时基与 sleep deadline | 各 CPU 本地校准，deadline 用绝对 tick 比较 | 频率漂移需在扩展曲线中记录 |
 
 ## 8. 分期工作包与验收观察
 
