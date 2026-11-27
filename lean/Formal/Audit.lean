@@ -36,8 +36,8 @@ deriving DecidableEq, Repr
 /-- Minimal §13.1 event kinds sufficient for the modelled slices. -/
 inductive AuditKind where
   | bootstrapped
-  | objectCreated (obj : Nat)
-  | objectDestroyed (obj : Nat)
+  | objectCreated (obj : Object)
+  | objectDestroyed (obj : Object)
   | capMinted (cap : Nat)
   | capDerived (cap parent : Nat)
   | capMoved (cap : Nat) (src dst : Option Location)
@@ -132,10 +132,10 @@ structure State where
   world : SubWorld
   log : Log
   created : Nat → Option Nat
-  objects : Nat → Bool
+  objects : Object → Bool
   now : Nat
 
-def State.createBit (s : State) (obj : Nat) (v : Bool) : Nat → Bool :=
+def State.createBit (s : State) (obj : Object) (v : Bool) : Object → Bool :=
   fun x => if x = obj then v else s.objects x
 
 def State.withCreated (s : State) (cap : Nat) (eventId : Nat) : Nat → Option Nat :=
@@ -242,33 +242,42 @@ theorem auditedTaskState_keeps_world (s : State) (actor : Actor) (task : Nat)
     (auditedTaskState s actor task before after).world = s.world := rfl
 
 /-- Object creation appends `ObjectCreated` and marks the object active. -/
-def auditedObjectCreate (s : State) (actor : Actor) (obj : Nat) : State :=
+def auditedObjectCreate (s : State) (actor : Actor) (obj : Object) : State :=
   { s with
     log := s.log.append actor s.now [.objectCreated obj]
     objects := s.createBit obj true }
 
-theorem auditedObjectCreate_event (s : State) (actor : Actor) (obj : Nat) :
+theorem auditedObjectCreate_event (s : State) (actor : Actor) (obj : Object) :
     ∃ e, e ∈ (auditedObjectCreate s actor obj).log.entries ∧ e.kind = .objectCreated obj := by
   refine ⟨{ actor := actor, when := s.now, kind := .objectCreated obj }, ?_, rfl⟩
   simp [auditedObjectCreate, Log.append]
 
-theorem auditedObjectCreate_live (s : State) (actor : Actor) (obj : Nat) :
+theorem auditedObjectCreate_live (s : State) (actor : Actor) (obj : Object) :
     (auditedObjectCreate s actor obj).objects obj = true := by
   simp [auditedObjectCreate, State.createBit]
 
 /-- Object destruction appends `ObjectDestroyed`; the creation event stays in the log. -/
-def auditedObjectDestroy (s : State) (actor : Actor) (obj : Nat) : State :=
+def auditedObjectDestroy (s : State) (actor : Actor) (obj : Object) : State :=
   { s with
     log := s.log.append actor s.now [.objectDestroyed obj]
     objects := s.createBit obj false }
 
-theorem auditedObjectDestroy_event (s : State) (actor : Actor) (obj : Nat) :
+theorem auditedObjectDestroy_event (s : State) (actor : Actor) (obj : Object) :
     ∃ e, e ∈ (auditedObjectDestroy s actor obj).log.entries ∧ e.kind = .objectDestroyed obj := by
   refine ⟨{ actor := actor, when := s.now, kind := .objectDestroyed obj }, ?_, rfl⟩
   simp [auditedObjectDestroy, Log.append]
 
-theorem auditedObjectDestroy_dead (s : State) (actor : Actor) (obj : Nat) :
+theorem auditedObjectDestroy_dead (s : State) (actor : Actor) (obj : Object) :
     (auditedObjectDestroy s actor obj).objects obj = false := by
   simp [auditedObjectDestroy, State.createBit]
+
+/-- Same numeric ID in a different object type is a different liveness entry. -/
+theorem auditedObjectCreate_other {s : State} {actor : Actor} {obj other : Object}
+    (hne : other ≠ obj) : (auditedObjectCreate s actor obj).objects other = s.objects other := by
+  simp [auditedObjectCreate, State.createBit, hne]
+
+theorem auditedObjectDestroy_other {s : State} {actor : Actor} {obj other : Object}
+    (hne : other ≠ obj) : (auditedObjectDestroy s actor obj).objects other = s.objects other := by
+  simp [auditedObjectDestroy, State.createBit, hne]
 
 end Formal.Audit

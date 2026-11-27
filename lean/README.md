@@ -223,6 +223,16 @@ python3 scripts/check_handle_refinement.py --mutation-test
 
 每次重新提取，并核对工具锁、生产文件/入口 hash 和生成文件字节，拒绝陈旧工件；随后构建细化证明与审计公理。`--regenerate` 仅供评审后的源码变化，更新工件后仍须证明。mutation 在临时 Rust 中改为 Some(1)，要求**重新生成后的 Lean 定理**失败，正式源码不变。
 
+本地缺少工具或依赖时，在仓库根执行一次准备，再运行完整 formal 检查（含 mutation）：
+
+```sh
+python3 scripts/ci.py formal --prepare-inputs
+python3 scripts/ci.py formal
+```
+
+准备命令需要联网，校验锁定发布包和二进制 SHA256，恢复 `target/aeneas/` 与独立
+Lake 包的依赖缓存；检查命令使用离线配置。工具与缓存均不入库。
+
 这是独立 Lake 包，使用 `toolchain.lock.json`/`lake-manifest.json` 固定依赖；安装与缓存准备见报告。原无外部依赖的 `lean/` 普通 `lake build` 不包含此包；默认脚本不下载工具或依赖。当前生产构建仍使用原 pinned Rust，抽取工具链单独安装。
 
 本增量在上述两个方法/后继值上将证据推进至**受信任翻译边界下的源码级细化**；原 CDT、有限表模型的遗漏不因此消失。下一步仍需自动提取整表读写/选槽和检查过程，并建立真实 Rust 状态到 `KernelHandleTable` 的模拟关系。尚不覆盖编解码、整表所有操作、LLVM/二进制、并发或完整内核安全性。
@@ -380,6 +390,18 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Revoke.lean
 边界：不覆盖并发/移动竞争、跨节点 `InTransit`、在途消息/命名空间的收回、审计容量预演与事件、对象销毁回收、`cap_drop` 的完整授权语义，或 Rust 源码细化。
 Bootstrap `revoke_capability` 的 Rust 证据（SPEC-022/023）与 host 测试是独立实现证据，不是本模型的自动对拍。
 本切片不改变阶段状态、7-D 或其它轨道的退出勾选。
+
+### 2026-11-27 连续撤销证明补强
+
+[修复报告](../docs/superpowers/reports/2026-11-27-lean-revoke-composition.md)记录前述单步
+定理的衔接缺口：输出 `ActiveWellFormed` 不能重新满足输入 `WellFormed`。
+新增 `ParentOrdered`（包括 inactive 记录的父 ID 递减）与
+`RevokeWellFormed = ParentOrdered ∧ ActiveWellFormed`，证明原 `WellFormed` 蕴含它，
+并由 `revoke_sequence_preserves_wf` 证明任意有限撤销序列保持它。
+燃料完备性新增 `_ordered` 入口可用于撤销后的状态，原定理入口和执行语义保留。
+`Checks/Revoke.lean` 现覆盖全部 36 条命名定理，仅标准 `propext`/`Quot.sound` 或无公理；
+含撤销后不满足旧 `WellFormed` 的反例与连续撤销回归。上述 25 条计数属于 11-25 基线。
+本补强不解决 `ISSUE-REVOKE-CONTAINER-001`，不扩大内核/并发证明范围。
 
 ## 2026-11-25 Drop 切片
 
@@ -586,7 +608,7 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/Audit.lean
 | `AuditError.invalidCap`/`notHeld` | 未知 CapId vs 未被调用者持有 | 目标可已销毁 |
 | `AuditTrace.creations` | 链上每个 Cap 的 `created_at` | 派生事件的完整载荷不含 |
 | `AuditTrace.positions` | `capHistory` 原样 | 与 §4.6 事件对齐 |
-| `AuditTrace.objectHistory` | 目标对象的创建/销毁事件 | 按对象 ID 过滤 |
+| `AuditTrace.objectHistory` | 目标对象的创建/销毁事件 | 按完整对象类型与编号过滤（11-27 修复） |
 
 20 条定理（全部无 `sorryAx`，仅 `propext`/`Quot.sound`）：
 
@@ -608,3 +630,18 @@ elan run leanprover/lean4:v4.35.0 lake env lean Checks/AuditQuery.lean
 边界：父链完备性以 `WellFormed`（W2：父 `<` 子）为前提；非良构状态、`origin`/跨节点
 代理根、内容摘要、完整 §13.1 事件载荷、时钟推进、拒绝事件与 Rust 细化不覆盖；查询
 结果与 `WorldOk`/`W15` 为独立模型，未证明联合查询正确性。
+
+## 2026-11-27 Audit 对象身份修复
+
+[修复报告](../docs/superpowers/reports/2026-11-27-lean-audit-object-identity.md)纠正 11-25
+Audit/AuditQuery 模型的类型丢失：COSIR 各类 ID 独立分配，Segment(1) 与 Namespace(1)
+不能共享历史或存活位。`AuditKind.objectCreated/objectDestroyed` 的参数、
+`Audit.State.objects` 的键、对象创建/销毁操作与 `objectEvents` 查询参数现均为
+`Formal.Object`，移除非单射的 `objectId : Object → Nat`，`audit` 直接按 `cap.obj` 查询。
+这是 Lean 模型参数类型修正，不是机器 ABI 或 Rust API 变更。
+
+新增跨对象存活位隔离、查询事件健全性/双向成员对应、成功 audit 结果隔离共五条定理；
+Audit 现 21 条、AuditQuery 现 23 条，前述 19/20 条为 11-25 基线。
+`Checks/AuditQuery.lean` 含七个回归，覆盖同编号异类对象、同类异编号、无匹配、
+无关事件排除、跨类型销毁，以及两个 bootstrap 根 Cap 的查询；保留原 EventId 与信封。
+只覆盖当前 `Formal.Object` 枚举，Device、完整载荷及联合不变量仍不覆盖。

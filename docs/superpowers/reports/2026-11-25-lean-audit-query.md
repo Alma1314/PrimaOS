@@ -4,7 +4,7 @@ kind: report
 authority: scoped-model-evidence
 status: validated-with-limits
 lifecycle: current
-updated: 2026-11-25
+updated: 2026-11-27
 ---
 
 # Lean `Formal.AuditQuery`：§13.2 `audit(cap)` 查询最小模型
@@ -79,3 +79,7 @@ updated: 2026-11-25
 - 契约：[COSIR §13.2](../../../COSIR%20原语规范.md)。
 - 映照：[lean/README.md](../../../lean/README.md)。
 - 互补：[Audit 日志核心](2026-11-25-lean-audit.md)、[Move §4.6 位置](2026-11-25-lean-move.md)。
+
+2026-11-27 后继：[审计对象身份修复](2026-11-27-lean-audit-object-identity.md)纠正本模型
+丢失对象类型的问题；本报告的定理计数/运行观察属于 11-25 基线，现行类型和新增隔离证明
+见后继报告与 Lean 映照。其它边界保留。

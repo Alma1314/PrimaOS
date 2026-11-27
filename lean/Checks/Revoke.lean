@@ -26,3 +26,14 @@ import Formal.Revoke
 #print axioms Formal.Revoke.revoked_caps
 #print axioms Formal.Revoke.wellFormed_active
 #print axioms Formal.Revoke.revoke_preserves_active_wf
+#print axioms Formal.Revoke.wellFormed_ordered
+#print axioms Formal.Revoke.desc_ge_root_ordered
+#print axioms Formal.Revoke.descB_complete_ordered
+#print axioms Formal.Revoke.descAt_complete_ordered
+#print axioms Formal.Revoke.revoked_preserves_active_wf
+#print axioms Formal.Revoke.revoked_preserves_ordered
+#print axioms Formal.Revoke.wellFormed_revoke_wf
+#print axioms Formal.Revoke.revoked_preserves_wf
+#print axioms Formal.Revoke.revoke_preserves_wf
+#print axioms Formal.Revoke.revoke_sequence_preserves_wf
+#print axioms Formal.Revoke.revState_wellformed

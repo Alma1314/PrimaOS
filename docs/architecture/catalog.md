@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（266）
+## report（268）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -357,6 +357,8 @@
 | [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 | [WIN-M2 ring3 原型：原样 PE32+ 子任务执行](../superpowers/reports/2026-11-26-windows-m2-ring3.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-ring3.md` |
 | [架构规划修订与异构 ISA 复核记录](../superpowers/reports/2026-11-27-architecture-isa-re-review.md) | historical | `docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md` |
+| [Lean 审计对象类型丢失修复](../superpowers/reports/2026-11-27-lean-audit-object-identity.md) | historical | `docs/superpowers/reports/2026-11-27-lean-audit-object-identity.md` |
+| [Lean 撤销不变量的连续操作闭合修复](../superpowers/reports/2026-11-27-lean-revoke-composition.md) | historical | `docs/superpowers/reports/2026-11-27-lean-revoke-composition.md` |
 | [P5-0：SMP 状态所有权设计与 CPU 本地状态基座](../superpowers/reports/2026-11-27-p5-0-state-partition.md) | current | `docs/superpowers/reports/2026-11-27-p5-0-state-partition.md` |
 | [P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测](../superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md) | current | `docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md` |
 | [P5-2：AP 启动原型（INIT-SIPI-SIPI 到长模式）](../superpowers/reports/2026-11-27-p5-2-ap-bringup.md) | current | `docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md` |

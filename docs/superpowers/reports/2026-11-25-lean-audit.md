@@ -4,7 +4,7 @@ kind: report
 authority: scoped-model-evidence
 status: validated-with-limits
 lifecycle: current
-updated: 2026-11-25
+updated: 2026-11-27
 ---
 
 # Lean `Formal.Audit`：§13.1 事件信封与 W13 日志核心最小模型
@@ -92,3 +92,7 @@ move/drop/mint 的一步原子追加。19 条定理通过 `lake build`；2 条�
 - 契约：[COSIR §13.1/W13](../../../COSIR%20原语规范.md)。
 - 映照：[lean/README.md](../../../lean/README.md)。
 - 互补：[Subscription §12.4](2026-11-25-lean-subscription.md)、[Move §4.6](2026-11-25-lean-move.md)。
+
+2026-11-27 后继：[审计对象身份修复](2026-11-27-lean-audit-object-identity.md)纠正本模型
+丢失对象类型的问题；本报告的定理计数/运行观察属于 11-25 基线，现行类型和新增隔离证明
+见后继报告与 Lean 映照。其它边界保留。

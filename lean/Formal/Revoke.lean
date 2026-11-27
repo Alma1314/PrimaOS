@@ -16,9 +16,9 @@ import Formal.State
     The original `Formal.WellFormed` requires every parent (including a parent of
     an inactive child) to be active. After revocation both the parent and child are
     inactive, so that predicate is no longer the right shape for the subtree; the
-    model instead proves preservation of `ActiveWellFormed`, which constrains only
-    active capabilities. This is an explicit scope change, not a relaxation of the
-    pre-revocation CDT invariant. See README.md for the Rust mapping and limits. -/
+    model carries `RevokeWellFormed`: ordering of all parent pointers together
+    with `ActiveWellFormed`. Both survive arbitrary finite revocation sequences;
+    ordering also keeps bounded traversal complete through inactive records. See README.md for the Rust mapping and limits. -/
 namespace Formal.Revoke
 
 open Formal
@@ -34,6 +34,18 @@ inductive Desc (s : State) (root : Nat) : Nat → Prop where
 def ActiveWellFormed (s : State) : Prop :=
   ∀ c cap, s.caps c = some cap → cap.active = true → ∀ p, cap.parent = some p →
     p < c ∧ ∃ pcap, s.caps p = some pcap ∧ pcap.active = true ∧ pcap.obj = cap.obj
+
+/-- Parent ordering includes inactive records, so bounded traversal remains complete
+    after revocation. ActiveWellFormed alone cannot constrain inactive chains. -/
+def ParentOrdered (s : State) : Prop :=
+  ∀ c cap, s.caps c = some cap → ∀ p, cap.parent = some p → p < c
+
+/-- The invariant carried between successive revocations. -/
+def RevokeWellFormed (s : State) : Prop := ParentOrdered s ∧ ActiveWellFormed s
+
+theorem wellFormed_ordered {s : State} (h : WellFormed s) : ParentOrdered s := by
+  intro c cap hc p hp
+  exact (h c cap hc p hp).1
 
 /-- Executable fuel-bounded membership test: `c` is the root, or its parent chain
     reaches the root within `n` steps. Sound for every fuel; complete for fuel
@@ -125,21 +137,21 @@ theorem descB_sound :
                 exact Desc.step hcap hp (ih s root p h')
 
 /-- In a well-formed state, a descendant's CapId is at least the root's. -/
-theorem desc_ge_root {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+theorem desc_ge_root_ordered {s : State} {root c : Nat} (hwf : ParentOrdered s) (h : Desc s root c) :
     root ≤ c := by
   induction h with
   | self => exact Nat.le_refl root
   | @step c p cap hcap hpar _ ih =>
-      exact Nat.le_trans ih (Nat.le_of_lt (hwf c cap hcap p hpar).1)
+      exact Nat.le_trans ih (Nat.le_of_lt (hwf c cap hcap p hpar))
 
 /-- `descB` with fuel `c + 1` recognises every descendant of a well-formed state. -/
-theorem descB_complete {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+theorem descB_complete_ordered {s : State} {root c : Nat} (hwf : ParentOrdered s) (h : Desc s root c) :
     descB (c + 1) s root c = true := by
   induction h with
   | self => exact descB_self s root
   | @step c p cap hcap hpar hd ih =>
-      have hlt : p < c := (hwf c cap hcap p hpar).1
-      have hrootlt : root < c := Nat.lt_of_le_of_lt (desc_ge_root hwf hd) hlt
+      have hlt : p < c := hwf c cap hcap p hpar
+      have hrootlt : root < c := Nat.lt_of_le_of_lt (desc_ge_root_ordered hwf hd) hlt
       have hcf : (c == root) = false := by simp [Nat.ne_of_gt hrootlt]
       have hf : descB c s root p = true := descB_mono (Nat.succ_le_of_lt hlt) ih
       simp [descB, hcf, hcap, hpar, hf]
@@ -148,9 +160,19 @@ theorem descAt_sound {s : State} {root c : Nat} (h : descAt s root c = true) :
     Desc s root c :=
   descB_sound (c + 1) s root c h
 
-theorem descAt_complete {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+theorem descAt_complete_ordered {s : State} {root c : Nat} (hwf : ParentOrdered s) (h : Desc s root c) :
     descAt s root c = true :=
-  descB_complete hwf h
+  descB_complete_ordered hwf h
+
+-- Keep the original entry points for callers starting from WellFormed.
+theorem desc_ge_root {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+    root ≤ c := desc_ge_root_ordered (wellFormed_ordered hwf) h
+
+theorem descB_complete {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+    descB (c + 1) s root c = true := descB_complete_ordered (wellFormed_ordered hwf) h
+
+theorem descAt_complete {s : State} {root c : Nat} (hwf : WellFormed s) (h : Desc s root c) :
+    descAt s root c = true := descAt_complete_ordered (wellFormed_ordered hwf) h
 
 /-- Revoked state: every subtree capability is inactive; every subtree `HeldBy`
     position is removed; non-`HeldBy` positions and all out-of-subtree state are
@@ -280,8 +302,8 @@ theorem revoked_caps {s : State} {root holder c : Nat} :
 /-- Successful revocation keeps the active-capability CDT invariants: an active
     capability is necessarily outside the subtree, so neither it nor its parent
     was modified (a parent in the subtree would put the child in the subtree). -/
-theorem revoke_preserves_active_wf {s : State} {root holder : Nat}
-    (hwf : WellFormed s) : ActiveWellFormed (revoked s root holder) := by
+theorem revoked_preserves_active_wf {s : State} {root holder : Nat}
+    (horder : ParentOrdered s) (hwf : ActiveWellFormed s) : ActiveWellFormed (revoked s root holder) := by
   intro c cap' hcap' hactive p hparent
   rw [revoked_caps] at hcap'
   cases hc : s.caps c with
@@ -296,12 +318,49 @@ theorem revoke_preserves_active_wf {s : State} {root holder : Nat}
       · have hb' : descAt s root c = false := Bool.eq_false_iff.mpr hb
         simp [hb'] at hcap'
         rw [← hcap'] at hparent hactive ⊢
-        have hnotc : ¬ Desc s root c := fun hd => hb (descAt_complete hwf hd)
+        have hnotc : ¬ Desc s root c := fun hd => hb (descAt_complete_ordered horder hd)
         have hnotp : ¬ Desc s root p := not_desc_parent hc hparent hnotc
-        have hpcap := hwf c cap hc p hparent
+        have hpcap := hwf c cap hc hactive p hparent
         refine ⟨hpcap.1, ?_⟩
         obtain ⟨pcap, hpdef, hpactive, hpobj⟩ := hpcap.2
         exact ⟨pcap, by rw [revoked_caps_outside hnotp]; exact hpdef, hpactive, hpobj⟩
+
+/-- Retained API: the original one-step result follows from the composable theorem. -/
+theorem revoke_preserves_active_wf {s : State} {root holder : Nat}
+    (hwf : WellFormed s) : ActiveWellFormed (revoked s root holder) :=
+  revoked_preserves_active_wf (wellFormed_ordered hwf) (wellFormed_active hwf)
+
+theorem revoked_preserves_ordered {s : State} {root holder : Nat}
+    (h : ParentOrdered s) : ParentOrdered (revoked s root holder) := by
+  intro c cap' hc' p hp'
+  simp only [revoked, Option.map_eq_some_iff] at hc'
+  obtain ⟨cap, hc, heq⟩ := hc'
+  have hp : cap.parent = some p := by
+    split at heq <;> cases heq <;> exact hp'
+  exact h c cap hc p hp
+
+theorem wellFormed_revoke_wf {s : State} (h : WellFormed s) : RevokeWellFormed s :=
+  ⟨wellFormed_ordered h, wellFormed_active h⟩
+
+theorem revoked_preserves_wf {s : State} {root holder : Nat}
+    (h : RevokeWellFormed s) : RevokeWellFormed (revoked s root holder) :=
+  ⟨revoked_preserves_ordered h.1, revoked_preserves_active_wf h.1 h.2⟩
+
+/-- Both success and failure preserve the invariant required by the next call. -/
+theorem revoke_preserves_wf {s : State} {root holder : Nat}
+    (h : RevokeWellFormed s) : RevokeWellFormed (revoke s root holder).1 := by
+  unfold revoke
+  split
+  · exact revoked_preserves_wf (holder := holder) h
+  · exact h
+
+/-- Any finite sequence, including failed guards and repeated roots. -/
+theorem revoke_sequence_preserves_wf (ops : List (Nat × Nat)) (s : State)
+    (h : RevokeWellFormed s) :
+    RevokeWellFormed (ops.foldl (fun st op => (revoke st op.1 op.2).1) s) := by
+  induction ops generalizing s with
+  | nil => exact h
+  | cons op ops ih => exact ih _ (revoke_preserves_wf h)
 
 -- Executable anchors: root (id 1, held by 9) with derived child (id 2, held by 9),
 -- an in-message descendant (id 3), and an out-of-subtree cap (id 4).
@@ -332,6 +391,50 @@ def revState : State :=
       else if id = 3 then some (.inMessage 5)
       else if id = 4 then some (.heldBy 8)
       else none }
+
+-- Regression: the old postcondition cannot serve as the next precondition.
+theorem revState_wellformed : WellFormed revState := by
+  intro c cap hc p hp
+  by_cases h1 : c = 1
+  · subst c
+    have heq : revRoot = cap := by simpa [revState] using hc
+    subst cap
+    simp [revRoot] at hp
+  by_cases h2 : c = 2
+  · subst c
+    have heq : revChild = cap := by simpa [revState] using hc
+    subst cap
+    have heq : p = 1 := by simpa [revChild] using hp.symm
+    subst p
+    exact ⟨by decide, revRoot, by simp [revState], rfl, rfl⟩
+  by_cases h3 : c = 3
+  · subst c
+    have heq : revMsg = cap := by simpa [revState] using hc
+    subst cap
+    have heq : p = 2 := by simpa [revMsg] using hp.symm
+    subst p
+    exact ⟨by decide, revChild, by simp [revState], rfl, rfl⟩
+  by_cases h4 : c = 4
+  · subst c
+    have heq : revOutside = cap := by simpa [revState] using hc
+    subst cap
+    simp [revOutside] at hp
+  · simp [revState, h1, h2, h3, h4] at hc
+
+example : ¬ WellFormed (revoke revState 1 9).1 := by
+  intro h
+  have hp := (h 2 { revChild with active := false } (by decide) 1 (by rfl)).2
+  obtain ⟨pcap, hc, ha, _⟩ := hp
+  have heq : pcap = { revRoot with active := false } := by
+    simpa [revoke, revoked, revState, descAt, descB] using hc.symm
+  subst pcap
+  contradiction
+
+-- This now composes on a state that no longer satisfies the original WellFormed.
+example :
+    RevokeWellFormed (([(1, 9), (4, 8), (1, 9)] : List (Nat × Nat)).foldl
+      (fun st op => (revoke st op.1 op.2).1) revState) :=
+  revoke_sequence_preserves_wf _ _ (wellFormed_revoke_wf revState_wellformed)
 
 #eval (revoke revState 1 9).2                                   -- true
 #eval ((revoke revState 1 9).1.caps 1).map (fun c => c.active)   -- some false（根失效）

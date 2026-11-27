@@ -20,3 +20,5 @@ import Formal.Audit
 #print axioms Formal.Audit.auditedObjectCreate_live
 #print axioms Formal.Audit.auditedObjectDestroy_event
 #print axioms Formal.Audit.auditedObjectDestroy_dead
+#print axioms Formal.Audit.auditedObjectCreate_other
+#print axioms Formal.Audit.auditedObjectDestroy_other

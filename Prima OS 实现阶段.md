@@ -34,6 +34,16 @@ updated: 2026-11-27
 
 ## 证据索引
 
+2026-11-27 [Lean 审计对象身份修复](docs/superpowers/reports/2026-11-27-lean-audit-object-identity.md)：
+事件、存活表和查询保留完整对象类型，修复 Segment/Namespace 同编号时的历史与存活位混淆；
+五条新增通用定理、七个回归与全部主模型通过；不改变阶段、退出勾选或机器 ABI。
+
+2026-11-27 [Lean 连续撤销证明补强](docs/superpowers/reports/2026-11-27-lean-revoke-composition.md)：
+新增覆盖 inactive 父链顺序的组合不变量与任意有限撤销序列保持性；主模型、36 条撤销定理
+公理检查、Rust host/lint 通过。后继已恢复锁定 Aeneas 工具与依赖，离线 formal
+验收（源码细化、新鲜度、公理审计与语义 mutation）通过；
+`ISSUE-REVOKE-CONTAINER-001` 仍开放，阶段与退出勾选不变。
+
 2026-11-27 [失效候选提案清理](docs/superpowers/reports/2026-11-27-proposal-cleanup.md)：移除
 两份外部 RuxOS 基座库候选正文，保留正式裁决、风险摘要与 Git/哈希恢复；Gate 初期设计
 转 historical，融合内核/UNIFICO、Windows 与 holder 路线保留。纯文档清理，不改变阶段或 profile。

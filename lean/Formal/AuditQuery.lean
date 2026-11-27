@@ -6,9 +6,8 @@ import Formal.Audit
     creation/destruction events. The query is pure: it returns an `Except` and
     never a new state.
 
-    Not covered: proving the chain is complete for arbitrary states (fuel `capId+1`
-    is only known to be enough under `WellFormed`, and the truncation/completeness
-    argument is not formalized), `origin` for cross-node roots, content digests,
+    Parent-chain completeness is proved under `WellFormed`. Not covered:
+    completeness for arbitrary states, `origin` for cross-node roots, content digests,
     the full §13.1 payload contract, or Rust refinement. -/
 namespace Formal.AuditQuery
 
@@ -231,29 +230,37 @@ theorem auditChain_root_parent_none {s : AState} {capId : Nat} {cap : Capability
   rw [auditChain, List.head?_reverse] at hroot
   exact hlast root hroot
 
-/-- Object creation/destruction events for one object, with their `EventId`. -/
-def objectId : Object → Nat
-  | .segment i => i
-  | .task i => i
-  | .excSource i => i
-  | .namespace i => i
-  | .timer i => i
-  | .node i => i
-  | .waitObject i => i
-
-def objectEvents (l : Log) (obj : Nat) : List Event :=
+/-- Object creation/destruction events retain the tagged Object identity. -/
+def objectEvents (l : Log) (obj : Object) : List Event :=
   (List.range l.entries.length).filterMap fun i =>
-    match l.entries[i]? with
-    | some e =>
-        match e.kind with
-        | .objectCreated o =>
-            if o = obj then some { id := l.first + i, when := e.when, actor := e.actor, kind := e.kind }
-            else none
-        | .objectDestroyed o =>
-            if o = obj then some { id := l.first + i, when := e.when, actor := e.actor, kind := e.kind }
-            else none
-        | _ => none
-    | none => none
+    (l.eventAt? i).filter fun e =>
+      match e.kind with
+      | .objectCreated o | .objectDestroyed o => o == obj
+      | _ => false
+
+/-- Every returned event belongs to this exact object, including its type tag. -/
+theorem objectEvents_sound {l : Log} {obj : Object} {e : Event}
+    (h : e ∈ objectEvents l obj) :
+    e.kind = .objectCreated obj ∨ e.kind = .objectDestroyed obj := by
+  simp only [objectEvents, List.mem_filterMap] at h
+  obtain ⟨i, _, hi⟩ := h
+  have hp := (Option.filter_eq_some_iff.mp hi).2
+  cases hk : e.kind <;> simp_all
+
+/-- No matching lifecycle event is dropped, and its original envelope is retained. -/
+theorem objectEvents_mem_iff {l : Log} {obj : Object} {e : Event} :
+    e ∈ objectEvents l obj ↔ ∃ i, i < l.entries.length ∧ l.eventAt? i = some e ∧
+      (e.kind = .objectCreated obj ∨ e.kind = .objectDestroyed obj) := by
+  constructor
+  · intro h
+    have hkind := objectEvents_sound h
+    simp only [objectEvents, List.mem_filterMap] at h
+    obtain ⟨i, hi, he⟩ := h
+    exact ⟨i, List.mem_range.mp hi, (Option.filter_eq_some_iff.mp he).1, hkind⟩
+  · rintro ⟨i, hi, he, hk⟩
+    simp only [objectEvents, List.mem_filterMap]
+    refine ⟨i, List.mem_range.mpr hi, Option.filter_eq_some_iff.mpr ⟨he, ?_⟩⟩
+    rcases hk with hk | hk <;> simp [hk]
 
 inductive AuditError where
   | invalidCap
@@ -279,7 +286,7 @@ def audit (s : AState) (caller capId : Nat) : Except AuditError AuditTrace :=
             .ok { chain := auditChain s capId
                   creations := (auditChain s capId).map (fun c => (c, s.created c))
                   positions := capHistory s.log capId
-                  objectHistory := objectEvents s.log (objectId cap.obj) }
+                  objectHistory := objectEvents s.log cap.obj }
           else .error .notHeld
       | _ => .error .notHeld
 
@@ -330,7 +337,7 @@ theorem audit_ok_fields {s : AState} {caller capId : Nat} {tr : AuditTrace} {cap
     tr.chain = auditChain s capId ∧
       tr.creations = (auditChain s capId).map (fun c => (c, s.created c)) ∧
       tr.positions = capHistory s.log capId ∧
-      tr.objectHistory = objectEvents s.log (objectId cap.obj) := by
+      tr.objectHistory = objectEvents s.log cap.obj := by
   unfold audit at h
   split at h <;> try cases h
   rename_i cap' hcap'
@@ -350,7 +357,7 @@ theorem audit_dead_target_ok {s : AState} {caller capId : Nat} {cap : Capability
   refine ⟨{ chain := auditChain s capId
             creations := (auditChain s capId).map (fun c => (c, s.created c))
             positions := capHistory s.log capId
-            objectHistory := objectEvents s.log (objectId cap.obj) }, ?_, rfl⟩
+            objectHistory := objectEvents s.log cap.obj }, ?_, rfl⟩
   simp [audit, hcap, hloc]
 
 theorem audit_ok_creation_mem {s : AState} {caller capId : Nat} {tr : AuditTrace}
@@ -365,5 +372,14 @@ theorem audit_ok_creation_mem {s : AState} {caller capId : Nat} {tr : AuditTrace
   subst h1
   subst h2
   exact ⟨by rwa [hc], rfl⟩
+
+/-- Successful audit cannot include another object's lifecycle events. -/
+theorem audit_ok_object_mem {s : AState} {caller capId : Nat} {tr : AuditTrace}
+    {cap : Capability} {e : Event}
+    (hcap : s.world.base.snap.state.caps capId = some cap)
+    (h : audit s caller capId = .ok tr) (he : e ∈ tr.objectHistory) :
+    e.kind = .objectCreated cap.obj ∨ e.kind = .objectDestroyed cap.obj := by
+  rw [(audit_ok_fields hcap h).2.2.2] at he
+  exact objectEvents_sound he
 
 end Formal.AuditQuery
