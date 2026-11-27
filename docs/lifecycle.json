@@ -584,6 +584,59 @@
         "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
         "docs/superpowers/reports/2026-11-27-proposal-cleanup.md"
       ]
+    },
+    {
+      "path": "docs/architecture/getting-started.md",
+      "lifecycle": "removed",
+      "id": "guide-getting-started",
+      "updated": "2026-11-27",
+      "reason": "阅读顺序、角色最小上下文与交付入口合入文档中心；没有独立契约或运行证据。",
+      "replacements": [
+        "docs/README.md",
+        "docs/architecture/documentation-maintenance.md"
+      ],
+      "revision": "5ebf2791fcf01f21cf6e396227483e74ef1b2dd9",
+      "sha256": "71ee209b0cfa25c3e2233883eaf29a943e76687e86be173a36b46c5faeadfab1"
+    },
+    {
+      "path": "docs/architecture/README.md",
+      "lifecycle": "removed",
+      "id": "architecture-home",
+      "updated": "2026-11-27",
+      "reason": "重复目录导航；手册与模板入口已由文档中心及维护手册承接，所链接正文继续保留。",
+      "replacements": [
+        "docs/README.md",
+        "docs/architecture/documentation-maintenance.md"
+      ],
+      "revision": "5ebf2791fcf01f21cf6e396227483e74ef1b2dd9",
+      "sha256": "7697aad2a9568ab43480192a1fb581a2c0e5e492c25b5c1d3841e7393959734e"
+    },
+    {
+      "path": "docs/superpowers/README.md",
+      "lifecycle": "removed",
+      "id": "artifacts-home",
+      "updated": "2026-11-27",
+      "reason": "重复工件类型/权威/追溯与维护说明；合并到文档中心、AI检索协议及维护手册，四类档案索引保留。",
+      "replacements": [
+        "docs/README.md",
+        "docs/architecture/ai-retrieval.md",
+        "docs/architecture/documentation-maintenance.md"
+      ],
+      "revision": "5ebf2791fcf01f21cf6e396227483e74ef1b2dd9",
+      "sha256": "50adf2f45da488bc0db04e0b748df8a62de3d1e220fb89355f7aa429dd1bd75a"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md",
+      "lifecycle": "removed",
+      "id": "plan-vfs-libos-foundation",
+      "updated": "2026-11-27",
+      "reason": "五步一次性操作顺序已完整合入既有VFS设计；没有独立决定或实跑，原报告的失败和范围不变。",
+      "replacements": [
+        "docs/superpowers/specs/2026-10-23-vfs-libos-foundation-design.md",
+        "docs/superpowers/reports/2026-10-23-vfs-libos-foundation-report.md"
+      ],
+      "revision": "5ebf2791fcf01f21cf6e396227483e74ef1b2dd9",
+      "sha256": "4923bf4e3563771fa31f23408484f70c13b39f080722f076d15626115bcf4baa"
     }
   ]
 }

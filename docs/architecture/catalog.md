@@ -22,25 +22,22 @@
 | [Linux LibOS profile v1（有界冻结）](../superpowers/compat/stage6-linux-profile-v1.md) | current | `docs/superpowers/compat/stage6-linux-profile-v1.md` |
 | [阶段 5 符号 ↔ 系统调用追溯（musl 1.2.5 / echo）](../superpowers/compat/symbol-trace.md) | current | `docs/superpowers/compat/symbol-trace.md` |
 
-## guide（5）
+## guide（4）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [AI 检索与上下文组装协议](ai-retrieval.md) | current | `docs/architecture/ai-retrieval.md` |
 | [开发、构建与验证手册](development.md) | current | `docs/architecture/development.md` |
 | [文档编写、复查与废弃操作手册](documentation-maintenance.md) | current | `docs/architecture/documentation-maintenance.md` |
-| [入门与任务阅读路线](getting-started.md) | current | `docs/architecture/getting-started.md` |
 | [系统层次与源码地图](system-map.md) | current | `docs/architecture/system-map.md` |
 
-## index（10）
+## index（8）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
 | [Prima OS](../../README.md) | current | `README.md` |
 | [PrimaOS 文档中心](../README.md) | current | `docs/README.md` |
-| [架构、开发与检索手册](README.md) | current | `docs/architecture/README.md` |
 | [按子系统检索](topics/README.md) | current | `docs/architecture/topics/README.md` |
-| [设计、执行与证据档案](../superpowers/README.md) | current | `docs/superpowers/README.md` |
 | [兼容性台账索引](../superpowers/compat/README.md) | current | `docs/superpowers/compat/README.md` |
 | [Plans 索引](../superpowers/plans/README.md) | current | `docs/superpowers/plans/README.md` |
 | [Reports 索引](../superpowers/reports/README.md) | current | `docs/superpowers/reports/README.md` |
@@ -53,7 +50,7 @@
 |---|---|---|
 | [阶段 6 静态 ELF 白名单（D12 冻结）](../superpowers/compat/stage6-static-whitelist.md) | current | `docs/superpowers/compat/stage6-static-whitelist.md` |
 
-## plan（26）
+## plan（25）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -75,7 +72,6 @@
 | [阶段 5：musl 移植计划](../superpowers/plans/2026-10-18-musl-port-plan.md) | historical | `docs/superpowers/plans/2026-10-18-musl-port-plan.md` |
 | [阶段 5 修订计划：从原生机制到 POSIX 源码兼容](../superpowers/plans/2026-10-18-stage5-revised-plan.md) | historical | `docs/superpowers/plans/2026-10-18-stage5-revised-plan.md` |
 | [阶段 5 收尾与阶段 6 入口实施路线图](../superpowers/plans/2026-10-22-stage5-completion-roadmap.md) | historical | `docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md` |
-| [VFS / LibOS 基础重构执行计划](../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md) | historical | `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md` |
 | [阶段 6–7 细化提案：从 Linux 静态 ELF 到多 LibOS 并存](../superpowers/plans/2026-10-27-stage6-7-refinement.md) | current | `docs/superpowers/plans/2026-10-27-stage6-7-refinement.md` |
 | [Windows LibOS 计划书：PE64 控制台与服务兼容路径](../superpowers/plans/2026-10-31-windows-libos-roadmap.md) | current | `docs/superpowers/plans/2026-10-31-windows-libos-roadmap.md` |
 | [阶段7执行计划：工程底座与九轨冻结顺序](../superpowers/plans/2026-11-06-stage7-execution.md) | current | `docs/superpowers/plans/2026-11-06-stage7-execution.md` |
@@ -98,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（268）
+## report（269）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -357,6 +353,7 @@
 | [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 | [WIN-M2 ring3 原型：原样 PE32+ 子任务执行](../superpowers/reports/2026-11-26-windows-m2-ring3.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-ring3.md` |
 | [架构规划修订与异构 ISA 复核记录](../superpowers/reports/2026-11-27-architecture-isa-re-review.md) | historical | `docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md` |
+| [文档整理、合并与压缩记录](../superpowers/reports/2026-11-27-documentation-consolidation.md) | historical | `docs/superpowers/reports/2026-11-27-documentation-consolidation.md` |
 | [Lean 审计对象类型丢失修复](../superpowers/reports/2026-11-27-lean-audit-object-identity.md) | historical | `docs/superpowers/reports/2026-11-27-lean-audit-object-identity.md` |
 | [Lean 撤销不变量的连续操作闭合修复](../superpowers/reports/2026-11-27-lean-revoke-composition.md) | historical | `docs/superpowers/reports/2026-11-27-lean-revoke-composition.md` |
 | [P5-0：SMP 状态所有权设计与 CPU 本地状态基座](../superpowers/reports/2026-11-27-p5-0-state-partition.md) | current | `docs/superpowers/reports/2026-11-27-p5-0-state-partition.md` |
@@ -531,3 +528,7 @@
 - `docs/architecture/primaos-architecture-qa.md`：重复的对话整理，含单文件存储、缺 stdin/exec 等过时实现摘要；无独立契约或实验效力。
 - `docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`：外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。
 - `docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md`：外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。
+- `docs/architecture/getting-started.md`：阅读顺序、角色最小上下文与交付入口合入文档中心；没有独立契约或运行证据。
+- `docs/architecture/README.md`：重复目录导航；手册与模板入口已由文档中心及维护手册承接，所链接正文继续保留。
+- `docs/superpowers/README.md`：重复工件类型/权威/追溯与维护说明；合并到文档中心、AI检索协议及维护手册，四类档案索引保留。
+- `docs/superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md`：五步一次性操作顺序已完整合入既有VFS设计；没有独立决定或实跑，原报告的失败和范围不变。

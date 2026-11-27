@@ -21,7 +21,7 @@ updated: 2026-10-31
 - [阶段跟踪](../../../Prima%20OS%20实现阶段.md)：S1～S5 的交付与退出检查。
 - [阶段1～4复核](2026-10-18-stage1-4-implementation-review.md)、[SPEC-151](2026-10-18-stage1-open-issues-spec151.md)、[阶段2 IPC整改](2026-10-18-stage2-ipc-review-remediation.md)、[阶段3整改](2026-10-18-stage3-review-remediation.md)。
 - [阶段5签署](2026-10-27-stage5-exit-signoff.md)、[冻结profile v2](../specs/2026-10-25-stage5-profile-v2.md)、[质量审查](2026-10-27-implementation-quality-review.md)。
-- VFS [M13a设计](../specs/2026-10-22-stage5-m13a-vfs-links-design.md)、[打开对象契约](../specs/2026-10-23-vfs-libos-foundation-design.md)、[执行计划](../plans/2026-10-23-vfs-libos-foundation-plan.md)、[前序报告](2026-10-23-vfs-libos-foundation-report.md)。
+- VFS [M13a设计](../specs/2026-10-22-stage5-m13a-vfs-links-design.md)、[打开对象契约](../specs/2026-10-23-vfs-libos-foundation-design.md)、[历史执行顺序](../specs/2026-10-23-vfs-libos-foundation-design.md#执行顺序历史记录)（原短计划于 2026-11-27 合并，原文恢复见[台账](../../lifecycle.json)）、[前序报告](2026-10-23-vfs-libos-foundation-report.md)。
 
 ## 复核判断
 

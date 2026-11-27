@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-11-17
+updated: 2026-11-27
 ---
 
 # 用户态 VFS、文件描述符与路径
@@ -31,7 +31,7 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 - [运行时/服务后继验证](../../superpowers/reports/2026-10-24-native-runtime-service-report.md)
 
 - [LibOS 基础设计](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md)
-- [LibOS 重构计划](../../superpowers/plans/2026-10-23-vfs-libos-foundation-plan.md)
+- [LibOS 重构顺序（已合入设计）](../../superpowers/specs/2026-10-23-vfs-libos-foundation-design.md#执行顺序历史记录)
 - [LibOS 重构验证报告](../../superpowers/reports/2026-10-23-vfs-libos-foundation-report.md)
 - [LibOS 数据通路契约](../../superpowers/specs/2026-11-10-libos-data-path.md)
 - [LibOS 数据通路计划](../../superpowers/plans/2026-11-10-libos-data-path.md)
@@ -79,4 +79,4 @@ M4 单文件 → M7 fd/dup → M8 多级 VFS/rootfs → M9 metadata/cwd → M11 
 
 普通文件 unlink/rename 替换后，旧打开对象保留到最后 close；打开目录仍拒绝删除/替换。v3 镜像只对全零头自动格式化，旧版本须显式处理。
 
-节点、路径、句柄和内容区都有固定容量；无硬链接、跨启动持久化或跨客户端句柄授权。P2a 已在 host 层实现代理会话、Store owner 绑定与受限根视图（`/linux`、`/native`、`/shared`），但 Linux personality 的数据面仍使用域内 RAM，fork 生命周期、镜像接线与代理路径的 QEMU 正反例待 P2b。fork 的 fd/cap 继承仍有 close 隔离偏差，子任务 rootfs 按任务授权限制另见 process 主题。profile v1 是提案，不能因测试通过而自动发布。
+节点、路径、句柄和内容区都有固定容量；硬链接、跨启动持久化等能力按具体契约判断。P2a 的代理会话/受限根视图及 P2b 的 Linux 数据面、fork 生命周期、镜像与代理矩阵须连读至 [P2b 收口证据](../../superpowers/reports/2026-11-18-p2b-closeout.md)，再读 [P3 收口证据](../../superpowers/reports/2026-11-25-p3-closeout.md)确认 v2 后继及未覆盖项；旧 P2a 报告中的待办不是当前状态。子任务 rootfs 授权与 fd/cap 继承另见 process 主题；profile 发布及签署以阶段跟踪和正式裁决为准。

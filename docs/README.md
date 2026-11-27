@@ -17,7 +17,7 @@ PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与
 
 | 任务 | 第一入口 | 然后读取 |
 |---|---|---|
-| 第一次接触项目 | [入门路线](architecture/getting-started.md) | [系统与代码地图](architecture/system-map.md) → 白皮书 |
+| 第一次接触项目 | [首次阅读](#首次阅读) | [系统与代码地图](architecture/system-map.md) → 白皮书 |
 | AI 接手任务、压缩上下文 | [AI 检索协议](architecture/ai-retrieval.md) | `docs.py pack <主题>` → 权威章节 → 最新证据 → 代码 |
 | 判断实现进度与阻塞 | [实现阶段](../Prima%20OS%20实现阶段.md) | 指向的报告、兼容台账与决策门 |
 | 修改某个子系统 | [主题地图](architecture/topics/README.md) | 同主题规范、设计、计划、实现与测试 |
@@ -28,6 +28,21 @@ PrimaOS 是研究型操作系统：以对象能力机制承载原生运行时与
 | 确认许可与再分发义务 | [许可证](architecture/licensing.md) | 根目录 `LICENSE`；MPL-2.0 例外与第三方 NOTICE |
 | 新写或维护文档 | [文档治理规范](superpowers/specs/2026-10-23-documentation-system-design.md) | [维护手册与模板](architecture/documentation-maintenance.md) |
 | 精确查文件与章节 | [全量目录](architecture/catalog.md) | [机器目录 JSON](catalog.json)；本地全文检索 |
+
+## 首次阅读
+
+先读本页权威分工，再读[系统与代码地图](architecture/system-map.md)；白皮书重点读摘要、§3 研究假设、§4 分层、§14 可证伪标准与§19 非目标，原语规范先读§1–6、§16 全局不变量与§18 细化要求。最后由阶段跟踪进入当前出口评审及其限制。
+
+| 工作 | 最小充分上下文 |
+|---|---|
+| 内核机制 | 主题原语、对应 W 不变量、kernel/prima-ostd 边界、后继整改 |
+| 原生运行时/服务 | runtime 主题、ABI/协议定义、阶段 4 收口与复核 |
+| C/musl 或其它 personality | libos/compatibility 主题、profile、兼容台账、探针与补丁 |
+| 模型/证明 | semantics 主题、Lean 映照契约、明确的证明边界 |
+| 项目评审 | 阶段退出条件、签署报告、后续整改、活跃问题 |
+| 文档维护 | 治理规范、维护手册、[设计](architecture/templates/spec.md)/[计划](architecture/templates/plan.md)/[报告](architecture/templates/report.md)/[决策](architecture/templates/decision.md)模板 |
+
+修改前用主题包定位契约、实现、报告及前序失败；交付顺序和验证命令见[维护手册](architecture/documentation-maintenance.md)与[开发手册](architecture/development.md)。原入门页和两层目录介绍已合入本页，删除理由与恢复身份见[本次整理记录](superpowers/reports/2026-11-27-documentation-consolidation.md)。
 
 ## 权威来源按问题分工
 

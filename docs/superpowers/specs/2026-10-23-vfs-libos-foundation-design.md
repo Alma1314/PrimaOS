@@ -4,18 +4,22 @@ kind: spec
 authority: design
 status: implementation-contract
 lifecycle: current
-updated: 2026-10-23
+updated: 2026-11-27
 ---
 
 # VFS 打开对象与 LibOS 适配边界
 
 ## 问题与范围
 
-本切片遵循[白皮书 §7/§11](../../../Prima%20OS.md)：文件系统在用户态，LibOS 负责 OS personality，内核不识别文件、Linux fd 或 Windows handle。前序为 [M8](2026-10-20-stage5-user-vfs-design.md)、[M11](2026-10-22-stage5-m11-file-mutation-design.md)、[M13a](2026-10-22-stage5-m13a-vfs-links-design.md)、[M13b](2026-10-22-stage5-m13b-permissions-stdio-design.md)，执行与结果见[计划](../plans/2026-10-23-vfs-libos-foundation-plan.md)和[报告](../reports/2026-10-23-vfs-libos-foundation-report.md)。
+本切片遵循[白皮书 §7/§11](../../../Prima%20OS.md)：文件系统在用户态，LibOS 负责 OS personality，内核不识别文件、Linux fd 或 Windows handle。前序为 [M8](2026-10-20-stage5-user-vfs-design.md)、[M11](2026-10-22-stage5-m11-file-mutation-design.md)、[M13a](2026-10-22-stage5-m13a-vfs-links-design.md)、[M13b](2026-10-22-stage5-m13b-permissions-stdio-design.md)，历史执行顺序已合入[下节](#执行顺序历史记录)，实际结果见[报告](../reports/2026-10-23-vfs-libos-foundation-report.md)。
 
 原实现把打开对象的访问模式、游标、append 和回收放在无 host 单测入口的服务循环中。表满在 create/truncate 之后检查，rename 替换的目标可被提前回收，unlink 通过跟随末项链接的预检查拒绝打开目标。本切片抽出实际使用的共享语义，并修复这些缺陷；不创建尚无第二个实现的后端 trait，不引入依赖。
 
 这是当前实现的增量契约，替代 M11“所有打开节点拒绝删除”与 M13a“替换立即释放目标”在**普通文件**上的行为。profile 发布、阶段签署与 BLK-003 状态不随此文改变。
+
+## 执行顺序（历史记录）
+
+2026-11-27 将原五步短计划合入本节，未修改行为契约或补记执行通过；原文件身份与 Git 恢复见[生命周期台账](../../lifecycle.json)。当时顺序为：追踪 M8→M11→M13a→M13b 及 service→VFS→Storage；抽出 `OpenFiles` 与类型化意图并保持线协议；修复延迟回收、容量前置、权限/路径/稀疏写并补 host 回归；扩展 V3 同源探针并运行 workspace/lint/Linux 参考/QEMU 双轮全量；最后按实际失败与限制更新报告、阶段/兼容索引和路由，不签署阶段出口。原报告中的 QEMU 超时与未完整通过结论保留。
 
 ## 分层与接口
 

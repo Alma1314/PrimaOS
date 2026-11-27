@@ -9,81 +9,51 @@ updated: 2026-11-27
 
 # Reports 索引
 
-2026-11-27：[Lean 审计对象身份修复](2026-11-27-lean-audit-object-identity.md)；全程保留 Object 类型标签，修复同编号异类对象的历史/存活位混淆，新增隔离和双向成员对应证明及查询回归；阶段不变。
+本页按主题导航，不复制各报告的测试计数或“待完成”快照。**当前状态只查[阶段跟踪](../../../Prima%20OS%20实现阶段.md)**；报告按其版本、失败、后继关系和未覆盖项解释，新日期不自动取代旧结论。历史 P2/P3/Windows/SMP 逐片报告应连读至后继，不将中间待办当作当前状态。
 
-2026-11-27：[Lean 连续撤销证明补强](2026-11-27-lean-revoke-composition.md)；修复撤销前后不变量不闭合，证明任意有限撤销序列保持组合不变量，保留原定理与运行语义；后继恢复锁定工具与缓存，离线 formal（含源码细化与语义 mutation）通过；容器偏差仍开放。
+## 近期阅读链
 
-2026-11-27：[失效候选提案清理与 Git 恢复](2026-11-27-proposal-cleanup.md)；退役两份 RuxOS 基座库外部候选，保留决策/风险摘要、正式承接与恢复版本/哈希；Gate 原设计转 historical，活跃研究提案与证据链保留；不改阶段/profile。
-
-2026-11-27：[架构规划修订与异构 ISA 复核记录](2026-11-27-architecture-isa-re-review.md)；保留 SMP/GS 准入、撤销偏差和旧提案复核的历史发现；现行[融合内核方案](../specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)已直接重写，后继补入统一镜像、芯粒硬件准入、内核分层和项目取舍。旧选项与旧分期不再作为当前方案，撤销实现偏差仍开放；本次未新增融合运行/证明证据。
-
-2026-11-11：[LibOS数据通路共享批量首片](2026-11-10-libos-data-path.md)；P1完整36组72轮BIOS通过，P2–P6待实现，未完成项和验证边界见正文。
-
-2026-11-16：[P2a代理会话与受限根视图](2026-11-16-stage7-proxy-session.md)；管理器签发、Store绑定与视图原语通过host/lint及既有72轮BIOS回归；Linux数据面迁移、镜像接线和代理QEMU正反例仍未实现。
-
-2026-11-17：[P2b-0/P2b-1 Store批量数据面](2026-11-17-p2b-store-batch-ops.md)；op矩阵与Store侧OPEN/STAT/CLOSE/GETDENTS/LSEEK/STAT_PATH通过host/workspace/lint；Linux前端、fork/exit、镜像与QEMU未做。
-
-2026-11-17：[P2b-2 Linux前端切换](2026-11-17-p2b-linux-frontend.md)；前端经Session/Local覆盖8个op，workspace 1166与既有Linux差分22轮通过；真实代理会话、fork/exit、镜像与代理QEMU正反例仍未完成。
-
-2026-11-17：[P2b-3 fork/exec/exit生命周期](2026-11-17-p2b-fork-exit.md)；owner预留/发布/回滚/退出关闭迁到Store接口并新增代理消息，workspace 1169与既有Linux差分22轮通过；真实会话接线、镜像与代理QEMU正反例仍未完成。
-
-2026-11-18：[P2b-4 镜像接线与两 ABI 场景](2026-11-18-p2b-proxy-wiring.md)；管理器签发文件/代理会话，Linux personality 经真实 Remote 读 Store 的 `/linux/fixture.txt`，原生应用读 `/README`；workspace 1169、lint、`test-linux-proxy` 与既有差分通过，正反例矩阵待P2b-5。
-
-2026-11-18：[P2b-5 代理路径正反例矩阵](2026-11-18-p2b-proxy-matrix.md)；两次 QEMU 启动覆盖 Linux 私有读/代理 fork/共享授权/fork 限额与原生策略视图七条负例；以能力绑定取代不可满足的内核父系校验，workspace 1170、lint 与既有差分 22 轮通过；P2b-6 收口待做。
-
-2026-11-18：[P2b-6 P2b 收口](2026-11-18-p2b-closeout.md)；汇总 P2b-0…P2b-5 证据并裁决保留 `Direct`，完整 BIOS 套件 36 程序/72 轮通过；P2 不签署、7-A 未勾选，组织级复核待做，P3–P6 未开始。
-
-2026-11-18：[P3-0 异步批量契约与状态机](2026-11-18-p3-async-state-machine.md)；把 P3 草案落成 Store/Producer 纯状态机，改用 IPC 顺序而非裸共享原子，host 有界穷举交错与回绕用例通过；未接线、无 QEMU，P3 未收口。
-
-2026-11-18：[P3-1 Store v2 会话](2026-11-18-p3-store-v2.md)；5 页控制/数据段、ASYNC_* tag、公平排空、取消/重置/EBUSY/ESTALE 与死亡回收落盘；host 1181、lint、既有 72 轮与 `test-linux-proxy` 通过；Store 栈 4→8 页修复既有代理路径溢出；无 v2 前端/QEMU，P3 未收口。
-
-2026-11-19：[P3-2 前端 v2 接线](2026-11-19-p3-frontend-v2.md)；Store 直连 v2、`Remote` v2 管线、exec 重开、独立代理 tag 族与服务栈 2→4/Store→16 页落盘，72 轮与代理矩阵通过；C 数据面 v2 在 W6/W7b 暴露 fork 后父进程 fd EACCES 已回退，C 锁拆分未开始，P3-2 未关闭。
-
-2026-11-24：[P3-2 C 数据面 v2 与 fork 反例修复](2026-11-24-p3-frontend-v2-data-plane.md)；C 的 read/write/pread/pwrite 切到直连 5 页 v2 会话，fork/exec 统一关闭修复 W6/W7b，per-op 失败推进序号修复 V4 悬挂；workspace 1181、musl 7、lint、W4–W9、V1–V4 与完整 72 轮通过；C 锁拆分未开始，P3-2 未关闭。
-
-2026-11-24：[P3-2 C 适配层数据面锁拆分](2026-11-24-p3-adapter-lock-split.md)；read/write/readv/writev/pread/pwrite 改为短表锁快照加每 wire fd 在途计数与延迟 CLOSE，不再跨同步 IPC 持进程锁；控制面 open/close/路径仍持表锁，工作项 3 未完整，P3-2 未关闭；musl 7、V1–V4、W4–W9 与完整 72 轮通过。
-
-2026-11-25：[P3-2 C 适配层控制面锁拆分](2026-11-25-p3-adapter-control-lock.md)；open/close/dup/fcntl/stat/路径/目录/termios/socket 改为短表锁本地段加锁外 IPC，在途引用扩展到目录与 socket，fork 不再持表锁；host 1181、musl 7、lint、V1–V4、W4–W9、代理矩阵与完整 72 轮通过；工作项 3 完整。
-
-2026-11-25：[P3-3 v2 正反例矩阵](2026-11-25-p3-async-matrix.md)；V5 验收镜像与 `test-async` 两轮 10 个 case：合并完成、满窗 EAGAIN、重放、回退/保留位重置、取消前 ECANCELED、两会话公平与单侧退出后继续；认领后取消与页改写快照登记为限制；P3 未收口、7-A 未勾选。
-
-2026-11-25：[P3 收口证据包](2026-11-25-p3-closeout.md)；汇总 P3-0…P3-3 交付与命令、保留失败历史、登记未覆盖项与复核问题；作为组织级复核输入，不称 P3 已复核，7-A 未勾选。
-
-2026-11-26：[P4-0 Gate/IPC 分段测量基线](2026-11-26-p4-baseline.md)；I1 64 次、N1 128 次、G5 128 次各两轮；本机 G5 的 `queue-deliver` 约占内核时间 48%、`deliver-reply` 约 29%；列出 gate 查找、调度/帧、`gate_copy` scratch 等候选；不改代码、不设门限。
-
-2026-11-26：[P4-1 Gate 递送/恢复分段确认](2026-11-26-p4-segmentation.md)；把 queue-deliver/deliver-reply 映射到两次任务切换与 FXSAVE/FXRSTOR、CR3、iretq，确认现有 5 阶段不足以细分；候选排序先补细分探针，再评估 FPU 惰性、绑定索引与 `gate_copy` scratch；不改代码。
-
-2026-11-26：[P4-2a G5 细分采样探针](2026-11-26-p4-segmentation-probe.md)；新增服务/客户端 resume 入口与 `GATE_WAIT` 内核入口，拆出 queue-wait/switch-service/wait-output 与 reply-dispatch/resume-client；旧 G4 事件与 G5 旧字段冻结，新增 `S7PHASE` 行；G4/G5 各两轮、完整 72 轮通过；未实现优化。
-
-2026-11-26：[P4 收口证据包](2026-11-26-p4-closeout.md)；汇总 P4-0…P4-2a 方法与样本，P4-2 候选评估保留现状；P4-3 回归 G4/G5/I1/N1/C1 各两轮、workspace 1205、lint 与完整 72 轮通过；P4 未关闭、门槛未冻结、7-A 未勾选。
-
-2026-11-26：[WIN-M1 PE/ABI 宿主模型](2026-11-26-windows-m1-pe-model.md)；新增 `prima-windows` 的有界 PE32+ 解析、严格 RVA/映射校验与 Win64 ABI 探针，PE 21/21、ABI 4/4 宿主通过；真实 PE 只验证头与 `.text`，无导入/重定位/TLS/装载/Windows 参考差分。
-
-2026-11-26：[WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md)；`load_into` 在宿主完成平铺复制、DIR64/HIGHLOW 重定位与 IAT 填充，PE 32/32、ABI 4/4 通过；无页映射、Task 发布、TLS 初始化或 ring3 执行，真实 PE 仅首个基址装载。
-
-2026-11-26：[WIN-M2 ring3 原型](2026-11-26-windows-m2-ring3.md)；专用 feature 下 servicemgr 把 clang/lld 原样 PE32+ 经平铺/重定位/IAT 写入 R+X 代码段，两轮 QEMU 各运行两个子任务并自毁，结果 42、exit=self、父服务继续、exit=33；替代导入为手写桩，非完整 M2。
-
-2026-11-27：[WIN-M2 真实 DLL 导出与发布失败清理](2026-11-27-windows-m2-real-dll.md)；解析 `winpe-stub.dll` 导出表替换手写导入桩并把 DLL 以 R+X 映射，新增发布失败负例（held Task 已建 R+X 映射后强制失败，清理并用同一 VA 重新装载）；专用 QEMU 连续 8 轮逐字节通过、host 1223、lint 通过；首次运行一次未复现的 `task_create_held` 失败已登记，无 Windows 参考差分，WIN-M2 未通过。
-
-2026-11-27：[WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md)；导出区分函数/转发器并新增 `export_by_ordinal` 与 `ModuleSet`（大小写/后缀归一、转发限深 8），新增 TEB/PEB 冻结子集与静态 TLS 模板宿主模型，ring3 改为三 DLL + `Fwd->winpe-stub.Stub` 转发；QEMU 两轮逐字节通过、host 1234、lint 通过；无用户 GS，动态 TLS/运行期 TEB/PEB、API-set 清单、`DllMain`、堆/错误与参考差分未覆盖，WIN-M3 未通过。
-
-2026-11-27：[Windows LibOS 计划审计](2026-11-27-windows-plan-audit.md)；对照计划、M0 规格与 M1–M3 报告，列出 3 项阻断（M0 参考未冻结、WIN-D3 用户 GS 与 SMP/内核上下文耦合、D4 共享 root 多线程）与 6 项重大及若干次要建议；同步修正阶段跟踪中过时的 Windows 段落，计划里程碑表未改写。
-
-2026-11-27：[P5-3a 每 CPU GDT/TSS 与共享 IDT](2026-11-27-p5-3a-percpu-gdt-tss.md)；GDT/TSS 改为每 CPU 槽，AP 入口装载本槽并从自身 GDTR/TR 读回描述符基址，BSP 校验 BSP+AP 基址互异；`test-smp-ap` 在 `-smp 2/4` 各两轮通过（`percpu=1/3;tss=distinct`）并复用既有校验器；host 1248、lint、默认 72 轮通过；AP 仍 `hlt` 且 IF=0，P5-3 未完成、7-B 未勾选。
-
-2026-11-27：[GS-1 `syscall` 路径 `swapgs` 与每任务用户 GS](2026-11-27-p5-gs1-syscall-swapgs.md)；`arch::swapgs` 与两 GS MSR 常量，入口/出口按运行期开关交换，`sched` 每任务用户 GS 槽与 `resume` 强制装入，新增 `SYS_TASK_SET_GS_BASE=90` 与 `gs-probe`/`test-gs` 受控探针（替换两任务机码）；`-smp 1` 双轮通过覆盖 ring3 GS 往返、两任务不串扰、非规范值 `EINVAL`；host 1251、lint、默认 72 轮通过；普通镜像不启用、`int 0x80`/异常/IRQ 未交换（GS-2）、7-B 未勾选。
-
-2026-11-27：[GS-2 陷阱 `swapgs` 与 NMI/IST](2026-11-27-p5-gs2-trap-swapgs-nmi.md)；`int 0x80`/`#PF` CPL3/IRQ0/外部 IRQ 入口按 `CS.RPL` 与运行期开关条件 `swapgs`、出口配对；NMI（vector 2）改用 IST1 独立栈、GS 无关 handler，经 LAPIC ICR self-NMI 自注入真实 NMI 验证内核态/用户态/半交换窗口/IST；ring3 追加用户 #PF 与 `int 0x25` 往返，内核半交换态触发 CPL0 #PF 验证嵌套；单核双轮逐字节通过、host 1251、lint、默认 72 轮通过；IRQ0 的 GS 注入与 AP NMI 未单独覆盖，7-B 未勾选。
-
-2026-11-27：[GS-3 每 CPU GS 区与经 `%gs` 的 CPU 索引](2026-11-27-p5-gs3-percpu-gs-area.md)；`CpuLocal` 含索引/APIC ID/当前 Task，`%gs:0`/`%gs:4` 偏移由 host 测试钉住，`gs3-probe` 下 `current_index()` 改读 `%gs`；AP 在入口安装本区并记录索引、GS 基址、`%gs`/CPUID APIC ID，`test-gs3` 在 `-smp 2/4` 各两轮通过（四项计数均等于 vCPU 数）；host 1254、lint、默认 72 轮通过，GS-1/GS-2 与 P5-2 探针复跑通过；默认镜像仍不安装 GS 区、AP 仍 parked，7-B 未勾选。
-
-2026-11-27：[P5-2 AP 启动原型](2026-11-27-p5-2-ap-bringup.md)；`prima-ostd::smp` 实模式→长模式跳板与 `kernel::smp` INIT-SIPI-SIPI，`test-smp-ap` 在 `-smp 2/4` 各两轮通过（`aps=1/3;online=2/4`），剔除 SMP 行后两种 vCPU 数输出逐字节相同；记录 LAPIC 只读、补丁未对齐、EFER.NXE 三次失败与修复；AP 仅停放，7-B 未勾选。
-
-2026-11-27：[P5-1 ACPI/MADT 解析与只读探测](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT、MADT 纯解析与 `smp_probe`（CPUID + LAPIC 自识别），专用 `test-smp` 在 `-smp 2/4` 各两轮通过并复用既有启动校验器，剔除 SMP 行后两种 vCPU 数日志逐字节相同；host 1245、lint、默认 72 轮通过；**AP 未启动**（`online=1`），7-B 未勾选，P6 未开始。
-
-2026-11-27：[P5-0 SMP 状态所有权设计](2026-11-27-p5-0-state-partition.md)；按 D15 给出每 CPU/任务级/全局共享/只读的状态分类、AP 启动与 IPI/TLB 分期、锁顺序与六项待决，并把调度当前任务迁到 `cpu::local`（BSP 初值不变）；host 1236、lint、完整 BIOS 36 组 72 轮通过；未启动 AP、未做 `-smp 2/4`，7-B 未勾选，P6 未开始。
-
-历史统一验收：[阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md)，workspace1016、lint、Lean、Rust/musl、compat及完整单次BIOS68轮通过；保留失败修复和时序断言修订，最终范围/阶段签署待确认。
+| 日期 | 报告/链入口 |
+|---|---|
+| 2026-11-27 | [文档整理、合并与压缩](2026-11-27-documentation-consolidation.md) |
+| 2026-11-27 | [Lean 审计对象身份修复](2026-11-27-lean-audit-object-identity.md) |
+| 2026-11-27 | [Lean 连续撤销证明补强](2026-11-27-lean-revoke-composition.md) |
+| 2026-11-27 | [失效候选提案清理与 Git 恢复](2026-11-27-proposal-cleanup.md) |
+| 2026-11-27 | [架构规划修订与异构 ISA 复核记录](2026-11-27-architecture-isa-re-review.md)；后继：[融合内核方案](../specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) |
+| 2026-11-11 | [LibOS数据通路共享批量首片](2026-11-10-libos-data-path.md) |
+| 2026-11-16 | [P2a代理会话与受限根视图](2026-11-16-stage7-proxy-session.md) |
+| 2026-11-17 | [P2b-0/P2b-1 Store批量数据面](2026-11-17-p2b-store-batch-ops.md) |
+| 2026-11-17 | [P2b-2 Linux前端切换](2026-11-17-p2b-linux-frontend.md) |
+| 2026-11-17 | [P2b-3 fork/exec/exit生命周期](2026-11-17-p2b-fork-exit.md) |
+| 2026-11-18 | [P2b-4 镜像接线与两 ABI 场景](2026-11-18-p2b-proxy-wiring.md) |
+| 2026-11-18 | [P2b-5 代理路径正反例矩阵](2026-11-18-p2b-proxy-matrix.md) |
+| 2026-11-18 | [P2b-6 P2b 收口](2026-11-18-p2b-closeout.md) |
+| 2026-11-18 | [P3-0 异步批量契约与状态机](2026-11-18-p3-async-state-machine.md) |
+| 2026-11-18 | [P3-1 Store v2 会话](2026-11-18-p3-store-v2.md) |
+| 2026-11-19 | [P3-2 前端 v2 接线](2026-11-19-p3-frontend-v2.md) |
+| 2026-11-24 | [P3-2 C 数据面 v2 与 fork 反例修复](2026-11-24-p3-frontend-v2-data-plane.md) |
+| 2026-11-24 | [P3-2 C 适配层数据面锁拆分](2026-11-24-p3-adapter-lock-split.md) |
+| 2026-11-25 | [P3-2 C 适配层控制面锁拆分](2026-11-25-p3-adapter-control-lock.md) |
+| 2026-11-25 | [P3-3 v2 正反例矩阵](2026-11-25-p3-async-matrix.md) |
+| 2026-11-25 | [P3 收口证据包](2026-11-25-p3-closeout.md) |
+| 2026-11-26 | [P4-0 Gate/IPC 分段测量基线](2026-11-26-p4-baseline.md) |
+| 2026-11-26 | [P4-1 Gate 递送/恢复分段确认](2026-11-26-p4-segmentation.md) |
+| 2026-11-26 | [P4-2a G5 细分采样探针](2026-11-26-p4-segmentation-probe.md) |
+| 2026-11-26 | [P4 收口证据包](2026-11-26-p4-closeout.md) |
+| 2026-11-26 | [WIN-M1 PE/ABI 宿主模型](2026-11-26-windows-m1-pe-model.md) |
+| 2026-11-26 | [WIN-M2 前置平铺装载模型](2026-11-26-windows-m2-preflight.md) |
+| 2026-11-26 | [WIN-M2 ring3 原型](2026-11-26-windows-m2-ring3.md) |
+| 2026-11-27 | [WIN-M2 真实 DLL 导出与发布失败清理](2026-11-27-windows-m2-real-dll.md) |
+| 2026-11-27 | [WIN-M3 部分交付](2026-11-27-windows-m3-loader-runtime.md) |
+| 2026-11-27 | [Windows LibOS 计划审计](2026-11-27-windows-plan-audit.md) |
+| 2026-11-27 | [P5-3a 每 CPU GDT/TSS 与共享 IDT](2026-11-27-p5-3a-percpu-gdt-tss.md) |
+| 2026-11-27 | [GS-1 `syscall` 路径 `swapgs` 与每任务用户 GS](2026-11-27-p5-gs1-syscall-swapgs.md) |
+| 2026-11-27 | [GS-2 陷阱 `swapgs` 与 NMI/IST](2026-11-27-p5-gs2-trap-swapgs-nmi.md) |
+| 2026-11-27 | [GS-3 每 CPU GS 区与经 `%gs` 的 CPU 索引](2026-11-27-p5-gs3-percpu-gs-area.md) |
+| 2026-11-27 | [P5-2 AP 启动原型](2026-11-27-p5-2-ap-bringup.md) |
+| 2026-11-27 | [P5-1 ACPI/MADT 解析与只读探测](2026-11-27-p5-1-acpi-madt-host.md) |
+| 2026-11-27 | [P5-0 SMP 状态所有权设计](2026-11-27-p5-0-state-partition.md) |
+| 2026-10-25 | [阶段0–5缺口后继](2026-10-25-stage0-5-gap-followup.md) |
 
 本目录保存**实现报告与审查/复核证据**：记录实际命令、结果、计数、反例和证据边界。历史报告保留其写作时的结论，后续复核可能改变适用范围。
 

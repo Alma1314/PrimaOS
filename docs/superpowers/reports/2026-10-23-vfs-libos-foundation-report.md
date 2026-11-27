@@ -9,7 +9,7 @@ updated: 2026-10-23
 
 # VFS / LibOS 基础重构验证报告
 
-范围与行为契约见[设计](../specs/2026-10-23-vfs-libos-foundation-design.md)，执行顺序见[计划](../plans/2026-10-23-vfs-libos-foundation-plan.md)。基线是文档重构后的 `9a311ed`；本报告是 M11/M13a/M13b 的实现后继证据，不回写或抹去当时的限制与测试结果。
+范围与行为契约见[设计](../specs/2026-10-23-vfs-libos-foundation-design.md)，原短计划于 2026-11-27 合入设计的[历史执行顺序](../specs/2026-10-23-vfs-libos-foundation-design.md#执行顺序历史记录)，原文可由[生命周期台账](../../lifecycle.json)恢复。基线是文档重构后的 `9a311ed`；本报告是 M11/M13a/M13b 的实现后继证据，不回写或抹去当时的限制与测试结果。
 
 ## 变更与证据范围
 

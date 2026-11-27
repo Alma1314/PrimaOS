@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-10-24
+updated: 2026-11-27
 ---
 
 # Prima OS
@@ -17,7 +17,7 @@ PrimaOS 是研究型操作系统项目，探索以小型对象能力内核支撑
 
 | 目的 | 入口 |
 |---|---|
-| 了解与使用文档 | [文档中心](docs/README.md) · [首次阅读路线](docs/architecture/getting-started.md) |
+| 了解与使用文档 | [文档中心与首次阅读路线](docs/README.md#首次阅读) |
 | AI 接手、检索和交接 | [AI 检索协议](docs/architecture/ai-retrieval.md) · [llms.md](llms.md) |
 | 查看当前阶段、阻塞和证据 | [实现阶段跟踪](Prima%20OS%20实现阶段.md) |
 | 查设计与实现 | [子系统主题地图](docs/architecture/topics/README.md) · [系统与源码地图](docs/architecture/system-map.md) |
@@ -34,7 +34,8 @@ PrimaOS 是研究型操作系统项目，探索以小型对象能力内核支撑
 | `prima-ostd/` | 特权硬件框架与必要 unsafe 的受控边界 |
 | `prima-abi/` | 实验性原生 syscall、boot/trace 共享布局 |
 | `prima-runtime/` | 原生用户态 API、传输抽象、服务协议 |
-| `prima-user/` | ring3 服务/应用/驱动、C 适配层与 musl 补丁 |
+| `prima-user/` | 原生 ring3 服务、应用与驱动 |
+| `libos/linux/`、`libos/windows/` | Linux C/musl 适配与探针、Windows PE/ABI 模型与原型 |
 | `prima-initgen/` | init 可执行启动输入生成 |
 | `xtask/` | 镜像构建、QEMU 验收、差分与门禁 |
 | `lean/` | [Lean 模型与映照契约](lean/README.md) |
