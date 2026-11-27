@@ -69,6 +69,53 @@ pub(crate) fn smp_pass() {
     serial::write_bytes(b"SMP|PASS\r\n");
 }
 
+/// GS-3：每 CPU GS 区的 `-smp` 见证（四个计数 + PASS）。
+#[cfg(feature = "gs3-probe")]
+pub(crate) fn gs3_ready(witness: &kernel::smp::GsWitness) {
+    serial::write_bytes(b"SMP|gs=cpus=");
+    write_u32(witness.cpus);
+    serial::write_bytes(b";index_ok=");
+    write_u32(witness.index_ok);
+    serial::write_bytes(b";base_ok=");
+    write_u32(witness.base_ok);
+    serial::write_bytes(b";apic_ok=");
+    write_u32(witness.apic_ok);
+    serial::write_bytes(b";cpuid_ok=");
+    write_u32(witness.cpuid_ok);
+    serial::write_bytes(b";PASS\r\n");
+}
+
+/// GS-3：GS 区见证无法完成（超时等）。
+#[cfg(feature = "gs3-probe")]
+pub(crate) fn gs3_fail(reason: &str) {
+    serial::write_bytes(b"SMP|gs=FAIL|");
+    serial::write_bytes(reason.as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
+/// GS-3 诊断行：每 CPU 实际测到的 `(索引, GS 基址, %gs APIC ID, CPUID APIC ID)`。
+#[cfg(feature = "gs3-probe")]
+pub(crate) fn gs3_progress(
+    indexes: &[u32; 4],
+    bases: &[u64; 4],
+    apics: &[u32; 4],
+    cpuids: &[u32; 4],
+) {
+    for cpu in 0..4 {
+        serial::write_bytes(b"SMP|stage=gs-cpu=");
+        write_u32(cpu as u32);
+        serial::write_bytes(b";index=");
+        write_u32(indexes[cpu]);
+        serial::write_bytes(b";base=");
+        write_hex_u64(bases[cpu]);
+        serial::write_bytes(b";apic=");
+        write_u32(apics[cpu]);
+        serial::write_bytes(b";cpuid=");
+        write_u32(cpuids[cpu]);
+        serial::write_bytes(b"\r\n");
+    }
+}
+
 /// GS-1：输出一次 ring3 用户 GS 探针见证（`GS|...;ok=0/1`，随后 `GS|PASS`/`GS|FAIL`）。
 #[cfg(feature = "gs-probe")]
 pub(crate) fn gs_ready(witness: &kernel::user::GsWitness) {

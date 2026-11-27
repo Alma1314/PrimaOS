@@ -224,14 +224,21 @@ pub mod local {
     /// BSP 的索引固定为 0。
     pub const BSP: usize = 0;
 
+    /// 每 CPU 区（GS-3）。`%gs:0` = index、`%gs:4` = APIC ID；字段顺序即 GS 偏移，
+    /// 改动必须同步 [`install_gs`]/[`local_apic_id`] 与 host 布局测试。
+    #[repr(C)]
     struct CpuLocal {
+        index: u32,
+        apic_id: AtomicU32,
         /// 本 CPU 当前（或即将恢复）的 Task id；0 = 尚无任务（AP 握手前）。
         current_task: AtomicU32,
     }
 
     impl CpuLocal {
-        const fn new(current_task: u32) -> Self {
+        const fn new(index: u32, current_task: u32) -> Self {
             Self {
+                index,
+                apic_id: AtomicU32::new(0),
                 current_task: AtomicU32::new(current_task),
             }
         }
@@ -239,13 +246,52 @@ pub mod local {
 
     /// BSP 初值与迁移前 `sched::CURRENT` 相同（bootstrap init Task）。
     static LOCALS: [CpuLocal; MAX_CPUS] = [
-        CpuLocal::new(crate::bootstrap::INIT_TASK_ID),
-        CpuLocal::new(0),
-        CpuLocal::new(0),
-        CpuLocal::new(0),
+        CpuLocal::new(0, crate::bootstrap::INIT_TASK_ID),
+        CpuLocal::new(1, 0),
+        CpuLocal::new(2, 0),
+        CpuLocal::new(3, 0),
     ];
 
-    /// 本 CPU 的索引。AP 上线前唯一在线 CPU 是 BSP。
+    /// 指定 CPU 的 GS 区基址；越界 panic（不返回错误槽位）。
+    pub fn area_ptr(cpu: usize) -> u64 {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        core::ptr::addr_of!(LOCALS[cpu]) as u64
+    }
+
+    /// 指定 CPU 区记录的 APIC ID（未安装时为 0）。
+    pub fn apic_id_on(cpu: usize) -> u32 {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].apic_id.load(Ordering::Relaxed)
+    }
+
+    /// GS-3：把本 CPU 的 GS 基址指向 [`LOCALS`] 中自己的槽位。
+    ///
+    /// 契约：调用方正在 `cpu` 上执行且处于 CPL0；`KERNEL_GS_BASE` 一并清零，使
+    /// `%gs` 在未交换态下就指向本区（受控 SMP 探针不进入用户态）。
+    #[cfg(all(feature = "gs3-probe", not(test)))]
+    pub fn install_gs(cpu: usize, apic_id: u32) {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].apic_id.store(apic_id, Ordering::Relaxed);
+        crate::msr::wrmsr(crate::msr::IA32_GS_BASE, area_ptr(cpu));
+        crate::msr::wrmsr(crate::msr::IA32_KERNEL_GS_BASE, 0);
+    }
+
+    /// GS-3：经 `%gs` 读本 CPU 区记录的 APIC ID。
+    #[cfg(all(feature = "gs3-probe", not(test)))]
+    pub fn local_apic_id() -> u32 {
+        prima_ostd::arch::read_gs_u32::<4>()
+    }
+
+    /// 本 CPU 的索引。GS-3 探针镜像经每 CPU GS 区读取；普通镜像与 host 测试恒为 BSP
+    /// （AP 上线前唯一在线 CPU，且内核未安装 GS 区）。
+    #[cfg(all(feature = "gs3-probe", not(test)))]
+    pub fn current_index() -> usize {
+        let index = prima_ostd::arch::read_gs_u32::<0>() as usize;
+        assert!(index < MAX_CPUS, "gs cpu index out of range");
+        index
+    }
+
+    #[cfg(any(not(feature = "gs3-probe"), test))]
     pub fn current_index() -> usize {
         BSP
     }
@@ -291,6 +337,32 @@ pub mod local {
         #[should_panic(expected = "cpu index out of range")]
         fn out_of_range_cpu_index_panics() {
             set_task_on(MAX_CPUS, 1);
+        }
+
+        /// GS-3：`%gs:0`/`%gs:4` 的偏移由结构布局决定，必须钉住；各区互异。
+        #[test]
+        fn gs_area_layout_and_distinct_bases() {
+            use core::mem::offset_of;
+            assert_eq!(offset_of!(CpuLocal, index), 0);
+            assert_eq!(offset_of!(CpuLocal, apic_id), 4);
+            let mut bases = [0u64; MAX_CPUS];
+            for (cpu, slot) in bases.iter_mut().enumerate() {
+                *slot = area_ptr(cpu);
+                assert_eq!(*slot % 4, 0);
+            }
+            for i in 0..bases.len() {
+                for j in 0..i {
+                    assert_ne!(bases[i], bases[j], "CPU {i} 与 {j} 共享 GS 区");
+                }
+            }
+            assert_eq!(bases[BSP], area_ptr(BSP));
+            assert_eq!(apic_id_on(BSP), 0);
+        }
+
+        #[test]
+        #[should_panic(expected = "cpu index out of range")]
+        fn gs_area_ptr_rejects_out_of_range() {
+            area_ptr(MAX_CPUS);
         }
     }
 }

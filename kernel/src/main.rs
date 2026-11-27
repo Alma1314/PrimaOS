@@ -155,6 +155,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             // AP 装载每 CPU GDT/TSS 与同一只读 IDT。
                                             #[cfg(feature = "smp-ap")]
                                             if let Some(report) = smp_report {
+                                                // GS-3：BSP 先安装自己的 GS 区，再启动 AP；
+                                                // 此后 `current_index()` 经 `%gs` 读取。
+                                                #[cfg(feature = "gs3-probe")]
+                                                kernel::cpu::local::install_gs(
+                                                    kernel::cpu::local::BSP,
+                                                    report.bsp_apic_id,
+                                                );
                                                 match kernel::smp::start_aps(
                                                     &report,
                                                     offset,
@@ -162,6 +169,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 ) {
                                                     Ok(aps) => {
                                                         protocol::smp_aps(aps, aps + 1);
+                                                        #[cfg(feature = "gs3-probe")]
+                                                        {
+                                                            let witness = kernel::smp::gs_witness(
+                                                                &report, aps,
+                                                            );
+                                                            if witness.evidence_ok() {
+                                                                protocol::gs3_ready(&witness);
+                                                                protocol::smp_pass();
+                                                            } else {
+                                                                let (indexes, bases, apics, cpuids) =
+                                                                    kernel::smp::gs_progress();
+                                                                protocol::gs3_progress(
+                                                                    &indexes, &bases, &apics,
+                                                                    &cpuids,
+                                                                );
+                                                                protocol::gs3_fail("mismatch");
+                                                            }
+                                                            serial::flush();
+                                                            qemu::exit(if witness.evidence_ok() {
+                                                                qemu::SUCCESS
+                                                            } else {
+                                                                qemu::PANIC
+                                                            })
+                                                        }
+                                                        #[cfg(not(feature = "gs3-probe"))]
                                                         protocol::smp_pass();
                                                     }
                                                     Err(error) => {
@@ -169,6 +201,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                     }
                                                 }
                                                 serial::flush();
+                                            } else {
+                                                // GS-3 依赖 MADT 报告；无 RSDP/解析失败时
+                                                // 不进入后续会读 `%gs` 的路径。
+                                                #[cfg(feature = "gs3-probe")]
+                                                {
+                                                    protocol::gs3_fail("no-smp-report");
+                                                    serial::flush();
+                                                    qemu::exit(qemu::PANIC)
+                                                }
                                             }
                                         }
                                         Err(()) => {

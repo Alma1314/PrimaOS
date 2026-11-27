@@ -125,6 +125,23 @@ pub(crate) fn run_bios_smp_ap(image: &Path, smp: u8, round: u32) -> Result<(), S
     Ok(())
 }
 
+/// GS-3：`-smp 2/4` 下每 CPU 经 `%gs` 自识别。镜像在见证后立即退出，故只校验
+/// SMP 事件序列与 `SMP|gs=` 行，不跑完整启动/用户-phase 校验器（见报告范围说明）。
+pub(crate) fn run_bios_gs3(image: &Path, smp: u8, round: u32) -> Result<(), String> {
+    let output = run_captured_with(qemu_args_smp(image, smp), TEST_TIMEOUT)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/GS3-{smp}-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve gs3 witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_gs3(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
+    println!("PASS GS-3 smp={smp} round={round} cpus={smp} index=gs base=distinct apic=madt");
+    Ok(())
+}
+
 /// GS-1：受控 ring3 用户 GS 探针（单核默认参数）。只校验退出码与 `GS|` 见证；
 /// 该镜像替换了用户程序，故不跑完整用户-phase 校验器（见 GS-1 报告的范围说明）。
 pub(crate) fn run_bios_gs(image: &Path, round: u32) -> Result<(), String> {

@@ -48,6 +48,77 @@ static LAST_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 static AP_TSS_BASE: [AtomicU64; crate::cpu::local::MAX_CPUS] =
     [const { AtomicU64::new(0) }; crate::cpu::local::MAX_CPUS];
 
+/// GS-3：各 CPU 经 `%gs:0` 读到的索引（AP 在自己的启动入口测量）。
+#[cfg(feature = "gs3-probe")]
+static GS_IDX_SEEN: [AtomicU32; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU32::new(u32::MAX) }; crate::cpu::local::MAX_CPUS];
+/// GS-3：各 CPU 的 `IA32_GS_BASE`（应等于本 CPU 的 GS 区基址）。
+#[cfg(feature = "gs3-probe")]
+static GS_BASE_SEEN: [AtomicU64; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::cpu::local::MAX_CPUS];
+/// GS-3：各 CPU 经 `%gs:4` 读到的自身 APIC ID。
+#[cfg(feature = "gs3-probe")]
+static GS_APIC_SEEN: [AtomicU32; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; crate::cpu::local::MAX_CPUS];
+/// GS-3：各 CPU 的 CPUID APIC ID（用于证明各索引确由不同 CPU 执行）。
+#[cfg(feature = "gs3-probe")]
+static GS_CPUID_SEEN: [AtomicU32; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; crate::cpu::local::MAX_CPUS];
+/// GS-3：MADT 期望的每 CPU APIC ID（P5-4 IPI 目标的同一来源）。
+#[cfg(feature = "gs3-probe")]
+static EXPECTED_APIC: [AtomicU32; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; crate::cpu::local::MAX_CPUS];
+
+/// GS-3：`-smp` 探针的每 CPU GS 区见证。四个 `*_ok` 计数都等于 `cpus` 才算通过：
+/// 每个 CPU 经 `%gs:0` 读到自己的索引、GS 基址等于自己的区、`%gs:4` 与 CPUID
+/// 均等于 MADT APIC ID。
+#[cfg(feature = "gs3-probe")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GsWitness {
+    pub cpus: u32,
+    pub index_ok: u32,
+    pub base_ok: u32,
+    pub apic_ok: u32,
+    pub cpuid_ok: u32,
+}
+
+#[cfg(feature = "gs3-probe")]
+impl GsWitness {
+    pub fn evidence_ok(&self) -> bool {
+        self.index_ok == self.cpus
+            && self.base_ok == self.cpus
+            && self.apic_ok == self.cpus
+            && self.cpuid_ok == self.cpus
+    }
+}
+
+/// GS-3 诊断：已收集的四种测量值（按 CPU 索引），仅失败报告使用。
+#[cfg(feature = "gs3-probe")]
+pub fn gs_progress() -> (
+    [u32; crate::cpu::local::MAX_CPUS],
+    [u64; crate::cpu::local::MAX_CPUS],
+    [u32; crate::cpu::local::MAX_CPUS],
+    [u32; crate::cpu::local::MAX_CPUS],
+) {
+    let mut indexes = [0u32; crate::cpu::local::MAX_CPUS];
+    let mut bases = [0u64; crate::cpu::local::MAX_CPUS];
+    let mut apics = [0u32; crate::cpu::local::MAX_CPUS];
+    let mut cpuids = [0u32; crate::cpu::local::MAX_CPUS];
+    for cpu in 0..crate::cpu::local::MAX_CPUS {
+        indexes[cpu] = GS_IDX_SEEN[cpu].load(Ordering::Relaxed);
+        bases[cpu] = GS_BASE_SEEN[cpu].load(Ordering::Relaxed);
+        apics[cpu] = GS_APIC_SEEN[cpu].load(Ordering::Relaxed);
+        cpuids[cpu] = GS_CPUID_SEEN[cpu].load(Ordering::Relaxed);
+    }
+    (indexes, bases, apics, cpuids)
+}
+
+/// GS-3：从 CPUID leaf 1 EBX[31:24] 读本 CPU 的初始 APIC ID（AP 自识别）。
+#[cfg(feature = "gs3-probe")]
+fn cpuid_apic_id() -> u32 {
+    (prima_ostd::arch::cpuid(1, 0)[1] >> 24) & 0xff
+}
+
 /// 诊断用：最近触碰的地址。
 pub fn last_addr() -> u64 {
     LAST_ADDR.load(Ordering::Relaxed)
@@ -116,6 +187,21 @@ fn stack_top(index: u32) -> u64 {
 ///
 /// IF 仍为 0：IDT 已有门，但 AP 不参与中断/调度；装载失败不置在线位，由 BSP 超时判失败。
 extern "C" fn ap_entry(index: u32) -> ! {
+    // GS-3：先安装本 CPU 的 GS 区，再经 `%gs` 自测。测量放在启动入口而非等 BSP
+    // 会合：单线程 TCG 下忙等的 vCPU 不保证被再次调度，入口执行则是确定的。
+    #[cfg(feature = "gs3-probe")]
+    {
+        let cpu = index as usize;
+        let cpuid_apic = cpuid_apic_id();
+        crate::cpu::local::install_gs(cpu, cpuid_apic);
+        GS_IDX_SEEN[cpu].store(crate::cpu::local::current_index() as u32, Ordering::Relaxed);
+        GS_BASE_SEEN[cpu].store(
+            crate::msr::rdmsr(crate::msr::IA32_GS_BASE),
+            Ordering::Relaxed,
+        );
+        GS_APIC_SEEN[cpu].store(crate::cpu::local::local_apic_id(), Ordering::Relaxed);
+        GS_CPUID_SEEN[cpu].store(cpuid_apic, Ordering::Relaxed);
+    }
     crate::cpu::enable_sse();
     if crate::gdt::init_cpu_gdt(index as usize, stack_top(index)).is_ok() {
         crate::idt::load_shared();
@@ -346,6 +432,8 @@ pub fn start_aps(
         if index as usize >= crate::cpu::local::MAX_CPUS {
             return Err(ApError::TooManyCpus);
         }
+        #[cfg(feature = "gs3-probe")]
+        EXPECTED_APIC[index as usize].store(apic_id, Ordering::Relaxed);
         note("tramp");
         write_trampoline(
             tramp_phys,
@@ -368,6 +456,54 @@ pub fn start_aps(
     }
     verify_per_cpu(aps)?;
     Ok(aps)
+}
+
+/// GS-3：汇总每 CPU 的 `%gs` 自识别见证。各 AP 在启动入口测量（已由
+/// [`start_aps`] 逐个等待在线），BSP 此刻补测自身；每项失败只降低对应计数，
+/// 由调用方（与 xtask 校验器）要求四个计数全等于 CPU 数。
+#[cfg(feature = "gs3-probe")]
+pub fn gs_witness(report: &Report, aps: u32) -> GsWitness {
+    let cpus = aps + 1;
+    EXPECTED_APIC[crate::cpu::local::BSP].store(report.bsp_apic_id, Ordering::Relaxed);
+    let bsp = (
+        crate::cpu::local::current_index() as u32,
+        crate::msr::rdmsr(crate::msr::IA32_GS_BASE),
+        crate::cpu::local::local_apic_id(),
+        cpuid_apic_id(),
+    );
+    let mut witness = GsWitness {
+        cpus,
+        index_ok: 0,
+        base_ok: 0,
+        apic_ok: 0,
+        cpuid_ok: 0,
+    };
+    for cpu in 0..cpus as usize {
+        let (index, base, apic, cpuid) = if cpu == crate::cpu::local::BSP {
+            bsp
+        } else {
+            (
+                GS_IDX_SEEN[cpu].load(Ordering::Relaxed),
+                GS_BASE_SEEN[cpu].load(Ordering::Relaxed),
+                GS_APIC_SEEN[cpu].load(Ordering::Relaxed),
+                GS_CPUID_SEEN[cpu].load(Ordering::Relaxed),
+            )
+        };
+        let expected = EXPECTED_APIC[cpu].load(Ordering::Relaxed);
+        if index == cpu as u32 {
+            witness.index_ok += 1;
+        }
+        if base == crate::cpu::local::area_ptr(cpu) {
+            witness.base_ok += 1;
+        }
+        if apic == expected {
+            witness.apic_ok += 1;
+        }
+        if cpuid == expected {
+            witness.cpuid_ok += 1;
+        }
+    }
+    witness
 }
 
 #[cfg(test)]

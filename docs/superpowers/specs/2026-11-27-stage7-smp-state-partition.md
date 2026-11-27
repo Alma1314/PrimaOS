@@ -73,14 +73,17 @@ updated: 2026-11-27
 
 - `MAX_CPUS = 4`（S7-SCOPE-13 的 2/4 vCPU 上限），索引 0 固定为 BSP；
 - 每 CPU 一个 `current_task: AtomicU32`，BSP 初值为 bootstrap init Task；
-- `current_index()` 在 AP 上线前恒返回 BSP；
+- 普通镜像中 `current_index()` 恒返回 BSP（GS 区未安装，内核不读 `%gs`）；
 - `sched::current()/init()/set_current()` 改为经该入口读写，调用点语义不变；
 - 越界 CPU 索引 panic，不静默读写错误槽位；
 - host 测试钉住“两个 CPU 槽互不影响”和越界拒绝。
 
 这一步不引入任何锁、不改变 QEMU 参数、不改变启动事件。`cpu::local` 是内核调度侧的
 CPU 身份入口；汇编直接访问的状态仍归 `prima-ostd`，后续须通过同一 CPU 索引映照分区，
-并为嵌套陷入保留独立现场。当前 `current_index()` 仍返回 BSP，AP parked 不证明运行期分区安全。
+并为嵌套陷入保留独立现场。**GS-3（探针范围）已把该入口扩展为每 CPU GS 区**：
+`CpuLocal` 在偏移 0/4 保存索引与 APIC ID，`gs3-probe` 镜像安装 `IA32_GS_BASE` 后
+`current_index()` 读 `%gs:0`，`-smp 2/4` 下每 CPU 自识别通过；普通镜像仍返回 BSP，
+AP parked、任务切换仍只写 BSP 的 `TSS.rsp0`，不证明运行期分区或用户边界安全。
 
 ## 5. CPU 身份与后续机制
 
@@ -136,7 +139,7 @@ P5-4 须冻结 active-CPU 集合、generation/ticket、确认与超时失败策�
 | # | 问题 | 推荐/决定 | 代价/说明 |
 |---|---|---|---|
 | 1 | AP 启动失败策略 | **已决（作者 2026-11-27）：默认确定性 fail-stop，不静默降级；仅显式 profile 可退化为 BSP-only 并写审计事件** | 当前 `test-smp-ap` 仍是“继续启动 + 校验器拒绝”；生产启动的 fail-stop 接线属 P5-3/7-B |
-| 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 方向已由 [Windows 阻断处置](2026-11-27-windows-blocker-decisions.md)选择内核 GS，但 GS-1…GS-3 未实现前 P5 不依赖它 | P5-3 不等待 GS；GS-3 后才评估热路径迁移 |
+| 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 方向已由 [Windows 阻断处置](2026-11-27-windows-blocker-decisions.md)选择内核 GS；GS-3 探针已用每 CPU GS 区替换索引读取，运行期启用仍待联合评审 | P5-3 不等待 GS；经营运期启用评审后才迁移调度热路径 |
 | 3 | xAPIC vs x2APIC | 先 xAPIC（QEMU `qemu64` 默认）；x2APIC 记录但不作为验收前提 | 需 CPUID 探测 |
 | 4 | 任务迁移策略 | **已决（作者 2026-11-27）：每 CPU 就绪队列 + 固定放置（fork/exec 在父 CPU，唤醒按目标 CPU）；首片运行中任务不迁移、不做 work stealing；迁移/steal 留到扩展曲线切片** | 每 CPU 队列与放置规则增加唤醒路由和丢唤醒反例的验证量 |
 | 5 | 跨 CPU 审计顺序 | 保留全局序号，允许并发 append 时按获取顺序线性化 | 需明确“顺序”是锁顺序还是提交顺序 |
@@ -148,7 +151,10 @@ GS-4；P5-3 不等待 GS。其中 **P5-3a、GS-1 与 GS-2 已落盘**（GS-1 见
 [报告](../reports/2026-11-27-p5-gs1-syscall-swapgs.md)，GS-2 见
 [报告](../reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md)：异常/中断/IRQ 入口出口 `swapgs`
 与 NMI/IST，受控探针双轮通过、普通镜像不启用；IRQ0 的 GS 注入与 AP NMI 未单独覆盖），
-GS-3（每 CPU GS 区与热路径 CPU 索引）待做。
+GS-3（每 CPU GS 区与热路径 CPU 索引）**探针已落盘**（见
+[报告](../reports/2026-11-27-p5-gs3-percpu-gs-area.md)：`-smp 2/4` 下每 CPU 经 `%gs`
+自识别、GS 基址互异、APIC ID 与 MADT/CPUID 一致；普通镜像仍返回 BSP、AP 仍 parked，
+不构成运行期启用）。GS-4 与 P5-3b 待做。
 
 ## 8. 分期工作包与验收观察
 

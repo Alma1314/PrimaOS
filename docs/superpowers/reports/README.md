@@ -71,6 +71,8 @@ updated: 2026-11-27
 
 2026-11-27：[GS-2 陷阱 `swapgs` 与 NMI/IST](2026-11-27-p5-gs2-trap-swapgs-nmi.md)；`int 0x80`/`#PF` CPL3/IRQ0/外部 IRQ 入口按 `CS.RPL` 与运行期开关条件 `swapgs`、出口配对；NMI（vector 2）改用 IST1 独立栈、GS 无关 handler，经 LAPIC ICR self-NMI 自注入真实 NMI 验证内核态/用户态/半交换窗口/IST；ring3 追加用户 #PF 与 `int 0x25` 往返，内核半交换态触发 CPL0 #PF 验证嵌套；单核双轮逐字节通过、host 1251、lint、默认 72 轮通过；IRQ0 的 GS 注入与 AP NMI 未单独覆盖，7-B 未勾选。
 
+2026-11-27：[GS-3 每 CPU GS 区与经 `%gs` 的 CPU 索引](2026-11-27-p5-gs3-percpu-gs-area.md)；`CpuLocal` 含索引/APIC ID/当前 Task，`%gs:0`/`%gs:4` 偏移由 host 测试钉住，`gs3-probe` 下 `current_index()` 改读 `%gs`；AP 在入口安装本区并记录索引、GS 基址、`%gs`/CPUID APIC ID，`test-gs3` 在 `-smp 2/4` 各两轮通过（四项计数均等于 vCPU 数）；host 1254、lint、默认 72 轮通过，GS-1/GS-2 与 P5-2 探针复跑通过；默认镜像仍不安装 GS 区、AP 仍 parked，7-B 未勾选。
+
 2026-11-27：[P5-2 AP 启动原型](2026-11-27-p5-2-ap-bringup.md)；`prima-ostd::smp` 实模式→长模式跳板与 `kernel::smp` INIT-SIPI-SIPI，`test-smp-ap` 在 `-smp 2/4` 各两轮通过（`aps=1/3;online=2/4`），剔除 SMP 行后两种 vCPU 数输出逐字节相同；记录 LAPIC 只读、补丁未对齐、EFER.NXE 三次失败与修复；AP 仅停放，7-B 未勾选。
 
 2026-11-27：[P5-1 ACPI/MADT 解析与只读探测](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT、MADT 纯解析与 `smp_probe`（CPUID + LAPIC 自识别），专用 `test-smp` 在 `-smp 2/4` 各两轮通过并复用既有启动校验器，剔除 SMP 行后两种 vCPU 数日志逐字节相同；host 1245、lint、默认 72 轮通过；**AP 未启动**（`online=1`），7-B 未勾选，P6 未开始。

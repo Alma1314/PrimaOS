@@ -13,6 +13,8 @@ gate-probe = []
 gs-probe = []
 smp-ap = ["smp-probe"]
 smp-probe = []
+# GS-3：每 CPU GS 区与经 `%gs` 的 CPU 索引；隐含 smp-ap，绝不出现在默认镜像。
+gs3-probe = ["smp-ap"]
 timestamp-probe = []
 
 [lib]

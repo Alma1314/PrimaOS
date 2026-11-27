@@ -6629,6 +6629,110 @@ pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// GS-3：在 P5-2/P5-3a 的 SMP 事件之外，每个 CPU 都必须经 `%gs` 识出自身索引、
+/// GS 基址等于自己的每 CPU 区、`%gs:4` 等于 MADT APIC ID；四个计数都要等于 `-smp`。
+pub(crate) fn validate_gs3(output: &str, smp: u8) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
+        .collect();
+    if records.len() != 5
+        || records[0] != "SMP|begin"
+        || records[4] != "SMP|PASS"
+        || !records[3].starts_with("SMP|gs=")
+    {
+        return Err("GS-3 requires begin, discovery, AP, GS lines and one PASS".to_owned());
+    }
+    let discovery = records[1]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed GS-3 discovery line".to_owned())?;
+    let mut cpus = None;
+    let mut bsp_apic = None;
+    let mut lapic_id = None;
+    let mut online = None;
+    for field in discovery.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed GS-3 field".to_owned())?;
+        match key {
+            "cpus" => cpus = Some(parse_decimal(value, key)?),
+            "bsp_apic" => bsp_apic = Some(parse_decimal(value, key)?),
+            "lapic_id" => lapic_id = Some(parse_decimal(value, key)?),
+            "online" => online = Some(parse_decimal(value, key)?),
+            "rsdp" | "xsdt" | "bsp_index" | "x2apic" => {
+                parse_decimal(value, key)?;
+            }
+            "lapic" if value.starts_with("0x") => {}
+            _ => return Err(format!("unknown or malformed GS-3 field: {key}")),
+        }
+    }
+    if cpus != Some(u64::from(smp))
+        || online != Some(1)
+        || bsp_apic.is_none()
+        || lapic_id != bsp_apic
+    {
+        return Err("GS-3 discovery must match -smp with the bootstrap CPU online".to_owned());
+    }
+    let ap_line = records[2]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed GS-3 AP line".to_owned())?;
+    let (mut aps, mut ap_online, mut percpu, mut tss) = (None, None, None, None);
+    for field in ap_line.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed GS-3 AP field".to_owned())?;
+        match key {
+            "aps" => aps = Some(parse_decimal(value, key)?),
+            "online" => ap_online = Some(parse_decimal(value, key)?),
+            "percpu" => percpu = Some(parse_decimal(value, key)?),
+            "tss" => tss = Some(value),
+            _ => return Err(format!("unknown GS-3 AP field: {key}")),
+        }
+    }
+    if aps != Some(u64::from(smp) - 1)
+        || ap_online != Some(u64::from(smp))
+        || percpu != aps
+        || tss != Some("distinct")
+    {
+        return Err("GS-3 AP line must report every AP online with distinct TSS".to_owned());
+    }
+    let gs = records[3]
+        .strip_prefix("SMP|gs=")
+        .ok_or_else(|| "malformed GS-3 witness line".to_owned())?;
+    let (mut gs_cpus, mut index_ok, mut base_ok, mut apic_ok, mut cpuid_ok) =
+        (None, None, None, None, None);
+    let mut passed = false;
+    for field in gs.split(';') {
+        if field == "PASS" {
+            passed = true;
+            continue;
+        }
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed GS-3 GS field".to_owned())?;
+        match key {
+            "cpus" => gs_cpus = Some(parse_decimal(value, key)?),
+            "index_ok" => index_ok = Some(parse_decimal(value, key)?),
+            "base_ok" => base_ok = Some(parse_decimal(value, key)?),
+            "apic_ok" => apic_ok = Some(parse_decimal(value, key)?),
+            "cpuid_ok" => cpuid_ok = Some(parse_decimal(value, key)?),
+            _ => return Err(format!("unknown GS-3 GS field: {key}")),
+        }
+    }
+    let want = Some(u64::from(smp));
+    if !passed
+        || gs_cpus != want
+        || index_ok != want
+        || base_ok != want
+        || apic_ok != want
+        || cpuid_ok != want
+    {
+        return Err("GS-3 must observe every CPU identify itself via %gs".to_owned());
+    }
+    Ok(())
+}
+
 /// GS-1：ring3 用户 GS 探针见证必须逐字段匹配，且恰好一条 `GS|PASS`。
 ///
 /// 期望：两任务各读到自己的魔数（不串扰）、非规范值得到 `EINVAL`、切换与 `syscall`
@@ -6705,7 +6809,7 @@ post_pf=0x47535f54315f4d41;post_irq=0x47535f54315f4d41;ok=1\nGS|PASS\nGS|nmi=ker
 
 #[cfg(test)]
 mod smp_tests {
-    use super::{validate_smp, validate_smp_ap};
+    use super::{validate_gs3, validate_smp, validate_smp_ap};
 
     const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
 
@@ -6747,6 +6851,36 @@ mod smp_tests {
             assert!(
                 validate_smp_ap(&bad, 4).is_err(),
                 "bad AP witness accepted: {bad}"
+            );
+        }
+    }
+
+    const VALID_GS3: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|gs=cpus=4;index_ok=4;base_ok=4;apic_ok=4;cpuid_ok=4;PASS\nSMP|PASS\n";
+
+    #[test]
+    fn gs3_witness_requires_every_cpu_to_identify_itself_via_gs() {
+        assert_eq!(validate_gs3(VALID_GS3, 4), Ok(()));
+        assert!(validate_gs3(VALID_GS3, 2).is_err(), "必须匹配 -smp");
+        for bad in [
+            VALID_GS3.replace("index_ok=4", "index_ok=3"),
+            VALID_GS3.replace("base_ok=4", "base_ok=3"),
+            VALID_GS3.replace("apic_ok=4", "apic_ok=3"),
+            VALID_GS3.replace("cpuid_ok=4", "cpuid_ok=3"),
+            VALID_GS3.replace("cpus=4;index_ok", "cpus=3;index_ok"),
+            VALID_GS3.replace("cpuid_ok=4;PASS", "cpuid_ok=4"),
+            VALID_GS3.replace("gs=cpus=4", "gs=FAIL|cpus=4"),
+            VALID_GS3.replace("SMP|aps=3;online=4;percpu=3;tss=distinct\n", ""),
+            VALID_GS3.replace(
+                "SMP|gs=cpus=4;index_ok=4;base_ok=4;apic_ok=4;cpuid_ok=4;PASS\n",
+                "",
+            ),
+            VALID_GS3.replace("SMP|PASS\n", "SMP|FAIL|gs-timeout\n"),
+            VALID_GS3.replace("lapic_id=0", "lapic_id=1"),
+            format!("{VALID_GS3}SMP|PASS\n"),
+        ] {
+            assert!(
+                validate_gs3(&bad, 4).is_err(),
+                "bad GS-3 witness accepted: {bad}"
             );
         }
     }

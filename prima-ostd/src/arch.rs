@@ -126,6 +126,25 @@ pub fn swapgs() {
     }
 }
 
+/// 读 `%gs` 段内偏移 `OFF` 处的 u32（GS-3 每 CPU 区）。
+///
+/// 契约：调用方必须处于内核态且 `IA32_GS_BASE` 指向有效、可读的每 CPU 区
+/// （GP/缺页由调用方保证不发生）。`OFF` 必须是 4 字节对齐的编译期常量。
+#[inline]
+pub fn read_gs_u32<const OFF: usize>() -> u32 {
+    let value: u32;
+    // SAFETY: 见函数契约——段基址有效、偏移常量对齐；只读，不改内存或特权状态。
+    unsafe {
+        asm!(
+            "mov {out:e}, dword ptr gs:[{off}]",
+            off = const OFF,
+            out = out(reg) value,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    value
+}
+
 /// 读 CR3（页表根物理地址，含低 12 位标志/PCID）。
 #[inline]
 pub fn read_cr3() -> u64 {
@@ -368,6 +387,7 @@ mod tests {
         let _: fn(u32) -> u64 = super::rdmsr;
         let _: fn(u32, u64) = super::wrmsr;
         let _: fn() = super::swapgs;
+        let _: fn() -> u32 = super::read_gs_u32::<0>;
         let _: fn() -> u64 = super::read_cr3;
         let _: fn(u64) = super::write_cr3;
         let _: fn() -> u64 = super::read_cr0;
