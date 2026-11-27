@@ -52,14 +52,16 @@ pub(crate) fn smp_panic_addr(addr: u64) {
     serial::write_bytes(b"\r\n");
 }
 
-/// P5-2：AP 上线结果；`online` 含 BSP（bit0 固定）。
+/// P5-2/P5-3：AP 上线与每 CPU GDT/TSS 结果；`online` 含 BSP（bit0 固定）。
 #[cfg(feature = "smp-ap")]
 pub(crate) fn smp_aps(aps: u32, online: u32) {
     serial::write_bytes(b"SMP|aps=");
     write_u32(aps);
     serial::write_bytes(b";online=");
     write_u32(online);
-    serial::write_bytes(b"\r\n");
+    serial::write_bytes(b";percpu=");
+    write_u32(aps);
+    serial::write_bytes(b";tss=distinct\r\n");
 }
 
 #[cfg(feature = "smp-probe")]

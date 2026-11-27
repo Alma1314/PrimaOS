@@ -60,6 +60,12 @@ INIT-SIPI-SIPI，`test-smp-ap` 在 `-smp 2/4` 各两轮通过，AP 置在线位�
 IPI、TLB shootdown；默认镜像与 72 轮不变。见
 [P5-2 报告](../reports/2026-11-27-p5-2-ap-bringup.md)。
 
+2026-11-27：P5-3a 每 CPU GDT/TSS/共享 IDT——GDT/TSS 改为每 CPU 槽，AP 入口装载本槽
+并从自身 GDTR/TR 读回描述符基址，BSP 校验 BSP+AP 基址互异；`test-smp-ap` 在 `-smp 2/4`
+各两轮通过（`percpu=1/3;tss=distinct`）并复用既有校验器。**AP 仍 `hlt` 且 IF=0**，无
+调度/IPI/TLB；P5-3 整体未完成。见
+[P5-3a 报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)。
+
 ## P2的具体接线与待解决边界
 
 此节是后继实施输入，未实现，不能由P1或P2a的测试签收。P2a只完成第2条中的管理器

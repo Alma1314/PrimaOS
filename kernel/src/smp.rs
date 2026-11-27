@@ -1,14 +1,15 @@
-//! P5-2：AP 启动（仅在 `smp-ap` feature 下编译）。
+//! P5-2/P5-3a：AP 启动与每 CPU 特权状态（仅在 `smp-ap` feature 下编译）。
 //!
 //! 流程：为 AP 建立只共享内核高半区、并把跳板页标识映射到低地址的页表根；复制
 //! [`prima_ostd::smp`] 跳板模板到 1 MiB 以下的可执行帧；经 LAPIC INIT-SIPI-SIPI 唤醒；
-//! AP 在长模式下跳到 [`ap_entry`]，只启用 SSE、置在线位并 `hlt`。
+//! AP 在长模式下跳到 [`ap_entry`]，装载本 CPU 的 GDT/TSS 与 BSP 的只读 IDT，置在线位并
+//! `hlt`。
 //!
-//! **边界**：AP 不参与调度、不建立每 CPU GDT/TSS/IDT（`hlt` 且 IF=0），不处理
-//! x2APIC MSR 发送路径；这不是 SMP 验收。页帧经注册表归属（保留标签
-//! `SMP_FRAME_SEGMENT`），AP 根共享 BSP 高半区页表，低半区只映射跳板页。
+//! **边界**：AP 不参与调度、不接收中断（`hlt` 且 IF=0），不处理 x2APIC MSR 发送路径；
+//! 这不是 SMP 验收。页帧经注册表归属（保留标签 `SMP_FRAME_SEGMENT`），AP 根共享 BSP
+//! 高半区页表，低半区只映射跳板页。
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::acpi::CpuTopology;
 use crate::mem::phys_to_virt;
@@ -43,6 +44,10 @@ static ONLINE: AtomicU32 = AtomicU32::new(0);
 /// 诊断：最近一次触碰的地址（panic 时由 panic handler 打印）。
 static LAST_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// 每个 AP 从自身 GDTR/TR 解出的 TSS 描述符基址；0 = 未装载。
+static AP_TSS_BASE: [AtomicU64; crate::cpu::local::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::cpu::local::MAX_CPUS];
+
 /// 诊断用：最近触碰的地址。
 pub fn last_addr() -> u64 {
     LAST_ADDR.load(Ordering::Relaxed)
@@ -71,6 +76,7 @@ pub enum ApError {
     TooManyCpus,
     X2apicUnsupported,
     ApTimeout(u32),
+    PerCpuInit(u32),
 }
 
 impl ApError {
@@ -85,6 +91,7 @@ impl ApError {
             ApError::TooManyCpus => "ap-too-many-cpus",
             ApError::X2apicUnsupported => "ap-x2apic-unsupported",
             ApError::ApTimeout(_) => "ap-online-timeout",
+            ApError::PerCpuInit(_) => "ap-percpu-init",
         }
     }
 }
@@ -105,13 +112,43 @@ fn stack_top(index: u32) -> u64 {
     base + AP_STACK_SIZE as u64
 }
 
-/// AP 在长模式下的入口。只做与 BSP 无关的最小初始化，然后离线停放。
+/// AP 在长模式下的入口：装载本 CPU 的 GDT/TSS 与共享 IDT，置在线位后停放。
+///
+/// IF 仍为 0：IDT 已有门，但 AP 不参与中断/调度；装载失败不置在线位，由 BSP 超时判失败。
 extern "C" fn ap_entry(index: u32) -> ! {
     crate::cpu::enable_sse();
+    if crate::gdt::init_cpu_gdt(index as usize, stack_top(index)).is_ok() {
+        crate::idt::load_shared();
+        AP_TSS_BASE[index as usize]
+            .store(crate::gdt::loaded_tss_base().unwrap_or(0), Ordering::SeqCst);
+    }
     ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
     loop {
         prima_ostd::arch::hlt();
     }
+}
+
+/// 校验 BSP+已上线 AP 的 TSS 基址互异，且每个 AP 从自身 GDTR/TR 读回本槽描述符基址。
+fn verify_per_cpu(aps: u32) -> Result<(), ApError> {
+    let mut bases = [0u64; crate::cpu::local::MAX_CPUS];
+    for cpu in 0..=aps as usize {
+        let Some(base) = crate::gdt::tss_base(cpu) else {
+            return Err(ApError::PerCpuInit(cpu as u32));
+        };
+        if base == 0 || bases[..cpu].contains(&base) {
+            return Err(ApError::PerCpuInit(cpu as u32));
+        }
+        bases[cpu] = base;
+    }
+    if crate::gdt::loaded_tss_base() != Some(bases[0]) {
+        return Err(ApError::PerCpuInit(0));
+    }
+    for index in 1..=aps as usize {
+        if AP_TSS_BASE[index].load(Ordering::SeqCst) != bases[index] {
+            return Err(ApError::PerCpuInit(index as u32));
+        }
+    }
+    Ok(())
 }
 
 fn allocate_low_frame() -> Result<u64, ApError> {
@@ -329,6 +366,7 @@ pub fn start_aps(
         wait_online(index)?;
         aps += 1;
     }
+    verify_per_cpu(aps)?;
     Ok(aps)
 }
 
@@ -344,5 +382,20 @@ mod tests {
         assert_eq!(first % 16, 0);
         assert_eq!(second % 16, 0);
         assert!(first > second || second > first);
+    }
+
+    /// P5-3：BSP 与每个 AP 槽都指向不同的 TSS。
+    #[test]
+    fn per_cpu_tss_bases_are_all_distinct() {
+        let mut bases = [0u64; crate::cpu::local::MAX_CPUS];
+        for (cpu, slot) in bases.iter_mut().enumerate() {
+            *slot = crate::gdt::tss_base(cpu).expect("cpu slot exists");
+            assert_ne!(*slot, 0);
+        }
+        for i in 0..bases.len() {
+            for j in 0..i {
+                assert_ne!(bases[i], bases[j]);
+            }
+        }
     }
 }

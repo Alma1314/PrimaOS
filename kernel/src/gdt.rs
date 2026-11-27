@@ -71,6 +71,8 @@ pub use prima_ostd::entry::Tss;
 const CODE_OFF: usize = 8; // 槽 1: index*8 = 内核 code
 const DATA_OFF: usize = 16; // 槽 2: index*8 = 内核 data
 const TSS_OFF: usize = 24; // 槽 3: index*8 = TSS 系统描述符（占 16 字节，覆盖槽 3..4）
+/// TSS 选择子（槽 3，RPL0）；`ltr` 与 `str` 读回值。
+pub const TSS_SELECTOR: u16 = TSS_OFF as u16;
 /// 用户数据段（槽 5，选择子 0x2b）。
 pub const USER_DATA_OFF: usize = 40;
 /// 用户代码段（槽 6，选择子 0x33）。
@@ -159,28 +161,90 @@ impl Gdt {
     }
 }
 
-// 静态持有：单核 boot 早期，仅一次 init 时写入。
-static GDT_ITEM: StaticCell<Gdt> = StaticCell::new(Gdt::new());
-static TSS_ITEM: StaticCell<Tss> = StaticCell::new(Tss::new(0));
+// 静态持有：每个 CPU 一份 GDT/TSS（S7-B.1 P5-3）。BSP 在 boot 早期初始化槽 0；
+// AP 在自己的入口用 [`init_cpu_gdt`] 初始化各自槽位；未初始化的槽位不装载。
+static GDTS: [StaticCell<Gdt>; crate::cpu::local::MAX_CPUS] =
+    [const { StaticCell::new(Gdt::new()) }; crate::cpu::local::MAX_CPUS];
+static TSSES: [StaticCell<Tss>; crate::cpu::local::MAX_CPUS] =
+    [const { StaticCell::new(Tss::new(0)) }; crate::cpu::local::MAX_CPUS];
 
-/// 供 `main.rs` 调用的公开入口：装载 GDT/TSS。
+/// 装载指定 CPU 的 GDT/TSS。索引越界确定性失败，不静默落到 BSP。
+///
+/// 契约：调用方正在该 CPU 上执行，且此后再无人并发写同一槽。
 #[allow(clippy::result_unit_err)]
-pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
-    GDT_ITEM.with_mut(|gdt| {
+pub fn init_cpu_gdt(cpu: usize, rsp0: u64) -> Result<(), ()> {
+    let Some(gdt) = GDTS.get(cpu) else {
+        return Err(());
+    };
+    let Some(tss) = TSSES.get(cpu) else {
+        return Err(());
+    };
+    gdt.with_mut(|gdt| {
         *gdt = Gdt::new();
-        TSS_ITEM.with_mut(|tss| {
+        tss.with_mut(|tss| {
             *tss = Tss::new(rsp0);
             init(gdt, tss)
         })
     })
 }
 
-/// 更新 `TSS.rsp0`：CPL3→CPL0（trap/中断）时硬件装载的内核栈顶。
+/// 供 `main.rs` 调用：装载 BSP 的 GDT/TSS。
+#[allow(clippy::result_unit_err)]
+pub fn init_kernel_gdt(rsp0: u64) -> Result<(), ()> {
+    init_cpu_gdt(crate::cpu::local::BSP, rsp0)
+}
+
+/// 更新指定 CPU 的 `TSS.rsp0`（CPL3→CPL0 时硬件装载的内核栈顶）。
 ///
-/// 单核、无并发；在任务切换（[`crate::sched::resume`]）时指向目标任务的内核栈，实现
-/// per-task 内核栈。TSS 描述子已在 [`init_kernel_gdt`] 装载，此处只改内存中的字段。
+/// 运行期 CPU 身份（GS/CPUID）未定前，调度仍在 BSP 上走 [`set_rsp0`]；AP 侧只在自己的
+/// 入口用 [`init_cpu_gdt`] 设初值。越界索引静默忽略，避免清理路径 panic。
+pub fn set_rsp0_for(cpu: usize, rsp0: u64) {
+    if let Some(tss) = TSSES.get(cpu) {
+        tss.with_mut(|tss| tss.set_rsp0(rsp0));
+    }
+}
+
+/// 更新 BSP 的 `TSS.rsp0`。任务切换（[`crate::sched::resume`]）当前只在 BSP 发生。
 pub fn set_rsp0(rsp0: u64) {
-    TSS_ITEM.with_mut(|tss| tss.set_rsp0(rsp0));
+    set_rsp0_for(crate::cpu::local::BSP, rsp0);
+}
+
+/// 指定 CPU 的 TSS 基址（越界返回 `None`）。用于证明每 CPU 的 TSS 互异。
+pub fn tss_base(cpu: usize) -> Option<u64> {
+    TSSES.get(cpu).map(|tss| tss.as_ptr() as u64)
+}
+
+/// 从 16 字节 TSS 描述符解出 64 位基址（纯函数，host 可测）。
+fn decode_tss_base(d: &[u8; 16]) -> u64 {
+    u64::from(d[2])
+        | (u64::from(d[3]) << 8)
+        | (u64::from(d[4]) << 16)
+        | (u64::from(d[7]) << 24)
+        | (u64::from(d[8]) << 32)
+        | (u64::from(d[9]) << 40)
+        | (u64::from(d[10]) << 48)
+        | (u64::from(d[11]) << 56)
+}
+
+/// 从**本 CPU 当前装载的** GDTR 与 TR 解析 TSS 描述符基址。
+///
+/// 这是比只比较 `str` 选择子更强的机器证据：AP 必须真的在自己的 GDT 里把 TSS
+/// 描述符指向本槽。仅在 CPL0、GDT 已装载且可读时调用。
+pub fn loaded_tss_base() -> Option<u64> {
+    let (gdt_base, limit) = prima_ostd::arch::sgdt();
+    let selector = prima_ostd::arch::task_register();
+    if selector == 0 {
+        return None;
+    }
+    let offset = u64::from(selector & 0xfff8);
+    if offset.checked_add(16)? > u64::from(limit) + 1 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = prima_ostd::mm::read_u8(gdt_base + offset + index as u64);
+    }
+    Some(decode_tss_base(&bytes))
 }
 
 #[cfg(test)]
@@ -326,5 +390,29 @@ mod tests {
         // 高 8 字节：字节 [8..12) = base[63:32]，字节 [12..16) = reserved(0)。
         assert_eq!(&d[8..12], &expected_base[4..8]);
         assert_eq!(&d[12..16], &[0, 0, 0, 0]);
+    }
+
+    /// P5-3：每 CPU 一份 TSS，描述符基址必须指向本槽且互不相同。
+    #[test]
+    fn per_cpu_tss_bases_are_distinct_and_descriptors_match() {
+        let mut bases = [0u64; crate::cpu::local::MAX_CPUS];
+        for (cpu, slot) in bases.iter_mut().enumerate() {
+            let base = tss_base(cpu).expect("cpu slot exists");
+            assert_ne!(base, 0);
+            *slot = base;
+            TSSES[cpu].with(|tss| {
+                let mut g = Gdt::new();
+                build_gdt_bytes(&mut g, tss);
+                let d: [u8; 16] = g.bytes[TSS_OFF..TSS_OFF + 16]
+                    .try_into()
+                    .expect("TSS descriptor is 16 bytes");
+                assert_eq!(decode_tss_base(&d), tss as *const Tss as u64);
+            });
+        }
+        for i in 0..bases.len() {
+            for j in 0..i {
+                assert_ne!(bases[i], bases[j], "CPU {i} 与 {j} 共享 TSS");
+            }
+        }
     }
 }

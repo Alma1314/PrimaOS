@@ -6603,7 +6603,7 @@ pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
     let ap_line = records[2]
         .strip_prefix("SMP|")
         .ok_or_else(|| "malformed SMP AP line".to_owned())?;
-    let (mut aps, mut ap_online) = (None, None);
+    let (mut aps, mut ap_online, mut percpu, mut tss) = (None, None, None, None);
     for field in ap_line.split(';') {
         let (key, value) = field
             .split_once('=')
@@ -6611,14 +6611,20 @@ pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
         match key {
             "aps" => aps = Some(parse_decimal(value, key)?),
             "online" => ap_online = Some(parse_decimal(value, key)?),
+            "percpu" => percpu = Some(parse_decimal(value, key)?),
+            "tss" => tss = Some(value),
             _ => return Err(format!("unknown SMP AP field: {key}")),
         }
     }
-    if aps != Some(u64::from(smp) - 1) {
+    let aps = aps.ok_or_else(|| "missing SMP-AP aps".to_owned())?;
+    if aps != u64::from(smp) - 1 {
         return Err(format!("SMP-AP must start {} APs", smp - 1));
     }
     if ap_online != Some(u64::from(smp)) {
         return Err(format!("SMP-AP must report all {smp} CPUs online"));
+    }
+    if percpu != Some(aps) || tss != Some("distinct") {
+        return Err("SMP-AP must load a distinct GDT/TSS on every AP".to_owned());
     }
     Ok(())
 }
@@ -6649,7 +6655,7 @@ mod smp_tests {
         }
     }
 
-    const VALID_AP: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4\nSMP|PASS\n";
+    const VALID_AP: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|PASS\n";
 
     #[test]
     fn smp_ap_witness_requires_every_reported_cpu_online() {
@@ -6658,7 +6664,9 @@ mod smp_tests {
         for bad in [
             VALID_AP.replace("aps=3", "aps=2"),
             VALID_AP.replace("online=4", "online=3"),
-            VALID_AP.replace("SMP|aps=3;online=4\n", ""),
+            VALID_AP.replace("percpu=3", "percpu=2"),
+            VALID_AP.replace("tss=distinct", "tss=shared"),
+            VALID_AP.replace("SMP|aps=3;online=4;percpu=3;tss=distinct\n", ""),
             VALID_AP.replace("SMP|PASS\n", "SMP|FAIL|ap-online-timeout\n"),
             VALID_AP.replace("lapic_id=0", "lapic_id=1"),
         ] {

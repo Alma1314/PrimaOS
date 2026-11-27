@@ -29,6 +29,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     protocol::boot_start();
     protocol::serial_ready();
 
+    // P5-3a：探测结果暂存到 BSP 完成 GDT/TSS/IDT 装载后再启动 AP，
+    // 使 AP 装载的是已初始化的共享 IDT 与 BSP 同布局的 GDT。
+    #[cfg(feature = "smp-ap")]
+    let mut smp_report: Option<kernel::smp_probe::Report> = None;
+
     let regions: &[bootloader_api::info::MemoryRegion] = &boot_info.memory_regions;
     match mem::build_inventory(regions, boot_info.kernel_addr, boot_info.kernel_len) {
         Ok(inventory) => {
@@ -74,16 +79,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         Ok(report) => {
                                             protocol::smp_ready(&report);
                                             #[cfg(feature = "smp-ap")]
-                                            match kernel::smp::start_aps(
-                                                &report,
-                                                offset,
-                                                &mut |stage| protocol::smp_stage(stage),
-                                            ) {
-                                                Ok(aps) => {
-                                                    protocol::smp_aps(aps, aps + 1);
-                                                    protocol::smp_pass();
-                                                }
-                                                Err(error) => protocol::smp_fail(error.as_str()),
+                                            {
+                                                smp_report = Some(report);
                                             }
                                             #[cfg(not(feature = "smp-ap"))]
                                             protocol::smp_pass();
@@ -142,6 +139,26 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             kernel::idt::trigger_int3();
                                             let seen = kernel::idt::trap_seen();
                                             protocol::trap_ready(seen);
+
+                                            // P5-3a：BSP 的 GDT/TSS/IDT 已就绪，此时启动 AP；
+                                            // AP 装载每 CPU GDT/TSS 与同一只读 IDT。
+                                            #[cfg(feature = "smp-ap")]
+                                            if let Some(report) = smp_report {
+                                                match kernel::smp::start_aps(
+                                                    &report,
+                                                    offset,
+                                                    &mut |stage| protocol::smp_stage(stage),
+                                                ) {
+                                                    Ok(aps) => {
+                                                        protocol::smp_aps(aps, aps + 1);
+                                                        protocol::smp_pass();
+                                                    }
+                                                    Err(error) => {
+                                                        protocol::smp_fail(error.as_str())
+                                                    }
+                                                }
+                                                serial::flush();
+                                            }
                                         }
                                         Err(()) => {
                                             protocol::idt_error();

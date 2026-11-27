@@ -109,10 +109,14 @@ CPU 本地状态都进这一入口，不再回到全局静态。
 
 | # | 问题 | 推荐 | 代价/说明 |
 |---|---|---|---|
-| 1 | AP 启动失败策略：确定性失败 vs 退化单核 | 验收环境确定性失败（panic），不静默降级 | 需在 G2 平台配置冻结时确认 |
+| 1 | AP 启动失败策略 | **已决（作者 2026-11-27）：默认确定性 fail-stop，不静默降级；仅显式 profile 可退化为 BSP-only 并写审计事件** | 当前 `test-smp-ap` 仍是“继续启动 + 校验器拒绝”；生产启动的 fail-stop 接线属 P5-3/7-B |
 | 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 方向已由 [Windows 阻断处置](2026-11-27-windows-blocker-decisions.md)选择内核 GS，但 GS-1…GS-3 未实现前 P5 不依赖它 | P5-3 不等待 GS；GS-3 后才评估热路径迁移 |
 | 3 | xAPIC vs x2APIC | 先 xAPIC（QEMU `qemu64` 默认）；x2APIC 记录但不作为验收前提 | 需 CPUID 探测 |
-| 4 | 任务迁移策略 | 允许迁移，但一个任务任一时刻只在一个 CPU 运行；迁移经 CR3 写刷新 TLB | 迁移不引入 PCID |
+| 4 | 任务迁移策略 | **已决（作者 2026-11-27）：每 CPU 就绪队列 + 固定放置（fork/exec 在父 CPU，唤醒按目标 CPU）；首片运行中任务不迁移、不做 work stealing；迁移/steal 留到扩展曲线切片** | 每 CPU 队列与放置规则增加唤醒路由和丢唤醒反例的验证量 |
+
+2026-11-27 执行顺序（作者）：先落盘 P5-3 的每 CPU GDT/TSS/IDT；随后 GS-1（仅
+`syscall` 路径的 `swapgs`）；再 GS-2（异常/IRQ）。Windows 运行期 TEB/TLS 不早于
+GS-4；P5-3 不等待 GS。
 | 5 | 跨 CPU 审计顺序 | 保留全局序号，允许并发 append 时按获取顺序线性化 | 需明确“顺序”是锁顺序还是提交顺序 |
 | 6 | per-CPU 时基与 sleep deadline | 各 CPU 本地校准，deadline 用绝对 tick 比较 | 频率漂移需在扩展曲线中记录 |
 
@@ -123,7 +127,7 @@ CPU 本地状态都进这一入口，不再回到全局静态。
 | P5-0 | 本文 + CPU 本地入口 + 调度当前任务分区 | host 测试与既有 BIOS 启动逐字节回归；不声称 SMP | **本片** |
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
 | P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
-| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 并行 fork/exec 无丢唤醒；任务状态与根一致 | 待做 |
+| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 并行 fork/exec 无丢唤醒；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，`-smp 2/4` 读回本槽描述符，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；P5-3b 每 CPU 就绪队列 + 固定放置；P5-3c AP 预抢占（LAPIC timer） |
 | P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 反例：一端解除共享映射，另一端旧地址必须失效 | 待做 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |
 

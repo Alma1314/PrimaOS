@@ -125,6 +125,13 @@ pub fn load_idt(idt: &Idt) -> Result<(), ()> {
     Ok(())
 }
 
+/// AP 装载与 BSP 相同的只读 IDT。要求本 CPU 已装载选择子布局一致的 GDT。
+///
+/// IDT 是只读共享表；每 CPU 只在硬件寄存器中保存同一基址。
+pub fn load_shared() {
+    let _ = IDT_ITEM.with(load_idt);
+}
+
 /// 切片 G：注册用户 `int3` 收尾回调（委派框架）。
 pub fn set_user_trap_handler(handler: extern "C" fn() -> !) {
     prima_ostd::entry::set_user_trap_handler(handler);

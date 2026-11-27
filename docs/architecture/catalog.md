@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（260）
+## report（261）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -359,6 +359,7 @@
 | [P5-0：SMP 状态所有权设计与 CPU 本地状态基座](../superpowers/reports/2026-11-27-p5-0-state-partition.md) | current | `docs/superpowers/reports/2026-11-27-p5-0-state-partition.md` |
 | [P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测](../superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md) | current | `docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md` |
 | [P5-2：AP 启动原型（INIT-SIPI-SIPI 到长模式）](../superpowers/reports/2026-11-27-p5-2-ap-bringup.md) | current | `docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md` |
+| [P5-3a：每 CPU GDT/TSS 与共享 IDT](../superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md) | current | `docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md` |
 | [WIN-M2 补片：真实 DLL 导出与发布失败清理](../superpowers/reports/2026-11-27-windows-m2-real-dll.md) | current | `docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md` |
 | [WIN-M3 部分：多模块导入、静态 TLS 布局与三 DLL ring3 原型](../superpowers/reports/2026-11-27-windows-m3-loader-runtime.md) | current | `docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md` |
 | [Windows LibOS 计划书审计（2026-11-27）](../superpowers/reports/2026-11-27-windows-plan-audit.md) | current | `docs/superpowers/reports/2026-11-27-windows-plan-audit.md` |

@@ -250,6 +250,32 @@ pub fn lgdt(base: u64, limit: u16) {
     }
 }
 
+/// 读当前 GDTR 的 `(base, limit)`。
+#[inline]
+pub fn sgdt() -> (u64, u16) {
+    let mut gdtr = [0u8; 10];
+    // SAFETY: sgdt 只写 10 字节局部缓冲，不读内存。
+    unsafe {
+        asm!("sgdt [{}]", in(reg) gdtr.as_mut_ptr(), options(nostack, preserves_flags));
+    }
+    let limit = u16::from_le_bytes(gdtr[0..2].try_into().expect("2 bytes"));
+    let base = u64::from_le_bytes(gdtr[2..10].try_into().expect("8 bytes"));
+    (base, limit)
+}
+
+/// 读任务寄存器（`str`）低 16 位：返回本 CPU 当前装载的 TSS 选择子。
+///
+/// 契约：仅 CPL0；只读，无内存副作用。用于证明每个 CPU 已装载自己的 TSS。
+#[inline]
+pub fn task_register() -> u16 {
+    let value: u16;
+    // SAFETY: `str` 读取任务寄存器，不改内存或特权状态。
+    unsafe {
+        asm!("str {0:x}", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
 /// 装载 TSS 段选择子（`ltr`），使其进入忙态。
 ///
 /// 契约：特权指令，仅 CPL0；`selector` 必须指向 GDT 中一个已装好的可用 TSS 描述符。

@@ -157,7 +157,8 @@
       "docs/superpowers/reports/2026-11-27-p5-0-state-partition.md",
       "docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md",
       "docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md",
-      "docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md"
+      "docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md",
+      "docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md"
     ],
     "code": [
       "kernel/src/main.rs",

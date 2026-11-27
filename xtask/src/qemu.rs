@@ -118,7 +118,8 @@ pub(crate) fn run_bios_smp_ap(image: &Path, smp: u8, round: u32) -> Result<(), S
     validate_boot_output(&output)?;
     protocol::validate_smp_ap(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
     println!(
-        "PASS SMP-AP smp={smp} round={round} aps={} online={smp}",
+        "PASS SMP-AP smp={smp} round={round} aps={} online={smp} percpu={} tss=distinct",
+        u32::from(smp) - 1,
         u32::from(smp) - 1
     );
     Ok(())

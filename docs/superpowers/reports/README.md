@@ -61,6 +61,8 @@ updated: 2026-11-27
 
 2026-11-27：[Windows LibOS 计划审计](2026-11-27-windows-plan-audit.md)；对照计划、M0 规格与 M1–M3 报告，列出 3 项阻断（M0 参考未冻结、WIN-D3 用户 GS 与 SMP/内核上下文耦合、D4 共享 root 多线程）与 6 项重大及若干次要建议；同步修正阶段跟踪中过时的 Windows 段落，计划里程碑表未改写。
 
+2026-11-27：[P5-3a 每 CPU GDT/TSS 与共享 IDT](2026-11-27-p5-3a-percpu-gdt-tss.md)；GDT/TSS 改为每 CPU 槽，AP 入口装载本槽并从自身 GDTR/TR 读回描述符基址，BSP 校验 BSP+AP 基址互异；`test-smp-ap` 在 `-smp 2/4` 各两轮通过（`percpu=1/3;tss=distinct`）并复用既有校验器；host 1248、lint、默认 72 轮通过；AP 仍 `hlt` 且 IF=0，P5-3 未完成、7-B 未勾选。
+
 2026-11-27：[P5-2 AP 启动原型](2026-11-27-p5-2-ap-bringup.md)；`prima-ostd::smp` 实模式→长模式跳板与 `kernel::smp` INIT-SIPI-SIPI，`test-smp-ap` 在 `-smp 2/4` 各两轮通过（`aps=1/3;online=2/4`），剔除 SMP 行后两种 vCPU 数输出逐字节相同；记录 LAPIC 只读、补丁未对齐、EFER.NXE 三次失败与修复；AP 仅停放，7-B 未勾选。
 
 2026-11-27：[P5-1 ACPI/MADT 解析与只读探测](2026-11-27-p5-1-acpi-madt-host.md)；新增 RSDP v0/v2、RSDT/XSDT、MADT 纯解析与 `smp_probe`（CPUID + LAPIC 自识别），专用 `test-smp` 在 `-smp 2/4` 各两轮通过并复用既有启动校验器，剔除 SMP 行后两种 vCPU 数日志逐字节相同；host 1245、lint、默认 72 轮通过；**AP 未启动**（`online=1`），7-B 未勾选，P6 未开始。
