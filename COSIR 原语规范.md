@@ -4,7 +4,7 @@ kind: specification
 authority: abstract-semantics
 status: maintained
 lifecycle: current
-updated: 2026-10-25
+updated: 2026-11-27
 ---
 
 # COSIR 原语规范：平台无关抽象语义
@@ -316,7 +316,7 @@ Capability 移动不是用户可直接调用的操作，因此没有独立的成
 
 如果未来加入选择性撤销，必须单独定义撤销域、并发语义、在途消息处理和派生树一致性，不能把它隐含在 `cap_drop` 中。
 
-> **撤销域（2026-08）：** 探索阶段已在 Bootstrap 宿主实现中先行落地选择性撤销（子树传播，见实施证据 SPEC-022/023），其撤销域定义见 [Prima OS](Prima%20OS.md) §6.2 实现注记；本节保持第一版不提供 `cap_revoke` 的基线，不将撤销隐含进 `cap_drop` 或新增一等原语。在途（`InMessage`/`InNamespace`/`InTransit`）位置仍不纳入撤销域，留待后续阶段。
+> **探索撤销边界（2026-11-27 澄清）：** SPEC-022/023 的 Bootstrap 子树撤销不改变第一版无公开 `cap_revoke` 的基线。参见[白皮书 §6.2](Prima%20OS.md#62-authority-的流动)：最小参考模型区分完整子树的授权失效与容器回收，`InMessage`/`InNamespace` 保留位置不意味着可继续授权；跨节点 `InTransit` 不在该模型保证内。内核退休槽位与参考模型保留容器位置之间的偏差登记为 `ISSUE-REVOKE-CONTAINER-001`，不能把该探索操作视作已证明保持本规范 W3/W4 的新增迁移。详见[修订与复核](docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)；本次仅修正注记，不修改已冻结 `cap_drop`/对象销毁语义。
 
 ### 4.8 受控 fork 继承的工作细化
 
@@ -2380,6 +2380,12 @@ W7 仅约束 `vspace` 的 Segment `PageMapping`；设备 MMIO 映射由 `dev_vsp
 在完成这些细化前，不得根据本文直接声称”实际内核已形式化证明安全”。准确表述应是：抽象对象能力状态机具有待证明的安全不变量，具体实现需要另行证明其正确细化。
 
 ### 18.0 POSIR/COSIR 边界清单
+
+融合内核边界：[白皮书 §18.5](Prima%20OS.md#185-异构-isa-融合内核)
+和[融合内核方案](docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)
+定义同一融合域多 ISA 执行体共同细化一个逻辑状态的工作设计。其共享 ABI、联合抽象函数、
+唯一 Authority/帧归属与跨 ISA 同步尚未证明；本规范不因此新增 FusionDomain 对象或放宽
+W3/W4/W6。融合域外独立 Node 的 `NonPortableCap` 边界仍有效；不得把 ISA 差异等同于 Node 边界。
 
 以下是 POSIR 抽象规范中提及但**故意不定义**、留待 COSIR 细化层实现的具体项目汇总：
 

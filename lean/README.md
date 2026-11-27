@@ -4,10 +4,15 @@ kind: reference
 authority: model-mapping
 status: maintained
 lifecycle: current
-updated: 2026-11-25
+updated: 2026-11-27
 ---
 
 # 形式化模型与内核映照（Lean）
+
+2026-11-27 映照纠偏：`Formal.Revoke.revoked` 使全部后代失效但保留消息/Namespace
+位置，内核 `retire_capability` 则删除位置并退休槽位；两者没有容器生命周期等价性证明。
+`ISSUE-REVOKE-CONTAINER-001` 与[复核报告](../docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)
+登记该具体偏差。以下 Revoke 定理仍只证明其参考模型，不把已有构建通过升级为内核修复证据。
 
 > 证据边界：本切片（BLK-001）以 **MODEL-TEST** 支撑 bootstrap / exc_resume / derive 的可执行状态模型，
 > 并以 **REFINEMENT-DESIGN**（独立 Lean 证明通道）支撑 §4.2 **能力派生树（CDT）不变量**的保持性。

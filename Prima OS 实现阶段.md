@@ -34,6 +34,17 @@ updated: 2026-11-27
 
 ## 证据索引
 
+2026-11-27 [失效候选提案清理](docs/superpowers/reports/2026-11-27-proposal-cleanup.md)：移除
+两份外部 RuxOS 基座库候选正文，保留正式裁决、风险摘要与 Git/哈希恢复；Gate 初期设计
+转 historical，融合内核/UNIFICO、Windows 与 holder 路线保留。纯文档清理，不改变阶段或 profile。
+
+2026-11-27 [架构规划修订与异构 ISA 复核](docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)：
+补齐 SMP 入口状态、调度/TLB 准入、统一期限、初次放置与 GS 启用门；纠正 guest 后端迁移模型，
+当前融合内核工作设计按共享基座、对象融合、执行融合、集成验收组织，尚未实现；UNIFICO
+用作编译布局参考。后继补入统一发布镜像、FCSA/CHI C2C/UCIe/封装平台准入及项目取舍；
+当前代码仍为 x86 机制基础，尚无 ARM 后端或融合运行证据。仅文档审查，不新增融合实现/证明证据；
+撤销容器偏差 `ISSUE-REVOKE-CONTAINER-001` 保持开放，阶段与勾选不变。
+
 2026-11-10作者要求完整LibOS数据通路改造；[执行计划](docs/superpowers/plans/2026-11-10-libos-data-path.md)覆盖域内前端、共同服务、批量/异步、背压及多核。2026-11-11[共享批量文件首片](docs/superpowers/reports/2026-11-10-libos-data-path.md)通过完整36组72轮BIOS及host/lint；P2–P6尚未实现，完整改造尚未完成，九轨退出不变。
 2026-11-16 [P2a代理会话/受限根视图](docs/superpowers/reports/2026-11-16-stage7-proxy-session.md)完成管理器签发、Store内核元数据绑定、视图约束与代理批量通道的host/lint证据；Linux数据面迁移、fork生命周期、镜像接线及代理QEMU正反例仍未实现，P2继续。
 2026-11-17 [P2b-0/P2b-1 Store批量ops](docs/superpowers/reports/2026-11-17-p2b-store-batch-ops.md)冻结op矩阵并实现OPEN/STAT/CLOSE/GETDENTS/LSEEK/STAT_PATH与proxy EMFILE；host/workspace/lint通过，但Linux前端、fork/exit、镜像与QEMU未做，P2未关闭。
@@ -153,6 +164,7 @@ POSIX std后继（2026-10-27）见[工作契约](docs/superpowers/specs/2026-10-
 
 | ID / 事项 | 当前口径与限制 | 证据 / 下一步 |
 |---|---|---|
+| ISSUE-REVOKE-CONTAINER-001 | **开放（静态审查）**：普通子树撤销删除消息/Namespace 后代位置，而参考模型保留；普通 Namespace 子能力后续 unbind 存在先删条目再失败路径；尚未实跑或修复 | [修订与复核](docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)；固定退休 token/容器映照，补消息/Namespace、槽复用与失败原子性反例；不由 HeldBy 或 Gate 特例证据关闭 |
 | S6-M1 R1–R6 / D14（当前评审范围） | **有界技术范围收口**：G1–G4、七审计边界与D14原探针双轮通过；S6-D2整体复核完成 | [统一验收](docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md)；历史协议/失败及TCG/单CPU限制保留 |
 | S6-M2 / 原生W7时限 | **本轮时限验收通过，历史超时因果未闭合**：前序完整60/72等失败及隔离W7双轮30秒超时保留；本轮隔离W7和首次完整回归中的W7均双轮PASS；首次完整71/72仅I1统计不一致，最终源码完整72/72 PASS。初次诊断21.473秒退出33，其中14.542秒才到内核入口；不能将总时限直接归因于exec复制，也不推断全部失败的唯一根因 | [分段采样与strip失败反例](docs/superpowers/reports/2026-11-01-stage6-w7-timing-diagnosis.md)、[本轮统一结果](docs/superpowers/reports/2026-11-01-stage6-gate-copy-lifecycle.md)、[前序失败](docs/superpowers/reports/2026-11-01-stage6-loader-geometry.md)；不放宽门限，不用单次诊断覆盖完整回归 |
 | 历史普通启动/V1时限 | **历史因果未解释，当前验收已通过**：2026-11-04完整72/72含默认/V1双轮PASS；以下旧失败保留，非当前验收阻塞。普通失败审计后继整套68/72，默认启动和V1各第1轮30秒超时、各第2轮通过；分别止于cow_ready/authority_ready，未定位原因，不以另一轮通过覆盖失败 | [原始日志与限制](docs/superpowers/reports/2026-10-31-stage6-gate-control-rejections.md)；保持门限和验收输入 |
@@ -379,7 +391,8 @@ BLK-003 已按阶段 5 范围关闭（2026-10-27，SPEC-152）。原生号段以
 
 WaitObject/futex、信号、fork/exec、TTY 输入、匿名内存已经有各自的后继技术证据，不能继续以候选阶段的“未实现”表代替当前状态。直接 IPC ≤250ns、动态链接归属、Rust 范围、persona/符号版本及未收口语义按[路线图 D1–D10](docs/superpowers/plans/2026-10-22-stage5-completion-roadmap.md)与 SPEC-152 的签署范围处置；同步 call/reply 快路径和性能指标不因队列 IPC 通过而完成。
 
-候选规格与风险走查保留在[基座库规格](docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md)和[走查记录](docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md)。这些是设计输入，不是本仓库已接受的排期或ABI承诺。
+旧 DOC-002 基座库候选与配套走查已按[清理报告](docs/superpowers/reports/2026-11-27-proposal-cleanup.md)
+退役；未采纳边界、原审查风险、原路径与 Git/哈希恢复均保留，不再占用当前提案入口。
 
 ### 退出条件
 
@@ -483,6 +496,14 @@ SDK、程序白名单与 WIN-D1–D7 仍未冻结；ring3 仅以专用 feature �
 逐 API 行仍未固定）；GS、D4 与 M4+ 均未实现。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
+
+研究架构方案：[异构 ISA 融合内核](docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)
+定义多 ISA 执行体共享对象/权限/资源权威状态及本地硬件状态的协作，按共享基座、对象融合、
+执行融合、集成验收推进。共享 ABI、平台和联合细化须先冻结/验证，尚无融合运行证据；
+统一镜像适配纯 x86、纯 ARM、混合平台是部署目标，FCSA/CHI C2C/UCIe 与先进封装是
+平台设计依据，均未形成 Prima 实现或硬件互操作证据。UNIFICO 仅为编译布局参考。
+方案不扩大阶段 7 的 AArch64 单核范围，不自动加入 ARM SMP
+或 DBT 必交付项。历史发现与未修复偏差见[复核记录](docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)。
 
 [2026-10-31 日志附件整理](docs/superpowers/reports/2026-10-31-documentation-log-inline.md)将必要输出内嵌到原证据报告，移除独立日志附件并保留Git恢复路径；不新增运行证据，整理时的退出0/4保持；2026-11-04的技术退出后继见阶段6节，历史失败保留。
 

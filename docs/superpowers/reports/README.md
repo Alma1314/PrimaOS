@@ -9,6 +9,10 @@ updated: 2026-11-27
 
 # Reports 索引
 
+2026-11-27：[失效候选提案清理与 Git 恢复](2026-11-27-proposal-cleanup.md)；退役两份 RuxOS 基座库外部候选，保留决策/风险摘要、正式承接与恢复版本/哈希；Gate 原设计转 historical，活跃研究提案与证据链保留；不改阶段/profile。
+
+2026-11-27：[架构规划修订与异构 ISA 复核记录](2026-11-27-architecture-isa-re-review.md)；保留 SMP/GS 准入、撤销偏差和旧提案复核的历史发现；现行[融合内核方案](../specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)已直接重写，后继补入统一镜像、芯粒硬件准入、内核分层和项目取舍。旧选项与旧分期不再作为当前方案，撤销实现偏差仍开放；本次未新增融合运行/证明证据。
+
 2026-11-11：[LibOS数据通路共享批量首片](2026-11-10-libos-data-path.md)；P1完整36组72轮BIOS通过，P2–P6待实现，未完成项和验证边界见正文。
 
 2026-11-16：[P2a代理会话与受限根视图](2026-11-16-stage7-proxy-session.md)；管理器签发、Store绑定与视图原语通过host/lint及既有72轮BIOS回归；Linux数据面迁移、镜像接线和代理QEMU正反例仍未实现。

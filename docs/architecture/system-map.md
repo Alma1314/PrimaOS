@@ -4,7 +4,7 @@ kind: guide
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # 系统层次与源码地图
@@ -45,6 +45,12 @@ flowchart TD
 | prima-initgen | 构造 init 可执行输入与原生调用编码 | [lib.rs](../../prima-initgen/src/lib.rs)、[code.rs](../../prima-initgen/src/code.rs) | 与 boot ABI 保持一致 |
 | xtask | 镜像打包、QEMU 见证、差分与门禁 | [main.rs](../../xtask/src/main.rs)、[image.rs](../../xtask/src/image.rs)、[protocol.rs](../../xtask/src/protocol.rs) | 预期 trace 与负例不能随意放宽 |
 | lean | 独立 Lean 状态、CDT 不变量与证明 | [README](../../lean/README.md)、[Formal.lean](../../lean/Formal.lean) | 保留映照契约与 cosir-only 差异 |
+
+融合内核的目标结构见[现行方案 §2](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md#2-总体结构)：
+`kernel` 通用机制同源构建，`prima-ostd` 提供 ISA 后端及平台适配，`xtask` 打包统一镜像；
+共享对象/能力/资源权威状态，本地保存架构编码与 CPU 现场。纯 x86、纯 ARM 和混合配置
+使用相同语义并分别验收。该结构尚未实现；上图与 crate 表描述现有 x86 路径，不能据其
+分层认定已有 ARM 后端。FCSA/CHI C2C/UCIe/先进封装的准入和相关项目取舍只在方案维护。
 
 ## LibOS 分区与依赖
 

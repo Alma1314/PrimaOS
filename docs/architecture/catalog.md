@@ -98,7 +98,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（261）
+## report（263）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -356,10 +356,12 @@
 | [WIN-M1：PE32+ 解析与 Win64 ABI 宿主模型](../superpowers/reports/2026-11-26-windows-m1-pe-model.md) | current | `docs/superpowers/reports/2026-11-26-windows-m1-pe-model.md` |
 | [WIN-M2 前置：PE32+ 平铺装载宿主模型](../superpowers/reports/2026-11-26-windows-m2-preflight.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-preflight.md` |
 | [WIN-M2 ring3 原型：原样 PE32+ 子任务执行](../superpowers/reports/2026-11-26-windows-m2-ring3.md) | current | `docs/superpowers/reports/2026-11-26-windows-m2-ring3.md` |
+| [架构规划修订与异构 ISA 复核记录](../superpowers/reports/2026-11-27-architecture-isa-re-review.md) | historical | `docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md` |
 | [P5-0：SMP 状态所有权设计与 CPU 本地状态基座](../superpowers/reports/2026-11-27-p5-0-state-partition.md) | current | `docs/superpowers/reports/2026-11-27-p5-0-state-partition.md` |
 | [P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测](../superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md) | current | `docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md` |
 | [P5-2：AP 启动原型（INIT-SIPI-SIPI 到长模式）](../superpowers/reports/2026-11-27-p5-2-ap-bringup.md) | current | `docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md` |
 | [P5-3a：每 CPU GDT/TSS 与共享 IDT](../superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md) | current | `docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md` |
+| [失效候选提案清理与 Git 恢复](../superpowers/reports/2026-11-27-proposal-cleanup.md) | historical | `docs/superpowers/reports/2026-11-27-proposal-cleanup.md` |
 | [WIN-M2 补片：真实 DLL 导出与发布失败清理](../superpowers/reports/2026-11-27-windows-m2-real-dll.md) | current | `docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md` |
 | [WIN-M3 部分：多模块导入、静态 TLS 布局与三 DLL ring3 原型](../superpowers/reports/2026-11-27-windows-m3-loader-runtime.md) | current | `docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md` |
 | [Windows LibOS 计划书审计（2026-11-27）](../superpowers/reports/2026-11-27-windows-plan-audit.md) | current | `docs/superpowers/reports/2026-11-27-windows-plan-audit.md` |
@@ -373,7 +375,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（111）
+## specification（109）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -418,8 +420,6 @@
 | [SPEC-087 设计：init ↔ 存活 ring3 客户端双向握手](../superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md) | historical | `docs/superpowers/specs/2026-10-10-stage4-init-client-handshake-design.md` |
 | [SPEC-085 设计：阶段 4 独立 ring3 原生客户端与 IPC Hello 握手](../superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md) | historical | `docs/superpowers/specs/2026-10-10-stage4-ring3-runtime-hello-design.md` |
 | [SPEC-088 设计：服务端解析与协商（阶段 4 S4-D2 前置）](../superpowers/specs/2026-10-10-stage4-service-negotiation-design.md) | historical | `docs/superpowers/specs/2026-10-10-stage4-service-negotiation-design.md` |
-| [RuxOS 基础库栈（基座库）技术规格书 v1.1](../superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md) | historical | `docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md` |
-| [RuxOS 基础库栈 — 走查与扫雷审查记录](../superpowers/specs/2026-10-11-baselib-stack-walkthrough.md) | historical | `docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md` |
 | [SPEC-093 设计：独立第二服务端点（独立二进制映像 + 独立物理栈段）](../superpowers/specs/2026-10-11-stage4-independent-service-images-design.md) | historical | `docs/superpowers/specs/2026-10-11-stage4-independent-service-images-design.md` |
 | [SPEC-092 设计：独立第二服务端点（init 按名路由到不同任务）](../superpowers/specs/2026-10-11-stage4-multi-endpoint-service-design.md) | historical | `docs/superpowers/specs/2026-10-11-stage4-multi-endpoint-service-design.md` |
 | [SPEC-090 设计：服务管理器（init 按名解析并路由）](../superpowers/specs/2026-10-11-stage4-service-manager-design.md) | historical | `docs/superpowers/specs/2026-10-11-stage4-service-manager-design.md` |
@@ -459,7 +459,7 @@
 | [静态程序的 persona 与适配层版本护栏](../superpowers/specs/2026-10-26-static-program-contract-design.md) | current | `docs/superpowers/specs/2026-10-26-static-program-contract-design.md` |
 | [Prima POSIX std 后端](../superpowers/specs/2026-10-27-posix-std-backend-design.md) | current | `docs/superpowers/specs/2026-10-27-posix-std-backend-design.md` |
 | [阶段 6–7 前置裁决（D11–D16）](../superpowers/specs/2026-10-28-stage6-7-release-decisions.md) | current | `docs/superpowers/specs/2026-10-28-stage6-7-release-decisions.md` |
-| [S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）](../superpowers/specs/2026-10-29-stage6-m1-delivery-design.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md` |
+| [S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）](../superpowers/specs/2026-10-29-stage6-m1-delivery-design.md) | historical | `docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md` |
 | [S6-M1 递送机制的六项裁决（D17–D22）](../superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-mechanism-decisions.md` |
 | [S6-M1 协议收口：候选 A、单服务者与不可警报等待](../superpowers/specs/2026-10-29-stage6-m1-protocol.md) | current | `docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md` |
 | [Rust 句柄源码到 Lean 的首个细化切片](../superpowers/specs/2026-10-31-rust-handle-refinement-design.md) | current | `docs/superpowers/specs/2026-10-31-rust-handle-refinement-design.md` |
@@ -484,7 +484,7 @@
 | [7-0 源码与验收证据包首片](../superpowers/specs/2026-11-08-stage7-evidence-package.md) | current | `docs/superpowers/specs/2026-11-08-stage7-evidence-package.md` |
 | [7-0 L1 端到端 LibOS read 基准](../superpowers/specs/2026-11-08-stage7-libos-benchmark.md) | current | `docs/superpowers/specs/2026-11-08-stage7-libos-benchmark.md` |
 | [LibOS 数据通路改造与批量文件协议首片](../superpowers/specs/2026-11-10-libos-data-path.md) | current | `docs/superpowers/specs/2026-11-10-libos-data-path.md` |
-| [异构 ISA 混合执行设计：系统层双构建与应用层用户态兼容层](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
+| [PrimaOS 异构 ISA 融合内核方案](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
 | [WIN-M0 有界基线：PE64 宿主模型与未决冻结门](../superpowers/specs/2026-11-26-windows-m0-baseline.md) | current | `docs/superpowers/specs/2026-11-26-windows-m0-baseline.md` |
 | [阶段 7 S7-B.1：SMP 状态所有权与按 CPU 分区设计](../superpowers/specs/2026-11-27-stage7-smp-state-partition.md) | current | `docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md` |
 | [Windows 计划审计阻断处置：M0 通道、D3b 用户 GS、D4 共享 root](../superpowers/specs/2026-11-27-windows-blocker-decisions.md) | current | `docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md` |
@@ -524,3 +524,5 @@
 - `docs/superpowers/plans/2026-10-23-documentation-restructure-plan.md`：已完成的文档搭建步骤，与维护手册重复；验收报告单独保留。
 - `docs/superpowers/reports/2026-10-14-dual-personality-handoff.md`：明确声明非证据的会话交接快照；旧的下一阶段描述已失效，采纳审核与 H0 原始评审保留。
 - `docs/architecture/primaos-architecture-qa.md`：重复的对话整理，含单文件存储、缺 stdin/exec 等过时实现摘要；无独立契约或实验效力。
+- `docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`：外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。
+- `docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md`：外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。

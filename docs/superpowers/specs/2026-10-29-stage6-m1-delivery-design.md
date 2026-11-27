@@ -3,11 +3,16 @@ id: spec-stage6-m1-delivery
 kind: specification
 authority: proposed-mechanism-design
 status: design-proposal
-lifecycle: current
-updated: 2026-11-01
+lifecycle: historical
+updated: 2026-11-27
 ---
 
 # S6-M1 递送设计：OS 中立的同步 syscall 门控（proposal）
+
+历史设计输入：下文“未实现/候选号段”等描述是当时基线。现行协议及后继运行证据分别见
+[M1 协议](2026-10-29-stage6-m1-protocol.md)、[阶段 6 统一验收](../reports/2026-11-02-stage6-process-and-differential.md)
+与[阶段跟踪](../../../Prima%20OS%20实现阶段.md)。本文件仍供 D17–D22/失败复审链追溯，
+按[提案清理报告](../reports/2026-11-27-proposal-cleanup.md)保留原契约正文，不作为当前未完成项。
 
 ## 问题与范围
 

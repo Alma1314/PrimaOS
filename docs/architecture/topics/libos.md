@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-27
 ---
 
 # LibOS 布局、personality 边界与验证入口
@@ -22,6 +22,12 @@ updated: 2026-11-26
 白皮书§4.3/§7（LibOS 边界与多 LibOS 模型）、[仓库约束](../../../AGENTS.md)与[系统地图](../system-map.md)。先查[阶段跟踪](../../../Prima%20OS%20实现阶段.md)确认 personality 是否属于当前阶段必交付，再读计划/规格与报告链；计划里的“未实现”属于当时基线。
 
 Windows 是独立候选扩展，不替换阶段 7 的 Linux + Prima 原生/POSIX 组合，也不构成第三个必交付 personality。其 M0 尚未通过。
+
+[异构 ISA 融合内核方案](../../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)
+定义共享内核权威状态与各 ISA 本地硬件状态的分工；personality/guest ABI 留在用户态，
+统一镜像按纯 x86/纯 ARM/混合平台选择参与执行体，FCSA/CHI C2C/UCIe/先进封装须经
+平台准入。方案集中说明 Stramash、Popcorn、Barrelfish、Helios 与 UNIFICO 的借鉴边界；
+UNIFICO 用于编译布局参考。该方案尚未实现，既有 Linux/Windows 证据不外推为融合或 ARM SMP 能力。
 
 ## crate 与资产归属
 

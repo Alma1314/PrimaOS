@@ -100,17 +100,31 @@
     },
     {
       "path": "docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md",
-      "lifecycle": "historical",
-      "updated": "2026-10-24",
-      "reason": "外部候选提案，BLK-003 尚未裁决；保留设计输入，不视为已废弃或已接受。",
-      "replacements": []
+      "lifecycle": "removed",
+      "updated": "2026-11-27",
+      "reason": "外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。",
+      "replacements": [
+        "docs/superpowers/reports/2026-11-27-proposal-cleanup.md",
+        "docs/superpowers/specs/2026-10-26-stage5-release-decisions.md",
+        "docs/superpowers/specs/2026-10-25-stage5-profile-v2.md"
+      ],
+      "id": "docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md",
+      "revision": "1c283ec1707637190368eff20dba4702ed247d60",
+      "sha256": "aba5b8aa97c88cbe1a2b7a587b4da146e9f40fb9dc383b92889d7b18d8000b21"
     },
     {
       "path": "docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md",
-      "lifecycle": "historical",
-      "updated": "2026-10-24",
-      "reason": "外部候选的风险审查，仍被白皮书和阶段跟踪引用；保留候选范围。",
-      "replacements": []
+      "lifecycle": "removed",
+      "updated": "2026-11-27",
+      "reason": "外部 RuxOS 候选不再承担当前设计；SPEC-152 与正式 profile/裁决承接有界范围，未采纳 ABI/性能/排期和走查风险在清理报告保留，原文可按 Git/哈希恢复。",
+      "replacements": [
+        "docs/superpowers/reports/2026-11-27-proposal-cleanup.md",
+        "docs/superpowers/specs/2026-10-26-stage5-release-decisions.md",
+        "docs/superpowers/specs/2026-10-25-stage5-profile-v2.md"
+      ],
+      "id": "docs/superpowers/specs/2026-10-11-baselib-stack-walkthrough.md",
+      "revision": "1c283ec1707637190368eff20dba4702ed247d60",
+      "sha256": "761a2808292449ae24021f105482384eb3575eb77ee8fe0bc17e23f45729de76"
     },
     {
       "path": "docs/superpowers/compat/compat-state.md",
@@ -559,6 +573,17 @@
       "updated": "2026-11-25",
       "reason": "阶段5 已落地设计记录；实现与 QEMU 证据见对应报告，保留设计边界与决策。",
       "replacements": []
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-29-stage6-m1-delivery-design.md",
+      "lifecycle": "historical",
+      "updated": "2026-11-27",
+      "reason": "Gate 初期设计仍承载机制裁决与复审/失败输入；实现已由协议及阶段 6 统一验收承接，不再作为当前未实现提案。",
+      "replacements": [
+        "docs/superpowers/specs/2026-10-29-stage6-m1-protocol.md",
+        "docs/superpowers/reports/2026-11-02-stage6-process-and-differential.md",
+        "docs/superpowers/reports/2026-11-27-proposal-cleanup.md"
+      ]
     }
   ]
 }

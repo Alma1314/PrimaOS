@@ -4,7 +4,7 @@ kind: reference
 authority: architecture-contract
 status: maintained
 lifecycle: current
-updated: 2026-10-31
+updated: 2026-11-27
 ---
 
 # Prima OS：架构与研究白皮书
@@ -279,7 +279,7 @@ Capability 是内核分配、用户态不可伪造的 token。它至少关联：
 
 第一版不提供派生树的选择性撤销。丢弃父 Capability 不撤销已经派生的子项；销毁目标对象会使所有相关 token 失去授权能力。
 
-> **实现注记（2026-08）：撤销域定义与现状。**
+> **探索撤销注记（2026-08 来源；2026-11-27 澄清授权失效与容器回收）。**
 >
 > 第一版不提供派生树的选择性撤销。当前探索阶段的真实内核已在 Bootstrap 状态中以细化形式先行落地选择性撤销——`revoke_capability` 将撤销传播到完整派生子树，不引入对 POSIR 可见的一等新原语，因此不构成 H1/H3 反例。它超前于本小节与 §8 的"第一版只支持 drop 与对象销毁"范围声明，故此处给出该撤销操作的撤销域定义（与 [COSIR 原语规范](COSIR%20%E5%8E%9F%E8%AF%AD%E8%A7%84%E8%8C%83.md) §4.7 相对应），并如实标注当前实现边界。
 >
@@ -289,9 +289,9 @@ Capability 是内核分配、用户态不可伪造的 token。它至少关联：
 > 2. **派生树一致性**：撤销沿派生方向单调传播——父失效则所有直接/间接子项一并失效；子项失效不影响其父。权限单调性（子 ⊆ 父）保证撤销任何根即可原子地收回其下全部授权，无需逐个子项处理。
 > 3. **与 `cap_drop` 正交**：`cap_drop` 只删除持有者手中的单个位置记录，不传播、不清除派生关系；`revoke` 是幂等、含目标的激进收回，两者语义互不替代。`revoke` 不隐含于 `cap_drop`（遵循 §4.7 的约束）。
 > 4. **token 中间态**：一个成功的 `revoke` 视为单一原子操作——要么根的整个派生子树全部失效并有完整审计记录，要么（审计容量不足等）全部保持原状，不存在"部分子树已撤销、部分仍活动"的可观察中间态。
-> 5. **在途消息与命名空间位置**：撤销域仅覆盖由调用者直接持有的 Capability 及其派生后代。已移入消息（`InMessage`）、命名空间绑定（`InNamespace`）或跨节点在途（`InTransit`）的 Capability **不属于**当前撤销域——它们的收回依赖目标对象销毁或各自的消费路径，留待后续阶段定义。
+> 5. **授权失效与容器回收分开**：`HeldBy(holder)` 是根的调用守卫，不把后代的当前容器当作继续授权的豁免。最小参考模型使完整子树失效，删除子树内 `HeldBy` 位置，但保留 `InMessage`/`InNamespace` 位置与其容器供后续消费/清理；保留位置不表示 token 仍可授权。这里“不收回容器”不再表述为“不失效该后代”。`InTransit` 在 POSIR v1 不可达，跨节点失效、fencing 和回收仍无契约，不从本地子树失效推出。
 >
-> **当前实现边界：** 宿主 `revoke_capability` 已实现子树传播、审计容量预演与原子提交（SPEC-022/023）；但仅接受 `HeldBy(holder)` 位置的根 Capability（其他位置返回 `HolderMismatch`），派生树失效范围与"在途消息/命名空间不纳入撤销域"是更简单的固定容量表近似，未覆盖并发的撤销/移动竞争与跨节点（`InTransit`）撤销传播。真实并发语义仍待规范后续阶段明确定义。
+> **当前实现偏差：** SPEC-022/023 的 HeldBy 场景证据保留；它不覆盖容器组合。`Formal.Revoke` 保留容器位置，而 `kernel::BootstrapState::revoke_capability` 通过 `retire_capability` 删除后代位置/活动记录并释放槽位，容器可能仍引用旧句柄；普通 Namespace 子能力的后续 `ns_unbind` 存在先删条目再失败的静态路径。此差异登记为 `ISSUE-REVOKE-CONTAINER-001`，尚未修复/重跑，不得称现有内核与该参考模型等价。已有 Gate 终结的特定容器例外不自动覆盖普通子树撤销。详见[修订与复核报告](docs/superpowers/reports/2026-11-27-architecture-isa-re-review.md)。本注记不新增公开 `cap_revoke`，7-D 的完整撤销仍需独立契约和证据。
 
 ### 6.3 显式授权通道
 
@@ -402,7 +402,10 @@ LibOS 应拆成可独立测试的职责：
 
 每项 API 都要记录：支持、部分支持、不支持、语义差异和测试证据。不得只以“能够编译”作为兼容完成标准。
 
-本阶段已有一份**候选的逐项规格**：《基础库栈（基座库）技术规格书 v1.1》（`docs/superpowers/specs/2026-10-11-baselib-stack-spec-v1.1.md`，含走查/扫雷记录 `2026-10-11-baselib-stack-walkthrough.md`）。**它是外部候选提案，不是已评审的权威约束**；其假设的内核侧前置 ABI 承诺与号段命名均未裁决（见跟踪文档 BLK-003），分解细节与风险见本文 §15 阶段 5。
+阶段 5 的具体范围以[冻结 profile v2](docs/superpowers/specs/2026-10-25-stage5-profile-v2.md)
+和[SPEC-152](docs/superpowers/reports/2026-10-27-stage5-exit-signoff.md)为准。旧外部 RuxOS
+基座库候选（DOC-002）已退役；其未采纳 ABI/性能/排期与审查风险见
+[清理及恢复记录](docs/superpowers/reports/2026-11-27-proposal-cleanup.md)，不再作为当前分解入口。
 
 ### 8.3 阶段三：选定 Linux x86_64 静态 ELF
 
@@ -865,7 +868,7 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 交付：
 
 - 冻结的 POSIX profile；
-- libc 适配（候选分解见下）；
+- libc 适配（具体范围见冻结 profile 与出口裁决）；
 - 文件描述符、路径、线程和基础网络子集；
 - 与 Linux 的差分测试矩阵。
 
@@ -875,7 +878,11 @@ POSIX 与 Linux profile 使用同一测试在参考 Linux 和 Prima LibOS 上运
 - 明确列出 partial / unsupported；
 - 选定开源程序可重新编译并通过功能测试。
 
-**候选分解（《基础库栈技术规格书 v1.1》，提案，需评审）**：三层为共享 crate 集合（`abi` + IDL 生成器、`ipc`、`libsys-rs`）、自家 libc（musl 五个边界替换点 + crt/`__libc_start_main` + `ld.so` + `fd↔capability` + 线程/TLS）、Rust `core`/`std` 移植；P0 另含信号 ABI、`fork`/`execve`/`wait4`、tty/console 通路，以及 persona 字段、符号版本脚本、`compat-state.md`、符号↔syscall 追溯表、`NT_RUXOS_ABI` 版本握手等“第一天即存在”的预留位。**上游前置**：该分解假设内核提供一批本阶段尚不存在的 ABI 语义（直接 IPC 快路径、futex/wait_multi、基础信号、`fork`/`execve`、tty 通路、匿名页池与 `mmap` flag、W^X 强制），属阶段 4/5 的内核侧承诺，须先经评审并解除跟踪文档阻塞项（BLK-003）后方可开发；其自带出口判据（如“公开符号 100% 有符号↔syscall 追溯行与 `compat-state.md` 说明”）以提案口径登记，**不并入本阶段退出条件**。另注：该规格把 `ld.so` 最小动态链接列为 P0（随本阶段交付），而本文档把“动态链接”列为阶段 7 候选，阶段归属须一并裁决。
+具体工作边界由[阶段 5 出口裁决](docs/superpowers/specs/2026-10-26-stage5-release-decisions.md)
+及 SPEC-152 的有界签署承接：静态链接、逐项 partial profile、Prima 原生 ABI 与用户态
+POSIX 适配、限定 Rust 范围；动态链接归阶段 7 的 7-E。旧 DOC-002 的原号段、内核 persona/
+ELF note、250 ns 目标和自带出口不作为本阶段义务，退役依据与原文恢复见
+[清理报告](docs/superpowers/reports/2026-11-27-proposal-cleanup.md)。
 
 ### 阶段 6 — Linux x86_64 静态 ELF
 
@@ -1048,6 +1055,9 @@ SMP 上多个 CPU 核共享同一个 KernelState。POSIR 的单核假设（W9：
 
 以下内容同样是待验证的映射假设：分布式场景可让每个物理节点运行独立的 HexArc 内核实例并拥有本地 `KernelState`，节点通过 Node 对象和跨节点扩展的 `send` 通信。其超时、失败恢复和 Capability 转移的 observable semantics 尚未冻结，也尚无 `COMPAT-TEST`。
 
+本节适用于融合域之外的独立节点；融合内核方案见 §18.5。
+一个融合域共同细化单一逻辑节点，不把跨 ISA CPU 间操作自动解释为跨 Node 传输。
+
 **节点连接模型：**
 
 - **Node 是一等对象**，类似 Task 但代表一个远程内核实例
@@ -1076,6 +1086,32 @@ Prima 的分布式模型明确拒绝"全局统一的 KernelState"——不寻求
 | 分布式文件读取 | `read(node3:fd, buf, n)` | 本地文件服务 Capability 委托到远程节点 + 跨节点共享 Segment |
 
 表中的分解只是候选组合，不构成 H1 的经验支撑。只有先冻结每个场景的 observable semantics，再形成覆盖成功、失败、并发与恢复行为的 `COMPAT-TEST`，且测试未暴露新的独立语义维度后，相关结果才可作为 H1 的有限支持；反例则要求修订映射或 H1。
+
+### 18.5 异构 ISA 融合内核
+
+同一融合域中的 x86_64 与 AArch64 执行体按 ISA 构建，共享通用对象、Capability/CDT/
+位置、资源身份与审计权威状态；架构页表、trap/IRQ、内核栈和执行上下文保留本地实现，
+共同细化一个逻辑 POSIR 状态。共享状态按对象/所有者分区，保持唯一 Authority 和帧归属。
+
+统一发布镜像包含各 ISA 的原生载荷与启动入口：纯 x86 或纯 ARM 只启用相应执行体，
+混合平台经能力核验和唯一初始化/加入协议组建融合域。单 ISA 是同一架构的一种运行配置，
+不要求指令翻译；应用仍需匹配 ISA 的代码。统一镜像不承诺任意硬件或自动跨 ISA 迁移。
+
+封装内目标以 FCSA 系统组织、CHI C2C 一致性事务、UCIe 传输和先进封装为硬件基础，
+实际采用的拓扑、原子/内存顺序、通知、时间与故障阻断须形成平台 profile 并验证。
+标准兼容性不替代 x86/ARM 端点与桥接器的互操作证据；CXL 与仿真平台按相同准入条件审查。
+
+[融合内核方案](docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md)
+定义镜像部署、通用机制/ISA/平台分层、共享 ABI、一次引导与加入、跨 ISA 同步、调度唤醒、
+映射失效/回收和验收义务。Stramash 是共享机制主要参考，Barrelfish/Helios 分别参考本地
+职责与服务放置；各项目取舍与复现限制集中记在方案中，不另建并行当前方案。
+成员内核共同受信，成员故障首版使整个融合域 fail-stop；用户态故障继续由权限与会话
+边界处理。域外独立 Node 保留 §18.3 的分布式边界。
+
+OS personality 与原样二进制的 native/DBT 兼容层保持用户态职责；UNIFICO 用于参考
+可重编译组件的统一 ABI/布局，首版系统组件固定部署。该方案是尚未实现的工作设计，
+共享布局与联合细化须另行验证；需要新抽象语义时按 §14 记录 H1 反例。阶段 7 的
+AArch64 单核范围、必交付项及已签署退出条件保持原有边界。
 
 ## 19. 非目标
 

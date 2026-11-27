@@ -9,6 +9,10 @@ updated: 2026-11-27
 
 # Specs 索引
 
+2026-11-27：[失效候选提案清理](../reports/2026-11-27-proposal-cleanup.md)；旧 DOC-002 RuxOS 基座库规格及走查已退役，原路径/身份/版本/哈希由生命周期台账保留；当前依据改查阶段 5 正式裁决与 profile，融合内核等当前工作设计保留。
+
+2026-11-27：[异构 ISA 融合内核方案](2026-11-24-heterogeneous-isa-hybrid-execution-design.md)；定义统一镜像三种配置、通用机制/ISA/平台分层、FCSA/CHI C2C/UCIe/封装准入及共享对象、同步、调度与回收；项目对照集中说明借鉴边界。按共享基座→对象融合→执行融合→集成验收实施；工作设计，尚无融合运行/证明证据。
+
 2026-11-27：[Windows阻断处置](2026-11-27-windows-blocker-decisions.md)；M0保持开放并设M4硬门（参考Windows仍为外部依赖），D3b采用内核GS/`swapgs`分期并与P5解耦，D4共享root v1契约冻结；实现与参考差分未做。
 
 2026-11-27：[S7-B.1 SMP状态所有权与按CPU分区设计](2026-11-27-stage7-smp-state-partition.md)；工作设计（未冻结），只覆盖D15的分类、分期与锁顺序，未启动AP、未声称SMP。
@@ -19,8 +23,6 @@ updated: 2026-11-27
 
 2026-11-17：LibOS数据通路契约新增P2b-0线协议、op矩阵、错误映射与fixture冻结文本；
 P2b-1 已完成 Store 批量执行与 host 编解码测试，QEMU 证据待 P2b-5。
-
-2026-11-24：[异构 ISA 混合执行设计](2026-11-24-heterogeneous-isa-hybrid-execution-design.md)：系统层双构建 + 每节点部署、不活迁移（作者已确认）；应用层 native + DBT 混合域仍为提案。不改变阶段状态或退出勾选。
 
 2026-11-26：[WIN-M0 有界基线](2026-11-26-windows-m0-baseline.md)：作者要求推进 Windows LibOS 后，只冻结 M1 的 PE32+/宿主/ABI 输入；参考 Windows、SDK、程序白名单与 WIN-D1–D7 仍待定，不构成 M0 通过。
 
@@ -105,7 +107,7 @@ IPC测量后继：[I1授权IPC用户往返](2026-11-07-stage7-ipc-benchmark.md)�
 
 2026-10-28 裁决：[阶段 6–7 前置裁决（D11–D16）](2026-10-28-stage6-7-release-decisions.md)——白名单冻结、`AT_RANDOM` 兼容字段、多 LibOS 升 7-A 并先做探索原型、SMP 前状态分区、阶段 7 拆九条子轨。裁决不启动阶段 6，也不签署任何阶段。
 
-2026-10-29 阶段 6 启动后的第一份机制设计：[S6-M1 同步 syscall 门控递送](2026-10-29-stage6-m1-delivery-design.md)——能力化的同步请求/答复、一次性答复、内核代理复制、无 Linux 语义。**提案，未冻结、未实现、未分配 syscall 号**。
+2026-10-29 阶段 6 启动后的第一份机制设计：[S6-M1 同步 syscall 门控递送](2026-10-29-stage6-m1-delivery-design.md)——能力化同步请求/答复、一次性答复、内核代理复制与零 Linux 语义的历史提案输入；当前实现与退出查阶段跟踪及统一验收，不把当时“未实现/候选号段”视为当前状态。
 
 同日六项机制裁决：[S6-M1 递送机制 D17–D22](2026-10-29-stage6-m1-mechanism-decisions.md)——追加号段 73–78、答复只写 `rax`、内核代理复制、`fork`/`exec` 留 S6-M4、模型采 `BlockedWait`+请求对象、队列满时阻塞。**仍不勾选 S6-D2**。 后继[六项决定复审](../reports/2026-10-29-stage6-m1-decision-review.md)保留路线，要求修订 R1–R6；提案未冻结，不能据原裁决推断有界等待或已可接线。
 
@@ -130,8 +132,6 @@ IPC测量后继：[I1授权IPC用户往返](2026-11-07-stage7-ipc-benchmark.md)�
 | 2026-10-20 | [2026-10-20-stage5-user-vfs-design.md](2026-10-20-stage5-user-vfs-design.md) | 阶段 5 / M8：用户态 VFS/rootfs、通用 fd 与多级路径（设计） |
 | 2026-10-20 | [2026-10-20-stage5-profile-v1.md](2026-10-20-stage5-profile-v1.md) | 阶段 5 POSIX profile v1（delta，提案） |
 | 2026-10-18 | [2026-10-18-stage5-profile-v0.md](2026-10-18-stage5-profile-v0.md) | 阶段 5 POSIX profile v0（冻结） |
-| 2026-10-11 | [2026-10-11-baselib-stack-walkthrough.md](2026-10-11-baselib-stack-walkthrough.md) | RuxOS 基础库栈 — 走查与扫雷审查记录 |
-| 2026-10-11 | [2026-10-11-baselib-stack-spec-v1.1.md](2026-10-11-baselib-stack-spec-v1.1.md) | RuxOS 基础库栈（基座库）技术规格书 v1.1 |
 
 ## 阶段 4
 
@@ -217,7 +217,7 @@ IPC测量后继：[I1授权IPC用户往返](2026-11-07-stage7-ipc-benchmark.md)�
 
 | 日期 | 文档 | 标题 |
 |---|---|---|
-| 2026-11-24 | [2026-11-24-heterogeneous-isa-hybrid-execution-design.md](2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | 异构 ISA 混合执行：系统层双构建与应用层用户态兼容层（提案） |
+| 2026-11-27 | [2026-11-24-heterogeneous-isa-hybrid-execution-design.md](2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | PrimaOS 异构 ISA 融合内核方案（工作设计） |
 | 2026-10-15 | [2026-10-15-exokernel-alignment-design.md](2026-10-15-exokernel-alignment-design.md) | Exokernel 对齐：规划与实现逻辑优化设计（提案） |
 | 2026-10-14 | [2026-10-14-dual-personality-holder-model-design.md](2026-10-14-dual-personality-holder-model-design.md) | 双人格 Holder 模型设计草案：AddressSpace / CapTable / ShareGroup / Thread |
 
