@@ -372,7 +372,7 @@
 | [musl 静态移植：调用边界、fd 控制与可重放构建](../superpowers/specs/2026-10-24-musl-port-boundary-design.md) | current | `docs/superpowers/specs/2026-10-24-musl-port-boundary-design.md` |
 | [原生运行时与服务：握手和分片事务边界](../superpowers/specs/2026-10-24-native-runtime-service-design.md) | current | `docs/superpowers/specs/2026-10-24-native-runtime-service-design.md` |
 
-## specification（110）
+## specification（111）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -486,6 +486,7 @@
 | [异构 ISA 混合执行设计：系统层双构建与应用层用户态兼容层](../superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md) | current | `docs/superpowers/specs/2026-11-24-heterogeneous-isa-hybrid-execution-design.md` |
 | [WIN-M0 有界基线：PE64 宿主模型与未决冻结门](../superpowers/specs/2026-11-26-windows-m0-baseline.md) | current | `docs/superpowers/specs/2026-11-26-windows-m0-baseline.md` |
 | [阶段 7 S7-B.1：SMP 状态所有权与按 CPU 分区设计](../superpowers/specs/2026-11-27-stage7-smp-state-partition.md) | current | `docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md` |
+| [Windows 计划审计阻断处置：M0 通道、D3b 用户 GS、D4 共享 root](../superpowers/specs/2026-11-27-windows-blocker-decisions.md) | current | `docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md` |
 
 ## template（4）
 

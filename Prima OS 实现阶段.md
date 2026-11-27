@@ -476,7 +476,9 @@ SDK、程序白名单与 WIN-D1–D7 仍未冻结；ring3 仅以专用 feature �
 `winpe-stub.dll` 导出与三 DLL 转发），整映像 R+X，无按节权限/TEB/PEB/TLS/API-set 清单/
 `DllMain`/堆/错误/参考差分；完整 M0、M2 与 M3 均未通过。2026-11-27
 [计划审计](docs/superpowers/reports/2026-11-27-windows-plan-audit.md)列出 3 项阻断与若干
-修订建议，里程碑表未改写。
+修订建议；[阻断处置](docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md)
+已冻结 M0 前原型通道与 M4 硬门、D3b 内核 GS/`swapgs` 分期与 D4 共享 root v1 契约。
+M0 参考 Windows、程序闭包与逐 API 行仍为外部依赖；GS、D4 与 M4+ 均未实现。
 
 文档维护记录：[2026-10-24 生命周期治理与清理](docs/superpowers/reports/2026-10-24-documentation-lifecycle-report.md)仅更新文档与检索工具，不新增 OS 运行证据，不改变上述阶段状态、勾选、profile 或阻塞结论。
 

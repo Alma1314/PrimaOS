@@ -10,8 +10,10 @@ updated: 2026-11-27
 # Windows LibOS 计划书：PE64 控制台与服务兼容路径
 
 > 2026-11-27 审计：[Windows LibOS 计划审计](../reports/2026-11-27-windows-plan-audit.md)
-> 记录 3 项阻断（M0 参考未冻结、WIN-D3 用户 GS 与 SMP/内核上下文耦合、D4 共享 root/
-> 多线程）与 6 项重大建议；本文里程碑表保持原样，修订待作者决定。
+> 记录 3 项阻断与 6 项重大建议；阻断处置见
+> [M0 通道、D3b 用户 GS、D4 共享 root 决定](../specs/2026-11-27-windows-blocker-decisions.md)：
+> M0 保持开放并设 M4 硬门；GS 采用内核 `swapgs` 分期、与 P5 解耦；D4 v1 契约冻结。
+> 其余重大建议未改写，待作者决定。
 >
 > 2026-11-27 后继：WIN-M3 部分交付——多模块按名/按序号/转发导入解析、TEB/PEB 冻结
 > 子集与静态 TLS 模板（宿主模型）、三 DLL + 转发器的 ring3 原型（见
@@ -220,10 +222,10 @@ SEH 执行。[Microsoft x64 exception handling](https://learn.microsoft.com/en-u
 |---|---|---|---|
 | WIN-M0 范围与基线 | 本计划评审 | 固定 Windows 参考 build/架构、SDK/工具链、程序/CRT/DLL 闭包、API 行和来源；审计当前 holder 模型 | 每项 API 有文档、期望、限制及参考用例；缺参考 Windows 时差分保持未完成，不用 Wine 代签 |
 | WIN-M1 PE/ABI 模型 | M0 | 拟建用户态兼容组件中的 PE 纯解析、映射计划和 Win64 ABI 小探针；先 host 测试 | 坏 PE、RVA 溢出、重定位/导入/TLS 负例；四寄存器及栈参数、shadow space、非易失与浮点状态对拍 |
-| WIN-M2 受保护启动原型 | M1、通用加载/内存支持 | 用户态装载器和最小 DLL，经 `prima-runtime` 使用现有映射/Task 机制；必要中立扩展先评审 | ring3 原样 PE64 调用替代导出、输出并退出；另一域继续运行；发布失败无残留可执行映射 |
-| WIN-M3 DLL/运行时基础 | M2、参数复制与用户 GS 设计 | 拟建兼容 DLL/语义服务：加载、API-set、TEB/PEB、TLS、堆、错误、命令行与环境 | 双 DLL、静态/动态 TLS、回调顺序、动态查找及卸载负例；返回值与线程错误不串扰 |
-| WIN-M4 文件与句柄 | M3、授权服务协议 | 兼容层访问通用 VFS/控制台；实现域内句柄表和文件共享策略 | 两打开共享/冲突、重复/关闭/继承、删除与重命名、UTF-16 路径、越权和部分 I/O；对端文件内容核对 |
-| WIN-M5 进程/线程 | M3、holder 复核、共享 root 的受控传输与复制 | 复用 `bootstrap`/调度的 Process/Task 能力；新增通用 GS 上下文按需放 `prima-ostd` | 同进程句柄/TLS/地址空间共享与隔离、子进程继承、退出/终止、等待/退出码；多线程陷入无错绑 |
+| WIN-M2 受保护启动原型 | M1、通用加载/内存支持 | 用户态装载器和最小 DLL，经 `prima-runtime` 使用现有映射/Task 机制；必要中立扩展先评审 | ring3 原样 PE64 调用替代导出、输出并退出；父任务继续运行（双域并存另验）；发布失败无残留可执行映射 |
+| WIN-M3 DLL/运行时基础 | M2、参数复制与用户 GS 设计（GS-1…GS-4） | 拟建兼容 DLL/语义服务：加载、API-set、TEB/PEB、TLS、堆、错误、命令行与环境 | 双 DLL、静态/动态 TLS、回调顺序、动态查找及卸载负例；返回值与线程错误不串扰。运行期 TEB/TLS 以 [D3b 分期](../specs/2026-11-27-windows-blocker-decisions.md) GS-1…GS-4 为前置 |
+| WIN-M4 文件与句柄 | **M0 签署**、M3、授权服务协议 | 兼容层访问通用 VFS/控制台；实现域内句柄表和文件共享策略 | M0 参考与逐 API 行冻结前禁止启动；两打开共享/冲突、重复/关闭/继承、删除与重命名、UTF-16 路径、越权和部分 I/O；对端文件内容核对 |
+| WIN-M5 进程/线程 | M3、holder 复核、D4 v1 契约冻结、共享 root 的受控传输与复制 | 复用 `bootstrap`/调度的 Process/Task 能力；新增通用 GS 上下文按需放 `prima-ostd` | 同进程句柄/TLS/地址空间共享与隔离、子进程继承、退出/终止、等待/退出码；多线程陷入无错绑。D4 未决项冻结前不启动 |
 | WIN-M6 同步/APC | M5、通用等待/上下文协议 | 域内同步协调及回调分派，host 状态机与调度交错测试 | auto/manual event、semaphore、递归/abandoned mutex、WaitAny/All、超时与 APC 竞争；无部分消费、无丢唤醒 |
 | WIN-M7 SEH | M3/M5、异常上下文评审 | 用户态展开器和异常分派，复用经验证的通用异常递送/恢复 | 软件异常与访问故障的处理、继续/展开/终止；非易失状态、栈界、坏展开表及嵌套负例 |
 | WIN-M8 控制台服务闭环 | M4–M7 的所需 API | 最小服务控制适配，接入 `prima-user` 现有服务管理职责 | 同一 PE 服务在 Windows 与 Prima 完成注册/启动/状态/停止及文件作业；控制拒绝与崩溃清理可审计 |
@@ -287,10 +289,10 @@ Capability 和版本协议访问；Windows 访问权不能扩大底层 Authority
 
 | 冻结门 | 待决定内容 |
 |---|---|
-| WIN-D1 版本/profile | Windows 参考 build、编译器/CRT、DLL/API-set、应用/服务白名单及每行语义 |
+| WIN-D1 版本/profile | Windows 参考 build、编译器/CRT、DLL/API-set 映射表、应用/服务白名单及每行语义；M0 签署是 M4 的硬门 |
 | WIN-D2 复用 | 自有薄层与选定 Wine 代码的边界、工具链、来源与接口；不默认移植整套 Wine |
-| WIN-D3 装载/GS | 停车与发布、映射权限、PE 初始化、用户 GS 与内核/per-CPU 上下文的安全分离 |
-| WIN-D4 共享与复制 | 共享 root 下 Gate 绑定、对象代次、双端权限、并发参数快照、取消/销毁和失败原子性 |
+| WIN-D3 装载/GS | 停车与发布（D3a，原型已有）、映射权限（D3c）、PE 初始化；用户 GS（D3b）采用内核 `swapgs` 分期，见[阻断处置](../specs/2026-11-27-windows-blocker-decisions.md) |
+| WIN-D4 共享与复制 | v1 契约已冻结：Process/Thread 模型、Gate 绑定、参数快照、等待/APC、取消/销毁；未决项在 M5 前冻结，见[阻断处置](../specs/2026-11-27-windows-blocker-decisions.md) |
 | WIN-D5 同步/异常 | WaitAll/abandonment/APC/SEH 状态机、上下文与展开格式、对应证明和反例 |
 | WIN-D6 文件/服务 | 路径/共享/删除/锁语义、最小 SCM、错误映射、未知标志及能力授权 |
 | WIN-D7 硬化/签署 | 资源预算、撤销/恢复协议、性能门槛、形式化映照、阶段归属与独立退出签署 |

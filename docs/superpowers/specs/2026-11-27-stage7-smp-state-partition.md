@@ -110,7 +110,7 @@ CPU 本地状态都进这一入口，不再回到全局静态。
 | # | 问题 | 推荐 | 代价/说明 |
 |---|---|---|---|
 | 1 | AP 启动失败策略：确定性失败 vs 退化单核 | 验收环境确定性失败（panic），不静默降级 | 需在 G2 平台配置冻结时确认 |
-| 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 与 WIN-D3 用户 GS 冲突，需合并评审 | WIN-D3 未决，不提前引入 swapgs |
+| 2 | 内核热路径 CPU 索引缓存：CPUID vs GS | 先 CPUID（冷路径）跑通；GS/`swapgs` 方向已由 [Windows 阻断处置](2026-11-27-windows-blocker-decisions.md)选择内核 GS，但 GS-1…GS-3 未实现前 P5 不依赖它 | P5-3 不等待 GS；GS-3 后才评估热路径迁移 |
 | 3 | xAPIC vs x2APIC | 先 xAPIC（QEMU `qemu64` 默认）；x2APIC 记录但不作为验收前提 | 需 CPUID 探测 |
 | 4 | 任务迁移策略 | 允许迁移，但一个任务任一时刻只在一个 CPU 运行；迁移经 CR3 写刷新 TLB | 迁移不引入 PCID |
 | 5 | 跨 CPU 审计顺序 | 保留全局序号，允许并发 append 时按获取顺序线性化 | 需明确“顺序”是锁顺序还是提交顺序 |

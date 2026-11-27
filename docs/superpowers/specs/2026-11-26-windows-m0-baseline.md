@@ -17,6 +17,10 @@ updated: 2026-11-26
 WIN-D 门保持为未决。**这不是 WIN-M0 的通过或签署**：参考 Windows build、SDK/工具链、
 程序白名单与逐 API 期望尚未固定，M0 的退出条件仍全部未满足。
 
+2026-11-27 阻断处置：M0 保持开放并设 M4 硬门，M0 签署前只允许原型通道；D3b 用户 GS
+与 D4 共享 root 的裁决见
+[阻断处置规格](2026-11-27-windows-blocker-decisions.md)。本文不因此改变退出条件。
+
 本文不改变[阶段跟踪](../../../Prima%20OS%20实现阶段.md)的阶段状态或勾选，不把 Windows
 LibOS 变成阶段 7 必交付 personality，也不替换 Linux + Prima 原生/POSIX 组合。
 
@@ -50,7 +54,7 @@ thunk 名称、重定位块与 TLS 回调数组的越界分别报告，不静默
 |---|---|---|
 | WIN-D1 版本/profile | **未决**：参考 Windows build、MSVC/CRT 版本、API-set 与程序白名单未固定 | 固定可复现参考镜像、SDK、编译器与首批导入闭包 |
 | WIN-D2 复用 | **未决**：本切片只用自有薄层 | 决定是否评估选定 Wine 组件及其来源/工具链 |
-| WIN-D3 装载/GS | **未决** | 停车/发布、映射权限、PEB/TEB 与用户 GS 安全设计 |
+| WIN-D3 装载/GS | **未决**；D3b 用户 GS 方向已裁决、实现未做 | 停车/发布、映射权限、PEB/TEB 与用户 GS 安全设计；见[阻断处置](2026-11-27-windows-blocker-decisions.md) |
 | WIN-D4 共享与复制 | **未决** | 共享 root 的 Gate 绑定、参数快照与失败原子性 |
 | WIN-D5 同步/异常 | **未决** | WaitAll、APC、SEH 状态机与证明范围 |
 | WIN-D6 文件/服务 | **未决** | 路径、共享、删除、锁与最小 SCM 语义 |

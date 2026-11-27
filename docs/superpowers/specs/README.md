@@ -9,6 +9,8 @@ updated: 2026-11-27
 
 # Specs 索引
 
+2026-11-27：[Windows阻断处置](2026-11-27-windows-blocker-decisions.md)；M0保持开放并设M4硬门（参考Windows仍为外部依赖），D3b采用内核GS/`swapgs`分期并与P5解耦，D4共享root v1契约冻结；实现与参考差分未做。
+
 2026-11-27：[S7-B.1 SMP状态所有权与按CPU分区设计](2026-11-27-stage7-smp-state-partition.md)；工作设计（未冻结），只覆盖D15的分类、分期与锁顺序，未启动AP、未声称SMP。
 
 2026-11-10：[LibOS数据通路工作契约](2026-11-10-libos-data-path.md)；完整范围按依赖分片，未完成项和验证边界见正文。

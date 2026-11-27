@@ -156,7 +156,8 @@
       "docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md",
       "docs/superpowers/reports/2026-11-27-p5-0-state-partition.md",
       "docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md",
-      "docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md"
+      "docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md",
+      "docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md"
     ],
     "code": [
       "kernel/src/main.rs",
@@ -891,7 +892,8 @@
       "docs/superpowers/reports/2026-11-26-windows-m2-ring3.md",
       "docs/superpowers/reports/2026-11-27-windows-m2-real-dll.md",
       "docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md",
-      "docs/superpowers/reports/2026-11-27-windows-plan-audit.md"
+      "docs/superpowers/reports/2026-11-27-windows-plan-audit.md",
+      "docs/superpowers/specs/2026-11-27-windows-blocker-decisions.md"
     ],
     "code": [
       "libos/linux/Cargo.toml",
