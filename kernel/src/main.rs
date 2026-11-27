@@ -132,6 +132,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // B4: 装载 IDT，触发 int3，验证 trap → handler → iretq 闭环。
                                     match kernel::idt::init_idt() {
                                         Ok(()) => {
+                                            // P5-3b-1：先于任何 AP 启动把 syscall/#PF 回调
+                                            // 换成探针版本；镜像在见证后退出，不恢复。
+                                            #[cfg(feature = "entry-percpu-probe")]
+                                            kernel::entry_probe::install_handlers();
                                             // S2-D4：进入 CPL3 前屏蔽 8259 全部中断。上电默认
                                             // IRQ0→vector 8（=#DF 门），用户帧 IF=1 且用户阶段
                                             // 长于 PIT 默认周期时会被当成 #DF 交付并三重故障。
@@ -169,7 +173,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 ) {
                                                     Ok(aps) => {
                                                         protocol::smp_aps(aps, aps + 1);
-                                                        #[cfg(feature = "gs3-probe")]
+                                                        #[cfg(all(
+                                                            feature = "gs3-probe",
+                                                            not(feature = "entry-percpu-probe")
+                                                        ))]
                                                         {
                                                             let witness = kernel::smp::gs_witness(
                                                                 &report, aps,
@@ -193,7 +200,41 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                                 qemu::PANIC
                                                             })
                                                         }
-                                                        #[cfg(not(feature = "gs3-probe"))]
+                                                        #[cfg(feature = "entry-percpu-probe")]
+                                                        {
+                                                            // AP 在各自入口已运行探针；BSP 最后
+                                                            // 补测自身，再汇总全部 CPU 的槽。
+                                                            kernel::entry_probe::run_local(
+                                                                kernel::cpu::local::BSP,
+                                                                boot_info.kernel_stack_bottom,
+                                                                boot_info.kernel_stack_bottom
+                                                                    + boot_info.kernel_stack_len,
+                                                            );
+                                                            let witness =
+                                                                kernel::entry_probe::witness(
+                                                                    aps + 1,
+                                                                );
+                                                            if witness.evidence_ok() {
+                                                                protocol::entry_ready(&witness);
+                                                                protocol::smp_pass();
+                                                            } else {
+                                                                protocol::entry_progress(
+                                                                    &kernel::entry_probe::progress(
+                                                                    ),
+                                                                );
+                                                                protocol::entry_fail("mismatch");
+                                                            }
+                                                            serial::flush();
+                                                            qemu::exit(if witness.evidence_ok() {
+                                                                qemu::SUCCESS
+                                                            } else {
+                                                                qemu::PANIC
+                                                            })
+                                                        }
+                                                        #[cfg(not(any(
+                                                            feature = "gs3-probe",
+                                                            feature = "entry-percpu-probe"
+                                                        )))]
                                                         protocol::smp_pass();
                                                     }
                                                     Err(error) => {

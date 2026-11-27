@@ -5,4 +5,8 @@ edition = "2024"
 publish = false
 license = "MPL-2.0"
 
+[features]
+# P5-3b-1：每 CPU 入口现场（CPL0 探针）。默认不编译进任何镜像。
+entry-percpu-probe = []
+
 [dependencies]

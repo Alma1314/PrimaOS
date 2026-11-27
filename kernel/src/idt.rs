@@ -228,10 +228,22 @@ pub fn init_idt() -> Result<(), ()> {
                 idt.set_handler_addr(0x20 + line, address);
             }
         }
+        // P5-3b-1：探针镜像把 #PF / `int 0x80` 换成每 CPU 现场副本（仅 CPL0）；默认镜像
+        // 保持原全局入口，事件与行为不变。
+        #[cfg(feature = "entry-percpu-probe")]
+        let (fault_entry, syscall_entry) = (
+            prima_ostd::entry::page_fault_entry_percpu_addr(),
+            prima_ostd::entry::syscall_entry_percpu_addr(),
+        );
+        #[cfg(not(feature = "entry-percpu-probe"))]
+        let (fault_entry, syscall_entry) = (
+            prima_ostd::entry::page_fault_entry_addr(),
+            prima_ostd::entry::syscall_entry_addr(),
+        );
         // #PF 用裸入口（自带现场处理与 iretq）。
-        idt.set_handler_addr(14, prima_ostd::entry::page_fault_entry_addr());
+        idt.set_handler_addr(14, fault_entry);
         // syscall 用 DPL3 门 + 裸入口：允许 CPL3 执行 `int 0x80`。
-        idt.set_handler_addr_dpl3(SYSCALL_VECTOR, prima_ostd::entry::syscall_entry_addr());
+        idt.set_handler_addr_dpl3(SYSCALL_VECTOR, syscall_entry);
         // 切片 O：IRQ0（PIT 时钟）用裸入口；中断门 DPL0，IF 由门自动清除。
         idt.set_handler_addr(
             crate::preempt::TIMER_VECTOR,

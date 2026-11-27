@@ -10,6 +10,8 @@ pub mod bootstrap;
 pub mod cap_view;
 pub mod cow;
 pub mod cpu;
+#[cfg(feature = "entry-percpu-probe")]
+pub mod entry_probe;
 pub mod exc;
 #[doc(hidden)]
 pub mod exec;

@@ -70,7 +70,7 @@ pub(crate) fn smp_pass() {
 }
 
 /// GS-3：每 CPU GS 区的 `-smp` 见证（四个计数 + PASS）。
-#[cfg(feature = "gs3-probe")]
+#[cfg(all(feature = "gs3-probe", not(feature = "entry-percpu-probe")))]
 pub(crate) fn gs3_ready(witness: &kernel::smp::GsWitness) {
     serial::write_bytes(b"SMP|gs=cpus=");
     write_u32(witness.cpus);
@@ -94,7 +94,7 @@ pub(crate) fn gs3_fail(reason: &str) {
 }
 
 /// GS-3 诊断行：每 CPU 实际测到的 `(索引, GS 基址, %gs APIC ID, CPUID APIC ID)`。
-#[cfg(feature = "gs3-probe")]
+#[cfg(all(feature = "gs3-probe", not(feature = "entry-percpu-probe")))]
 pub(crate) fn gs3_progress(
     indexes: &[u32; 4],
     bases: &[u64; 4],
@@ -112,6 +112,48 @@ pub(crate) fn gs3_progress(
         write_u32(apics[cpu]);
         serial::write_bytes(b";cpuid=");
         write_u32(cpuids[cpu]);
+        serial::write_bytes(b"\r\n");
+    }
+}
+
+/// P5-3b-1：每 CPU 入口现场探针的 `-smp` 见证（四项计数 + PASS）。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_ready(witness: &kernel::entry_probe::EntryWitness) {
+    serial::write_bytes(b"SMP|entry=cpus=");
+    write_u32(witness.cpus);
+    serial::write_bytes(b";syscall_ok=");
+    write_u32(witness.syscall_ok);
+    serial::write_bytes(b";ctx_ok=");
+    write_u32(witness.ctx_ok);
+    serial::write_bytes(b";fault_ok=");
+    write_u32(witness.fault_ok);
+    serial::write_bytes(b";frame_ok=");
+    write_u32(witness.frame_ok);
+    serial::write_bytes(b";PASS\r\n");
+}
+
+/// P5-3b-1：入口探针失败。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_fail(reason: &str) {
+    serial::write_bytes(b"SMP|stage=entry-fail=");
+    serial::write_bytes(reason.as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
+/// P5-3b-1 诊断行：每 CPU 的 `[syscall, ctx, fault, frame]` 自检标志。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_progress(flags: &[[u32; 4]; 4]) {
+    for (cpu, slots) in flags.iter().enumerate() {
+        serial::write_bytes(b"SMP|stage=entry-cpu=");
+        write_u32(cpu as u32);
+        serial::write_bytes(b";syscall=");
+        write_u32(slots[0]);
+        serial::write_bytes(b";ctx=");
+        write_u32(slots[1]);
+        serial::write_bytes(b";fault=");
+        write_u32(slots[2]);
+        serial::write_bytes(b";frame=");
+        write_u32(slots[3]);
         serial::write_bytes(b"\r\n");
     }
 }

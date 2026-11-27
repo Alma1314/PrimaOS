@@ -73,6 +73,8 @@ const DATA_OFF: usize = 16; // 槽 2: index*8 = 内核 data
 const TSS_OFF: usize = 24; // 槽 3: index*8 = TSS 系统描述符（占 16 字节，覆盖槽 3..4）
 /// TSS 选择子（槽 3，RPL0）；`ltr` 与 `str` 读回值。
 pub const TSS_SELECTOR: u16 = TSS_OFF as u16;
+/// 内核代码段选择子（槽 1，RPL0）；AP 装载本 CPU GDT 后用它重装 CS。
+pub const KERNEL_CODE_SELECTOR: u16 = CODE_OFF as u16;
 /// 用户数据段（槽 5，选择子 0x2b）。
 pub const USER_DATA_OFF: usize = 40;
 /// 用户代码段（槽 6，选择子 0x33）。

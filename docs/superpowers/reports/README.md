@@ -16,6 +16,7 @@ updated: 2026-11-27
 | 日期 | 报告/链入口 |
 |---|---|
 | 2026-11-27 | [文档整理、合并与压缩](2026-11-27-documentation-consolidation.md) |
+| 2026-11-27 | [P5-3b-1 CPL0 每 CPU 入口现场探针](2026-11-27-p5-3b1-entry-percpu.md) |
 | 2026-11-27 | [Lean 审计对象身份修复](2026-11-27-lean-audit-object-identity.md) |
 | 2026-11-27 | [Lean 连续撤销证明补强](2026-11-27-lean-revoke-composition.md) |
 | 2026-11-27 | [失效候选提案清理与 Git 恢复](2026-11-27-proposal-cleanup.md) |

@@ -11,6 +11,8 @@
 //! 仍是 8 字节、仍走 `rdi`，ABI 与原裸指针参数逐字节一致。信任调用方，不宣称 sound。
 
 use core::arch::asm;
+#[cfg(feature = "entry-percpu-probe")]
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::mm;
@@ -249,6 +251,11 @@ impl SaveBlock {
     /// 由裸指针构造。
     pub const fn new(ptr: *const u64) -> Self {
         Self(ptr)
+    }
+
+    /// 保存块基址（只读；供每 CPU 记录与栈范围核对）。
+    pub fn addr(self) -> u64 {
+        self.0 as u64
     }
 
     /// 保存块中的进入 `CS`（槽 16 = 偏移 0x80，硬件帧的第 2 项）。
@@ -1461,6 +1468,330 @@ pub fn trigger_page_fault(addr: u64) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// P5-3b-1：每 CPU 入口现场（CPL0 探针）
+// ---------------------------------------------------------------------------
+//
+// 本片只覆盖 CPL0 来源的 `int 0x80` 与 #PF：`syscall` 快路径、`resume`、CPL3 用户入口
+// 现场仍为全局单槽，且本 feature 不出现在默认镜像或任何用户态镜像。选择方式：入口从
+// 本 CPU GS 区偏移 0 取索引（GS-3 契约），再按固定步长索引本模块的每 CPU 槽；调用方
+// 必须已在每个参与 CPU 上安装 GS 区。
+
+/// 每 CPU 入口现场槽上限；必须与内核 `cpu::local::MAX_CPUS` 一致。
+#[cfg(feature = "entry-percpu-probe")]
+pub const PERCPU_MAX: usize = 4;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_STRIDE: usize = 0x100;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_CTX_OFF: usize = 0x00;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_FAULT_ADDR_OFF: usize = 0x08;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_FAULT_ERROR_OFF: usize = 0x10;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_FRAME_OFF: usize = 0x20;
+
+#[cfg(feature = "entry-percpu-probe")]
+#[repr(C)]
+struct PerCpuEntry {
+    context_base: AtomicU64,
+    fault_addr: AtomicU64,
+    fault_error: AtomicU64,
+    reserved: AtomicU64,
+    fault_frame: UnsafeCell<SretFrame>,
+    pad: [u8; 0x40],
+}
+
+#[cfg(feature = "entry-percpu-probe")]
+impl PerCpuEntry {
+    const fn new() -> Self {
+        Self {
+            context_base: AtomicU64::new(0),
+            fault_addr: AtomicU64::new(0),
+            fault_error: AtomicU64::new(0),
+            reserved: AtomicU64::new(0),
+            fault_frame: UnsafeCell::new(SretFrame::ZERO),
+            pad: [0; 0x40],
+        }
+    }
+}
+
+// 裸入口用 `shl rax, 8` 索引槽；步长必须与结构长度一致。
+#[cfg(feature = "entry-percpu-probe")]
+const _: () = assert!(size_of::<PerCpuEntry>() == PERCPU_STRIDE);
+
+// SAFETY: 每槽只由本 CPU 在 CPL0 入口写入、由同一 CPU（或在其停放后由 BSP）读取；
+// `UnsafeCell` 仅经 `get()` 裸访问，不形成跨 CPU 的 `&mut`。
+#[cfg(feature = "entry-percpu-probe")]
+unsafe impl Sync for PerCpuEntry {}
+
+#[cfg(feature = "entry-percpu-probe")]
+static PERCPU: [PerCpuEntry; PERCPU_MAX] = [const { PerCpuEntry::new() }; PERCPU_MAX];
+
+#[cfg(feature = "entry-percpu-probe")]
+fn percpu(cpu: usize) -> &'static PerCpuEntry {
+    assert!(cpu < PERCPU_MAX, "cpu index out of range");
+    &PERCPU[cpu]
+}
+
+/// 指定 CPU 最近一次 `int 0x80` 保存块基址（未进入过为 `None`）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_context_base(cpu: usize) -> Option<SaveBlock> {
+    let raw = percpu(cpu).context_base.load(Ordering::Relaxed);
+    if raw == 0 {
+        None
+    } else {
+        Some(SaveBlock(raw as *const u64))
+    }
+}
+
+/// 指定 CPU 最近一次 #PF 的 CR2。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_fault_addr(cpu: usize) -> u64 {
+    percpu(cpu).fault_addr.load(Ordering::Relaxed)
+}
+
+/// 指定 CPU 最近一次 #PF 的 error code。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_fault_error(cpu: usize) -> u64 {
+    percpu(cpu).fault_error.load(Ordering::Relaxed)
+}
+
+/// 指定 CPU 最近一次 #PF 捕获的完整现场帧。
+///
+/// 契约：仅在该 CPU 已停放（或本 CPU 自身）时读取；入口写入期间不得并发读取同一槽。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_fault_frame(cpu: usize) -> SretFrame {
+    // SAFETY: 见函数契约——每次按 CPU 访问独立槽，读取 0xA0 字节的 POD 值。
+    unsafe { *percpu(cpu).fault_frame.get() }
+}
+
+/// 从 CPL0 执行一次 `int 0x80`（探针专用；CPL3 来源被每 CPU 入口以 #UD 拒绝）。
+///
+/// 契约：本 CPU 已安装 GS 区，vector 0x80 门指向 [`syscall_entry_percpu_addr`]，且入口
+/// 回调不阻塞、不切换任务。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn int80_probe(number: u64, args: [u64; 6]) -> u64 {
+    let result: u64;
+    // SAFETY: 见函数契约；入口恢复全部 GPR 与 RFLAGS，只有 RAX 作为返回值有意不同。
+    unsafe {
+        asm!(
+            "int 0x80",
+            inlateout("rax") number => result,
+            in("rdi") args[0],
+            in("rsi") args[1],
+            in("rdx") args[2],
+            in("r10") args[3],
+            in("r8") args[4],
+            in("r9") args[5],
+            lateout("rcx") _,
+            lateout("r11") _,
+        );
+    }
+    result
+}
+
+/// 每 CPU `int 0x80` 入口地址（CPL0 探针）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn syscall_entry_percpu_addr() -> u64 {
+    syscall_entry_percpu as *const () as u64
+}
+
+/// 每 CPU #PF 入口地址（CPL0 探针）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn page_fault_entry_percpu_addr() -> u64 {
+    page_fault_entry_percpu as *const () as u64
+}
+
+/// `int 0x80` 的每 CPU 现场副本（仅 CPL0）。
+///
+/// 与 [`syscall_entry`] 的差别只有保存块基址写入的位置：`r12` 从 `%gs:0` 索引本模块的
+/// 每 CPU 槽。CPL3 来源直接 `ud2`，避免把未分区的用户路径伪装成已覆盖。
+#[cfg(feature = "entry-percpu-probe")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn syscall_entry_percpu() -> ! {
+    core::arch::naked_asm!(
+        "test byte ptr [rsp + 8], 3",
+        "jnz 9f",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        "cld",
+        "mov rbp, rsp",
+        // r12 = &PERCPU + (%gs:0) * 0x100。
+        "mov eax, dword ptr gs:[0]",
+        "lea r12, [rip + {percpu}]",
+        "shl rax, 8",
+        "add r12, rax",
+        "mov qword ptr [r12 + {ctx}], rbp",
+        "and rsp, -16",
+        "sub rsp, 64",
+        "mov r10, qword ptr [rbp + 0x00]",
+        "mov qword ptr [rsp + 0x00], r10",
+        "mov r10, qword ptr [rbp + 0x28]",
+        "mov qword ptr [rsp + 0x08], r10",
+        "mov r10, qword ptr [rbp + 0x20]",
+        "mov qword ptr [rsp + 0x10], r10",
+        "mov r10, qword ptr [rbp + 0x18]",
+        "mov qword ptr [rsp + 0x18], r10",
+        "mov r10, qword ptr [rbp + 0x48]",
+        "mov qword ptr [rsp + 0x20], r10",
+        "mov r10, qword ptr [rbp + 0x38]",
+        "mov qword ptr [rsp + 0x28], r10",
+        "mov r10, qword ptr [rbp + 0x40]",
+        "mov qword ptr [rsp + 0x30], r10",
+        "mov r10, qword ptr [rbp + 0x80]",
+        "mov qword ptr [rsp + 0x38], r10",
+        "mov rdi, rsp",
+        "call qword ptr [rip + {handle}]",
+        "mov rsp, rbp",
+        "mov qword ptr [rsp + 0x00], rax",
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "iretq",
+        "9:",
+        "ud2",
+        percpu = sym PERCPU,
+        ctx = const PERCPU_CTX_OFF,
+        handle = sym SYSCALL_HANDLER,
+    )
+}
+
+/// #PF 的每 CPU 现场副本（仅 CPL0）。
+///
+/// 与 [`page_fault_entry`] 的 CPL0 路径逐槽相同，差别只在现场基址：`r12` 从 `%gs:0`
+/// 索引本模块的每 CPU 槽。CPL3 来源直接 `ud2`（用户路径现场尚未分区）。
+#[cfg(feature = "entry-percpu-probe")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn page_fault_entry_percpu() -> ! {
+    core::arch::naked_asm!(
+        "test byte ptr [rsp + 0x10], 3",
+        "jnz 9f",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        "cld",
+        "mov eax, dword ptr gs:[0]",
+        "lea r12, [rip + {percpu}]",
+        "shl rax, 8",
+        "add r12, rax",
+        "mov r10, qword ptr [rsp + 0x00]",
+        "mov qword ptr [r12 + {frame} + 0x00], r10",
+        "mov r10, qword ptr [rsp + 0x08]",
+        "mov qword ptr [r12 + {frame} + 0x08], r10",
+        "mov r10, qword ptr [rsp + 0x10]",
+        "mov qword ptr [r12 + {frame} + 0x10], r10",
+        "mov r10, qword ptr [rsp + 0x18]",
+        "mov qword ptr [r12 + {frame} + 0x18], r10",
+        "mov r10, qword ptr [rsp + 0x20]",
+        "mov qword ptr [r12 + {frame} + 0x20], r10",
+        "mov r10, qword ptr [rsp + 0x28]",
+        "mov qword ptr [r12 + {frame} + 0x28], r10",
+        "mov r10, qword ptr [rsp + 0x30]",
+        "mov qword ptr [r12 + {frame} + 0x30], r10",
+        "lea r10, [rsp + 0x98]",
+        "mov qword ptr [r12 + {frame} + 0x38], r10",
+        "mov r10, qword ptr [rsp + 0x38]",
+        "mov qword ptr [r12 + {frame} + 0x40], r10",
+        "mov r10, qword ptr [rsp + 0x40]",
+        "mov qword ptr [r12 + {frame} + 0x48], r10",
+        "mov r10, qword ptr [rsp + 0x48]",
+        "mov qword ptr [r12 + {frame} + 0x50], r10",
+        "mov r10, qword ptr [rsp + 0x50]",
+        "mov qword ptr [r12 + {frame} + 0x58], r10",
+        "mov r10, qword ptr [rsp + 0x58]",
+        "mov qword ptr [r12 + {frame} + 0x60], r10",
+        "mov r10, qword ptr [rsp + 0x60]",
+        "mov qword ptr [r12 + {frame} + 0x68], r10",
+        "mov r10, qword ptr [rsp + 0x68]",
+        "mov qword ptr [r12 + {frame} + 0x70], r10",
+        "mov r10, qword ptr [rsp + 0x70]",
+        "mov qword ptr [r12 + {frame} + 0x78], r10",
+        "mov r10, qword ptr [rsp + 0x90]",
+        "mov qword ptr [r12 + {frame} + 0x80], r10",
+        "mov r10, qword ptr [rsp + 0x80]",
+        "mov qword ptr [r12 + {frame} + 0x88], r10",
+        "mov r10, qword ptr [rsp + 0x88]",
+        "mov qword ptr [r12 + {frame} + 0x90], r10",
+        "xor eax, eax",
+        "mov ax, ss",
+        "mov qword ptr [r12 + {frame} + 0x98], rax",
+        "mov r10, cr2",
+        "mov qword ptr [r12 + {addr}], r10",
+        "mov r10, qword ptr [rsp + 0x78]",
+        "mov qword ptr [r12 + {error}], r10",
+        "lea rdi, [r12 + {frame}]",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "call qword ptr [rip + {handler}]",
+        "mov rsp, rbp",
+        "mov qword ptr [rsp + 0x80], rax",
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "add rsp, 8",
+        "iretq",
+        "9:",
+        "ud2",
+        percpu = sym PERCPU,
+        frame = const PERCPU_FRAME_OFF,
+        addr = const PERCPU_FAULT_ADDR_OFF,
+        error = const PERCPU_FAULT_ERROR_OFF,
+        handler = sym PAGE_FAULT_HANDLER,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1657,6 +1988,39 @@ mod tests {
                 assert_ne!(left, right);
             }
         }
+    }
+
+    /// P5-3b-1：每 CPU 槽的步长/偏移是裸入口与访问器的共同契约，必须钉住。
+    #[cfg(feature = "entry-percpu-probe")]
+    #[test]
+    fn percpu_entry_layout_is_pinned_and_slots_are_distinct() {
+        use core::mem::offset_of;
+        assert_eq!(size_of::<PerCpuEntry>(), PERCPU_STRIDE);
+        assert_eq!(offset_of!(PerCpuEntry, context_base), 0x00);
+        assert_eq!(offset_of!(PerCpuEntry, fault_addr), 0x08);
+        assert_eq!(offset_of!(PerCpuEntry, fault_error), 0x10);
+        assert_eq!(offset_of!(PerCpuEntry, fault_frame), 0x20);
+        assert_eq!(PERCPU.len(), PERCPU_MAX);
+        let mut bases = [0u64; PERCPU_MAX];
+        for (cpu, slot) in bases.iter_mut().enumerate() {
+            *slot = percpu(cpu) as *const PerCpuEntry as u64;
+            assert_eq!(percpu_fault_addr(cpu), 0);
+            assert_eq!(percpu_fault_error(cpu), 0);
+            assert_eq!(percpu_fault_frame(cpu), SretFrame::ZERO);
+            assert!(percpu_context_base(cpu).is_none());
+        }
+        for i in 0..bases.len() {
+            for j in 0..i {
+                assert_eq!(bases[i] - bases[j], (i - j) as u64 * PERCPU_STRIDE as u64);
+            }
+        }
+    }
+
+    #[cfg(feature = "entry-percpu-probe")]
+    #[test]
+    #[should_panic(expected = "cpu index out of range")]
+    fn percpu_accessor_rejects_out_of_range_cpu() {
+        let _ = percpu_fault_addr(PERCPU_MAX);
     }
 
     #[test]

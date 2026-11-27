@@ -183,6 +183,13 @@ fn stack_top(index: u32) -> u64 {
     base + AP_STACK_SIZE as u64
 }
 
+/// 指定 AP 的内核栈区间 `[base, top)`（入口探针核对保存块基址用）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn ap_stack_bounds(index: u32) -> (u64, u64) {
+    let base = core::ptr::addr_of!(AP_STACKS[index as usize]) as u64;
+    (base, base + AP_STACK_SIZE as u64)
+}
+
 /// AP 在长模式下的入口：装载本 CPU 的 GDT/TSS 与共享 IDT，置在线位后停放。
 ///
 /// IF 仍为 0：IDT 已有门，但 AP 不参与中断/调度；装载失败不置在线位，由 BSP 超时判失败。
@@ -204,9 +211,18 @@ extern "C" fn ap_entry(index: u32) -> ! {
     }
     crate::cpu::enable_sse();
     if crate::gdt::init_cpu_gdt(index as usize, stack_top(index)).is_ok() {
+        // 装载本 CPU GDT 后，旧的 CS 选择子可能在新表中不再指向代码段；任何中断/异常
+        // 返回都会按新表重新校验它。用远返回把 CS 切到本表的内核代码段。
+        prima_ostd::arch::reload_code_segment(crate::gdt::KERNEL_CODE_SELECTOR);
         crate::idt::load_shared();
         AP_TSS_BASE[index as usize]
             .store(crate::gdt::loaded_tss_base().unwrap_or(0), Ordering::SeqCst);
+        // P5-3b-1：本 CPU 执行一次 CPL0 `int 0x80` 与 #PF，写本 CPU 的入口现场槽。
+        #[cfg(feature = "entry-percpu-probe")]
+        {
+            let (stack_lo, stack_hi) = ap_stack_bounds(index);
+            crate::entry_probe::run_local(index as usize, stack_lo, stack_hi);
+        }
     }
     ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
     loop {

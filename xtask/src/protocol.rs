@@ -6807,9 +6807,110 @@ post_pf=0x47535f54315f4d41;post_irq=0x47535f54315f4d41;ok=1\nGS|PASS\nGS|nmi=ker
     }
 }
 
+/// P5-3b-1：在 P5-2/P5-3a 的 SMP 事件之外，每个 CPU 的 CPL0 `int 0x80` 与 #PF 必须
+/// 写入自己的入口现场槽；四项计数都要等于 `-smp`。
+pub(crate) fn validate_entry(output: &str, smp: u8) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
+        .collect();
+    if records.len() != 5
+        || records[0] != "SMP|begin"
+        || records[4] != "SMP|PASS"
+        || !records[3].starts_with("SMP|entry=")
+    {
+        return Err("ENTRY requires begin, discovery, AP, entry lines and one PASS".to_owned());
+    }
+    let discovery = records[1]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed ENTRY discovery line".to_owned())?;
+    let (mut cpus, mut online, mut bsp_apic, mut lapic_id) = (None, None, None, None);
+    for field in discovery.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed ENTRY field".to_owned())?;
+        match key {
+            "cpus" => cpus = Some(parse_decimal(value, key)?),
+            "online" => online = Some(parse_decimal(value, key)?),
+            "bsp_apic" => bsp_apic = Some(parse_decimal(value, key)?),
+            "lapic_id" => lapic_id = Some(parse_decimal(value, key)?),
+            "rsdp" | "xsdt" | "bsp_index" | "x2apic" => {
+                parse_decimal(value, key)?;
+            }
+            "lapic" if value.starts_with("0x") => {}
+            _ => return Err(format!("unknown or malformed ENTRY field: {key}")),
+        }
+    }
+    if cpus != Some(u64::from(smp))
+        || online != Some(1)
+        || bsp_apic.is_none()
+        || lapic_id != bsp_apic
+    {
+        return Err("ENTRY discovery must match -smp with the bootstrap CPU online".to_owned());
+    }
+    let ap_line = records[2]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed ENTRY AP line".to_owned())?;
+    let (mut aps, mut ap_online, mut percpu, mut tss) = (None, None, None, None);
+    for field in ap_line.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed ENTRY AP field".to_owned())?;
+        match key {
+            "aps" => aps = Some(parse_decimal(value, key)?),
+            "online" => ap_online = Some(parse_decimal(value, key)?),
+            "percpu" => percpu = Some(parse_decimal(value, key)?),
+            "tss" => tss = Some(value),
+            _ => return Err(format!("unknown ENTRY AP field: {key}")),
+        }
+    }
+    if aps != Some(u64::from(smp) - 1)
+        || ap_online != Some(u64::from(smp))
+        || percpu != aps
+        || tss != Some("distinct")
+    {
+        return Err("ENTRY AP line must report every AP online with distinct TSS".to_owned());
+    }
+    let entry = records[3]
+        .strip_prefix("SMP|entry=")
+        .ok_or_else(|| "malformed ENTRY witness line".to_owned())?;
+    let (mut entry_cpus, mut syscall_ok, mut ctx_ok, mut fault_ok, mut frame_ok) =
+        (None, None, None, None, None);
+    let mut passed = false;
+    for field in entry.split(';') {
+        if field == "PASS" {
+            passed = true;
+            continue;
+        }
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed ENTRY witness field".to_owned())?;
+        match key {
+            "cpus" => entry_cpus = Some(parse_decimal(value, key)?),
+            "syscall_ok" => syscall_ok = Some(parse_decimal(value, key)?),
+            "ctx_ok" => ctx_ok = Some(parse_decimal(value, key)?),
+            "fault_ok" => fault_ok = Some(parse_decimal(value, key)?),
+            "frame_ok" => frame_ok = Some(parse_decimal(value, key)?),
+            _ => return Err(format!("unknown ENTRY witness field: {key}")),
+        }
+    }
+    let want = Some(u64::from(smp));
+    if !passed
+        || entry_cpus != want
+        || syscall_ok != want
+        || ctx_ok != want
+        || fault_ok != want
+        || frame_ok != want
+    {
+        return Err("ENTRY must observe every CPU use its own entry state".to_owned());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod smp_tests {
-    use super::{validate_gs3, validate_smp, validate_smp_ap};
+    use super::{validate_entry, validate_gs3, validate_smp, validate_smp_ap};
 
     const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
 
@@ -6881,6 +6982,32 @@ mod smp_tests {
             assert!(
                 validate_gs3(&bad, 4).is_err(),
                 "bad GS-3 witness accepted: {bad}"
+            );
+        }
+    }
+
+    const VALID_ENTRY: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|entry=cpus=4;syscall_ok=4;ctx_ok=4;fault_ok=4;frame_ok=4;PASS\nSMP|PASS\n";
+
+    #[test]
+    fn entry_witness_requires_every_cpu_own_state() {
+        assert_eq!(validate_entry(VALID_ENTRY, 4), Ok(()));
+        assert!(validate_entry(VALID_ENTRY, 2).is_err(), "必须匹配 -smp");
+        for bad in [
+            VALID_ENTRY.replace("syscall_ok=4", "syscall_ok=3"),
+            VALID_ENTRY.replace("ctx_ok=4", "ctx_ok=3"),
+            VALID_ENTRY.replace("fault_ok=4", "fault_ok=3"),
+            VALID_ENTRY.replace("frame_ok=4", "frame_ok=3"),
+            VALID_ENTRY.replace("cpus=4;syscall", "cpus=3;syscall"),
+            VALID_ENTRY.replace("frame_ok=4;PASS", "frame_ok=4"),
+            VALID_ENTRY.replace("entry=cpus=4", "entry=FAIL|cpus=4"),
+            VALID_ENTRY.replace("SMP|aps=3;online=4;percpu=3;tss=distinct\n", ""),
+            VALID_ENTRY.replace("SMP|PASS\n", "SMP|FAIL|entry-timeout\n"),
+            VALID_ENTRY.replace("lapic_id=0", "lapic_id=1"),
+            format!("{VALID_ENTRY}SMP|PASS\n"),
+        ] {
+            assert!(
+                validate_entry(&bad, 4).is_err(),
+                "bad ENTRY witness accepted: {bad}"
             );
         }
     }

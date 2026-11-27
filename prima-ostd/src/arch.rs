@@ -336,6 +336,27 @@ pub fn reload_data_segments(selector: u16) {
     }
 }
 
+/// 经远返回把 `cs` 重装为 `selector`（同一 GDT 内的 64 位代码段）。
+///
+/// AP 装载自己的 GDT 后，原 `cs` 选择子可能不再指向新 GDT 的代码段；任何中断/异常返回
+/// 都会按新 GDT 重新校验它。契约：仅 CPL0，`selector` 必须指向当前 GDT 的 64 位内核代码段。
+#[inline]
+pub fn reload_code_segment(selector: u16) {
+    // SAFETY: 见函数契约——非法选择子只会 #GP，不构成 UB；远返回消费压入的两个 qword。
+    unsafe {
+        asm!(
+            "push {sel}",
+            "lea {tmp}, [rip + 2f]",
+            "push {tmp}",
+            "retfq",
+            "2:",
+            sel = in(reg) u64::from(selector),
+            tmp = out(reg) _,
+            options(preserves_flags),
+        );
+    }
+}
+
 /// 装载用户数据段到 `fs`（M2/T-MUSL-02）。
 ///
 /// 契约：`selector` 必须是当前 GDT 中 DPL3 的数据段选择子（本内核为 `USER_DS = 0x2b`）。
@@ -399,5 +420,6 @@ mod tests {
         let _: fn(u64, u16) = super::lgdt;
         let _: fn(u16) = super::ltr;
         let _: fn(u16) = super::reload_data_segments;
+        let _: fn(u16) = super::reload_code_segment;
     }
 }

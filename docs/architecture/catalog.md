@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（269）
+## report（270）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -360,6 +360,7 @@
 | [P5-1：ACPI/MADT 解析与 2/4 vCPU 只读探测](../superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md) | current | `docs/superpowers/reports/2026-11-27-p5-1-acpi-madt-host.md` |
 | [P5-2：AP 启动原型（INIT-SIPI-SIPI 到长模式）](../superpowers/reports/2026-11-27-p5-2-ap-bringup.md) | current | `docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md` |
 | [P5-3a：每 CPU GDT/TSS 与共享 IDT](../superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md) | current | `docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md` |
+| [P5-3b-1：CPL0 `int 0x80`/#PF 每 CPU 入口现场探针](../superpowers/reports/2026-11-27-p5-3b1-entry-percpu.md) | current | `docs/superpowers/reports/2026-11-27-p5-3b1-entry-percpu.md` |
 | [GS-1：`syscall` 路径 `swapgs` 与每任务用户 GS（受控探针）](../superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md) | current | `docs/superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md` |
 | [GS-2：异常/中断/IRQ 入口出口 `swapgs` 与 NMI/IST](../superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md) | current | `docs/superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md` |
 | [GS-3：每 CPU GS 区与经 `%gs` 的 CPU 索引](../superpowers/reports/2026-11-27-p5-gs3-percpu-gs-area.md) | current | `docs/superpowers/reports/2026-11-27-p5-gs3-percpu-gs-area.md` |

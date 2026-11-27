@@ -15,6 +15,8 @@ smp-ap = ["smp-probe"]
 smp-probe = []
 # GS-3：每 CPU GS 区与经 `%gs` 的 CPU 索引；隐含 smp-ap，绝不出现在默认镜像。
 gs3-probe = ["smp-ap"]
+# P5-3b-1：CPL0 `int 0x80`/#PF 现场按 CPU 分区探针；隐含 gs3-probe，绝不出现在默认镜像。
+entry-percpu-probe = ["gs3-probe", "prima-ostd/entry-percpu-probe"]
 timestamp-probe = []
 
 [lib]
