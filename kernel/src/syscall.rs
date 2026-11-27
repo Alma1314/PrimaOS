@@ -50,12 +50,12 @@ pub use prima_abi::syscall::{
     SYS_PROCESS_EXIT, SYS_PROCESS_ID, SYS_PROCESS_TERMINATE, SYS_RECV, SYS_RECV_META, SYS_SEND,
     SYS_SIGACTION, SYS_SIGNAL, SYS_SIGRETURN, SYS_SUM4, SYS_TASK_CONTEXT_AUTHORITY,
     SYS_TASK_CREATE, SYS_TASK_CREATE_HELD, SYS_TASK_DESTROY, SYS_TASK_ID, SYS_TASK_INFO,
-    SYS_TASK_LOAD_IMAGE, SYS_TASK_SET_FS_BASE, SYS_TASK_SET_TLS, SYS_TASK_START,
-    SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE, SYS_THREAD_EXIT,
-    SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS, SYS_TIMER_CANCEL,
-    SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL, SYS_VSPACE_ACCESS_ENABLE,
-    SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS, SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL,
-    SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
+    SYS_TASK_LOAD_IMAGE, SYS_TASK_SET_FS_BASE, SYS_TASK_SET_GS_BASE, SYS_TASK_SET_TLS,
+    SYS_TASK_START, SYS_TASK_WAIT_DEADLINE, SYS_THREAD_CLEAR_TID, SYS_THREAD_CREATE,
+    SYS_THREAD_EXIT, SYS_THREAD_EXIT_UNMAP, SYS_TIME_ENABLE, SYS_TIME_NOW, SYS_TIME_TICKS,
+    SYS_TIMER_CANCEL, SYS_TIMER_DESTROY, SYS_TIMER_SET, SYS_TRAP, SYS_UPCALL_CONTROL,
+    SYS_VSPACE_ACCESS_ENABLE, SYS_WAIT_CREATE, SYS_WAIT_DESTROY, SYS_WAIT_OBJECTS,
+    SYS_WAIT_OBSERVE, SYS_WAIT_SIGNAL, SYS_WAIT_WORD, SYS_WAIT4, SYS_YIELD,
 };
 
 /// SPEC-082：`timer_cancel` 的状态返回编码。
@@ -3885,6 +3885,27 @@ fn set_fs_base_call(base: u64) -> u64 {
     0
 }
 
+/// GS-1：用户 GS base 与 FS 一样只接受低半区规范地址（其余写入 MSR 会 #GP）。
+pub const fn validate_gs_base(base: u64) -> Result<(), Errno> {
+    validate_fs_base(base)
+}
+
+/// `SYS_TASK_SET_GS_BASE`：保存到当前 Task 的调度槽，**不写硬件**。
+///
+/// GS-2 统一入口交换前，syscall 可能经 `syscall` 指令（已 `swapgs`）或 `int 0x80`（未交换）
+/// 进入，二者硬件 GS 处于不同半交换态；此处只存槽，使新值在下一个 `sched::resume` 恢复点
+/// 由 `activate_gs` 一次性装入，避免误写半交换态。GS 探针关闭时确定性 `ENOSYS`。
+fn set_gs_base_call(base: u64) -> u64 {
+    if !prima_ostd::entry::gs_swap_enabled() {
+        return encode_errno(Errno::NoSys);
+    }
+    if let Err(errno) = validate_gs_base(base) {
+        return encode_errno(errno);
+    }
+    crate::sched::set_gs_base(crate::sched::current(), base);
+    0
+}
+
 /// 从用户缓冲读入 `len` 字节并组装为 little-endian u64（内核/QEMU 专用）。
 fn copy_in(ptr: u64, len: u64) -> Result<u64, Errno> {
     copy_in_bounds(ptr, len)?;
@@ -4660,6 +4681,8 @@ fn serve(num: u64, args: &[u64; MAX_ARGS], flags: u64) -> u64 {
             .map_or_else(|| encode_errno(Errno::Invalid), u64::from)
     } else if num == SYS_TASK_SET_FS_BASE {
         set_fs_base_call(args[0])
+    } else if num == SYS_TASK_SET_GS_BASE {
+        set_gs_base_call(args[0])
     } else if num == SYS_YIELD {
         yield_call()
     } else if num == SYS_EXC_WAIT {
@@ -5439,6 +5462,16 @@ mod tests {
         assert_eq!(validate_fs_base(0x0000_8000_0000_0000), Err(Errno::Invalid));
         assert_eq!(validate_fs_base(u64::MAX), Err(Errno::Invalid));
         assert_eq!(validate_fs_base(0xFFFF_8000_0000_0000), Err(Errno::Invalid));
+    }
+
+    /// GS-1：用户 GS base 复用同一规范地址约束。
+    #[test]
+    fn gs_base_validation_rejects_non_canonical_and_kernel_addresses() {
+        assert_eq!(validate_gs_base(0), Ok(()));
+        assert_eq!(validate_gs_base(0x0000_0A00_0000_4000), Ok(()));
+        assert_eq!(validate_gs_base(0x0000_8000_0000_0000), Err(Errno::Invalid));
+        assert_eq!(validate_gs_base(u64::MAX), Err(Errno::Invalid));
+        assert_eq!(validate_gs_base(0xFFFF_8000_0000_0000), Err(Errno::Invalid));
     }
 
     #[test]

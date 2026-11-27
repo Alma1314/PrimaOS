@@ -531,6 +531,166 @@ pub const fn task2_code() -> [u8; TASK2_CODE_LEN] {
     code
 }
 
+/// GS-1：两任务 GS 页首的魔数（内核预置在各自 Y 页 +0，供 ring3 `mov gs:[0]` 读回）。
+#[cfg(feature = "gs-probe")]
+pub const GS_MAGIC1: u64 = 0x4753_5F54_315F_4D41; // "GS_T1_MA"
+#[cfg(feature = "gs-probe")]
+pub const GS_MAGIC2: u64 = 0x4753_5F54_325F_4D42; // "GS_T2_MB"
+/// GS 探针中 ECHO 的参数与其期望回报（`echo_expected(0x1234) == arg ^ ECHO_MASK`）。
+#[cfg(feature = "gs-probe")]
+pub const GS_ECHO_ARG: u64 = 0x1234;
+#[cfg(feature = "gs-probe")]
+pub const GS_ECHO_RET: u64 = GS_ECHO_ARG ^ crate::syscall::ECHO_MASK;
+
+/// GS-1：task 1 探针代码长度上限。
+#[cfg(feature = "gs-probe")]
+pub const GS_TASK1_CODE_LEN: usize = 256;
+/// GS-1：task 2 探针代码长度上限。
+#[cfg(feature = "gs-probe")]
+pub const GS_TASK2_CODE_LEN: usize = 64;
+
+/// `mov rax, qword ptr gs:[0]`（GS 前缀 + REX.W + MOV + SIB(disp32=0)）。
+#[cfg(feature = "gs-probe")]
+const MOV_RAX_GS0: &[u8] = &[0x65, 0x48, 0x8B, 0x04, 0x25, 0x00, 0x00, 0x00, 0x00];
+
+/// const 友好的“追加字节并返回新游标”。
+#[cfg(feature = "gs-probe")]
+const fn emit<const N: usize>(code: &mut [u8; N], at: usize, bytes: &[u8]) -> usize {
+    put(code, at, bytes);
+    at + bytes.len()
+}
+
+/// 追加 `mov r64, imm64`（10 字节）。
+#[cfg(feature = "gs-probe")]
+const fn emit_imm64<const N: usize>(
+    code: &mut [u8; N],
+    at: usize,
+    op0: u8,
+    op1: u8,
+    imm: u64,
+) -> usize {
+    put_imm64(code, at, op0, op1, imm);
+    at + 10
+}
+
+/// GS-1：task 1 探针——ring3 用户 GS 往返、非法值拒绝、切换不串扰、`syscall` 往返不变。
+///
+/// 依次：读 `gs:[0]`（应 magic1）→ 经 `SYS_TASK_SET_GS_BASE` 传非规范值（应 `EINVAL`）→
+/// `SYS_YIELD` 让给 task 2 → 切回后再读 `gs:[0]`（应仍 magic1）→ 一次 `syscall` 指令
+/// ECHO 往返 → 再读 `gs:[0]`（swapgs 配对后仍 magic1）→ `int3` 收尾。
+/// 结果写入 `USER_Y_VA` 各槽（见 [`gs_probe_witness`]）。
+#[cfg(feature = "gs-probe")]
+pub const fn gs_task1_code() -> [u8; GS_TASK1_CODE_LEN] {
+    let mut c = [0u8; GS_TASK1_CODE_LEN];
+    let mut at = 0usize;
+    // 读 gs:[0] → Y+8
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x08]);
+    // 非规范 GS（2^47）→ EINVAL → Y+16
+    at = emit_imm64(&mut c, at, 0x48, 0xBF, 0x0000_8000_0000_0000);
+    at = emit_imm64(&mut c, at, 0x48, 0xB8, crate::syscall::SYS_TASK_SET_GS_BASE);
+    at = emit(&mut c, at, &[0xCD, 0x80]);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x10]);
+    // 让给 task 2
+    at = emit_imm64(&mut c, at, 0x48, 0xB8, SYS_YIELD);
+    at = emit(&mut c, at, &[0xCD, 0x80]);
+    // 切回后读 gs:[0] → Y+24
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x18]);
+    // syscall 指令 ECHO 往返
+    at = emit_imm64(&mut c, at, 0x48, 0xBF, GS_ECHO_ARG);
+    at = emit_imm64(&mut c, at, 0x48, 0xB8, crate::syscall::SYS_ECHO);
+    at = emit(&mut c, at, &[0x0F, 0x05]);
+    // 返回值 → Y+40；再读 gs:[0] → Y+32
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x28]);
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x20]);
+    // int3 收尾
+    let _ = emit(&mut c, at, &[0xCC]);
+    c
+}
+
+/// GS-1：task 2 探针——读取自己的 `gs:[0]`（应 magic2）后让回 task 1。
+#[cfg(feature = "gs-probe")]
+pub const fn gs_task2_code() -> [u8; GS_TASK2_CODE_LEN] {
+    let mut c = [0u8; GS_TASK2_CODE_LEN];
+    let mut at = 0usize;
+    at = emit(&mut c, at, MOV_RAX_GS0);
+    at = emit_imm64(&mut c, at, 0x48, 0xB9, USER2_Y_VA);
+    at = emit(&mut c, at, &[0x48, 0x89, 0x41, 0x08]);
+    at = emit_imm64(&mut c, at, 0x48, 0xB8, SYS_YIELD);
+    at = emit(&mut c, at, &[0xCD, 0x80]);
+    let _ = emit(&mut c, at, &[0xEB, 0xFE]);
+    c
+}
+
+/// GS-1：一次 GS 探针的实测证据（在 task 1 `int3` 收尾读取）。
+#[cfg(feature = "gs-probe")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GsWitness {
+    /// task 1 首次 `gs:[0]` 读回（应 [`GS_MAGIC1`]）。
+    pub read1: u64,
+    /// task 2 `gs:[0]` 读回（应 [`GS_MAGIC2`]，经物理读 Y2）。
+    pub read2: u64,
+    /// 非规范 GS 设置的返回值（应 `EINVAL`）。
+    pub invalid: u64,
+    /// task 1 切换往返后 `gs:[0]`（应 [`GS_MAGIC1`]）。
+    pub post_yield: u64,
+    /// task 1 `syscall` 往返后 `gs:[0]`（应 [`GS_MAGIC1`]）。
+    pub post_syscall: u64,
+    /// `syscall` ECHO 返回值（应 [`GS_ECHO_RET`]）。
+    pub echo_ret: u64,
+}
+
+#[cfg(feature = "gs-probe")]
+impl GsWitness {
+    /// 纯判定：三项验收是否全部成立。
+    pub fn evidence_ok(&self) -> bool {
+        self.read1 == GS_MAGIC1
+            && self.read2 == GS_MAGIC2
+            && self.invalid == crate::syscall::ERRNO_INVALID
+            && self.post_yield == GS_MAGIC1
+            && self.post_syscall == GS_MAGIC1
+            && self.echo_ret == GS_ECHO_RET
+    }
+}
+
+/// 读取 task 1 Y 页某偏移（仅在其根活动时，即 `int3` 收尾上下文）。
+#[cfg(feature = "gs-probe")]
+pub fn gs_task1_qword(off: u64) -> u64 {
+    read_qword(USER_Y_VA + off)
+}
+
+/// 按物理读 task 2 Y2 页某偏移（task 1 根下不可见 Y2 VA）。
+#[cfg(feature = "gs-probe")]
+pub fn gs_task2_qword(off: u64) -> u64 {
+    let Some(phys) = task2_y_phys() else {
+        return 0;
+    };
+    let Some((_, offset)) = crate::cow::root_and_offset() else {
+        return 0;
+    };
+    read_qword(phys_to_virt(phys, offset) + off)
+}
+
+/// 收集 GS 探针见证。
+#[cfg(feature = "gs-probe")]
+pub fn gs_probe_witness() -> GsWitness {
+    GsWitness {
+        read1: gs_task1_qword(8),
+        read2: gs_task2_qword(8),
+        invalid: gs_task1_qword(16),
+        post_yield: gs_task1_qword(24),
+        post_syscall: gs_task1_qword(32),
+        echo_ret: gs_task1_qword(40),
+    }
+}
+
 /// S2-D4：`task_create` 创建的任务的用户代码。
 ///
 /// `mov rcx, USER3_STACK_VA; SYS_TASK_ID → [rcx]; SYS_SEND(1, TASK_CREATE_SEND_CAP_HANDLE,
@@ -1007,6 +1167,8 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     // 不进入 task 1 代码段。
     let (_, init) = boot_entry_by_kind(&layout, prima_abi::boot_image::KIND_INIT)
         .ok_or(VspaceError::NoBootImage)?;
+    // GS-1：受控探针镜像改用写死的 ring3 机器码替换 init 运行时；默认镜像仍装载真实 init ELF。
+    #[cfg(not(feature = "gs-probe"))]
     load_runtime_elf(
         init.bytes,
         &code_frames,
@@ -1016,6 +1178,15 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
         USER_CODE_PAGES,
         init.entry,
     )?;
+    #[cfg(feature = "gs-probe")]
+    {
+        let _ = init;
+        let code = gs_task1_code();
+        let code_frame = region_frame(&code_frames)?;
+        for (index, &byte) in code.iter().enumerate() {
+            prima_ostd::mm::write_u8_at(map(code_frame), index as u64, byte);
+        }
+    }
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(x) + index * 8, crate::cow::pattern(index));
     }
@@ -1023,6 +1194,12 @@ pub fn prepare(offset: u64) -> Result<(), VspaceError> {
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(stack) + index * 8, 0);
         write_qword(map(y) + index * 8, 0);
+    }
+    // GS-1：预置 task 1 的用户 GS（Y 页）与页首魔数；复位点由 `sched::resume` 装入。
+    #[cfg(feature = "gs-probe")]
+    {
+        write_qword(map(y), GS_MAGIC1);
+        sched::set_gs_base(INIT_TASK_ID, USER_Y_VA);
     }
     for (index, &byte) in NS_PATH_BYTES.iter().enumerate() {
         prima_ostd::mm::write_u8_at(map(y), (NS_PATH_DATA_OFFSET + index) as u64, byte);
@@ -1100,13 +1277,23 @@ pub fn prepare_task2(offset: u64) -> Result<(), VspaceError> {
     let stack = region_frame(&stack_frames)?;
     let y = region_frame(&y_frames)?;
 
+    // GS-1：受控探针镜像用写死的 ring3 机器码替换常规 task 2 程序。
+    #[cfg(not(feature = "gs-probe"))]
     let code_bytes = task2_code();
+    #[cfg(feature = "gs-probe")]
+    let code_bytes = gs_task2_code();
     for (index, &byte) in code_bytes.iter().enumerate() {
         prima_ostd::mm::write_u8_at(map(code), index as u64, byte);
     }
     for index in 0..(FRAME_SIZE / 8) {
         write_qword(map(stack) + index * 8, 0);
         write_qword(map(y) + index * 8, 0);
+    }
+    // GS-1：预置 task 2 的用户 GS（Y2 页）与页首魔数。
+    #[cfg(feature = "gs-probe")]
+    {
+        write_qword(map(y), GS_MAGIC2);
+        sched::set_gs_base(TASK2_ID, USER2_Y_VA);
     }
 
     let task_cap = PLATFORM_TASK2_CAP_HANDLE;

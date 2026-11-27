@@ -175,6 +175,17 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
+        "test-gs" => {
+            require_no_args(&rest)?;
+            if !cfg!(feature = "gs-probe") {
+                return Err("test-gs requires --features gs-probe at cargo build time".to_owned());
+            }
+            let images = build_and_report()?;
+            for round in 1..=2 {
+                qemu::run_bios_gs(&images.bios, round)?;
+            }
+            Ok(())
+        }
         "run" => {
             require_no_args(&rest)?;
             let images = build_and_report()?;
@@ -812,9 +823,10 @@ fn require_no_args(args: &[String]) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|test|test-domains|test-smp|test-smp-ap|test-winpe|test-vfs|test-process|test-async|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
+    "usage: cargo xtask <build|run|test|test-domains|test-smp|test-smp-ap|test-gs|test-winpe|test-vfs|test-process|test-async|test-rust|test-tty|test-net|test-musl|compat|linux-trace|lint|tcb>\n\
      \x20      cargo run -p xtask --features smp-probe -- test-smp\n\
      \x20      cargo run -p xtask --features smp-ap -- test-smp-ap\n\
+     \x20      cargo run -p xtask --features gs-probe -- test-gs\n\
      \x20      PRIMA_WINPE_PROBE=1 cargo run -p xtask --features windows-pe-probe -- test-winpe\n\
      \x20      cargo xtask test-vfs [V1|V2|V3]\n\
      \x20      cargo xtask test-async\n\

@@ -16,6 +16,10 @@ pub const IA32_LSTAR: u32 = 0xC000_0082;
 pub const IA32_FMASK: u32 = 0xC000_0084;
 /// IA32_FS_BASE：`%fs` 段基址（M2/T-MUSL-02）。
 pub const IA32_FS_BASE: u32 = 0xC000_0100;
+/// IA32_GS_BASE：`%gs` 段基址（GS-1；用户态可见，`swapgs` 交换）。
+pub const IA32_GS_BASE: u32 = 0xC000_0101;
+/// IA32_KERNEL_GS_BASE：内核态 `%gs` 基址（GS-1；CPL3 不可访问，仅被 `swapgs` 交换）。
+pub const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
 /// EFER.SCE（System Call Extensions，bit 0）：置位后 `syscall`/`sysret` 可用。
 pub const EFER_SCE: u64 = 1;

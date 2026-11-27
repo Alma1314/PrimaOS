@@ -372,6 +372,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
                                     kernel::syscall::configure_fast_path();
+                                    // GS-1：仅在受控探针镜像中开启 `syscall` 路径 `swapgs`；先把两根
+                                    // GS MSR 置一致初值（0），进入用户态前由 `resume` 按任务装入。
+                                    #[cfg(feature = "gs-probe")]
+                                    {
+                                        kernel::msr::wrmsr(kernel::msr::IA32_GS_BASE, 0);
+                                        kernel::msr::wrmsr(kernel::msr::IA32_KERNEL_GS_BASE, 0);
+                                        prima_ostd::entry::enable_gs_swap();
+                                    }
                                     // SPEC-070：在 `activate_init` **之前**采集 Faulted 见证——此刻尚无任何
                                     // Task 处于 Running，故「建见证 Task → 调度为 Running → §12.5 置
                                     // Faulted」是一条合法路径。见证 Task 用保留槽位，不占用普通 id、

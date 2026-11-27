@@ -9,6 +9,8 @@ license = "GPL-3.0-or-later"
 # Explicitly opt-in fault injection; absent from ordinary kernel images.
 gate-audit-probe = []
 gate-probe = []
+# GS-1：受控 ring3 用户 GS 探针镜像；替换用户程序、开启 syscall swapgs，绝不出现在默认镜像。
+gs-probe = []
 smp-ap = ["smp-probe"]
 smp-probe = []
 timestamp-probe = []

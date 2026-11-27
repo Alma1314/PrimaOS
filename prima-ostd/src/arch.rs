@@ -114,6 +114,18 @@ pub fn wrmsr(msr: u32, value: u64) {
     }
 }
 
+/// 交换 `IA32_GS_BASE` 与 `IA32_KERNEL_GS_BASE`（`swapgs`）。
+///
+/// 契约：`swapgs` 在 CPL3 执行会触发 #GP；在 CPL0 每次调用翻转两根 GS 基址。调用方必须
+/// 保证进入/离开配对，且 GS-3 之前内核不依赖 `%gs`（交换后的值不得被当作内核指针）。
+#[inline]
+pub fn swapgs() {
+    // SAFETY: `swapgs` 只翻转两个 MSR；CPL0 下合法，无内存别名风险。
+    unsafe {
+        asm!("swapgs", options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// 读 CR3（页表根物理地址，含低 12 位标志/PCID）。
 #[inline]
 pub fn read_cr3() -> u64 {
@@ -355,6 +367,7 @@ mod tests {
         let _: fn(u16) -> u8 = super::inb;
         let _: fn(u32) -> u64 = super::rdmsr;
         let _: fn(u32, u64) = super::wrmsr;
+        let _: fn() = super::swapgs;
         let _: fn() -> u64 = super::read_cr3;
         let _: fn(u64) = super::write_cr3;
         let _: fn() -> u64 = super::read_cr0;

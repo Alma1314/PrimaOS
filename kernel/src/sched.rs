@@ -31,6 +31,13 @@ static KSTACK_TOPS: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS
 /// M2/T-MUSL-02：每个 Task 的 `%fs` 基址（0 = 无 TLS 上下文）。索引即 Task id。
 static FS_BASES: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
 
+/// GS-1：每个 Task 的用户 `%gs` 基址（0 = 无用户 GS 上下文）。索引即 Task id。
+///
+/// 与 [`FS_BASES`] 对称：用户无法在 CPL3 直接写 MSR，故值只经
+/// [`crate::syscall`] 的 `SYS_TASK_SET_GS_BASE` 写入槽；任务切换时由
+/// [`activate_gs`] 装入硬件。任务间不继承彼此的值。
+static GS_BASES: StaticCell<[u64; MAX_TASKS]> = StaticCell::new([0; MAX_TASKS]);
+
 /// FXSAVE 区域大小（x87 + SSE + MXCSR）。
 const FXSAVE_SIZE: usize = 512;
 
@@ -328,6 +335,40 @@ pub fn fs_base(task_id: u32) -> Option<u64> {
     None
 }
 
+/// GS-1：记录某 Task 的用户 `%gs` 基址（0 = 无）。
+///
+/// 调用方须先经 `validate_gs_base` 拒绝非规范值；任务回收路径可直接清零。
+pub fn set_gs_base(task_id: u32, base: u64) {
+    if (task_id as usize) < MAX_TASKS {
+        GS_BASES.with_mut(|bases| bases[task_id as usize] = base);
+    }
+}
+
+/// GS-1：读取某 Task 的用户 `%gs` 基址；0 表示无用户 GS 上下文。
+pub fn gs_base(task_id: u32) -> Option<u64> {
+    if (task_id as usize) < MAX_TASKS {
+        let value = GS_BASES.with(|bases| bases[task_id as usize]);
+        if value != 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// GS-1：把 `task_id` 的用户 GS 基址装入硬件（仅在 GS 探针开关开启时）。
+///
+/// 与 [`activate_fs`] 一样是“强制覆盖”：进入用户态前 `GS_BASE` 必须是该任务的值。
+/// 同时把 `KERNEL_GS_BASE` 置 0，使其在 `syscall` 入口 `swapgs` 后落入内核可见侧；
+/// GS-3 之前内核不读 `%gs`，0 即可。开关关闭时整个函数是 no-op（普通镜像不触碰 GS MSR）。
+fn activate_gs(task_id: u32) {
+    if !prima_ostd::entry::gs_swap_enabled() {
+        return;
+    }
+    let base = GS_BASES.with(|bases| bases.get(task_id as usize).copied().unwrap_or(0));
+    crate::msr::wrmsr(crate::msr::IA32_GS_BASE, base);
+    crate::msr::wrmsr(crate::msr::IA32_KERNEL_GS_BASE, 0);
+}
+
 /// 把当前硬件 x87/SSE 状态保存到 `task_id` 的槽位。
 fn save_fpu(task_id: u32) {
     FPU_AREAS.with_mut(|areas| {
@@ -397,6 +438,7 @@ pub fn clear_task(task_id: u32) {
         set_root(task_id, 0);
         KSTACK_TOPS.with_mut(|tops| tops[task_id as usize] = 0);
         FS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
+        GS_BASES.with_mut(|bases| bases[task_id as usize] = 0);
         FPU_AREAS.with_mut(|areas| areas[task_id as usize] = FpuArea::DEFAULT);
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
         crate::syscall::end_pending_recv(task_id, crate::syscall::RecvEnd::Retired);
@@ -553,6 +595,8 @@ pub fn resume(task_id: u32) -> ! {
     let mut frame = frame(task_id).expect("task frame must exist");
     // M2/T-MUSL-02：切回用户态前装入该任务自己的 FS 选择子与基址。
     activate_fs(task_id);
+    // GS-1：装入该任务自己的用户 GS 基址（探针开关关闭时 no-op）。
+    activate_gs(task_id);
     // M3：x87/SSE 状态按 Task 恢复（保存发生在各切换函数的 set_current 之前）。
     restore_fpu(task_id);
     if let Some(handler) = crate::syscall::prepare_signal_resume(task_id, frame) {
@@ -671,6 +715,28 @@ mod tests {
         set_fs_base(MAX_TASKS as u32, 0xDEAD);
         assert_eq!(fs_base(MAX_TASKS as u32), None);
         // 清理测试留下的状态，避免影响其他用例（全局静态在测试间共享）。
+        clear_task(3);
+    }
+
+    /// GS-1：用户 GS base 按 Task id 独立保存；`task_destroy` 清零，避免 id 复用后继承
+    /// 上一个任务的 GS 上下文（与 FS 对称）。
+    #[test]
+    fn gs_bases_are_per_task_and_cleared_with_task() {
+        init();
+        set_gs_base(2, 0x0000_0A00_0000_4000);
+        set_gs_base(3, 0x0000_0A00_0000_5000);
+        assert_eq!(gs_base(2), Some(0x0000_0A00_0000_4000));
+        assert_eq!(gs_base(3), Some(0x0000_0A00_0000_5000));
+        // 0 表示无用户 GS 上下文。
+        set_gs_base(3, 0);
+        assert_eq!(gs_base(3), None);
+        assert_eq!(gs_base(2), Some(0x0000_0A00_0000_4000));
+
+        clear_task(2);
+        assert_eq!(gs_base(2), None);
+        // 越界 id 安全忽略。
+        set_gs_base(MAX_TASKS as u32, 0xDEAD);
+        assert_eq!(gs_base(MAX_TASKS as u32), None);
         clear_task(3);
     }
 

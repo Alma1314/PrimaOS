@@ -331,6 +331,12 @@ pub mod syscall {
         SYS_GATE_EXEC_IMAGE = 88,
         /// Read the next authorized Gate audit record into 128 service bytes.
         SYS_GATE_AUDIT_READ = 89,
+        /// GS-1：设置当前 Task 的用户 `%gs` 基址（类似 `SYS_TASK_SET_FS_BASE`，但用于 GS）。
+        ///
+        /// 只写入调度槽，**不立即写硬件**：新值在下一个调度恢复点（`sched::resume`）生效，
+        /// 避免在未统一入口交换（GS-2 前）时误写半交换态的 GS MSR。仅在 GS 受控探针开启时
+        /// 可用，否则返回 `ENOSYS`；非规范值返回 `EINVAL`。
+        SYS_TASK_SET_GS_BASE = 90,
     }
 
     /// 按号查名称；未实现、保留号或越界号返回 `None`。
@@ -468,12 +474,12 @@ pub mod auxv {
 mod tests {
     use super::syscall;
 
-    /// D17 冻结台账：`1..=89` 已实现号的逐号映射（52 保留）。
+    /// D17 冻结台账：`1..=90` 已实现号的逐号映射（52 保留）。
     ///
     /// 这张表**故意与实现分开写**：宏生成的 [`syscall::NUMBERS`] 若被重编号（例如把
     /// `SYS_WAIT4` 从 53 挪到 73），实现内部仍然自洽，只有本表会失败。改号必须同时改
     /// 这里，并按 D17 留下裁决与迁移记录。
-    const FROZEN: [(u64, &str); 88] = [
+    const FROZEN: [(u64, &str); 89] = [
         (1, "SYS_ECHO"),
         (2, "SYS_SUM4"),
         (3, "SYS_COPY_IN"),
@@ -562,6 +568,7 @@ mod tests {
         (87, "SYS_GATE_FORK"),
         (88, "SYS_GATE_EXEC_IMAGE"),
         (89, "SYS_GATE_AUDIT_READ"),
+        (90, "SYS_TASK_SET_GS_BASE"),
     ];
 
     /// 台账本身必须是严格升序且无重复，否则 [`syscall::name`] 的线性查找与证据工具

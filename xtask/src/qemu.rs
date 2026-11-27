@@ -125,6 +125,25 @@ pub(crate) fn run_bios_smp_ap(image: &Path, smp: u8, round: u32) -> Result<(), S
     Ok(())
 }
 
+/// GS-1：受控 ring3 用户 GS 探针（单核默认参数）。只校验退出码与 `GS|` 见证；
+/// 该镜像替换了用户程序，故不跑完整用户-phase 校验器（见 GS-1 报告的范围说明）。
+pub(crate) fn run_bios_gs(image: &Path, round: u32) -> Result<(), String> {
+    let output = run_captured(image)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/GS-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve gs witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_gs(&output.stdout).map_err(|error| with_output(error, &output))?;
+    println!(
+        "PASS GS round={round} read1=magic1 read2=magic2 invalid=EINVAL post_yield=magic1 post_syscall=magic1 echo=ok"
+    );
+    Ok(())
+}
+
 /// 2/4 vCPU 启动仍须通过默认镜像的既有校验器；AP parked 时事件应不变。
 fn validate_boot_output(output: &CapturedOutput) -> Result<(), String> {
     protocol::validate_output(&output.stdout).map_err(|error| with_output(error, output))?;

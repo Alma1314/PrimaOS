@@ -490,6 +490,24 @@ pub fn syscall_stack_canary_intact() -> bool {
 /// `syscall` 进入前的用户 `rsp`（`sysretq` 前恢复）。
 static USER_RSP: AtomicU64 = AtomicU64::new(0);
 
+/// GS-1：`syscall` 入口/出口是否执行 `swapgs`。默认 0——普通镜像完全不触碰 GS 基址；
+/// 仅 GS 受控探针经 [`enable_gs_swap`] 置 1。运行期只置一次、之后只读，故入口与出口看到
+/// 同一值，交换必然配对（阻塞切换不回到出口，改由 `sched::resume` 强制重设）。
+static GS_SWAP: AtomicU8 = AtomicU8::new(0);
+
+/// GS 探针开关是否开启。
+pub fn gs_swap_enabled() -> bool {
+    GS_SWAP.load(Ordering::Relaxed) != 0
+}
+
+/// 开启 `syscall` 快路径的 `swapgs`（GS 受控探针专用）。
+///
+/// 开启前调用方必须把 `IA32_GS_BASE` 与 `IA32_KERNEL_GS_BASE` 初始化为一致状态，且
+/// 内核在 GS-3 之前不得读取 `%gs`。
+pub fn enable_gs_swap() {
+    GS_SWAP.store(1, Ordering::Relaxed);
+}
+
 /// 恢复落点实测的 `r12`/`r13`/`rsp`/`rflags`。
 static SEEN_R12: AtomicU64 = AtomicU64::new(0);
 static SEEN_R13: AtomicU64 = AtomicU64::new(0);
@@ -1000,7 +1018,13 @@ unsafe extern "C" fn syscall_entry() -> ! {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn syscall_fast_entry() -> ! {
     core::arch::naked_asm!(
-        // 1) 记下用户 rsp，切到专用内核栈（单核，无需 swapgs/per-CPU）。
+        // GS-1：入口先交换 GS（安全不变量：先交换、再触碰任何状态）。开关关闭时整段跳过；
+        // 只改 RFLAGS、不动 GPR，用户 RFLAGS 仍在 r11。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 1f",
+        "swapgs",
+        "1:",
+        // 1) 记下用户 rsp，切到专用内核栈（无 per-CPU 区；GS 交换由上面的开关控制）。
         "mov qword ptr [rip + {user_rsp}], rsp",
         "lea rsp, [rip + {stack}]",
         "add rsp, {size}",
@@ -1058,6 +1082,12 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         "call qword ptr [rip + {handle}]",
         "mov rsp, rbp",
         "mov qword ptr [rsp + 0x00], rax",
+        // GS-1：出口再交换，与入口配对（handler 内若阻塞切换则永不返回此处，改由调度器
+        // 重设 GS）。只改 RFLAGS，用户 RFLAGS 仍在保存块/r11。
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 3f",
+        "swapgs",
+        "3:",
         // 4) 恢复 GPR，再恢复用户 RFLAGS/RIP 与 rsp，sysretq 回 CPL3。
         "pop rax",
         "pop rbx",
@@ -1083,6 +1113,7 @@ unsafe extern "C" fn syscall_fast_entry() -> ! {
         user_cs = sym FAST_SYSCALL_CS,
         user_ss = sym FAST_SYSCALL_SS,
         ctx = sym CONTEXT_BASE,
+        gs = sym GS_SWAP,
     )
 }
 

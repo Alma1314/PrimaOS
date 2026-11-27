@@ -108,11 +108,38 @@ extern "C" fn after_resume() -> ! {
     qemu::exit(qemu::SUCCESS)
 }
 
+/// GS-1：受控 GS 探针的收尾——读取 ring3 探针回执，输出 `GS|...;PASS/FAIL` 后退出。
+#[cfg(feature = "gs-probe")]
+fn gs_probe_exit() -> ! {
+    let witness = kernel::user::gs_probe_witness();
+    protocol::gs_ready(&witness);
+    serial::flush();
+    qemu::exit(if witness.evidence_ok() {
+        qemu::SUCCESS
+    } else {
+        qemu::PANIC
+    })
+}
+
 /// 切片 G：用户任务以 `int3` 从 CPL3 陷入内核时的收尾回调（由 `idt` 调用，不返回）。
+///
+/// GS-1 受控探针镜像改走 [`gs_probe_exit`]（只校验 GS，不跑完整见证链）；默认镜像走完整链。
+pub extern "C" fn user_trap_exit() -> ! {
+    #[cfg(feature = "gs-probe")]
+    {
+        gs_probe_exit()
+    }
+    #[cfg(not(feature = "gs-probe"))]
+    {
+        user_trap_exit_default()
+    }
+}
+
+/// 默认镜像的完整收尾链（`int3` 回调）。
 ///
 /// 用户 COW 的 error code 在故障时已单独保存（后续驱动 #PF 可覆盖硬件槽）；据此构造
 /// [`kernel::user::UserWitness`]、发出 `user_cow_ready`，随后继续切片 D 的帧恢复见证。
-pub extern "C" fn user_trap_exit() -> ! {
+fn user_trap_exit_default() -> ! {
     let err = kernel::cow::user_cow_err().unwrap_or_else(kernel::idt::last_fault_err);
     let witness = kernel::user::witness(err);
     protocol::user_cow_ready(&witness);

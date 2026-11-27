@@ -6629,6 +6629,62 @@ pub(crate) fn validate_smp_ap(output: &str, smp: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// GS-1：ring3 用户 GS 探针见证必须逐字段匹配，且恰好一条 `GS|PASS`。
+///
+/// 期望：两任务各读到自己的魔数（不串扰）、非规范值得到 `EINVAL`、切换与 `syscall`
+/// 往返后 task 1 仍读回自己的魔数、`syscall` ECHO 返回值正确。
+pub(crate) fn validate_gs(output: &str) -> Result<(), String> {
+    const EXPECTED: &str = "GS|read1=0x47535f54315f4d41;read2=0x47535f54325f4d42;\
+invalid=0xffffffffffffffea;post_yield=0x47535f54315f4d41;\
+post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1";
+    let witness = output
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("GS|read1="))
+        .ok_or_else(|| "missing GS witness line".to_owned())?;
+    if witness != EXPECTED {
+        return Err(format!(
+            "GS witness mismatch:\n got: {witness}\n want: {EXPECTED}"
+        ));
+    }
+    let passes = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| *line == "GS|PASS")
+        .count();
+    if passes != 1 {
+        return Err(format!("expected exactly one GS|PASS, found {passes}"));
+    }
+    if output.lines().map(str::trim).any(|line| line == "GS|FAIL") {
+        return Err("GS probe reported FAIL".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod gs_tests {
+    use super::validate_gs;
+
+    const VALID: &str = "boot\nGS|read1=0x47535f54315f4d41;read2=0x47535f54325f4d42;\
+invalid=0xffffffffffffffea;post_yield=0x47535f54315f4d41;\
+post_syscall=0x47535f54315f4d41;echo=0xffff0000ffff1234;ok=1\nGS|PASS\n";
+
+    #[test]
+    fn gs_witness_requires_all_fields_and_one_pass() {
+        assert_eq!(validate_gs(VALID), Ok(()));
+        for bad in [
+            VALID.replace("0x47535f54315f4d41;read2", "0x0;read2"),
+            VALID.replace("echo=0xffff0000ffff1234", "echo=0xffff0000ffff1235"),
+            VALID.replace("invalid=0xffffffffffffffea", "invalid=0x0"),
+            VALID.replace("GS|PASS", "GS|FAIL"),
+            format!("{VALID}GS|PASS\n"),
+            VALID.replace("GS|PASS\n", ""),
+        ] {
+            assert!(validate_gs(&bad).is_err(), "{bad}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod smp_tests {
     use super::{validate_smp, validate_smp_ap};

@@ -69,6 +69,26 @@ pub(crate) fn smp_pass() {
     serial::write_bytes(b"SMP|PASS\r\n");
 }
 
+/// GS-1：输出一次 ring3 用户 GS 探针见证（`GS|...;ok=0/1`，随后 `GS|PASS`/`GS|FAIL`）。
+#[cfg(feature = "gs-probe")]
+pub(crate) fn gs_ready(witness: &kernel::user::GsWitness) {
+    serial::write_bytes(b"GS|read1=");
+    write_hex_u64(witness.read1);
+    serial::write_bytes(b";read2=");
+    write_hex_u64(witness.read2);
+    serial::write_bytes(b";invalid=");
+    write_hex_u64(witness.invalid);
+    serial::write_bytes(b";post_yield=");
+    write_hex_u64(witness.post_yield);
+    serial::write_bytes(b";post_syscall=");
+    write_hex_u64(witness.post_syscall);
+    serial::write_bytes(b";echo=");
+    write_hex_u64(witness.echo_ret);
+    let ok = witness.evidence_ok();
+    serial::write_bytes(if ok { b";ok=1\r\n" } else { b";ok=0\r\n" });
+    serial::write_bytes(if ok { b"GS|PASS\r\n" } else { b"GS|FAIL\r\n" });
+}
+
 #[cfg(feature = "smp-probe")]
 pub(crate) fn smp_fail(reason: &str) {
     serial::write_bytes(b"SMP|FAIL|");
