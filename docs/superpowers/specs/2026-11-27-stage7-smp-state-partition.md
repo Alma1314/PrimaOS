@@ -110,7 +110,8 @@ P5-3b 开启 AP 用户态执行前，必须完成 CPU 身份、入口栈/现场�
 这是待评审的补充规则，不冒称作者已裁决。验收必须观察不同 CPU 同时执行有效负载。
 2026-11-28 状态：`SYS_TASK_CREATE`/held launch/fork/线程与 Gate spawn/fork 创建路径均已
 接入发布时 owner+入队（Gate 规则仅 host 单测）；服务管理器 held-launch 流程与 Gate
-端到端双核行为仍未验证。
+端到端双核行为仍未验证。2026-11-28：pre-exec fork 子进程已并发 exec 第二映像并在父
+exec 后核对；exec 后二次 fork 触发取指缺页，暂不采用。
 
 TLB shootdown 的最小协议是允许跨 CPU 修改活动页表、共享 root 并行运行或回收其页帧前的
 前置。P5-3 可先在受限配置验证独立 root 固定所有者：每个 root 仅在一个 CPU 执行，映射
@@ -180,7 +181,11 @@ held-launch、prepared fork 与线程创建接入创建时放置；双核同时 
 `SYS_GATE_FORK` 创建的子任务按客户 owner CPU 发布（host 单测规则，探针未构造 Gate
 端到端流程）；exec 后新映像增加 CPU1→CPU0 反向 4 轮跨核阻塞/唤醒，`reverse_ok=2`。
 服务管理器 held-launch、程序级 fork/exec 矩阵、Gate 端到端双核行为、IPI/TLB 未做）。
-GS-4 与 P5-4 待做。
+**P5-3b-6 已落盘**（见
+[报告](../reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)：pre-exec fork 子进程
+并发 exec 第二映像（独立根槽），父进程 exec 后核对换根、停放与 owner；随后做 fork/exec
+后双向一轮唤醒。exec 后的二次 fork 触发取指缺页，未采用并登记；Gate 端到端、服务管理器
+流程与 IPI/TLB 仍未做）。GS-4 与 P5-4 待做。
 
 ## 8. 分期工作包与验收观察
 
@@ -189,7 +194,7 @@ GS-4 与 P5-4 待做。
 | P5-0 | 本文 + CPU 本地入口 + 调度当前任务分区 | host 测试与既有 BIOS 启动逐字节回归；不声称 SMP | **本片** |
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
 | P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
-| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)）；**P5-3b-3 完成探针范围**（每 CPU 队列/owner/单运行者、AP 真实调度、双核屏障/跨核唤醒/真实 fork/嵌套 #PF，[报告](../reports/2026-11-28-p5-3b3-queue-placement.md)）；**P5-3b-4 完成探针范围**（held-launch/prepared fork/线程创建放置、双核 exec 换根、4 轮跨核丢唤醒矩阵，并修复 `SYS_SEND` 直投判定丢唤醒，[报告](../reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)；Gate 内部创建路径与服务管理器流程未接）；**P5-3b-5 完成放置规则与反向矩阵**（Gate spawn/fork 子任务按客户 owner CPU 发布，host 单测；exec 后 CPU1→CPU0 反向 4 轮跨核阻塞/唤醒，[报告](../reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md)；Gate 端到端、服务管理器流程与程序级 fork/exec 矩阵未做）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
+| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)）；**P5-3b-3 完成探针范围**（每 CPU 队列/owner/单运行者、AP 真实调度、双核屏障/跨核唤醒/真实 fork/嵌套 #PF，[报告](../reports/2026-11-28-p5-3b3-queue-placement.md)）；**P5-3b-4 完成探针范围**（held-launch/prepared fork/线程创建放置、双核 exec 换根、4 轮跨核丢唤醒矩阵，并修复 `SYS_SEND` 直投判定丢唤醒，[报告](../reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)；Gate 内部创建路径与服务管理器流程未接）；**P5-3b-5 完成放置规则与反向矩阵**（Gate spawn/fork 子任务按客户 owner CPU 发布，host 单测；exec 后 CPU1→CPU0 反向 4 轮跨核阻塞/唤醒，[报告](../reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md)；Gate 端到端、服务管理器流程与程序级 fork/exec 矩阵未做）；**P5-3b-6 完成程序级 fork/exec 探针**（pre-exec fork 子进程并发 exec 第二映像、父进程 exec 后核对，随后双向唤醒；exec 后二次 fork 缺页未采用，[报告](../reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)；Gate 端到端与服务管理器流程未做）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
 | P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 旧映射失效、确认前帧不复用、超时不静默成功 | 待做；允许跨 CPU 活动映射变更前必须交付最小协议，必要时提前到 P5-3 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |
 

@@ -15,6 +15,7 @@ updated: 2026-11-28
 
 | 日期 | 报告/链入口 |
 |---|---|
+| 2026-11-28 | [P5-3b-6 程序级 fork/exec 与后置丢唤醒矩阵](2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md) |
 | 2026-11-28 | [P5-3b-5 Gate 创建路径放置与反向丢唤醒矩阵](2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md) |
 | 2026-11-28 | [P5-3b-4 held-launch 放置、双核 exec 与丢唤醒矩阵](2026-11-28-p5-3b4-launch-exec-lost-wakeup.md) |
 | 2026-11-28 | [P5-3b-3 每 CPU 队列、创建时放置与真实双核负载](2026-11-28-p5-3b3-queue-placement.md) |

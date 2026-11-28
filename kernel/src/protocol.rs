@@ -249,6 +249,10 @@ pub(crate) fn sched_ready(witness: &kernel::sched_probe::SchedWitness) {
     write_u32(witness.lost_ok);
     serial::write_bytes(b";reverse_ok=");
     write_u32(witness.reverse_ok);
+    serial::write_bytes(b";forkexec_ok=");
+    write_u32(witness.forkexec_ok);
+    serial::write_bytes(b";post_ok=");
+    write_u32(witness.post_ok);
     serial::write_bytes(b";PASS\r\n");
 }
 
@@ -326,6 +330,18 @@ pub(crate) fn sched_progress(progress: &kernel::sched_probe::Progress) {
         write_u32(cpu as u32);
         serial::write_bytes(b"=");
         write_u32(progress.reverse[cpu]);
+        serial::write_bytes(b";fx");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.forkexec[cpu]);
+        serial::write_bytes(b";fec");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.fe_code[cpu]);
+        serial::write_bytes(b";ps");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.post[cpu]);
         serial::write_bytes(b";st");
         write_u32(cpu as u32);
         serial::write_bytes(b"=");

@@ -11,10 +11,14 @@
 //! （`SYS_FORK_TRANSACTION`）与 `SYS_THREAD_CREATE` 的随父/随调用者发布，以及双核同时
 //! `SYS_EXEC_REPLACE` 换根后 4 轮跨核阻塞/唤醒（丢唤醒矩阵）。
 //!
+//! P5-3b-5 追加：反向 4 轮丢唤醒；Gate spawn/fork 的创建时放置（仅 host 单测）。
+//! P5-3b-6 追加：pre-exec fork 子进程并发 exec 第二映像，父进程 exec 后核对换根、
+//! 停放与 owner，再做 fork/exec 后的双向唤醒。
+//!
 //! **边界**：仅 2 个 CPU 承载负载（`-smp 4` 的其余 AP 在线但停放）；本命令使用 MTTCG
 //! （每 vCPU 一个宿主线程）观察真实并行，单线程 TCG 会在自旋 vCPU 上饿死同一工作负载。
 //! 仍无 IPI：跨核唤醒只按 owner 入队，由目标 CPU 自己的空闲循环轮询（P5-4 引入 IPI 前
-//! 的探针取舍）。Gate 的 spawn/fork 创建路径与用户态服务管理器仍未接线。
+//! 的探针取舍）。Gate 端到端双核行为与用户态服务管理器仍未接线。
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -70,6 +74,12 @@ const MAGIC_REV_GATE: u64 = 0x5C0D_1E00;
 const MAGIC_REV_ACK: u64 = 0x5C0D_1F00;
 const MAGIC_REV_WAIT: u64 = 0x5C0D_2000;
 const MAGIC_REV_DONE: u64 = 0x5C0D_2100;
+const MAGIC_FORK_EXEC_CHILD_RUN: u64 = 0x5C0D_2300;
+const MAGIC_FORK_EXEC_DONE: u64 = 0x5C0D_2400;
+const MAGIC_FE_FAIL: u64 = 0x5C0D_2500;
+const MAGIC_POST_ACK: u64 = 0x5C0D_2600;
+const MAGIC_POST_WAIT: u64 = 0x5C0D_2700;
+const MAGIC_POST_DONE: u64 = 0x5C0D_2800;
 
 /// 换根后跨核阻塞/唤醒矩阵的轮数。
 const LOST_ROUNDS: u64 = 4;
@@ -82,6 +92,13 @@ const IMAGE_LEN_OFF: u64 = 0x7f0;
 const ELF_IMAGE_OFF: u64 = 0x800;
 /// exec 后新映像的装载 VA 与入口（PML4 槽 1；槽 0 被内核低半区映像占用）。
 const EXEC_IMAGE_VA: u64 = 1u64 << 39;
+/// 子进程 exec 的第二映像根槽（与父映像槽 1 区分，便于核对旧映射消失）。
+///
+/// 选用任务根已清零的 `U_SLOT`：bootloader 低半区其余槽可能含 supervisor 项，
+/// exec 会拒绝在已存在的 supervisor PML4 项上建立用户映像。
+const EXEC_CHILD_VA: u64 = 24u64 << 39;
+/// 子进程 ELF 在 fork 前数据页中的偏移（父 ELF 从 0x800 起，约 1 KiB）。
+const CHILD_ELF_DATA_OFF: u32 = 0xC00;
 
 /// 跨核 SEND/RECV 的载荷；双方都核对。
 const PAYLOAD: u64 = 0x5C0D_9001;
@@ -114,6 +131,13 @@ static REV_ACK: [AtomicU32; LOST_ROUNDS as usize] =
     [const { AtomicU32::new(0) }; LOST_ROUNDS as usize];
 static REV_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static REV_FAIL: AtomicBool = AtomicBool::new(false);
+static FORK_EXEC_RAN: [AtomicU32; MAX_TASKS] = [const { AtomicU32::new(0) }; MAX_TASKS];
+static FORK_EXEC_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+static FE_CODE: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+/// fork/exec 后双向矩阵的 2 轮确认（0 = CPU0→CPU1，1 = CPU1→CPU0）。
+static POST_ACK: [AtomicU32; 2] = [const { AtomicU32::new(0) }; 2];
+static POST_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+static POST_FAIL: AtomicBool = AtomicBool::new(false);
 static EXEC_ARRIVED: AtomicU32 = AtomicU32::new(0);
 static LAUNCH_OK: AtomicU32 = AtomicU32::new(0);
 static HELD_RAN: AtomicBool = AtomicBool::new(false);
@@ -273,6 +297,12 @@ extern "C" fn probe_syscall(frame: AbiFrame) -> u64 {
         MAGIC_REV_ACK => rev_ack(frame.arg(0), frame.arg(1)),
         MAGIC_REV_WAIT => rev_wait(frame.arg(0)),
         MAGIC_REV_DONE => rev_done(cpu),
+        MAGIC_FORK_EXEC_CHILD_RUN => fork_exec_child_run(cpu),
+        MAGIC_FORK_EXEC_DONE => fork_exec_done(cpu, frame.arg(0)),
+        MAGIC_FE_FAIL => fe_fail(cpu, frame.arg(0)),
+        MAGIC_POST_ACK => post_ack(frame.arg(0), frame.arg(1)),
+        MAGIC_POST_WAIT => post_wait(frame.arg(0)),
+        MAGIC_POST_DONE => post_done(cpu),
         _ => crate::syscall::handle(frame),
     }
 }
@@ -573,6 +603,108 @@ fn rev_done(cpu: usize) -> u64 {
     u64::from(!ok)
 }
 
+/// 子进程 exec 后的第二映像入口：记录已运行并停放，供父进程核对。
+fn fork_exec_child_run(cpu: usize) -> ! {
+    let task = sched::current();
+    observe(task, cpu);
+    if (task as usize) < MAX_TASKS {
+        FORK_EXEC_RAN[task as usize].store(1, Ordering::SeqCst);
+    }
+    park(cpu)
+}
+
+/// 父进程核对子进程已 exec 到第二映像：旧父映像消失、新映像存在、随父 CPU 停放。
+fn fork_exec_done(cpu: usize, child: u64) -> u64 {
+    let parent = sched::current();
+    observe(parent, cpu);
+    let Ok(child) = u32::try_from(child) else {
+        FE_CODE[cpu].store(1, Ordering::SeqCst);
+        return 1;
+    };
+    if child as usize >= MAX_TASKS {
+        FE_CODE[cpu].store(1, Ordering::SeqCst);
+        return 1;
+    }
+    let ran = FORK_EXEC_RAN[child as usize].load(Ordering::SeqCst) != 0;
+    let parked = bootstrap::task_status(child) == Some(bootstrap::TaskStatus::BlockedRecv);
+    let root = sched::root(child).unwrap_or(0);
+    let (_, offset) = crate::cow::root_and_offset().unwrap_or((0, PHYS.load(Ordering::SeqCst)));
+    let old_gone = root != 0
+        && vspace::read_user_leaf(root, EXEC_IMAGE_VA, |p| phys_to_virt(p, offset)).is_err();
+    let new_present = root != 0
+        && vspace::read_user_leaf(root, EXEC_CHILD_VA, |p| phys_to_virt(p, offset)).is_ok();
+    let mut code = 0u32;
+    if !(child > 2) {
+        code |= 1;
+    }
+    if !ran {
+        code |= 2;
+    }
+    if !parked {
+        code |= 4;
+    }
+    if !old_gone {
+        code |= 8;
+    }
+    if !new_present {
+        code |= 16;
+    }
+    if sched::owner(child) != Some(cpu) {
+        code |= 32;
+    }
+    if sched::owner(parent) != Some(cpu) {
+        code |= 64;
+    }
+    if FE_CODE[cpu].load(Ordering::SeqCst) & 0x8000_0000 == 0 {
+        FE_CODE[cpu].store(code, Ordering::SeqCst);
+    }
+    let ok = code == 0;
+    FORK_EXEC_OK[cpu].store(u32::from(ok), Ordering::SeqCst);
+    u64::from(!ok)
+}
+
+/// 子进程 exec 失败：标记失败并停放（不提前置 CPU DONE）。
+fn fe_fail(cpu: usize, errno: u64) -> ! {
+    FE_CODE[cpu].store(0x8000_0000 | errno as u32, Ordering::SeqCst);
+    FORK_EXEC_OK[cpu].store(0, Ordering::SeqCst);
+    park(cpu)
+}
+
+fn post_ack(round: u64, ok: u64) -> u64 {
+    if let Some(slot) = POST_ACK.get(round as usize) {
+        slot.store(if ok != 0 { 1 } else { 2 }, Ordering::SeqCst);
+    }
+    0
+}
+
+fn post_wait(round: u64) -> u64 {
+    let start = tsc();
+    loop {
+        match POST_ACK
+            .get(round as usize)
+            .map(|slot| slot.load(Ordering::SeqCst))
+        {
+            Some(1) => return 0,
+            Some(2) => return 1,
+            Some(_) => {
+                if elapsed(start) > BLOCKED_LIMIT {
+                    POST_FAIL.store(true, Ordering::SeqCst);
+                    return 1;
+                }
+                core::hint::spin_loop();
+            }
+            None => return 1,
+        }
+    }
+}
+
+fn post_done(cpu: usize) -> u64 {
+    let ok = !POST_FAIL.load(Ordering::SeqCst)
+        && POST_ACK.iter().all(|slot| slot.load(Ordering::SeqCst) == 1);
+    POST_OK[cpu].store(u32::from(ok), Ordering::SeqCst);
+    u64::from(!ok)
+}
+
 fn cpu_done(cpu: usize) -> ! {
     let task = sched::current();
     observe(task, cpu);
@@ -823,6 +955,7 @@ fn user_code() -> [u8; BUF_LEN] {
     a.emit(&[0x48, 0x85, 0xC0]); // test rax, rax
     let to_child = a.jz();
     a.mov_r12_rax(); // 子 id
+    a.emit(&[0x49, 0x89, 0xC7]); // mov r15, rax：保留到 exec 后核对子进程
     a.mov_rax(crate::syscall::SYS_YIELD);
     a.int80();
     a.mov_rax(MAGIC_FORK_DONE);
@@ -906,7 +1039,7 @@ fn user_code() -> [u8; BUF_LEN] {
     a.int80();
     a.ud2();
 
-    // ---- 普通 fork 子进程：报告运行并停放 ----
+    // ---- 普通 fork 子进程：报告运行后 exec 数据页中的第二映像并停放 ----
     let child = a.at;
     a.patch(to_child, child);
     a.patch(to_child_prep, child);
@@ -915,8 +1048,14 @@ fn user_code() -> [u8; BUF_LEN] {
     a.mov_rax(MAGIC_CHILD_RUN);
     a.xor_rdi();
     a.int80();
-    a.mov_rax(MAGIC_CHILD_DONE);
-    a.xor_rdi();
+    a.load_rsi_at(U_DATA_VA, CHILD_ELF_DATA_OFF + 96); // 子 ELF p_filesz
+    a.mov_rdi(U_DATA_VA + CHILD_ELF_DATA_OFF as u64);
+    a.mov_rax(crate::syscall::SYS_EXEC_REPLACE);
+    a.xor_rdx();
+    a.xor_r10_r8_r9();
+    a.int80();
+    a.emit(&[0x48, 0x89, 0xC7]); // mov rdi, rax（保留 exec 错误码）
+    a.mov_rax(MAGIC_FE_FAIL);
     a.int80();
     a.ud2();
 
@@ -958,8 +1097,9 @@ fn held_code() -> [u8; 32] {
     out
 }
 
-/// exec 后新映像的机器码：确认换根后做 4 轮跨核阻塞/唤醒。
-fn exec_code() -> [u8; BUF_LEN] {
+/// exec 后新映像的机器码：正向/反向丢唤醒、核对 pre-exec fork 子进程的第二映像 exec，
+/// 最后做 fork/exec 后的双向唤醒。
+fn exec_code() -> ([u8; BUF_LEN], usize) {
     let mut a = Asm::new();
     a.mov_rax(MAGIC_EXEC_RUN);
     a.xor_rdi();
@@ -1070,19 +1210,130 @@ fn exec_code() -> [u8; BUF_LEN] {
     a.xor_rdi();
     a.int80();
 
+    // ---- 核对 pre-exec fork 子进程已 exec 第二映像并停放 ----
+    // 子 id 在 fork 后存入 r15，exec 只重置 rax/rdi，故此处仍有效。
+    a.mov_rax(MAGIC_FORK_EXEC_DONE);
+    a.emit(&[0x4C, 0x89, 0xFF]); // mov rdi, r15
+    a.int80();
+
+    // ---- fork/exec 后双向丢唤醒：CPU0→CPU1，再 CPU1→CPU0 ----
+    a.emit(&[0x48, 0x83, 0xFB, 0x00]); // cmp rbx, 0
+    let to_post_cpu1 = a.jne();
+
+    // CPU0：先发送，再阻塞接收反向。
+    a.mov_rax(MAGIC_WAIT_BLOCKED);
+    a.mov_rdi(2);
+    a.int80();
+    a.mov_rax(crate::syscall::SYS_SEND);
+    a.mov_rdi(2);
+    a.mov_rsi(bootstrap::TASK2_SEND_CAP_HANDLE.encode());
+    a.mov_rdx(PAYLOAD + 0x10);
+    a.xor_r10_r8_r9();
+    a.int80();
+    a.mov_rax(MAGIC_POST_WAIT);
+    a.xor_rdi();
+    a.int80();
+    a.mov_rax(crate::syscall::SYS_RECV);
+    a.emit(&[0x48, 0x8D, 0x7C, 0x24, 0xF0]); // lea rdi, [rsp-16]
+    a.xor_rsi();
+    a.int80();
+    a.mov_rdx(PAYLOAD + 0x11);
+    a.emit(&[0x31, 0xF6]); // xor esi, esi
+    a.emit(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    a.emit(&[0x40, 0x0F, 0x94, 0xC6]); // sete sil
+    a.mov_rax(MAGIC_POST_ACK);
+    a.mov_rdi(1);
+    a.int80();
+    let to_post_done = a.jmp();
+
+    // CPU1：先阻塞接收，再发送反向。
+    let post_cpu1 = a.at;
+    a.patch(to_post_cpu1, post_cpu1);
+    a.mov_rax(crate::syscall::SYS_RECV);
+    a.emit(&[0x48, 0x8D, 0x7C, 0x24, 0xF0]); // lea rdi, [rsp-16]
+    a.xor_rsi();
+    a.int80();
+    a.mov_rdx(PAYLOAD + 0x10);
+    a.emit(&[0x31, 0xF6]); // xor esi, esi
+    a.emit(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    a.emit(&[0x40, 0x0F, 0x94, 0xC6]); // sete sil
+    a.mov_rax(MAGIC_POST_ACK);
+    a.xor_rdi();
+    a.int80();
+    a.mov_rax(MAGIC_REV_GATE);
+    a.mov_rdi(1);
+    a.int80();
+    a.mov_rax(crate::syscall::SYS_SEND);
+    a.mov_rdi(1);
+    a.mov_rsi(bootstrap::PROBE_TASK1_SEND_CAP_HANDLE.encode());
+    a.mov_rdx(PAYLOAD + 0x11);
+    a.xor_r10_r8_r9();
+    a.int80();
+    a.mov_rax(MAGIC_POST_WAIT);
+    a.mov_rdi(1);
+    a.int80();
+
+    let post_done = a.at;
+    a.patch(to_post_done, post_done);
+    a.mov_rax(MAGIC_POST_DONE);
+    a.xor_rdi();
+    a.int80();
+
     a.mov_rax(MAGIC_CPU_DONE);
     a.xor_rdi();
     a.int80();
     a.ud2();
-    a.buf
+    let len = a.at;
+    (a.buf, len)
+}
+
+/// 子进程 exec 的第二映像机器码：报告已换根并停放。
+fn child_exec_code() -> ([u8; BUF_LEN], usize) {
+    let mut a = Asm::new();
+    a.mov_rax(MAGIC_FORK_EXEC_CHILD_RUN);
+    a.xor_rdi();
+    a.int80();
+    a.ud2();
+    let len = a.at;
+    (a.buf, len)
+}
+
+/// 第二映像：单段 RX ELF，映射到与父映像不同的根槽（`EXEC_CHILD_VA`）。
+fn child_exec_elf() -> ([u8; 512], usize) {
+    const OFF: usize = 64 + 56;
+    let mut image = [0u8; 512];
+    let (code, code_len) = child_exec_code();
+    let len = OFF + code_len;
+    image[0..4].copy_from_slice(b"\x7fELF");
+    image[4] = 2;
+    image[5] = 1;
+    image[6] = 1;
+    image[16..18].copy_from_slice(&2u16.to_le_bytes());
+    image[18..20].copy_from_slice(&62u16.to_le_bytes());
+    image[20..24].copy_from_slice(&1u32.to_le_bytes());
+    image[24..32].copy_from_slice(&(EXEC_CHILD_VA + OFF as u64).to_le_bytes());
+    image[32..40].copy_from_slice(&64u64.to_le_bytes());
+    image[52..54].copy_from_slice(&64u16.to_le_bytes());
+    image[54..56].copy_from_slice(&56u16.to_le_bytes());
+    image[56..58].copy_from_slice(&1u16.to_le_bytes());
+    image[64..68].copy_from_slice(&1u32.to_le_bytes());
+    image[68..72].copy_from_slice(&5u32.to_le_bytes()); // PF_R | PF_X
+    image[72..80].copy_from_slice(&0u64.to_le_bytes());
+    image[80..88].copy_from_slice(&EXEC_CHILD_VA.to_le_bytes());
+    image[88..96].copy_from_slice(&EXEC_CHILD_VA.to_le_bytes());
+    image[96..104].copy_from_slice(&(len as u64).to_le_bytes());
+    image[104..112].copy_from_slice(&(len as u64).to_le_bytes());
+    image[112..120].copy_from_slice(&4096u64.to_le_bytes());
+    image[OFF..len].copy_from_slice(&code[..code_len]);
+    (image, len)
 }
 
 /// 单段静态 ELF64：ELF 头/程序头/机器码同处一个 RX `PT_LOAD`（offset 0）。
 fn exec_elf() -> ([u8; 2048], usize) {
     const OFF: usize = 64 + 56;
     let mut image = [0u8; 2048];
-    let code = exec_code();
-    let len = OFF + code.len();
+    let (code, code_len) = exec_code();
+    let len = OFF + code_len;
     image[0..4].copy_from_slice(b"\x7fELF");
     image[4] = 2; // ELFCLASS64
     image[5] = 1; // ELFDATA2LSB
@@ -1104,7 +1355,7 @@ fn exec_elf() -> ([u8; 2048], usize) {
     image[96..104].copy_from_slice(&(len as u64).to_le_bytes()); // p_filesz
     image[104..112].copy_from_slice(&(len as u64).to_le_bytes()); // p_memsz
     image[112..120].copy_from_slice(&4096u64.to_le_bytes()); // p_align
-    image[OFF..len].copy_from_slice(&code[..code.len()]);
+    image[OFF..OFF + code_len].copy_from_slice(&code[..code_len]);
     (image, len)
 }
 
@@ -1138,8 +1389,17 @@ fn build_task(task: u32, cpu: usize, offset: u64) -> Result<(), u32> {
         if va == U_DATA_VA {
             DATA_FRAME[task as usize].store(frame, Ordering::SeqCst);
             let (image, len) = exec_elf();
+            assert!(
+                ELF_IMAGE_OFF + len as u64 <= CHILD_ELF_DATA_OFF as u64,
+                "parent image overlaps child ELF"
+            );
             prima_ostd::mm::write_bytes(phys_to_virt(frame, offset) + ELF_IMAGE_OFF, &image[..len]);
             prima_ostd::mm::write_u64(phys_to_virt(frame, offset) + IMAGE_LEN_OFF, len as u64);
+            let (child, child_len) = child_exec_elf();
+            prima_ostd::mm::write_bytes(
+                phys_to_virt(frame, offset) + CHILD_ELF_DATA_OFF as u64,
+                &child[..child_len],
+            );
         }
     }
 
@@ -1326,6 +1586,8 @@ pub struct SchedWitness {
     pub exec_ok: u32,
     pub lost_ok: u32,
     pub reverse_ok: u32,
+    pub forkexec_ok: u32,
+    pub post_ok: u32,
 }
 
 impl SchedWitness {
@@ -1346,6 +1608,8 @@ impl SchedWitness {
             && self.exec_ok == self.cpus
             && self.lost_ok == self.cpus
             && self.reverse_ok == self.cpus
+            && self.forkexec_ok == self.cpus
+            && self.post_ok == self.cpus
     }
 }
 
@@ -1369,6 +1633,8 @@ pub fn witness() -> SchedWitness {
         exec_ok: 0,
         lost_ok: 0,
         reverse_ok: 0,
+        forkexec_ok: 0,
+        post_ok: 0,
     };
     for cpu in 0..cpus as usize {
         let task = cpu as u32 + 1;
@@ -1387,6 +1653,8 @@ pub fn witness() -> SchedWitness {
         witness.exec_ok += EXEC_OK[cpu].load(Ordering::SeqCst);
         witness.lost_ok += LOST_OK[cpu].load(Ordering::SeqCst);
         witness.reverse_ok += REV_OK[cpu].load(Ordering::SeqCst);
+        witness.forkexec_ok += FORK_EXEC_OK[cpu].load(Ordering::SeqCst);
+        witness.post_ok += POST_OK[cpu].load(Ordering::SeqCst);
     }
     witness
 }
@@ -1405,6 +1673,9 @@ pub struct Progress {
     pub exec: [u32; MAX_CPUS],
     pub lost: [u32; MAX_CPUS],
     pub reverse: [u32; MAX_CPUS],
+    pub forkexec: [u32; MAX_CPUS],
+    pub fe_code: [u32; MAX_CPUS],
+    pub post: [u32; MAX_CPUS],
     pub launch: u32,
     pub exec_arrived: u32,
     pub held_owner: u32,
@@ -1439,6 +1710,9 @@ pub fn progress() -> Progress {
         exec: core::array::from_fn(|cpu| EXEC_OK[cpu].load(Ordering::SeqCst)),
         lost: core::array::from_fn(|cpu| LOST_OK[cpu].load(Ordering::SeqCst)),
         reverse: core::array::from_fn(|cpu| REV_OK[cpu].load(Ordering::SeqCst)),
+        forkexec: core::array::from_fn(|cpu| FORK_EXEC_OK[cpu].load(Ordering::SeqCst)),
+        fe_code: core::array::from_fn(|cpu| FE_CODE[cpu].load(Ordering::SeqCst)),
+        post: core::array::from_fn(|cpu| POST_OK[cpu].load(Ordering::SeqCst)),
         launch: LAUNCH_OK.load(Ordering::SeqCst),
         exec_arrived: EXEC_ARRIVED.load(Ordering::SeqCst),
         held_owner: HELD_OWNER.load(Ordering::SeqCst),
@@ -1511,6 +1785,26 @@ mod tests {
     }
 
     #[test]
+    fn child_exec_image_is_a_loadable_segment_at_its_own_root_slot() {
+        let (image, len) = child_exec_elf();
+        let plan = crate::exec::plan(&image[..len]).expect("child ELF is loadable");
+        assert_eq!(plan.count, 1);
+        assert_eq!(plan.entry, EXEC_CHILD_VA + 120);
+        let part = plan.segments[0].unwrap();
+        assert_eq!(part.vaddr, EXEC_CHILD_VA);
+        assert!(part.executable && !part.writable);
+    }
+
+    /// 父 ELF 与子 ELF 必须落在同一数据页的不同区间。
+    #[test]
+    fn parent_and_child_images_fit_the_probe_data_page() {
+        let (_, len) = exec_elf();
+        let (_, child_len) = child_exec_elf();
+        assert!(ELF_IMAGE_OFF + len as u64 <= CHILD_ELF_DATA_OFF as u64);
+        assert!(CHILD_ELF_DATA_OFF as u64 + child_len as u64 <= FRAME_SIZE);
+    }
+
+    #[test]
     fn witness_requires_every_count_to_match_active_cpus() {
         let base = SchedWitness {
             cpus: 2,
@@ -1529,6 +1823,8 @@ mod tests {
             exec_ok: 2,
             lost_ok: 2,
             reverse_ok: 2,
+            forkexec_ok: 2,
+            post_ok: 2,
         };
         assert!(base.evidence_ok());
         assert!(
@@ -1546,6 +1842,14 @@ mod tests {
             }
             .evidence_ok()
         );
+        assert!(
+            !SchedWitness {
+                forkexec_ok: 1,
+                ..base
+            }
+            .evidence_ok()
+        );
+        assert!(!SchedWitness { post_ok: 1, ..base }.evidence_ok());
         assert!(
             !SchedWitness {
                 launch_ok: 0,
