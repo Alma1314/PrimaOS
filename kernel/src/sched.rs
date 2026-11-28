@@ -14,6 +14,246 @@ use prima_ostd::sync::StaticCell;
 /// 调度器与 Task 表共用同一上限，避免新增 Task 只有模型槽、没有上下文槽。
 pub const MAX_TASKS: usize = bootstrap::MAX_TASKS;
 
+/// P5-3b-3：每 CPU 可运行队列、唯一所有者与单运行者守卫（仅 `sched-percpu-probe`）。
+///
+/// 状态全部在一个 IRQ-safe 自旋锁内维护；调用方**不得**在持有本锁时再取
+/// `BOOTSTRAP_STATE`（锁序固定为 bootstrap → 本队列），故这里的操作都不查任务状态，
+/// 由调用方在释放后经 `bootstrap` 校验。
+#[cfg(feature = "sched-percpu-probe")]
+mod queues {
+    use super::MAX_TASKS;
+    use crate::cpu::local::MAX_CPUS;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use prima_ostd::sync::StaticCell;
+
+    /// 未指定所有者。
+    pub const NO_CPU: u8 = 0xff;
+
+    pub struct State {
+        owner: [u8; MAX_TASKS],
+        running: [bool; MAX_TASKS],
+        queued: [bool; MAX_TASKS],
+        len: [u8; MAX_CPUS],
+        items: [[u32; MAX_TASKS]; MAX_CPUS],
+    }
+
+    impl State {
+        const fn new() -> Self {
+            Self {
+                owner: [NO_CPU; MAX_TASKS],
+                running: [false; MAX_TASKS],
+                queued: [false; MAX_TASKS],
+                len: [0; MAX_CPUS],
+                items: [[0; MAX_TASKS]; MAX_CPUS],
+            }
+        }
+    }
+
+    static STATE: StaticCell<State> = StaticCell::new(State::new());
+    /// 见证：每 CPU 入队/出队次数、放置数、单运行者违规数、状态不符丢弃数。
+    static ENQ: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+    static DEQ: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+    static PLACED: AtomicU32 = AtomicU32::new(0);
+    static VIOLATIONS: AtomicU32 = AtomicU32::new(0);
+    static STALE: AtomicU32 = AtomicU32::new(0);
+
+    fn valid(task: u32, cpu: usize) -> bool {
+        (task as usize) < MAX_TASKS && task != 0 && cpu < MAX_CPUS
+    }
+
+    /// 发布：一次置 owner（只允许一次）并在需要时入队。失败不留下半发布状态。
+    pub fn place(task: u32, cpu: usize, enqueue_task: bool) -> Result<(), ()> {
+        if !valid(task, cpu) {
+            return Err(());
+        }
+        STATE.with_mut(|state| {
+            let slot = task as usize;
+            let current = state.owner[slot];
+            if current != NO_CPU && current as usize != cpu {
+                return Err(());
+            }
+            let will_enqueue = enqueue_task && !state.queued[slot];
+            let len = state.len[cpu] as usize;
+            // 所有检查先于任何写入：失败不得留下已置 owner 的半发布任务。
+            if will_enqueue && len >= MAX_TASKS {
+                return Err(());
+            }
+            state.owner[slot] = cpu as u8;
+            if will_enqueue {
+                state.items[cpu][len] = task;
+                state.len[cpu] = (len + 1) as u8;
+                state.queued[slot] = true;
+                ENQ[cpu].fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        })
+    }
+
+    /// 把一个已 Ready 的任务追加到其 owner 队列（唤醒路由）。
+    pub fn wake(task: u32) -> bool {
+        STATE.with_mut(|state| {
+            let slot = task as usize;
+            if slot >= MAX_TASKS || state.owner[slot] == NO_CPU || state.queued[slot] {
+                return false;
+            }
+            let cpu = state.owner[slot] as usize;
+            let len = state.len[cpu] as usize;
+            if len >= MAX_TASKS {
+                return false;
+            }
+            state.items[cpu][len] = task;
+            state.len[cpu] = (len + 1) as u8;
+            state.queued[slot] = true;
+            ENQ[cpu].fetch_add(1, Ordering::Relaxed);
+            true
+        })
+    }
+
+    /// 读取队首（不消费）。`skip` 用于排除正在运行的任务（通常不在队列里）。
+    pub fn peek(cpu: usize, skip: u32) -> Option<u32> {
+        STATE.with(|state| {
+            if cpu >= MAX_CPUS {
+                return None;
+            }
+            state.items[cpu][..state.len[cpu] as usize]
+                .iter()
+                .copied()
+                .find(|task| *task != skip)
+        })
+    }
+
+    /// 丢弃一个候选（状态已不是 Ready）。
+    pub fn discard(task: u32) {
+        STATE.with_mut(|state| {
+            let slot = task as usize;
+            if slot >= MAX_TASKS || !state.queued[slot] {
+                return;
+            }
+            let cpu = state.owner[slot] as usize;
+            remove_locked(state, cpu, task);
+            STALE.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+
+    fn remove_locked(state: &mut State, cpu: usize, task: u32) -> bool {
+        let len = state.len[cpu] as usize;
+        let Some(at) = state.items[cpu][..len].iter().position(|id| *id == task) else {
+            return false;
+        };
+        for index in at..len - 1 {
+            state.items[cpu][index] = state.items[cpu][index + 1];
+        }
+        state.len[cpu] = (len - 1) as u8;
+        state.queued[task as usize] = false;
+        DEQ[cpu].fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// 从 `cpu` 的队列取出 `task` 并置运行时守卫；任何所有者/重复运行违例都返回 false。
+    pub fn take(task: u32, cpu: usize) -> bool {
+        STATE.with_mut(|state| {
+            let slot = task as usize;
+            if !valid(task, cpu) || state.owner[slot] as usize != cpu {
+                VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            if state.running[slot] {
+                VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            if !remove_locked(state, cpu, task) {
+                return false;
+            }
+            state.running[slot] = true;
+            true
+        })
+    }
+
+    pub fn release(task: u32) {
+        STATE.with_mut(|state| {
+            if (task as usize) < MAX_TASKS {
+                state.running[task as usize] = false;
+            }
+        });
+    }
+
+    pub fn owner(task: u32) -> Option<usize> {
+        STATE.with(|state| {
+            let value = state.owner.get(task as usize).copied().unwrap_or(NO_CPU);
+            (value != NO_CPU).then_some(value as usize)
+        })
+    }
+
+    /// 任务销毁/清理：撤销 owner、运行时与队列项。
+    pub fn forget(task: u32) {
+        STATE.with_mut(|state| {
+            let slot = task as usize;
+            if slot >= MAX_TASKS {
+                return;
+            }
+            if state.queued[slot] {
+                let cpu = state.owner[slot] as usize;
+                remove_locked(state, cpu, task);
+            }
+            state.owner[slot] = NO_CPU;
+            state.running[slot] = false;
+        });
+    }
+
+    /// 选择放置 CPU：在线 CPU 中队列最短者（BSP 兜底）。
+    pub fn placement_cpu() -> usize {
+        let online = crate::smp::online_mask();
+        let mut best = crate::cpu::local::BSP;
+        let mut best_len = u8::MAX;
+        STATE.with(|state| {
+            for cpu in 0..MAX_CPUS {
+                if online & (1 << cpu) == 0 {
+                    continue;
+                }
+                if state.len[cpu] < best_len {
+                    best = cpu;
+                    best_len = state.len[cpu];
+                }
+            }
+        });
+        best
+    }
+
+    pub fn stats() -> (u32, u32, u32, u32, u32) {
+        let mut enq = 0;
+        let mut deq = 0;
+        for cpu in 0..MAX_CPUS {
+            enq += ENQ[cpu].load(Ordering::Relaxed);
+            deq += DEQ[cpu].load(Ordering::Relaxed);
+        }
+        (
+            enq,
+            deq,
+            PLACED.load(Ordering::Relaxed),
+            VIOLATIONS.load(Ordering::Relaxed),
+            STALE.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn count_placed() {
+        PLACED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn queue_lens() -> [u8; MAX_CPUS] {
+        STATE.with(|state| state.len)
+    }
+
+    pub fn cpu_stats(cpu: usize) -> (u32, u32) {
+        if cpu >= MAX_CPUS {
+            return (0, 0);
+        }
+        (
+            ENQ[cpu].load(Ordering::Relaxed),
+            DEQ[cpu].load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// 每个 Task 的用户上下文；索引即 Task id。
 static FRAMES: StaticCell<[SretFrame; MAX_TASKS]> = StaticCell::new([SretFrame::ZERO; MAX_TASKS]);
 
@@ -360,6 +600,7 @@ pub fn gs_base(task_id: u32) -> Option<u64> {
 /// 与 [`activate_fs`] 一样是“强制覆盖”：进入用户态前 `GS_BASE` 必须是该任务的值。
 /// 同时把 `KERNEL_GS_BASE` 置 0，使其在 `syscall` 入口 `swapgs` 后落入内核可见侧；
 /// GS-3 之前内核不读 `%gs`，0 即可。开关关闭时整个函数是 no-op（普通镜像不触碰 GS MSR）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 fn activate_gs(task_id: u32) {
     if !prima_ostd::entry::gs_swap_enabled() {
         return;
@@ -443,10 +684,13 @@ pub fn clear_task(task_id: u32) {
         FRAMES.with_mut(|frames| frames[task_id as usize] = SretFrame::ZERO);
         crate::syscall::end_pending_recv(task_id, crate::syscall::RecvEnd::Retired);
         PENDING_STATUS.with_mut(|slots| slots[task_id as usize] = None);
+        #[cfg(feature = "sched-percpu-probe")]
+        queues::forget(task_id);
     }
 }
 
 /// 选择下一个 Ready 任务（最小 id，排除 `cur`）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn pick_next(cur: u32) -> Option<u32> {
     bootstrap::gate_audit::enforce_stop("pick-next");
     (0..MAX_TASKS as u32)
@@ -454,9 +698,87 @@ pub fn pick_next(cur: u32) -> Option<u32> {
         .find(|task_id| bootstrap::task_status(*task_id) == Some(bootstrap::TaskStatus::Ready))
 }
 
+/// P5-3b-3：只从本 CPU 队列选择；不在本 CPU 所有者名下的任务永不被看到。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn pick_next(cur: u32) -> Option<u32> {
+    bootstrap::gate_audit::enforce_stop("pick-next");
+    let cpu = crate::cpu::local::current_index();
+    loop {
+        let task = queues::peek(cpu, cur)?;
+        if bootstrap::task_status(task) == Some(bootstrap::TaskStatus::Ready) {
+            return Some(task);
+        }
+        queues::discard(task);
+    }
+}
+
+/// P5-3b-3：发布失败（容量或 owner 冲突）；不留下半发布状态。
+#[cfg(feature = "sched-percpu-probe")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaceError;
+
+/// P5-3b-3：发布一个尚未运行的任务到指定 CPU（owner 与入队一次完成）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn publish_placed(task: u32, cpu: usize) -> Result<(), PlaceError> {
+    queues::place(task, cpu, true).map_err(|_| PlaceError)?;
+    queues::count_placed();
+    Ok(())
+}
+
+/// P5-3b-3：fork 子任务随父 CPU 发布（不迁移、不 work stealing）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn publish_fork(child: u32, parent: u32) -> Result<(), PlaceError> {
+    let cpu = queues::owner(parent).ok_or(PlaceError)?;
+    publish_placed(child, cpu)
+}
+
+/// P5-3b-3：为尚未运行的独立任务选择在线 CPU（队列最短者）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn placement_cpu() -> usize {
+    queues::placement_cpu()
+}
+
+/// P5-3b-3：把已 Ready 的目标按 owner 重新入队（阻塞唤醒路由）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn wake_enqueue(task: u32) {
+    queues::wake(task);
+}
+
+/// P5-3b-3：任务的所有者（未发布返回 `None`）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn owner(task: u32) -> Option<usize> {
+    queues::owner(task)
+}
+
+/// P5-3b-3：队列/单运行者见证计数。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn queue_stats() -> (u32, u32, u32, u32, u32) {
+    queues::stats()
+}
+
+/// P5-3b-3：每 CPU 当前队列长度（诊断）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn queue_lengths() -> [u8; crate::cpu::local::MAX_CPUS] {
+    queues::queue_lens()
+}
+
+/// P5-3b-3：指定 CPU 的（入队, 出队）计数。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn queue_cpu_stats(cpu: usize) -> (u32, u32) {
+    queues::cpu_stats(cpu)
+}
+
+/// P5-3b-3：停放当前任务（调用方已把它置为阻塞态）并进入本 CPU 空闲循环。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn park_current(cpu: usize) -> ! {
+    queues::release(current());
+    idle_for(cpu)
+}
+
 /// 协作切换到 `next`：先把 TaskTable 的 Running/Ready 原子迁移成功，再更新当前 id 并恢复。
 ///
 /// 迁移失败即 `panic`——绝不带着不一致的身份继续 `resume`，否则 `authorize` 会用错调用者。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn switch_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "switch_to must target a different task");
@@ -467,9 +789,28 @@ pub fn switch_to(next: u32) -> ! {
     resume(next)
 }
 
+/// P5-3b-3：让出当前任务——先按 owner 入队，再由本 CPU 队列取出 `next`。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn switch_to(next: u32) -> ! {
+    let cur = current();
+    let cpu = crate::cpu::local::current_index();
+    assert_ne!(cur, next, "switch_to must target a different task");
+    bootstrap::yield_task_global(cur).expect("current task must be Running to yield");
+    queues::wake(cur);
+    queues::release(cur);
+    save_fpu(cur);
+    if !queues::take(next, cpu) {
+        idle_for(cpu)
+    }
+    bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    set_current(next);
+    resume(next)
+}
+
 /// 切片 N：当前任务已由调用方置 `BlockedRecv`，调度 `next`（Ready→Running）并切走。
 ///
 /// 与 [`switch_to`] 的区别：不把当前任务置回 Ready（它保持阻塞，等待 raise 唤醒）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn block_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "block_to must target a different task");
@@ -479,8 +820,25 @@ pub fn block_to(next: u32) -> ! {
     resume(next)
 }
 
+/// P5-3b-3：阻塞切走——当前任务不回到队列，`next` 必须在本 CPU 队列中。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn block_to(next: u32) -> ! {
+    let cur = current();
+    let cpu = crate::cpu::local::current_index();
+    assert_ne!(cur, next, "block_to must target a different task");
+    queues::release(cur);
+    save_fpu(cur);
+    if !queues::take(next, cpu) {
+        idle_for(cpu)
+    }
+    bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    set_current(next);
+    resume(next)
+}
+
 /// The caller is already blocked and its frame saved. Keep its kernel stack
 /// while idle; IRQ callbacks only wake Tasks and return, never schedule here.
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn block_current() -> ! {
     if let Some(next) = pick_next(current()) {
         block_to(next);
@@ -489,8 +847,21 @@ pub fn block_current() -> ! {
     idle_until_ready()
 }
 
+/// P5-3b-3：阻塞当前任务；本 CPU 无后继时进入本 CPU 空闲循环（轮询自有队列）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn block_current() -> ! {
+    if let Some(next) = pick_next(current()) {
+        block_to(next);
+    }
+    let cur = current();
+    queues::release(cur);
+    save_fpu(cur);
+    idle_for(crate::cpu::local::current_index())
+}
+
 /// Retain the retiring Task's deferred root until another root is activated.
 /// Its static kernel stack and shared supervisor mappings remain valid in idle.
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn exit_current() -> ! {
     if let Some(next) = pick_next(current()) {
         exit_to(next);
@@ -498,6 +869,17 @@ pub fn exit_current() -> ! {
     idle_until_ready()
 }
 
+/// P5-3b-3：退出当前任务；本 CPU 无后继时进入本 CPU 空闲循环。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn exit_current() -> ! {
+    if let Some(next) = pick_next(current()) {
+        exit_to(next);
+    }
+    queues::release(current());
+    idle_for(crate::cpu::local::current_index())
+}
+
+#[cfg(not(feature = "sched-percpu-probe"))]
 fn idle_until_ready() -> ! {
     loop {
         crate::irq::retry_pending();
@@ -512,10 +894,68 @@ fn idle_until_ready() -> ! {
     }
 }
 
+/// P5-3b-3：本 CPU 空闲循环。只消费本 CPU 队列；BSP 在全部探针阶段完成后收尾。
+///
+/// 单线程 TCG 下跨核唤醒无法靠 `hlt`/IPI（P5-4 才引入）送达，故以自旋轮询队列；
+/// 这是探针范围的取舍，报告已登记。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn idle_for(cpu: usize) -> ! {
+    loop {
+        if cpu == crate::cpu::local::BSP && crate::sched_probe::complete() {
+            crate::sched_probe::finalize();
+        }
+        crate::sched_probe::note_stage(cpu, 20);
+        if let Some(next) = queues::peek(cpu, 0) {
+            crate::sched_probe::note_stage(cpu, 21);
+            crate::sched_probe::note_task(cpu, next);
+            let ready = bootstrap::task_status(next) == Some(bootstrap::TaskStatus::Ready);
+            crate::sched_probe::note_stage(cpu, 22);
+            if ready && queues::take(next, cpu) {
+                crate::sched_probe::note_stage(cpu, 23);
+                match bootstrap::schedule_task_global(next) {
+                    Ok(()) => {
+                        crate::sched_probe::note_stage(cpu, 24);
+                        set_current(next);
+                        resume(next);
+                    }
+                    Err(error) => {
+                        let status = match bootstrap::task_status(next) {
+                            Some(bootstrap::TaskStatus::Running) => 1,
+                            Some(bootstrap::TaskStatus::Ready) => 2,
+                            Some(bootstrap::TaskStatus::Faulted) => 3,
+                            Some(bootstrap::TaskStatus::BlockedRecv) => 4,
+                            Some(bootstrap::TaskStatus::BlockedWait) => 5,
+                            Some(bootstrap::TaskStatus::Dead) => 6,
+                            _ => 7,
+                        };
+                        crate::sched_probe::note_sched_err(
+                            cpu,
+                            match error {
+                                bootstrap::TaskError::NoSuchTask => 7,
+                                bootstrap::TaskError::AlreadyRunning => 10 + status,
+                                bootstrap::TaskError::NotReady => 20 + status,
+                                bootstrap::TaskError::AuditFull => 6,
+                                _ => 90 + status,
+                            },
+                        );
+                    }
+                }
+                queues::release(next);
+            } else {
+                crate::sched_probe::note_sched_err(cpu, if ready { 2 } else { 3 });
+                queues::discard(next);
+            }
+        }
+        crate::sched_probe::tick(cpu);
+        core::hint::spin_loop();
+    }
+}
+
 /// 切片 V：把一个**已从任务表删除**的当前任务切走。
 ///
 /// 与 [`block_to`]/[`switch_to`] 的区别：不触碰 `cur` 的 TaskTable 记录——自毁者已 Dead，
 /// `yield_task_global` 会拒绝。调用方（syscall 层）必须先确认存在 Ready 后继。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn exit_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "exit_to must target a different task");
@@ -524,12 +964,44 @@ pub fn exit_to(next: u32) -> ! {
     resume(next)
 }
 
+/// P5-3b-3：退出切走——当前任务不回到队列。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn exit_to(next: u32) -> ! {
+    let cur = current();
+    let cpu = crate::cpu::local::current_index();
+    assert_ne!(cur, next, "exit_to must target a different task");
+    queues::release(cur);
+    if !queues::take(next, cpu) {
+        idle_for(cpu)
+    }
+    bootstrap::schedule_task_global(next).expect("next task must be Ready to schedule");
+    set_current(next);
+    resume(next)
+}
+
 /// 硬件故障后的切换：当前任务已经是 Faulted，不可重新置 Ready。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn fault_to(next: u32) -> ! {
     let cur = current();
     assert_ne!(cur, next, "fault_to must target a different task");
     bootstrap::schedule_task_global(next).expect("fault successor must be Ready");
     save_fpu(cur);
+    set_current(next);
+    resume(next)
+}
+
+/// P5-3b-3：故障切走——当前任务保持 Faulted，`next` 必须在本 CPU 队列中。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn fault_to(next: u32) -> ! {
+    let cur = current();
+    let cpu = crate::cpu::local::current_index();
+    assert_ne!(cur, next, "fault_to must target a different task");
+    queues::release(cur);
+    save_fpu(cur);
+    if !queues::take(next, cpu) {
+        idle_for(cpu)
+    }
+    bootstrap::schedule_task_global(next).expect("fault successor must be Ready");
     set_current(next);
     resume(next)
 }
@@ -578,6 +1050,7 @@ pub fn flush_deferred_frames() {
 /// （CPL3→CPL0 硬件换栈用），再写 CR3。写 CR3 安全的前提是新根已由
 /// [`crate::vspace::clone_root`] 复制了 bootloader 根的全部 PML4 项，故内核高半区
 /// （本函数所在代码、当前栈、直映射）在新根下仍然可见。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn resume(task_id: u32) -> ! {
     bootstrap::gate_audit::enforce_stop("resume");
     // G5: entry timestamp for the service (5) and client (7) resumes; other
@@ -610,6 +1083,38 @@ pub fn resume(task_id: u32) -> ! {
     #[cfg(feature = "gate-probe")]
     bootstrap::gate_probe::bench::stamp(4, task_id);
     crate::exc::resume(&frame)
+}
+
+/// P5-3b-3：每 CPU 恢复——本 CPU 的 `TSS.rsp0`、本 CPU 的恢复跳板与本任务用户 GS。
+///
+/// 与普通路径的差别：(1) 只写本 CPU 的 `rsp0`；(2) 不经 `activate_gs`（那会清掉
+/// `KERNEL_GS_BASE`，而下一条 iretq 跳板要保存内核 GS 到该 MSR）；(3) 入口基址由
+/// `%gs:0` 索引本 CPU 槽。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn resume(task_id: u32) -> ! {
+    bootstrap::gate_audit::enforce_stop("resume");
+    let cpu = crate::cpu::local::current_index();
+    crate::sched_probe::note_resume(cpu);
+    crate::sched_probe::note_stage(cpu, 6);
+    assert_eq!(current(), task_id, "resume target must be the current task");
+    if let Some(top) = kstack_top(task_id) {
+        crate::gdt::set_rsp0_for(cpu, top);
+    }
+    if let Some(root) = root(task_id) {
+        crate::cpu::write_cr3(root);
+        write_pending_status(task_id);
+        crate::syscall::complete_pending_recv(task_id);
+    }
+    let mut frame = frame(task_id).expect("task frame must exist");
+    activate_fs(task_id);
+    restore_fpu(task_id);
+    if let Some(handler) = crate::syscall::prepare_signal_resume(task_id, frame) {
+        frame = handler;
+        set_frame(task_id, frame);
+    }
+    flush_deferred_frames();
+    let user_gs = gs_base(task_id).unwrap_or(0);
+    prima_ostd::entry::resume_percpu_user(cpu, &frame, user_gs)
 }
 
 #[cfg(test)]

@@ -1065,6 +1065,9 @@ pub const fn wait_errno(error: bootstrap::WaitError) -> Errno {
 pub(crate) fn inject_wait_wakes(wakes: &bootstrap::WaitWake) {
     for (task, result) in wakes.tasks[..wakes.count].iter().flatten() {
         sched::set_frame_rax(*task, result.code());
+        // P5-3b-3：等待被唤醒后按 owner 入队，避免在队列调度下丢失唤醒。
+        #[cfg(feature = "sched-percpu-probe")]
+        sched::wake_enqueue(*task);
     }
 }
 
@@ -1209,6 +1212,18 @@ fn fork_call(prepared: bool) -> u64 {
         crate::fork_tx::restore(caller, offset);
         return encode_errno(Errno::Invalid);
     }
+    // P5-3b-3：子任务按父 CPU 发布并立刻入队（不迁移、不 work stealing）。
+    #[cfg(feature = "sched-percpu-probe")]
+    if !prepared && sched::publish_fork(child, caller).is_err() {
+        bootstrap::fork_abort(child);
+        sched::clear_task(child);
+        crate::vspace::discard_cow_root(new_root, map, |frame| {
+            let _ = crate::frames::release_table_frame(frame);
+        });
+        let _ = crate::frames::release_table_frame(new_root);
+        crate::fork_tx::restore(caller, offset);
+        return encode_errno(Errno::Invalid);
+    }
     crate::signal::inherit_process(caller, child);
     if prepared {
         bootstrap::set_prepared_fork_root(caller, ticket, new_root)
@@ -1229,8 +1244,16 @@ fn fork_transaction_call(selector: u64, raw_ticket: u64) -> u64 {
     };
     let parent = sched::current();
     match selector {
-        1 => bootstrap::publish_fork(parent, ticket)
-            .map_or_else(|error| encode_errno(task_destroy_errno(error)), u64::from),
+        1 => match bootstrap::publish_fork(parent, ticket) {
+            Ok(child) => {
+                // P5-3b-4：prepared fork 子任务随父 CPU 发布；子任务此前只有 Prepared
+                // 状态，发布与入队在此一次完成。
+                #[cfg(feature = "sched-percpu-probe")]
+                crate::sched::publish_fork(child, parent).expect("prepared fork placement");
+                child as u64
+            }
+            Err(error) => encode_errno(task_destroy_errno(error)),
+        },
         2 => {
             let Some((_, offset)) = crate::cow::root_and_offset() else {
                 return encode_errno(Errno::Fault);
@@ -2376,6 +2399,10 @@ fn clone_call(flags: u64, stack_top: u64, parent_tid: u64, child_tid: u64, tls: 
         sched::write_user_word(caller, parent_tid, thread.to_le_bytes())
             .expect("clone output preflight");
     }
+    // P5-3b-4：线程与调用者共享 root，随调用者 CPU 发布并入队。
+    #[cfg(feature = "sched-percpu-probe")]
+    sched::publish_placed(thread, crate::cpu::local::current_index())
+        .expect("clone thread placement");
     thread as u64
 }
 
@@ -2446,6 +2473,9 @@ fn thread_create_call(entry: u64, stack_top: u64, tls: u64) -> u64 {
         return encode_errno(Errno::Invalid);
     }
     crate::signal::bind_thread(caller, thread);
+    // P5-3b-4：线程随调用者 CPU 发布；线程共享 root，不迁移。
+    #[cfg(feature = "sched-percpu-probe")]
+    sched::publish_placed(thread, crate::cpu::local::current_index()).expect("thread placement");
     thread as u64
 }
 
@@ -3228,19 +3258,25 @@ fn send_call(
         payload,
         &caps[..cap_count as usize],
     ) {
-        Ok(()) => {
-            if was_blocked {
+        Ok(direct) => {
+            // P5-3b-4 丢唤醒修复：以 `send_message` 的锁内判定为准。锁外的 `was_blocked`
+            // 快照可能与锁内转换不一致（接收者恰在两次加锁之间阻塞），旧代码会因此
+            // 既不写回也不入队，接收者停在 `Ready` 且无人唤醒。
+            if direct {
                 // 直投：吃掉 pending（否则后续 `SYS_RECV` 会重复投递同一消息），并把 payload
                 // 注入被唤醒任务的保存帧 `rax`，使其阻塞中的 `SYS_RECV` 直接返回 payload。
                 let message = bootstrap::take_pending_global(receiver)
                     .expect("successful direct send must leave a pending message");
                 if let Some(out) = direct_out {
-                    write_recv_out(receiver, out, Some(&message));
+                    write_recv_out(receiver, &out, Some(&message));
                 }
                 sched::clear_recv_out(receiver);
                 sched::set_frame_rax(receiver, payload);
+                // P5-3b-3：唤醒按目标 owner 入队；目标 CPU 的空闲循环轮询自有队列。
+                #[cfg(feature = "sched-percpu-probe")]
+                sched::wake_enqueue(receiver);
             }
-            ipc_path_record(was_blocked);
+            ipc_path_record(direct);
             0
         }
         Err(error) => encode_errno(ipc_errno(error)),
@@ -3298,7 +3334,7 @@ fn recv_out_phys_from_pte(ptr: u64, pte: u64, offset: u64) -> Result<u64, Errno>
     Ok(phys_to_virt((pte & PT_ADDR_MASK) + (ptr & 0xfff), offset))
 }
 
-fn write_recv_out(receiver: u32, out: RecvOutPhys, message: Option<&bootstrap::IpcMessage>) {
+fn write_recv_out(receiver: u32, out: &RecvOutPhys, message: Option<&bootstrap::IpcMessage>) {
     let mut values = [0u64; 5];
     if let Some(message) = message {
         for (index, cap) in message.capabilities[..message.capability_count]
@@ -3334,7 +3370,7 @@ pub fn complete_pending_recv(task: u32) {
         }
     };
     if let Some(message) = bootstrap::take_pending_global(task) {
-        write_recv_out(task, out, Some(&message));
+        write_recv_out(task, &out, Some(&message));
         let uart = message.sender == bootstrap::KERNEL_ACTOR
             && bootstrap::irq_source(4).is_some_and(|source| {
                 message.payload
@@ -3355,23 +3391,29 @@ fn recv_call(out_ptr: u64, format: u64) -> u64 {
         Err(error) => return encode_errno(error),
     };
     sched::set_recv_extended(cur, format == 1);
+    // P5-3b-4：先登记 out 指针并写零元数据，再在同一状态锁内「取消息或阻塞」。
+    // `receive_message` 本身在空队列时原子置 BlockedRecv；先登记 out 指针可保证
+    // 锁内直投的发送方总能验证到输出缓冲。
+    sched::set_recv_out(cur, out_ptr);
+    write_recv_out(cur, &out, None);
     match bootstrap::receive_message(cur) {
         Ok(message) => {
-            write_recv_out(cur, out, Some(&message));
+            write_recv_out(cur, &out, Some(&message));
             sched::clear_recv_out(cur);
             message.payload
         }
         Err(bootstrap::IpcError::QueueEmpty) => {
-            write_recv_out(cur, out, None);
             let mut frame = current_context();
             frame.rax = 0;
             sched::set_frame(cur, frame);
             mark_blocked_call(cur, if format == 1 { SYS_RECV_META } else { SYS_RECV });
-            sched::set_recv_out(cur, out_ptr);
             IPC_PATHS.with_mut(|paths| paths.blocks += 1);
             sched::block_current()
         }
-        Err(error) => encode_errno(ipc_errno(error)),
+        Err(error) => {
+            sched::clear_recv_out(cur);
+            encode_errno(ipc_errno(error))
+        }
     }
 }
 
@@ -3593,6 +3635,16 @@ fn create_task_call(req_ptr: u64, held: bool) -> Result<u64, Errno> {
         req.name,
     )
     .map_err(|_| Errno::NoSpace)?;
+    // P5-3b-3：非 held 的 `SYS_TASK_CREATE` 随调用者 CPU 发布；失败即回收，不留半发布任务。
+    #[cfg(feature = "sched-percpu-probe")]
+    if !held
+        && crate::sched::publish_placed(outcome.task_id, crate::cpu::local::current_index())
+            .is_err()
+    {
+        let _ = bootstrap::task_destroy(caller, outcome.task_id, Some(outcome.root_phys), offset);
+        crate::sched::clear_task(outcome.task_id);
+        return Err(Errno::NoSpace);
+    }
     if !held {
         TASK_STATE.with_mut(|state| {
             if state.create_count == 0 {
@@ -4246,15 +4298,20 @@ fn gate_control_operation(task: u32, num: u64, args: &[u64; MAX_ARGS]) -> Result
                 } else {
                     decode_caller_handle(args[1]).map_err(auth_errno)?
                 };
-                gate::with_state(|s| s.start_held_task(task, cap, other, args[2], args[3] == 1))
-                    .map(|cap| {
-                        if cap.is_zero() {
-                            0
-                        } else {
-                            encode_caller_handle(cap)
-                        }
-                    })
-                    .map_err(gate_errno)
+                let started = gate::with_state(|s| {
+                    s.start_held_task(task, cap, other, args[2], args[3] == 1)
+                })
+                .map_err(gate_errno)?;
+                // P5-3b-4：held-launch 在发布时指定在线 CPU（队列最短者）并一次置
+                // owner+入队。任务 id 刚创建、owner 未设，故放置不会失败。
+                #[cfg(feature = "sched-percpu-probe")]
+                crate::sched::publish_placed(target, crate::sched::placement_cpu())
+                    .expect("held launch placement");
+                Ok(if started.is_zero() {
+                    0
+                } else {
+                    encode_caller_handle(started)
+                })
             }
             SYS_TASK_SET_TLS => {
                 validate_fs_base(args[1])?;

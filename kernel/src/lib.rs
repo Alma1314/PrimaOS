@@ -29,6 +29,8 @@ pub mod nmi_probe;
 pub mod preempt;
 pub mod rights;
 pub mod sched;
+#[cfg(feature = "sched-percpu-probe")]
+pub mod sched_probe;
 #[doc(hidden)]
 pub mod signal;
 #[cfg(feature = "smp-ap")]

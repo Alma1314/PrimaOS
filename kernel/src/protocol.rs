@@ -117,7 +117,7 @@ pub(crate) fn gs3_progress(
 }
 
 /// P5-3b-1：每 CPU 入口现场探针的 `-smp` 见证（四项计数 + PASS）。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_ready(witness: &kernel::entry_probe::EntryWitness) {
     serial::write_bytes(b"SMP|entry=cpus=");
     write_u32(witness.cpus);
@@ -133,7 +133,7 @@ pub(crate) fn entry_ready(witness: &kernel::entry_probe::EntryWitness) {
 }
 
 /// P5-3b-1：入口探针失败。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_fail(reason: &str) {
     serial::write_bytes(b"SMP|stage=entry-fail=");
     serial::write_bytes(reason.as_bytes());
@@ -141,7 +141,7 @@ pub(crate) fn entry_fail(reason: &str) {
 }
 
 /// P5-3b-2：CPL3 用户入口现场探针的 `-smp` 见证（六项计数 + PASS）。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_user_ready(witness: &kernel::entry_probe::UserWitness) {
     serial::write_bytes(b"SMP|entry-user=cpus=");
     write_u32(witness.cpus);
@@ -161,7 +161,7 @@ pub(crate) fn entry_user_ready(witness: &kernel::entry_probe::UserWitness) {
 }
 
 /// P5-3b-2 诊断行：用户根构建失败的 CPU 与步骤码。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_root_fail(cpu: usize, step: u32) {
     serial::write_bytes(b"SMP|stage=entry-root-fail=");
     write_u32(cpu as u32);
@@ -171,7 +171,7 @@ pub(crate) fn entry_root_fail(cpu: usize, step: u32) {
 }
 
 /// P5-3b-2 诊断行：每 CPU 的 CPL3 自检标志。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_user_progress(flags: &[[u32; 8]; 4]) {
     for (cpu, slots) in flags.iter().enumerate() {
         serial::write_bytes(b"SMP|stage=entry-user-cpu=");
@@ -197,7 +197,7 @@ pub(crate) fn entry_user_progress(flags: &[[u32; 8]; 4]) {
 }
 
 /// P5-3b-1 诊断行：每 CPU 的 `[syscall, ctx, fault, frame]` 自检标志。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 pub(crate) fn entry_progress(flags: &[[u32; 4]; 4]) {
     for (cpu, slots) in flags.iter().enumerate() {
         serial::write_bytes(b"SMP|stage=entry-cpu=");
@@ -212,6 +212,156 @@ pub(crate) fn entry_progress(flags: &[[u32; 4]; 4]) {
         write_u32(slots[3]);
         serial::write_bytes(b"\r\n");
     }
+}
+
+/// P5-3b-3：每 CPU 队列/放置/唯一运行者与双核负载的 `-smp` 见证。
+#[cfg(feature = "sched-percpu-probe")]
+pub(crate) fn sched_ready(witness: &kernel::sched_probe::SchedWitness) {
+    serial::write_bytes(b"SMP|sched=cpus=");
+    write_u32(witness.cpus);
+    serial::write_bytes(b";online=");
+    write_u32(witness.online);
+    serial::write_bytes(b";place_ok=");
+    write_u32(witness.place_ok);
+    serial::write_bytes(b";single_ok=");
+    write_u32(witness.single_ok);
+    serial::write_bytes(b";queues_ok=");
+    write_u32(witness.queues_ok);
+    serial::write_bytes(b";barrier_ok=");
+    write_u32(witness.barrier_ok);
+    serial::write_bytes(b";wake_ok=");
+    write_u32(witness.wake_ok);
+    serial::write_bytes(b";fork_ok=");
+    write_u32(witness.fork_ok);
+    serial::write_bytes(b";child_ok=");
+    write_u32(witness.child_ok);
+    serial::write_bytes(b";nested_ok=");
+    write_u32(witness.nested_ok);
+    serial::write_bytes(b";launch_ok=");
+    write_u32(witness.launch_ok);
+    serial::write_bytes(b";prepared_ok=");
+    write_u32(witness.prepared_ok);
+    serial::write_bytes(b";thread_ok=");
+    write_u32(witness.thread_ok);
+    serial::write_bytes(b";exec_ok=");
+    write_u32(witness.exec_ok);
+    serial::write_bytes(b";lost_ok=");
+    write_u32(witness.lost_ok);
+    serial::write_bytes(b";PASS\r\n");
+}
+
+/// P5-3b-3：sched 探针失败原因。
+#[cfg(feature = "sched-percpu-probe")]
+pub(crate) fn sched_fail(reason: &str) {
+    serial::write_bytes(b"SMP|sched=FAIL|");
+    serial::write_bytes(reason.as_bytes());
+    serial::write_bytes(b"\r\n");
+}
+
+/// P5-3b-3 诊断行：各阶段标志与每 CPU 队列长度（不属于验收）。
+#[cfg(feature = "sched-percpu-probe")]
+pub(crate) fn sched_progress(progress: &kernel::sched_probe::Progress) {
+    serial::write_bytes(b"SMP|stage=sched;done=");
+    write_u32(progress.done);
+    serial::write_bytes(b";arrived=");
+    write_u32(progress.arrived);
+    serial::write_bytes(b";park_fail=");
+    write_u32(progress.park_failed);
+    serial::write_bytes(b";setup=");
+    write_u32(progress.setup_step);
+    serial::write_bytes(b";go=");
+    write_u32(u32::from(progress.go));
+    serial::write_bytes(b";launch=");
+    write_u32(progress.launch);
+    serial::write_bytes(b";exa=");
+    write_u32(progress.exec_arrived);
+    serial::write_bytes(b";how=");
+    write_u32(progress.held_owner);
+    serial::write_bytes(b";ht=");
+    write_u32(progress.held_task);
+    for cpu in 0..4usize {
+        serial::write_bytes(b";q");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.queues[cpu] as u32);
+        serial::write_bytes(b";b");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.barrier[cpu]);
+        serial::write_bytes(b";w");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.wake[cpu]);
+        serial::write_bytes(b";f");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.fork[cpu]);
+        serial::write_bytes(b";c");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.child[cpu]);
+        serial::write_bytes(b";n");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.nested[cpu]);
+        serial::write_bytes(b";pp");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.prepared[cpu]);
+        serial::write_bytes(b";th");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.thread[cpu]);
+        serial::write_bytes(b";xc");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.exec[cpu]);
+        serial::write_bytes(b";lw");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.lost[cpu]);
+        serial::write_bytes(b";st");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.stage[cpu]);
+        serial::write_bytes(b";tk");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.stage_task[cpu]);
+        serial::write_bytes(b";se");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.sched_err[cpu]);
+        serial::write_bytes(b";rs");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.resumes[cpu]);
+        serial::write_bytes(b";fr");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_hex_u64(progress.fork_raw[cpu]);
+        serial::write_bytes(b";sp");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.spin[cpu]);
+        serial::write_bytes(b";ex");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_hex_u64(progress.exc[cpu]);
+        serial::write_bytes(b";exr");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_hex_u64(progress.exc_rip[cpu]);
+        serial::write_bytes(b";ae");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.ap_entries[cpu]);
+        serial::write_bytes(b";ai");
+        write_u32(cpu as u32);
+        serial::write_bytes(b"=");
+        write_u32(progress.ap_last_index[cpu]);
+    }
+    serial::write_bytes(b"\r\n");
 }
 
 /// GS-1：输出一次 ring3 用户 GS 探针见证（`GS|...;ok=0/1`，随后 `GS|PASS`/`GS|FAIL`）。

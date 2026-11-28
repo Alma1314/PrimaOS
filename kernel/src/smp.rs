@@ -33,7 +33,11 @@ const LAPIC_ICR_LOW: u32 = 0x300;
 const LAPIC_ICR_HIGH: u32 = 0x310;
 const ICR_DELIVERY_STATUS: u32 = 1 << 12;
 /// INIT：delivery mode 5、level assert、level trigger。
-const ICR_INIT: u32 = 0x000c_4500;
+///
+/// destination shorthand（bits 19:18）必须为 00（仅在 `ICR_HIGH` 指定的 CPU 上投递）。
+/// 旧值 `0x000c4500` 把这两位设成 `11`（all-excluding-self），启动第二个 AP 的 INIT
+/// 会重置**所有已上线 AP**；P5-3b-3 要求 AP1 在后续 AP 启动后继续执行才暴露此缺陷。
+const ICR_INIT: u32 = 0x0000_4500;
 /// SIPI：delivery mode 6（vector 在低 8 位）。
 const ICR_SIPI: u32 = 0x0000_0600;
 const IA32_APIC_BASE: u32 = 0x1b;
@@ -194,6 +198,12 @@ pub fn ap_stack_bounds(index: u32) -> (u64, u64) {
 ///
 /// IF 仍为 0：IDT 已有门，但 AP 不参与中断/调度；装载失败不置在线位，由 BSP 超时判失败。
 extern "C" fn ap_entry(index: u32) -> ! {
+    #[cfg(feature = "sched-percpu-probe")]
+    {
+        let apic = cpuid_apic_id() as usize;
+        let slot = apic.min(crate::cpu::local::MAX_CPUS - 1);
+        crate::sched_probe::note_ap_entry(slot, index);
+    }
     // GS-3：先安装本 CPU 的 GS 区，再经 `%gs` 自测。测量放在启动入口而非等 BSP
     // 会合：单线程 TCG 下忙等的 vCPU 不保证被再次调度，入口执行则是确定的。
     #[cfg(feature = "gs3-probe")]
@@ -219,7 +229,7 @@ extern "C" fn ap_entry(index: u32) -> ! {
         AP_TSS_BASE[index as usize]
             .store(crate::gdt::loaded_tss_base().unwrap_or(0), Ordering::SeqCst);
         // P5-3b-1：本 CPU 执行一次 CPL0 `int 0x80` 与 #PF，写本 CPU 的入口现场槽。
-        #[cfg(feature = "entry-percpu-probe")]
+        #[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
         {
             let (stack_lo, stack_hi) = ap_stack_bounds(index);
             crate::entry_probe::run_local(index as usize, stack_lo, stack_hi);
@@ -227,15 +237,29 @@ extern "C" fn ap_entry(index: u32) -> ! {
         ready = true;
     }
     // P5-3b-2：本 CPU 从 CPL3 执行用户探针；其收尾回调置在线位并停放（不返回）。
-    #[cfg(feature = "entry-percpu-probe")]
+    #[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
     if ready {
         let offset = AP_PHYS_OFFSET.load(Ordering::SeqCst);
         crate::entry_probe::run_user_local(index as usize, offset, 0);
+    }
+    // P5-3b-3：AP 进入真实调度。先置在线位，再等待 BSP 发布任务；随后只消费本 CPU
+    // 队列（`idle_for` 不返回）。
+    #[cfg(feature = "sched-percpu-probe")]
+    if ready {
+        ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
+        prima_ostd::entry::enable_gs_swap();
+        crate::sched_probe::ap_enter(index as usize);
     }
     ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
     loop {
         prima_ostd::arch::hlt();
     }
+}
+
+/// P5-3b-3：在线 CPU 位图（bit0 = BSP）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn online_mask() -> u32 {
+    ONLINE.load(Ordering::SeqCst)
 }
 
 /// P5-3b-2：AP 用户探针收尾时置在线位（由 `entry_probe::finish` 调用）。
@@ -554,6 +578,19 @@ mod tests {
         assert_eq!(first % 16, 0);
         assert_eq!(second % 16, 0);
         assert!(first > second || second > first);
+    }
+
+    /// P5-3b-3：INIT IPI 必须是定向投递；destination shorthand 非零会重置已上线 AP。
+    #[test]
+    fn init_ipi_is_directed() {
+        assert_eq!(
+            (ICR_INIT >> 18) & 0x3,
+            0,
+            "destination shorthand must be none"
+        );
+        assert_eq!((ICR_INIT >> 8) & 0x7, 5, "delivery mode must be INIT");
+        assert_eq!(ICR_SIPI & (0x3 << 18), 0);
+        assert_eq!((ICR_SIPI >> 8) & 0x7, 6, "delivery mode must be SIPI");
     }
 
     /// P5-3：BSP 与每个 AP 槽都指向不同的 TSS。

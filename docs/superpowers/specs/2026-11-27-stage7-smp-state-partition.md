@@ -161,8 +161,18 @@ GS-3（每 CPU GS 区与热路径 CPU 索引）**探针已落盘**（见
 `USER_FRAME`、`syscall` 快路径（每 CPU 栈/`USER_RSP`/保存块基址）与 `resume` 跳板改为
 每 CPU 槽；每 CPU 构造最小用户根从 CPL3 自检，`-smp 2/4` 下每 CPU 六项计数等于 vCPU
 数；AP 共享跳板根覆盖叶，可运行队列/创建时放置/唯一运行者与阻塞恢复/嵌套故障反例
-未做，AP 用户态调度仍受 §5.1 准入阻断）。GS-4、P5-3b-3（可运行队列、创建时放置与
-准入反例）待做。
+未做，AP 用户态调度仍受 §5.1 准入阻断）。**P5-3b-3 已落盘**（见
+[报告](../reports/2026-11-28-p5-3b3-queue-placement.md)：每 CPU 可运行队列、owner 与
+单运行者守卫，AP 进入真实调度循环运行真实 Task；双核同时驻留屏障、跨核 `SEND`/`RECV`
+阻塞唤醒、真实 `SYS_FORK`（子随父 CPU）与用户 #PF 内嵌套 CPL0 #PF 在 `test-sched`
+`-smp 2/4` 两轮通过；顺带修复 `ICR_INIT` 广播简写会重置已上线 AP 的缺陷。仍只让
+CPU0/CPU1 承载负载、本命令用 MTTCG，held-launch 放置、`SYS_EXEC_REPLACE` 并发、完整
+丢唤醒矩阵与 IPI 未做）。**P5-3b-4 已落盘**（见
+[报告](../reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)：`SYS_TASK_START` 的
+held-launch、prepared fork 与线程创建接入创建时放置；双核同时 `SYS_EXEC_REPLACE` 换根
+后完成 4 轮跨核阻塞/唤醒矩阵；顺带修复 `SYS_SEND` 直投判定使用锁外快照导致的真实丢
+唤醒。Gate 内部创建路径、服务管理器 held-launch 流程、程序级并行 fork/exec、IPI/TLB
+未做）。GS-4、Gate 创建路径放置与 P5-4 待做。
 
 ## 8. 分期工作包与验收观察
 
@@ -171,7 +181,7 @@ GS-3（每 CPU GS 区与热路径 CPU 索引）**探针已落盘**（见
 | P5-0 | 本文 + CPU 本地入口 + 调度当前任务分区 | host 测试与既有 BIOS 启动逐字节回归；不声称 SMP | **本片** |
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
 | P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
-| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)；可运行队列、创建时放置与准入反例待 P5-3b-3）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
+| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)）；**P5-3b-3 完成探针范围**（每 CPU 队列/owner/单运行者、AP 真实调度、双核屏障/跨核唤醒/真实 fork/嵌套 #PF，[报告](../reports/2026-11-28-p5-3b3-queue-placement.md)）；**P5-3b-4 完成探针范围**（held-launch/prepared fork/线程创建放置、双核 exec 换根、4 轮跨核丢唤醒矩阵，并修复 `SYS_SEND` 直投判定丢唤醒，[报告](../reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)；Gate 内部创建路径与服务管理器流程未接）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
 | P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 旧映射失效、确认前帧不复用、超时不静默成功 | 待做；允许跨 CPU 活动映射变更前必须交付最小协议，必要时提前到 P5-3 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |
 

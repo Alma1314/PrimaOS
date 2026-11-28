@@ -4,7 +4,7 @@ kind: index
 authority: navigation
 status: maintained
 lifecycle: current
-updated: 2026-11-27
+updated: 2026-11-28
 ---
 
 # Reports 索引
@@ -15,6 +15,8 @@ updated: 2026-11-27
 
 | 日期 | 报告/链入口 |
 |---|---|
+| 2026-11-28 | [P5-3b-4 held-launch 放置、双核 exec 与丢唤醒矩阵](2026-11-28-p5-3b4-launch-exec-lost-wakeup.md) |
+| 2026-11-28 | [P5-3b-3 每 CPU 队列、创建时放置与真实双核负载](2026-11-28-p5-3b3-queue-placement.md) |
 | 2026-11-28 | [P5-3b-2 CPL3 入口、快路径与恢复跳板每 CPU 分区](2026-11-28-p5-3b2-user-fastpath-percpu.md) |
 | 2026-11-27 | [文档整理、合并与压缩](2026-11-27-documentation-consolidation.md) |
 | 2026-11-27 | [P5-3b-1 CPL0 每 CPU 入口现场探针](2026-11-27-p5-3b1-entry-percpu.md) |

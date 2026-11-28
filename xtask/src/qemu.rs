@@ -159,6 +159,25 @@ pub(crate) fn run_bios_entry(image: &Path, smp: u8, round: u32) -> Result<(), St
     Ok(())
 }
 
+/// P5-3b-3：`-smp 2/4` 下两个真实任务在各自 CPU 上经队列运行，完成屏障、跨核唤醒、
+/// `SYS_FORK`、嵌套故障与收尾。镜像在见证后立即退出，只校验 SMP 事件与 `SMP|sched=`。
+pub(crate) fn run_bios_sched(image: &Path, smp: u8, round: u32) -> Result<(), String> {
+    let output = run_captured_with(qemu_args_sched(image, smp), TEST_TIMEOUT)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::write(
+        root.join(format!("target/prima-os/SCHED-{smp}-{round}.log")),
+        &output.stdout,
+    )
+    .map_err(|error| format!("could not preserve sched witness: {error}"))?;
+    validate_exit_code(output.status.code(), SUCCESS_EXIT_CODE)
+        .map_err(|error| with_output(error, &output))?;
+    protocol::validate_sched(&output.stdout, smp).map_err(|error| with_output(error, &output))?;
+    println!(
+        "PASS SCHED smp={smp} round={round} active=2 online={smp} queue=percpu fork=parent-cpu wake=target-cpu"
+    );
+    Ok(())
+}
+
 /// GS-1：受控 ring3 用户 GS 探针（单核默认参数）。只校验退出码与 `GS|` 见证；
 /// 该镜像替换了用户程序，故不跑完整用户-phase 校验器（见 GS-1 报告的范围说明）。
 pub(crate) fn run_bios_gs(image: &Path, round: u32) -> Result<(), String> {
@@ -197,6 +216,16 @@ fn qemu_args_smp(image: &Path, smp: u8) -> Vec<OsString> {
     let mut args = qemu_args(image);
     if let Some(index) = args.iter().position(|argument| argument == "-smp") {
         args[index + 1] = OsString::from(smp.to_string());
+    }
+    args
+}
+
+/// P5-3b-3：真实双核负载用 MTTCG（每 vCPU 一个宿主线程），否则单线程 TCG 会在
+/// 自旋 vCPU 上饿死另一核，无法观察同时执行。其余参数与 SMP 基线一致，不改默认镜像。
+fn qemu_args_sched(image: &Path, smp: u8) -> Vec<OsString> {
+    let mut args = qemu_args_smp(image, smp);
+    if let Some(index) = args.iter().position(|argument| argument == "-accel") {
+        args[index + 1] = OsString::from("tcg,thread=multi");
     }
     args
 }

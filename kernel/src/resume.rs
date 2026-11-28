@@ -31,6 +31,7 @@ struct ResumeStack(
 static RESUME_STACK: StaticCell<ResumeStack> = StaticCell::new(ResumeStack([0; RESUME_STACK_SIZE]));
 
 /// SPEC-073：§12.10 帧验证所需的 `(landing, stack_bottom, stack_top)`。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn resume_target() -> (u64, u64, u64) {
     let (bottom, top) = stack_bounds();
     (prima_ostd::entry::resume_landing_addr(), bottom, top)

@@ -892,14 +892,14 @@ pub struct PreparedUserWrite {
 
 impl PreparedUserWrite {
     /// Commit without another fallible page walk or allocation.
-    pub fn write(self, bytes: &[u8], map: impl Fn(u64) -> u64) {
+    pub fn write(&self, bytes: &[u8], map: impl Fn(u64) -> u64) {
         assert_eq!(
             bytes.len(),
             self.len,
             "preflight covers the complete output"
         );
         let mut copied = 0;
-        for chunk in self.chunks {
+        for chunk in &self.chunks {
             for index in 0..chunk.len {
                 prima_ostd::mm::write_u8_at(
                     map(chunk.physical),

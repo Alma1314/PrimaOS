@@ -135,13 +135,20 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             // P5-3b：先于任何 AP 启动把 syscall/快路径/#PF 回调
                                             // 换成探针版本，并登记用户探针收尾；镜像在见证后
                                             // 退出，不恢复。
-                                            #[cfg(feature = "entry-percpu-probe")]
+                                            #[cfg(all(
+                                                feature = "entry-percpu-probe",
+                                                not(feature = "sched-percpu-probe")
+                                            ))]
                                             {
                                                 kernel::entry_probe::install_handlers();
                                                 prima_ostd::entry::set_finish_handler(
                                                     entry_probe_finish,
                                                 );
                                             }
+                                            #[cfg(feature = "sched-percpu-probe")]
+                                            prima_ostd::entry::set_finish_handler(
+                                                sched_probe_finish,
+                                            );
                                             // S2-D4：进入 CPL3 前屏蔽 8259 全部中断。上电默认
                                             // IRQ0→vector 8（=#DF 门），用户帧 IF=1 且用户阶段
                                             // 长于 PIT 默认周期时会被当成 #DF 交付并三重故障。
@@ -206,7 +213,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                                 qemu::PANIC
                                                             })
                                                         }
-                                                        #[cfg(feature = "entry-percpu-probe")]
+                                                        #[cfg(feature = "sched-percpu-probe")]
+                                                        kernel::sched_probe::note_aps(aps);
+                                                        #[cfg(all(
+                                                            feature = "entry-percpu-probe",
+                                                            not(feature = "sched-percpu-probe")
+                                                        ))]
                                                         {
                                                             // AP 在各自入口已运行 CPL0/CPL3 探针；
                                                             // BSP 最后补测自身（CPL0），再进入
@@ -430,44 +442,49 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     };
                                     // 让后续 `SYS_TASK_CREATE` 也从自建根克隆地址空间。
                                     kernel::cow::rebase_root(self_root);
-                                    if kernel::user::prepare(offset).is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // M：第二 ring3 任务的用户页面（与 task 1 区域不相交）。
-                                    if kernel::user::prepare_task2(offset).is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // O：两任务各自的抢占空转页（同 VA、不同帧）。
-                                    if kernel::user::prepare_spin(offset).is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // S2-D4：建新 Task 的代码段（用户区第一个 id）并铸两条 bring-up
-                                    // Capability。必须放在既有取帧序列之后，避免平移 E/F/G/O 的
-                                    // 物理帧序列。
-                                    if kernel::user::prepare_task_create(offset).is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // EXO-2D：所有 boot capability 已铸妥，写入 init 的通用 entry ABI。
-                                    if kernel::user::install_boot_info(offset).is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // SPEC-066：把 11 条用户可见平台段 cap 与 2 条平台 Task cap 按
-                                    // 属主移交给 task 1 / task 2，使用户可自持经 memseg_map 使用。
-                                    // 必须在既有 bring-up 映射（均以 KERNEL_ACTOR 为 caller）之后。
-                                    if kernel::bootstrap::handover_platform_caps().is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
+                                    // P5-3b-3：探针镜像自带最小用户根与真实任务，不装载默认 init
+                                    // 程序的页面/段/能力，避免占用 fork 所需的审计与帧预算。
+                                    #[cfg(not(feature = "sched-percpu-probe"))]
+                                    {
+                                        if kernel::user::prepare(offset).is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // M：第二 ring3 任务的用户页面（与 task 1 区域不相交）。
+                                        if kernel::user::prepare_task2(offset).is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // O：两任务各自的抢占空转页（同 VA、不同帧）。
+                                        if kernel::user::prepare_spin(offset).is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // S2-D4：建新 Task 的代码段（用户区第一个 id）并铸两条
+                                        // bring-up Capability。必须放在既有取帧序列之后，避免平移
+                                        // E/F/G/O 的物理帧序列。
+                                        if kernel::user::prepare_task_create(offset).is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // EXO-2D：所有 boot capability 已铸妥，写入 init 的通用
+                                        // entry ABI。
+                                        if kernel::user::install_boot_info(offset).is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // SPEC-066：把 11 条用户可见平台段 cap 与 2 条平台 Task cap
+                                        // 按属主移交给 task 1 / task 2，使用户可自持经 memseg_map 使用。
+                                        if kernel::bootstrap::handover_platform_caps().is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
                                     }
                                     // J：配置 syscall/sysret 快路径 MSR（EFER.SCE/STAR/LSTAR/FMASK），
                                     // 用户代码随后用 `syscall` 指令再次进入内核。
@@ -480,42 +497,47 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         kernel::msr::wrmsr(kernel::msr::IA32_KERNEL_GS_BASE, 0);
                                         prima_ostd::entry::enable_gs_swap();
                                     }
-                                    // SPEC-070：在 `activate_init` **之前**采集 Faulted 见证——此刻尚无任何
-                                    // Task 处于 Running，故「建见证 Task → 调度为 Running → §12.5 置
-                                    // Faulted」是一条合法路径。见证 Task 用保留槽位，不占用普通 id、
-                                    // 不铸 Capability、不取帧，既有的 id/帧/cap 序列不受扰动。
-                                    if kernel::bootstrap::record_fault_witness().is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // SPEC-072：同一窗口采集 §8.2 内核回收见证（KernelActor 无 cap
-                                    // 销毁不可恢复的 Faulted 任务；可恢复者必须被拒）。
-                                    if kernel::bootstrap::record_reclaim_witness().is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // SPEC-073：同一窗口见证 §12.10 `exc_resume`（KernelActor 代故障任务
-                                    // 调用）。帧的 landing/栈界取自切片 D 的恢复跳板与专用栈。
-                                    let (landing, stack_bottom, stack_top) =
-                                        resume::resume_target();
-                                    if kernel::bootstrap::record_resume_witness(
-                                        landing,
-                                        stack_bottom,
-                                        stack_top,
-                                    )
-                                    .is_err()
+                                    // P5-3b-3：探针不采集这些 boot 见证（它们会占任务/审计槽，
+                                    // 且 init 必须保持 Ready 才可由创建时放置发布）。
+                                    #[cfg(not(feature = "sched-percpu-probe"))]
                                     {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
-                                    }
-                                    // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
-                                    if kernel::bootstrap::activate_init().is_err() {
-                                        protocol::panic_event();
-                                        serial::flush();
-                                        qemu::exit(qemu::PANIC)
+                                        // SPEC-070：在 `activate_init` **之前**采集 Faulted 见证——此刻尚无任何
+                                        // Task 处于 Running，故「建见证 Task → 调度为 Running → §12.5 置
+                                        // Faulted」是一条合法路径。见证 Task 用保留槽位，不占用普通 id、
+                                        // 不铸 Capability、不取帧，既有的 id/帧/cap 序列不受扰动。
+                                        if kernel::bootstrap::record_fault_witness().is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // SPEC-072：同一窗口采集 §8.2 内核回收见证（KernelActor 无 cap
+                                        // 销毁不可恢复的 Faulted 任务；可恢复者必须被拒）。
+                                        if kernel::bootstrap::record_reclaim_witness().is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // SPEC-073：同一窗口见证 §12.10 `exc_resume`（KernelActor 代故障任务
+                                        // 调用）。帧的 landing/栈界取自切片 D 的恢复跳板与专用栈。
+                                        let (landing, stack_bottom, stack_top) =
+                                            resume::resume_target();
+                                        if kernel::bootstrap::record_resume_witness(
+                                            landing,
+                                            stack_bottom,
+                                            stack_top,
+                                        )
+                                        .is_err()
+                                        {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
+                                        // SPEC-061：init 首次被调度——Ready→Running + TaskStateChanged。
+                                        if kernel::bootstrap::activate_init().is_err() {
+                                            protocol::panic_event();
+                                            serial::flush();
+                                            qemu::exit(qemu::PANIC)
+                                        }
                                     }
                                     #[cfg(feature = "gate-audit-probe")]
                                     kernel::bootstrap::gate_audit_probe::set_observer(
@@ -532,6 +554,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 kernel::preempt::timestamp_hz().unwrap(),
                                             );
                                         }
+                                        #[cfg(feature = "sched-percpu-probe")]
+                                        kernel::sched_probe::setup_and_enter(offset);
+                                        #[cfg(not(feature = "sched-percpu-probe"))]
                                         kernel::user::enter();
                                     }
                                 }
@@ -614,8 +639,37 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
     );
 }
 
+/// P5-3b-3：BSP 收尾——输出每 CPU 队列/放置/唯一运行者与双核负载见证并退出。
+#[cfg(feature = "sched-percpu-probe")]
+extern "C" fn sched_probe_finish(cpu: usize) -> ! {
+    if cpu != kernel::cpu::local::BSP {
+        loop {
+            prima_ostd::arch::hlt();
+        }
+    }
+    let witness = kernel::sched_probe::witness();
+    if witness.evidence_ok() {
+        protocol::sched_ready(&witness);
+        protocol::smp_pass();
+        serial::flush();
+        qemu::exit(qemu::SUCCESS)
+    } else {
+        protocol::sched_progress(&kernel::sched_probe::progress());
+        let reason = if kernel::sched_probe::timed_out() {
+            "timeout"
+        } else if kernel::sched_probe::setup_step() != 0 {
+            "root"
+        } else {
+            "mismatch"
+        };
+        protocol::sched_fail(reason);
+        serial::flush();
+        qemu::exit(qemu::PANIC)
+    }
+}
+
 /// P5-3b-2：每 CPU 用户探针收尾（AP 停放；BSP 汇总两面见证并退出）。
-#[cfg(feature = "entry-percpu-probe")]
+#[cfg(all(feature = "entry-percpu-probe", not(feature = "sched-percpu-probe")))]
 extern "C" fn entry_probe_finish(cpu: usize) -> ! {
     if cpu != kernel::cpu::local::BSP {
         kernel::smp::mark_online(cpu as u32);

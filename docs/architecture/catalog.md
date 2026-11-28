@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（271）
+## report（273）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -369,6 +369,8 @@
 | [WIN-M3 部分：多模块导入、静态 TLS 布局与三 DLL ring3 原型](../superpowers/reports/2026-11-27-windows-m3-loader-runtime.md) | current | `docs/superpowers/reports/2026-11-27-windows-m3-loader-runtime.md` |
 | [Windows LibOS 计划书审计（2026-11-27）](../superpowers/reports/2026-11-27-windows-plan-audit.md) | current | `docs/superpowers/reports/2026-11-27-windows-plan-audit.md` |
 | [P5-3b-2：CPL3 入口、`syscall` 快路径与恢复跳板的每 CPU 分区](../superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md` |
+| [P5-3b-3：每 CPU 可运行队列、创建时放置、唯一运行者与真实双核负载](../superpowers/reports/2026-11-28-p5-3b3-queue-placement.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b3-queue-placement.md` |
+| [P5-3b-4：held-launch 放置、prepared fork/线程发布、双核 exec 与丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md` |
 
 ## spec（4）
 

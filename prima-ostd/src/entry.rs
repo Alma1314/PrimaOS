@@ -587,6 +587,16 @@ pub fn user_frame() -> UserFrame {
 }
 
 /// 读取当前 syscall 保存块基址；未处于 `int 0x80` 现场时为 `None`。
+///
+/// P5-3b-3：每 CPU 入口把基址写入本 CPU 槽；此时按 `%gs:0` 索引读取，避免 AP 的真实
+/// 系统调用读到 BSP 的旧现场。普通镜像仍读全局单槽。
+#[cfg(all(feature = "entry-percpu-probe", not(test)))]
+pub fn context_base() -> Option<SaveBlock> {
+    percpu_context_base(crate::arch::read_gs_u32::<0>() as usize)
+}
+
+/// 读取当前 syscall 保存块基址；未处于 `int 0x80` 现场时为 `None`。
+#[cfg(any(not(feature = "entry-percpu-probe"), test))]
 pub fn context_base() -> Option<SaveBlock> {
     let raw = CONTEXT_BASE.load(Ordering::Relaxed);
     if raw == 0 {
@@ -1518,6 +1528,9 @@ const PERCPU_FRAME_OFF: usize = 0x20;
 const PERCPU_RESUME_OFF: usize = 0xC0;
 #[cfg(feature = "entry-percpu-probe")]
 const PERCPU_USER_FRAME_OFF: usize = 0xC8;
+/// P5-3b-3：恢复跳板写入的用户 `%gs` 基址（`resume_percpu_user` 用）。
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_USER_GS_OFF: usize = 0xF0;
 
 /// 每 CPU GS 区中由入口汇编直接读写的字段偏移（内核 `cpu::local::CpuLocal` 必须按此布局）。
 ///
@@ -1542,7 +1555,9 @@ struct PerCpuEntry {
     resume_frame: AtomicU64,
     /// CPL3 #PF 的返回现场（每 CPU）。
     user_frame: UnsafeCell<UserFrame>,
-    pad: [u8; 0x10],
+    /// P5-3b-3：即将恢复的用户 `%gs` 基址（0 = 无用户 GS）。
+    user_gs: AtomicU64,
+    pad: [u8; 0x08],
 }
 
 #[cfg(feature = "entry-percpu-probe")]
@@ -1562,7 +1577,8 @@ impl PerCpuEntry {
                 rsp: 0,
                 ss: 0,
             }),
-            pad: [0; 0x10],
+            user_gs: AtomicU64::new(0),
+            pad: [0; 0x08],
         }
     }
 }
@@ -2116,6 +2132,28 @@ pub fn resume_percpu(cpu: usize, frame: &SretFrame) -> ! {
     unsafe { exc_resume_entry_percpu() }
 }
 
+/// P5-3b-3：带用户 `%gs` 基址的每 CPU 恢复（真实任务用）。
+///
+/// 与 [`resume_percpu`] 的唯一差别：`iretq` 前把 `GS_BASE` 置为 `user_gs` 而不是 0，
+/// 内核侧原 GS 基址仍保存到 `KERNEL_GS_BASE`。`user_gs` 为 0 时与旧跳板等价。
+///
+/// 契约同 [`resume_percpu`]；`user_gs` 必须是已校验的低半区规范地址（调用方负责）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn resume_percpu_user(cpu: usize, frame: &SretFrame, user_gs: u64) -> ! {
+    let slot = percpu(cpu);
+    slot.resume_frame
+        .store(frame as *const SretFrame as u64, Ordering::Relaxed);
+    slot.user_gs.store(user_gs, Ordering::Relaxed);
+    // SAFETY: 见函数契约——帧与 GS 基址已校验；入口读取本 CPU 槽。
+    unsafe { exc_resume_entry_percpu_user() }
+}
+
+/// 指定 CPU 最近一次恢复跳板写入的用户 GS 基址（测试/诊断用）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_user_gs(cpu: usize) -> u64 {
+    percpu(cpu).user_gs.load(Ordering::Relaxed)
+}
+
 /// 每 CPU 恢复跳板：从 `%gs:0` 索引的槽读取帧指针，加载完整 `iretq` 帧与 GPR，
 /// 并把两根 GS MSR 切到用户态（`GS_BASE=0`、`KERNEL_GS_BASE=原 GS`）后 `iretq`。
 #[cfg(feature = "entry-percpu-probe")]
@@ -2167,6 +2205,62 @@ unsafe extern "C" fn exc_resume_entry_percpu() -> ! {
         "iretq",
         percpu = sym PERCPU,
         resume = const PERCPU_RESUME_OFF,
+    )
+}
+
+/// 带用户 `%gs` 基址的每 CPU 恢复跳板（P5-3b-3）。
+///
+/// 与 [`exc_resume_entry_percpu`] 相同，只把 `GS_BASE` 从 0 改为本槽的 `user_gs`；
+/// `KERNEL_GS_BASE` 仍保存内核侧原 GS，供入口 `swapgs` 配对。
+#[cfg(feature = "entry-percpu-probe")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn exc_resume_entry_percpu_user() -> ! {
+    core::arch::naked_asm!(
+        "mov eax, dword ptr gs:[0]",
+        "lea r10, [rip + {percpu}]",
+        "shl rax, 8",
+        "add r10, rax",
+        "mov r11, r10",
+        "mov r10, qword ptr [r10 + {resume}]",
+        "mov qword ptr [r11 + {resume}], 0",
+        // 保存内核 GS，然后写入本任务用户 GS（可能为 0），最后把内核 GS 存入 KERNEL_GS。
+        "mov ecx, 0xC0000101",
+        "rdmsr",
+        "mov r8d, eax",
+        "mov r9d, edx",
+        "mov rax, qword ptr [r11 + {user_gs}]",
+        "mov rdx, rax",
+        "shr rdx, 32",
+        "wrmsr",
+        "mov ecx, 0xC0000102",
+        "mov eax, r8d",
+        "mov edx, r9d",
+        "wrmsr",
+        "push qword ptr [r10 + 0x98]",
+        "push qword ptr [r10 + 0x38]",
+        "push qword ptr [r10 + 0x80]",
+        "push qword ptr [r10 + 0x90]",
+        "push qword ptr [r10 + 0x88]",
+        "mov rax, qword ptr [r10 + 0x00]",
+        "mov rbx, qword ptr [r10 + 0x08]",
+        "mov rcx, qword ptr [r10 + 0x10]",
+        "mov rdx, qword ptr [r10 + 0x18]",
+        "mov rsi, qword ptr [r10 + 0x20]",
+        "mov rdi, qword ptr [r10 + 0x28]",
+        "mov rbp, qword ptr [r10 + 0x30]",
+        "mov r8, qword ptr [r10 + 0x40]",
+        "mov r9, qword ptr [r10 + 0x48]",
+        "mov r11, qword ptr [r10 + 0x58]",
+        "mov r12, qword ptr [r10 + 0x60]",
+        "mov r13, qword ptr [r10 + 0x68]",
+        "mov r14, qword ptr [r10 + 0x70]",
+        "mov r15, qword ptr [r10 + 0x78]",
+        "mov r10, qword ptr [r10 + 0x50]",
+        "iretq",
+        percpu = sym PERCPU,
+        resume = const PERCPU_RESUME_OFF,
+        user_gs = const PERCPU_USER_GS_OFF,
     )
 }
 

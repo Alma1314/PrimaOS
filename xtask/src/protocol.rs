@@ -6947,9 +6947,132 @@ pub(crate) fn validate_entry(output: &str, smp: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// P5-3b-3：除 SMP 事件外，要求 `SMP|sched=` 行报告 2 个活动 CPU 的放置、唯一运行者、
+/// 每 CPU 队列、双核屏障、跨核唤醒、父 CPU fork、子任务执行与嵌套故障全部通过；
+/// `online` 必须等于 `-smp`。
+pub(crate) fn validate_sched(output: &str, smp: u8) -> Result<(), String> {
+    let records: Vec<_> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
+        .collect();
+    if records.len() != 5
+        || records[0] != "SMP|begin"
+        || records[4] != "SMP|PASS"
+        || !records[3].starts_with("SMP|sched=")
+    {
+        return Err("SCHED requires begin, discovery, AP, sched lines and one PASS".to_owned());
+    }
+    let discovery = records[1]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed SCHED discovery line".to_owned())?;
+    let (mut cpus, mut online, mut bsp_apic, mut lapic_id) = (None, None, None, None);
+    for field in discovery.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SCHED discovery field".to_owned())?;
+        match key {
+            "cpus" => cpus = Some(parse_decimal(value, key)?),
+            "online" => online = Some(parse_decimal(value, key)?),
+            "bsp_apic" => bsp_apic = Some(parse_decimal(value, key)?),
+            "lapic_id" => lapic_id = Some(parse_decimal(value, key)?),
+            "rsdp" | "xsdt" | "bsp_index" | "x2apic" => {
+                parse_decimal(value, key)?;
+            }
+            "lapic" if value.starts_with("0x") => {}
+            _ => return Err(format!("unknown or malformed SCHED discovery field: {key}")),
+        }
+    }
+    if cpus != Some(u64::from(smp))
+        || online != Some(1)
+        || bsp_apic.is_none()
+        || lapic_id != bsp_apic
+    {
+        return Err("SCHED discovery must match -smp with the bootstrap CPU online".to_owned());
+    }
+    let ap_line = records[2]
+        .strip_prefix("SMP|")
+        .ok_or_else(|| "malformed SCHED AP line".to_owned())?;
+    let (mut aps, mut ap_online, mut percpu, mut tss) = (None, None, None, None);
+    for field in ap_line.split(';') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SCHED AP field".to_owned())?;
+        match key {
+            "aps" => aps = Some(parse_decimal(value, key)?),
+            "online" => ap_online = Some(parse_decimal(value, key)?),
+            "percpu" => percpu = Some(parse_decimal(value, key)?),
+            "tss" => tss = Some(value),
+            _ => return Err(format!("unknown SCHED AP field: {key}")),
+        }
+    }
+    if aps != Some(u64::from(smp) - 1)
+        || ap_online != Some(u64::from(smp))
+        || percpu != aps
+        || tss != Some("distinct")
+    {
+        return Err("SCHED AP line must report every AP online with distinct TSS".to_owned());
+    }
+    let sched = records[3]
+        .strip_prefix("SMP|sched=")
+        .ok_or_else(|| "malformed SCHED witness line".to_owned())?;
+    let (mut witness_cpus, mut witnessed_online) = (None, None);
+    let mut fields: [Option<u64>; 13] = [None; 13];
+    let keys = [
+        ("place_ok", 2),
+        ("single_ok", 2),
+        ("queues_ok", 2),
+        ("barrier_ok", 2),
+        ("wake_ok", 2),
+        ("fork_ok", 2),
+        ("child_ok", 2),
+        ("nested_ok", 2),
+        ("launch_ok", 1),
+        ("prepared_ok", 2),
+        ("thread_ok", 2),
+        ("exec_ok", 2),
+        ("lost_ok", 2),
+    ];
+    let mut passed = false;
+    for field in sched.split(';') {
+        if field == "PASS" {
+            passed = true;
+            continue;
+        }
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed SCHED field".to_owned())?;
+        match key {
+            "cpus" => witness_cpus = Some(parse_decimal(value, key)?),
+            "online" => witnessed_online = Some(parse_decimal(value, key)?),
+            _ => match keys.iter().position(|(name, _)| *name == key) {
+                Some(index) => fields[index] = Some(parse_decimal(value, key)?),
+                None => return Err(format!("unknown SCHED field: {key}")),
+            },
+        }
+    }
+    let active = 2u64;
+    if !passed
+        || witness_cpus != Some(active)
+        || witnessed_online != Some(u64::from(smp))
+        || fields
+            .iter()
+            .zip(keys.iter())
+            .any(|(value, (_, expected))| *value != Some(*expected))
+    {
+        return Err(
+            "SCHED must observe per-CPU queues/placement/single runner, barrier, cross-CPU wake, \
+             parent-CPU fork/child, nested fault, held-launch placement, prepared fork, thread \
+             creation, concurrent exec replacement and the cross-CPU lost-wakeup matrix"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod smp_tests {
-    use super::{validate_entry, validate_gs3, validate_smp, validate_smp_ap};
+    use super::{validate_entry, validate_gs3, validate_sched, validate_smp, validate_smp_ap};
 
     const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
 
@@ -7061,6 +7184,51 @@ mod smp_tests {
                 "bad ENTRY witness accepted: {bad}"
             );
         }
+    }
+
+    const VALID_SCHED: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;PASS\nSMP|PASS\n";
+
+    #[test]
+    fn sched_witness_requires_dual_cpu_queues_and_real_workload() {
+        assert_eq!(validate_sched(VALID_SCHED, 4), Ok(()));
+        for bad in [
+            VALID_SCHED.replace("place_ok=2", "place_ok=1"),
+            VALID_SCHED.replace("single_ok=2", "single_ok=1"),
+            VALID_SCHED.replace("queues_ok=2", "queues_ok=1"),
+            VALID_SCHED.replace("barrier_ok=2", "barrier_ok=1"),
+            VALID_SCHED.replace("wake_ok=2", "wake_ok=1"),
+            VALID_SCHED.replace("fork_ok=2", "fork_ok=1"),
+            VALID_SCHED.replace("child_ok=2", "child_ok=1"),
+            VALID_SCHED.replace("nested_ok=2", "nested_ok=1"),
+            VALID_SCHED.replace("launch_ok=1", "launch_ok=0"),
+            VALID_SCHED.replace("prepared_ok=2", "prepared_ok=1"),
+            VALID_SCHED.replace("thread_ok=2", "thread_ok=1"),
+            VALID_SCHED.replace("exec_ok=2", "exec_ok=1"),
+            VALID_SCHED.replace("lost_ok=2", "lost_ok=1"),
+            VALID_SCHED.replace("launch_ok=1", "launch_ok=2"),
+            VALID_SCHED.replace("cpus=2", "cpus=1"),
+            VALID_SCHED.replace("online=4;place", "online=2;place"),
+            VALID_SCHED.replace("lost_ok=2;PASS", "lost_ok=2"),
+            VALID_SCHED.replace(
+                "SMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;PASS\n",
+                "",
+            ),
+            VALID_SCHED.replace("SMP|PASS\n", "SMP|FAIL|sched-timeout\n"),
+            VALID_SCHED.replace("lapic_id=0", "lapic_id=1"),
+            format!("{VALID_SCHED}SMP|PASS\n"),
+        ] {
+            assert!(
+                validate_sched(&bad, 4).is_err(),
+                "bad SCHED witness accepted: {bad}"
+            );
+        }
+        // -smp 2 的 online 必须为 2，不能复用 -smp 4 的见证。
+        let two = VALID_SCHED
+            .replace("cpus=4", "cpus=2")
+            .replace("aps=3;online=4;percpu=3", "aps=1;online=2;percpu=1")
+            .replace("online=4;place", "online=2;place");
+        assert_eq!(validate_sched(&two, 2), Ok(()));
+        assert!(validate_sched(&two, 4).is_err());
     }
 }
 

@@ -338,6 +338,18 @@ pub mod local {
         BSP
     }
 
+    /// P5-3b-3：不改 `%gs`、只读 MSR 的 CPU 身份。
+    ///
+    /// 早期 boot（GS 区尚未安装、`IA32_GS_BASE` 为 0）必须能安全定位 #PF 现场；
+    /// 此时返回 BSP。`%gs:0` 版本在这是不可读的（基址 0 可能未映射低页）。
+    #[cfg(feature = "sched-percpu-probe")]
+    pub fn index_from_gs_base() -> usize {
+        let base = crate::msr::rdmsr(crate::msr::IA32_GS_BASE);
+        (0..MAX_CPUS)
+            .find(|&cpu| area_ptr(cpu) == base)
+            .unwrap_or(BSP)
+    }
+
     /// 本 CPU 的当前 Task id。
     pub fn current_task() -> u32 {
         task_on(current_index())

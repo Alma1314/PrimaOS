@@ -1072,6 +1072,10 @@ impl TaskTable {
     }
 
     pub fn schedule(&mut self, task_id: u32) -> Result<(), TaskError> {
+        // P5-3b-3：单核镜像保持「全系统至多一个 Running」；每 CPU 分区镜像改为
+        // 「同一任务不得重复 Running」，跨 CPU 的同时运行由 `sched` 的 owner 与
+        // 单运行者守卫约束（每个 Task 仍只在一个 CPU 上执行）。
+        #[cfg(not(feature = "sched-percpu-probe"))]
         if self.entries[..self.count]
             .iter()
             .flatten()
@@ -1080,6 +1084,10 @@ impl TaskTable {
             return Err(TaskError::AlreadyRunning);
         }
         let task = self.find_mut(task_id).ok_or(TaskError::NoSuchTask)?;
+        #[cfg(feature = "sched-percpu-probe")]
+        if task.status == TaskStatus::Running {
+            return Err(TaskError::AlreadyRunning);
+        }
         if task.status != TaskStatus::Ready {
             return Err(TaskError::NotReady);
         }
@@ -7907,7 +7915,7 @@ impl BootstrapState {
         receiver: u32,
         send_cap: Handle,
         payload: u64,
-    ) -> Result<(), IpcError> {
+    ) -> Result<bool, IpcError> {
         self.send_message_with_capabilities(sender, receiver, send_cap, payload, &[])
     }
 
@@ -7919,7 +7927,7 @@ impl BootstrapState {
         send_cap: Handle,
         payload: u64,
         capability_ids: &[Handle],
-    ) -> Result<(), IpcError> {
+    ) -> Result<bool, IpcError> {
         if !self.tasks.is_live(sender) || !self.tasks.is_live(receiver) {
             return Err(IpcError::NoSuchTask);
         }
@@ -8029,7 +8037,8 @@ impl BootstrapState {
             self.ipc.send(message)?;
         }
         self.commit_gate_cap_loss(gate_loss);
-        Ok(())
+        // 返回本次是否走直投；调用方必须以它（而非锁外的阻塞快照）决定唤醒/写回。
+        Ok(direct_delivery)
     }
 
     pub fn receive_message(&mut self, receiver: u32) -> Result<IpcMessage, IpcError> {
@@ -12483,7 +12492,7 @@ pub fn send_message_with_capabilities(
     send_cap: Handle,
     payload: u64,
     capability_ids: &[Handle],
-) -> Result<(), IpcError> {
+) -> Result<bool, IpcError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.send_message_with_capabilities(
             sender,
@@ -12550,6 +12559,39 @@ pub fn yield_task_global(task_id: u32) -> Result<(), TaskError> {
 pub fn schedule_task_global(task_id: u32) -> Result<(), TaskError> {
     BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
         Some(state) => state.schedule_task(task_id),
+        None => Err(TaskError::NoSuchTask),
+    })
+}
+
+/// P5-3b-3：为平台直接创建的 Task 建立独立 Process（每个 Task 为自身 leader）。
+///
+/// `platform_init` 只用 `create_task` 建记录，不建 Process；而 `SYS_FORK` 的准入要求
+/// 调用者是某个 Process 的单线程成员。探针任务在发布前经本函数补齐这一结构。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn probe_ensure_process(task: u32) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        let state = slot.as_mut().ok_or(TaskError::NoSuchTask)?;
+        if state.process_of(task).is_some() {
+            return Ok(());
+        }
+        let process = state
+            .create_process(task)
+            .ok_or(TaskError::CapacityExceeded)?;
+        if !state.attach_thread(process, task) {
+            return Err(TaskError::CapacityExceeded);
+        }
+        Ok(())
+    })
+}
+
+/// P5-3b-3：把当前 Running 任务置 `BlockedRecv`（探针停放语义）。
+///
+/// 仅 `sched-percpu-probe` 镜像使用：探针任务以真实阻塞状态退出 CPU，而不是留下
+/// 一个仍标 `Running` 的假任务。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn probe_block_recv_global(task_id: u32) -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| match slot.as_mut() {
+        Some(state) => state.block_recv_task(task_id),
         None => Err(TaskError::NoSuchTask),
     })
 }
@@ -13646,6 +13688,24 @@ mod tests {
                 assert_eq!(&message.capabilities[..cap_count], &caps[..cap_count]);
             }
         }
+    }
+
+    /// P5-3b-4：发送返回的直投标志必须来自锁内判定，供 syscall 层决定写回/唤醒。
+    #[test]
+    fn send_reports_locked_direct_decision() {
+        let mut state = fresh_state();
+        state.create_task(2).unwrap();
+        state.prepare_user_ipc_caps().unwrap();
+        assert_eq!(
+            state.send_message_with_capabilities(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 1, &[]),
+            Ok(false)
+        );
+        assert!(state.receive_message(2).is_ok());
+        state.block_recv_task(2).unwrap();
+        assert_eq!(
+            state.send_message_with_capabilities(INIT_TASK_ID, 2, TASK2_SEND_CAP_HANDLE, 2, &[]),
+            Ok(true)
+        );
     }
 
     #[test]

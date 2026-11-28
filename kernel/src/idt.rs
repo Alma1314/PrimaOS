@@ -172,16 +172,40 @@ pub const FAULT_SKIP_LEN: u64 = 3;
 pub const SYSCALL_VECTOR: u8 = 0x80;
 
 /// 读取最近一次 #PF 的 CR2 地址（初始 0）。
+///
+/// P5-3b-3：真实双核任务共用内核故障路径（`cow::dispatch` 等），故探针镜像改读本
+/// CPU 的入口槽；CPL0 嵌套故障也按同一槽读取（见报告的嵌套限制）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn fault_addr() -> u64 {
+    prima_ostd::entry::percpu_fault_addr(crate::cpu::local::index_from_gs_base())
+}
+
+/// 读取最近一次 #PF 的 CR2 地址（初始 0）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn fault_addr() -> u64 {
     prima_ostd::entry::fault_addr()
 }
 
 /// 读取最近一次 #PF 的 error code（初始 0；CPU 压入为 64 位零扩展，低 32 位有效）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn last_fault_err() -> u64 {
+    prima_ostd::entry::percpu_fault_error(crate::cpu::local::index_from_gs_base())
+}
+
+/// 读取最近一次 #PF 的 error code（初始 0；CPU 压入为 64 位零扩展，低 32 位有效）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn last_fault_err() -> u64 {
     prima_ostd::entry::last_fault_err()
 }
 
 /// 读取最近一次 #PF 捕获的完整现场帧（初始全零）。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn fault_frame() -> SretFrame {
+    prima_ostd::entry::percpu_fault_frame(crate::cpu::local::index_from_gs_base())
+}
+
+/// 读取最近一次 #PF 捕获的完整现场帧（初始全零）。
+#[cfg(not(feature = "sched-percpu-probe"))]
 pub fn fault_frame() -> SretFrame {
     prima_ostd::entry::fault_frame()
 }
