@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（273）
+## report（274）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -371,6 +371,7 @@
 | [P5-3b-2：CPL3 入口、`syscall` 快路径与恢复跳板的每 CPU 分区](../superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md` |
 | [P5-3b-3：每 CPU 可运行队列、创建时放置、唯一运行者与真实双核负载](../superpowers/reports/2026-11-28-p5-3b3-queue-placement.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b3-queue-placement.md` |
 | [P5-3b-4：held-launch 放置、prepared fork/线程发布、双核 exec 与丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md` |
+| [P5-3b-5：Gate 创建路径放置与反向跨核丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md` |
 
 ## spec（4）
 

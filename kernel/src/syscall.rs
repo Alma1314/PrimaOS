@@ -4573,6 +4573,16 @@ fn gate_validate_frame(client: u32, root: u64, frame: &SretFrame) -> Result<(), 
     gate_validate_range(client, root, frame.rsp - 1, 1, Right::SegMapW)
 }
 
+/// P5-3b-5：Gate 创建的子任务随客户进程的 owner CPU 发布。
+///
+/// 门线程与客户共享 root、门 fork 子任务由父 COW 派生，两者都必须与该 root 的
+/// 执行 CPU 一致（§5.1 禁止跨 CPU 共享 root）。客户在门 trap 前已发布，故必有 owner。
+#[cfg(feature = "sched-percpu-probe")]
+fn publish_gate_child(child: u32, client: u32) {
+    let cpu = sched::owner(client).expect("gate client owner");
+    sched::publish_placed(child, cpu).expect("gate child placement");
+}
+
 #[inline(never)]
 fn gate_spawn_call(service: u32, cap: Handle, args: &[u64; MAX_ARGS]) -> Result<u64, Errno> {
     use bootstrap::gate;
@@ -4613,6 +4623,9 @@ fn gate_spawn_call(service: u32, cap: Handle, args: &[u64; MAX_ARGS]) -> Result<
         gate::with_state(|s| s.gate_spawn_thread(service, cap, context, frame, args[4], gate_cap))
             .map_err(gate_errno)?;
     let child = bootstrap::task_of_cap(manager).expect("spawn manager target");
+    // P5-3b-5：门创建的子线程与客户共享 root，随客户进程的 owner CPU 发布。
+    #[cfg(feature = "sched-percpu-probe")]
+    publish_gate_child(child, request.client);
     let (_, offset) = crate::cow::root_and_offset().expect("spawn output root");
     for output in outputs.into_iter().flatten() {
         output.write(&child.to_le_bytes(), |p| phys_to_virt(p, offset));
@@ -4634,6 +4647,11 @@ fn gate_fork_call(service: u32, cap: Handle, args: &[u64; MAX_ARGS]) -> Result<u
         gate::with_state(|s| s.gate_fork_commit(service, cap, context, manager, gate_cap, root));
     match result {
         Ok(manager) => {
+            // P5-3b-5：门 fork 子任务随父客户 CPU 发布（子 root 由父 COW 派生）。
+            #[cfg(feature = "sched-percpu-probe")]
+            if let Some(child) = bootstrap::task_of_cap(manager) {
+                publish_gate_child(child, request.client);
+            }
             crate::fork_tx::forget(request.client);
             Ok(encode_caller_handle(manager))
         }
@@ -6396,5 +6414,20 @@ mod tests {
         let mut w = valid_exc_wait();
         w.wait_receipt = 0;
         assert!(!w.evidence_ok());
+    }
+
+    /// P5-3b-5：门创建的子任务必须落到客户进程的 owner CPU，而不是调用者。
+    #[cfg(feature = "sched-percpu-probe")]
+    #[test]
+    fn gate_child_is_placed_on_the_client_owner_cpu() {
+        let client = 15;
+        let while_owned = 16;
+        crate::sched::publish_placed(client, 1).expect("client placement");
+        publish_gate_child(while_owned, client);
+        assert_eq!(crate::sched::owner(while_owned), Some(1));
+        assert_eq!(crate::sched::owner(client), Some(1));
+        crate::sched::clear_task(while_owned);
+        crate::sched::clear_task(client);
+        assert_eq!(crate::sched::owner(while_owned), None);
     }
 }

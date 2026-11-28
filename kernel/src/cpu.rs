@@ -318,10 +318,23 @@ pub mod local {
         crate::msr::wrmsr(crate::msr::IA32_KERNEL_GS_BASE, 0);
     }
 
+    /// host 测试桩：只记录 APIC ID，不写 GS MSR。
+    #[cfg(all(feature = "gs3-probe", test))]
+    pub fn install_gs(cpu: usize, apic_id: u32) {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].apic_id.store(apic_id, Ordering::Relaxed);
+    }
+
     /// GS-3：经 `%gs` 读本 CPU 区记录的 APIC ID。
     #[cfg(all(feature = "gs3-probe", not(test)))]
     pub fn local_apic_id() -> u32 {
         prima_ostd::arch::read_gs_u32::<4>()
+    }
+
+    /// host 测试桩：不读 `%gs`，返回本 CPU 槽记录的 APIC ID。
+    #[cfg(all(feature = "gs3-probe", test))]
+    pub fn local_apic_id() -> u32 {
+        LOCALS[BSP].apic_id.load(Ordering::Relaxed)
     }
 
     /// 本 CPU 的索引。GS-3 探针镜像经每 CPU GS 区读取；普通镜像与 host 测试恒为 BSP

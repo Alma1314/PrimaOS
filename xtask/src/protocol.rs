@@ -7017,7 +7017,7 @@ pub(crate) fn validate_sched(output: &str, smp: u8) -> Result<(), String> {
         .strip_prefix("SMP|sched=")
         .ok_or_else(|| "malformed SCHED witness line".to_owned())?;
     let (mut witness_cpus, mut witnessed_online) = (None, None);
-    let mut fields: [Option<u64>; 13] = [None; 13];
+    let mut fields: [Option<u64>; 14] = [None; 14];
     let keys = [
         ("place_ok", 2),
         ("single_ok", 2),
@@ -7032,6 +7032,7 @@ pub(crate) fn validate_sched(output: &str, smp: u8) -> Result<(), String> {
         ("thread_ok", 2),
         ("exec_ok", 2),
         ("lost_ok", 2),
+        ("reverse_ok", 2),
     ];
     let mut passed = false;
     for field in sched.split(';') {
@@ -7063,7 +7064,8 @@ pub(crate) fn validate_sched(output: &str, smp: u8) -> Result<(), String> {
         return Err(
             "SCHED must observe per-CPU queues/placement/single runner, barrier, cross-CPU wake, \
              parent-CPU fork/child, nested fault, held-launch placement, prepared fork, thread \
-             creation, concurrent exec replacement and the cross-CPU lost-wakeup matrix"
+             creation, concurrent exec replacement and both-direction cross-CPU lost-wakeup \
+             matrices"
                 .to_owned(),
         );
     }
@@ -7186,7 +7188,7 @@ mod smp_tests {
         }
     }
 
-    const VALID_SCHED: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;PASS\nSMP|PASS\n";
+    const VALID_SCHED: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;reverse_ok=2;PASS\nSMP|PASS\n";
 
     #[test]
     fn sched_witness_requires_dual_cpu_queues_and_real_workload() {
@@ -7205,12 +7207,13 @@ mod smp_tests {
             VALID_SCHED.replace("thread_ok=2", "thread_ok=1"),
             VALID_SCHED.replace("exec_ok=2", "exec_ok=1"),
             VALID_SCHED.replace("lost_ok=2", "lost_ok=1"),
+            VALID_SCHED.replace("reverse_ok=2", "reverse_ok=1"),
             VALID_SCHED.replace("launch_ok=1", "launch_ok=2"),
             VALID_SCHED.replace("cpus=2", "cpus=1"),
             VALID_SCHED.replace("online=4;place", "online=2;place"),
-            VALID_SCHED.replace("lost_ok=2;PASS", "lost_ok=2"),
+            VALID_SCHED.replace("reverse_ok=2;PASS", "reverse_ok=2"),
             VALID_SCHED.replace(
-                "SMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;PASS\n",
+                "SMP|sched=cpus=2;online=4;place_ok=2;single_ok=2;queues_ok=2;barrier_ok=2;wake_ok=2;fork_ok=2;child_ok=2;nested_ok=2;launch_ok=1;prepared_ok=2;thread_ok=2;exec_ok=2;lost_ok=2;reverse_ok=2;PASS\n",
                 "",
             ),
             VALID_SCHED.replace("SMP|PASS\n", "SMP|FAIL|sched-timeout\n"),

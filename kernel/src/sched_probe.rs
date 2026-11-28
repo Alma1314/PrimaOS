@@ -66,6 +66,10 @@ const MAGIC_EXEC_FAIL: u64 = 0x5C0D_1A00;
 const MAGIC_LOST_ACK: u64 = 0x5C0D_1B00;
 const MAGIC_LOST_WAIT: u64 = 0x5C0D_1C00;
 const MAGIC_LOST_DONE: u64 = 0x5C0D_1D00;
+const MAGIC_REV_GATE: u64 = 0x5C0D_1E00;
+const MAGIC_REV_ACK: u64 = 0x5C0D_1F00;
+const MAGIC_REV_WAIT: u64 = 0x5C0D_2000;
+const MAGIC_REV_DONE: u64 = 0x5C0D_2100;
 
 /// 换根后跨核阻塞/唤醒矩阵的轮数。
 const LOST_ROUNDS: u64 = 4;
@@ -106,6 +110,10 @@ static EXEC_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static LOST_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 static LOST_ACK: [AtomicU32; LOST_ROUNDS as usize] =
     [const { AtomicU32::new(0) }; LOST_ROUNDS as usize];
+static REV_ACK: [AtomicU32; LOST_ROUNDS as usize] =
+    [const { AtomicU32::new(0) }; LOST_ROUNDS as usize];
+static REV_OK: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
+static REV_FAIL: AtomicBool = AtomicBool::new(false);
 static EXEC_ARRIVED: AtomicU32 = AtomicU32::new(0);
 static LAUNCH_OK: AtomicU32 = AtomicU32::new(0);
 static HELD_RAN: AtomicBool = AtomicBool::new(false);
@@ -261,6 +269,10 @@ extern "C" fn probe_syscall(frame: AbiFrame) -> u64 {
         MAGIC_LOST_ACK => lost_ack(frame.arg(0), frame.arg(1)),
         MAGIC_LOST_WAIT => lost_wait(frame.arg(0)),
         MAGIC_LOST_DONE => lost_done(cpu),
+        MAGIC_REV_GATE => rev_gate(frame.arg(0)),
+        MAGIC_REV_ACK => rev_ack(frame.arg(0), frame.arg(1)),
+        MAGIC_REV_WAIT => rev_wait(frame.arg(0)),
+        MAGIC_REV_DONE => rev_done(cpu),
         _ => crate::syscall::handle(frame),
     }
 }
@@ -510,6 +522,54 @@ fn lost_wait(round: u64) -> u64 {
 fn lost_done(cpu: usize) -> u64 {
     let ok = LOST_ACK.iter().all(|slot| slot.load(Ordering::SeqCst) == 1);
     LOST_OK[cpu].store(u32::from(ok), Ordering::SeqCst);
+    u64::from(!ok)
+}
+
+/// 反向发送方每轮先等接收方真正阻塞，避免消息落 pending（那不是唤醒）。
+fn rev_gate(task: u64) -> u64 {
+    let start = tsc();
+    while !bootstrap::is_blocked_recv_global(task as u32) {
+        if elapsed(start) > BLOCKED_LIMIT {
+            REV_FAIL.store(true, Ordering::SeqCst);
+            return 1;
+        }
+        core::hint::spin_loop();
+    }
+    0
+}
+
+fn rev_ack(round: u64, ok: u64) -> u64 {
+    if let Some(slot) = REV_ACK.get(round as usize) {
+        slot.store(if ok != 0 { 1 } else { 2 }, Ordering::SeqCst);
+    }
+    0
+}
+
+fn rev_wait(round: u64) -> u64 {
+    let start = tsc();
+    loop {
+        match REV_ACK
+            .get(round as usize)
+            .map(|slot| slot.load(Ordering::SeqCst))
+        {
+            Some(1) => return 0,
+            Some(2) => return 1,
+            Some(_) => {
+                if elapsed(start) > BLOCKED_LIMIT {
+                    REV_FAIL.store(true, Ordering::SeqCst);
+                    return 1;
+                }
+                core::hint::spin_loop();
+            }
+            None => return 1,
+        }
+    }
+}
+
+fn rev_done(cpu: usize) -> u64 {
+    let ok = !REV_FAIL.load(Ordering::SeqCst)
+        && REV_ACK.iter().all(|slot| slot.load(Ordering::SeqCst) == 1);
+    REV_OK[cpu].store(u32::from(ok), Ordering::SeqCst);
     u64::from(!ok)
 }
 
@@ -954,6 +1014,62 @@ fn exec_code() -> [u8; BUF_LEN] {
     a.mov_rax(MAGIC_LOST_DONE);
     a.xor_rdi();
     a.int80();
+
+    // ---- 反向矩阵：换 CPU1 发送、CPU0 阻塞接收（仍共 LOST_ROUNDS 轮） ----
+    // rbx 在 exec 前后由保存帧保留（本任务初始 CPU 编码）。
+    a.emit(&[0x48, 0x83, 0xFB, 0x00]); // cmp rbx, 0
+    let to_rev_send = a.jne();
+
+    // CPU0：每轮阻塞接收、核对载荷并确认。
+    a.emit(&[0x4D, 0x31, 0xE4]); // xor r12, r12
+    let rev_recv_loop = a.at;
+    a.mov_rax(crate::syscall::SYS_RECV);
+    a.emit(&[0x48, 0x8D, 0x7C, 0x24, 0xF0]); // lea rdi, [rsp-16]
+    a.xor_rsi();
+    a.int80();
+    a.mov_rdx(PAYLOAD);
+    a.emit(&[0x4C, 0x01, 0xE2]); // add rdx, r12
+    a.emit(&[0x31, 0xF6]); // xor esi, esi
+    a.emit(&[0x48, 0x39, 0xD0]); // cmp rax, rdx
+    a.emit(&[0x40, 0x0F, 0x94, 0xC6]); // sete sil
+    a.mov_rax(MAGIC_REV_ACK);
+    a.mov_rdi_r12();
+    a.int80();
+    a.emit(&[0x49, 0xFF, 0xC4]); // inc r12
+    a.emit(&[0x49, 0x83, 0xFC, LOST_ROUNDS as u8]);
+    let rev_recv_back = a.jb();
+    let to_rev_done = a.jmp();
+
+    // CPU1：每轮等 CPU0 真正阻塞后发送，再等确认。
+    let rev_send = a.at;
+    a.patch(to_rev_send, rev_send);
+    a.emit(&[0x4D, 0x31, 0xE4]); // xor r12, r12
+    let rev_send_loop = a.at;
+    a.mov_rax(MAGIC_REV_GATE);
+    a.mov_rdi(1);
+    a.int80();
+    a.mov_rax(crate::syscall::SYS_SEND);
+    a.mov_rdi(1);
+    a.mov_rsi(bootstrap::PROBE_TASK1_SEND_CAP_HANDLE.encode());
+    a.mov_rdx(PAYLOAD);
+    a.emit(&[0x4C, 0x01, 0xE2]); // add rdx, r12
+    a.xor_r10_r8_r9();
+    a.int80();
+    a.mov_rax(MAGIC_REV_WAIT);
+    a.mov_rdi_r12();
+    a.int80();
+    a.emit(&[0x49, 0xFF, 0xC4]); // inc r12
+    a.emit(&[0x49, 0x83, 0xFC, LOST_ROUNDS as u8]);
+    let rev_send_back = a.jb();
+
+    let rev_done = a.at;
+    a.patch(to_rev_done, rev_done);
+    a.patch(rev_recv_back, rev_recv_loop);
+    a.patch(rev_send_back, rev_send_loop);
+    a.mov_rax(MAGIC_REV_DONE);
+    a.xor_rdi();
+    a.int80();
+
     a.mov_rax(MAGIC_CPU_DONE);
     a.xor_rdi();
     a.int80();
@@ -1053,6 +1169,8 @@ fn setup_roots(offset: u64) -> Result<(), u32> {
     if active() >= 2 {
         build_task(2, 1, offset)?;
         bootstrap::probe_ensure_process(2).map_err(|_| 12u32)?;
+        // P5-3b-5：反向丢唤醒矩阵需要 task 2 持有目标 `Task(1)` 的发送凭据。
+        bootstrap::probe_grant_reverse_send().map_err(|_| 22u32)?;
     }
     create_held(offset)
 }
@@ -1207,6 +1325,7 @@ pub struct SchedWitness {
     pub thread_ok: u32,
     pub exec_ok: u32,
     pub lost_ok: u32,
+    pub reverse_ok: u32,
 }
 
 impl SchedWitness {
@@ -1226,6 +1345,7 @@ impl SchedWitness {
             && self.thread_ok == self.cpus
             && self.exec_ok == self.cpus
             && self.lost_ok == self.cpus
+            && self.reverse_ok == self.cpus
     }
 }
 
@@ -1248,6 +1368,7 @@ pub fn witness() -> SchedWitness {
         thread_ok: 0,
         exec_ok: 0,
         lost_ok: 0,
+        reverse_ok: 0,
     };
     for cpu in 0..cpus as usize {
         let task = cpu as u32 + 1;
@@ -1265,6 +1386,7 @@ pub fn witness() -> SchedWitness {
         witness.thread_ok += THREAD_OK[cpu].load(Ordering::SeqCst);
         witness.exec_ok += EXEC_OK[cpu].load(Ordering::SeqCst);
         witness.lost_ok += LOST_OK[cpu].load(Ordering::SeqCst);
+        witness.reverse_ok += REV_OK[cpu].load(Ordering::SeqCst);
     }
     witness
 }
@@ -1282,6 +1404,7 @@ pub struct Progress {
     pub thread: [u32; MAX_CPUS],
     pub exec: [u32; MAX_CPUS],
     pub lost: [u32; MAX_CPUS],
+    pub reverse: [u32; MAX_CPUS],
     pub launch: u32,
     pub exec_arrived: u32,
     pub held_owner: u32,
@@ -1315,6 +1438,7 @@ pub fn progress() -> Progress {
         thread: core::array::from_fn(|cpu| THREAD_OK[cpu].load(Ordering::SeqCst)),
         exec: core::array::from_fn(|cpu| EXEC_OK[cpu].load(Ordering::SeqCst)),
         lost: core::array::from_fn(|cpu| LOST_OK[cpu].load(Ordering::SeqCst)),
+        reverse: core::array::from_fn(|cpu| REV_OK[cpu].load(Ordering::SeqCst)),
         launch: LAUNCH_OK.load(Ordering::SeqCst),
         exec_arrived: EXEC_ARRIVED.load(Ordering::SeqCst),
         held_owner: HELD_OWNER.load(Ordering::SeqCst),
@@ -1404,6 +1528,7 @@ mod tests {
             thread_ok: 2,
             exec_ok: 2,
             lost_ok: 2,
+            reverse_ok: 2,
         };
         assert!(base.evidence_ok());
         assert!(
@@ -1414,6 +1539,13 @@ mod tests {
             .evidence_ok()
         );
         assert!(!SchedWitness { exec_ok: 1, ..base }.evidence_ok());
+        assert!(
+            !SchedWitness {
+                reverse_ok: 1,
+                ..base
+            }
+            .evidence_ok()
+        );
         assert!(
             !SchedWitness {
                 launch_ok: 0,

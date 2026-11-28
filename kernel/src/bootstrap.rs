@@ -12563,6 +12563,34 @@ pub fn schedule_task_global(task_id: u32) -> Result<(), TaskError> {
     })
 }
 
+/// P5-3b-5：反向丢唤醒矩阵的发送凭据槽（task 2 持有、目标 `Task(1)`）。
+///
+/// 落在探针镜像未使用的低空闲区（9..32）；默认镜像不调用播种函数，槽位布局不变。
+#[cfg(feature = "sched-percpu-probe")]
+pub const PROBE_TASK1_SEND_CAP_SLOT: u32 = 31;
+#[cfg(feature = "sched-percpu-probe")]
+pub const PROBE_TASK1_SEND_CAP_HANDLE: Handle =
+    cap_handle(PROBE_TASK1_SEND_CAP_SLOT, INITIAL_CAP_GENERATION);
+
+/// P5-3b-5：为 task 2 铸一条目标 `Task(1)` 的 `TaskSend` 凭据（仅探针镜像）。
+///
+/// 默认镜像不调用，故不改变既有 usercap 固定块与默认 boot 能力布局。
+#[cfg(feature = "sched-percpu-probe")]
+pub fn probe_grant_reverse_send() -> Result<(), TaskError> {
+    BOOTSTRAP_STATE.with_mut(|slot| {
+        let state = slot.as_mut().ok_or(TaskError::NoSuchTask)?;
+        state
+            .mint_root_capability_at(
+                CapabilityLocation::HeldByTask(2),
+                PROBE_TASK1_SEND_CAP_SLOT,
+                TASK2_SEND_RIGHTS,
+                ObjectRef::Task(1),
+            )
+            .map(|_| ())
+            .map_err(|_| TaskError::CapacityExceeded)
+    })
+}
+
 /// P5-3b-3：为平台直接创建的 Task 建立独立 Process（每个 Task 为自身 leader）。
 ///
 /// `platform_init` 只用 `create_task` 建记录，不建 Process；而 `SYS_FORK` 的准入要求
