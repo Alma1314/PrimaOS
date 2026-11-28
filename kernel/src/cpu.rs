@@ -217,7 +217,7 @@ pub fn audit_reachable_page_tables(
 /// 后改为由 LAPIC ID 映射到索引。设计与分期见
 /// `docs/superpowers/specs/2026-11-27-stage7-smp-state-partition.md`。
 pub mod local {
-    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
     /// 平台上限：S7-SCOPE-13 冻结 x86_64 为 2/4 vCPU。
     pub const MAX_CPUS: usize = 4;
@@ -232,6 +232,12 @@ pub mod local {
         apic_id: AtomicU32,
         /// 本 CPU 当前（或即将恢复）的 Task id；0 = 尚无任务（AP 握手前）。
         current_task: AtomicU32,
+        /// P5-3b-2：本 CPU `syscall` 快路径栈可用顶（入口经 `%gs` 直接读取）。
+        syscall_stack_top: AtomicU64,
+        /// P5-3b-2：本 CPU 快路径 `USER_RSP` 槽（入口经 `%gs` 直接读写）。
+        user_rsp: AtomicU64,
+        /// P5-3b-2：本 CPU 入口槽地址（快路径 `ctx` 写入）。
+        entry_slot: AtomicU64,
     }
 
     impl CpuLocal {
@@ -240,6 +246,9 @@ pub mod local {
                 index,
                 apic_id: AtomicU32::new(0),
                 current_task: AtomicU32::new(current_task),
+                syscall_stack_top: AtomicU64::new(0),
+                user_rsp: AtomicU64::new(0),
+                entry_slot: AtomicU64::new(0),
             }
         }
     }
@@ -264,14 +273,47 @@ pub mod local {
         LOCALS[cpu].apic_id.load(Ordering::Relaxed)
     }
 
+    /// P5-3b-2：指定 CPU 快路径入口最近写入的 `USER_RSP`（未进入过为 0）。
+    ///
+    /// 仅供受控探针见证；普通镜像不写该槽。
+    #[cfg(feature = "entry-percpu-probe")]
+    pub fn user_rsp_on(cpu: usize) -> u64 {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].user_rsp.load(Ordering::Relaxed)
+    }
+
+    /// P5-3b-2：指定 CPU GS 区记录的快路径栈顶（诊断/断言用）。
+    #[cfg(feature = "entry-percpu-probe")]
+    pub fn syscall_stack_top_on(cpu: usize) -> u64 {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].syscall_stack_top.load(Ordering::Relaxed)
+    }
+
+    /// P5-3b-2：把指定 CPU 的快路径栈顶改指向探针显式映射的内核栈。
+    #[cfg(feature = "entry-percpu-probe")]
+    pub fn set_syscall_stack_top(cpu: usize, top: u64) {
+        assert!(cpu < MAX_CPUS, "cpu index out of range");
+        LOCALS[cpu].syscall_stack_top.store(top, Ordering::Relaxed);
+    }
+
     /// GS-3：把本 CPU 的 GS 基址指向 [`LOCALS`] 中自己的槽位。
     ///
     /// 契约：调用方正在 `cpu` 上执行且处于 CPL0；`KERNEL_GS_BASE` 一并清零，使
-    /// `%gs` 在未交换态下就指向本区（受控 SMP 探针不进入用户态）。
+    /// `%gs` 在未交换态下就指向本区。P5-3b-2 的受控镜像会在此后进入 CPL3，届时由
+    /// 恢复跳板把两根 MSR 切到用户侧，入口再按 GS-1 判据交换。
     #[cfg(all(feature = "gs3-probe", not(test)))]
     pub fn install_gs(cpu: usize, apic_id: u32) {
         assert!(cpu < MAX_CPUS, "cpu index out of range");
         LOCALS[cpu].apic_id.store(apic_id, Ordering::Relaxed);
+        #[cfg(feature = "entry-percpu-probe")]
+        {
+            // 探针在当前根显式映射本 CPU 的快路径栈后再写入真实栈顶。
+            LOCALS[cpu].syscall_stack_top.store(0, Ordering::Relaxed);
+            LOCALS[cpu].user_rsp.store(0, Ordering::Relaxed);
+            LOCALS[cpu]
+                .entry_slot
+                .store(prima_ostd::entry::percpu_slot_addr(cpu), Ordering::Relaxed);
+        }
         crate::msr::wrmsr(crate::msr::IA32_GS_BASE, area_ptr(cpu));
         crate::msr::wrmsr(crate::msr::IA32_KERNEL_GS_BASE, 0);
     }
@@ -345,6 +387,19 @@ pub mod local {
             use core::mem::offset_of;
             assert_eq!(offset_of!(CpuLocal, index), 0);
             assert_eq!(offset_of!(CpuLocal, apic_id), 4);
+            // P5-3b-2：入口汇编经 `%gs` 直接读写的字段必须与 prima-ostd 常量一致。
+            #[cfg(feature = "entry-percpu-probe")]
+            {
+                use prima_ostd::entry::{
+                    GS_ENTRY_SLOT_OFF, GS_SYSCALL_STACK_TOP_OFF, GS_USER_RSP_OFF,
+                };
+                assert_eq!(
+                    offset_of!(CpuLocal, syscall_stack_top),
+                    GS_SYSCALL_STACK_TOP_OFF
+                );
+                assert_eq!(offset_of!(CpuLocal, user_rsp), GS_USER_RSP_OFF);
+                assert_eq!(offset_of!(CpuLocal, entry_slot), GS_ENTRY_SLOT_OFF);
+            }
             let mut bases = [0u64; MAX_CPUS];
             for (cpu, slot) in bases.iter_mut().enumerate() {
                 *slot = area_ptr(cpu);

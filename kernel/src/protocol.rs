@@ -140,6 +140,62 @@ pub(crate) fn entry_fail(reason: &str) {
     serial::write_bytes(b"\r\n");
 }
 
+/// P5-3b-2：CPL3 用户入口现场探针的 `-smp` 见证（六项计数 + PASS）。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_user_ready(witness: &kernel::entry_probe::UserWitness) {
+    serial::write_bytes(b"SMP|entry-user=cpus=");
+    write_u32(witness.cpus);
+    serial::write_bytes(b";int80_ok=");
+    write_u32(witness.int80_ok);
+    serial::write_bytes(b";fast_ok=");
+    write_u32(witness.fast_ok);
+    serial::write_bytes(b";fault_ok=");
+    write_u32(witness.fault_ok);
+    serial::write_bytes(b";frame_ok=");
+    write_u32(witness.frame_ok);
+    serial::write_bytes(b";fast_ctx_ok=");
+    write_u32(witness.fast_ctx_ok);
+    serial::write_bytes(b";fast_rsp_ok=");
+    write_u32(witness.fast_rsp_ok);
+    serial::write_bytes(b";PASS\r\n");
+}
+
+/// P5-3b-2 诊断行：用户根构建失败的 CPU 与步骤码。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_root_fail(cpu: usize, step: u32) {
+    serial::write_bytes(b"SMP|stage=entry-root-fail=");
+    write_u32(cpu as u32);
+    serial::write_bytes(b";step=");
+    write_u32(step);
+    serial::write_bytes(b"\r\n");
+}
+
+/// P5-3b-2 诊断行：每 CPU 的 CPL3 自检标志。
+#[cfg(feature = "entry-percpu-probe")]
+pub(crate) fn entry_user_progress(flags: &[[u32; 8]; 4]) {
+    for (cpu, slots) in flags.iter().enumerate() {
+        serial::write_bytes(b"SMP|stage=entry-user-cpu=");
+        write_u32(cpu as u32);
+        serial::write_bytes(b";done=");
+        write_u32(slots[0]);
+        serial::write_bytes(b";int80=");
+        write_u32(slots[1]);
+        serial::write_bytes(b";fast=");
+        write_u32(slots[2]);
+        serial::write_bytes(b";ctx=");
+        write_u32(slots[3]);
+        serial::write_bytes(b";fault=");
+        write_u32(slots[4]);
+        serial::write_bytes(b";frame=");
+        write_u32(slots[5]);
+        serial::write_bytes(b";canary=");
+        write_u32(slots[6]);
+        serial::write_bytes(b";rsp=");
+        write_hex_u64(kernel::cpu::local::user_rsp_on(cpu));
+        serial::write_bytes(b"\r\n");
+    }
+}
+
 /// P5-3b-1 诊断行：每 CPU 的 `[syscall, ctx, fault, frame]` 自检标志。
 #[cfg(feature = "entry-percpu-probe")]
 pub(crate) fn entry_progress(flags: &[[u32; 4]; 4]) {

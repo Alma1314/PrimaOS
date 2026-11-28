@@ -15,6 +15,7 @@ updated: 2026-11-27
 
 | 日期 | 报告/链入口 |
 |---|---|
+| 2026-11-28 | [P5-3b-2 CPL3 入口、快路径与恢复跳板每 CPU 分区](2026-11-28-p5-3b2-user-fastpath-percpu.md) |
 | 2026-11-27 | [文档整理、合并与压缩](2026-11-27-documentation-consolidation.md) |
 | 2026-11-27 | [P5-3b-1 CPL0 每 CPU 入口现场探针](2026-11-27-p5-3b1-entry-percpu.md) |
 | 2026-11-27 | [Lean 审计对象身份修复](2026-11-27-lean-audit-object-identity.md) |

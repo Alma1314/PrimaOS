@@ -77,6 +77,7 @@ updated: 2026-11-27
 2026-11-27 [P5-2 AP启动原型](docs/superpowers/reports/2026-11-27-p5-2-ap-bringup.md)`prima-ostd::smp`实模式→长模式跳板与INIT-SIPI-SIPI，`test-smp-ap`在`-smp 2/4`各两轮通过（`aps=1/3;online=2/4`），非SMP行逐字节相同并复用既有校验器；host 1247、lint、默认72轮通过；AP仅停放，无调度/IPI/TLB/每CPU TSS，7-B未勾选。
 2026-11-27 [P5-3a 每CPU GDT/TSS与共享IDT](docs/superpowers/reports/2026-11-27-p5-3a-percpu-gdt-tss.md)GDT/TSS改为每CPU槽，AP装载本槽并从GDTR/TR读回描述符基址，BSP校验BSP+AP基址互异；`test-smp-ap`在`-smp 2/4`各两轮通过（`percpu=1/3;tss=distinct`）并复用既有校验器；host 1248、lint、默认72轮通过；AP仍`hlt`且IF=0，P5-3未完成、7-B未勾选。
 2026-11-27 [P5-3b-1 CPL0入口现场每CPU槽](docs/superpowers/reports/2026-11-27-p5-3b1-entry-percpu.md)把`int 0x80`保存块基址与`#PF`的CR2/error/现场帧改为每CPU槽（`%gs:0`索引），每CPU从CPL0执行`int 0x80`与#PF自检，`test-entry`在`-smp 2/4`各两轮通过（`syscall_ok/ctx_ok/fault_ok/frame_ok`等于vCPU数）且同vCPU两轮逐字节相同；顺带修复AP装载本CPU GDT后CS仍为跳板选择子的缺陷（远返回重装）；host 1255、lint、默认36组72轮通过；CPL3/`syscall`快路径/`resume`与可运行队列未分区，AP未进入用户态，P5-3b未完成、7-B未勾选。
+2026-11-28 [P5-3b-2 CPL3入口与快路径每CPU分区](docs/superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)把CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall`快路径（每CPU栈/`USER_RSP`/保存块基址）与`resume`跳板改为每CPU槽，每CPU构造最小用户根从CPL3执行写未映射页#PF、`int 0x80`与`syscall`自检，`test-entry`在`-smp 2/4`各两轮通过（`int80_ok/fast_ok/fault_ok/frame_ok/fast_ctx_ok/fast_rsp_ok`等于vCPU数）且同vCPU两轮逐字节相同；顺带修复AP共享跳板根槽位冲突与跨根VA读取；host 1255、lint、默认72轮通过；AP共享跳板根覆盖叶、可运行队列/创建时放置/阻塞恢复/嵌套故障反例未做，P5-3b未完成、7-B未勾选。
 
 阶段7工程后继：[Cargo输入源码/NOTICE材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)，
 [源码/验收证据包及73056ba自身远端](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)，
@@ -449,7 +450,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS）、GS-2（异常/中断/IRQ入口出口`swapgs`及NMI/IST，真实LAPIC自注入NMI矩阵双轮通过）与GS-3（每CPU GS区与经`%gs`的CPU索引，`-smp 2/4`探针四项计数等于vCPU数），以及P5-3b-1（CPL0 `int 0x80`/`#PF`现场改为每CPU槽，`-smp 2/4`探针四项计数等于vCPU数）；四者均受控探针、普通镜像不启用，CPL3/`syscall`快路径/可运行队列与创建时放置仍未分区，P5未签署；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
+**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS）、GS-2（异常/中断/IRQ入口出口`swapgs`及NMI/IST，真实LAPIC自注入NMI矩阵双轮通过）与GS-3（每CPU GS区与经`%gs`的CPU索引，`-smp 2/4`探针四项计数等于vCPU数）、P5-3b-1（CPL0 `int 0x80`/`#PF`现场改为每CPU槽，`-smp 2/4`探针四项计数等于vCPU数）与P5-3b-2（CPL3 `int 0x80`/`#PF`/`USER_FRAME`、`syscall`快路径与`resume`跳板改为每CPU槽，每CPU从CPL3自检，`-smp 2/4`六项计数等于vCPU数）；五者均受控探针、普通镜像不启用，可运行队列/创建时放置/唯一运行者与阻塞恢复/嵌套故障反例仍未做，P5未签署；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
 [启动与首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、
 [CI后继报告](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、
 [远端CI整改报告](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、
@@ -465,7 +466,8 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 [GS-1 `syscall` 路径 `swapgs`](docs/superpowers/reports/2026-11-27-p5-gs1-syscall-swapgs.md)、
 [GS-2 陷阱 `swapgs` 与 NMI/IST](docs/superpowers/reports/2026-11-27-p5-gs2-trap-swapgs-nmi.md)、
 [GS-3 每 CPU GS 区](docs/superpowers/reports/2026-11-27-p5-gs3-percpu-gs-area.md)、
-[P5-3b-1 CPL0 入口现场每 CPU 槽](docs/superpowers/reports/2026-11-27-p5-3b1-entry-percpu.md)记录实际范围。
+[P5-3b-1 CPL0 入口现场每 CPU 槽](docs/superpowers/reports/2026-11-27-p5-3b1-entry-percpu.md)、
+[P5-3b-2 CPL3 入口、快路径与恢复跳板](docs/superpowers/reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)记录实际范围。
 技术规格、应用/设备白名单和量化门槛继续逐片冻结。作者在
 [2026-10-31 范围讨论](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)中逐项确认下列范围，
 承接 D16 的九条子轨结构。九轨均为必交付，排序仍是假设，各轨需自身退出签署；本次启动不勾选任何退出项。

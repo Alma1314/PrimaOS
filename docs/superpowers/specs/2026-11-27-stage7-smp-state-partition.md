@@ -156,9 +156,13 @@ GS-3（每 CPU GS 区与热路径 CPU 索引）**探针已落盘**（见
 自识别、GS 基址互异、APIC ID 与 MADT/CPUID 一致；普通镜像仍返回 BSP、AP 仍 parked，
 不构成运行期启用）。P5-3b 首片 **P5-3b-1 已落盘**（见
 [报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)：CPL0 `int 0x80` 的保存块基址与
-#PF 的 CR2/error/现场帧改为每 CPU 槽，`-smp 2/4` 下每 CPU 自检通过；CPL3 用户入口、
-`syscall` 快路径、`resume` 跳板与每 CPU syscall 栈仍未分区，AP 用户态执行仍受 §5.1
-准入阻断）。GS-4、P5-3b-2（用户/快路径分区、可运行队列与创建时放置）待做。
+#PF 的 CR2/error/现场帧改为每 CPU 槽）。**P5-3b-2 已落盘**（见
+[报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)：CPL3 `int 0x80`/#PF 与
+`USER_FRAME`、`syscall` 快路径（每 CPU 栈/`USER_RSP`/保存块基址）与 `resume` 跳板改为
+每 CPU 槽；每 CPU 构造最小用户根从 CPL3 自检，`-smp 2/4` 下每 CPU 六项计数等于 vCPU
+数；AP 共享跳板根覆盖叶，可运行队列/创建时放置/唯一运行者与阻塞恢复/嵌套故障反例
+未做，AP 用户态调度仍受 §5.1 准入阻断）。GS-4、P5-3b-3（可运行队列、创建时放置与
+准入反例）待做。
 
 ## 8. 分期工作包与验收观察
 
@@ -167,7 +171,7 @@ GS-3（每 CPU GS 区与热路径 CPU 索引）**探针已落盘**（见
 | P5-0 | 本文 + CPU 本地入口 + 调度当前任务分区 | host 测试与既有 BIOS 启动逐字节回归；不声称 SMP | **本片** |
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
 | P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
-| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1 完成**（CPL0 `int 0x80`/#PF 每 CPU 现场，[报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)；CPL3/快路径/可运行队列与创建时放置待 P5-3b-2）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
+| P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)；可运行队列、创建时放置与准入反例待 P5-3b-3）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
 | P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 旧映射失效、确认前帧不复用、超时不静默成功 | 待做；允许跨 CPU 活动映射变更前必须交付最小协议，必要时提前到 P5-3 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |
 

@@ -6815,12 +6815,15 @@ pub(crate) fn validate_entry(output: &str, smp: u8) -> Result<(), String> {
         .map(str::trim)
         .filter(|line| line.starts_with("SMP|") && !line.starts_with("SMP|stage="))
         .collect();
-    if records.len() != 5
+    if records.len() != 6
         || records[0] != "SMP|begin"
-        || records[4] != "SMP|PASS"
+        || records[5] != "SMP|PASS"
         || !records[3].starts_with("SMP|entry=")
+        || !records[4].starts_with("SMP|entry-user=")
     {
-        return Err("ENTRY requires begin, discovery, AP, entry lines and one PASS".to_owned());
+        return Err(
+            "ENTRY requires begin, discovery, AP, entry, entry-user lines and one PASS".to_owned(),
+        );
     }
     let discovery = records[1]
         .strip_prefix("SMP|")
@@ -6905,6 +6908,42 @@ pub(crate) fn validate_entry(output: &str, smp: u8) -> Result<(), String> {
     {
         return Err("ENTRY must observe every CPU use its own entry state".to_owned());
     }
+    let user = records[4]
+        .strip_prefix("SMP|entry-user=")
+        .ok_or_else(|| "malformed ENTRY user witness line".to_owned())?;
+    let (mut user_cpus, mut int80, mut fast, mut ufault, mut uframe, mut fctx, mut frsp) =
+        (None, None, None, None, None, None, None);
+    let mut upassed = false;
+    for field in user.split(';') {
+        if field == "PASS" {
+            upassed = true;
+            continue;
+        }
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| "malformed ENTRY user field".to_owned())?;
+        match key {
+            "cpus" => user_cpus = Some(parse_decimal(value, key)?),
+            "int80_ok" => int80 = Some(parse_decimal(value, key)?),
+            "fast_ok" => fast = Some(parse_decimal(value, key)?),
+            "fault_ok" => ufault = Some(parse_decimal(value, key)?),
+            "frame_ok" => uframe = Some(parse_decimal(value, key)?),
+            "fast_ctx_ok" => fctx = Some(parse_decimal(value, key)?),
+            "fast_rsp_ok" => frsp = Some(parse_decimal(value, key)?),
+            _ => return Err(format!("unknown ENTRY user field: {key}")),
+        }
+    }
+    if !upassed
+        || user_cpus != want
+        || int80 != want
+        || fast != want
+        || ufault != want
+        || uframe != want
+        || fctx != want
+        || frsp != want
+    {
+        return Err("ENTRY must observe every CPU use its own CPL3 entry state".to_owned());
+    }
     Ok(())
 }
 
@@ -6986,7 +7025,7 @@ mod smp_tests {
         }
     }
 
-    const VALID_ENTRY: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|entry=cpus=4;syscall_ok=4;ctx_ok=4;fault_ok=4;frame_ok=4;PASS\nSMP|PASS\n";
+    const VALID_ENTRY: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|entry=cpus=4;syscall_ok=4;ctx_ok=4;fault_ok=4;frame_ok=4;PASS\nSMP|entry-user=cpus=4;int80_ok=4;fast_ok=4;fault_ok=4;frame_ok=4;fast_ctx_ok=4;fast_rsp_ok=4;PASS\nSMP|PASS\n";
 
     #[test]
     fn entry_witness_requires_every_cpu_own_state() {
@@ -7000,6 +7039,18 @@ mod smp_tests {
             VALID_ENTRY.replace("cpus=4;syscall", "cpus=3;syscall"),
             VALID_ENTRY.replace("frame_ok=4;PASS", "frame_ok=4"),
             VALID_ENTRY.replace("entry=cpus=4", "entry=FAIL|cpus=4"),
+            VALID_ENTRY.replace("int80_ok=4", "int80_ok=3"),
+            VALID_ENTRY.replace("fast_ok=4", "fast_ok=3"),
+            VALID_ENTRY.replace("fast_ctx_ok=4", "fast_ctx_ok=3"),
+            VALID_ENTRY.replace("fast_rsp_ok=4", "fast_rsp_ok=3"),
+            VALID_ENTRY.replace(
+                "SMP|entry-user=cpus=4;int80_ok=4;fast_ok=4;fault_ok=4;frame_ok=4;fast_ctx_ok=4;fast_rsp_ok=4;PASS\n",
+                "",
+            ),
+            VALID_ENTRY.replace(
+                "fast_rsp_ok=4;PASS\n",
+                "fast_rsp_ok=4\n",
+            ),
             VALID_ENTRY.replace("SMP|aps=3;online=4;percpu=3;tss=distinct\n", ""),
             VALID_ENTRY.replace("SMP|PASS\n", "SMP|FAIL|entry-timeout\n"),
             VALID_ENTRY.replace("lapic_id=0", "lapic_id=1"),

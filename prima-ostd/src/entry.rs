@@ -394,6 +394,30 @@ pub type TimerHandler = extern "C" fn(SaveBlock, u64);
 /// 不返回的收尾回调（用户 `int3` 收尾 / 恢复落点）。
 pub type ExitHandler = extern "C" fn() -> !;
 
+/// P5-3b-2：每 CPU 用户探针的收尾回调（参数为本 CPU 索引；不得返回）。
+pub type FinishHandler = extern "C" fn(usize) -> !;
+static FINISH_HANDLER: AtomicU64 = AtomicU64::new(0);
+
+/// 注册用户探针收尾回调（在进入 CPL3 前调用）。
+pub fn set_finish_handler(handler: FinishHandler) {
+    FINISH_HANDLER.store(handler as usize as u64, Ordering::Relaxed);
+}
+
+/// 调用已注册的用户探针收尾回调；未注册时停放（`hlt` 循环）。
+///
+/// 契约：仅在受控探针的 `int 0x80` 回调中调用，且当前 CPU 的入口现场已记录。
+pub fn finish_now(cpu: usize) -> ! {
+    let raw = FINISH_HANDLER.load(Ordering::Relaxed);
+    if raw != 0 {
+        // SAFETY: 由 `set_finish_handler` 保证该槽登记的是同类型 `fn` 地址。
+        let handler: FinishHandler = unsafe { core::mem::transmute(raw as usize) };
+        handler(cpu);
+    }
+    loop {
+        crate::arch::hlt();
+    }
+}
+
 pub type CpuExceptionHandler = extern "C" fn(u64, SaveBlock, u64) -> !;
 static CPU_EXCEPTION_HANDLER: AtomicU64 = AtomicU64::new(0);
 pub fn set_cpu_exception_handler(handler: CpuExceptionHandler) {
@@ -1490,6 +1514,21 @@ const PERCPU_FAULT_ADDR_OFF: usize = 0x08;
 const PERCPU_FAULT_ERROR_OFF: usize = 0x10;
 #[cfg(feature = "entry-percpu-probe")]
 const PERCPU_FRAME_OFF: usize = 0x20;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_RESUME_OFF: usize = 0xC0;
+#[cfg(feature = "entry-percpu-probe")]
+const PERCPU_USER_FRAME_OFF: usize = 0xC8;
+
+/// 每 CPU GS 区中由入口汇编直接读写的字段偏移（内核 `cpu::local::CpuLocal` 必须按此布局）。
+///
+/// 快路径入口不得在保存用户 GPR 之前破坏任何寄存器，故 `USER_RSP` 与栈顶经 `%gs`
+/// 直接寻址；槽基址同样放在 GS 区，供压栈后的 `ctx` 写入使用。
+#[cfg(feature = "entry-percpu-probe")]
+pub const GS_SYSCALL_STACK_TOP_OFF: usize = 0x10;
+#[cfg(feature = "entry-percpu-probe")]
+pub const GS_USER_RSP_OFF: usize = 0x18;
+#[cfg(feature = "entry-percpu-probe")]
+pub const GS_ENTRY_SLOT_OFF: usize = 0x20;
 
 #[cfg(feature = "entry-percpu-probe")]
 #[repr(C)]
@@ -1499,7 +1538,11 @@ struct PerCpuEntry {
     fault_error: AtomicU64,
     reserved: AtomicU64,
     fault_frame: UnsafeCell<SretFrame>,
-    pad: [u8; 0x40],
+    /// 恢复跳板的帧指针（由 [`resume_percpu`] 写入，裸入口消费后清零）。
+    resume_frame: AtomicU64,
+    /// CPL3 #PF 的返回现场（每 CPU）。
+    user_frame: UnsafeCell<UserFrame>,
+    pad: [u8; 0x10],
 }
 
 #[cfg(feature = "entry-percpu-probe")]
@@ -1511,7 +1554,15 @@ impl PerCpuEntry {
             fault_error: AtomicU64::new(0),
             reserved: AtomicU64::new(0),
             fault_frame: UnsafeCell::new(SretFrame::ZERO),
-            pad: [0; 0x40],
+            resume_frame: AtomicU64::new(0),
+            user_frame: UnsafeCell::new(UserFrame {
+                rip: 0,
+                cs: 0,
+                rflags: 0,
+                rsp: 0,
+                ss: 0,
+            }),
+            pad: [0; 0x10],
         }
     }
 }
@@ -1532,6 +1583,26 @@ static PERCPU: [PerCpuEntry; PERCPU_MAX] = [const { PerCpuEntry::new() }; PERCPU
 fn percpu(cpu: usize) -> &'static PerCpuEntry {
     assert!(cpu < PERCPU_MAX, "cpu index out of range");
     &PERCPU[cpu]
+}
+
+/// 指定 CPU 的入口槽地址（供内核写入 GS 区，快路径 `ctx` 写入用）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_slot_addr(cpu: usize) -> u64 {
+    percpu(cpu) as *const PerCpuEntry as u64
+}
+
+/// 指定 CPU 最近一次 CPL3 #PF 的返回现场。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_user_frame(cpu: usize) -> UserFrame {
+    // SAFETY: 见 [`percpu_fault_frame`] 的访问契约——每次读本 CPU 独立槽的 POD 值。
+    unsafe { *percpu(cpu).user_frame.get() }
+}
+
+/// 指定 CPU 已由恢复跳板消费的帧指针（未消费或已清为 0 返回 `None`）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn percpu_resume_frame(cpu: usize) -> Option<u64> {
+    let raw = percpu(cpu).resume_frame.load(Ordering::Relaxed);
+    if raw == 0 { None } else { Some(raw) }
 }
 
 /// 指定 CPU 最近一次 `int 0x80` 保存块基址（未进入过为 `None`）。
@@ -1603,17 +1674,22 @@ pub fn page_fault_entry_percpu_addr() -> u64 {
     page_fault_entry_percpu as *const () as u64
 }
 
-/// `int 0x80` 的每 CPU 现场副本（仅 CPL0）。
+/// `int 0x80` 的每 CPU 现场副本（CPL0 与 CPL3）。
 ///
 /// 与 [`syscall_entry`] 的差别只有保存块基址写入的位置：`r12` 从 `%gs:0` 索引本模块的
-/// 每 CPU 槽。CPL3 来源直接 `ud2`，避免把未分区的用户路径伪装成已覆盖。
+/// 每 CPU 槽。GS 交换沿用 GS-2 的开关与 `CS.RPL` 判据，仅在受控镜像启用；CPL0 探针
+/// 不交换（此时 `%gs` 已是内核 GS 区）。
 #[cfg(feature = "entry-percpu-probe")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn syscall_entry_percpu() -> ! {
     core::arch::naked_asm!(
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 4f",
         "test byte ptr [rsp + 8], 3",
-        "jnz 9f",
+        "jz 4f",
+        "swapgs",
+        "4:",
         "push r15",
         "push r14",
         "push r13",
@@ -1674,26 +1750,34 @@ unsafe extern "C" fn syscall_entry_percpu() -> ! {
         "pop r13",
         "pop r14",
         "pop r15",
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 5f",
+        "test byte ptr [rsp + 8], 3",
+        "jz 5f",
+        "swapgs",
+        "5:",
         "iretq",
-        "9:",
-        "ud2",
         percpu = sym PERCPU,
         ctx = const PERCPU_CTX_OFF,
         handle = sym SYSCALL_HANDLER,
+        gs = sym GS_SWAP,
     )
 }
 
-/// #PF 的每 CPU 现场副本（仅 CPL0）。
+/// #PF 的每 CPU 现场副本（CPL0 与 CPL3）。
 ///
-/// 与 [`page_fault_entry`] 的 CPL0 路径逐槽相同，差别只在现场基址：`r12` 从 `%gs:0`
-/// 索引本模块的每 CPU 槽。CPL3 来源直接 `ud2`（用户路径现场尚未分区）。
+/// CPL0 路径与 [`page_fault_entry`] 的 CPL0 分支逐槽相同；CPL3 路径按 GS-2 判据交换 GS，
+/// 并把返回现场写入本 CPU 的 `USER_FRAME`。两条路径的现场基址都由 `r12`（`%gs:0`
+/// 索引）给出，不再引用全局单槽。
 #[cfg(feature = "entry-percpu-probe")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn page_fault_entry_percpu() -> ! {
     core::arch::naked_asm!(
+        // CS 位于 [rsp+0x10]（err 在 0、rip 在 8），CPL3 走 3f。
         "test byte ptr [rsp + 0x10], 3",
-        "jnz 9f",
+        "jnz 3f",
+        // ---- CPL0 ----
         "push r15",
         "push r14",
         "push r13",
@@ -1782,13 +1866,307 @@ unsafe extern "C" fn page_fault_entry_percpu() -> ! {
         "pop r15",
         "add rsp, 8",
         "iretq",
-        "9:",
-        "ud2",
+        // ---- CPL3 ----
+        "3:",
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 4f",
+        "swapgs",
+        "4:",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        "cld",
+        "mov eax, dword ptr gs:[0]",
+        "lea r12, [rip + {percpu}]",
+        "shl rax, 8",
+        "add r12, rax",
+        // 完整现场帧（rsp 槽合成后由用户 rsp 覆盖）。
+        "mov r10, qword ptr [rsp + 0x00]",
+        "mov qword ptr [r12 + {frame} + 0x00], r10",
+        "mov r10, qword ptr [rsp + 0x08]",
+        "mov qword ptr [r12 + {frame} + 0x08], r10",
+        "mov r10, qword ptr [rsp + 0x10]",
+        "mov qword ptr [r12 + {frame} + 0x10], r10",
+        "mov r10, qword ptr [rsp + 0x18]",
+        "mov qword ptr [r12 + {frame} + 0x18], r10",
+        "mov r10, qword ptr [rsp + 0x20]",
+        "mov qword ptr [r12 + {frame} + 0x20], r10",
+        "mov r10, qword ptr [rsp + 0x28]",
+        "mov qword ptr [r12 + {frame} + 0x28], r10",
+        "mov r10, qword ptr [rsp + 0x30]",
+        "mov qword ptr [r12 + {frame} + 0x30], r10",
+        "mov r10, qword ptr [rsp + 0x98]",
+        "mov qword ptr [r12 + {frame} + 0x38], r10",
+        "mov r10, qword ptr [rsp + 0x38]",
+        "mov qword ptr [r12 + {frame} + 0x40], r10",
+        "mov r10, qword ptr [rsp + 0x40]",
+        "mov qword ptr [r12 + {frame} + 0x48], r10",
+        "mov r10, qword ptr [rsp + 0x48]",
+        "mov qword ptr [r12 + {frame} + 0x50], r10",
+        "mov r10, qword ptr [rsp + 0x50]",
+        "mov qword ptr [r12 + {frame} + 0x58], r10",
+        "mov r10, qword ptr [rsp + 0x58]",
+        "mov qword ptr [r12 + {frame} + 0x60], r10",
+        "mov r10, qword ptr [rsp + 0x60]",
+        "mov qword ptr [r12 + {frame} + 0x68], r10",
+        "mov r10, qword ptr [rsp + 0x68]",
+        "mov qword ptr [r12 + {frame} + 0x70], r10",
+        "mov r10, qword ptr [rsp + 0x70]",
+        "mov qword ptr [r12 + {frame} + 0x78], r10",
+        "mov r10, qword ptr [rsp + 0x90]",
+        "mov qword ptr [r12 + {frame} + 0x80], r10",
+        "mov r10, qword ptr [rsp + 0x80]",
+        "mov qword ptr [r12 + {frame} + 0x88], r10",
+        "mov r10, qword ptr [rsp + 0x88]",
+        "mov qword ptr [r12 + {frame} + 0x90], r10",
+        "mov r10, qword ptr [rsp + 0xA0]",
+        "mov qword ptr [r12 + {frame} + 0x98], r10",
+        "mov r10, cr2",
+        "mov qword ptr [r12 + {addr}], r10",
+        "mov r10, qword ptr [rsp + 0x78]",
+        "mov qword ptr [r12 + {error}], r10",
+        // 每 CPU 的 CPL3 返回现场。
+        "lea r11, [r12 + {user_frame}]",
+        "mov r10, qword ptr [rsp + 0x80]",
+        "mov qword ptr [r11 + 0x00], r10",
+        "mov r10, qword ptr [rsp + 0x88]",
+        "mov qword ptr [r11 + 0x08], r10",
+        "mov r10, qword ptr [rsp + 0x90]",
+        "mov qword ptr [r11 + 0x10], r10",
+        "mov r10, qword ptr [rsp + 0x98]",
+        "mov qword ptr [r11 + 0x18], r10",
+        "mov r10, qword ptr [rsp + 0xA0]",
+        "mov qword ptr [r11 + 0x20], r10",
+        "lea rdi, [r12 + {frame}]",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "call qword ptr [rip + {handler}]",
+        "mov rsp, rbp",
+        // 询问分派器返回的 RIP，并写回硬件帧槽（弹 GPR 前完成，之后不再需要槽基址）。
+        "lea r11, [r12 + {user_frame}]",
+        "mov qword ptr [r11 + 0x00], rax",
+        "mov r10, qword ptr [r11 + 0x00]",
+        "mov qword ptr [rsp + 0x80], r10",
+        "mov r10, qword ptr [r11 + 0x08]",
+        "mov qword ptr [rsp + 0x88], r10",
+        "mov r10, qword ptr [r11 + 0x10]",
+        "mov qword ptr [rsp + 0x90], r10",
+        "mov r10, qword ptr [r11 + 0x18]",
+        "mov qword ptr [rsp + 0x98], r10",
+        "mov r10, qword ptr [r11 + 0x20]",
+        "mov qword ptr [rsp + 0xA0], r10",
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "add rsp, 8",
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 5f",
+        "swapgs",
+        "5:",
+        "iretq",
         percpu = sym PERCPU,
         frame = const PERCPU_FRAME_OFF,
         addr = const PERCPU_FAULT_ADDR_OFF,
         error = const PERCPU_FAULT_ERROR_OFF,
+        user_frame = const PERCPU_USER_FRAME_OFF,
         handler = sym PAGE_FAULT_HANDLER,
+        gs = sym GS_SWAP,
+    )
+}
+
+/// 每 CPU `syscall` 快路径入口地址（IA32_LSTAR，受控探针）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn syscall_fast_entry_percpu_addr() -> u64 {
+    syscall_fast_entry_percpu as *const () as u64
+}
+
+/// `syscall` 快路径的每 CPU 版本（仅受控探针；GS-1 交换 + 每 CPU 栈/`USER_RSP`/`ctx`）。
+///
+/// 快路径在保存用户 GPR 之前不得破坏任何寄存器，故 `USER_RSP` 与栈顶经 `%gs` 直接读写
+/// （GS 区布局见 [`GS_USER_RSP_OFF`]/[`GS_SYSCALL_STACK_TOP_OFF`]）。出口用户 `rsp`
+/// 暂存到模拟帧的 `ss` 槽，弹完 GPR 后从栈上取回，避免依赖已被恢复的 `r12`。
+#[cfg(feature = "entry-percpu-probe")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn syscall_fast_entry_percpu() -> ! {
+    core::arch::naked_asm!(
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 1f",
+        "swapgs",
+        "1:",
+        // 1) 保存用户 rsp、切到本 CPU 专用栈（均经 GS 区，不碰 GPR）。
+        "mov qword ptr gs:[{user_rsp}], rsp",
+        "mov rsp, qword ptr gs:[{stack_top}]",
+        // 2) 模拟 `int 0x80` 硬件帧。
+        "push qword ptr [rip + {user_ss}]",
+        "push qword ptr gs:[{user_rsp}]",
+        "push r11",
+        "push qword ptr [rip + {user_cs}]",
+        "push rcx",
+        "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rbp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rbx",
+        "push rax",
+        "mov rbp, rsp",
+        // 3) 保存块基址写入本 CPU 槽（压栈后 r11 可作临时）。
+        "mov r11, qword ptr gs:[{slot}]",
+        "mov qword ptr [r11 + {ctx}], rbp",
+        "and rsp, -16",
+        "sub rsp, 64",
+        "mov r10, qword ptr [rbp + 0x00]",
+        "mov qword ptr [rsp + 0x00], r10",
+        "mov r10, qword ptr [rbp + 0x28]",
+        "mov qword ptr [rsp + 0x08], r10",
+        "mov r10, qword ptr [rbp + 0x20]",
+        "mov qword ptr [rsp + 0x10], r10",
+        "mov r10, qword ptr [rbp + 0x18]",
+        "mov qword ptr [rsp + 0x18], r10",
+        "mov r10, qword ptr [rbp + 0x48]",
+        "mov qword ptr [rsp + 0x20], r10",
+        "mov r10, qword ptr [rbp + 0x38]",
+        "mov qword ptr [rsp + 0x28], r10",
+        "mov r10, qword ptr [rbp + 0x40]",
+        "mov qword ptr [rsp + 0x30], r10",
+        "mov r10, qword ptr [rip + {user_cs}]",
+        "mov qword ptr [rsp + 0x38], r10",
+        "mov rdi, rsp",
+        "call qword ptr [rip + {handle}]",
+        "mov rsp, rbp",
+        "mov qword ptr [rsp + 0x00], rax",
+        // 4) 用户 rsp 暂存到模拟帧的 ss 槽（弹 GPR 后从这里取回）。
+        "mov r10, qword ptr gs:[{user_rsp}]",
+        "mov qword ptr [rbp + 0x98], r10",
+        "pop rax",
+        "pop rbx",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop rbp",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
+        "cmp byte ptr [rip + {gs}], 0",
+        "je 3f",
+        "swapgs",
+        "3:",
+        "mov rsp, qword ptr [rsp + 0x20]",
+        "sysretq",
+        user_rsp = const GS_USER_RSP_OFF,
+        stack_top = const GS_SYSCALL_STACK_TOP_OFF,
+        slot = const GS_ENTRY_SLOT_OFF,
+        ctx = const PERCPU_CTX_OFF,
+        handle = sym FAST_SYSCALL_HANDLER,
+        user_cs = sym FAST_SYSCALL_CS,
+        user_ss = sym FAST_SYSCALL_SS,
+        gs = sym GS_SWAP,
+    )
+}
+
+/// 经每 CPU 恢复槽进入用户态：帧指针写入本 CPU 槽后由 [`exc_resume_entry_percpu`]
+/// 消费，并在 `iretq` 前把 GS 切到"已交换"侧（`GS_BASE=0`、`KERNEL_GS_BASE=旧 GS`）。
+///
+/// 契约：仅在 `cpu` 上、CPL0、本 CPU GS 区已安装且即将 iret 到 CPL3 时调用。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn resume_percpu(cpu: usize, frame: &SretFrame) -> ! {
+    percpu(cpu)
+        .resume_frame
+        .store(frame as *const SretFrame as u64, Ordering::Relaxed);
+    // SAFETY: 见函数契约——帧已校验且有效；GS 区已安装，入口读取本 CPU 槽。
+    unsafe { exc_resume_entry_percpu() }
+}
+
+/// 每 CPU 恢复跳板：从 `%gs:0` 索引的槽读取帧指针，加载完整 `iretq` 帧与 GPR，
+/// 并把两根 GS MSR 切到用户态（`GS_BASE=0`、`KERNEL_GS_BASE=原 GS`）后 `iretq`。
+#[cfg(feature = "entry-percpu-probe")]
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn exc_resume_entry_percpu() -> ! {
+    core::arch::naked_asm!(
+        "mov eax, dword ptr gs:[0]",
+        "lea r10, [rip + {percpu}]",
+        "shl rax, 8",
+        "add r10, rax",
+        "mov r11, r10",
+        "mov r10, qword ptr [r10 + {resume}]",
+        // 清零本 CPU 槽，证明帧指针被本槽消费。
+        "mov qword ptr [r11 + {resume}], 0",
+        // 切 GS 到用户侧：先保存原 GS（rdmsr），再 GS=0、KERNEL_GS=原 GS。
+        "mov ecx, 0xC0000101",
+        "rdmsr",
+        "mov r8d, eax",
+        "mov r9d, edx",
+        "xor eax, eax",
+        "xor edx, edx",
+        "wrmsr",
+        "mov ecx, 0xC0000102",
+        "mov eax, r8d",
+        "mov edx, r9d",
+        "wrmsr",
+        // 压完整 iret 帧。
+        "push qword ptr [r10 + 0x98]",
+        "push qword ptr [r10 + 0x38]",
+        "push qword ptr [r10 + 0x80]",
+        "push qword ptr [r10 + 0x90]",
+        "push qword ptr [r10 + 0x88]",
+        "mov rax, qword ptr [r10 + 0x00]",
+        "mov rbx, qword ptr [r10 + 0x08]",
+        "mov rcx, qword ptr [r10 + 0x10]",
+        "mov rdx, qword ptr [r10 + 0x18]",
+        "mov rsi, qword ptr [r10 + 0x20]",
+        "mov rdi, qword ptr [r10 + 0x28]",
+        "mov rbp, qword ptr [r10 + 0x30]",
+        "mov r8, qword ptr [r10 + 0x40]",
+        "mov r9, qword ptr [r10 + 0x48]",
+        "mov r11, qword ptr [r10 + 0x58]",
+        "mov r12, qword ptr [r10 + 0x60]",
+        "mov r13, qword ptr [r10 + 0x68]",
+        "mov r14, qword ptr [r10 + 0x70]",
+        "mov r15, qword ptr [r10 + 0x78]",
+        "mov r10, qword ptr [r10 + 0x50]",
+        "iretq",
+        percpu = sym PERCPU,
+        resume = const PERCPU_RESUME_OFF,
     )
 }
 
@@ -1990,7 +2368,7 @@ mod tests {
         }
     }
 
-    /// P5-3b-1：每 CPU 槽的步长/偏移是裸入口与访问器的共同契约，必须钉住。
+    /// P5-3b-1/2：每 CPU 槽的步长/偏移是裸入口与访问器的共同契约，必须钉住。
     #[cfg(feature = "entry-percpu-probe")]
     #[test]
     fn percpu_entry_layout_is_pinned_and_slots_are_distinct() {
@@ -2000,6 +2378,8 @@ mod tests {
         assert_eq!(offset_of!(PerCpuEntry, fault_addr), 0x08);
         assert_eq!(offset_of!(PerCpuEntry, fault_error), 0x10);
         assert_eq!(offset_of!(PerCpuEntry, fault_frame), 0x20);
+        assert_eq!(offset_of!(PerCpuEntry, resume_frame), 0xC0);
+        assert_eq!(offset_of!(PerCpuEntry, user_frame), 0xC8);
         assert_eq!(PERCPU.len(), PERCPU_MAX);
         let mut bases = [0u64; PERCPU_MAX];
         for (cpu, slot) in bases.iter_mut().enumerate() {
@@ -2008,6 +2388,8 @@ mod tests {
             assert_eq!(percpu_fault_error(cpu), 0);
             assert_eq!(percpu_fault_frame(cpu), SretFrame::ZERO);
             assert!(percpu_context_base(cpu).is_none());
+            assert!(percpu_resume_frame(cpu).is_none());
+            assert_eq!(percpu_user_frame(cpu), UserFrame::default());
         }
         for i in 0..bases.len() {
             for j in 0..i {

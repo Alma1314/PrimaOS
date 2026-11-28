@@ -132,10 +132,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     // B4: 装载 IDT，触发 int3，验证 trap → handler → iretq 闭环。
                                     match kernel::idt::init_idt() {
                                         Ok(()) => {
-                                            // P5-3b-1：先于任何 AP 启动把 syscall/#PF 回调
-                                            // 换成探针版本；镜像在见证后退出，不恢复。
+                                            // P5-3b：先于任何 AP 启动把 syscall/快路径/#PF 回调
+                                            // 换成探针版本，并登记用户探针收尾；镜像在见证后
+                                            // 退出，不恢复。
                                             #[cfg(feature = "entry-percpu-probe")]
-                                            kernel::entry_probe::install_handlers();
+                                            {
+                                                kernel::entry_probe::install_handlers();
+                                                prima_ostd::entry::set_finish_handler(
+                                                    entry_probe_finish,
+                                                );
+                                            }
                                             // S2-D4：进入 CPL3 前屏蔽 8259 全部中断。上电默认
                                             // IRQ0→vector 8（=#DF 门），用户帧 IF=1 且用户阶段
                                             // 长于 PIT 默认周期时会被当成 #DF 交付并三重故障。
@@ -202,8 +208,10 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                         }
                                                         #[cfg(feature = "entry-percpu-probe")]
                                                         {
-                                                            // AP 在各自入口已运行探针；BSP 最后
-                                                            // 补测自身，再汇总全部 CPU 的槽。
+                                                            // AP 在各自入口已运行 CPL0/CPL3 探针；
+                                                            // BSP 最后补测自身（CPL0），再进入
+                                                            // CPL3 用户探针；收尾统一汇总两面见证。
+                                                            protocol::smp_stage("entry-bsp-local");
                                                             kernel::entry_probe::run_local(
                                                                 kernel::cpu::local::BSP,
                                                                 boot_info.kernel_stack_bottom,
@@ -214,22 +222,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                                 kernel::entry_probe::witness(
                                                                     aps + 1,
                                                                 );
-                                                            if witness.evidence_ok() {
-                                                                protocol::entry_ready(&witness);
-                                                                protocol::smp_pass();
-                                                            } else {
+                                                            if !witness.evidence_ok() {
                                                                 protocol::entry_progress(
                                                                     &kernel::entry_probe::progress(
                                                                     ),
                                                                 );
                                                                 protocol::entry_fail("mismatch");
+                                                                serial::flush();
+                                                                qemu::exit(qemu::PANIC)
                                                             }
-                                                            serial::flush();
-                                                            qemu::exit(if witness.evidence_ok() {
-                                                                qemu::SUCCESS
-                                                            } else {
-                                                                qemu::PANIC
-                                                            })
+                                                            protocol::smp_stage("entry-bsp-user");
+                                                            kernel::entry_probe::run_user_local(
+                                                                kernel::cpu::local::BSP,
+                                                                offset,
+                                                                aps + 1,
+                                                            );
                                                         }
                                                         #[cfg(not(any(
                                                             feature = "gs3-probe",
@@ -605,6 +612,43 @@ fn audit_probe_record(phase: &str, evidence: kernel::bootstrap::gate_audit_probe
         "S6AUDIT|{phase} site={};owner={};required={};used={};reserved={};unchanged=1",
         evidence.site, d.owner, d.required, d.used, d.reserved,
     );
+}
+
+/// P5-3b-2：每 CPU 用户探针收尾（AP 停放；BSP 汇总两面见证并退出）。
+#[cfg(feature = "entry-percpu-probe")]
+extern "C" fn entry_probe_finish(cpu: usize) -> ! {
+    if cpu != kernel::cpu::local::BSP {
+        kernel::smp::mark_online(cpu as u32);
+        loop {
+            prima_ostd::arch::hlt();
+        }
+    }
+    if (0..kernel::cpu::local::MAX_CPUS).any(kernel::entry_probe::user_root_failed) {
+        for cpu in 0..kernel::cpu::local::MAX_CPUS {
+            if kernel::entry_probe::user_root_failed(cpu) {
+                protocol::entry_root_fail(cpu, kernel::entry_probe::user_root_step(cpu));
+            }
+        }
+        protocol::entry_fail("user-root");
+        serial::flush();
+        qemu::exit(qemu::PANIC)
+    }
+    let (entry_witness, user) = kernel::entry_probe::summarize();
+    if entry_witness.evidence_ok() && user.evidence_ok() {
+        protocol::entry_ready(&entry_witness);
+        protocol::entry_user_ready(&user);
+        protocol::smp_pass();
+        serial::flush();
+        qemu::exit(qemu::SUCCESS)
+    } else {
+        if entry_witness.evidence_ok() {
+            protocol::entry_ready(&entry_witness);
+        }
+        protocol::entry_user_progress(&kernel::entry_probe::user_progress());
+        protocol::entry_fail("user-mismatch");
+        serial::flush();
+        qemu::exit(qemu::PANIC)
+    }
 }
 
 #[cfg(feature = "gate-probe")]

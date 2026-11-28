@@ -210,6 +210,7 @@ extern "C" fn ap_entry(index: u32) -> ! {
         GS_CPUID_SEEN[cpu].store(cpuid_apic, Ordering::Relaxed);
     }
     crate::cpu::enable_sse();
+    let mut ready = false;
     if crate::gdt::init_cpu_gdt(index as usize, stack_top(index)).is_ok() {
         // 装载本 CPU GDT 后，旧的 CS 选择子可能在新表中不再指向代码段；任何中断/异常
         // 返回都会按新表重新校验它。用远返回把 CS 切到本表的内核代码段。
@@ -223,12 +224,29 @@ extern "C" fn ap_entry(index: u32) -> ! {
             let (stack_lo, stack_hi) = ap_stack_bounds(index);
             crate::entry_probe::run_local(index as usize, stack_lo, stack_hi);
         }
+        ready = true;
+    }
+    // P5-3b-2：本 CPU 从 CPL3 执行用户探针；其收尾回调置在线位并停放（不返回）。
+    #[cfg(feature = "entry-percpu-probe")]
+    if ready {
+        let offset = AP_PHYS_OFFSET.load(Ordering::SeqCst);
+        crate::entry_probe::run_user_local(index as usize, offset, 0);
     }
     ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
     loop {
         prima_ostd::arch::hlt();
     }
 }
+
+/// P5-3b-2：AP 用户探针收尾时置在线位（由 `entry_probe::finish` 调用）。
+#[cfg(feature = "entry-percpu-probe")]
+pub fn mark_online(index: u32) {
+    ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
+}
+
+/// P5-3b-2：AP 用户页构建用的物理直映射偏移（由 [`start_aps`] 写入）。
+#[cfg(feature = "entry-percpu-probe")]
+static AP_PHYS_OFFSET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// 校验 BSP+已上线 AP 的 TSS 基址互异，且每个 AP 从自身 GDTR/TR 读回本槽描述符基址。
 fn verify_per_cpu(aps: u32) -> Result<(), ApError> {
@@ -422,6 +440,8 @@ pub fn start_aps(
     if report.x2apic {
         return Err(ApError::X2apicUnsupported);
     }
+    #[cfg(feature = "entry-percpu-probe")]
+    AP_PHYS_OFFSET.store(phys_offset, Ordering::SeqCst);
     crate::frames::open_segment(SMP_FRAME_SEGMENT, crate::frames::Pool::Cpu)
         .map_err(|_| ApError::SegmentLedger)?;
     note("frame");
