@@ -5,6 +5,15 @@ use kernel::mem::{FrameInventory, MemError};
 
 static NEXT_SEQUENCE: AtomicU32 = AtomicU32::new(1);
 
+#[cfg(feature = "ipi-probe")]
+pub(crate) fn ipi_ready(cpus: u32) {
+    serial::write_bytes(b"SMP|ipi=cpus=");
+    write_u32(cpus);
+    serial::write_bytes(b";roundtrips=");
+    write_u32(cpus - 1);
+    serial::write_bytes(b";directed=1;ack_timeout=1;PASS\r\n");
+}
+
 pub(crate) fn boot_start() {
     write_event("boot_start", "ok");
 }

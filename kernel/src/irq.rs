@@ -54,6 +54,13 @@ pub fn disable(line: u8) {
     PENDING.fetch_and(!(1 << line), Ordering::Relaxed);
 }
 pub extern "C" fn dispatch(raw_line: u64) {
+    // Isolated IPI image reserves IRQ15's existing DPL0 entry; physical PIC
+    // lines remain masked and this image exits before any device/user workload.
+    #[cfg(feature = "ipi-probe")]
+    if raw_line == 15 {
+        crate::ipi_probe::interrupt();
+        return;
+    }
     let line = raw_line as u8;
     // Spurious IRQ7 sends no EOI; spurious IRQ15 acknowledges only the cascade.
     if line == 7 || line == 15 {

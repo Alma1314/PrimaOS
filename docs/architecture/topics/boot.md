@@ -4,7 +4,7 @@ kind: topic
 authority: explanatory
 status: maintained
 lifecycle: current
-updated: 2026-11-06
+updated: 2026-11-28
 ---
 
 # 启动、硬件与可信边界
@@ -15,7 +15,7 @@ updated: 2026-11-06
 
 谁建立初始 Authority？init 如何获得 boot info？unsafe 应放在哪里？启动见证与帧守恒在哪里检查？
 
-检索别名：bootstrap, framekernel, GDT, IDT, trap, CR3, EXO, TCB。
+检索别名：bootstrap, framekernel, GDT, IDT, trap, CR3, EXO, TCB, SMP, LAPIC, IPI。
 
 ## 权威章节与阅读顺序
 
@@ -93,3 +93,14 @@ get 无等待；set 争用返回原值；递归初始化仍禁止。self_root_re
 [本地验收身份报告](../../superpowers/reports/2026-11-06-stage7-ci-evidence.md)限定宿主工具范围。
 入口为[scripts/ci.py](../../../scripts/ci.py)，用法见[开发手册](../development.md#ci分组与验收身份)。
 九轨退出、远端CI和性能基准以阶段跟踪器为准；这些工具不实现OS配额、SMP或透明恢复。
+
+## SMP 与定向 IPI
+
+先读 [S7-B.1 状态分区设计](../../superpowers/specs/2026-11-27-stage7-smp-state-partition.md)
+与其 §5.1 活动 root 限制、§5.3 传输探针边界，再读
+[AP 启动失败链](../../superpowers/reports/2026-11-27-p5-2-ap-bringup.md)和
+[P5-4-1 定向 IPI 报告](../../superpowers/reports/2026-11-28-p5-4-1-directed-ipi.md)。
+实现入口为 [smp.rs](../../../kernel/src/smp.rs)、[ipi_probe.rs](../../../kernel/src/ipi_probe.rs)
+与 [IRQ 分派](../../../kernel/src/irq.rs)；验收命令为
+`cargo run -p xtask --features ipi-probe -- test-ipi`。该命令只证明 CPL0 的定向往返与
+有界缺确认处理，不证明 TLB shootdown、帧回收或运行期跨核唤醒。

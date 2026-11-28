@@ -5,9 +5,10 @@
 //! AP 在长模式下跳到 [`ap_entry`]，装载本 CPU 的 GDT/TSS 与 BSP 的只读 IDT，置在线位并
 //! `hlt`。
 //!
-//! **边界**：AP 不参与调度、不接收中断（`hlt` 且 IF=0），不处理 x2APIC MSR 发送路径；
-//! 这不是 SMP 验收。页帧经注册表归属（保留标签 `SMP_FRAME_SEGMENT`），AP 根共享 BSP
-//! 高半区页表，低半区只映射跳板页。
+//! **边界**：基础 `smp-ap` 的 AP 停放且 IF=0；调度探针与 IPI 探针分别显式开启
+//! 用户负载和 CPL0 ping/pong。无 x2APIC MSR 发送路径，不是完整 SMP 验收。
+//! 页帧经注册表归属（保留标签 `SMP_FRAME_SEGMENT`），AP 根共享 BSP 内核页表与
+//! LAPIC 窗口，低地址标识映射只覆盖跳板页。
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -32,6 +33,7 @@ const LAPIC_SVR: u32 = 0xf0;
 const LAPIC_ICR_LOW: u32 = 0x300;
 const LAPIC_ICR_HIGH: u32 = 0x310;
 const ICR_DELIVERY_STATUS: u32 = 1 << 12;
+const ICR_POLL_LIMIT: u32 = 10_000_000;
 /// INIT：delivery mode 5、level assert、level trigger。
 ///
 /// destination shorthand（bits 19:18）必须为 00（仅在 `ICR_HIGH` 指定的 CPU 上投递）。
@@ -250,6 +252,14 @@ extern "C" fn ap_entry(index: u32) -> ! {
         prima_ostd::entry::enable_gs_swap();
         crate::sched_probe::ap_enter(index as usize);
     }
+    #[cfg(feature = "ipi-probe")]
+    if ready {
+        crate::ipi_probe::enable_local();
+        ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
+        loop {
+            prima_ostd::arch::wait_for_interrupt();
+        }
+    }
     ONLINE.fetch_or(1u32 << index, Ordering::SeqCst);
     loop {
         prima_ostd::arch::hlt();
@@ -405,7 +415,7 @@ fn map_window(window_va: u64, phys: u64, phys_offset: u64) -> Result<u64, ApErro
     Ok(window_va)
 }
 
-fn enable_lapic(lapic: u64) {
+pub(crate) fn enable_lapic(lapic: u64) {
     let base_msr = crate::msr::rdmsr(IA32_APIC_BASE);
     if base_msr & APIC_BASE_ENABLE == 0 {
         crate::msr::wrmsr(IA32_APIC_BASE, base_msr | APIC_BASE_ENABLE);
@@ -417,17 +427,27 @@ fn enable_lapic(lapic: u64) {
     write_u32(lapic + u64::from(LAPIC_TPR), 0);
 }
 
-fn wait_icr(lapic: u64) -> Result<(), ApError> {
-    for _ in 0..10_000_000u32 {
-        if read_u32(lapic + u64::from(LAPIC_ICR_LOW)) & ICR_DELIVERY_STATUS == 0 {
-            return Ok(());
+/// Iteration bound, independent of TSC calibration or target CPU progress.
+pub(crate) fn poll_bounded(limit: u32, mut ready: impl FnMut() -> bool) -> bool {
+    for _ in 0..limit {
+        if ready() {
+            return true;
         }
         core::hint::spin_loop();
+    }
+    false
+}
+
+fn wait_icr(lapic: u64) -> Result<(), ApError> {
+    if poll_bounded(ICR_POLL_LIMIT, || {
+        read_u32(lapic + u64::from(LAPIC_ICR_LOW)) & ICR_DELIVERY_STATUS == 0
+    }) {
+        return Ok(());
     }
     Err(ApError::LapicTimeout)
 }
 
-fn send_ipi(lapic: u64, apic_id: u32, command: u32) -> Result<(), ApError> {
+pub(crate) fn send_ipi(lapic: u64, apic_id: u32, command: u32) -> Result<(), ApError> {
     wait_icr(lapic)?;
     write_u32(lapic + u64::from(LAPIC_ICR_HIGH), apic_id << 24);
     write_u32(lapic + u64::from(LAPIC_ICR_LOW), command);
@@ -476,6 +496,18 @@ pub fn start_aps(
     let tramp_va = map_window(TRAMP_WINDOW_VA, tramp_phys, phys_offset)?;
     note("lapic-map");
     let lapic = map_window(LAPIC_WINDOW_VA, u64::from(report.lapic_phys), phys_offset)?;
+    // This slot was empty when build_ap_root copied the BSP root. Publish it
+    // before SIPI without changing frame allocation or startup event order.
+    let slot = (LAPIC_WINDOW_VA >> 39) & 0x1ff;
+    let entry = read_u64(phys_to_virt(crate::cpu::cr3_phys() + slot * 8, phys_offset));
+    write_u64(phys_to_virt(ap_root + slot * 8, phys_offset), entry);
+    if crate::vspace::leaf_phys_or_none(ap_root, lapic, |phys| phys_to_virt(phys, phys_offset))
+        != Some(u64::from(report.lapic_phys))
+    {
+        return Err(ApError::LapicMapping);
+    }
+    #[cfg(feature = "ipi-probe")]
+    crate::ipi_probe::prepare(lapic, report.bsp_apic_id);
     note("lapic-enable");
     enable_lapic(lapic);
     note("lapic-enabled");
@@ -569,6 +601,36 @@ pub fn gs_witness(report: &Report, aps: u32) -> GsWitness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_poll_times_out_or_accepts_the_last_sample() {
+        let mut reads = 0;
+        assert!(!poll_bounded(3, || {
+            reads += 1;
+            false
+        }));
+        assert_eq!(reads, 3);
+        reads = 0;
+        assert!(poll_bounded(3, || {
+            reads += 1;
+            reads == 3
+        }));
+        assert_eq!(reads, 3);
+        assert!(!poll_bounded(0, || panic!("zero budget must not read")));
+    }
+
+    #[test]
+    fn stuck_icr_times_out_without_overwriting_a_pending_command() {
+        let mut registers = [0u32; 0x314 / 4];
+        registers[LAPIC_ICR_LOW as usize / 4] = ICR_DELIVERY_STATUS;
+        registers[LAPIC_ICR_HIGH as usize / 4] = 0x1234_5678;
+        assert_eq!(
+            send_ipi(registers.as_ptr() as u64, 2, ICR_INIT),
+            Err(ApError::LapicTimeout)
+        );
+        assert_eq!(registers[LAPIC_ICR_LOW as usize / 4], ICR_DELIVERY_STATUS);
+        assert_eq!(registers[LAPIC_ICR_HIGH as usize / 4], 0x1234_5678);
+    }
 
     #[test]
     fn stack_tops_are_distinct_aligned_and_in_range() {

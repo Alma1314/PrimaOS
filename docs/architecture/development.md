@@ -4,7 +4,7 @@ kind: guide
 authority: operational
 status: maintained
 lifecycle: current
-updated: 2026-11-26
+updated: 2026-11-28
 ---
 
 # 开发、构建与验证手册
@@ -38,6 +38,7 @@ musl 快照不入 Git。身份、commit、校验值及获取说明见[musl 锁�
 | `cargo xtask compat` | 兼容差分入口 | 当前 cow-write-fault 有界场景；不是全部阶段5 API 验收 |
 | `cargo xtask linux-trace` | Linux 参考 trace 工作流 | 参数与再生成语义见 xtask main/linux |
 | `cargo xtask tcb` | 特权框架/机制层代码和耦合指标 | prima-ostd/src 与 kernel/src 的限定口径 |
+| `cargo run -p xtask --features ipi-probe -- test-ipi` | 独立 CPL0 定向 IPI 往返与丢确认超时探针 | BIOS `-smp 2/4` 各双轮；无用户负载、TLB 失效或帧回收；不与其它入口/调度探针组合 |
 | `cd lean && elan run leanprover/lean4:v4.35.0 lake build` | 编译 Lean 工件与定理 | lean/README 声明的模型范围 |
 | `python3 scripts/check_handle_refinement.py [--mutation-test]` | 重新提取实际 Rust 并检查生成物/源码细化/公理 | 独立安装锁定 Charon/Aeneas/Rust 及其 Lean 依赖；范围见 [源码细化报告](../superpowers/reports/2026-10-31-rust-handle-source-refinement.md)，不证明整表或机器码 |
 | `python3 scripts/docs.py check` | 文档目录、ID、主题、路径与 Markdown 锚点 | 本地链接；不探测远端网页，不判定技术结论 |

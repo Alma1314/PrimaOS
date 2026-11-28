@@ -196,6 +196,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                             );
                                                             if witness.evidence_ok() {
                                                                 protocol::gs3_ready(&witness);
+                                                                #[cfg(feature = "ipi-probe")]
+                                                                match kernel::ipi_probe::run(
+                                                                    &report, aps,
+                                                                ) {
+                                                                    Ok(()) => {
+                                                                        protocol::ipi_ready(aps + 1)
+                                                                    }
+                                                                    Err(reason) => {
+                                                                        protocol::smp_fail(reason);
+                                                                        serial::flush();
+                                                                        qemu::exit(qemu::PANIC)
+                                                                    }
+                                                                }
                                                                 protocol::smp_pass();
                                                             } else {
                                                                 let (indexes, bases, apics, cpuids) =

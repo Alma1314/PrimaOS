@@ -20,6 +20,8 @@ pub mod frames;
 pub mod gdt;
 pub mod handle;
 pub mod idt;
+#[cfg(feature = "ipi-probe")]
+pub mod ipi_probe;
 pub mod irq;
 pub mod mem;
 pub mod msr;

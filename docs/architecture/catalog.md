@@ -94,7 +94,7 @@
 | [阶段 5 当前工作 API 与符号调用边界](../superpowers/compat/stage5-working-api.md) | current | `docs/superpowers/compat/stage5-working-api.md` |
 | [形式化模型与内核映照（Lean）](../../lean/README.md) | current | `lean/README.md` |
 
-## report（275）
+## report（276）
 
 | 文档 | 生命周期 | 路径 |
 |---|---|---|
@@ -373,6 +373,7 @@
 | [P5-3b-4：held-launch 放置、prepared fork/线程发布、双核 exec 与丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md` |
 | [P5-3b-5：Gate 创建路径放置与反向跨核丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md` |
 | [P5-3b-6：程序级 fork/exec 与 fork/exec 后双向丢唤醒矩阵](../superpowers/reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md) | current | `docs/superpowers/reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md` |
+| [P5-4-1：AP LAPIC 窗口与有界定向 IPI 往返](../superpowers/reports/2026-11-28-p5-4-1-directed-ipi.md) | historical | `docs/superpowers/reports/2026-11-28-p5-4-1-directed-ipi.md` |
 
 ## spec（4）
 

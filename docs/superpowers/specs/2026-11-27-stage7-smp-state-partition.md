@@ -91,7 +91,8 @@ AP parked、任务切换仍只写 BSP 的 `TSS.rsp0`，不证明运行期分区�
   AP 按 MADT 次序取 1..；CPU 索引表在启动期一次写定，之后只读。热路径缓存方式（GS 或
   其它）见待决项 2。
 - **AP 启动**（P5-2）：`BootInfo.rsdp_addr` → XSDT/RSDT → MADT；MMIO LAPIC
-  `0xFEE0_0000` 经物理直映射；低于 1 MiB 的实模式跳板承载 INIT-SIPI-SIPI；AP 进长模式后
+  `0xFEE0_0000` 经专用内核窗口（AP 根须包含同一窗口项，见 §5.3）；低于 1 MiB 的
+  实模式跳板承载 INIT-SIPI-SIPI；AP 进长模式后
   装载共享 IDT、本 CPU GDT/TSS 与内核栈，以原子在线位握手。全部 `unsafe` 收敛在
   `prima-ostd`，`kernel/src` 保持零 unsafe。
 - **调度边界**（P5-3）：AP 上线初期只进 idle，不取任务；任务分区/迁移与可运行队列在
@@ -126,6 +127,26 @@ P5-4 须冻结 active-CPU 集合、generation/ticket、确认与超时失败策�
 在该转换和单调性证据就绪前，只由 BSP 处理物理期限，AP 不得用本地 tick 扫描全局等待者。
 这不把物理期限时钟与 COSIR 抽象 `now` 合并。验收注入各核启动偏移、采样回退和频率差，
 证明不会提前超时，并覆盖 idle 唤醒与跨 CPU 等待；误差界与延迟界另行冻结。
+
+### 5.3 P5-4-1 定向 IPI 传输探针边界
+
+本切片先验证 transport，不开放远端活动页表修改或帧回收。独立 `ipi-probe`
+镜像依赖 `gs3-probe`，与 `entry-percpu-probe`/`sched-percpu-probe` 不组合运行。
+
+- BSP 建立 LAPIC 窗口后、首个 SIPI 前，把对应 PML4 项复制到尚未活动的 AP 根；
+  保留既有帧分配顺序和启动事件，并校验该根解析出的 LAPIC 物理页。
+- AP 装载自身 GDT/共享 IDT 后经窗口启用自身 LAPIC，再发布在线位并开中断等待。
+- 本镜像在设备/用户负载前退出，PIC 设备线保持屏蔽；仅此镜像借用 IRQ15 的 DPL0 门
+  （vector `0x2f`），handler 只记本 CPU 计数、LAPIC EOI 与有界回送，不获取锁。
+- BSP 逐个向 MADT APIC ID 定向 ping，目标 AP 定向 pong 回 BSP；每次核对全部 CPU
+  的目标/非目标计数，且确认 AP 已结束回送发送操作。每次仅有一个目标在途。
+- ICR 发送前后各最多轮询 10,000,000 次；确认也最多轮询 10,000,000 次。
+  这是迭代上限，不承诺物理时间界。失败输出原因并使探针失败，禁止静默成功。
+- 在同一镜像主动抑制一次 pong，要求确认路径返回超时且目标确实收到 ping。
+  ICR 持续 busy 的拒绝与不覆写待发命令另由 host 寄存器替身验证。
+
+这些计数不是 generation/ticket，不用于撤销或回收。active-CPU 集合、迟到/重复确认、
+代次复用、确认前帧不复用和运行期超时 fail-stop 策略继续由后续 P5-4 协议冻结。
 
 ## 6. 锁顺序与禁止项
 
@@ -185,7 +206,11 @@ held-launch、prepared fork 与线程创建接入创建时放置；双核同时 
 [报告](../reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)：pre-exec fork 子进程
 并发 exec 第二映像（独立根槽），父进程 exec 后核对换根、停放与 owner；随后做 fork/exec
 后双向一轮唤醒。exec 后的二次 fork 触发取指缺页，未采用并登记；Gate 端到端、服务管理器
-流程与 IPI/TLB 仍未做）。GS-4 与 P5-4 待做。
+流程与 IPI/TLB 在该切片仍未做）。GS-4 待做。
+**P5-4-1 已取得传输探针证据**（见
+[报告](../reports/2026-11-28-p5-4-1-directed-ipi.md)）：AP 根纳入 LAPIC 窗口，
+独立 CPL0 镜像验证每个 AP 定向往返与丢确认超时；不接调度、TLB 失效或帧回收。
+P5-4 的 generation/ticket 与完整 shootdown 协议仍待做。
 
 ## 8. 分期工作包与验收观察
 
@@ -195,7 +220,7 @@ held-launch、prepared fork 与线程创建接入创建时放置；双核同时 
 | P5-1 | MADT/RSDP 解析、LAPIC MMIO、CPU 索引表（宿主模型 + 只读探测） | 宿主夹具用例；BSP 上读出自身 APIC ID；不改默认启动 | **完成**：解析 + `-smp 2/4` 只读探测（AP 未启动，[报告](../reports/2026-11-27-p5-1-acpi-madt-host.md)）；运行期索引与 AP 属 P5-2 |
 | P5-2 | AP 实模式跳板、每 CPU GDT/TSS/栈、在线握手、AP idle | 专用 QEMU `-smp 2/4` 见证 `online=2/4`；既有事件不改 | **原型完成**：跳板 + INIT-SIPI-SIPI + 在线位，`-smp 2/4` 通过（AP parked，[报告](../reports/2026-11-27-p5-2-ap-bringup.md)）；每 CPU GDT/TSS/IDT 与调度属 P5-3 |
 | P5-3 | 调度分区、可运行队列、锁域拆分、唤醒与阻塞反例 | 受 §5.1 准入限制；并行 fork/exec 无丢唤醒、入口现场无串扰；任务状态与根一致 | 进行中：**P5-3a 完成**（每 CPU GDT/TSS/共享 IDT，AP 仍 IF=0，[报告](../reports/2026-11-27-p5-3a-percpu-gdt-tss.md)）；**P5-3b-1/2 完成**（CPL0 与 CPL3 `int 0x80`/#PF、`USER_FRAME`、`syscall` 快路径与 `resume` 每 CPU 槽，[P5-3b-1 报告](../reports/2026-11-27-p5-3b1-entry-percpu.md)、[P5-3b-2 报告](../reports/2026-11-28-p5-3b2-user-fastpath-percpu.md)）；**P5-3b-3 完成探针范围**（每 CPU 队列/owner/单运行者、AP 真实调度、双核屏障/跨核唤醒/真实 fork/嵌套 #PF，[报告](../reports/2026-11-28-p5-3b3-queue-placement.md)）；**P5-3b-4 完成探针范围**（held-launch/prepared fork/线程创建放置、双核 exec 换根、4 轮跨核丢唤醒矩阵，并修复 `SYS_SEND` 直投判定丢唤醒，[报告](../reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)；Gate 内部创建路径与服务管理器流程未接）；**P5-3b-5 完成放置规则与反向矩阵**（Gate spawn/fork 子任务按客户 owner CPU 发布，host 单测；exec 后 CPU1→CPU0 反向 4 轮跨核阻塞/唤醒，[报告](../reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md)；Gate 端到端、服务管理器流程与程序级 fork/exec 矩阵未做）；**P5-3b-6 完成程序级 fork/exec 探针**（pre-exec fork 子进程并发 exec 第二映像、父进程 exec 后核对，随后双向唤醒；exec 后二次 fork 缺页未采用，[报告](../reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)；Gate 端到端与服务管理器流程未做）；P5-3c 先冻结统一期限时间域再接 AP 预抢占 |
-| P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 旧映射失效、确认前帧不复用、超时不静默成功 | 待做；允许跨 CPU 活动映射变更前必须交付最小协议，必要时提前到 P5-3 |
+| P5-4 | IPI 与 TLB shootdown，跨 CPU 撤销失效 | 旧映射失效、确认前帧不复用、超时不静默成功 | 进行中：P5-4-1 定向 IPI 传输探针（[报告](../reports/2026-11-28-p5-4-1-directed-ipi.md)）；shootdown 协议未实现，允许跨 CPU 活动映射变更前必须交付 |
 | P5-5 | 2/4 vCPU 并发 I/O 与扩展曲线 | 1/2/4 vCPU 曲线与门槛登记 | 待做 |
 
 7-B 退出仍要求全部四项：2/4 vCPU 启动、并行 fork/exec 无丢唤醒、TLB shootdown 正确、

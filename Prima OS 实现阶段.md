@@ -82,6 +82,7 @@ updated: 2026-11-28
 2026-11-28 [P5-3b-4 held-launch放置、双核exec与丢唤醒矩阵](docs/superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)把`SYS_TASK_START`的held-launch、prepared fork与线程创建接入创建时放置，双核同时`SYS_EXEC_REPLACE`换根后完成4轮跨核阻塞/唤醒；修复`SYS_SEND`直投判定使用锁外快照导致的真实丢唤醒；`test-sched` `-smp 2/4`各两轮通过、host 1257、lint与默认72轮通过；Gate内部创建路径、服务管理器流程、程序级fork/exec矩阵与IPI/TLB未做，7-B未勾选。
 2026-11-28 [P5-3b-5 Gate创建路径放置与反向丢唤醒](docs/superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md)`SYS_GATE_SPAWN_THREAD`/`SYS_GATE_FORK`子任务按客户owner CPU发布（host单测），exec后新映像增加CPU1→CPU0反向4轮跨核阻塞/唤醒（`reverse_ok=2`）；`test-sched` `-smp 2/4`各两轮通过且同vCPU逐字节相同，host 1257、lint、默认72轮与entry/smp-ap/gs3回归通过；Gate端到端、服务管理器held-launch、程序级fork/exec矩阵与IPI/TLB未做，7-B未勾选。
 2026-11-28 [P5-3b-6 程序级fork/exec与后置丢唤醒](docs/superpowers/reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)pre-exec fork子进程并发exec数据页第二映像，父进程exec后核对换根/停放/owner，再做fork/exec后双向一轮唤醒（`forkexec_ok=2`、`post_ok=2`）；`test-sched` `-smp 2/4`各两轮通过且同vCPU逐字节相同，host 1257、lint、默认72轮与entry/smp-ap/gs3回归通过；exec后二次fork触发用户取指缺页，未采用；Gate端到端与服务管理器流程未做，7-B未勾选。
+2026-11-28 [P5-4-1 AP LAPIC窗口与有界定向IPI往返](docs/superpowers/reports/2026-11-28-p5-4-1-directed-ipi.md)补齐AP根的LAPIC映射，独立CPL0探针在`-smp 2/4`各两轮完成每个AP的定向ping/pong与主动丢pong的确认超时反例；保留ICR有界轮询并以host替身验证busy时不覆写命令。AP启动`SMP|`行对基线逐字节相同，整份BIOS日志因ELF布局/引导可用帧变化不相同；TLB shootdown的active-CPU、generation/ticket、确认前帧不复用与运行期失败策略未实现，7-B未勾选。 默认完整回归未取得连续PASS：V2一次启动期超时（聚焦双轮通过），N1在完整与聚焦运行均出现`interrupt=0`后超时，根因未定；未据此签署P5。
 
 阶段7工程后继：[Cargo输入源码/NOTICE材料](docs/superpowers/reports/2026-11-08-stage7-cargo-materials.md)，
 [源码/验收证据包及73056ba自身远端](docs/superpowers/reports/2026-11-08-stage7-evidence-package.md)，
@@ -454,7 +455,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 
 ## 阶段 7 — 扩展与硬化
 
-**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS）、GS-2（异常/中断/IRQ入口出口`swapgs`及NMI/IST，真实LAPIC自注入NMI矩阵双轮通过）与GS-3（每CPU GS区与经`%gs`的CPU索引，`-smp 2/4`探针四项计数等于vCPU数）、P5-3b-1（CPL0 `int 0x80`/`#PF`现场改为每CPU槽，`-smp 2/4`探针四项计数等于vCPU数）与P5-3b-2（CPL3 `int 0x80`/`#PF`/`USER_FRAME`、`syscall`快路径与`resume`跳板改为每CPU槽，每CPU从CPL3自检，`-smp 2/4`六项计数等于vCPU数）与P5-3b-3（每CPU可运行队列/owner/单运行者、AP真实调度、双核屏障/跨核唤醒/真实fork/嵌套#PF，`test-sched`两轮通过，命令用MTTCG）与P5-3b-4（held-launch/prepared fork/线程创建放置、双核exec换根与4轮跨核丢唤醒矩阵，修复`SYS_SEND`直投判定丢唤醒；Gate内部创建路径与服务管理器流程未接）与P5-3b-5（Gate spawn/fork子任务按客户owner CPU发布，host单测；exec后CPU1→CPU0反向4轮跨核阻塞/唤醒，`reverse_ok=2`；Gate端到端、服务管理器流程与程序级fork/exec矩阵未做）与P5-3b-6（pre-exec fork子进程并发exec第二映像，父进程exec后核对；随后fork/exec后双向唤醒，`forkexec_ok=2`、`post_ok=2`；exec后二次fork缺页未采用；Gate端到端与服务管理器流程未做）；后者均受控探针、普通镜像不启用，可运行队列之外的准入规则仍未整体闭合，P5未签署；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
+**状态：进行中（2026-11-06，作者指令“启动阶段7”）；7-0已取得73056ba自身干净远端九组及97份归档核验；五类有界单核基线、源码/验收证据包及根Cargo输入材料已有结果，G4内核路径独立保留；P5-3a后已落GS-1（`syscall`路径`swapgs`与每任务用户GS）、GS-2（异常/中断/IRQ入口出口`swapgs`及NMI/IST，真实LAPIC自注入NMI矩阵双轮通过）与GS-3（每CPU GS区与经`%gs`的CPU索引，`-smp 2/4`探针四项计数等于vCPU数）、P5-3b-1（CPL0 `int 0x80`/`#PF`现场改为每CPU槽，`-smp 2/4`探针四项计数等于vCPU数）与P5-3b-2（CPL3 `int 0x80`/`#PF`/`USER_FRAME`、`syscall`快路径与`resume`跳板改为每CPU槽，每CPU从CPL3自检，`-smp 2/4`六项计数等于vCPU数）与P5-3b-3（每CPU可运行队列/owner/单运行者、AP真实调度、双核屏障/跨核唤醒/真实fork/嵌套#PF，`test-sched`两轮通过，命令用MTTCG）与P5-3b-4（held-launch/prepared fork/线程创建放置、双核exec换根与4轮跨核丢唤醒矩阵，修复`SYS_SEND`直投判定丢唤醒；Gate内部创建路径与服务管理器流程未接）与P5-3b-5（Gate spawn/fork子任务按客户owner CPU发布，host单测；exec后CPU1→CPU0反向4轮跨核阻塞/唤醒，`reverse_ok=2`；Gate端到端、服务管理器流程与程序级fork/exec矩阵未做）与P5-3b-6（pre-exec fork子进程并发exec第二映像，父进程exec后核对；随后fork/exec后双向唤醒，`forkexec_ok=2`、`post_ok=2`；exec后二次fork缺页未采用；Gate端到端与服务管理器流程未做）；P5-4-1（AP根LAPIC窗口、有界定向IPI传输与丢确认超时探针，TLB协议未实现）；上述均受控探针、普通镜像不启用，可运行队列之外的准入规则仍未整体闭合，P5未签署；本机超时限制保留，多核、门槛、材料缺口/其它输入图及镜像包待完成。**
 [启动与首片报告](docs/superpowers/reports/2026-11-06-stage7-start.md)、
 [CI后继报告](docs/superpowers/reports/2026-11-06-stage7-ci-evidence.md)、
 [远端CI整改报告](docs/superpowers/reports/2026-11-07-stage7-ci-remediation.md)、
@@ -475,6 +476,7 @@ D14仅单核双人格桩探索与模型，不冒充7-A完整交付。前序构�
 [P5-3b-4 held-launch 放置、双核 exec 与丢唤醒矩阵](docs/superpowers/reports/2026-11-28-p5-3b4-launch-exec-lost-wakeup.md)、
 [P5-3b-5 Gate 创建路径放置与反向丢唤醒矩阵](docs/superpowers/reports/2026-11-28-p5-3b5-gate-placement-reverse-wakeup.md)、
 [P5-3b-6 程序级 fork/exec 与后置丢唤醒矩阵](docs/superpowers/reports/2026-11-28-p5-3b6-program-fork-exec-post-wakeup.md)、
+[P5-4-1 AP LAPIC 窗口与有界定向 IPI 往返](docs/superpowers/reports/2026-11-28-p5-4-1-directed-ipi.md)、
 [P5-3b-3 每 CPU 队列、放置与真实双核负载](docs/superpowers/reports/2026-11-28-p5-3b3-queue-placement.md)记录实际范围。
 技术规格、应用/设备白名单和量化门槛继续逐片冻结。作者在
 [2026-10-31 范围讨论](docs/superpowers/specs/2026-10-31-stage7-scope-decisions.md)中逐项确认下列范围，

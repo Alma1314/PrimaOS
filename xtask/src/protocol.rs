@@ -6733,6 +6733,41 @@ pub(crate) fn validate_gs3(output: &str, smp: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// IPI extends the GS-3 discovery/online witness with exactly one transport result.
+pub(crate) fn validate_ipi(output: &str, smp: u8) -> Result<(), String> {
+    if !matches!(smp, 2 | 4) {
+        return Err("IPI supports only 2/4 vCPUs".to_owned());
+    }
+    let expected = format!(
+        "SMP|ipi=cpus={smp};roundtrips={};directed=1;ack_timeout=1;PASS",
+        smp - 1
+    );
+    let mut found = false;
+    let mut base = Vec::new();
+    for line in output.lines().map(str::trim) {
+        if line.starts_with("SMP|ipi=") {
+            if found
+                || line != expected
+                || !base
+                    .last()
+                    .is_some_and(|line: &&str| line.starts_with("SMP|gs="))
+            {
+                return Err("IPI requires exactly one matching transport witness".to_owned());
+            }
+            found = true;
+        } else {
+            if line == "SMP|PASS" && !found {
+                return Err("IPI witness must precede final PASS".to_owned());
+            }
+            base.push(line);
+        }
+    }
+    if !found {
+        return Err("missing IPI transport witness".to_owned());
+    }
+    validate_gs3(&base.join("\n"), smp)
+}
+
 /// GS-1：ring3 用户 GS 探针见证必须逐字段匹配，且恰好一条 `GS|PASS`。
 ///
 /// 期望：两任务各读到自己的魔数（不串扰）、非规范值得到 `EINVAL`、切换与 `syscall`
@@ -7076,7 +7111,9 @@ pub(crate) fn validate_sched(output: &str, smp: u8) -> Result<(), String> {
 
 #[cfg(test)]
 mod smp_tests {
-    use super::{validate_entry, validate_gs3, validate_sched, validate_smp, validate_smp_ap};
+    use super::{
+        validate_entry, validate_gs3, validate_ipi, validate_sched, validate_smp, validate_smp_ap,
+    };
 
     const VALID: &str = "boot_start|seq=1;event=ok\nSMP|begin\nSMP|rsdp=2;xsdt=1;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|PASS\nboot_complete|seq=9;event=ok\n";
 
@@ -7123,6 +7160,33 @@ mod smp_tests {
     }
 
     const VALID_GS3: &str = "SMP|begin\nSMP|rsdp=0;xsdt=0;cpus=4;bsp_apic=0;bsp_index=0;lapic=0xfee00000;lapic_id=0;x2apic=0;online=1\nSMP|aps=3;online=4;percpu=3;tss=distinct\nSMP|gs=cpus=4;index_ok=4;base_ok=4;apic_ok=4;cpuid_ok=4;PASS\nSMP|PASS\n";
+
+    #[test]
+    fn ipi_requires_directed_roundtrips_and_missing_reply_timeout() {
+        let witness = "SMP|ipi=cpus=4;roundtrips=3;directed=1;ack_timeout=1;PASS\n";
+        let valid = VALID_GS3.replace("SMP|PASS\n", &format!("{witness}SMP|PASS\n"));
+        assert_eq!(validate_ipi(&valid, 4), Ok(()));
+        let valid_two = valid.replace("=4", "=2").replace("=3", "=1");
+        assert_eq!(validate_ipi(&valid_two, 2), Ok(()));
+        assert!(validate_ipi(&valid, 2).is_err());
+        assert!(validate_ipi(&valid, 0).is_err());
+        for bad in [
+            VALID_GS3.to_owned(),
+            valid.replace("roundtrips=3", "roundtrips=2"),
+            valid.replace("directed=1", "directed=0"),
+            valid.replace("ack_timeout=1", "ack_timeout=0"),
+            valid.replace("index_ok=4", "index_ok=3"),
+            valid.replace(witness, &format!("{witness}{witness}")),
+            format!("{VALID_GS3}{witness}"),
+            format!("{witness}{VALID_GS3}"),
+            valid.replace("SMP|PASS", "SMP|FAIL|ipi-ack-timeout"),
+        ] {
+            assert!(
+                validate_ipi(&bad, 4).is_err(),
+                "bad IPI witness accepted: {bad}"
+            );
+        }
+    }
 
     #[test]
     fn gs3_witness_requires_every_cpu_to_identify_itself_via_gs() {
